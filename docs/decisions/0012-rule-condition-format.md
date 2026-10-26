@@ -2,7 +2,7 @@
 
 - Status: Accepted (owner, first requirements review)
 - Decision issue: DEC-12
-- Requirements: `docs/requirements.md`, section 10
+- Requirements: `docs/requirements.md`
 
 ## Context
 
