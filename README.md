@@ -18,5 +18,6 @@ Project structure:
 - Contributing, branch and commit conventions: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Decisions (ADRs): [docs/decisions/](docs/decisions/README.md)
 - Server setup and development: [cmdb/README.md](cmdb/README.md)
+- Agent build and checks: [agent/README.md](agent/README.md)
 - Reporting a vulnerability: [SECURITY.md](SECURITY.md)
 - License: [MIT](LICENSE)

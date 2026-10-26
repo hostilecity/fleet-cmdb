@@ -1,4 +1,4 @@
-# Dependency update pull requests (P0-SERVER-CI). The agent's cargo entry is added by P0-AGENT.
+# Dependency update pull requests (P0-SERVER-CI, P0-AGENT).
 version: 2
 updates:
   - package-ecosystem: bundler
@@ -9,6 +9,12 @@ updates:
     groups:
       rails:
         patterns: ["rails", "action*", "active*", "railties"]
+
+  - package-ecosystem: cargo
+    directory: /agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
     directory: /
