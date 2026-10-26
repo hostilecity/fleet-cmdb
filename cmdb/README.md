@@ -63,6 +63,14 @@ Development uses `cmdb_development` plus `cmdb_development_cache`, `_queue`, and
 
 Recurring jobs are declared in `config/recurring.yml` and run by Solid Queue's scheduler. Later issues add their jobs there.
 
+### Hosts and the audit log
+
+- **Hosts** (`app/models/host.rb`) change enrollment state only through `activate!`, `revoke!`, `begin_reenrollment!`, and `retire!`, which follow the FR-1.1 table. Any other change raises `Host::InvalidTransition`. Create hosts with `Host.register!` and change them with `#edit!`. Hosts are retired, never deleted.
+- **Audit entries** are written only with `Audit.record` (`app/models/audit.rb`), inside the same transaction as the change. Action names live in `Audit::Actions`.
+  - Before and after values whose keys look like secrets (token, credential, digest, and so on) raise outside production and are replaced with `[FILTERED]` in production.
+- **The audit log is append-only in the database too.** A trigger rejects `UPDATE`, `DELETE`, and `TRUNCATE` on `audit_entries`, so tasks that truncate every table, such as `bin/rails db:truncate_all` and `db:seed:replant`, fail by design. Use `db:reset` for a fresh development database.
+  - The trigger and its function live in `db/functions/` and `db/triggers/`. The [fx](https://github.com/teoljungberg/fx) gem records them in `db/schema.rb`, so `db:prepare` and `db:schema:load` recreate them.
+
 ## Secrets
 
 - `config/master.key` is generated locally and **never committed** (it is ignored). `config/credentials.yml.enc` is committed but cannot be read without that key. Back the key up with the database backup (NFR-2): a restored database without the key is not enough to run production.
