@@ -29,7 +29,7 @@ bin/ci      # tests, rubocop, brakeman, bundler-audit
 bin/dev     # run the app and job worker
 ```
 
-Agent (`agent/`), once it exists: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
+Agent (`agent/`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`. See `agent/README.md`.
 
 Use Ruby 3.4.x through chruby (the macOS system Ruby, 2.6, will not work) and PostgreSQL from Homebrew.
 

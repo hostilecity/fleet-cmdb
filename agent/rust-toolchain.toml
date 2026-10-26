@@ -1,0 +1,7 @@
+# Pinned toolchain for local builds and CI. Bump deliberately, in its own pull request.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
+# DEC-01: the fleet is Debian 13 on x86_64; the agent ships as a static musl binary.
+targets = ["x86_64-unknown-linux-musl"]
+profile = "minimal"

@@ -1,0 +1,17 @@
+[package]
+name = "fleet-agent"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Fleet CMDB agent: reports host facts to the Fleet CMDB server"
+license = "MIT"
+publish = false
+
+# Dependencies are added by the issues that first use them; the planned set is recorded in README.md.
+# Keep this list short: the agent runs as root (DEC-03).
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
