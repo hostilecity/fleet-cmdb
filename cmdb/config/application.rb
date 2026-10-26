@@ -26,7 +26,7 @@ module Cmdb
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
     # Common ones are `templates`, `generators`, or `middleware`, for example.
-    config.autoload_lib(ignore: %w[assets tasks])
+    config.autoload_lib(ignore: %w[assets middleware tasks])
 
     # Configuration for the application, engines, and railties goes here.
     #
@@ -38,5 +38,9 @@ module Cmdb
 
     # Don't generate system test files.
     config.generators.system_tests = nil
+
+    # Agent API body limit and no Rails parameter parsing for /api/ (lib/middleware, P1-S06).
+    require Rails.root.join("lib/middleware/agent_api_request_guard").to_s
+    config.middleware.insert_after ActionDispatch::RequestId, AgentApiRequestGuard
   end
 end

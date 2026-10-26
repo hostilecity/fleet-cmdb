@@ -39,4 +39,8 @@ Rails.application.configure do
 
   # Raise error when a before_action's only/except options reference missing actions.
   config.action_controller.raise_on_missing_callback_actions = true
+
+  # Agent API rate limits small enough to exercise in request specs (config/initializers/agent_api.rb).
+  config.x.agent_api.rate_limit = { to: 10, within: 1.minute }
+  config.x.agent_api.enroll_rate_limit = { to: 5, within: 1.minute }
 end

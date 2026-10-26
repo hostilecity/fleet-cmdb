@@ -5,6 +5,16 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", as: :rails_health_check
 
+  # Agent API (FR-S.2, docs/api). Served only on the private agent hostname once P1-ACCESS adds the host
+  # constraint. Keep the catch-all last so unknown /api/v1 paths get the JSON error envelope.
+  namespace :api do
+    namespace :v1 do
+      post "enroll", to: "enrollments#create"
+      match "", to: "base#not_found", via: :all
+      match "*path", to: "base#not_found", via: :all, format: false
+    end
+  end
+
   # Render dynamic PWA files from app/views/pwa/* (remember to link manifest in application.html.erb)
   # get "manifest" => "rails/pwa#manifest", as: :pwa_manifest
   # get "service-worker" => "rails/pwa#service_worker", as: :pwa_service_worker
