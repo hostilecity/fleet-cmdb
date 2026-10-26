@@ -1,0 +1,92 @@
+# Server CI (issue P0-SERVER-CI, NFR-4).
+# Runs cmdb/bin/ci (rubocop, bundler-audit, importmap audit, brakeman, RSpec) against PostgreSQL.
+#
+# Branch protection should require the "Server CI" job only. It always runs and passes when
+# cmdb/ was not touched, so path filtering never leaves a required check pending.
+name: Server CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read # paths-filter lists PR files through the API
+
+concurrency:
+  group: server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect server changes
+    runs-on: ubuntu-latest
+    outputs:
+      # Pushes to main always run the full check; pull requests only when cmdb/ or this workflow changed.
+      server: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.server }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            server:
+              - 'cmdb/**'
+              - '.github/workflows/server-ci.yml'
+
+  test:
+    name: bin/ci
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: cmdb
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RAILS_ENV: test
+      # database.yml sets no host or user, so libpq reads these for every connection.
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          working-directory: cmdb # reads cmdb/.ruby-version
+          bundler-cache: true
+
+      - name: Run bin/ci
+        run: bin/ci
+
+  gate:
+    name: Server CI
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "changes=$CHANGES test=$TEST"
+          if [ "$CHANGES" != "success" ]; then exit 1; fi
+          if [ "$TEST" = "failure" ] || [ "$TEST" = "cancelled" ]; then exit 1; fi
