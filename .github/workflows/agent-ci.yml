@@ -29,7 +29,7 @@ jobs:
     name: Detect agent changes
     runs-on: ubuntu-latest
     outputs:
-      # Pushes to main always run the full check; pull requests only when agent/ or this workflow changed.
+      # Pushes to main always run the full check; pull requests only when agent/, docs/api/, or this workflow changed.
       agent: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.agent }}
     steps:
       - uses: dorny/paths-filter@v4
@@ -40,6 +40,7 @@ jobs:
             agent:
               - 'agent/**'
               - '.github/workflows/agent-ci.yml'
+              - 'docs/api/**' # shared API contract (P0-CONTRACT)
 
   check:
     name: fmt, clippy, test

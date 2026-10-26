@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Enroll response",
+  "description": "201 response to POST /api/v1/enroll. The credential appears here once and nowhere else.",
+  "type": "object",
+  "required": [
+    "credential",
+    "server_time"
+  ],
+  "properties": {
+    "credential": {
+      "description": "Permanent per-host credential, `<key_id>.<secret>`; sent as `Authorization: Bearer <credential>`. Secret: never logged.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{32,128}$"
+    },
+    "server_time": {
+      "description": "Server clock, RFC 3339 UTC.",
+      "type": "string",
+      "maxLength": 35,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    }
+  }
+}

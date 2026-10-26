@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Enroll request",
+  "description": "POST /api/v1/enroll. Unauthenticated apart from the single-use enrollment token (DEC-04).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_version",
+    "token",
+    "hostname",
+    "machine_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Payload schema version. This directory is version 1.",
+      "const": 1
+    },
+    "agent_version": {
+      "description": "Agent release version (semantic version).",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+    },
+    "token": {
+      "description": "Single-use enrollment token issued by the operator. Secret: never logged.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{32,128}$"
+    },
+    "hostname": {
+      "description": "Hostname as the agent sees it, or null if unreadable.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "machine_id": {
+      "description": "Contents of /etc/machine-id, or null if unreadable. Recorded as the host's identity for clone detection (FR-S.1).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{32}$"
+    }
+  }
+}

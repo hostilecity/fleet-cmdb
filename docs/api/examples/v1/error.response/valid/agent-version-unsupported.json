@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "agent_version_unsupported",
+    "message": "Agent 0.1.0 is older than the minimum supported version 0.2.0. Upgrade the agent.",
+    "request_id": "req-00000000000000000002"
+  }
+}

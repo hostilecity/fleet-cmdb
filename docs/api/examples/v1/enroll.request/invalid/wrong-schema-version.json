@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "agent_version": "0.1.0",
+  "token": "EXAMPLE-enrollment-token-not-a-real-one-0001",
+  "hostname": "vm-01.example.lan",
+  "machine_id": "0123456789abcdef0123456789abcdef"
+}
