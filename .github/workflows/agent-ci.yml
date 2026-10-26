@@ -1,0 +1,165 @@
+# Agent CI (issue P0-AGENT, FR-1.6, NFR-4).
+# Runs cargo fmt, clippy, tests, a dependency audit, and the static musl release build for each target in
+# DEC-01 (x86_64-unknown-linux-musl only). Pushes to main upload the binary as a workflow artefact.
+# Publishing releases is not done here; see P1-PACKAGING.
+#
+# Branch protection should require the "Agent CI" job only. It always runs and passes when
+# agent/ was not touched, so path filtering never leaves a required check pending.
+name: Agent CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read # paths-filter lists PR files through the API
+
+concurrency:
+  group: agent-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  changes:
+    name: Detect agent changes
+    runs-on: ubuntu-latest
+    outputs:
+      # Pushes to main always run the full check; pull requests only when agent/ or this workflow changed.
+      agent: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.agent }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            agent:
+              - 'agent/**'
+              - '.github/workflows/agent-ci.yml'
+
+  check:
+    name: fmt, clippy, test
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain (agent/rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
+
+  audit:
+    name: Dependency audit
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        # Fails on any RustSec advisory (vulnerable, unmaintained, or yanked crate) in Cargo.lock.
+        run: cargo audit --deny warnings
+
+  build:
+    name: Release build (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        # DEC-01. Add a target here only with a new decision.
+        target: [x86_64-unknown-linux-musl]
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools
+        # Needed once a dependency compiles C code; harmless before then.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: ${{ matrix.target }}
+
+      - name: cargo build --release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Check the binary is static and runs
+        env:
+          BIN: target/${{ matrix.target }}/release/fleet-agent
+        run: |
+          file "$BIN"
+          file "$BIN" | grep -Eq 'static(-pie)? linked'
+          "$BIN" --version
+
+      - name: Upload binary
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-agent-${{ matrix.target }}
+          path: agent/target/${{ matrix.target }}/release/fleet-agent
+          if-no-files-found: error
+          retention-days: 30
+
+  gate:
+    name: Agent CI
+    needs: [changes, check, audit, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CHECK: ${{ needs.check.result }}
+          AUDIT: ${{ needs.audit.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          echo "changes=$CHANGES check=$CHECK audit=$AUDIT build=$BUILD"
+          if [ "$CHANGES" != "success" ]; then exit 1; fi
+          for r in "$CHECK" "$AUDIT" "$BUILD"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then exit 1; fi
+          done
