@@ -15,7 +15,7 @@ Work is tracked as GitHub Issues, grouped into milestones (Phase 0 to Phase 3). 
 - Branch names: `<issue-number>-short-slug`, for example `42-liveness-job`.
 - Commit and pull request titles cite the requirement IDs they implement:
   `FR-1.4: evaluate liveness every minute`, `NFR-1: add content security policy`.
-- Use the pull request template. Its **delivery note** (built, tested, acceptance criteria covered, decisions used, left incomplete) is required, and the phase acceptance issue (`P1-ACCEPT` and so on) gets a consolidated delivery note when the phase is accepted. Reference the issue (`Refs #N`, `Closes #N` on the last PR).
+- Use the pull request template. Its **delivery note** (built, tested, acceptance criteria covered, decisions used, left incomplete) is required, and the phase acceptance issue (`P1-ACCEPT` and so on) gets a consolidated delivery note when the phase is accepted. Link the issue with `Closes #N` so merging closes it; use `Refs #N` only when more PRs for that issue will follow.
 - Squash merge. Keep `main` green.
 
 ## Running things
