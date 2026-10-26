@@ -133,7 +133,7 @@ jobs:
           BIN: target/${{ matrix.target }}/release/fleet-agent
         run: |
           file "$BIN"
-          file "$BIN" | grep -Eq 'static(-pie)? linked'
+          file "$BIN" | grep -Eq '(statically|static-pie) linked'
           "$BIN" --version
 
       - name: Upload binary
