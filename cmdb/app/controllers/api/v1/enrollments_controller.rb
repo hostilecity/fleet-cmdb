@@ -9,6 +9,9 @@ module Api
                  by: -> { request.remote_ip }, store: AgentApi.rate_limit_store, name: "enroll", scope: "agent_api",
                  with: -> { rate_limited!(AgentApi.config.enroll_rate_limit[:within]) }
       validates_body_with "enroll.request"
+      # The token, credential, and host change commit only once the response is built, so a failure after
+      # redeeming never consumes the token without the agent receiving its credential.
+      atomic :create
 
       def create
         credential = Enrollment::Redeem.call(token: payload["token"], machine_id: payload["machine_id"],

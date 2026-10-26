@@ -7,6 +7,9 @@ gem "propshaft"
 # Use postgresql as the database for Active Record
 gem "pg", "~> 1.1"
 
+# Validates agent API requests against the JSON Schemas in docs/api at runtime (P1-API-AUTH)
+gem "json_schemer"
+
 # Database functions and triggers in db/schema.rb (append-only audit log guard, P1-HOSTS)
 gem "fx", "~> 0.11"
 # Use the Puma web server [https://github.com/puma/puma]
@@ -57,8 +60,6 @@ group :development do
 end
 
 group :test do
-  # Validates payloads against the agent API JSON Schemas in docs/api (P0-CONTRACT).
-  gem "json_schemer"
   gem "webmock"
   gem "simplecov", require: false
 end

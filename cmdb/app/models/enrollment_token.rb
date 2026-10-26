@@ -18,8 +18,15 @@ class EnrollmentToken < ApplicationRecord
     Issued.new(record:, plaintext:)
   end
 
-  # The token row for a plaintext token, locked FOR UPDATE so concurrent redemptions are serialised. Callers
-  # must check redeemable? after locking.
+  # The host a plaintext token belongs to, read without locking so callers can lock the host first.
+  def self.host_id_for(plaintext)
+    return nil unless FORMAT.match?(plaintext.to_s)
+
+    where(token_digest: AgentApi.digest(plaintext)).pick(:host_id)
+  end
+
+  # The token row for a plaintext token, locked FOR UPDATE so concurrent redemptions are serialised. Lock the
+  # host first (lock order: host, then token), then check redeemable? after locking.
   def self.lock_for_redemption(plaintext)
     return nil unless FORMAT.match?(plaintext.to_s)
 

@@ -160,6 +160,28 @@ RSpec.describe "POST /api/v1/enroll", type: :request do
       expect(log).not_to include("some value")
     end
 
+    it "returns 400, not 426, for a version that is not valid SemVer" do
+      enroll(body(agent_version: "0.1.0-01"))
+      expect_error(:bad_request, "validation_failed")
+      expect(json.dig("error", "details").pluck("pointer")).to eq([ "/agent_version" ])
+    end
+
+    it "rolls the redemption back if the request fails after redeeming, so the agent can retry" do
+      allow(Enrollment::Redeem).to receive(:call).and_wrap_original do |original, **args|
+        original.call(**args)
+        raise "failure while building the response"
+      end
+      enroll
+      expect_error(:internal_server_error, "internal_error")
+      expect(host.reload.enrollment_state).to eq("pending")
+      expect(host.agent_credentials).to be_empty
+      expect(EnrollmentToken.redeemable.where(host:)).to exist
+
+      allow(Enrollment::Redeem).to receive(:call).and_call_original
+      enroll
+      expect(response).to have_http_status(:created)
+    end
+
     it "returns 426 to agents older than the minimum version" do
       [ "0.0.9", "0.1.0-rc.1" ].each do |agent_version|
         enroll(body(agent_version:))

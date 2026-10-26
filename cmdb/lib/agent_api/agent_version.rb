@@ -4,7 +4,12 @@ module AgentApi
   class AgentVersion
     include Comparable
 
-    PATTERN = /\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?\z/
+    # The SemVer 2.0.0 grammar, as in docs/api agent_version: no leading zeros in numeric identifiers, no
+    # empty identifiers.
+    NUMERIC = /0|[1-9]\d*/
+    PRERELEASE_ID = /(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)/
+    BUILD_ID = /[0-9A-Za-z-]+/
+    PATTERN = /\A(#{NUMERIC})\.(#{NUMERIC})\.(#{NUMERIC})(?:-(#{PRERELEASE_ID}(?:\.#{PRERELEASE_ID})*))?(?:\+#{BUILD_ID}(?:\.#{BUILD_ID})*)?\z/
 
     attr_reader :core, :prerelease
 

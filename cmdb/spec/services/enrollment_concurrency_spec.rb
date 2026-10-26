@@ -20,7 +20,7 @@ RSpec.describe "Concurrent enrollment" do
   it "redeems a token exactly once when several agents race" do
     @host, token = Enrollment::RegisterHost.call({ name: "Race", hostname: "race.example.lan" }, actor: Audit::SYSTEM)
     gate = Concurrent::CountDownLatch.new(1)
-    results = Array.new(6) do
+    results = Array.new(4) do # the test pool has 5 connections; this thread holds one
       Thread.new do
         gate.wait
         ActiveRecord::Base.connection_pool.with_connection do
@@ -35,8 +35,35 @@ RSpec.describe "Concurrent enrollment" do
     outcomes = results.map(&:value)
 
     expect(outcomes.count(:redeemed)).to eq(1)
-    expect(outcomes.count(:rejected)).to eq(5)
+    expect(outcomes.count(:rejected)).to eq(3)
     expect(AgentCredential.where(host_id: @host.id).count).to eq(1)
     expect(@host.reload.enrollment_state).to eq("active")
+  end
+
+  it "does not deadlock when a token is issued while another is being redeemed" do
+    @host, token = Enrollment::RegisterHost.call({ name: "Race", hostname: "race.example.lan" }, actor: Audit::SYSTEM)
+    gate = Concurrent::CountDownLatch.new(1)
+    threads = Array.new(4) do |i| # the test pool has 5 connections; this thread holds one
+      Thread.new do
+        gate.wait
+        ActiveRecord::Base.connection_pool.with_connection do
+          if i.even?
+            Enrollment::Redeem.call(token:, machine_id: nil, agent_version: "0.1.0", schema_version: 1)
+          else
+            Enrollment::IssueToken.call(host: @host, actor: Audit::SYSTEM)
+          end
+          :ok
+        rescue AgentApi::EnrollmentTokenInvalid
+          :rejected
+        rescue ActiveRecord::Deadlocked
+          :deadlocked
+        end
+      end
+    end
+    gate.count_down
+    outcomes = threads.map(&:value)
+
+    expect(outcomes).not_to include(:deadlocked)
+    expect(AgentCredential.where(host_id: @host.id, state: "active").count).to be <= 1
   end
 end

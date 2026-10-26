@@ -15,6 +15,22 @@ RSpec.describe AgentApi::AgentVersion do
   it "rejects anything that is not a semantic version" do
     [ nil, "", "1.2", "01.2.3", "1.2.3.4", "v1.2.3", 7 ].each { |s| expect(v(s)).to be_nil }
   end
+
+  it "uses the same strict grammar as docs/api agent_version" do
+    %w[0.1.0-01 0.1.0-alpha..1 0.1.0- 0.1.0-alpha. 1.0.0+ 1.0.0+a..b 1.0.0+build.].each do |invalid|
+      expect(v(invalid)).to be_nil, invalid
+    end
+    %w[0.1.0-0 0.1.0-0a 0.1.0-alpha.0.beta 1.0.0+001 1.0.0-rc.1+build.5].each do |valid|
+      expect(v(valid)).not_to be_nil, valid
+    end
+  end
+
+  it "agrees with the docs/api schema on every version it accepts or rejects" do
+    pattern = Regexp.new(ApiContract.schema("heartbeat.request", "v1").dig("properties", "agent_version", "pattern"))
+    %w[0.1.0 0.1.0-01 0.1.0-alpha..1 1.0.0+ 1.0.0-rc.1+build.5 01.0.0 0.1.0-0a 1.0.0+001].each do |candidate|
+      expect(v(candidate).nil?).to eq(!pattern.match?(candidate)), candidate
+    end
+  end
 end
 
 RSpec.describe AgentApi::Schema do
@@ -39,5 +55,12 @@ RSpec.describe AgentApi::Schema do
     errors = described_class.errors("enroll.request", 1, { "token" => "EXAMPLE-sensitive-value" })
     expect(errors).to include(a_hash_including("pointer" => "/token"))
     expect(errors.to_json).not_to include("EXAMPLE-sensitive-value")
+  end
+end
+
+RSpec.describe "Runtime dependencies" do
+  it "loads json_schemer in every environment, not only tests (request validation needs it)" do
+    dependency = Bundler.definition.dependencies.find { |d| d.name == "json_schemer" }
+    expect(dependency.groups).to eq([ :default ])
   end
 end
