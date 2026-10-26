@@ -1,6 +1,10 @@
 ## Summary
 
-<!-- What does this change do, and why? Link the issue: "Closes #N". -->
+<!-- What does this change do, and why? -->
+
+Closes #
+
+<!-- Keep "Closes #N" so merging closes the issue. Use "Refs #N" instead only if more PRs for this issue will follow. -->
 
 ## Requirements implemented
 
