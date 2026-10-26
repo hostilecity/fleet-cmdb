@@ -115,6 +115,17 @@
     - "A status change appears in an open browser within 30 seconds without a reload."
   blocked_by: [P1-ACCESS, P1-HOSTS, P1-HEARTBEAT, P1-INVENTORY]
 
+- key: P1-AUDIT-PAGE
+  title: "Dashboard: read-only fleet-wide audit log page"
+  milestone: 1
+  labels: ["area:dashboard", "area:server"]
+  covers: [FR-S.3, FR-S.4, NFR-1]
+  goal: "Signed-in operators can browse and filter the whole audit log read-only, split out of P1-HOSTS because it needs operator sign-in first."
+  done:
+    - "A signed-in operator sees entries newest first, filterable by actor, action, target, and date range, with pagination."
+    - "Anonymous requests are redirected to sign-in, there is no way to create, edit, or delete an entry, and recorded values render escaped."
+  blocked_by: [P1-HOSTS, P1-ACCESS]
+
 - key: P1-DASH-ACTIONS
   title: "Dashboard: create, edit, revoke, re-enroll, retire hosts"
   milestone: 1
@@ -202,7 +213,7 @@
   done:
     - "AC-1.1 to AC-1.7 each have recorded evidence, and the full suite plus migrations from an empty database pass in a clean CI run."
     - "The delivery note lists what was built, tested, and left incomplete, and maps each acceptance criterion to its proof."
-  blocked_by: [P0-CONTRACT, P1-HEARTBEAT, P1-INVENTORY, P1-AGENT-REPORT, P1-ACCESS, P1-HOSTS, P1-API-AUTH, P1-OPERABILITY, P1-DASH-FLEET, P1-DASH-ACTIONS, P1-AGENT-CORE, P1-AGENT-COLLECT, P1-PACKAGING, P1-VERIFY, P1-DEPLOY]
+  blocked_by: [P0-CONTRACT, P1-HEARTBEAT, P1-INVENTORY, P1-AGENT-REPORT, P1-ACCESS, P1-HOSTS, P1-API-AUTH, P1-OPERABILITY, P1-DASH-FLEET, P1-DASH-ACTIONS, P1-AUDIT-PAGE, P1-AGENT-CORE, P1-AGENT-COLLECT, P1-PACKAGING, P1-VERIFY, P1-DEPLOY]
 
 - key: P2-CONFIG-REPORTS
   title: "Config fact manifest, config reports, and report requests"
