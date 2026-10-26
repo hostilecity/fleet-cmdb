@@ -12,7 +12,7 @@
       "description": "Server clock, RFC 3339 UTC.",
       "type": "string",
       "maxLength": 35,
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
     },
     "directives": {
       "description": "Server-to-agent signals. Always empty in schema version 1; Phase 2 adds report requests and Phase 3 task hints under a new schema version.",

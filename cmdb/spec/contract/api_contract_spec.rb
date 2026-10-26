@@ -85,5 +85,11 @@ RSpec.describe "Agent API contract (docs/api)" do
                                                   "credential" => "abc.def" })
       expect(problems).to include(/nas\.home\.arpa/, /10\.0\.0\.5/, /fd00::5/, /credential value/)
     end
+
+    it "flags single-label hostnames under a hostname key" do
+      expect(ApiContract.real_data_problems({ "hostname" => "nas" })).to include(/hostname "nas"/)
+      expect(ApiContract.real_data_problems({ "hostname" => "vm-01.example.lan" })).to eq([])
+      expect(ApiContract.real_data_problems({ "hostname" => "vm-01.test" })).to eq([])
+    end
   end
 end

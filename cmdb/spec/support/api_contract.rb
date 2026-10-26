@@ -104,6 +104,11 @@ module ApiContract
     if SECRET_KEYS.include?(key) && !string.include?("EXAMPLE")
       out << "#{key} value #{string.inspect} does not contain EXAMPLE"
     end
+    # Hostname fields must use an example domain even when single-label ("nas"), which the
+    # dotted-name heuristic below cannot see.
+    if key == "hostname" && !string.downcase.match?(FAKE_DOMAIN)
+      out << "hostname #{string.inspect} is not under an example domain"
+    end
     string.scan(%r{[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*|\d{1,3}(?:\.\d{1,3}){3}}).each do |candidate|
       address = parse_address(candidate) or next
       out << "address #{candidate} is outside the documentation ranges" unless DOC_RANGES.any? { |r| r.include?(address) }

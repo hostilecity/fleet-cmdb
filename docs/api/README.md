@@ -37,7 +37,7 @@ Later phases add the config, package, and task endpoints.
 - **Validation:**
   - Unknown fields are ignored and logged, so schemas do not set `additionalProperties: false`.
   - Wrong types, out-of-range values, and unknown values of enumerated fields are rejected.
-  - Formats such as timestamps, UUIDs and credentials are checked with `pattern`, not `format`, so every validator agrees.
+  - Formats such as timestamps, UUIDs and credentials are checked with `pattern`, not `format`, so every validator agrees. Patterns cannot express every calendar rule (for example 30 February), so the server also parses timestamps and addresses when it implements an endpoint.
 - **Identifiers:**
   - Every report carries a `report_id`: a UUIDv4, generated per report and reused on retry.
   - A report whose `report_id` was already processed is answered `200` with `duplicate: true` and changes nothing.
@@ -70,7 +70,7 @@ Examples are public, so every value must be obviously fake. The server contract 
 
 | Kind | Rule |
 |---|---|
-| Hostnames | Under `example.lan`, `example.com`, `example.net`, `example.org`, `.example`, `.test`, or `.invalid`, for example `vm-01.example.lan` |
+| Hostnames | Under `example.lan`, `example.com`, `example.net`, `example.org`, `.example`, `.test`, or `.invalid`, for example `vm-01.example.lan`. Any value under a `hostname` key must match this, including single-label names |
 | IPv4 addresses | Documentation ranges `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` |
 | IPv6 addresses | Documentation range `2001:db8::/32` |
 | Secrets | Any value under a `token`, `credential`, `secret`, or `password` key contains `EXAMPLE` |
@@ -107,3 +107,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | Version | Change |
 |---|---|
 | v1 | Initial Phase 1 payloads: enroll, heartbeat, inventory, errors (P0-CONTRACT) |
+| v1 | Tightened before first release (review of #44): SemVer 2.0.0 `agent_version` (build metadata allowed, leading zeros rejected), timestamp patterns reject impossible month, day, hour, minute, and second values, `architecture` accepts `null` when unreadable, network addresses must be valid IPv4 (prefix 0-32) or IPv6 (prefix 0-128) CIDRs. No version bump: v1 has no released consumers. |
