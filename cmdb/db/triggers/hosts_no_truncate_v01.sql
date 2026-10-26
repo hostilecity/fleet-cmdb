@@ -1,0 +1,4 @@
+CREATE TRIGGER hosts_no_truncate
+  BEFORE TRUNCATE ON hosts
+  FOR EACH STATEMENT
+  EXECUTE FUNCTION hosts_guard();

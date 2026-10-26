@@ -21,7 +21,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_26_193100) do
     t.string "target_type"
     t.bigint "target_id"
     t.jsonb "changeset", default: {}, null: false
-    t.string "request_id", limit: 64
+    t.string "request_id", limit: 255
     t.datetime "occurred_at", default: -> { "CURRENT_TIMESTAMP" }, null: false
     t.index ["action", "occurred_at"], name: "index_audit_entries_on_action_and_occurred_at"
     t.index ["actor_type", "actor_id", "occurred_at"], name: "index_audit_entries_on_actor"
@@ -53,6 +53,46 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_26_193100) do
     t.check_constraint "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying, 'stale'::character varying, 'offline'::character varying]::text[]))", name: "hosts_liveness_status_valid"
   end
 
+  create_function :hosts_guard, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.hosts_guard()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- Hosts are retired, never deleted (P1-S02).
+        IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+          RAISE EXCEPTION 'hosts are retired, never deleted: % is not allowed', TG_OP
+            USING ERRCODE = 'insufficient_privilege';
+        END IF;
+
+        -- New hosts start pending (FR-1.1).
+        IF TG_OP = 'INSERT' THEN
+          IF NEW.enrollment_state <> 'pending' THEN
+            RAISE EXCEPTION 'new hosts start pending, not %', NEW.enrollment_state
+              USING ERRCODE = 'check_violation';
+          END IF;
+          RETURN NEW;
+        END IF;
+
+        -- Only the FR-1.1 transitions, whichever code path writes the column; retired is terminal.
+        IF NEW.enrollment_state IS DISTINCT FROM OLD.enrollment_state
+           AND (OLD.enrollment_state::text, NEW.enrollment_state::text) NOT IN (
+             ('pending', 'active'),
+             ('active', 'revoked'),
+             ('revoked', 'pending'),
+             ('active', 'pending'),
+             ('pending', 'retired'),
+             ('active', 'retired'),
+             ('revoked', 'retired')
+           ) THEN
+          RAISE EXCEPTION 'invalid enrollment state transition: % -> %', OLD.enrollment_state, NEW.enrollment_state
+            USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+      END;
+      $function$
+  SQL
+
   create_function :audit_entries_append_only, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.audit_entries_append_only()
        RETURNS trigger
@@ -63,6 +103,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_26_193100) do
           USING ERRCODE = 'insufficient_privilege';
       END;
       $function$
+  SQL
+
+  create_trigger :hosts_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER hosts_no_truncate BEFORE TRUNCATE ON public.hosts FOR EACH STATEMENT EXECUTE FUNCTION hosts_guard()
+  SQL
+
+  create_trigger :hosts_no_delete, sql_definition: <<-SQL
+      CREATE TRIGGER hosts_no_delete BEFORE DELETE ON public.hosts FOR EACH ROW EXECUTE FUNCTION hosts_guard()
+  SQL
+
+  create_trigger :hosts_enrollment_state_guard, sql_definition: <<-SQL
+      CREATE TRIGGER hosts_enrollment_state_guard BEFORE INSERT OR UPDATE OF enrollment_state ON public.hosts FOR EACH ROW EXECUTE FUNCTION hosts_guard()
   SQL
 
   create_trigger :audit_entries_no_truncate, sql_definition: <<-SQL

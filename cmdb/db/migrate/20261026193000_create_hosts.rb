@@ -1,4 +1,6 @@
-# Host records and the FR-1.1 enrollment state machine (P1-HOSTS, P1-S02).
+# Host records and the FR-1.1 enrollment state machine (P1-HOSTS, P1-S02). A database trigger enforces
+# the transition table and rejects DELETE and TRUNCATE, so code that skips model callbacks
+# (update_column, update_all, delete_all) cannot resurrect a retired host or hard-delete one.
 class CreateHosts < ActiveRecord::Migration[8.1]
   def change
     create_table :hosts do |t|
@@ -26,5 +28,10 @@ class CreateHosts < ActiveRecord::Migration[8.1]
                          name: "hosts_enrollment_state_valid"
     add_check_constraint :hosts, "liveness_status IS NULL OR liveness_status IN ('online', 'stale', 'offline')",
                          name: "hosts_liveness_status_valid"
+
+    create_function :hosts_guard
+    create_trigger :hosts_enrollment_state_guard, on: :hosts
+    create_trigger :hosts_no_delete, on: :hosts
+    create_trigger :hosts_no_truncate, on: :hosts
   end
 end

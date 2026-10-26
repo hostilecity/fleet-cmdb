@@ -3,7 +3,8 @@ module Audit
   # outside production, so the mistake is caught by tests, and is replaced with FILTERED in production,
   # so a missed case can never block an operator or leak the value.
   module Scrubber
-    SECRET_KEY = /token|secret|credential|digest|passw|authorization|bearer|api_key|private_key|otp|recovery/i
+    # Case-insensitive and separator-agnostic: api_key, apiKey, api-key, and APIKEY all match.
+    SECRET_KEY = /token|secret|credential|digest|passw|authorization|bearer|api[_-]?key|private[_-]?key|access[_-]?key|otp|recovery/i
     FILTERED = "[FILTERED]"
 
     module_function

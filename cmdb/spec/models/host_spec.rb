@@ -7,6 +7,11 @@ RSpec.describe Host do
     create(:host, *([ state.to_sym ] unless state == "pending"))
   end
 
+  # Runs in a savepoint so a database error does not abort the test transaction.
+  def attempt(&block)
+    Host.transaction(requires_new: true, &block)
+  end
+
   describe "FR-1.1 enrollment state machine" do
     it "starts new hosts as pending" do
       expect(Host.register!({ name: "VM 1", hostname: "vm-1.example.lan" }, actor:)).to have_attributes(enrollment_state: "pending")
@@ -61,6 +66,42 @@ RSpec.describe Host do
       expect(host.reload.enrollment_state).to eq("pending")
     end
 
+    describe "code paths that skip model callbacks (database guard)" do
+      it "cannot resurrect a retired host" do
+        host = host_in("retired")
+        expect { host.update_column(:enrollment_state, "active") }.to raise_error(Host::InvalidTransition)
+        expect { host.update_columns(enrollment_state: "active", notes: "x") }.to raise_error(Host::InvalidTransition)
+        expect { attempt { Host.where(id: host.id).update_all(enrollment_state: "active") } }
+          .to raise_error(ActiveRecord::StatementInvalid, /invalid enrollment state transition: retired -> active/)
+        expect { attempt { Host.connection.execute("UPDATE hosts SET enrollment_state = 'pending' WHERE id = #{host.id}") } }
+          .to raise_error(ActiveRecord::StatementInvalid, /retired -> pending/)
+        expect(host.reload.enrollment_state).to eq("retired")
+      end
+
+      it "rejects every transition outside the FR-1.1 table in the database" do
+        rejected.map(&:first).uniq.each do |from|
+          host = host_in(from)
+          (Host::ENROLLMENT_STATES - [ from ] - allowed.select { |(f, _), _| f == from }.values).each do |to|
+            expect { attempt { Host.where(id: host.id).update_all(enrollment_state: to) } }
+              .to raise_error(ActiveRecord::StatementInvalid, /#{from} -> #{to}/)
+          end
+        end
+      end
+
+      it "rejects inserting a host in a state other than pending" do
+        expect { attempt { Host.insert_all!([ { name: "VM", hostname: "vm.example.lan", enrollment_state: "active" } ]) } }
+          .to raise_error(ActiveRecord::StatementInvalid, /new hosts start pending/)
+      end
+
+      it "still allows bulk updates that leave the enrollment state alone" do
+        host = host_in("active")
+        Host.where(id: host.id).update_all(liveness_status: "stale")
+        expect(host.reload.liveness_status).to eq("stale")
+        host.update_column(:liveness_status, "offline")
+        expect(host.reload.liveness_status).to eq("offline")
+      end
+    end
+
     it "audits each transition with the before and after state" do
       host = host_in("pending")
       host.activate!(actor:)
@@ -82,6 +123,20 @@ RSpec.describe Host do
       host = host_in("retired")
       expect { host.destroy }.to raise_error(Host::HardDeleteNotAllowed)
       expect { host.delete }.to raise_error(Host::HardDeleteNotAllowed)
+      expect(Host.exists?(host.id)).to be(true)
+    end
+
+    it "refuses class, relation, and SQL deletes in the database" do
+      host = host_in("retired")
+      [
+        proc { Host.delete(host.id) },
+        proc { Host.delete_by(id: host.id) },
+        proc { Host.where(id: host.id).delete_all },
+        proc { Host.connection.execute("DELETE FROM hosts") },
+        proc { Host.connection.execute("TRUNCATE hosts CASCADE") }
+      ].each do |path|
+        expect { attempt(&path) }.to raise_error(ActiveRecord::StatementInvalid, /never deleted/)
+      end
       expect(Host.exists?(host.id)).to be(true)
     end
   end
@@ -190,6 +245,36 @@ RSpec.describe Host do
     it "writes nothing for a no-op edit" do
       host = host_in("pending")
       expect { host.edit!({ name: host.name }, actor:) }.not_to change(AuditEntry, :count)
+    end
+
+    describe "when a caller rescues an audit failure inside its own transaction" do
+      let(:unsaved_actor) { build(:host) } # Audit.record raises ArgumentError for an unsaved actor
+
+      def in_committing_transaction
+        Host.transaction do
+          yield
+        rescue ArgumentError
+          nil # the caller swallows the error and its transaction commits
+        end
+      end
+
+      it "does not commit a registration without its entry" do
+        expect { in_committing_transaction { Host.register!({ name: "VM", hostname: "vm.example.lan" }, actor: unsaved_actor) } }
+          .not_to change(Host, :count)
+      end
+
+      it "does not commit an edit without its entry" do
+        host = host_in("pending")
+        in_committing_transaction { host.edit!({ notes: "changed" }, actor: unsaved_actor) }
+        expect(host.reload.notes).to be_nil
+      end
+
+      it "does not commit a transition without its entry" do
+        host = host_in("active")
+        in_committing_transaction { host.revoke!(actor: unsaved_actor) }
+        expect(host.reload.enrollment_state).to eq("active")
+        expect(AuditEntry.for_target(host).pluck(:action)).not_to include(Audit::Actions::HOST_CREDENTIAL_REVOKED)
+      end
     end
 
     it "writes nothing when the edit is invalid" do

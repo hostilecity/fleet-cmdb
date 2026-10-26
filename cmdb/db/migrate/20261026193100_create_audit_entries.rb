@@ -9,7 +9,8 @@ class CreateAuditEntries < ActiveRecord::Migration[8.1]
       t.string :target_type
       t.bigint :target_id
       t.jsonb :changeset, null: false, default: {}
-      t.string :request_id, limit: 64
+      # ActionDispatch::RequestId accepts incoming X-Request-Id values up to 255 characters.
+      t.string :request_id, limit: 255
       # Server clock, set by the database, never by the caller.
       t.datetime :occurred_at, null: false, default: -> { "CURRENT_TIMESTAMP" }
     end

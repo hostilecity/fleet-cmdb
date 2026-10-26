@@ -3,7 +3,8 @@
 # Enrollment state changes only through the transition methods below, which follow the FR-1.1 table,
 # raise InvalidTransition for anything else, and write an audit entry in the same transaction. Create and
 # edit hosts with Host.register! and #edit! so those changes are audited too. Hosts are never deleted:
-# retiring is the end of a host's life (retired is terminal).
+# retiring is the end of a host's life (retired is terminal). The hosts_guard database trigger enforces the
+# same transition table and the no-delete rule for code paths that skip model callbacks.
 class Host < ApplicationRecord
   class InvalidTransition < StandardError; end
   class HardDeleteNotAllowed < StandardError; end
@@ -53,7 +54,7 @@ class Host < ApplicationRecord
 
   # Creates a pending host and audits it. The enrollment token is issued separately (P1-API-AUTH).
   def self.register!(attributes, actor:)
-    transaction do
+    transaction(requires_new: true) do
       host = create!(attributes.to_h.stringify_keys.slice(*EDITABLE_ATTRIBUTES))
       Audit.record(actor:, action: Audit::Actions::HOST_CREATED, target: host,
                    changes: host.slice(*EDITABLE_ATTRIBUTES, "enrollment_state").transform_values { |v| [ nil, v ] })
@@ -63,7 +64,7 @@ class Host < ApplicationRecord
 
   # Updates operator-editable fields and audits the before and after values. No-op edits write nothing.
   def edit!(attributes, actor:)
-    transaction do
+    transaction(requires_new: true) do
       lock!
       assign_attributes(attributes.to_h.stringify_keys.slice(*EDITABLE_ATTRIBUTES))
       changes = changes_to_save.slice(*EDITABLE_ATTRIBUTES)
@@ -112,11 +113,23 @@ class Host < ApplicationRecord
     raise HardDeleteNotAllowed, "hosts are retired, never deleted"
   end
 
+  # update_column(s) skip callbacks, so guard the state here too. Bulk paths (update_all, delete_all) are
+  # stopped by the hosts_guard database trigger.
+  def update_columns(attributes)
+    if attributes.to_h.stringify_keys.key?("enrollment_state") && !@transitioning
+      raise InvalidTransition, "enrollment state changes only through the transition methods"
+    end
+
+    super
+  end
+
   private
 
   def transition!(event, actor:)
     rule = TRANSITIONS.fetch(event)
-    transaction do
+    # requires_new: a savepoint, so a failed audit write rolls the change back even when the caller rescues
+    # the error inside its own transaction.
+    transaction(requires_new: true) do
       lock!
       unless rule[:from].include?(enrollment_state)
         raise InvalidTransition, "cannot #{event.to_s.tr('_', ' ')} a #{enrollment_state} host"

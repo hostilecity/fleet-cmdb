@@ -18,6 +18,11 @@ RSpec.describe Audit do
       end
     end
 
+    it "stores request ids up to the 255 characters ActionDispatch::RequestId accepts" do
+      long_id = "r" * 255
+      Current.set(request_id: long_id) { expect(record.reload.request_id).to eq(long_id) }
+    end
+
     it "records a host as the actor" do
       entry = Audit.record(actor: host, action: Audit::Actions::HOST_ENROLLED, target: host)
       expect(entry).to have_attributes(actor_type: "host", actor_id: host.id)
@@ -76,14 +81,22 @@ RSpec.describe Audit do
       end
     end
 
+    it "matches camelCase and hyphenated spellings" do
+      %w[apiKey privateKey api-key accessKey APIKEY clientSecret refreshToken].each do |key|
+        expect { record(changes: { key => [ nil, "x" ] }) }.to raise_error(Audit::SecretInChangeset), key
+      end
+    end
+
     it "raises for secrets nested anywhere in the changes" do
       expect { record(changes: { "details" => { "items" => [ { "token" => "x" } ] } }) }.to raise_error(Audit::SecretInChangeset)
     end
 
     it "filters instead of raising in production" do
       allow(Rails.env).to receive(:production?).and_return(true)
-      entry = record(changes: { "hostname" => [ "a", "b" ], "details" => { "Credential" => "x" }, "token" => "y" })
-      expect(entry.changeset).to eq("hostname" => %w[a b], "details" => { "Credential" => "[FILTERED]" }, "token" => "[FILTERED]")
+      entry = record(changes: { "hostname" => [ "a", "b" ], "details" => { "Credential" => "x", "privateKey" => "z" },
+                                "token" => "y", "apiKey" => "w" })
+      expect(entry.changeset).to eq("hostname" => %w[a b], "details" => { "Credential" => "[FILTERED]", "privateKey" => "[FILTERED]" },
+                                    "token" => "[FILTERED]", "apiKey" => "[FILTERED]")
     end
 
     it "leaves ordinary fields alone" do
