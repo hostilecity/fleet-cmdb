@@ -1,0 +1,5 @@
+#!/usr/bin/env ruby
+# Runs the app for development. Solid Queue runs inside Puma so recurring jobs
+# (config/recurring.yml) execute without a separate worker process.
+ENV["SOLID_QUEUE_IN_PUMA"] ||= "1"
+exec "./bin/rails", "server", *ARGV

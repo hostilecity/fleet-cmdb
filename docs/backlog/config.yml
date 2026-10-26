@@ -1,0 +1,28 @@
+# Labels and milestones created by import.rb.
+# Existing repository labels (bug, enhancement, ...) are left untouched; a label defined here
+# with the same name as an existing one is overwritten.
+# Milestones are numbered by position: `milestone: 0` in issues.yml means the first entry.
+# `gate`: every issue in that milestone with no blocker inside the same milestone is blocked by the
+# gate issue, so a phase's code cannot start before the previous phase is accepted.
+# Milestone progress replaces epic issues; exit criteria are the AC-* items in docs/requirements.md.
+
+milestones:
+  - title: "Phase 0 — Scaffolding"
+    description: "Agent crate, CI, and the API contract workspace. Decisions are already recorded in docs/decisions."
+  - title: "Phase 1 — CMDB & inventory"
+    description: "Shared foundations plus enroll, heartbeat, inventory, liveness, and dashboard. Exit criteria: AC-1.1 to AC-1.7 in docs/requirements.md."
+  - title: "Phase 2 — Config, CIS & vulnerabilities"
+    description: "Config and package reporting, CIS evaluation, vulnerability matching. Exit criteria: AC-2.1 to AC-2.6."
+    gate: P1-ACCEPT
+  - title: "Phase 3 — Remote tasks"
+    description: "Allowlisted remote tasks with audit trail. Highest-risk phase. Exit criteria: AC-3.1 to AC-3.9."
+    gate: P2-ACCEPT
+
+labels:
+  - { name: "area:server",    color: "D93F0B", description: "Rails server (cmdb/)" }
+  - { name: "area:agent",     color: "B60205", description: "Rust agent (agent/)" }
+  - { name: "area:dashboard", color: "F9D0C4", description: "Operator-facing web UI" }
+  - { name: "area:api",       color: "5319E7", description: "Agent-to-server API contract" }
+  - { name: "area:ops",       color: "006B75", description: "CI, deployment, backups, packaging, acceptance" }
+  - { name: "security",       color: "EE0701", description: "Security-sensitive; review carefully" }
+  - { name: "risk:high",      color: "B60205", description: "Remote execution or irreversible effects; extra review" }

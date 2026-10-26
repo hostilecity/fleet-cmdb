@@ -1,0 +1,46 @@
+# Monorepo-level ignores. Each subproject (cmdb/, agent/) also has its own .gitignore.
+
+# IDE and editor files
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+.DS_Store
+
+# Secrets and local configuration (never commit real values; commit .env.example only)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+master.key
+cmdb/config/master.key
+cmdb/config/credentials/*.key
+
+# Local CA / certificate material and tunnel credentials
+/ca/
+/certs/
+*.cloudflared.json
+cloudflared/*.json
+
+# Rails (cmdb/)
+cmdb/log/*
+!cmdb/log/.keep
+cmdb/tmp/*
+!cmdb/tmp/.keep
+cmdb/storage/*
+!cmdb/storage/.keep
+cmdb/coverage/
+cmdb/node_modules/
+cmdb/public/assets/
+
+# Rust (agent/)
+agent/target/
+**/*.rs.bk
+
+# Local scratch
+*.local
+/tmp/
