@@ -54,6 +54,8 @@ group :development do
 end
 
 group :test do
+  # Validates payloads against the agent API JSON Schemas in docs/api (P0-CONTRACT).
+  gem "json_schemer"
   gem "webmock"
   gem "simplecov", require: false
 end

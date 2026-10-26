@@ -49,4 +49,6 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Config | `toml` | Config file format |
 | Logging | `tracing`, `tracing-subscriber` | Structured fields (host, `report_id`) on timestamped lines to stdout, which systemd sends to the journal |
 
+Test-only dependencies (`[dev-dependencies]`, never in the binary): `jsonschema` (default features off, so it never fetches remote schemas) and `serde_json`. Together they check payloads against the API contract in [`docs/api`](../docs/api/README.md). In a test, use `assert_conforms` from `tests/support/contract.rs`.
+
 Changing a choice in this table needs a note in the pull request that does it. CI runs a dependency audit on every pull request.

@@ -23,7 +23,7 @@ jobs:
     name: Detect server changes
     runs-on: ubuntu-latest
     outputs:
-      # Pushes to main always run the full check; pull requests only when cmdb/ or this workflow changed.
+      # Pushes to main always run the full check; pull requests only when cmdb/, docs/api/, or this workflow changed.
       server: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.server }}
     steps:
       - uses: dorny/paths-filter@v4
@@ -34,6 +34,7 @@ jobs:
             server:
               - 'cmdb/**'
               - '.github/workflows/server-ci.yml'
+              - 'docs/api/**' # shared API contract (P0-CONTRACT)
 
   test:
     name: bin/ci

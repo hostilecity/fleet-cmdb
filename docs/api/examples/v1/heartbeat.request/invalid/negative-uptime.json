@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.1.0",
+  "hostname": "vm-01.example.lan",
+  "uptime_seconds": -1,
+  "agent_time": "2026-01-01T12:00:01.250Z"
+}

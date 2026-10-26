@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "The request body is invalid.",
+    "request_id": "req-00000000000000000001",
+    "details": [
+      {
+        "pointer": "/uptime_seconds",
+        "problem": "must be an integer"
+      }
+    ]
+  }
+}

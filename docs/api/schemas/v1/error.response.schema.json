@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Error response",
+  "description": "Body of every 4xx and 5xx response from /api/v1 (DEC-08). See the error code table in docs/api/README.md.",
+  "type": "object",
+  "required": [
+    "error"
+  ],
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "request_id"
+      ],
+      "properties": {
+        "code": {
+          "description": "Machine-readable code. Agents treat unknown codes by HTTP status.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "message": {
+          "description": "Human-readable message. Never contains internals or secrets.",
+          "type": "string",
+          "maxLength": 1024
+        },
+        "request_id": {
+          "description": "Same value as the X-Request-Id response header.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "details": {
+          "description": "Only on validation_failed: one entry per rejected field.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": [
+              "pointer",
+              "problem"
+            ],
+            "properties": {
+              "pointer": {
+                "description": "JSON Pointer (RFC 6901) to the rejected value.",
+                "type": "string",
+                "maxLength": 256
+              },
+              "problem": {
+                "description": "What is wrong with it.",
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

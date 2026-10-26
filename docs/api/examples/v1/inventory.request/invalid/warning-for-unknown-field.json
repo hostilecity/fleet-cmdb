@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.1.0",
+  "report_id": "00000000-0000-4000-8000-000000000001",
+  "collected_at": "2026-01-01T12:00:00Z",
+  "hostname": "vm-01.example.lan",
+  "os": {
+    "id": "debian",
+    "version_id": "13",
+    "pretty_name": "Debian GNU/Linux 13 (trixie)"
+  },
+  "kernel_version": "6.12.0-example-amd64",
+  "architecture": "x86_64",
+  "cpu_model": "Example Virtual CPU",
+  "cpu_cores": 4,
+  "memory_total_bytes": 8589934592,
+  "memory_available_bytes": 6442450944,
+  "uptime_seconds": 86400,
+  "boot_id": "00000000-0000-4000-8000-0000000000b1",
+  "machine_id": "0123456789abcdef0123456789abcdef",
+  "disks": [
+    {
+      "mount": "/",
+      "filesystem": "ext4",
+      "size_bytes": 34359738368,
+      "free_bytes": 21474836480
+    },
+    {
+      "mount": "/srv/media files",
+      "filesystem": "xfs",
+      "size_bytes": 1099511627776,
+      "free_bytes": 549755813888
+    }
+  ],
+  "network_interfaces": [
+    {
+      "name": "ens18",
+      "primary": true,
+      "addresses": [
+        "192.0.2.10/24",
+        "2001:db8::10/64"
+      ]
+    },
+    {
+      "name": "ens19",
+      "primary": false,
+      "addresses": [
+        "198.51.100.10/24"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "field": "gpu",
+      "message": "not collected"
+    }
+  ]
+}
