@@ -28,7 +28,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Append-only: no update or destroy path in the application. Evaluate a database-level guard (trigger or revoked privileges); record the outcome in the PR.
 - A scrubber ensures credentials, tokens, and digests can never be placed in before/after values.
 - Action names defined in one place as constants (host created, enrolled, credential revoked, host edited, host retired, token issued, and so on). Later phases add rule changes and task actions.
-- Read-only fleet-wide audit log page (filter by actor, action, target, date). Per-host entries on the host page are in [P1-D03](p1-dash-fleet.md).
+- The read-only fleet-wide audit log page moved to [P1-AUDIT-PAGE](p1-audit-page.md), because it needs operator sign-in first. Per-host entries on the host page are in [P1-D03](p1-dash-fleet.md).
 
 ### Acceptance criteria
 

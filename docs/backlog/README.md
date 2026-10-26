@@ -4,7 +4,7 @@ Source for the GitHub issues that track the Fleet CMDB build, designed to be che
 
 | Path | Purpose |
 |---|---|
-| `issues.yml` | The 39 issues: key, title, milestone, labels, covered requirement IDs, one-sentence goal, 2 or 3 acceptance criteria, blockers |
+| `issues.yml` | The 40 issues: key, title, milestone, labels, covered requirement IDs, one-sentence goal, 2 or 3 acceptance criteria, blockers |
 | `specs/<key>.md` | One file per issue with the implementation details (scope, constraints, edge cases, test notes). This is what agents read |
 | `config.yml` | Labels, milestones, and phase gates |
 | `import.rb` | Validates the sources and creates the GitHub issues |
@@ -35,7 +35,7 @@ Nothing else is copied into GitHub, so there is nothing to keep in sync: change 
 | Milestone | Issues |
 |---|---|
 | Phase 0 — Scaffolding | 3: agent crate and CI, server CI, API contract workspace |
-| Phase 1 — CMDB & inventory | 15: server (hosts, access, API/enrollment, heartbeat, inventory, operability), dashboard (2), agent (core, collectors, reporting, packaging), deployment, verification, acceptance |
+| Phase 1 — CMDB & inventory | 16: server (hosts, access, API/enrollment, heartbeat, inventory, operability), dashboard (3: fleet, actions, audit log), agent (core, collectors, reporting, packaging), deployment, verification, acceptance |
 | Phase 2 — Config, CIS & vulnerabilities | 10 |
 | Phase 3 — Remote tasks | 11 |
 
