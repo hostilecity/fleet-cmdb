@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_27_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_27_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -59,6 +59,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_010000) do
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
   end
 
+  create_table "host_status_events", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "from_status"
+    t.string "to_status", null: false
+    t.string "reason", null: false
+    t.datetime "occurred_at", null: false
+    t.index ["host_id", "occurred_at"], name: "index_host_status_events_on_host_id_and_occurred_at"
+    t.index ["occurred_at"], name: "index_host_status_events_on_occurred_at"
+    t.check_constraint "from_status IS NULL OR (from_status::text = ANY (ARRAY['online'::character varying, 'stale'::character varying, 'offline'::character varying]::text[]))", name: "host_status_events_from_status_valid"
+    t.check_constraint "from_status::text IS DISTINCT FROM to_status::text", name: "host_status_events_is_a_change"
+    t.check_constraint "reason::text = ANY (ARRAY['heartbeat'::character varying, 'evaluation'::character varying]::text[])", name: "host_status_events_reason_valid"
+    t.check_constraint "to_status::text = ANY (ARRAY['online'::character varying, 'stale'::character varying, 'offline'::character varying]::text[])", name: "host_status_events_to_status_valid"
+  end
+
   create_table "hosts", force: :cascade do |t|
     t.string "name", limit: 100, null: false
     t.string "hostname", limit: 253, null: false
@@ -73,6 +87,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_010000) do
     t.string "liveness_status"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.datetime "agent_reported_at"
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
     t.index ["liveness_status"], name: "index_hosts_on_liveness_status"
@@ -111,8 +126,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_010000) do
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 
+  create_table "settings", force: :cascade do |t|
+    t.string "key", limit: 100, null: false
+    t.jsonb "value", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["key"], name: "index_settings_on_key", unique: true
+  end
+
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
+  add_foreign_key "host_status_events", "hosts"
   add_foreign_key "operator_sessions", "operators"
 
   create_function :hosts_guard, sql_definition: <<-'SQL'

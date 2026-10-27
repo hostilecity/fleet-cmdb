@@ -31,7 +31,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Generation: random secret (at least 32 bytes), presented to the caller exactly once as `<key_id>.<secret>`. Store a digest only (SHA-256 or keyed digest; not plaintext, not `has_secure_token`). Lookup by key id; compare with a constant-time function.
 - API base controller: authenticates the `Authorization: Bearer` header, loads the host **through the credential** (`current_host`), and exposes no other way to find a host. Every API query is scoped to `current_host`.
 - Revocation takes effect on the next request (no authentication caching). Revoked, unknown, malformed, or retired-host credentials all return the same `401` body so responses give no oracle.
-- `last_used_at` updated cheaply (throttled so it is not a write per heartbeat).
+- `last_used_at` updated cheaply (throttled to one write per few minutes). Heartbeats do not update it at all: they record `hosts.last_seen_at` and must stay a single write ([P1-S07](p1-heartbeat.md)).
 - Revoke and rotate operations as service objects, each writing an audit entry ([P1-S03](p1-hosts.md)).
 
 ### Acceptance criteria

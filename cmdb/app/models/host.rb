@@ -29,6 +29,7 @@ class Host < ApplicationRecord
   CONTROL_CHARACTERS_EXCEPT_WHITESPACE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/
 
   has_many :agent_credentials, dependent: :restrict_with_exception
+  has_many :status_events, class_name: "HostStatusEvent", dependent: :restrict_with_exception
   has_many :enrollment_tokens, dependent: :restrict_with_exception
 
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
@@ -96,6 +97,14 @@ class Host < ApplicationRecord
   end
 
   def retired? = enrollment_state == "retired"
+
+  # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an
+  # active host that has not sent a heartbeat yet, and the enrollment state for everything else.
+  def display_status
+    return enrollment_state unless enrollment_state == "active"
+
+    liveness_status || "awaiting first contact"
+  end
 
   def audit_actor_type = "host"
 

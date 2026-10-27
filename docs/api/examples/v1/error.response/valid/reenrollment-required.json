@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "reenrollment_required",
+    "message": "This host is being re-enrolled. Redeem the new enrollment token (fleet-agent enroll --force).",
+    "request_id": "req-00000000000000000003"
+  }
+}

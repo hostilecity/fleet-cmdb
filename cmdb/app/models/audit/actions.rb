@@ -11,6 +11,7 @@ module Audit
     OPERATOR_ALLOWED = "operator.allowed"
     OPERATOR_DISALLOWED = "operator.disallowed"
     OPERATOR_SIGNED_IN = "operator.signed_in"
+    SETTING_CHANGED = "setting.changed"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

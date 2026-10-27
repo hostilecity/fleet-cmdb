@@ -27,8 +27,8 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - HTTPS client using `rustls`; trusts the system roots plus the optional `ca_file`. No code path disables verification.
 - Sends `Authorization: Bearer <credential>` and the agent version on every request.
-- Typed error mapping from the documented envelope ([DEC-08](../../decisions/0008-api-conventions.md)) including `401` (credential rejected), `426` (agent unsupported), `429` (honour `Retry-After`), `413`, and `5xx`.
-- Retry policy: exponential backoff with jitter and a cap; the agent keeps running through any outage. `401` and `426` are logged plainly and backed off to a long interval rather than retried tightly.
+- Typed error mapping from the documented envelope ([DEC-08](../../decisions/0008-api-conventions.md)) including `401` (credential rejected), `403 reenrollment_required` (the host is being re-enrolled; also signalled by `Fleet-Enrollment-State: pending`), `426` (agent unsupported), `429` (honour `Retry-After`), `413`, and `5xx`.
+- Retry policy: exponential backoff with jitter and a cap; the agent keeps running through any outage. `401`, `403 reenrollment_required`, and `426` are logged plainly and backed off to a long interval rather than retried tightly. For `reenrollment_required` the log line tells the operator to run `fleet-agent enroll --force` with the new token.
 - Request timeouts; bounded response size.
 - Reused connection where practical.
 

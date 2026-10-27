@@ -21,6 +21,7 @@ Rails.application.routes.draw do
     namespace :api do
       namespace :v1 do
         post "enroll", to: "enrollments#create"
+        post "heartbeat", to: "heartbeats#create"
         match "", to: "base#not_found", via: :all
         match "*path", to: "base#not_found", via: :all, format: false
       end

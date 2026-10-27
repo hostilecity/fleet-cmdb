@@ -43,6 +43,14 @@ module AgentApi
     self.default_message = "This host is not active."
   end
 
+  # A pending host whose old credential still works (re-enrollment, FR-1.1). The agent must redeem the new
+  # enrollment token; the response also carries Fleet-Enrollment-State: pending.
+  class ReenrollmentRequired < Error
+    self.status = :forbidden
+    self.code = "reenrollment_required"
+    self.default_message = "This host is being re-enrolled. Redeem the new enrollment token (fleet-agent enroll --force)."
+  end
+
   class NotFound < Error
     self.status = :not_found
     self.code = "not_found"

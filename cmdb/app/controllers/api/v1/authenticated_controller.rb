@@ -7,6 +7,10 @@ module Api
     # Missing, malformed, unknown, revoked, and retired-host credentials all get the same 401, and there is
     # no authentication cache, so revocation takes effect on the next request (AC-1.5).
     class AuthenticatedController < BaseController
+      # Whether a request updates the credential's last_used_at. Heartbeats opt out: they record
+      # hosts.last_seen_at instead and must stay a single write (P1-S07, review of #50).
+      class_attribute :records_credential_use, default: true
+
       before_action :authenticate_agent!
       rate_limit to: AgentApi.config.rate_limit[:to], within: AgentApi.config.rate_limit[:within],
                  by: -> { current_credential.key_id }, store: AgentApi.rate_limit_store, name: "agent", scope: "agent_api",
@@ -20,12 +24,18 @@ module Api
 
       def authenticate_agent!
         @current_credential = AgentCredential.authenticate(request.authorization) or raise AgentApi::Unauthorized
-        current_credential.record_use!
+        current_credential.record_use! if records_credential_use
       end
 
-      # For endpoints only active hosts may call (for example heartbeats, P1-HEARTBEAT).
+      # For endpoints only active hosts may call (for example heartbeats, P1-HEARTBEAT). A pending host can
+      # only get here mid re-enrollment (its old credential works until the new token is redeemed), so it is
+      # told to redeem the new token rather than given a generic refusal.
       def require_active_host!
-        raise AgentApi::HostNotActive unless current_host.enrollment_state == "active"
+        case current_host.enrollment_state
+        when "active" then nil
+        when "pending" then raise AgentApi::ReenrollmentRequired
+        else raise AgentApi::HostNotActive
+        end
       end
     end
   end

@@ -71,6 +71,20 @@ Recurring jobs are declared in `config/recurring.yml` and run by Solid Queue's s
 - **The audit log is append-only in the database too.** A trigger rejects `UPDATE`, `DELETE`, and `TRUNCATE` on `audit_entries`, so tasks that truncate every table, such as `bin/rails db:truncate_all` and `db:seed:replant`, fail by design. Use `db:reset` for a fresh development database.
   - The trigger and its function live in `db/functions/` and `db/triggers/`. The [fx](https://github.com/teoljungberg/fx) gem records them in `db/schema.rb`, so `db:prepare` and `db:schema:load` recreate them.
 
+### Heartbeats and liveness
+
+- **Heartbeats.** `POST /api/v1/heartbeat` sets `last_seen_at` from the server clock. The agent's own clock goes in `agent_reported_at` and is never used for liveness. A host that wasn't online becomes online at once, with a row in `host_status_events`, the status history (not the audit log).
+- **Liveness evaluation.** `LivenessEvaluationJob` runs every minute (`config/recurring.yml`). It moves active hosts to `online`, `stale` or `offline` by age, writing a history row only on a change. Rows a heartbeat is holding are skipped (`FOR UPDATE SKIP LOCKED`) and picked up on the next run.
+- **What each host shows:**
+  - a host that has never sent a heartbeat has no liveness status and shows "awaiting first contact";
+  - hosts that are not active show their enrollment state instead.
+- **Thresholds** default to 3 and 15 minutes. Until the dashboard settings page exists (P1-DASH-FLEET), change them from the command line; each change is audited:
+
+```sh
+bin/rails settings:show
+bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
+```
+
 ## Hostnames and operator sign-in
 
 The server has two faces (DEC-05), each on its own hostname:
