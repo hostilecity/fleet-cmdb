@@ -11,6 +11,15 @@ module Api
       # hosts.last_seen_at instead and must stay a single write (P1-S07, review of #50).
       class_attribute :records_credential_use, default: true
 
+      # Refusals found under the host row lock (AgentHostLock), mapped to the documented errors.
+      REFUSALS = {
+        unauthorized: AgentApi::Unauthorized,
+        reenrollment_required: AgentApi::ReenrollmentRequired,
+        host_not_active: AgentApi::HostNotActive
+      }.freeze
+
+      rescue_from(AgentHostLock::Refused) { |refusal| render_api_error(REFUSALS.fetch(refusal.reason).new) }
+
       before_action :authenticate_agent!
       rate_limit to: AgentApi.config.rate_limit[:to], within: AgentApi.config.rate_limit[:within],
                  by: -> { current_credential.key_id }, store: AgentApi.rate_limit_store, name: "agent", scope: "agent_api",

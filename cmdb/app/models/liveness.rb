@@ -13,25 +13,12 @@ module Liveness
 
   module_function
 
-  # Why a heartbeat was refused once the host row was locked: the credential was revoked or the host left
-  # `active` between authentication and the write (review of #50). The caller maps it to the API error.
-  class Refused < StandardError
-    attr_reader :reason
-
-    def initialize(reason)
-      @reason = reason
-      super("heartbeat refused: #{reason}")
-    end
-  end
-
-  # Records a heartbeat: locks the host row, re-checks the host and credential under that lock, then reads
-  # the server clock and writes one UPDATE, plus a status event only when the host was not already online.
-  # Must run inside a transaction (the request's). Returns the server time it recorded.
+  # Records a heartbeat: locks the host row and re-checks the host and credential under that lock
+  # (AgentHostLock, raising AgentHostLock::Refused), then reads the server clock and writes one UPDATE, plus
+  # a status event only when the host was not already online. Must run inside a transaction (the
+  # request's). Returns the server time it recorded.
   def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:)
-    host = Host.lock.find(host_id)
-    raise Refused.new(:unauthorized) if host.retired? || !AgentCredential.active.exists?(id: credential_id, host_id:)
-    raise Refused.new(:reenrollment_required) if host.enrollment_state == "pending"
-    raise Refused.new(:host_not_active) unless host.enrollment_state == "active"
+    host = AgentHostLock.lock!(host_id:, credential_id:)
 
     # Sampled only now, after the lock: a heartbeat that waited for the row cannot write an older time than
     # the one it waited for, so last_seen_at never moves backwards.

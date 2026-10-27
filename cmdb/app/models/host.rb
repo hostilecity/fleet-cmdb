@@ -30,6 +30,8 @@ class Host < ApplicationRecord
 
   has_many :agent_credentials, dependent: :restrict_with_exception
   has_many :status_events, class_name: "HostStatusEvent", dependent: :restrict_with_exception
+  has_one :inventory, class_name: "HostInventory", dependent: :restrict_with_exception
+  has_many :inventory_snapshots, dependent: :restrict_with_exception
   has_many :enrollment_tokens, dependent: :restrict_with_exception
 
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
@@ -97,6 +99,9 @@ class Host < ApplicationRecord
   end
 
   def retired? = enrollment_state == "retired"
+
+  # FR-S.1: the credential has been used from a machine other than the one it was enrolled on.
+  def machine_id_mismatch? = machine_id_mismatch_at.present?
 
   # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an
   # active host that has not sent a heartbeat yet, and the enrollment state for everything else.

@@ -85,6 +85,24 @@ bin/rails settings:show
 bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 ```
 
+### Inventory reports
+
+`POST /api/v1/reports/inventory` (FR-1.3, DEC-07):
+
+- **Validation and checks.** The body is validated against `docs/api`, then normalised and checked by `lib/agent_api/inventory_report.rb`:
+  - control characters are stripped (markup is kept and escaped when rendered);
+  - addresses must be valid CIDRs;
+  - free space cannot exceed size, and available memory cannot exceed total;
+  - mounts and interfaces cannot repeat.
+
+  A report that fails writes nothing.
+- **Storage.** `InventoryRecorder` stores a valid report under the host row lock:
+  - `inventory_report_receipts`: report ids already processed. A retried report is answered `duplicate: true` and changes nothing.
+  - `host_inventories`: the current stable and volatile fields and warnings, replaced on every report.
+  - `inventory_snapshots`: the stable fields, written only when their hash changes. A boot id change counts, so reboots appear.
+- **Clone detection (FR-S.1).** A machine id different from the one the credential was enrolled with sets `hosts.machine_id_mismatch_at`. It is audited once and cleared when the host is re-enrolled.
+- **Audit entries.** Ordinary reports write none; only the first inventory and a machine id mismatch are audited.
+
 ## Hostnames and operator sign-in
 
 The server has two faces (DEC-05), each on its own hostname:

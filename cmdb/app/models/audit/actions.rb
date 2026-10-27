@@ -8,6 +8,8 @@ module Audit
     HOST_REENROLLMENT_STARTED = "host.reenrollment_started"
     HOST_RETIRED = "host.retired"
     HOST_ENROLLMENT_TOKEN_ISSUED = "host.enrollment_token_issued"
+    HOST_FIRST_INVENTORY = "host.first_inventory"
+    HOST_MACHINE_ID_MISMATCH = "host.machine_id_mismatch"
     OPERATOR_ALLOWED = "operator.allowed"
     OPERATOR_DISALLOWED = "operator.disallowed"
     OPERATOR_SIGNED_IN = "operator.signed_in"

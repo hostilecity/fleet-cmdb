@@ -13,19 +13,11 @@ module Api
       validates_body_with "heartbeat.request"
       atomic :create
 
-      REFUSALS = {
-        unauthorized: AgentApi::Unauthorized,
-        reenrollment_required: AgentApi::ReenrollmentRequired,
-        host_not_active: AgentApi::HostNotActive
-      }.freeze
-
       def create
         recorded_at = Liveness.record_heartbeat!(host_id: current_host.id, credential_id: current_credential.id,
                                                  agent_version: payload["agent_version"], agent_schema_version: payload["schema_version"],
                                                  agent_time: Time.iso8601(payload["agent_time"]))
         render json: { server_time: recorded_at.utc.iso8601, directives: [] }
-      rescue Liveness::Refused => e
-        raise REFUSALS.fetch(e.reason)
       end
     end
   end
