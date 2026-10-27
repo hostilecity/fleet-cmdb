@@ -79,8 +79,71 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     writes = queries.grep(/\A\s*(INSERT|UPDATE|DELETE)/i)
     expect(writes.size).to eq(1), writes.inspect
     expect(writes.first).to match(/UPDATE "hosts"/)
-    expect(queries.size).to be <= 4, queries.inspect
+    # credential + host (authentication), host FOR UPDATE and credential re-check (under the lock), UPDATE
+    expect(queries.size).to be <= 5, queries.inspect
     expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events/)
+  end
+
+  it "stays one write after the credential last-use interval has passed (no agent_credentials write)" do
+    heartbeat
+    credential_record = host.agent_credentials.active.sole
+    last_used = credential_record.reload.last_used_at
+    travel(AgentCredential::LAST_USED_RESOLUTION + 1.minute) do
+      writes = []
+      callback = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)/i) }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat }
+      expect(response).to have_http_status(:ok)
+      expect(writes.size).to eq(1), writes.inspect
+      expect(writes.first).to match(/UPDATE "hosts"/)
+    end
+    expect(credential_record.reload.last_used_at).to eq(last_used)
+  end
+
+  it "reads the server clock only after locking the host row" do
+    locked_at = nil
+    callback = ->(*, payload) { locked_at ||= Time.current if payload[:sql].match?(/FROM "hosts".*FOR UPDATE/m) }
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat }
+    expect(locked_at).to be_present
+    expect(host.reload.last_seen_at).to be >= locked_at.floor(6)
+    expect(Time.iso8601(json["server_time"])).to be >= locked_at.floor
+  end
+
+  it "never moves last_seen_at backwards behind a newer committed heartbeat" do
+    heartbeat
+    newer = 2.seconds.from_now.floor(6)
+    host.reload.update_columns(last_seen_at: newer)
+    heartbeat
+    expect(host.reload.last_seen_at).to eq(newer)
+    expect(host.first_seen_at).to be <= host.last_seen_at
+  end
+
+  describe "a state change between authentication and the write (review of #50)" do
+    # Runs the transition after the request has authenticated and passed the active-host check, before
+    # the heartbeat locks the host row.
+    def after_authentication(&transition)
+      allow_any_instance_of(Api::V1::HeartbeatsController).to receive(:require_active_host!).and_wrap_original do |original, *args|
+        original.call(*args)
+        transition.call
+      end
+    end
+
+    it "refuses with 403 reenrollment_required when re-enrollment lands in between" do
+      heartbeat
+      after_authentication { Enrollment::IssueToken.call(host:, actor: Audit::SYSTEM) }
+      expect { heartbeat }.not_to(change { host.reload.last_seen_at })
+      expect_error(:forbidden, "reenrollment_required")
+      expect(response.headers["Fleet-Enrollment-State"]).to eq("pending")
+    end
+
+    it "refuses with 401 when revocation or retirement lands in between" do
+      %i[revoke! retire!].each do |transition|
+        target, target_credential = enrolled_host
+        after_authentication { target.reload.public_send(transition, actor: Audit::SYSTEM) }
+        expect { heartbeat(as: target_credential) }.not_to change(HostStatusEvent, :count)
+        expect_error(:unauthorized, "unauthorized")
+        expect(target.reload.last_seen_at).to be_nil
+      end
+    end
   end
 
   describe "docs/api contract examples (NFR-5)" do

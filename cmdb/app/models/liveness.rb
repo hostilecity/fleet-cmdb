@@ -8,37 +8,70 @@
 # - Hosts that are not active are not evaluated; they show their enrollment state.
 module Liveness
   STATUSES = %w[online stale offline].freeze
+  # Advisory lock key that serialises evaluation runs ("live" in ASCII).
+  EVALUATION_LOCK_KEY = 0x6c697665
 
   module_function
 
-  # Records a heartbeat for an active host: one UPDATE, plus a status event only when the host was not
-  # already online. Runs inside the request transaction.
-  def record_heartbeat!(host, agent_version:, agent_schema_version:, agent_time:, now: Time.current)
-    previous = Host.where(id: host.id).lock.pick(:liveness_status, :first_seen_at)
-    status, first_seen_at = previous
-    updates = { last_seen_at: now, agent_version:, agent_schema_version:, agent_reported_at: agent_time, liveness_status: "online" }
-    updates[:first_seen_at] = now if first_seen_at.nil?
-    Host.where(id: host.id).update_all(updates)
-    return if status == "online"
+  # Why a heartbeat was refused once the host row was locked: the credential was revoked or the host left
+  # `active` between authentication and the write (review of #50). The caller maps it to the API error.
+  class Refused < StandardError
+    attr_reader :reason
 
-    HostStatusEvent.insert!({ host_id: host.id, from_status: status, to_status: "online", reason: "heartbeat", occurred_at: now })
+    def initialize(reason)
+      @reason = reason
+      super("heartbeat refused: #{reason}")
+    end
   end
 
-  # Moves every active host to the status its last heartbeat implies. Rows another transaction holds (a
-  # heartbeat in flight, or a concurrent run) are skipped and handled by the next run. Returns the number
-  # of transitions written.
-  def evaluate!(now: Time.current, thresholds: Setting.liveness_thresholds)
+  # Records a heartbeat: locks the host row, re-checks the host and credential under that lock, then reads
+  # the server clock and writes one UPDATE, plus a status event only when the host was not already online.
+  # Must run inside a transaction (the request's). Returns the server time it recorded.
+  def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:)
+    host = Host.lock.find(host_id)
+    raise Refused.new(:unauthorized) if host.retired? || !AgentCredential.active.exists?(id: credential_id, host_id:)
+    raise Refused.new(:reenrollment_required) if host.enrollment_state == "pending"
+    raise Refused.new(:host_not_active) unless host.enrollment_state == "active"
+
+    # Sampled only now, after the lock: a heartbeat that waited for the row cannot write an older time than
+    # the one it waited for, so last_seen_at never moves backwards.
+    now = [ Time.current, host.last_seen_at ].compact.max
+    updates = { last_seen_at: now, agent_version:, agent_schema_version:, agent_reported_at: agent_time, liveness_status: "online" }
+    updates[:first_seen_at] = now if host.first_seen_at.nil?
+    Host.where(id: host.id).update_all(updates)
+    unless host.liveness_status == "online"
+      HostStatusEvent.insert!({ host_id: host.id, from_status: host.liveness_status, to_status: "online", reason: "heartbeat", occurred_at: now })
+    end
+    now
+  end
+
+  # Moves every active host to the status its last heartbeat implies. Runs are serialised by a transaction-
+  # level advisory lock taken before the clock and thresholds are read, so an older run can never act after
+  # a newer one (review of #50); a run that finds another in progress does nothing, and the next minute's
+  # run catches up. Rows a heartbeat holds are skipped and handled by the next run. Returns the number of
+  # transitions written.
+  def evaluate!(now: nil, thresholds: nil)
+    Host.transaction do
+      if Host.connection.select_value("SELECT pg_try_advisory_xact_lock(#{EVALUATION_LOCK_KEY})")
+        now ||= Time.current
+        thresholds ||= Setting.liveness_thresholds
+        buckets(now, thresholds).sum { |status, condition| transition_all!(status, condition, now) }
+      else
+        0
+      end
+    end
+  end
+
+  def buckets(now, thresholds)
     online_after = now - thresholds[:online]
     stale_after = now - thresholds[:stale]
-    buckets = {
+    {
       "online" => [ "hosts.last_seen_at > ?", online_after ],
       "stale" => [ "hosts.last_seen_at <= ? AND hosts.last_seen_at > ?", online_after, stale_after ],
       "offline" => [ "hosts.last_seen_at <= ?", stale_after ]
     }
-    Host.transaction do
-      buckets.sum { |status, condition| transition_all!(status, condition, now) }
-    end
   end
+  private_class_method :buckets
 
   def transition_all!(status, condition, now)
     candidates = Host.active.where.not(last_seen_at: nil).where(*condition)

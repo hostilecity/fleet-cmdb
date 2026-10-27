@@ -7,6 +7,14 @@ module AgentApiHelpers
     [ host.reload, credential ]
   end
 
+  # Records a heartbeat for an enrolled host through Liveness, as the endpoint does.
+  def record_heartbeat(host, agent_time: Time.current)
+    Host.transaction do
+      Liveness.record_heartbeat!(host_id: host.id, credential_id: host.agent_credentials.active.pick(:id),
+                                 agent_version: "0.1.0", agent_schema_version: 1, agent_time:)
+    end
+  end
+
   def api_headers(credential = nil)
     { "CONTENT_TYPE" => "application/json" }.tap { |h| h["Authorization"] = "Bearer #{credential}" if credential }
   end

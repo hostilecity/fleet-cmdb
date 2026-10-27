@@ -18,15 +18,16 @@ RSpec.describe "Concurrent liveness evaluation" do
 
   def prepare_hosts(start)
     @hosts = Array.new(3) { |i| enrolled_host(hostname: "race-#{i}.example.lan").first }
-    @hosts.each { |h| Host.transaction { Liveness.record_heartbeat!(h, agent_version: "0.1.0", agent_schema_version: 1, agent_time: start) } }
+    @hosts.each { |h| record_heartbeat(h, agent_time: start) }
     Host.where(id: @hosts.map(&:id)).update_all(last_seen_at: start - 20.minutes)
   end
 
-  it "writes each transition once when a second run overlaps an uncommitted first run" do
+  it "lets only one evaluation run at a time: an overlapping run does nothing and does not wait" do
     start = Time.current
     prepare_hosts(start)
     first_done = Queue.new
     release = Queue.new
+    allow(Setting).to receive(:liveness_thresholds).and_call_original
 
     first = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
@@ -45,7 +46,8 @@ RSpec.describe "Concurrent liveness evaluation" do
     release << :go
     first.join
 
-    expect(second_written).to eq(0)
+    expect(second_written).to eq(0) # the overlapping run did nothing rather than act on its own clock
+    expect(Setting).to have_received(:liveness_thresholds).once # only the first run read its clock and thresholds
     expect(HostStatusEvent.where(host_id: @hosts.map(&:id), reason: "evaluation").group(:host_id).count.values).to eq([ 1, 1, 1 ])
     expect(Liveness.evaluate!(now: start)).to eq(0) # and a later run has nothing left to do
   ensure

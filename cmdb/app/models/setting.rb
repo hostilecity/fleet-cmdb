@@ -17,8 +17,12 @@ class Setting < ApplicationRecord
 
   # FR-1.4: online if the last heartbeat is newer than online_threshold, stale until stale_threshold,
   # offline after. Read on every evaluation, so a change takes effect on the next run.
+  # Both values come from one SELECT, so an evaluation never mixes an old and a new pair (review of #50).
   def self.liveness_thresholds
-    { online: get("liveness.online_threshold_minutes").minutes, stale: get("liveness.stale_threshold_minutes").minutes }
+    keys = %w[liveness.online_threshold_minutes liveness.stale_threshold_minutes]
+    stored = where(key: keys).pluck(:key, :value).to_h
+    online, stale = keys.map { |key| stored.fetch(key) { DEFINITIONS[key][:default] } }
+    { online: online.minutes, stale: stale.minutes }
   end
 
   def self.update_liveness_thresholds!(online_minutes:, stale_minutes:, actor:)

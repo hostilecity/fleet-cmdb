@@ -6,7 +6,7 @@ RSpec.describe Liveness do
   let!(:host) { enrolled_host.first }
 
   def heartbeat_at(time)
-    travel_to(time) { Host.transaction { described_class.record_heartbeat!(host, agent_version: "0.1.0", agent_schema_version: 1, agent_time: time) } }
+    travel_to(time) { record_heartbeat(host, agent_time: time) }
   end
 
   def evaluate_at(time) = travel_to(time) { LivenessEvaluationJob.perform_now }
@@ -61,9 +61,19 @@ RSpec.describe Liveness do
     expect(host.reload.display_status).to eq("revoked")
   end
 
+  it "reads the clock and thresholds only after taking the evaluation lock" do
+    record_heartbeat(host, agent_time: Time.current)
+    host.update_columns(last_seen_at: 20.minutes.ago)
+    locked_at = nil
+    callback = ->(*, payload) { locked_at ||= Time.current if payload[:sql].include?("pg_try_advisory_xact_lock") }
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { described_class.evaluate! }
+    expect(locked_at).to be_present
+    expect(host.status_events.chronological.last).to have_attributes(to_status: "offline", occurred_at: be >= locked_at.floor(6))
+  end
+
   it "evaluates many hosts in one run" do
     others = Array.new(3) { enrolled_host.first }
-    ([ host ] + others).each { |h| travel_to(start) { Host.transaction { described_class.record_heartbeat!(h, agent_version: "0.1.0", agent_schema_version: 1, agent_time: start) } } }
+    ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
     expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(4)
     expect(Host.active.pluck(:liveness_status).uniq).to eq([ "offline" ])
   end
@@ -91,6 +101,15 @@ RSpec.describe Setting do
     end
     expect(described_class.count).to eq(0)
     expect(described_class.liveness_thresholds).to eq(online: 3.minutes, stale: 15.minutes)
+  end
+
+  it "reads both thresholds in one query, so an evaluation never mixes old and new values" do
+    described_class.update_liveness_thresholds!(online_minutes: 10, stale_minutes: 30, actor: Audit::SYSTEM)
+    queries = []
+    callback = ->(*, payload) { queries << payload[:sql] unless payload[:name] == "SCHEMA" }
+    thresholds = ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { described_class.liveness_thresholds }
+    expect(queries.size).to eq(1)
+    expect(thresholds).to eq(online: 10.minutes, stale: 30.minutes)
   end
 
   it "only stores defined keys" do
