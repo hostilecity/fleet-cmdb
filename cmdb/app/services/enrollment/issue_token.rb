@@ -1,0 +1,32 @@
+module Enrollment
+  # Issues an enrollment token for a host and returns the plaintext once (DEC-04, P1-S05).
+  #
+  # For an active or revoked host this starts re-enrollment (FR-1.1: -> pending). An active host's credential
+  # keeps working until the new token is redeemed. Any earlier unredeemed token for the host is expired, so
+  # only the newest token works.
+  class IssueToken
+    class HostRetired < StandardError; end
+
+    def self.call(...) = new(...).call
+
+    def initialize(host:, actor:, ttl: Rails.configuration.x.enrollment.token_ttl)
+      @host = host
+      @actor = actor
+      @ttl = ttl
+    end
+
+    def call
+      Host.transaction(requires_new: true) do
+        @host.lock!
+        raise HostRetired, "retired hosts cannot be enrolled" if @host.retired?
+
+        @host.begin_reenrollment!(actor: @actor) if @host.can_transition?(:begin_reenrollment)
+        @host.enrollment_tokens.redeemable.update_all(expires_at: Time.current, updated_at: Time.current)
+        issued = EnrollmentToken.issue!(host: @host, ttl: @ttl)
+        Audit.record(actor: @actor, action: Audit::Actions::HOST_ENROLLMENT_TOKEN_ISSUED, target: @host,
+                     changes: { "expires_at" => [ nil, issued.record.expires_at ] })
+        issued.plaintext
+      end
+    end
+  end
+end

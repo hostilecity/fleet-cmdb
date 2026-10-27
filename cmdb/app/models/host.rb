@@ -28,6 +28,9 @@ class Host < ApplicationRecord
   CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
   CONTROL_CHARACTERS_EXCEPT_WHITESPACE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/
 
+  has_many :agent_credentials, dependent: :restrict_with_exception
+  has_many :enrollment_tokens, dependent: :restrict_with_exception
+
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
   validates :hostname, presence: true, length: { maximum: 253 }, format: { with: HOSTNAME_FORMAT, allow_blank: true }
   validates :description, length: { maximum: 1_000 }, format: { without: CONTROL_CHARACTERS_EXCEPT_WHITESPACE }
@@ -74,18 +77,18 @@ class Host < ApplicationRecord
     self
   end
 
-  # pending -> active: the agent redeemed its enrollment token.
-  def activate!(actor:) = transition!(:activate, actor:)
+  # pending -> active: the agent redeemed its enrollment token. details are added to the audit entry.
+  def activate!(actor:, details: {}) = transition!(:activate, actor:, details:)
 
-  # active -> revoked: the operator revoked the credential.
+  # active -> revoked: the operator revoked the credential. The active credential is revoked in the same
+  # transaction, so it gets 401 on the next request (AC-1.5).
   def revoke!(actor:) = transition!(:revoke, actor:)
 
   # active or revoked -> pending: the operator issued a new enrollment token. For an active host the old
   # credential keeps working until the new token is redeemed (FR-1.1, DEC-04).
   def begin_reenrollment!(actor:) = transition!(:begin_reenrollment, actor:)
 
-  # any -> retired (terminal). Revoking the credential as part of retiring arrives with credentials in
-  # P1-API-AUTH.
+  # any -> retired (terminal). Retiring also revokes the active credential (FR-1.1).
   def retire!(actor:) = transition!(:retire, actor:)
 
   def can_transition?(event)
@@ -125,7 +128,10 @@ class Host < ApplicationRecord
 
   private
 
-  def transition!(event, actor:)
+  # Transitions that end the host's current credential.
+  REVOKING_EVENTS = %i[revoke retire].freeze
+
+  def transition!(event, actor:, details: {})
     rule = TRANSITIONS.fetch(event)
     # requires_new: a savepoint, so a failed audit write rolls the change back even when the caller rescues
     # the error inside its own transaction.
@@ -138,11 +144,20 @@ class Host < ApplicationRecord
       before = enrollment_state
       @transitioning = true
       update!(enrollment_state: rule[:to])
-      Audit.record(actor:, action: rule[:action], target: self, changes: { "enrollment_state" => [ before, rule[:to] ] })
+      revoked = REVOKING_EVENTS.include?(event) ? revoke_active_credentials : {}
+      Audit.record(actor:, action: rule[:action], target: self,
+                   changes: { "enrollment_state" => [ before, rule[:to] ] }.merge(revoked, details))
     ensure
       @transitioning = false
     end
     self
+  end
+
+  # Revokes the active credential, if any, and returns its key id (not secret) for the audit entry.
+  def revoke_active_credentials
+    credentials = agent_credentials.active.lock.to_a
+    credentials.each(&:revoke!)
+    credentials.any? ? { "revoked_key_id" => credentials.map(&:key_id).join(",") } : {}
   end
 
   def require_pending_state

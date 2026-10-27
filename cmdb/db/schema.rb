@@ -10,9 +10,26 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_26_193100) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_26_200100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "agent_credentials", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "key_id", limit: 64, null: false
+    t.string "secret_digest", limit: 64, null: false
+    t.string "state", default: "active", null: false
+    t.string "machine_id", limit: 32
+    t.datetime "revoked_at"
+    t.datetime "last_used_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_agent_credentials_on_host_id"
+    t.index ["host_id"], name: "index_agent_credentials_one_active_per_host", unique: true, where: "((state)::text = 'active'::text)"
+    t.index ["key_id"], name: "index_agent_credentials_on_key_id", unique: true
+    t.check_constraint "(state::text = 'revoked'::text) = (revoked_at IS NOT NULL)", name: "agent_credentials_revoked_at_matches_state"
+    t.check_constraint "state::text = ANY (ARRAY['active'::character varying, 'revoked'::character varying]::text[])", name: "agent_credentials_state_valid"
+  end
 
   create_table "audit_entries", force: :cascade do |t|
     t.string "actor_type", null: false
@@ -29,6 +46,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_26_193100) do
     t.index ["target_type", "target_id", "occurred_at"], name: "index_audit_entries_on_target"
     t.check_constraint "(actor_type::text = 'system'::text) = (actor_id IS NULL)", name: "audit_entries_actor_id_matches_type"
     t.check_constraint "actor_type::text = ANY (ARRAY['operator'::character varying, 'host'::character varying, 'system'::character varying]::text[])", name: "audit_entries_actor_type_valid"
+  end
+
+  create_table "enrollment_tokens", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "token_digest", limit: 64, null: false
+    t.datetime "expires_at", null: false
+    t.datetime "redeemed_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_enrollment_tokens_on_host_id"
+    t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
   end
 
   create_table "hosts", force: :cascade do |t|
@@ -52,6 +80,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_26_193100) do
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying, 'active'::character varying, 'revoked'::character varying, 'retired'::character varying]::text[])", name: "hosts_enrollment_state_valid"
     t.check_constraint "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying, 'stale'::character varying, 'offline'::character varying]::text[]))", name: "hosts_liveness_status_valid"
   end
+
+  add_foreign_key "agent_credentials", "hosts"
+  add_foreign_key "enrollment_tokens", "hosts"
 
   create_function :hosts_guard, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.hosts_guard()

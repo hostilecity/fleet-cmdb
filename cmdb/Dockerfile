@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 # check=error=true
 
-# This Dockerfile is designed for production, not development. Use with Kamal or build'n'run by hand:
-# docker build -t cmdb .
+# This Dockerfile is designed for production, not development. Build it from cmdb/ with the agent API
+# schemas from docs/api passed in as a named build context (they are read at runtime; P1-API-AUTH):
+# docker build --build-context api=../docs/api -t cmdb .
 # docker run -d -p 80:80 -e RAILS_MASTER_KEY=<value from config/master.key> --name cmdb cmdb
 
 # For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
@@ -25,7 +26,8 @@ ENV RAILS_ENV="production" \
     BUNDLE_DEPLOYMENT="1" \
     BUNDLE_PATH="/usr/local/bundle" \
     BUNDLE_WITHOUT="development" \
-    LD_PRELOAD="/usr/local/lib/libjemalloc.so"
+    LD_PRELOAD="/usr/local/lib/libjemalloc.so" \
+    FLEET_API_SCHEMAS_DIR="/rails/api-schemas"
 
 # Throw-away build stage to reduce size of final image
 FROM base AS build
@@ -46,6 +48,9 @@ RUN bundle install && \
 
 # Copy application code
 COPY . .
+
+# Agent API JSON Schemas, the single source of truth in docs/api (named build context "api").
+COPY --from=api schemas ./api-schemas
 
 # Precompile bootsnap code for faster boot times.
 # -j 1 disable parallel compilation to avoid a QEMU bug: https://github.com/rails/bootsnap/issues/495

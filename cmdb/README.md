@@ -71,6 +71,44 @@ Recurring jobs are declared in `config/recurring.yml` and run by Solid Queue's s
 - **The audit log is append-only in the database too.** A trigger rejects `UPDATE`, `DELETE`, and `TRUNCATE` on `audit_entries`, so tasks that truncate every table, such as `bin/rails db:truncate_all` and `db:seed:replant`, fail by design. Use `db:reset` for a fresh development database.
   - The trigger and its function live in `db/functions/` and `db/triggers/`. The [fx](https://github.com/teoljungberg/fx) gem records them in `db/schema.rb`, so `db:prepare` and `db:schema:load` recreate them.
 
+## Agent API and enrollment
+
+The agent API lives under `/api/v1` (`app/controllers/api/v1`). Its contract is `../docs/api`: the conventions, error codes, schemas and examples.
+
+- **Validation.** Request bodies are validated at runtime against `../docs/api/schemas`, so those files must be present wherever the server runs:
+  - The path comes from `FLEET_API_SCHEMAS_DIR`, which defaults to `../docs/api/schemas`.
+  - The server refuses to boot without the schemas.
+- **Request guard.** `lib/middleware/agent_api_request_guard.rb` caps `/api/` bodies at 1 MB and stops Rails parsing or logging agent JSON. `Api::V1::BaseController` then reads, size-checks (per endpoint) and validates the raw body, and renders every failure as the documented error envelope.
+- **Authenticated endpoints** inherit from `Api::V1::AuthenticatedController`. The host is always `current_host`, from the credential; never look a host up from the request. A spec enforces both rules.
+
+| Setting | Default | |
+|---|---|---|
+| `FLEET_API_SCHEMAS_DIR` | `../docs/api/schemas` | Where the JSON Schemas are read from |
+| `FLEET_MINIMUM_AGENT_VERSION` | `0.1.0` | Older agents get `426 agent_version_unsupported` |
+| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints |
+| `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
+| `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Enrollment token lifetime |
+
+Until the dashboard exists, hosts are created and enrolled from the command line. Each task prints the enrollment token once, and only its digest is stored.
+
+```sh
+bin/rails hosts:create DISPLAY_NAME="Media server" VM_HOSTNAME=vm-01.example.lan TAGS=media,lab
+bin/rails hosts:enroll_token VM_HOSTNAME=vm-01.example.lan   # re-enrollment; or HOST_ID=...
+```
+
+`VM_HOSTNAME` is used instead of `HOSTNAME` because shells set `HOSTNAME` to the local machine's name.
+
+- **Re-enrollment.** Issuing a token for an active or revoked host moves it to `pending`. An active host's old credential keeps working until the new token is redeemed, then stops immediately. Issuing a token also expires any earlier unredeemed token for the host.
+- **Revocation.** `Host#revoke!` and `Host#retire!` revoke the host's credential in the same transaction.
+
+### Docker image
+
+The image needs the schemas too, so build it from `cmdb/` with `docs/api` as a named build context:
+
+```sh
+docker build --build-context api=../docs/api -t cmdb .
+```
+
 ## Secrets
 
 - `config/master.key` is generated locally and **never committed** (it is ignored). `config/credentials.yml.enc` is committed but cannot be read without that key. Back the key up with the database backup (NFR-2): a restored database without the key is not enough to run production.

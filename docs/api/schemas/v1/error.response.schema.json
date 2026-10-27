@@ -29,7 +29,7 @@
           "description": "Same value as the X-Request-Id response header.",
           "type": "string",
           "minLength": 1,
-          "maxLength": 64
+          "maxLength": 255
         },
         "details": {
           "description": "Only on validation_failed: one entry per rejected field.",
