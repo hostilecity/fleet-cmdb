@@ -8,6 +8,9 @@ module Audit
     HOST_REENROLLMENT_STARTED = "host.reenrollment_started"
     HOST_RETIRED = "host.retired"
     HOST_ENROLLMENT_TOKEN_ISSUED = "host.enrollment_token_issued"
+    OPERATOR_ALLOWED = "operator.allowed"
+    OPERATOR_DISALLOWED = "operator.disallowed"
+    OPERATOR_SIGNED_IN = "operator.signed_in"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

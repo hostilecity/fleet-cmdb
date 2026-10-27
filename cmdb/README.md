@@ -71,9 +71,47 @@ Recurring jobs are declared in `config/recurring.yml` and run by Solid Queue's s
 - **The audit log is append-only in the database too.** A trigger rejects `UPDATE`, `DELETE`, and `TRUNCATE` on `audit_entries`, so tasks that truncate every table, such as `bin/rails db:truncate_all` and `db:seed:replant`, fail by design. Use `db:reset` for a fresh development database.
   - The trigger and its function live in `db/functions/` and `db/triggers/`. The [fx](https://github.com/teoljungberg/fx) gem records them in `db/schema.rb`, so `db:prepare` and `db:schema:load` recreate them.
 
+## Hostnames and operator sign-in
+
+The server has two faces (DEC-05), each on its own hostname:
+
+| Hostname (setting) | Serves | Reached through |
+|---|---|---|
+| Dashboard (`FLEET_DASHBOARD_HOST`) | Dashboard, sign-in, Google OAuth callback | The Cloudflare tunnel, behind Cloudflare Access |
+| Agent API (`FLEET_AGENT_HOST`) | `/api/v1/*`, and the `/up` health check (later also `/health`) | The LAN only, through the agent TLS proxy |
+| `localhost` | `/up` only | The container health check |
+
+- **Host guard.** `lib/middleware/host_separation.rb` runs first in the middleware stack. It returns an empty 404 for a path on the wrong hostname or for an unknown host. Each route is also constrained to its hostname in `config/routes.rb`, as a second line of defence.
+- **`X-Forwarded-Host`** is ignored unless the request comes from a trusted proxy (`FLEET_TRUSTED_PROXIES`), so a client cannot claim the other hostname.
+- **Production** refuses to boot without both hostnames.
+- **Development** uses `localhost` for the dashboard and `agent.localhost` for the API, both on port 3000.
+
+**Operators sign in with Google** (DEC-06). There are no passwords and no sign-up.
+
+- Only a Google-verified email on the allowlist can sign in. Anyone else is refused without a record being created.
+- The allowlist is re-checked on every request, so removing an email signs that operator out on their next request.
+- Sessions are server-side (`operator_sessions`). The encrypted cookie holds only a random token, and the table stores its digest. Signing out revokes the session, so a saved copy of the cookie stops working.
+- Every dashboard controller requires sign-in unless it calls `allow_unauthenticated_access`. A spec enumerates the routes to enforce this.
+
+```sh
+bin/rails operators:allow EMAIL=you@example.com      # the first operator, and any later one
+bin/rails operators:list
+bin/rails operators:disallow EMAIL=you@example.com
+```
+
+Google OAuth needs a web client in Google Cloud. Its authorised redirect URI is `https://<dashboard host>/auth/google_oauth2/callback`, or `http://localhost:3000/auth/google_oauth2/callback` for development.
+
+| Setting | Default | |
+|---|---|---|
+| `FLEET_DASHBOARD_HOST`, `FLEET_AGENT_HOST` | required in production | The two hostnames above |
+| `FLEET_TRUSTED_PROXIES` | loopback only | Comma-separated addresses or CIDRs of the tunnel connector and the agent TLS proxy. Only these may set `X-Forwarded-Host`, `X-Forwarded-For`, `Client-IP` and `Forwarded`; the host guard drops those headers from anyone else, so client addresses used for rate limits cannot be spoofed |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required in production | Google OAuth web client |
+| `FLEET_SESSION_IDLE_MINUTES` | `120` | Sign out after this long without a request |
+| `FLEET_SESSION_ABSOLUTE_HOURS` | `12` | Sign out this long after signing in, however active |
+
 ## Agent API and enrollment
 
-The agent API lives under `/api/v1` (`app/controllers/api/v1`). Its contract is `../docs/api`: the conventions, error codes, schemas and examples.
+The agent API lives under `/api/v1` (`app/controllers/api/v1`) on the agent hostname. Its contract is `../docs/api`: the conventions, error codes, schemas and examples.
 
 - **Validation.** Request bodies are validated at runtime against `../docs/api/schemas`, so those files must be present wherever the server runs:
   - The path comes from `FLEET_API_SCHEMAS_DIR`, which defaults to `../docs/api/schemas`.

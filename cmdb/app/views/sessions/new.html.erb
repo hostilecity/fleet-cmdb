@@ -1,0 +1,6 @@
+<% content_for :title, "Sign in · Fleet CMDB" %>
+<main>
+  <h1>Fleet CMDB</h1>
+  <p>Sign in with an allowed Google account.</p>
+  <%= button_to "Sign in with Google", "/auth/google_oauth2", method: :post, data: { turbo: false } %>
+</main>

@@ -28,7 +28,8 @@ Rails.application.configure do
   config.force_ssl = true
 
   # Skip http-to-https redirect for the default health check endpoint.
-  # config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
+  # The container health check calls http://localhost/up without TLS.
+  config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
 
   # Log to STDOUT with the current request id as a default log tag.
   config.log_tags = [ :request_id ]
@@ -67,5 +68,8 @@ Rails.application.configure do
   # ]
   #
   # Skip DNS rebinding protection for the default health check endpoint.
-  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  # Only the configured hostnames (and localhost, for the health check) reach the app; HostSeparation
+  # decides what each may serve. Unknown hosts get an empty 404, not Rails' blocked-host page.
+  config.hosts = [ config.x.fleet_hosts.dashboard, config.x.fleet_hosts.agent, "localhost", IPAddr.new("127.0.0.1"), IPAddr.new("::1") ].compact
+  config.host_authorization = { response_app: ->(_env) { [ 404, { "content-type" => "text/plain" }, [] ] } }
 end
