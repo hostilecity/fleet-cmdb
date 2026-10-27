@@ -132,6 +132,33 @@ RSpec.describe "POST /api/v1/reports/inventory", type: :request do
     expect(host.inventory.stable).to include("cpu_model" => "<script>alert(1)</script>Xeon[31m", "kernel_version" => "6.12-x")
   end
 
+  describe "unknown fields are ignored at every depth (DEC-08, review of #51)" do
+    it "does not store undeclared keys in warnings, even ones jsonb would reject" do
+      warnings = [ { "field" => "disks", "message" => "timed out", "extra\u0000key" => "x", "detail" => { "nested" => true } } ]
+      log = captured_log { send_report(report(warnings:)) }
+      expect(response).to have_http_status(:ok)
+      expect(host.inventory.warnings).to eq([ { "field" => "disks", "message" => "timed out" } ])
+      expect(log).to include("ignored unknown fields /warnings/0/extrakey /warnings/0/detail")
+      expect(log).not_to include("\u0000")
+    end
+
+    it "ignores undeclared fields inside os: no stored value and no snapshot" do
+      send_report(report)
+      os = full["os"].merge("codename" => "trixie")
+      expect { send_report(report(os:)) }.not_to change(InventorySnapshot, :count)
+      expect(host.inventory.stable["os"]).to eq(full["os"])
+      expect { send_report(report(os: os.merge("codename" => "forky"))) }.not_to change(InventorySnapshot, :count)
+    end
+
+    it "stores only declared keys anywhere in the inventory" do
+      send_report(report(extra: 1, disks: full["disks"].map { |d| d.merge("inode_count" => 5) },
+                         network_interfaces: full["network_interfaces"].map { |n| n.merge("mtu" => 1500) }))
+      stored = host.inventory
+      expect(stored.stable.to_json).not_to match(/extra|inode_count|mtu|codename/)
+      expect(stored.volatile.to_json).not_to match(/extra|inode_count|mtu/)
+    end
+  end
+
   describe "clone detection (FR-S.1)" do
     it "warns once when the credential is used from a different machine" do
       other = "fedcba9876543210fedcba9876543210"

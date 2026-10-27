@@ -10,6 +10,10 @@ module AgentApi
   # Failures raise ValidationFailed with a JSON Pointer per problem, before anything is written.
   class InventoryReport
     STABLE_FIELDS = %w[hostname os kernel_version architecture cpu_model cpu_cores memory_total_bytes boot_id machine_id agent_version].freeze
+    # Only declared properties are stored or hashed: unknown fields are ignored (DEC-08), at every depth, so
+    # they can neither create a snapshot nor carry unchecked keys into the database (review of #51).
+    OS_FIELDS = %w[id version_id pretty_name].freeze
+    WARNING_FIELDS = %w[field message].freeze
     CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
     attr_reader :report_id, :schema_version, :collected_at, :stable, :volatile, :warnings
@@ -22,7 +26,7 @@ module AgentApi
       @report_id = data["report_id"]
       @schema_version = data["schema_version"]
       @collected_at = Time.iso8601(data["collected_at"])
-      @warnings = data["warnings"].sort_by { |w| [ w["field"], w["message"] ] }
+      @warnings = data["warnings"].map { |w| w.slice(*WARNING_FIELDS) }.sort_by { |w| [ w["field"], w["message"] ] }
       @stable = build_stable(data)
       @volatile = build_volatile(data)
     end
@@ -37,6 +41,7 @@ module AgentApi
 
     def build_stable(data)
       fields = data.slice(*STABLE_FIELDS)
+      fields["os"] = data["os"]&.slice(*OS_FIELDS)
       fields["disks"] = data["disks"]&.map { |d| d.slice("mount", "filesystem", "size_bytes") }&.sort_by { |d| d["mount"] }
       fields["network_interfaces"] = data["network_interfaces"]&.map do |nic|
         { "name" => nic["name"], "primary" => nic["primary"], "addresses" => nic["addresses"].map { |a| normalize_address(a) }.uniq.sort }
