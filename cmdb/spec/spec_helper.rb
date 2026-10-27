@@ -7,7 +7,15 @@ unless ENV["NO_COVERAGE"]
   end
 end
 
+require_relative "support/github_annotations_formatter"
+
 RSpec.configure do |config|
+  # In GitHub Actions, failures also become annotations on the pull request (and readable through the API).
+  if ENV["GITHUB_ACTIONS"] == "true"
+    config.add_formatter("progress") # keep the usual output; adding a formatter replaces the default
+    config.add_formatter(GithubAnnotationsFormatter)
+  end
+
   config.expect_with :rspec do |expectations|
     expectations.include_chain_clauses_in_custom_matcher_descriptions = true
   end
