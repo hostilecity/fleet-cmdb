@@ -90,6 +90,7 @@ The server has two faces (DEC-05), each on its own hostname:
 
 - Only a Google-verified email on the allowlist can sign in. Anyone else is refused without a record being created.
 - The allowlist is re-checked on every request, so removing an email signs that operator out on their next request.
+- Sessions are server-side (`operator_sessions`). The encrypted cookie holds only a random token, and the table stores its digest. Signing out revokes the session, so a saved copy of the cookie stops working.
 - Every dashboard controller requires sign-in unless it calls `allow_unauthenticated_access`. A spec enumerates the routes to enforce this.
 
 ```sh
@@ -103,7 +104,7 @@ Google OAuth needs a web client in Google Cloud. Its authorised redirect URI is 
 | Setting | Default | |
 |---|---|---|
 | `FLEET_DASHBOARD_HOST`, `FLEET_AGENT_HOST` | required in production | The two hostnames above |
-| `FLEET_TRUSTED_PROXIES` | loopback only | Comma-separated addresses or CIDRs of the tunnel connector and the agent TLS proxy. Trusted for `X-Forwarded-Host` and `X-Forwarded-For` (client addresses for rate limits) |
+| `FLEET_TRUSTED_PROXIES` | loopback only | Comma-separated addresses or CIDRs of the tunnel connector and the agent TLS proxy. Only these may set `X-Forwarded-Host`, `X-Forwarded-For`, `Client-IP` and `Forwarded`; the host guard drops those headers from anyone else, so client addresses used for rate limits cannot be spoofed |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required in production | Google OAuth web client |
 | `FLEET_SESSION_IDLE_MINUTES` | `120` | Sign out after this long without a request |
 | `FLEET_SESSION_ABSOLUTE_HOURS` | `12` | Sign out this long after signing in, however active |

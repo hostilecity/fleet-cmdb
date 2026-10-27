@@ -7,13 +7,18 @@ require "ipaddr"
 # - localhost serves the health paths only, for the container health check; it is not published anywhere.
 # - Any other host, or a path on the wrong host, gets an empty 404.
 #
-# X-Forwarded-Host is removed unless the request comes directly from a configured trusted proxy, so a
-# client cannot claim another hostname (Rails would otherwise prefer the header over Host). This runs
+# X-Forwarded-Host, X-Forwarded-For, Client-IP, and Forwarded are removed unless the request comes directly
+# from a configured trusted proxy, so a client can claim neither another hostname (Rails would otherwise
+# prefer the header over Host) nor another client address (which keys the enrollment rate limit). This runs
 # first in the middleware stack, before OmniAuth (which answers /auth/... itself) and before routing.
 class HostSeparation
   API_PREFIX = "/api"
   HEALTH_PATHS = %w[/up /health].freeze
   LOCAL_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
+  # Headers only a trusted proxy may set. Rails reads X-Forwarded-For and Client-IP for request.remote_ip
+  # (the enrollment rate-limit key) even when the peer itself is untrusted, and Rack reads Forwarded for the
+  # host, so all of them are dropped from any other peer.
+  SPOOFABLE_HEADERS = %w[HTTP_X_FORWARDED_HOST HTTP_X_FORWARDED_FOR HTTP_CLIENT_IP HTTP_FORWARDED].freeze
   NOT_FOUND = [ 404, { "content-type" => "text/plain; charset=utf-8", "content-length" => "0" }, [] ].freeze
 
   def self.config = Rails.configuration.x.fleet_hosts
@@ -59,7 +64,7 @@ class HostSeparation
   end
 
   def call(env)
-    env.delete("HTTP_X_FORWARDED_HOST") unless self.class.trusted_proxy?(env["REMOTE_ADDR"])
+    SPOOFABLE_HEADERS.each { |header| env.delete(header) } unless self.class.trusted_proxy?(env["REMOTE_ADDR"])
     host = self.class.normalize(env["HTTP_X_FORWARDED_HOST"].presence || env["HTTP_HOST"].presence || env["SERVER_NAME"])
     return NOT_FOUND.dup unless self.class.allowed?(host, env["PATH_INFO"].to_s)
 

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_27_003000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_27_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -89,6 +89,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_003000) do
     t.check_constraint "email::text = lower(email::text)", name: "operator_allowlist_entries_email_lowercase"
   end
 
+  create_table "operator_sessions", force: :cascade do |t|
+    t.bigint "operator_id", null: false
+    t.string "token_digest", limit: 64, null: false
+    t.datetime "last_seen_at", null: false
+    t.datetime "revoked_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["operator_id"], name: "index_operator_sessions_on_operator_id"
+    t.index ["token_digest"], name: "index_operator_sessions_on_token_digest", unique: true
+  end
+
   create_table "operators", force: :cascade do |t|
     t.string "google_uid", limit: 255, null: false
     t.string "email", limit: 254, null: false
@@ -102,6 +113,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_003000) do
 
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
+  add_foreign_key "operator_sessions", "operators"
 
   create_function :hosts_guard, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.hosts_guard()

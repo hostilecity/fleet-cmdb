@@ -6,7 +6,7 @@ class SessionsController < ApplicationController
   REFUSED = "That Google account is not allowed to sign in.".freeze
 
   def new
-    redirect_to root_path if session[:operator_id] && operator_from_session
+    redirect_to root_path if session[:operator_session_token] && operator_from_session
   end
 
   def create
@@ -24,7 +24,7 @@ class SessionsController < ApplicationController
   end
 
   def destroy
-    reset_session
+    end_session
     redirect_to sign_in_path, notice: "Signed out."
   end
 end

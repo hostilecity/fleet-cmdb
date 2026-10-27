@@ -23,7 +23,10 @@ class OperatorSignIn
     raise Refused, "email not on the allowlist" unless OperatorAllowlistEntry.allowed?(email)
 
     Operator.transaction(requires_new: true) do
-      operator = Operator.lock.find_or_initialize_by(google_uid: uid)
+      # Conflict-safe for two first sign-ins at once: the unique index decides, and the loser finds the
+      # winner's row. Then lock it so the update and audit entry are serialised.
+      operator = Operator.create_or_find_by!(google_uid: uid) { |new_operator| new_operator.email = email }
+      operator.lock!
       operator.update!(email:, name: @auth.dig("info", "name").to_s.squish.truncate(255).presence, last_signed_in_at: Time.current)
       Audit.record(actor: operator, action: Audit::Actions::OPERATOR_SIGNED_IN, target: operator)
       operator

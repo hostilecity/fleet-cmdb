@@ -106,6 +106,34 @@ RSpec.describe "Operator sign-in", type: :request do
       expect(response).to redirect_to(sign_in_path)
     end
 
+    it "revokes the session on sign-out, so a saved copy of the cookie no longer works" do
+      sign_in_with_google
+      saved_cookie = cookies["_fleet_cmdb_session"]
+      get "/"
+      expect(response).to have_http_status(:ok)
+
+      delete "/sign_out"
+      expect(OperatorSession.sole.revoked_at).to be_present
+      cookies["_fleet_cmdb_session"] = saved_cookie # replay the pre-sign-out cookie
+      get "/"
+      expect(response).to redirect_to(sign_in_path)
+    end
+
+    it "stores only a digest of the session token" do
+      sign_in_with_google
+      record = OperatorSession.sole
+      expect(record.token_digest).to match(/\A\h{64}\z/)
+      expect(cookies["_fleet_cmdb_session"]).not_to include(record.token_digest)
+    end
+
+    it "clears an operator's unusable sessions at the next sign-in" do
+      sign_in_with_google
+      delete "/sign_out"
+      sign_in_with_google
+      expect(OperatorSession.count).to eq(1)
+      expect(OperatorSession.sole.revoked_at).to be_nil
+    end
+
     it "ends after the idle timeout" do
       sign_in_with_google
       travel(Rails.configuration.x.sessions.idle_timeout - 1.minute) { get "/" }

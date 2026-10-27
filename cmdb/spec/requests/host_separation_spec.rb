@@ -97,6 +97,30 @@ RSpec.describe "Host-based separation", type: :request do
       expect_empty_404
     end
 
+    it "ignores spoofed client addresses from an untrusted peer, so the enrollment rate limit holds" do
+      limit = AgentApi.config.enroll_rate_limit[:to]
+      body = { schema_version: 1, agent_version: "0.1.0", token: "EXAMPLE-unknown-token-0000000000000000000000", hostname: nil, machine_id: nil }.to_json
+      host! agent_host
+      (limit + 1).times do |i|
+        post "/api/v1/enroll", params: body,
+             headers: { "CONTENT_TYPE" => "application/json", "X-Forwarded-For" => "198.51.100.#{i}", "Client-IP" => "198.51.100.#{i}",
+                        "Forwarded" => "for=198.51.100.#{i}" },
+             env: { "REMOTE_ADDR" => UNTRUSTED }
+      end
+      expect(response).to have_http_status(:too_many_requests)
+    end
+
+    it "uses the client address a trusted proxy forwards" do
+      limit = AgentApi.config.enroll_rate_limit[:to]
+      body = { schema_version: 1, agent_version: "0.1.0", token: "EXAMPLE-unknown-token-0000000000000000000000", hostname: nil, machine_id: nil }.to_json
+      host! agent_host
+      (limit + 1).times do |i|
+        post "/api/v1/enroll", params: body, headers: { "CONTENT_TYPE" => "application/json", "X-Forwarded-For" => "198.51.100.#{i}" },
+             env: { "REMOTE_ADDR" => "127.0.0.1" }
+      end
+      expect(response).to have_http_status(:gone) # each agent has its own bucket
+    end
+
     it "keeps a trusted proxy's forwarded host on its side of the boundary" do
       request_as(:post, "/api/v1/enroll", host: agent_host, forwarded_host: dashboard_host, remote_addr: "127.0.0.1")
       expect_empty_404
@@ -132,6 +156,17 @@ RSpec.describe HostSeparation do
     expect(described_class.normalize("::1")).to eq("::1")
     expect(described_class.normalize("a.example, b.example")).to eq("b.example")
     expect(described_class.normalize(nil)).to eq("")
+  end
+
+  it "drops proxy-only headers from untrusted peers and keeps them from trusted ones" do
+    seen = nil
+    app = described_class.new(->(env) { seen = env.slice(*described_class::SPOOFABLE_HEADERS); [ 200, {}, [] ] })
+    headers = { "HTTP_X_FORWARDED_HOST" => "x", "HTTP_X_FORWARDED_FOR" => "198.51.100.1", "HTTP_CLIENT_IP" => "198.51.100.1", "HTTP_FORWARDED" => "for=198.51.100.1" }
+    app.call(Rack::MockRequest.env_for("http://#{HostSeparation.agent_host}/up", "REMOTE_ADDR" => "203.0.113.9", **headers))
+    expect(seen).to eq({})
+    app.call(Rack::MockRequest.env_for("http://#{HostSeparation.agent_host}/up", "REMOTE_ADDR" => "127.0.0.1",
+                                       "HTTP_X_FORWARDED_FOR" => "198.51.100.1", "HTTP_FORWARDED" => "for=198.51.100.1"))
+    expect(seen).to eq("HTTP_X_FORWARDED_FOR" => "198.51.100.1", "HTTP_FORWARDED" => "for=198.51.100.1")
   end
 
   it "trusts only configured proxies" do

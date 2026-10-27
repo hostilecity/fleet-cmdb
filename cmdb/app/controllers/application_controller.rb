@@ -29,29 +29,31 @@ class ApplicationController < ActionController::Base
     redirect_to sign_in_path
   end
 
+  # The operator for this request's session token, or nil. Sessions live server-side (OperatorSession), so
+  # signing out revokes them even if a copy of the cookie is replayed.
   def operator_from_session
-    operator_id = session[:operator_id] or return nil
+    token = session[:operator_session_token] or return nil
 
-    now = Time.current
-    signed_in_at = Time.zone.at(session[:signed_in_at].to_i)
-    last_seen_at = Time.zone.at(session[:last_seen_at].to_i)
-    timeouts = Rails.configuration.x.sessions
-    operator = Operator.find_by(id: operator_id)
-    if operator.nil? || !operator.allowlisted? || now - signed_in_at > timeouts.absolute_timeout || now - last_seen_at > timeouts.idle_timeout
+    operator_session = OperatorSession.authenticate(token)
+    unless operator_session
       reset_session
       flash[:alert] = "Your session has ended. Sign in again."
       return nil
     end
 
-    session[:last_seen_at] = now.to_i
-    operator
+    operator_session.record_activity!
+    operator_session.operator
   end
 
   def start_session(operator)
-    reset_session # a new session id on sign-in, so a planted session cannot be reused
-    now = Time.current.to_i
-    session[:operator_id] = operator.id
-    session[:signed_in_at] = now
-    session[:last_seen_at] = now
+    reset_session # a new cookie on sign-in, so a planted session cannot be reused
+    _record, token = OperatorSession.start!(operator)
+    session[:operator_session_token] = token
+  end
+
+  def end_session
+    token = session[:operator_session_token]
+    OperatorSession.find_by(token_digest: AgentApi.digest(token))&.revoke! if token.present?
+    reset_session
   end
 end
