@@ -37,6 +37,7 @@ Static HTML mockups (no backend) in `docs/mockups/phase-1/`:
 - Sort by any column, search by name and hostname, filter by tag and by status. State held in query parameters so views are linkable.
 - Avoids N+1 queries; verified by a query-count spec.
 - Plain server-rendered HTML first; live updates are added in [P1-D05](p1-dash-fleet.md).
+- Settings page (moved here from [P1-S09](p1-heartbeat.md) so it follows the approved settings mockup): the online and stale liveness thresholds, saved with `Setting.update_liveness_thresholds!`, which validates them and audits the change. Errors are shown in place (FR-S.4).
 
 ### Acceptance criteria
 
@@ -44,6 +45,7 @@ Static HTML mockups (no backend) in `docs/mockups/phase-1/`:
 - [ ] Retired hosts do not appear and are not counted
 - [ ] Fleet list renders in under 2 seconds with 50 hosts ([P1-O04](p1-verify.md) confirms)
 - [ ] All agent-supplied text is escaped (see [P1-S12](p1-operability.md))
+- [ ] The settings page changes the liveness thresholds, rejects invalid values in place, and each change appears in the audit log
 
 ## P1-D03: Host detail view with inventory history and field-level diff
 

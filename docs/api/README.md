@@ -54,7 +54,8 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 |---|---|---|
 | 400 | `validation_failed` | Body is not valid JSON or fails the schema or the server checks. `details` lists each field as a JSON Pointer |
 | 401 | `unauthorized` | Credential missing, malformed, unknown, revoked, or for a retired host. Same body for each case |
-| 403 | `host_not_active` | Valid credential, but the host is not `active` (for example a heartbeat from a pending host) |
+| 403 | `reenrollment_required` | Valid credential, but the host is `pending` because an operator issued a new enrollment token (re-enrollment). The response also has the header `Fleet-Enrollment-State: pending`. The agent logs plainly that the new token must be redeemed (`fleet-agent enroll --force`) and backs off to a long interval |
+| 403 | `host_not_active` | Valid credential, but the host is in some other state that may not call this endpoint |
 | 404 | `not_found` | Unknown route |
 | 410 | `enrollment_token_invalid` | Enrollment token unknown, expired, or already used. Same body for each case |
 | 413 | `payload_too_large` | Body over the endpoint's size limit |
@@ -109,3 +110,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | Initial Phase 1 payloads: enroll, heartbeat, inventory, errors (P0-CONTRACT) |
 | v1 | Tightened before first release (review of #44): SemVer 2.0.0 `agent_version` (build metadata allowed, leading zeros rejected), timestamp patterns reject impossible month, day, hour, minute, and second values, `architecture` accepts `null` when unreadable, network addresses must be valid IPv4 (prefix 0-32) or IPv6 (prefix 0-128) CIDRs. No version bump: v1 has no released consumers. |
 | v1 | `error.request_id` `maxLength` raised from 64 to 255, the length Rails accepts for an incoming `X-Request-Id` (P1-API-AUTH). Loosening only, so no version bump. |
+| v1 | New error code `reenrollment_required` (403) with the `Fleet-Enrollment-State: pending` header, for endpoints a re-enrolling host may not call (P1-HEARTBEAT). Additive, so no version bump. |

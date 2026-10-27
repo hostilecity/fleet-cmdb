@@ -17,13 +17,13 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] Heartbeat from a host in `stale` or `offline` returns it to `online` and records the transition
 - [ ] Agent-reported time never affects `last_seen_at` or liveness (spec with a skewed clock)
 - [ ] Heartbeat p95 stays under 200 ms with the [P1-O04](p1-verify.md) simulator at 50 hosts and a large snapshot table
-- [ ] Heartbeats from a `pending`, `revoked`, or `retired` host are refused
+- [ ] Heartbeats from a `pending`, `revoked`, or `retired` host are refused (a `pending` host still holding its old credential during re-enrollment gets `403 reenrollment_required` with `Fleet-Enrollment-State: pending`; revoked and retired hosts' credentials are revoked, so they get `401`)
 
 ## P1-S09: Liveness evaluation job, thresholds, and status history
 
 ### Scope
 
-- `Setting` model (typed key/value with defaults) holding the online and stale thresholds (defaults 3 and 15 minutes) with validation that online is less than stale. A small settings form in the dashboard lets the operator change them; changes are audited ([P1-S03](p1-hosts.md)).
+- `Setting` model (typed key/value with defaults) holding the online and stale thresholds (defaults 3 and 15 minutes) with validation that online is less than stale. Changes are audited ([P1-S03](p1-hosts.md)) and made with `bin/rails settings:liveness`. The dashboard settings form moved to [P1-DASH-FLEET](p1-dash-fleet.md), so it is built from the approved settings mockup.
 - `host_status_events` table (host, from, to, occurred at, reason), separate from the audit log.
 - Recurring Solid Queue job (at least once per minute) that evaluates every active host from `last_seen_at` and writes events only when status changes. Idempotent and safe to run concurrently or twice.
 - Status of hosts that are not `active` is not evaluated (they show their enrollment state).

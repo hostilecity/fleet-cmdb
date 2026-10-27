@@ -11,6 +11,8 @@ module Api
     # - Unexpected errors return 500 internal_error without internals.
     class BaseController < ActionController::API
       JSON_MAX_NESTING = 16
+      # Tells an agent its host is waiting for a new enrollment token to be redeemed (docs/api/README.md).
+      ENROLLMENT_STATE_HEADER = "Fleet-Enrollment-State"
 
       class_attribute :max_body_bytes, default: 64.kilobytes
 
@@ -86,6 +88,7 @@ module Api
 
       def render_api_error(error)
         response.set_header("Retry-After", @retry_after.to_s) if error.is_a?(AgentApi::RateLimited) && @retry_after
+        response.set_header(ENROLLMENT_STATE_HEADER, "pending") if error.is_a?(AgentApi::ReenrollmentRequired)
         body = { code: error.code, message: error.message, request_id: request.request_id, details: error.details.presence }
         render json: { error: body.compact }, status: error.status
       end

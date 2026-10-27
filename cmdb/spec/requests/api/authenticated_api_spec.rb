@@ -120,7 +120,8 @@ RSpec.describe "Authenticated agent API", type: :request do
       expect(response).to have_http_status(:ok)
       Enrollment::IssueToken.call(host: host_a, actor: Audit::SYSTEM) # active -> pending, credential still valid
       get "/api/v1/probe/active", headers: api_headers(credential_a)
-      expect_error(:forbidden, "host_not_active")
+      expect_error(:forbidden, "reenrollment_required") # P1-HEARTBEAT: tell the agent to redeem its new token
+      expect(response.headers["Fleet-Enrollment-State"]).to eq("pending")
     end
   end
 

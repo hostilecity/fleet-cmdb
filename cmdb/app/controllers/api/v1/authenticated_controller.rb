@@ -23,9 +23,15 @@ module Api
         current_credential.record_use!
       end
 
-      # For endpoints only active hosts may call (for example heartbeats, P1-HEARTBEAT).
+      # For endpoints only active hosts may call (for example heartbeats, P1-HEARTBEAT). A pending host can
+      # only get here mid re-enrollment (its old credential works until the new token is redeemed), so it is
+      # told to redeem the new token rather than given a generic refusal.
       def require_active_host!
-        raise AgentApi::HostNotActive unless current_host.enrollment_state == "active"
+        case current_host.enrollment_state
+        when "active" then nil
+        when "pending" then raise AgentApi::ReenrollmentRequired
+        else raise AgentApi::HostNotActive
+        end
       end
     end
   end
