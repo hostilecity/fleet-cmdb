@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_26_200100) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_27_003000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -79,6 +79,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_26_200100) do
     t.index ["tags"], name: "index_hosts_on_tags", using: :gin
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying, 'active'::character varying, 'revoked'::character varying, 'retired'::character varying]::text[])", name: "hosts_enrollment_state_valid"
     t.check_constraint "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying, 'stale'::character varying, 'offline'::character varying]::text[]))", name: "hosts_liveness_status_valid"
+  end
+
+  create_table "operator_allowlist_entries", force: :cascade do |t|
+    t.string "email", limit: 254, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["email"], name: "index_operator_allowlist_entries_on_email", unique: true
+    t.check_constraint "email::text = lower(email::text)", name: "operator_allowlist_entries_email_lowercase"
+  end
+
+  create_table "operators", force: :cascade do |t|
+    t.string "google_uid", limit: 255, null: false
+    t.string "email", limit: 254, null: false
+    t.string "name", limit: 255
+    t.datetime "last_signed_in_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["email"], name: "index_operators_on_email"
+    t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 
   add_foreign_key "agent_credentials", "hosts"

@@ -1,0 +1,7 @@
+<% content_for :title, "Fleet CMDB" %>
+<main>
+  <h1>Fleet CMDB</h1>
+  <p>Signed in as <%= current_operator.display_name %>.</p>
+  <p>The fleet views arrive with the Phase 1 dashboard.</p>
+  <%= button_to "Sign out", sign_out_path, method: :delete %>
+</main>

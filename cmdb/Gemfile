@@ -10,6 +10,11 @@ gem "pg", "~> 1.1"
 # Validates agent API requests against the JSON Schemas in docs/api at runtime (P1-API-AUTH)
 gem "json_schemer"
 
+# Operator sign-in with Google OAuth, POST-only request phase with CSRF protection (P1-ACCESS, DEC-06)
+gem "omniauth", "~> 2.1"
+gem "omniauth-google-oauth2", "~> 1.2"
+gem "omniauth-rails_csrf_protection", "~> 2.0"
+
 # Database functions and triggers in db/schema.rb (append-only audit log guard, P1-HOSTS)
 gem "fx", "~> 0.11"
 # Use the Puma web server [https://github.com/puma/puma]

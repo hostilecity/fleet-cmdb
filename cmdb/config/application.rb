@@ -42,5 +42,27 @@ module Cmdb
     # Agent API body limit and no Rails parameter parsing for /api/ (lib/middleware, P1-S06).
     require Rails.root.join("lib/middleware/agent_api_request_guard").to_s
     config.middleware.insert_after ActionDispatch::RequestId, AgentApiRequestGuard
+
+    # Dashboard and agent API on separate hostnames, before anything else sees the request (P1-S13).
+    require Rails.root.join("lib/middleware/host_separation").to_s
+    config.middleware.insert_before 0, HostSeparation
+
+    # The dashboard and private agent API hostnames (DEC-05). Required in production; development and test
+    # set defaults in their environment files.
+    config.x.fleet_hosts.dashboard = ENV["FLEET_DASHBOARD_HOST"]&.downcase.presence
+    config.x.fleet_hosts.agent = ENV["FLEET_AGENT_HOST"]&.downcase.presence
+
+    # Proxies allowed to set X-Forwarded-Host and X-Forwarded-For (the tunnel connector and the agent TLS
+    # proxy), as comma-separated addresses or CIDRs. Unset means only loopback is trusted.
+    trusted = ENV.fetch("FLEET_TRUSTED_PROXIES", "").split(",").map(&:strip).reject(&:empty?).map { |cidr| IPAddr.new(cidr) }
+    config.x.fleet_hosts.trusted_proxies = [ IPAddr.new("127.0.0.0/8"), IPAddr.new("::1") ] + trusted
+    config.action_dispatch.trusted_proxies = config.x.fleet_hosts.trusted_proxies
+
+    # Action Cable is not mounted until a dashboard feature needs it; it must then be mounted inside the
+    # dashboard host constraint with an operator-authenticated connection (P1-DASH-FLEET).
+    config.action_cable.mount_path = nil
+
+    # No Turbo Native apps, so no public historical-location routes.
+    config.turbo.draw_routes = false
   end
 end
