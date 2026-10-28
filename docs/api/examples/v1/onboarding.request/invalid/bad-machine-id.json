@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.1.0",
+  "hostname": "vm-01.example.lan",
+  "machine_id": "not-a-machine-id",
+  "os": {
+    "id": "debian",
+    "version_id": "13",
+    "pretty_name": "Debian GNU/Linux 13 (trixie)"
+  }
+}

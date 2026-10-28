@@ -1,0 +1,9 @@
+{
+  "device_code": "EXAMPLE-device-code-000000000000000000000000000",
+  "user_code": "AB01-CD23",
+  "verification_uri": "https://fleet.example.lan/onboard",
+  "verification_uri_complete": "https://fleet.example.lan/onboard/WDJB-MJHT",
+  "expires_in": 600,
+  "interval": 5,
+  "server_time": "2026-01-01T12:00:00Z"
+}

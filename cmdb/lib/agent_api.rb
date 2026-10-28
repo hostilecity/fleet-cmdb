@@ -63,6 +63,20 @@ module AgentApi
     self.default_message = "The enrollment token is invalid, expired, or already used."
   end
 
+  # Onboarding (DEC-17, P1-ONBOARD): an operator rejected the request.
+  class OnboardingRejected < Error
+    self.status = :forbidden
+    self.code = "onboarding_rejected"
+    self.default_message = "An operator rejected this onboarding request."
+  end
+
+  # Unknown, expired, and already-collected device codes all get this one response.
+  class OnboardingExpired < Error
+    self.status = :gone
+    self.code = "onboarding_expired"
+    self.default_message = "This onboarding request has expired or was already used. Run the installer again."
+  end
+
   class PayloadTooLarge < Error
     self.status = :payload_too_large
     self.code = "payload_too_large"

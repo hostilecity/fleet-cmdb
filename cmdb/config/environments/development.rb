@@ -71,5 +71,6 @@ Rails.application.configure do
   # Local hostnames (P1-S13): the dashboard on http://localhost:3000, the agent API on
   # http://agent.localhost:3000 (curl and browsers resolve *.localhost to loopback).
   config.x.fleet_hosts.dashboard ||= "localhost"
+  config.x.onboarding.dashboard_url ||= ENV["FLEET_DASHBOARD_URL"].presence || "http://localhost:3000"
   config.x.fleet_hosts.agent ||= "agent.localhost"
 end

@@ -10,6 +10,8 @@ module Audit
     HOST_ENROLLMENT_TOKEN_ISSUED = "host.enrollment_token_issued"
     HOST_FIRST_INVENTORY = "host.first_inventory"
     HOST_MACHINE_ID_MISMATCH = "host.machine_id_mismatch"
+    ONBOARDING_APPROVED = "onboarding.approved"
+    ONBOARDING_REJECTED = "onboarding.rejected"
     OPERATOR_ALLOWED = "operator.allowed"
     OPERATOR_DISALLOWED = "operator.disallowed"
     OPERATOR_SIGNED_IN = "operator.signed_in"

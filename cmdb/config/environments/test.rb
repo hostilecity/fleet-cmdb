@@ -42,6 +42,9 @@ Rails.application.configure do
 
   # Hostnames for request specs (P1-S13). Request specs default to the dashboard host.
   config.x.fleet_hosts.dashboard = "fleet.example.lan"
+  config.x.onboarding.max_open = 6
+  config.x.onboarding.max_open_per_address = 3
+  config.x.onboarding.start_rate_limit = { to: 5, within: 1.minute }
   config.x.fleet_hosts.agent = "agent.fleet.example.lan"
 
   # Agent API rate limits small enough to exercise in request specs (config/initializers/agent_api.rb).

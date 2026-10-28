@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Onboarding request",
+  "description": "POST /api/v1/onboarding. Unauthenticated: starts an onboarding request that an operator approves or rejects in the dashboard (DEC-17). Creates no host. The facts are shown to the operator so they can recognise the VM.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_version",
+    "hostname",
+    "machine_id",
+    "os"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Payload schema version. This directory is version 1.",
+      "const": 1
+    },
+    "agent_version": {
+      "description": "Agent release version (semantic version).",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "hostname": {
+      "description": "Hostname as the agent sees it, or null if unreadable.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "machine_id": {
+      "description": "Contents of /etc/machine-id, or null if unreadable. Shown to the operator, who decides whether a match with an existing host is a re-enrollment.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "os": {
+      "description": "Stable. From /etc/os-release.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id",
+        "version_id",
+        "pretty_name"
+      ],
+      "properties": {
+        "id": {
+          "description": "`ID`, for example `debian`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "version_id": {
+          "description": "`VERSION_ID`, for example `13`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "pretty_name": {
+          "description": "`PRETTY_NAME`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      }
+    }
+  }
+}

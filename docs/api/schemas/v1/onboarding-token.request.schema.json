@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Onboarding token request",
+  "description": "POST /api/v1/onboarding/token. The installer polls with its device code until the request is approved, rejected, or expired.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_version",
+    "device_code"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Payload schema version. This directory is version 1.",
+      "const": 1
+    },
+    "agent_version": {
+      "description": "Agent release version (semantic version).",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "device_code": {
+      "description": "Secret known only to the installer, used to poll for the credential. Never logged and never shown to a person.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43,128}$"
+    }
+  }
+}

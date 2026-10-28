@@ -177,6 +177,33 @@ The agent API lives under `/api/v1` (`app/controllers/api/v1`) on the agent host
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
 | `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Enrollment token lifetime |
 
+### Onboarding
+
+The default way to enroll (DEC-17). The installer starts a request and an operator approves it; nothing becomes a host until then.
+
+- **`POST /api/v1/onboarding`** is unauthenticated, but served only on the agent hostname and limited per client address. It is also capped in how many requests may await approval, in total and per address. It creates an `onboarding_requests` row, not a host. The response carries:
+  - a **device code**, which only the installer holds and which is stored as a digest;
+  - a **user code**, such as `WDJB-MJHT`, for the operator to match with the terminal;
+  - the approval URL on the dashboard.
+- **Deciding.** An operator approves (`Onboarding::Approve`), either as a new host with the fields they enter or as the re-enrollment of a host they choose, or rejects (`Onboarding::Reject`). Both are audited. The approval page arrives with P1-DASH-ACTIONS (#10).
+- **`POST /api/v1/onboarding/token`** is polled with the device code:
+  - `202` while the request waits;
+  - `429` when polled faster than the interval;
+  - `403 onboarding_rejected` after rejection;
+  - `410 onboarding_expired` when the code is unknown, expired, or already used;
+  - `201` once approved, with the credential, exactly once. The host is created, or re-enrolled, in that same transaction.
+- **Cleanup.** Requests expire after 10 minutes and are deleted a day later by `OnboardingPruneJob` (`config/recurring.yml`).
+
+| Setting | Default | |
+|---|---|---|
+| `FLEET_ONBOARDING_TTL_MINUTES` | `10` | How long a request waits for approval |
+| `FLEET_ONBOARDING_POLL_SECONDS` | `5` | Minimum time between polls |
+| `FLEET_ONBOARDING_MAX_OPEN`, `FLEET_ONBOARDING_MAX_OPEN_PER_ADDRESS` | `50`, `5` | Requests awaiting approval, in total and per client address |
+| `FLEET_ONBOARDING_RATE_LIMIT_PER_MINUTE` | `10` | Starts per client address |
+| `FLEET_DASHBOARD_URL` | `https://$FLEET_DASHBOARD_HOST` | Base of the approval URL, if the dashboard uses another scheme or port |
+
+### Pre-registration
+
 Until the dashboard's host actions arrive (P1-DASH-ACTIONS), hosts are created and enrolled from the command line. Each task prints the enrollment token once, and only its digest is stored.
 
 ```sh
