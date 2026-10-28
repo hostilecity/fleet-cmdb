@@ -1,0 +1,9 @@
+<div class="strip" id="fleet_counts" aria-label="Fleet status">
+  <% %w[online stale offline awaiting].each do |status| %>
+    <%= link_to root_path(status:) do %><span class="count"><%= counts[status] %></span><span class="lamp <%= status %>"><%= FleetList::STATUSES[status] %></span><% end %>
+  <% end %>
+  <span class="divider" aria-hidden="true"></span>
+  <% %w[pending revoked].each do |status| %>
+    <%= link_to root_path(status:), class: "aside" do %><span class="count"><%= counts[status] %></span><span class="lamp <%= status %>"><%= FleetList::STATUSES[status] %></span><% end %>
+  <% end %>
+</div>

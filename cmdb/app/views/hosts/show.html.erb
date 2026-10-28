@@ -1,0 +1,172 @@
+<% content_for :title, @host.name %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
+<% stable = @inventory&.stable || {} %>
+<% volatile = @inventory&.volatile || {} %>
+<% warnings = @inventory&.warnings || [] %>
+<% if @host.machine_id_mismatch? %>
+  <div class="notice" role="status">
+    <strong>This credential was used from another machine.</strong>
+    <p>Enrolled on machine <code><%= @credential&.machine_id || "unknown" %></code>, last report from <code><%= @host.reported_machine_id || "an unreadable machine ID" %></code> (<%= utc(@host.machine_id_mismatch_at) %>). If this VM was cloned, retire the copy or re-enroll this host.</p>
+  </div>
+<% end %>
+<div class="host-head">
+  <div>
+    <h1><%= @host.name %></h1>
+    <%= render "hosts/status", host: @host %>
+  </div>
+</div>
+<% if @host.enrollment_state == "pending" %>
+  <div class="notice info" role="status">
+    <% if @credential&.active? %>
+      <strong>Re-enrollment in progress.</strong>
+      <p>The agent keeps using credential <code><%= @credential.key_id %></code> until it redeems the new token<%= ", which expires #{utc(@token.expires_at)}" if @token %>. <%= "The token has expired; issue a new one." unless @token %></p>
+    <% else %>
+      <strong>Waiting for the agent to enroll.</strong>
+      <p><%= @token ? "The enrollment token expires #{utc(@token.expires_at)}." : "The enrollment token has expired." %> If it was lost or has expired, issue a new one; the old token stops working.</p>
+    <% end %>
+  </div>
+<% elsif @host.retired? %>
+  <div class="notice" role="status"><strong>This host is retired.</strong><p>It no longer appears in the fleet. Its history is kept.</p></div>
+<% end %>
+<div class="columns">
+<div>
+  <section class="sheet" aria-labelledby="inventory_heading">
+    <h2 id="inventory_heading">Inventory</h2>
+    <% if @inventory.nil? %>
+      <p class="muted">No inventory yet. It appears after the agent enrolls and sends its first report.</p>
+    <% else %>
+      <p class="muted">Reported <%= seen_ago(@inventory.received_at).downcase_first %>. Collected by the agent at <%= utc(@inventory.collected_at) %>.</p>
+      <dl class="facts">
+        <dt>Hostname</dt><%= inventory_fact(stable["hostname"], warnings, "hostname", mono: true) %>
+        <dt>Operating system</dt>
+        <% if stable.dig("os", "pretty_name").present? %>
+          <dd><%= stable.dig("os", "pretty_name") %><% if stable.dig("os", "id") %> <span class="muted">(<%= [ stable.dig("os", "id"), stable.dig("os", "version_id") ].compact.join(" ") %>)</span><% end %></dd>
+        <% else %>
+          <%= inventory_fact(nil, warnings, "os") %>
+        <% end %>
+        <dt>Kernel</dt><%= inventory_fact(stable["kernel_version"], warnings, "kernel_version", mono: true) %>
+        <dt>Architecture</dt><%= inventory_fact(stable["architecture"], warnings, "architecture", mono: true) %>
+        <%# Each independently nullable fact gets its own row, so one unreadable part never hides another or its warning (review of #53). %>
+        <dt>CPU model</dt><%= inventory_fact(stable["cpu_model"], warnings, "cpu_model") %>
+        <dt>CPU cores</dt><%= inventory_fact(stable["cpu_cores"]&.to_s, warnings, "cpu_cores") %>
+        <dt>Total memory</dt><%= inventory_fact(human_bytes(stable["memory_total_bytes"]), warnings, "memory_total_bytes") %>
+        <dt>Available memory</dt>
+        <% if volatile["memory_available_bytes"] %>
+          <dd><%= human_bytes(volatile["memory_available_bytes"]) %><%= share_meter(volatile["memory_available_bytes"], stable["memory_total_bytes"], "Available") %></dd>
+        <% else %>
+          <%= inventory_fact(nil, warnings, "memory_available_bytes") %>
+        <% end %>
+        <dt>Uptime</dt><%= inventory_fact(human_duration(volatile["uptime_seconds"]), warnings, "uptime_seconds") %>
+        <dt>Boot ID</dt><%= inventory_fact(stable["boot_id"], warnings, "boot_id", mono: true) %>
+        <dt>Machine ID</dt><%= inventory_fact(stable["machine_id"], warnings, "machine_id", mono: true) %>
+        <dt>Agent</dt><%= inventory_fact(stable["agent_version"], warnings, "agent_version", mono: true) %>
+      </dl>
+      <h3>Disks</h3>
+      <% if stable["disks"].nil? %>
+        <p class="unavailable">Not available<% if (why = inventory_warning(warnings, "disks")) %><span class="why"><%= why %></span><% end %></p>
+      <% elsif stable["disks"].empty? %>
+        <p class="muted">No filesystems reported.</p>
+      <% else %>
+        <div class="table-wrap"><table><thead><tr><th>Mount</th><th>Filesystem</th><th>Size</th><th>Free</th></tr></thead><tbody>
+          <% stable["disks"].each do |disk| %>
+            <% free = volatile.dig("disk_free_bytes", disk["mount"]) %>
+            <tr><td class="mono"><%= disk["mount"] %></td><td><%= disk["filesystem"] %></td><td class="num"><%= human_bytes(disk["size_bytes"]) %></td>
+              <td class="num"><%= free ? human_bytes(free) : unavailable("—") %> <%= share_meter(free, disk["size_bytes"], "Free") %></td></tr>
+          <% end %>
+        </tbody></table></div>
+      <% end %>
+      <h3>Network</h3>
+      <% if stable["network_interfaces"].nil? %>
+        <p class="unavailable">Not available<% if (why = inventory_warning(warnings, "network_interfaces")) %><span class="why"><%= why %></span><% end %></p>
+      <% elsif stable["network_interfaces"].empty? %>
+        <p class="muted">No interfaces reported.</p>
+      <% else %>
+        <div class="table-wrap"><table><thead><tr><th>Interface</th><th>Addresses</th><th>Primary</th></tr></thead><tbody>
+          <% stable["network_interfaces"].each do |nic| %>
+            <tr><td class="mono"><%= nic["name"] %></td><td class="mono"><%= safe_join(nic["addresses"], tag.br) %></td>
+              <td><%= nic["primary"] ? "Default route" : tag.span("No", class: "muted") %></td></tr>
+          <% end %>
+        </tbody></table></div>
+      <% end %>
+    <% end %>
+  </section>
+
+  <section aria-labelledby="history_heading">
+    <h2 id="history_heading">Inventory history</h2>
+    <p class="muted">A snapshot is kept only when a stable field changes. Free space, available memory, and uptime change too often to record.</p>
+    <% if @history.empty? %>
+      <p class="muted">No snapshots yet.</p>
+    <% else %>
+      <div class="table-wrap"><table><thead><tr><th class="when">Recorded</th><th>What changed</th></tr></thead><tbody>
+        <% @history.each do |entry| %>
+          <tr><td><%= utc(entry[:snapshot].received_at) %></td><td>
+            <% if entry[:first] %>
+              First inventory
+            <% elsif entry[:changes].empty? %>
+              <span class="muted">No change to the displayed fields.</span>
+            <% else %>
+              <ul class="change-list">
+                <% entry[:changes].each do |change| %>
+                  <li><%= change.label %>
+                    <% if change.old.nil? %>added <ins><%= change_value(change.new) %></ins>
+                    <% elsif change.new.nil? && change.label.start_with?("Disk ", "Interface ") %>removed <del><%= change_value(change.old) %></del>
+                    <% else %><del><%= change_value(change.old) %></del> <ins><%= change_value(change.new) %></ins><% end %>
+                    <% if change.label == "Boot ID" %><span class="muted">(rebooted)</span><% end %>
+                  </li>
+                <% end %>
+              </ul>
+            <% end %>
+          </td></tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+  </section>
+</div>
+
+<div>
+  <section class="sheet" aria-labelledby="enrollment_heading">
+    <h2 id="enrollment_heading">Enrollment</h2>
+    <dl class="facts">
+      <dt>State</dt><dd><%= @host.enrollment_state.capitalize %></dd>
+      <dt>Credential</dt>
+      <% if @credential.nil? %>
+        <dd class="muted">Never issued</dd>
+      <% else %>
+        <dd><%= @credential.active? ? "Active" : "Revoked #{utc(@credential.revoked_at)}" %>, key <code><%= @credential.key_id %></code></dd>
+        <dt>Last used</dt><dd><%= seen_ago(@credential.last_used_at) %></dd>
+      <% end %>
+      <% if @host.enrollment_state == "pending" %>
+        <dt>Token</dt><dd><%= @token ? "Expires #{utc(@token.expires_at)}" : "Expired" %></dd>
+      <% end %>
+      <dt>First seen</dt><dd><%= @host.first_seen_at ? seen_ago(@host.first_seen_at) : "Never" %></dd>
+      <dt>Description</dt><dd><%= @host.description.presence || tag.span("None", class: "muted") %></dd>
+      <dt>Notes</dt><dd class="notes"><%= @host.notes.presence ? simple_format(h(@host.notes), {}, wrapper_tag: "span", sanitize: false) : tag.span("None", class: "muted") %></dd>
+    </dl>
+  </section>
+  <section aria-labelledby="status_heading">
+    <h2 id="status_heading">Status history</h2>
+    <% if @status_events.empty? %>
+      <p class="muted"><%= @host.enrollment_state == "active" ? "No heartbeats yet." : "Liveness applies to active hosts only." %></p>
+    <% else %>
+      <div class="table-wrap"><table><tbody>
+        <% @status_events.each do |event| %>
+          <tr><td><span class="lamp <%= event.to_status %>"><%= FleetList::STATUSES[event.to_status] %></span></td><td class="muted"><%= utc(event.occurred_at) %></td></tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+  </section>
+  <section aria-labelledby="audit_heading">
+    <h2 id="audit_heading">Audit entries</h2>
+    <% if @audit_entries.empty? %>
+      <p class="muted">None.</p>
+    <% else %>
+      <div class="table-wrap"><table><tbody>
+        <% @audit_entries.each do |entry| %>
+          <tr><td><%= audit_label(entry.action) %><br><span class="muted">By <%= @actors[entry.id] %>, <%= utc(entry.occurred_at) %></span></td></tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+  </section>
+</div>
+</div>

@@ -1,0 +1,20 @@
+<% content_for :title, "Settings" %>
+<div class="page-head"><div><h1>Settings</h1><p>Changes apply from the next liveness check, within a minute, and are recorded in the audit log.</p></div></div>
+<%= form_with url: settings_path, method: :patch, class: "form" do %>
+  <h2>Liveness</h2>
+  <p class="muted">A host is online while its last heartbeat is newer than the first threshold, stale until the second, and offline after that.</p>
+  <% if @error %>
+    <div class="notice error" role="alert"><strong>Settings were not saved.</strong><p><%= @error.field ? "Check the highlighted field." : @error.message %></p></div>
+  <% end %>
+  <% { online: [ "Online for up to (minutes)", 1, 1_440, @online ], stale: [ "Stale for up to (minutes)", 2, 10_080, @stale ] }.each do |field, (label, min, max, value)| %>
+    <% invalid = @error&.field == field %>
+    <div class="field<%= " invalid" if invalid %>">
+      <label for="<%= field %>_minutes"><%= label %></label>
+      <%= number_field_tag "#{field}_minutes", value, id: "#{field}_minutes", min:, max:, required: true,
+            "aria-invalid": (invalid ? "true" : nil), "aria-describedby": (invalid ? "#{field}_error" : (field == :stale ? "stale_hint" : nil)) %>
+      <% if invalid %><p class="error-text" id="<%= field %>_error"><%= @error.message %></p><% end %>
+      <% if field == :stale %><p class="hint" id="stale_hint">Defaults: 3 and 15 minutes.</p><% end %>
+    </div>
+  <% end %>
+  <div class="actions"><button class="btn" type="submit">Save settings</button></div>
+<% end %>

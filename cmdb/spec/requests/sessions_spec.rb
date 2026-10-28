@@ -8,7 +8,7 @@ RSpec.describe "Operator sign-in", type: :request do
     sign_in_with_google
     expect(response).to redirect_to(root_path)
     follow_redirect!
-    expect(response.body).to include("Signed in as Example Operator")
+    expect(response.body).to include(%(<span class="operator" title="Signed in">Example Operator</span>))
 
     operator = Operator.sole
     expect(operator).to have_attributes(google_uid: "1000000000001", email: "operator@example.com", last_signed_in_at: be_present)
@@ -93,8 +93,8 @@ RSpec.describe "Operator sign-in", type: :request do
 
       first.get "/"
       second.get "/"
-      expect(first.response.body).to include("Signed in as Example Operator")
-      expect(second.response.body).to include("Signed in as Second")
+      expect(first.response.body).to include(%(<span class="operator" title="Signed in">Example Operator</span>))
+      expect(second.response.body).to include(%(<span class="operator" title="Signed in">Second))
       expect(Operator.pluck(:email)).to contain_exactly("operator@example.com", "second@example.com")
     end
 
@@ -117,6 +117,15 @@ RSpec.describe "Operator sign-in", type: :request do
       cookies["_fleet_cmdb_session"] = saved_cookie # replay the pre-sign-out cookie
       get "/"
       expect(response).to redirect_to(sign_in_path)
+    end
+
+    it "closes that session's live-update connections on sign-out, and no other session's (P1-D05)" do
+      sign_in_with_google
+      operator_session = OperatorSession.sole
+      allow(ActionCable.server).to receive(:broadcast).and_call_original
+      delete "/sign_out"
+      expect(ActionCable.server).to have_received(:broadcast).once
+        .with("action_cable/#{operator_session.to_gid_param}", { type: "disconnect", reconnect: false })
     end
 
     it "stores only a digest of the session token" do

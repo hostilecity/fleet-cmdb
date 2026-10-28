@@ -78,7 +78,7 @@ Recurring jobs are declared in `config/recurring.yml` and run by Solid Queue's s
 - **What each host shows:**
   - a host that has never sent a heartbeat has no liveness status and shows "awaiting first contact";
   - hosts that are not active show their enrollment state instead.
-- **Thresholds** default to 3 and 15 minutes. Until the dashboard settings page exists (P1-DASH-FLEET), change them from the command line; each change is audited:
+- **Thresholds** default to 3 and 15 minutes. Change them on the dashboard's Settings page, or from the command line; each change is audited:
 
 ```sh
 bin/rails settings:show
@@ -141,6 +141,24 @@ Google OAuth needs a web client in Google Cloud. Its authorised redirect URI is 
 | `FLEET_SESSION_IDLE_MINUTES` | `120` | Sign out after this long without a request |
 | `FLEET_SESSION_ABSOLUTE_HOURS` | `12` | Sign out this long after signing in, however active |
 
+## Dashboard
+
+Server-rendered Hotwire views built from the approved mockups in `../docs/mockups/phase-1/` (P1-DASH-FLEET). The styles are `app/assets/stylesheets/application.css`, with self-hosted fonts (OFL licences beside them in `app/assets/fonts/`).
+
+- **Fleet list** (`/`): counts by status, search, tag and status filters, and sortable columns. All of it lives in the query string, so a view can be bookmarked. `FleetList` builds the list in two queries whatever the fleet size; retired hosts are never listed or counted.
+- **Host detail** (`/hosts/:id`): current inventory (unreadable facts show "Not available" with the agent's warning), inventory history with the changed fields (`InventoryDiff`), enrollment and credential state, status history, and the host's audit entries. Operator actions arrive with P1-DASH-ACTIONS.
+- **Settings** (`/settings`): the liveness thresholds.
+- **Escaping.** Everything a host or operator supplied is rendered through Rails' escaping; nothing is marked `html_safe`. Inventory meters use width classes rather than inline styles.
+
+### Live updates
+
+Status changes reach open pages within seconds, over Turbo Streams on Action Cable (Solid Cable):
+
+- Code that changes what the fleet shows calls `FleetBroadcast.hosts_changed(ids)` inside its transaction: heartbeat status changes, liveness evaluation, enrollment transitions, edits, and the first inventory. `FleetBroadcastJob` is enqueued only after the outermost transaction commits.
+- The job sends a Turbo **page refresh**. Each open fleet list or host page re-requests itself with its own filters and sort, and morphs the result in, so list membership, order, counts, empty states, and the host header always agree with a fresh load. The stream element is `data-turbo-permanent`, so the subscription survives the morph, and a filter form the operator is editing is left alone (`keep_edits_controller.js`).
+- `/cable` is mounted only on the dashboard hostname. A connection needs a live operator session from the dashboard cookie (`ApplicationCable::Connection`); it is rechecked every 30 seconds and closed at once on sign-out. Production accepts handshakes only from `https://$FLEET_DASHBOARD_HOST`.
+- When the connection drops, the top bar reads "Reconnecting" and a banner warns that statuses may be out of date. After any interruption, however short, the page refreshes itself once to catch up, since broadcasts are not replayed. A first connection that never succeeds also ends in the banner (`app/javascript/controllers/live_status_controller.js`).
+
 ## Agent API and enrollment
 
 The agent API lives under `/api/v1` (`app/controllers/api/v1`) on the agent hostname. Its contract is `../docs/api`: the conventions, error codes, schemas and examples.
@@ -159,7 +177,7 @@ The agent API lives under `/api/v1` (`app/controllers/api/v1`) on the agent host
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
 | `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Enrollment token lifetime |
 
-Until the dashboard exists, hosts are created and enrolled from the command line. Each task prints the enrollment token once, and only its digest is stored.
+Until the dashboard's host actions arrive (P1-DASH-ACTIONS), hosts are created and enrolled from the command line. Each task prints the enrollment token once, and only its digest is stored.
 
 ```sh
 bin/rails hosts:create DISPLAY_NAME="Media server" VM_HOSTNAME=vm-01.example.lan TAGS=media,lab

@@ -71,5 +71,8 @@ Rails.application.configure do
   # Only the configured hostnames (and localhost, for the health check) reach the app; HostSeparation
   # decides what each may serve. Unknown hosts get an empty 404, not Rails' blocked-host page.
   config.hosts = [ config.x.fleet_hosts.dashboard, config.x.fleet_hosts.agent, "localhost", IPAddr.new("127.0.0.1"), IPAddr.new("::1") ].compact
+
+  # Live updates (P1-D05): WebSocket handshakes are accepted only from dashboard pages.
+  config.action_cable.allowed_request_origins = [ "https://#{config.x.fleet_hosts.dashboard}" ] if config.x.fleet_hosts.dashboard
   config.host_authorization = { response_app: ->(_env) { [ 404, { "content-type" => "text/plain" }, [] ] } }
 end

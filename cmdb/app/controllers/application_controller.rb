@@ -53,7 +53,11 @@ class ApplicationController < ActionController::Base
 
   def end_session
     token = session[:operator_session_token]
-    OperatorSession.find_by(token_digest: AgentApi.digest(token))&.revoke! if token.present?
+    if token.present? && (operator_session = OperatorSession.find_by(token_digest: AgentApi.digest(token)))
+      operator_session.revoke!
+      # Close this session's live-update connections now rather than at their next check (P1-D05).
+      ActionCable.server.remote_connections.where(operator_session:).disconnect(reconnect: false)
+    end
     reset_session
   end
 end

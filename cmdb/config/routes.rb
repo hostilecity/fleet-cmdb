@@ -32,7 +32,12 @@ Rails.application.routes.draw do
   # Dashboard, on the dashboard hostname only. Every controller requires a signed-in operator unless it opts
   # out (ApplicationController, P1-S01).
   constraints(dashboard_host) do
-    root "dashboard#show"
+    root "hosts#index"
+    resources :hosts, only: :show
+    get "settings", to: "settings#edit", as: :settings
+    patch "settings", to: "settings#update"
+    # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
+    mount ActionCable.server => "/cable"
     get "sign_in", to: "sessions#new", as: :sign_in
     get "auth/google_oauth2/callback", to: "sessions#create", as: :auth_callback
     get "auth/failure", to: "sessions#failure"

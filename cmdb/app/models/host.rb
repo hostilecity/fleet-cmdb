@@ -75,7 +75,10 @@ class Host < ApplicationRecord
       assign_attributes(attributes.to_h.stringify_keys.slice(*EDITABLE_ATTRIBUTES))
       changes = changes_to_save.slice(*EDITABLE_ATTRIBUTES)
       save!
-      Audit.record(actor:, action: Audit::Actions::HOST_EDITED, target: self, changes:) if changes.any?
+      if changes.any?
+        Audit.record(actor:, action: Audit::Actions::HOST_EDITED, target: self, changes:)
+        FleetBroadcast.hosts_changed([ id ])
+      end
     end
     self
   end
@@ -161,6 +164,7 @@ class Host < ApplicationRecord
       revoked = REVOKING_EVENTS.include?(event) ? revoke_active_credentials : {}
       Audit.record(actor:, action: rule[:action], target: self,
                    changes: { "enrollment_state" => [ before, rule[:to] ] }.merge(revoked, details))
+      FleetBroadcast.hosts_changed([ id ])
     ensure
       @transitioning = false
     end
