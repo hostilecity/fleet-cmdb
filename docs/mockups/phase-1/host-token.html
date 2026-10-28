@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enrollment token · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Lab sandbox added</h1><p class="mono">vm-06.example.lan</p></div></div>
+<div class="form" style="max-width:46rem">
+  <div class="notice" role="alert"><strong>Copy this token now. It is shown only once.</strong><p>Only a fingerprint is stored, so it cannot be shown again. If it is lost, issue a new token from the host page.</p></div>
+  <p>Enrollment token, valid until tomorrow 18:30 UTC:</p>
+  <div class="token">EXAMPLE-enrollment-token-not-a-real-one-0001</div>
+  <p class="actions" style="margin-top:.75rem"><button class="btn" type="button">Copy token</button></p>
+  <h2>Enroll the VM</h2>
+  <p>On vm-06.example.lan, as root:</p>
+  <div class="token">fleet-agent enroll --server https://agent.fleet.example.lan --token-stdin</div>
+  <p class="muted">Paste the token when asked, so it never appears in the process list or shell history.</p>
+  <p><a href="host-pending.html">Go to the host</a></p>
+</div>
+</main>
+</body>
+</html>

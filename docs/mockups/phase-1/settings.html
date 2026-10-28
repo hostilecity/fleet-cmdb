@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html" aria-current="page">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Settings</h1><p>Changes apply from the next liveness check, within a minute, and are recorded in the audit log.</p></div></div>
+<form class="form">
+  <h2 style="margin-top:0">Liveness</h2>
+  <p class="muted">A host is online while its last heartbeat is newer than the first threshold, stale until the second, and offline after that.</p>
+  <div class="notice error" role="alert"><strong>Settings were not saved.</strong><p>The online threshold must be shorter than the stale threshold.</p></div>
+  <div class="field invalid"><label for="on">Online for up to (minutes)</label><input id="on" type="number" value="20" min="1" max="1440" aria-invalid="true" aria-describedby="on-err"><p class="error-text" id="on-err">Must be shorter than the stale threshold (15 minutes).</p></div>
+  <div class="field"><label for="st">Stale for up to (minutes)</label><input id="st" type="number" value="15" min="2" max="10080"><p class="hint">Defaults: 3 and 15 minutes.</p></div>
+  <div class="actions"><button class="btn" type="submit">Save settings</button></div>
+</form>
+</main>
+</body>
+</html>

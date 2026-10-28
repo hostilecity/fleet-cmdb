@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confirmations · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Confirmations</h1><p>Destructive actions ask first (FR-S.4). Shown here open; in the app each opens over the host page.</p></div></div>
+<div class="dialog" id="revoke" role="dialog" aria-labelledby="r-t"><h2 id="r-t">Revoke the credential for Media server?</h2>
+<p>The agent on vm-01.example.lan is refused from its next request and the host stops reporting. To let it back in, issue a new enrollment token.</p>
+<div class="actions"><button class="btn danger" type="button">Revoke credential</button><button class="btn quiet" type="button">Keep it</button></div></div>
+<div class="dialog" id="reenroll" role="dialog" aria-labelledby="e-t"><h2 id="e-t">Issue a new enrollment token for Media server?</h2>
+<p>The host moves to pending until the agent redeems the new token. Its current credential keeps working until then, and the agent is told to re-enroll. Any earlier unused token stops working.</p>
+<div class="actions"><button class="btn" type="button">Issue new token</button><button class="btn quiet" type="button">Cancel</button></div></div>
+<div class="dialog" id="retire" role="dialog" aria-labelledby="t-t"><h2 id="t-t">Retire Media server?</h2>
+<p>Retiring revokes the credential and removes the host from the fleet list and counts. Its inventory, history, and audit entries are kept. This cannot be undone.</p>
+<div class="field"><label for="c">Type the hostname to confirm</label><input id="c" class="mono" placeholder="vm-01.example.lan"></div>
+<div class="actions"><button class="btn danger" type="button">Retire host</button><button class="btn quiet" type="button">Cancel</button></div></div>
+<p class="note">Retire asks for the hostname because it is the only action that cannot be undone. Revoke and re-enroll can be reversed by issuing a new token, so a single button is enough.</p>
+</main>
+</body>
+</html>

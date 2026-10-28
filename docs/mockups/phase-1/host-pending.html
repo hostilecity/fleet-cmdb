@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab sandbox · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div><h1>Lab sandbox</h1><div class="sub"><span class="mono">vm-06.example.lan</span><span class="lamp pending">Pending enrollment</span><span><span class="tag">lab</span></span></div></div>
+  <div class="actions"><a class="btn quiet" href="host-edit.html">Edit</a><a class="btn quiet" href="dialogs.html#reenroll">Issue new token</a><a class="btn danger quiet" href="dialogs.html#retire">Retire</a></div>
+</div>
+<div class="notice info" role="status"><strong>Waiting for the agent to enroll.</strong><p>The enrollment token expires tomorrow at 18:30 UTC. If it was lost or has expired, issue a new one; the old token stops working.</p></div>
+<div class="columns">
+<section class="sheet"><h2 style="margin-top:0">Inventory</h2><p class="muted">No inventory yet. It appears after the agent enrolls and sends its first report.</p></section>
+<section class="sheet"><h2 style="margin-top:0">Enrollment</h2><dl class="facts">
+<dt>State</dt><dd>Pending</dd><dt>Credential</dt><dd class="muted">Never issued</dd><dt>Token</dt><dd>Expires tomorrow 18:30 UTC</dd></dl></section>
+</div>
+<p class="note">Pending, revoked, and retired hosts show their enrollment state where an active host shows liveness. A host being re-enrolled keeps its inventory and history; the notice reads "Re-enrollment in progress" and names the old credential still in use.</p>
+</main>
+</body>
+</html>

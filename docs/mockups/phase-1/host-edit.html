@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edit host · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Edit Media server</h1><p>Changes are recorded in the audit log with the old and new values.</p></div></div>
+<form class="form">
+  <div class="field"><label for="n">Name</label><input id="n" value="Media server"></div>
+  <div class="field"><label for="h">Hostname</label><input id="h" class="mono" value="vm-01.example.lan"><p class="hint">What the operator calls it. The agent's own reported hostname is shown in the inventory.</p></div>
+  <div class="field"><label for="t">Tags</label><input id="t" value="media"></div>
+  <div class="field"><label for="d">Description</label><textarea id="d">Jellyfin and the download stack.</textarea></div>
+  <div class="field invalid"><label for="o">Notes</label><textarea id="o" aria-invalid="true" aria-describedby="o-err">Disk 2 is passthrough; snapshot before kernel updates.</textarea><p class="error-text" id="o-err">Notes can be up to 10,000 characters (this is 10,214).</p></div>
+  <div class="actions"><button class="btn" type="submit">Save changes</button><a class="btn quiet" href="host.html">Cancel</a></div>
+</form>
+</main>
+</body>
+</html>

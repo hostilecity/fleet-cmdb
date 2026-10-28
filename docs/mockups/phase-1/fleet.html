@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Fleet</h1><p>7 hosts, 5 active. Retired hosts are not listed or counted.</p></div><a class="btn" href="host-new.html">Add host</a></div>
+<div class="strip" aria-label="Fleet status">
+  <a href="fleet.html?status=online"><span class="count">2</span><span class="lamp online">Online</span></a>
+  <a href="fleet.html?status=stale"><span class="count">1</span><span class="lamp stale">Stale</span></a>
+  <a href="fleet.html?status=offline"><span class="count">1</span><span class="lamp offline">Offline</span></a>
+  <a href="fleet.html?status=awaiting"><span class="count">1</span><span class="lamp awaiting">Awaiting first contact</span></a>
+  <span class="divider" aria-hidden="true"></span>
+  <a class="aside" href="fleet.html?status=pending"><span class="count">1</span><span class="lamp pending">Pending enrollment</span></a>
+  <a class="aside" href="fleet.html?status=revoked"><span class="count">1</span><span class="lamp">Revoked</span></a>
+</div>
+<p class="note">The counts are links that filter the list. Active hosts are counted by liveness; pending and revoked hosts sit apart, after the divider (FR-1.1).</p>
+<form class="filters" role="search">
+  <label>Search name or hostname<input type="search" placeholder="vm-01 or Media server"></label>
+  <label>Tag<select><option>All tags</option><option>ci</option><option>infra</option><option>lab</option><option>media</option><option>storage</option><option>web</option></select></label>
+  <label>Status<select><option>All statuses</option><option>Online</option><option>Stale</option><option>Offline</option><option>Awaiting first contact</option><option>Pending enrollment</option><option>Credential revoked</option></select></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<div class="table-wrap"><table>
+<thead><tr>
+<th aria-sort="ascending"><a href="#">Name</a></th><th aria-sort="none"><a href="#">Status</a></th><th aria-sort="none"><a href="#">Last seen</a></th>
+<th aria-sort="none"><a href="#">Hostname</a></th><th>Tags</th>
+<th aria-sort="none"><a href="#">Operating system</a></th><th aria-sort="none"><a href="#">Agent</a></th>
+</tr></thead>
+<tbody>
+<tr><td><a href="host.html">Media server</a></td><td><span class="lamp online">Online</span></td><td class="muted">28 seconds ago</td><td class="mono">vm-01.example.lan</td><td><span class="tag">media</span></td><td>Debian GNU/Linux 13 (trixie)</td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="host.html">Web A</a></td><td><span class="lamp online">Online</span></td><td class="muted">41 seconds ago</td><td class="mono">vm-02.example.lan</td><td><span class="tag">web</span><span class="tag">lab</span></td><td>Debian GNU/Linux 13 (trixie)</td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="host.html">Build runner</a></td><td><span class="lamp stale">Stale</span></td><td class="muted">7 minutes ago</td><td class="mono">vm-03.example.lan</td><td><span class="tag">ci</span></td><td>Debian GNU/Linux 13 (trixie)</td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="host.html">Backup target</a></td><td><span class="lamp offline">Offline</span></td><td class="muted">2 hours ago</td><td class="mono">vm-04.example.lan</td><td><span class="tag">storage</span></td><td>Debian GNU/Linux 13 (trixie)</td><td class="mono">0.0.9</td></tr>
+<tr><td><a href="host.html">DNS resolver</a></td><td><span class="lamp awaiting">Awaiting first contact</span></td><td class="muted">Never</td><td class="mono">vm-05.example.lan</td><td><span class="tag">infra</span></td><td><span class="unavailable">Not reported</span></td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="host-pending.html">Lab sandbox</a></td><td><span class="lamp pending">Pending enrollment</span></td><td class="muted">Never</td><td class="mono">vm-06.example.lan</td><td><span class="tag">lab</span></td><td><span class="unavailable">Not reported</span></td><td class="mono"><span class=unavailable>—</span></td></tr>
+<tr><td><a href="host.html">Old proxy</a></td><td><span class="lamp revoked">Credential revoked</span></td><td class="muted">3 days ago</td><td class="mono">vm-07.example.lan</td><td><span class="tag">web</span></td><td>Debian GNU/Linux 13 (trixie)</td><td class="mono">0.1.0</td></tr>
+</tbody></table></div>
+<p class="note">Search, filters, and sort live in the URL, so a view can be bookmarked. Rows and counts update in place when a status changes (P1-D05); "Live" in the top bar shows the connection.</p>
+</main>
+</body>
+</html>
