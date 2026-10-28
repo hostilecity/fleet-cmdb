@@ -4,14 +4,14 @@ Source for the GitHub issues that track the Fleet CMDB build, designed to be che
 
 | Path | Purpose |
 |---|---|
-| `issues.yml` | The 40 issues: key, title, milestone, labels, covered requirement IDs, one-sentence goal, 2 or 3 acceptance criteria, blockers |
+| `issues.yml` | The 45 issues: key, title, milestone, labels, covered requirement IDs, one-sentence goal, 2 or 3 acceptance criteria, blockers |
 | `specs/<key>.md` | One file per issue with the implementation details (scope, constraints, edge cases, test notes). This is what agents read |
 | `config.yml` | Labels, milestones, and phase gates |
 | `import.rb` | Validates the sources and creates the GitHub issues |
 | `review-notes.md` | What the requirements review found (R-01 to R-37) |
 | `_original-requirements.md` | The requirements draft as received, for diffing |
 
-Decisions are not issues: all 16 are decided and recorded as ADRs in `docs/decisions/`. There are no epic issues either; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. SETUP-01 and SETUP-02 are done.
+Decisions are not issues: all 19 are decided and recorded as ADRs in `docs/decisions/`. There are no epic issues either; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. SETUP-01 and SETUP-02 are done.
 
 ## What a GitHub issue looks like
 
@@ -35,7 +35,7 @@ Nothing else is copied into GitHub, so there is nothing to keep in sync: change 
 | Milestone | Issues |
 |---|---|
 | Phase 0 — Scaffolding | 3: agent crate and CI, server CI, API contract workspace |
-| Phase 1 — CMDB & inventory | 16: server (hosts, access, API/enrollment, heartbeat, inventory, operability), dashboard (3: fleet, actions, audit log), agent (core, collectors, reporting, packaging), deployment, verification, acceptance |
+| Phase 1 — CMDB & inventory | 21: server (hosts, access, API/enrollment, onboarding, heartbeat, inventory, operability, releases, rollouts), dashboard (3: fleet, actions, audit log), agent (core, install, collectors, reporting, packaging, updater), deployment, verification, acceptance |
 | Phase 2 — Config, CIS & vulnerabilities | 10 |
 | Phase 3 — Remote tasks | 11 |
 
@@ -43,7 +43,7 @@ Run `ruby docs/backlog/import.rb plan` for the full list in creation order with 
 
 **Phase gates.** Every Phase 2 issue with no blocker inside Phase 2 is blocked by `P1-ACCEPT`, and likewise Phase 3 by `P2-ACCEPT`, so a phase's code cannot start before the previous phase is accepted. Blockers are shown only when direct (a blocker already implied through another blocker is omitted).
 
-**Traceability.** `check` fails if any `FR-*`, `NFR-*`, or `AC-*` ID in `docs/requirements.md` is not covered by some issue, and if any `DEC-*` lacks an ADR. Currently 46 of 46 covered.
+**Traceability.** `check` fails if any `FR-*`, `NFR-*`, or `AC-*` ID in `docs/requirements.md` is not covered by some issue, and if any `DEC-*` lacks an ADR. Currently 50 of 50 covered.
 
 ## Commands
 

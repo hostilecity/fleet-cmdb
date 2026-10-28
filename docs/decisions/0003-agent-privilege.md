@@ -1,6 +1,6 @@
 # ADR 0003: Agent runtime privilege model
 
-- Status: Accepted (owner, first requirements review)
+- Status: Accepted (owner, first requirements review); see [ADR 0018](0018-signed-agent-updates.md) for the signed update path, the one way the server can cause new agent code to run
 - Decision issue: DEC-03
 - Requirements: `docs/requirements.md`
 

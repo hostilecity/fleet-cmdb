@@ -1,6 +1,6 @@
 # ADR 0014: Task trust model and safeguards
 
-- Status: Accepted (owner, first requirements review)
+- Status: Accepted (owner, first requirements review); task signing stays rejected, and agent releases are signed separately under [ADR 0018](0018-signed-agent-updates.md)
 - Decision issue: DEC-14
 - Requirements: `docs/requirements.md`
 

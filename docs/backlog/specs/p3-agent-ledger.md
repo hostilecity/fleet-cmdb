@@ -27,6 +27,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - A task id already present in the ledger is never run again. At startup the agent reconciles: `started` without `finished` is reported as `failed` with reason `interrupted`; `finished` without `reported` is re-reported; unknown states are reported, not executed.
 - Ledger growth is bounded (compaction of old reported tasks).
 - Result reporting retries until accepted, idempotently.
+- An agent update ([P1-AGENT-UPDATE](p1-agent-update.md)) is deferred while a task is in flight, and an update in progress blocks new claims until it is confirmed or rolled back.
 
 ### Acceptance criteria
 

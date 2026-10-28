@@ -101,7 +101,7 @@
   done:
     - "Hostile strings in every agent- and operator-supplied field render escaped in every view under a restrictive CSP."
     - "Retention prunes expired snapshots but keeps each host's newest and never touches audit entries, and failed jobs appear in an operator-visible list and in `/health`."
-  blocked_by: [P1-INVENTORY, P1-HEARTBEAT, P1-ACCESS, P1-DASH-FLEET, P1-DASH-ACTIONS]
+  blocked_by: [P1-INVENTORY, P1-HEARTBEAT, P1-ACCESS, P1-DASH-FLEET, P1-DASH-ACTIONS, P1-ONBOARD, P1-UPDATES]
 
 - key: P1-DASH-FLEET
   title: "Dashboard: mockups, fleet list, host detail, live status"
@@ -127,25 +127,26 @@
   blocked_by: [P1-HOSTS, P1-ACCESS]
 
 - key: P1-DASH-ACTIONS
-  title: "Dashboard: create, edit, revoke, re-enroll, retire hosts"
+  title: "Dashboard: onboarding approval, pre-registration, and host actions"
   milestone: 1
   labels: ["area:dashboard", "area:server", "security"]
-  covers: [FR-1.5, FR-S.1, FR-S.3, FR-S.4, FR-1.1, AC-1.5]
-  goal: "Operators can create, edit, revoke, re-enroll, and retire hosts from the dashboard with confirmations and audit entries."
+  covers: [FR-1.5, FR-S.1, FR-S.3, FR-S.4, FR-1.1, AC-1.5, AC-1.8]
+  goal: "Operators approve onboarding requests and pre-register, edit, revoke, re-enroll, and retire hosts from the dashboard with confirmations and audit entries, built from approved mockups."
   done:
-    - "Creating a host shows the one-time token and enroll command once and never again."
+    - "Approving an onboarding request with the matching code enrolls the waiting installer with the entered fields, and nothing is attached to an existing host without the operator choosing it."
+    - "Pre-registering a host shows the one-time token and install command once and never again."
     - "Revoke and retire require confirmation and take effect immediately, and each action writes an audit entry with before and after values."
-  blocked_by: [P1-DASH-FLEET, P1-API-AUTH]
+  blocked_by: [P1-DASH-FLEET, P1-API-AUTH, P1-ONBOARD]
 
 - key: P1-AGENT-CORE
-  title: "Agent config, HTTP client, and enroll command"
+  title: "Agent config and HTTP client"
   milestone: 1
   labels: ["area:agent", "security"]
   covers: [FR-1.6, FR-S.1, NFR-1, NFR-4, FR-1.2, FR-S.2, NFR-5, AC-1.1, AC-1.5]
-  goal: "The agent loads validated config, talks to the server over verified HTTPS with retry and backoff, and enrolls itself with a one-time token."
+  goal: "The agent loads validated config and talks to the server over verified HTTPS with retry and backoff, never crashing on server outages."
   done:
     - "An `http://` URL is rejected, there is no way to skip certificate verification, and the credential never appears in logs."
-    - "`fleet-agent enroll` writes the credential atomically with mode 0600 so `run` can authenticate, and server outages never crash the agent."
+    - "`401`, `403 reenrollment_required`, `426`, and `429` are each logged plainly and backed off without a tight retry loop, and server outages never crash the agent."
   blocked_by: [P0-AGENT, P0-CONTRACT, P1-API-AUTH]
 
 - key: P1-AGENT-COLLECT
@@ -171,15 +172,15 @@
   blocked_by: [P1-AGENT-CORE, P1-HEARTBEAT, P1-AGENT-COLLECT, P1-INVENTORY]
 
 - key: P1-PACKAGING
-  title: "Agent release build, systemd unit, and install steps"
+  title: "Signed agent release build and systemd unit"
   milestone: 1
-  labels: ["area:agent", "area:ops"]
-  covers: [FR-1.6, NFR-4]
-  goal: "The agent ships as a checksummed static binary with an example config and hardened systemd unit that installs, upgrades, and uninstalls cleanly."
+  labels: ["area:agent", "area:ops", "security"]
+  covers: [FR-1.6, NFR-4, FR-S.5, NFR-1]
+  goal: "A tagged release publishes a static binary with a signed manifest, signed only after the owner's approval, plus the hardened systemd unit the installer writes."
   done:
-    - "A tagged release publishes the x86_64 musl binary with a SHA-256 checksum, and it runs on Debian 13."
-    - "The documented install, upgrade, and uninstall steps work on a clean VM, and the unit restarts on failure and logs to the journal."
-  blocked_by: [P1-AGENT-REPORT, P0-AGENT]
+    - "A tagged release publishes the x86_64 musl binary, manifest, checksums, and a signature that verifies against the key embedded in the agent, and untagged builds are never signed."
+    - "The unit starts on boot, restarts on failure, triggers rollback on repeated failure, and logs to the journal, with `systemd-analyze security` recorded."
+  blocked_by: [P1-AGENT-REPORT, P1-AGENT-INSTALL, P0-AGENT]
 
 - key: P1-DEPLOY
   title: "Server deployment, backups, and installation docs"
@@ -191,7 +192,7 @@
     - "`/api/v1` is unreachable through the public hostname, and an agent verifies the agent-hostname certificate using only the system trust store."
     - "A restore drill into a scratch database boots the app with the expected hosts and audit entries."
     - "Following the docs alone, a fresh reader sets up the server and enrolls a VM."
-  blocked_by: [P1-ACCESS, P1-PACKAGING]
+  blocked_by: [P1-ACCESS, P1-PACKAGING, P1-RELEASES]
 
 - key: P1-VERIFY
   title: "Fleet simulator, load check, and agent soak test"
@@ -201,19 +202,74 @@
   goal: "A fleet simulator and soak script prove the system holds up at 50 hosts and the agent runs for days without leaking."
   done:
     - "50 simulated hosts keep the fleet list under 2 s and heartbeat p95 under 200 ms."
-    - "A 72-hour agent run including server outages shows flat memory, file descriptors, and state-directory size."
-  blocked_by: [P1-HEARTBEAT, P1-INVENTORY, P1-DASH-FLEET, P1-AGENT-REPORT]
+    - "A 72-hour agent run including server outages, an update, and a forced rollback shows flat memory, file descriptors, and state-directory size."
+  blocked_by: [P1-HEARTBEAT, P1-INVENTORY, P1-DASH-FLEET, P1-AGENT-REPORT, P1-AGENT-UPDATE]
+
+- key: P1-ONBOARD
+  title: "Agent onboarding requests and endpoints"
+  milestone: 1
+  labels: ["area:server", "area:api", "security"]
+  covers: [FR-S.1, FR-S.2, FR-1.1, NFR-1, AC-1.8, AC-1.5]
+  goal: "An installer can start an onboarding request and, once an operator approves it, collect its per-host credential exactly once, with no host created otherwise."
+  done:
+    - "Start, approve, and collect issue exactly one credential even under concurrent collects, and rejected, expired, or uncollected requests leave no host."
+    - "The unauthenticated start endpoint is rate-limited and capped, and no device code, user code, or credential appears in logs or audit entries."
+  blocked_by: [P1-API-AUTH, P1-HOSTS]
+
+- key: P1-AGENT-INSTALL
+  title: "One-command agent install, onboarding, and uninstall"
+  milestone: 1
+  labels: ["area:agent", "security"]
+  covers: [FR-S.5, FR-S.1, FR-1.6, NFR-4, NFR-1, AC-1.8]
+  goal: "One command run as root installs, enrolls by onboarding or a pre-registered token, and starts the agent with clear output, and `uninstall` removes it."
+  done:
+    - "On a clean Debian 13 VM the documented command plus one approval leaves a running agent whose host appears in the dashboard (AC-1.8)."
+    - "The token path works unattended, no secret appears in output, logs, or the process list, and a failed install leaves nothing half-written and can be re-run."
+  blocked_by: [P1-AGENT-CORE, P1-ONBOARD]
+
+- key: P1-RELEASES
+  title: "Signed release import, downloads, and the install page"
+  milestone: 1
+  labels: ["area:server", "area:dashboard", "security"]
+  covers: [FR-S.5, FR-1.5, NFR-1, NFR-4, AC-1.9]
+  goal: "The server imports and verifies signed agent releases, serves them on the agent hostname, and shows operators the exact install commands."
+  done:
+    - "A correctly signed release imports and a wrong signature, modified binary, or unknown key is refused with an audited reason."
+    - "Commands copied from the install page install the agent on a clean VM with no other instructions."
+  blocked_by: [P1-PACKAGING, P1-ACCESS, P1-DASH-ACTIONS]
+
+- key: P1-UPDATES
+  title: "Agent rollouts, heartbeat directives, and update history"
+  milestone: 1
+  labels: ["area:server", "area:api", "area:dashboard", "security"]
+  covers: [FR-S.5, FR-1.2, FR-1.5, FR-S.3, NFR-5, AC-1.9, AC-1.10]
+  goal: "Operators run staged rollouts that reach agents through the heartbeat response, and any failure or rollback halts the rollout and shows in the dashboard."
+  done:
+    - "Only hosts in an open stage running an older version receive the update directive, including agents below the minimum version."
+    - "A reported rollback or missing confirmation halts the rollout until an operator resumes it, and every rollout action and outcome is audited."
+  blocked_by: [P1-RELEASES, P1-HEARTBEAT, P1-DASH-FLEET]
+
+- key: P1-AGENT-UPDATE
+  title: "Agent updater, supervisor, and automatic rollback"
+  milestone: 1
+  labels: ["area:agent", "security", "risk:high"]
+  covers: [FR-S.5, FR-1.6, NFR-1, AC-1.9, AC-1.10]
+  goal: "The agent installs only signed, newer releases through a supervisor that rolls back automatically when the new version cannot confirm a heartbeat."
+  done:
+    - "A tampered, unsigned, unknown-key, or older release is refused and reported, leaving the running version unchanged (AC-1.9)."
+    - "A release that exits at start, crash-loops, or cannot authenticate is rolled back automatically and reported, including across a supervisor kill or reboot (AC-1.10)."
+  blocked_by: [P1-AGENT-INSTALL, P1-PACKAGING, P1-UPDATES, P1-AGENT-REPORT]
 
 - key: P1-ACCEPT
   title: "Phase 1 acceptance and delivery note"
   milestone: 1
   labels: ["area:ops"]
-  covers: [NFR-5, FR-S.2, AC-1.7, AC-1.1, AC-1.2, AC-1.3, AC-1.4, AC-1.5, AC-1.6, NFR-2, NFR-3]
+  covers: [NFR-5, FR-S.2, AC-1.7, AC-1.1, AC-1.2, AC-1.3, AC-1.4, AC-1.5, AC-1.6, AC-1.8, AC-1.9, AC-1.10, NFR-2, NFR-3]
   goal: "Phase 1 is accepted: contract fixtures are frozen, every AC-1.x passes on the test VM, and a delivery note is posted."
   done:
-    - "AC-1.1 to AC-1.7 each have recorded evidence, and the full suite plus migrations from an empty database pass in a clean CI run."
+    - "AC-1.1 to AC-1.10 each have recorded evidence, and the full suite plus migrations from an empty database pass in a clean CI run."
     - "The delivery note lists what was built, tested, and left incomplete, and maps each acceptance criterion to its proof."
-  blocked_by: [P0-CONTRACT, P1-HEARTBEAT, P1-INVENTORY, P1-AGENT-REPORT, P1-ACCESS, P1-HOSTS, P1-API-AUTH, P1-OPERABILITY, P1-DASH-FLEET, P1-DASH-ACTIONS, P1-AUDIT-PAGE, P1-AGENT-CORE, P1-AGENT-COLLECT, P1-PACKAGING, P1-VERIFY, P1-DEPLOY]
+  blocked_by: [P0-CONTRACT, P1-HEARTBEAT, P1-INVENTORY, P1-AGENT-REPORT, P1-ACCESS, P1-HOSTS, P1-API-AUTH, P1-OPERABILITY, P1-DASH-FLEET, P1-DASH-ACTIONS, P1-AUDIT-PAGE, P1-AGENT-CORE, P1-AGENT-COLLECT, P1-PACKAGING, P1-VERIFY, P1-DEPLOY, P1-ONBOARD, P1-AGENT-INSTALL, P1-RELEASES, P1-UPDATES, P1-AGENT-UPDATE]
 
 - key: P2-CONFIG-REPORTS
   title: "Config fact manifest, config reports, and report requests"

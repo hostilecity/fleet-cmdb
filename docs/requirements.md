@@ -16,14 +16,13 @@ The Rails application is the system of record. It stores inventory, evaluates po
 
 ### Out of scope
 
-- OTA firmware or operating system image updates, A/B partitions, signed firmware bundles, and any signer tool — removed from scope; do not build them
+- OTA firmware or operating system image updates, A/B partitions, and signed firmware bundles — removed from scope; do not build them. Signing **agent releases** for the agent update channel (FR-S.5, DEC-18) is a separate, in-scope mechanism
 - Support for physical or embedded devices, including ESP32 — not part of this project
 - Arbitrary shell commands sent from the server to agents
 - Container orchestration, VM provisioning, or hypervisor management
-- Multi-tenancy, public sign-up, or use as a commercial software-as-a-service product
+- Multi-tenancy, public sign-up, or use as a commercial software-as-a-service product (revisited only by a later scale-up decision; see DEC-19)
 - Agent support for non-Linux operating systems in Phases 1–3, unless the owner approves it later
 - Automatic remediation of CIS or vulnerability findings — Phase 2 reports and scores findings; it does not fix them
-- Agent self-update. Upgrading an agent is a manual binary replacement documented in NFR-4.
 
 ## 2. Design principles
 
@@ -33,7 +32,8 @@ The Rails application is the system of record. It stores inventory, evaluates po
 - **Every state change is auditable.** Enrollment, inventory changes, evaluation results, and task actions leave a record with a timestamp and an actor. High-volume derived events (heartbeats, liveness transitions) are recorded in their own tables, not the audit log.
 - **Idempotent reporting.** Re-sending the same report must not create duplicates or corrupt state.
 - **Boring, inspectable technology.** Prefer Rails conventions, a relational database, background jobs inside the Rails stack, and a single static Rust binary for the agent.
-- **Homelab scale, production discipline.** Design for tens of VMs, not thousands, but keep authentication, validation, tests, and backups at a standard that would survive real use.
+- **Homelab scale, production discipline.** Build and accept at tens of VMs, but keep authentication, validation, tests, and backups at a standard that would survive real use.
+- **Built to grow.** The intended end state is enterprise scale, millions of devices. Nothing is built for that scale early, but choices that are hard to undo (above all the agent protocol and the trust model) must not block it. (decided, DEC-19)
 
 ## 3. Architecture
 
@@ -41,7 +41,7 @@ The Rails application is the system of record. It stores inventory, evaluates po
 |---|---|---|
 | CMDB server and dashboard | Ruby on Rails | Host records, dashboard, application programming interface (API), evaluation, task dispatch, audit log |
 | Database | Relational, via Rails | All persistent state; no state held only in agent or server memory |
-| Agent | Rust, single static binary | Enrollment, heartbeat, fact collection, task polling and execution (Phase 3) |
+| Agent | Rust, single static binary | Self-install and enrollment, heartbeat, fact collection, signed self-update with rollback, task polling and execution (Phase 3) |
 | Background jobs | Rails job system | Liveness transitions, Phase 2 evaluations, vulnerability matching, stale-data cleanup |
 
 Stack (decided, DEC-02): Ruby 3.4 and Rails 8.1, PostgreSQL, Solid Queue and Solid Cable, Hotwire (Turbo and Stimulus) for the dashboard, RSpec for server tests. The agent builds as a static `musl` binary with `rustls`.
@@ -61,7 +61,7 @@ agent/            # Rust agent
 
 ### Data flow
 
-1. An operator creates a host record, which issues a one-time enrollment token (FR-S.1). The agent redeems the token for a per-host credential.
+1. One install command on the VM starts onboarding; an operator approves the request in the dashboard and the agent collects its per-host credential (FR-S.1). For unattended installs, an operator pre-registers the host and the installer redeems a one-time token instead.
 2. The agent on the VM sends heartbeats and reports to the Rails API over HTTPS.
 3. Rails validates, stores, and derives status and findings from those reports.
 4. The operator reads everything from the dashboard. In Phase 3, the operator also creates tasks there; agents poll for, run, and report back on their own tasks.
@@ -80,13 +80,14 @@ Build these in Phase 1 and reuse them unchanged in Phases 2 and 3.
 
 ### FR-S.1 Enrollment and agent identity
 
-- Each host has one agent identity, created through an enrollment flow the operator controls.
-- Enrollment is initiated by the operator: creating a host record issues a single-use enrollment token that expires (default 24 hours). The agent redeems the token once for its permanent credential. There is no unauthenticated self-registration. (decided, DEC-04)
+- Each host has one agent identity, created through an enrollment flow the operator controls. Every enrolled host was approved or pre-registered by an operator; there is no automatic self-registration. (decided, DEC-04, DEC-17)
+- **Onboarding (default, interactive).** The installer requests onboarding from the agent API and shows an approval URL and a short user code. A signed-in operator confirms the code, reviews the facts the VM reported, fills in the host's name, tags, description, and notes, and approves or rejects. The installer then collects its credential exactly once. An onboarding request is not a host: it expires (default 10 minutes), and a rejected, expired, or uncollected request leaves no host behind. When the reported machine identifier or hostname matches an existing host, the operator chooses between re-enrolling that host and adding a new one; nothing is attached to an existing host automatically. (decided, DEC-17)
+- **Pre-registration (unattended).** An operator creates the host record first, which issues a single-use enrollment token that expires (default 24 hours). The installer redeems the token once for the permanent credential. (decided, DEC-04, DEC-17)
 - Enrollment issues a unique, revocable, per-host credential. Credentials are never shared between hosts.
 - The server stores only a hash of each credential, never the credential itself. Credentials are long random values, so a keyed or plain SHA-256 digest with constant-time comparison is appropriate; they must not be stored in plaintext (for example with Rails `has_secure_token`) and need not use a password hash. Each credential carries a non-secret identifier so lookup does not require scanning.
 - The agent stores its credential in a configuration file readable only by the agent's service account (mode `0600`) and sends it on every request.
 - Revoking a credential immediately blocks that agent's requests and marks the host's credential as revoked in the dashboard.
-- Re-enrollment replaces the old credential. The operator triggers it by issuing a new enrollment token for the existing host; the old credential stops working at the moment the new token is redeemed.
+- Re-enrollment replaces the old credential. The operator triggers it by issuing a new enrollment token for the existing host, or by approving an onboarding request as a re-enrollment of that host; the old credential stops working at the moment the new credential is issued.
 - Where the agent can identify the machine (for example `machine-id`), the server warns when the same credential is used from a machine that does not match the host's recorded identity, which catches cloned VMs.
 
 ### FR-S.2 API rules
@@ -114,9 +115,17 @@ Build these in Phase 1 and reuse them unchanged in Phases 2 and 3.
 - A single-operator setup is acceptable for Phases 1–3, but the design must not hard-code one user in a way that blocks adding a second operator later.
 - All dashboard forms validate input and show errors in place. Destructive actions — retire host, revoke credential, cancel task — require explicit confirmation.
 
+### FR-S.5 Agent installation and updates
+
+- **One-command install.** A single command run as root on the VM installs the agent binary, its configuration, and its systemd unit, enrolls it (FR-S.1), starts the service, and confirms the first heartbeat. Every step prints what it did, and every failure prints what to do next. Re-running the command is safe; `fleet-agent uninstall` removes everything the install created. The dashboard shows the exact commands, including the release checksum.
+- **Signed releases.** Agent releases are signed by a key that is never on the server. The agent installs only a binary whose signed manifest and checksum it has verified itself, and never moves to an older version than the one it runs. (decided, DEC-18)
+- **Remote updates.** Operators set a target agent version and run staged rollouts: canary hosts first, then the rest. Agents learn the target from the heartbeat response and download the release from the server. A rollout halts on any failure or rollback until an operator resumes it. Agents below the minimum supported version can still receive updates. (decided, DEC-18)
+- **Automatic rollback.** An update counts as successful only once the new version has completed an authenticated heartbeat within a deadline. Otherwise, or if it crash-loops, or if the VM restarts before it is confirmed, the agent returns to the previous version without operator action. (decided, DEC-18)
+- Update requests, outcomes, and rollbacks are audited and visible per host. A manual upgrade by re-running the installer remains documented.
+
 ## 5. Phase 1 — CMDB and fleet inventory
 
-Phase 1 is complete when an operator can enroll a VM, see it appear in the dashboard within one heartbeat interval, watch it go stale and then offline when the agent stops, and trust that the inventory shown matches the VM.
+Phase 1 is complete when an operator can install and enroll a VM with one command and one approval, see it appear in the dashboard within one heartbeat interval, watch it go stale and then offline when the agent stops, and trust that the inventory shown matches the VM.
 
 ### FR-1.1 Host record
 
@@ -134,11 +143,11 @@ Enrollment state transitions:
 
 | From | To | Trigger |
 |---|---|---|
-| (none) | pending | Operator creates the host record |
-| pending | active | Agent redeems the enrollment token |
+| (none) | pending | Operator pre-registers the host, or the agent collects the credential for an approved onboarding request (then immediately active, in the same transaction) |
+| pending | active | Agent redeems the enrollment token, or collects the credential for an approved onboarding request |
 | active | revoked | Operator revokes the credential |
-| revoked | pending | Operator issues a new enrollment token (re-enrollment) |
-| active | pending | Operator issues a new enrollment token; the old credential keeps working until the new token is redeemed |
+| revoked | pending | Operator issues a new enrollment token, or approves an onboarding request as a re-enrollment of this host |
+| active | pending | Operator issues a new enrollment token, or approves an onboarding request as a re-enrollment; the old credential keeps working until the new credential is issued |
 | any | retired | Operator retires the host; retiring also revokes the credential |
 
 Retired is terminal in Phase 1. Liveness applies to active hosts only; pending, revoked, and retired hosts show their enrollment state instead of a liveness status. Fleet counts cover active hosts by liveness status and show pending and revoked counts separately.
@@ -150,7 +159,7 @@ Retiring a host keeps its history and audit trail but removes it from the active
 - The agent sends a heartbeat at a configurable interval, defaulting to 60 seconds, and sends the first heartbeat immediately on start.
 - A heartbeat contains the host identity, agent version, agent uptime, and the agent's current time.
 - Heartbeats are cheap: they update `last_seen_at` and liveness only. Full inventory travels in the separate report in FR-1.3. Heartbeats do not write audit entries.
-- The heartbeat response carries the server time and an extensible envelope for future server-to-agent signals. In Phase 1 the envelope is empty of actions. (decided, DEC-08)
+- The heartbeat response carries the server time and an extensible envelope for server-to-agent signals. In Phase 1 it carries the agent-update directive (FR-S.5) and the heartbeat and report intervals the server wants, which the agent adopts so fleet-wide load can be adjusted without an agent release. (decided, DEC-08, DEC-18, DEC-19)
 - On failure, the agent retries with exponential backoff and jitter, caps the backoff, and keeps running. A server outage must never crash or exit the agent. The agent does not queue or replay missed heartbeats or reports; it sends current state once the server is reachable again.
 
 ### FR-1.3 Inventory report
@@ -174,11 +183,12 @@ Retiring a host keeps its history and audit trail but removes it from the active
 
 - **Fleet list:** every active host with name, hostname, tags, operating system, agent version, liveness status, and last seen. Sortable, searchable by name and hostname, and filterable by tag and status. Fleet counts by status appear at the top.
 - **Host detail:** full current inventory, inventory history with field-level change highlighting, enrollment and credential state, status history, and the host's audit entries.
-- **Operator actions:** create or approve a host, edit name, description, notes and tags, revoke a credential, issue a new enrollment token, and retire a host.
+- **Operator actions:** approve or reject onboarding requests (with the host's name, tags, description, and notes), pre-register a host for an unattended install, edit name, description, notes and tags, revoke a credential, issue a new enrollment token, and retire a host.
+- **Agent install and updates:** the install commands for the current release, the target agent version and rollout progress, and each host's update history (FR-S.5).
 
 ### FR-1.6 Agent packaging and operation
 
-- The agent ships as a single static Rust binary plus an example config file and a systemd unit.
+- The agent ships as a single signed, static Rust binary that installs itself (FR-S.5): the systemd unit and an example config are built in, and versions are installed side by side so a previous version is always available for rollback.
 - Configuration covers server URL, credential, heartbeat and inventory intervals, log level, and an optional path to an additional certificate authority bundle for servers using a private certificate authority. There is no option to disable certificate verification. No recompilation is needed to change any of these.
 - The agent keeps persistent state (for example the last boot identifier and, in Phase 3, task records) in a dedicated state directory owned by its service account. Losing the directory must not break enrollment.
 - The agent runs as a systemd service under the privilege model chosen in DEC-03. The unit file applies systemd sandboxing appropriate to that model.
@@ -194,6 +204,9 @@ Retiring a host keeps its history and audit trail but removes it from the active
 - [ ] **AC-1.5** A revoked credential receives authentication errors and cannot report, even with correct payloads
 - [ ] **AC-1.6** One host's credential cannot read or modify another host's record
 - [ ] **AC-1.7** Automated tests cover enrollment, heartbeat, inventory validation, liveness transitions, and credential revocation
+- [ ] **AC-1.8** On a clean Debian 13 VM, one install command plus one dashboard approval leaves a running, enrolled agent; a rejected or expired request leaves no host record
+- [ ] **AC-1.9** A rollout updates a canary VM to a newly signed release; a tampered, unsigned, or older release is refused by the agent and reported
+- [ ] **AC-1.10** A release that cannot complete a heartbeat (for example one that exits at start) is rolled back automatically to the previous version, the rollback is reported in the dashboard, and the rollout halts
 
 ## 6. Phase 2 — Config, CIS, package, and vulnerability reporting
 
@@ -311,7 +324,8 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 - All agent–server traffic uses HTTPS; the agent verifies the server certificate and does not offer a mode that disables verification.
 - Dashboard sessions use secure, HTTP-only cookies. The OAuth flow validates `state` and the ID token, and only verified email addresses on the allowlist can sign in. The dashboard sends a restrictive Content Security Policy.
 - All agent input is treated as untrusted and validated before storage or display. Inventory and output text rendered in the dashboard is escaped, so a compromised VM cannot inject markup into an operator's browser.
-- Secrets — agent credentials, enrollment tokens, operator credentials, advisory source keys — never appear in logs or error messages. Agent credentials and enrollment tokens are shown to the operator at most once.
+- Secrets — agent credentials, enrollment tokens, onboarding device codes, operator credentials, advisory source keys — never appear in logs or error messages. Agent credentials and enrollment tokens are shown to the operator at most once; onboarding shows no secret to any person.
+- The release signing key is never stored on the server or a VM. The unauthenticated onboarding endpoint is rate-limited, capped in open requests, and creates no host until an operator approves.
 
 ### NFR-2 Reliability and data safety
 
@@ -328,18 +342,19 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 
 - Server and agent both emit structured logs with timestamps, host identity where relevant, and request or report identifiers that let one report be traced end to end.
 - A simple health endpoint on the server reports application and database status for monitoring.
-- Installation is documented well enough that the owner can set up the server and enroll a new VM from the documentation alone: server setup, agent install, enrollment, upgrade, and uninstall.
+- Installation is documented well enough that the owner can set up the server and enroll a new VM from the documentation alone: server setup, agent install, enrollment, remote and manual upgrade, rollback, and uninstall. A newcomer can install an agent by following the dashboard's install page without other documentation.
 - Continuous integration runs server and agent tests and linting on every pull request, and builds release agent binaries for the fleet's architectures.
 
 ### NFR-5 Maintainability
 
 - The agent API is covered by contract-style tests shared in spirit across phases: a payload accepted in Phase 1 stays readable after Phase 2 and 3 changes, or its schema version increments with a migration path. Example payloads and JSON Schemas live in one place that both the server and agent tests consume.
 - Agent and server versions are independent. The server accepts reports from the previous agent release, or returns the minimum-version error from FR-S.2 that the agent logs plainly.
+- The update channel is part of the contract: every released agent must be able to update to any later release, so its directive, manifest format, and signature scheme change only through a new schema version with a migration path.
 
 ## 9. Build order and definition of done
 
 0. Phase 0 — repository scaffolding, continuous integration, and the API contract workspace (the decisions are already recorded as ADRs).
-1. Shared foundations (section 4) and Phase 1 — enroll, heartbeat, inventory, liveness, dashboard.
+1. Shared foundations (section 4) and Phase 1 — install and onboarding, heartbeat, inventory, liveness, dashboard, signed updates with rollback.
 2. Phase 2 — config facts, CIS evaluation, package reporting, vulnerability matching.
 3. Phase 3 — task catalog, lifecycle, dashboard, with the safety checks in FR-3.1 and FR-3.3 verified last and most carefully.
 
@@ -353,5 +368,5 @@ A phase is done only when all of these hold:
 
 ## 10. Decisions and traceability
 
-- All sixteen decisions (`DEC-01` to `DEC-16`) are recorded as ADRs; see the index in [`docs/decisions/README.md`](decisions/README.md). To change one, add an ADR that supersedes it.
+- All nineteen decisions (`DEC-01` to `DEC-19`) are recorded as ADRs; see the index in [`docs/decisions/README.md`](decisions/README.md). To change one, add an ADR that supersedes it.
 - Every `FR-*`, `NFR-*`, and `AC-*` ID in this document is covered by at least one issue in [`docs/backlog/issues.yml`](backlog/issues.yml), and every `DEC-*` has an ADR. `ruby docs/backlog/import.rb check` verifies both.

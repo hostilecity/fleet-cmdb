@@ -6,7 +6,7 @@ Work is tracked as GitHub Issues, grouped into milestones (Phase 0 to Phase 3). 
 
 - Work one issue per branch and pull request. Respect "blocked by" relationships.
 - Code for a phase starts only after the previous phase is accepted. Decisions, mockups, and design notes may happen earlier.
-- Do not build anything listed as out of scope, and do not add arbitrary remote command execution or over-the-air updating.
+- Do not build anything listed as out of scope, and do not add arbitrary remote command execution or over-the-air firmware or OS updating. Agent updates go only through the signed channel in `docs/decisions/0018-signed-agent-updates.md`.
 - Never commit secrets or real fleet details (hostnames, addresses, keys, certificates). Use example values.
 - Dashboard work starts from approved mockups in `docs/mockups/`.
 

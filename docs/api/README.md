@@ -28,7 +28,7 @@ All endpoints are under `/api/v1`, served only on the private agent hostname ([D
 | `POST /api/v1/heartbeat` | Bearer credential | `heartbeat.request` | `200`, `heartbeat.response` |
 | `POST /api/v1/reports/inventory` | Bearer credential | `inventory.request` | `200`, `inventory.response` |
 
-Later phases add the config, package, and task endpoints.
+Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: `POST /api/v1/onboarding` and `POST /api/v1/onboarding/token` (P1-ONBOARD), release downloads under `/api/v1/releases/` (P1-RELEASES), and the update and interval directives in `heartbeat.response` plus `POST /api/v1/agent/update-results` (P1-UPDATES). Later phases add the config, package, and task endpoints.
 
 ## Conventions
 
@@ -54,7 +54,7 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 |---|---|---|
 | 400 | `validation_failed` | Body is not valid JSON or fails the schema or the server checks. `details` lists each field as a JSON Pointer |
 | 401 | `unauthorized` | Credential missing, malformed, unknown, revoked, or for a retired host. Same body for each case |
-| 403 | `reenrollment_required` | Valid credential, but the host is `pending` because an operator issued a new enrollment token (re-enrollment). The response also has the header `Fleet-Enrollment-State: pending`. The agent logs plainly that the new token must be redeemed (`fleet-agent enroll --force`) and backs off to a long interval |
+| 403 | `reenrollment_required` | Valid credential, but the host is `pending` because an operator issued a new enrollment token (re-enrollment). The response also has the header `Fleet-Enrollment-State: pending`. The agent logs plainly that it must be re-enrolled (`fleet-agent install --reenroll`, or `--token` with the new token) and backs off to a long interval |
 | 403 | `host_not_active` | Valid credential, but the host is in some other state that may not call this endpoint |
 | 404 | `not_found` | Unknown route |
 | 410 | `enrollment_token_invalid` | Enrollment token unknown, expired, or already used. Same body for each case |
