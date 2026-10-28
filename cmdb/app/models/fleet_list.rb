@@ -29,8 +29,11 @@ class FleetList
     "last_seen" => "hosts.last_seen_at",
     "hostname" => "hosts.hostname",
     "os" => "lower(host_inventories.stable #>> '{os,pretty_name}')",
-    # Numeric by release (0.10.0 after 0.9.0); pre-release and build suffixes are ignored.
-    "agent" => "string_to_array(regexp_replace(hosts.agent_version, '[-+].*$', ''), '.')::int[]"
+    # Numeric by release (0.10.0 after 0.9.0); pre-release and build suffixes are ignored. numeric, not
+    # int: SemVer components are unbounded, and a valid 2147483648.0.0 must not break the page (review of #53).
+    "agent" => "string_to_array(regexp_replace(hosts.agent_version, '[-+].*$', ''), '.')::numeric[]",
+    # By the tag list as displayed (in entry order); hosts without tags sort last in either direction.
+    "tags" => "NULLIF(array_to_string(hosts.tags, ','), '')"
   }.freeze
 
   # Every ORDER BY clause the list can use, built from the constants above only.

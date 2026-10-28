@@ -154,9 +154,10 @@ Server-rendered Hotwire views built from the approved mockups in `../docs/mockup
 
 Status changes reach open pages within seconds, over Turbo Streams on Action Cable (Solid Cable):
 
-- Code that changes what the fleet shows calls `FleetBroadcast.hosts_changed(ids)` inside its transaction: heartbeat status changes, liveness evaluation, enrollment transitions, edits, and the first inventory. `FleetBroadcastJob` is enqueued only after the outermost transaction commits, and sends the rows, the counts, and the host headers in one message.
+- Code that changes what the fleet shows calls `FleetBroadcast.hosts_changed(ids)` inside its transaction: heartbeat status changes, liveness evaluation, enrollment transitions, edits, and the first inventory. `FleetBroadcastJob` is enqueued only after the outermost transaction commits.
+- The job sends a Turbo **page refresh**. Each open fleet list or host page re-requests itself with its own filters and sort, and morphs the result in, so list membership, order, counts, empty states, and the host header always agree with a fresh load. The stream element is `data-turbo-permanent`, so the subscription survives the morph, and a filter form the operator is editing is left alone (`keep_edits_controller.js`).
 - `/cable` is mounted only on the dashboard hostname. A connection needs a live operator session from the dashboard cookie (`ApplicationCable::Connection`); it is rechecked every 30 seconds and closed at once on sign-out. Production accepts handshakes only from `https://$FLEET_DASHBOARD_HOST`.
-- When the connection drops, the top bar reads "Reconnecting" and a banner warns that statuses may be out of date. On reconnect the page refreshes itself once to catch up (`app/javascript/controllers/live_status_controller.js`).
+- When the connection drops, the top bar reads "Reconnecting" and a banner warns that statuses may be out of date. After any interruption, however short, the page refreshes itself once to catch up, since broadcasts are not replayed. A first connection that never succeeds also ends in the banner (`app/javascript/controllers/live_status_controller.js`).
 
 ## Agent API and enrollment
 

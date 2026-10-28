@@ -84,6 +84,15 @@ RSpec.describe "Hosts", type: :request do
       expect(response.body.scan(%(&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;)).size).to be >= 2
     end
 
+    it "opts into morphing page refreshes and keeps the live subscription across them (P1-D05)" do
+      get "/"
+      expect(page.at_css('meta[name="turbo-refresh-method"]')["content"]).to eq("morph")
+      expect(page.at_css('meta[name="turbo-refresh-scroll"]')["content"]).to eq("preserve")
+      source = page.at_css("turbo-cable-stream-source")
+      expect(source["id"]).to eq("fleet_stream")
+      expect(source["data-turbo-permanent"]).to eq("true")
+    end
+
     it "runs a fixed number of queries whatever the fleet size, and renders 50 hosts in under 2 seconds" do
       3.times { |i| enrolled_host(tags: [ "t#{i}" ]).first.then { |h| record_heartbeat(h) && record_inventory(h) } }
       get "/" # warm up
@@ -123,8 +132,8 @@ RSpec.describe "Hosts", type: :request do
       expect(page.at_css("#status_host_#{host.id} .lamp").text).to eq("Online")
       expect(facts("Inventory")).to include(
         "Hostname" => "vm-01.example.lan", "Operating system" => "Debian GNU/Linux 13 (trixie) (debian 13)",
-        "Kernel" => "6.12.0-example-amd64", "Architecture" => "x86_64", "CPU" => "Example Virtual CPU, 4 cores",
-        "Memory" => "6 GiB available of 8 GiB", "Uptime" => "1 day", "Boot ID" => "00000000-0000-4000-8000-0000000000b1",
+        "Kernel" => "6.12.0-example-amd64", "Architecture" => "x86_64", "CPU model" => "Example Virtual CPU", "CPU cores" => "4",
+        "Total memory" => "8 GiB", "Available memory" => "6 GiB", "Uptime" => "1 day", "Boot ID" => "00000000-0000-4000-8000-0000000000b1",
         "Machine ID" => "0123456789abcdef0123456789abcdef", "Agent" => "0.1.0"
       )
       disks = section("Inventory").css("table").first.css("tbody tr").map { |tr| tr.css("td").map { |td| td.text.squish } }
@@ -140,6 +149,30 @@ RSpec.describe "Hosts", type: :request do
       get "/hosts/#{host.id}"
       expect(facts("Inventory")["Machine ID"]).to eq("Not available/etc/machine-id: permission denied")
       expect(section("Inventory").at_css("p.unavailable").text).to eq("Not available/proc/self/mounts: read timed out after 5s")
+    end
+
+    it "shows each unreadable part of the CPU and memory on its own, with its warning (review of #53)" do
+      record_inventory(host, cpu_model: nil, memory_available_bytes: nil,
+                             warnings: [ { "field" => "cpu_model", "message" => "/proc/cpuinfo: no model name" },
+                                         { "field" => "memory_available_bytes", "message" => "/proc/meminfo: MemAvailable missing" } ])
+      get "/hosts/#{host.id}"
+      expect(facts("Inventory")).to include("CPU model" => "Not available/proc/cpuinfo: no model name", "CPU cores" => "4",
+                                            "Total memory" => "8 GiB", "Available memory" => "Not available/proc/meminfo: MemAvailable missing")
+
+      record_inventory(host, memory_total_bytes: nil, warnings: [ { "field" => "memory_total_bytes", "message" => "/proc/meminfo: MemTotal missing" } ])
+      get "/hosts/#{host.id}"
+      expect(facts("Inventory")).to include("Total memory" => "Not available/proc/meminfo: MemTotal missing", "Available memory" => "6 GiB")
+      available = section("Inventory").xpath(".//dt[.='Available memory']/following-sibling::dd[1]").first
+      expect(available.css(".meter")).to be_empty # no meter without both values
+    end
+
+    it "shows notes as literal text with their line breaks, never as markup (review of #53)" do
+      host.edit!({ notes: %(See <a href="https://example.com">the runbook</a> and <b>bold</b>\nSecond line <img src=x>) }, actor: operator)
+      get "/hosts/#{host.id}"
+      notes = section("Enrollment").at_css("dd.notes")
+      expect(notes.css("a, b, img")).to be_empty
+      expect(notes.css("br").size).to eq(1)
+      expect(notes.text.squish).to eq(%(See <a href="https://example.com">the runbook</a> and <b>bold</b> Second line <img src=x>))
     end
 
     it "highlights the fields that changed in each snapshot, newest first (P1-D03)" do
@@ -222,7 +255,7 @@ RSpec.describe "Hosts", type: :request do
       expect(page.css("script:not([type])").map(&:text).grep(/alert/)).to eq([])
       expect(page.css("img[onerror]")).to be_empty
       expect(page.at_css("h1").text).to eq(HOSTILE)
-      expect(facts("Inventory")["CPU"]).to eq("#{HOSTILE}, 4 cores")
+      expect(facts("Inventory")["CPU model"]).to eq(HOSTILE)
     end
 
     it "answers an unknown host with 404" do

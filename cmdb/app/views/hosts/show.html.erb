@@ -1,5 +1,6 @@
 <% content_for :title, @host.name %>
-<%= turbo_stream_from "fleet" %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
 <% stable = @inventory&.stable || {} %>
 <% volatile = @inventory&.volatile || {} %>
 <% warnings = @inventory&.warnings || [] %>
@@ -46,12 +47,15 @@
         <% end %>
         <dt>Kernel</dt><%= inventory_fact(stable["kernel_version"], warnings, "kernel_version", mono: true) %>
         <dt>Architecture</dt><%= inventory_fact(stable["architecture"], warnings, "architecture", mono: true) %>
-        <dt>CPU</dt><%= inventory_fact([ stable["cpu_model"], (pluralize(stable["cpu_cores"], "core") if stable["cpu_cores"]) ].compact.join(", ").presence, warnings, stable["cpu_model"] ? "cpu_cores" : "cpu_model") %>
-        <dt>Memory</dt>
-        <% if stable["memory_total_bytes"] %>
-          <dd><%= volatile["memory_available_bytes"] ? "#{human_bytes(volatile["memory_available_bytes"])} available of #{human_bytes(stable["memory_total_bytes"])}" : human_bytes(stable["memory_total_bytes"]) %><%= share_meter(volatile["memory_available_bytes"], stable["memory_total_bytes"], "Available") %></dd>
+        <%# Each independently nullable fact gets its own row, so one unreadable part never hides another or its warning (review of #53). %>
+        <dt>CPU model</dt><%= inventory_fact(stable["cpu_model"], warnings, "cpu_model") %>
+        <dt>CPU cores</dt><%= inventory_fact(stable["cpu_cores"]&.to_s, warnings, "cpu_cores") %>
+        <dt>Total memory</dt><%= inventory_fact(human_bytes(stable["memory_total_bytes"]), warnings, "memory_total_bytes") %>
+        <dt>Available memory</dt>
+        <% if volatile["memory_available_bytes"] %>
+          <dd><%= human_bytes(volatile["memory_available_bytes"]) %><%= share_meter(volatile["memory_available_bytes"], stable["memory_total_bytes"], "Available") %></dd>
         <% else %>
-          <%= inventory_fact(nil, warnings, "memory_total_bytes") %>
+          <%= inventory_fact(nil, warnings, "memory_available_bytes") %>
         <% end %>
         <dt>Uptime</dt><%= inventory_fact(human_duration(volatile["uptime_seconds"]), warnings, "uptime_seconds") %>
         <dt>Boot ID</dt><%= inventory_fact(stable["boot_id"], warnings, "boot_id", mono: true) %>
@@ -137,7 +141,7 @@
       <% end %>
       <dt>First seen</dt><dd><%= @host.first_seen_at ? seen_ago(@host.first_seen_at) : "Never" %></dd>
       <dt>Description</dt><dd><%= @host.description.presence || tag.span("None", class: "muted") %></dd>
-      <dt>Notes</dt><dd class="notes"><%= @host.notes.presence ? simple_format(@host.notes, {}, wrapper_tag: "span") : tag.span("None", class: "muted") %></dd>
+      <dt>Notes</dt><dd class="notes"><%= @host.notes.presence ? simple_format(h(@host.notes), {}, wrapper_tag: "span", sanitize: false) : tag.span("None", class: "muted") %></dd>
     </dl>
   </section>
   <section aria-labelledby="status_heading">

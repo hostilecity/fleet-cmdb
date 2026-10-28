@@ -96,7 +96,17 @@ RSpec.describe FleetList do
       Host.where(id: waiting.id).update_all(agent_version: "0.9.1-rc.1")
       expect(names(sort: "agent").first(4)).to eq([ "Media server", "web A", "DNS resolver", "Build runner" ]) # by release, not text
       expect(names(sort: "agent", dir: "desc").last(2)).to eq([ "Lab sandbox", "Old proxy" ]) # never reported: last
+      Host.where(id: web.id).update_all(agent_version: "2147483648.0.0") # schema-valid, beyond a 32-bit int
+      expect(names(sort: "agent", dir: "desc").first).to eq("web A")
     end
+  end
+
+  it "sorts by tags as displayed, untagged hosts last in both directions" do
+    Host.where(id: waiting.id).update_all(tags: [])
+    expect(names(sort: "tags").first(3)).to eq([ "Build runner", "Lab sandbox", "Media server" ]) # ci,lab / lab / media,lab
+    expect(names(sort: "tags").last).to eq("DNS resolver")
+    expect(names(sort: "tags", dir: "desc").first(2)).to eq([ "web A", "Old proxy" ].sort_by(&:downcase))
+    expect(names(sort: "tags", dir: "desc").last).to eq("DNS resolver")
   end
 
   it "joins the operating system name onto each row" do

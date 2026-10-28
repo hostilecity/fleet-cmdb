@@ -1,8 +1,9 @@
 <% content_for :title, "Fleet" %>
-<%= turbo_stream_from "fleet" %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
 <div class="page-head"><div><h1>Fleet</h1><p>Retired hosts are not listed or counted.</p></div></div>
 <%= render "hosts/counts", counts: @counts %>
-<%= form_with url: root_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace" } do %>
+<%= form_with url: root_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect" } do %>
   <label>Search name or hostname<%= search_field_tag :q, @fleet.q, placeholder: "vm-01 or Media server", maxlength: 100 %></label>
   <label>Tag<%= select_tag :tag, options_for_select(@tags, @fleet.tag), include_blank: "All tags" %></label>
   <label>Status<%= select_tag :status, options_for_select(FleetList::STATUSES.invert, @fleet.status), include_blank: "All statuses" %></label>
@@ -24,12 +25,8 @@
   <div class="table-wrap"><table>
     <caption class="visually-hidden">Hosts, <%= @fleet.sort == "last_seen" ? "last seen" : @fleet.sort %> <%= @fleet.aria_sort(@fleet.sort) %></caption>
     <thead><tr>
-      <% [ %w[name Name], %w[status Status], [ "last_seen", "Last seen" ], %w[hostname Hostname], [ nil, "Tags" ], [ "os", "Operating system" ], %w[agent Agent] ].each do |column, label| %>
-        <% if column %>
-          <th aria-sort="<%= @fleet.aria_sort(column) %>"><%= link_to label, root_path(@fleet.sort_params(column)) %></th>
-        <% else %>
-          <th><%= label %></th>
-        <% end %>
+      <% [ %w[name Name], %w[status Status], [ "last_seen", "Last seen" ], %w[hostname Hostname], %w[tags Tags], [ "os", "Operating system" ], %w[agent Agent] ].each do |column, label| %>
+        <th aria-sort="<%= @fleet.aria_sort(column) %>"><%= link_to label, root_path(@fleet.sort_params(column)) %></th>
       <% end %>
     </tr></thead>
     <tbody>

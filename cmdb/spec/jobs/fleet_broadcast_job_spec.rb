@@ -13,32 +13,21 @@ RSpec.describe FleetBroadcastJob, type: :job do
   before { ActionCable.server.pubsub.clear }
 
   describe "#perform" do
-    it "replaces the row, the host's status header, and the counts in one message" do
-      record_heartbeat(host)
+    # A page refresh, not targeted replacements: each open page re-requests itself with its own filters and
+    # sort, so list membership, order, counts, and empty states cannot drift (review of #53).
+    it "sends one Turbo page refresh to the fleet stream, with no host data in it" do
+      host.edit!({ name: %(<script>alert("x")</script>) }, actor: Audit::SYSTEM)
       described_class.perform_now([ host.id ])
       expect(broadcasts.size).to eq(1)
       parts = streams(broadcasts.first)
-      expect(parts.map { |s| [ s["action"], s["target"] ] }).to eq([
-        [ "replace", "row_host_#{host.id}" ], [ "replace", "status_host_#{host.id}" ], %w[replace fleet_counts]
-      ])
-      row = parts[0].at_css("template").children
-      expect(row.at_css("tr")["id"]).to eq("row_host_#{host.id}")
-      expect(row.at_css(".lamp").text).to eq("Online")
-      expect(parts[2].css(".count").map(&:text)).to eq(%w[1 0 0 0 0 0])
+      expect(parts.map { |s| s["action"] }).to eq([ "refresh" ])
+      expect(JSON.parse(broadcasts.first)).not_to include("alert")
     end
 
-    it "removes a retired host's row" do
+    it "refreshes for a retired host too, so its open detail page shows the new state" do
       host.retire!(actor: Audit::SYSTEM)
       described_class.perform_now([ host.id ])
-      expect(streams(broadcasts.last).map { |s| [ s["action"], s["target"] ] }).to eq([ [ "remove", "row_host_#{host.id}" ], %w[replace fleet_counts] ])
-    end
-
-    it "escapes host text" do
-      host.edit!({ name: %(<script>alert("x")</script>) }, actor: Audit::SYSTEM)
-      described_class.perform_now([ host.id ])
-      html = JSON.parse(broadcasts.last)
-      expect(html).not_to include("<script>alert")
-      expect(html).to include("&lt;script&gt;alert")
+      expect(streams(broadcasts.last).map { |s| s["action"] }).to eq([ "refresh" ])
     end
   end
 
