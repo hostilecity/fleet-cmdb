@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media server · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="notice" role="status"><strong>This credential was used from another machine.</strong><p>Enrolled on machine <code>0123456789abcdef0123456789abcdef</code>, last report from <code>fedcba9876543210fedcba9876543210</code> (yesterday at 14:02 UTC). If this VM was cloned, retire the copy or re-enroll this host.</p></div>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="host-edit.html">Edit</a><a class="btn quiet" href="dialogs.html#reenroll">Issue new token</a><a class="btn danger quiet" href="dialogs.html#revoke">Revoke credential</a><a class="btn danger quiet" href="dialogs.html#retire">Retire</a></div>
+</div>
+<div class="columns">
+<div>
+  <section class="sheet" aria-labelledby="inv">
+    <h2 id="inv" style="margin-top:0">Inventory</h2>
+    <p class="muted" style="margin-top:0">Reported 3 minutes ago. Collected by the agent at 12:00:01 UTC.</p>
+    <dl class="facts">
+      <dt>Hostname</dt><dd class="mono">vm-01.example.lan</dd>
+      <dt>Operating system</dt><dd>Debian GNU/Linux 13 (trixie) <span class="muted">(debian 13)</span></dd>
+      <dt>Kernel</dt><dd class="mono">6.12.0-example-amd64</dd>
+      <dt>Architecture</dt><dd class="mono">x86_64</dd>
+      <dt>CPU</dt><dd>&lt;script&gt;Example Virtual CPU&lt;/script&gt;, 4 cores</dd>
+      <dt>Memory</dt><dd>6.0 GiB available of 8.0 GiB<span class="meter" title="Available" aria-hidden="true"><span style="width:75%"></span></span></dd>
+      <dt>Uptime</dt><dd>1 day, 0 hours</dd>
+      <dt>Boot ID</dt><dd class="mono">00000000-0000-4000-8000-0000000000b1</dd>
+      <dt>Machine ID</dt><dd class="unavailable">Not available<span class="why">/etc/machine-id: permission denied</span></dd>
+      <dt>Agent</dt><dd class="mono">0.1.0</dd>
+    </dl>
+    <p class="note">The CPU model shows a hostile string rendered as text, never as markup. A null field reads "Not available" with the agent's collection warning underneath.</p>
+    <h3>Disks</h3>
+    <div class="table-wrap"><table><thead><tr><th>Mount</th><th>Filesystem</th><th>Size</th><th>Free</th></tr></thead><tbody>
+      <tr><td class="mono">/</td><td>ext4</td><td class="num">32 GiB</td><td class="num">20 GiB <span class="meter" title="Free" aria-hidden="true"><span style="width:62%"></span></span></td></tr>
+      <tr><td class="mono">/srv/media files</td><td>xfs</td><td class="num">1.0 TiB</td><td class="num">512 GiB <span class="meter" title="Free" aria-hidden="true"><span style="width:50%"></span></span></td></tr>
+    </tbody></table></div>
+    <h3>Network</h3>
+    <div class="table-wrap"><table><thead><tr><th>Interface</th><th>Addresses</th><th>Primary</th></tr></thead><tbody>
+      <tr><td class="mono">ens18</td><td class="mono">192.0.2.10/24<br>2001:db8::10/64</td><td>Default route</td></tr>
+      <tr><td class="mono">ens19</td><td class="mono">198.51.100.10/24</td><td class="muted">No</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <section aria-labelledby="hist">
+    <h2 id="hist">Inventory history</h2>
+    <p class="muted">A snapshot is kept only when a stable field changes. Free space, available memory, and uptime change too often to record.</p>
+    <div class="table-wrap"><table><thead><tr><th style="width:11rem">Recorded</th><th>What changed</th></tr></thead><tbody>
+      <tr><td>Today 09:14 UTC</td><td><ul class="change-list">
+        <li>Kernel <del class="mono">6.11.10-example-amd64</del> <ins class="mono">6.12.0-example-amd64</ins></li>
+        <li>Boot ID <del class="mono">…0000000000a7</del> <ins class="mono">…0000000000b1</ins> <span class="muted">(rebooted)</span></li></ul></td></tr>
+      <tr><td>2 days ago 16:40 UTC</td><td><ul class="change-list">
+        <li>Disk <ins class="mono">/srv/media files</ins> added, 1.0 TiB xfs</li>
+        <li>Machine ID <del class="mono">0123…cdef</del> <ins>Not available</ins> <span class="muted">(permission denied)</span></li></ul></td></tr>
+      <tr><td>9 days ago 11:02 UTC</td><td>First inventory</td></tr>
+    </tbody></table></div>
+  </section>
+</div>
+
+<div>
+  <section class="sheet" aria-labelledby="enr">
+    <h2 id="enr" style="margin-top:0">Enrollment</h2>
+    <dl class="facts">
+      <dt>State</dt><dd>Active</dd>
+      <dt>Credential</dt><dd>Active, key <code>fa_EXAMPLEkey01</code></dd>
+      <dt>Last used</dt><dd>3 minutes ago</dd>
+      <dt>First seen</dt><dd>9 days ago</dd>
+      <dt>Description</dt><dd>Jellyfin and the download stack.</dd>
+      <dt>Notes</dt><dd>Disk 2 is passthrough; snapshot before kernel updates.</dd>
+    </dl>
+  </section>
+  <section aria-labelledby="st">
+    <h2 id="st">Status history</h2>
+    <div class="table-wrap"><table><tbody>
+      <tr><td><span class="lamp online">Online</span></td><td class="muted">Today 09:16</td></tr>
+      <tr><td><span class="lamp offline">Offline</span></td><td class="muted">Today 09:02</td></tr>
+      <tr><td><span class="lamp stale">Stale</span></td><td class="muted">Today 08:50</td></tr>
+      <tr><td><span class="lamp online">Online</span></td><td class="muted">9 days ago</td></tr>
+    </tbody></table></div>
+    <p class="muted" style="font-size:.875rem">Offline for 14 minutes this morning, back after the reboot.</p>
+  </section>
+  <section aria-labelledby="au">
+    <h2 id="au">Audit entries</h2>
+    <div class="table-wrap"><table><tbody>
+      <tr><td>Credential used from another machine<br><span class="muted">By the host, yesterday</span></td></tr>
+      <tr><td>Notes edited<br><span class="muted">By Example Operator, 4 days ago</span></td></tr>
+      <tr><td>Enrolled<br><span class="muted">By the host, 9 days ago</span></td></tr>
+      <tr><td>Enrollment token issued<br><span class="muted">By Example Operator, 9 days ago</span></td></tr>
+      <tr><td>Host created<br><span class="muted">By Example Operator, 9 days ago</span></td></tr>
+    </tbody></table></div>
+    <p><a href="audit.html">All entries for this host</a></p>
+  </section>
+</div>
+</div>
+</main>
+</body>
+</html>

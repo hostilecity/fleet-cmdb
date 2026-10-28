@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockups · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Phase 1 dashboard mockups</h1><p>Static screens for review before any view is built (P1-D01). All names, addresses, and identifiers are examples.</p></div></div>
+<div class="table-wrap"><table>
+<thead><tr><th>Screen</th><th>What it shows</th><th>Built in</th></tr></thead>
+<tbody>
+<tr><td><a href="sign-in.html">Sign in</a></td><td>Google sign-in, the only way in</td><td>P1-ACCESS (built)</td></tr>
+<tr><td><a href="sign-in-refused.html">Sign-in refused</a></td><td>Account not on the allowlist or not verified</td><td>P1-ACCESS (built)</td></tr>
+<tr><td><a href="fleet.html">Fleet</a></td><td>Status counts, search, tag and status filters, sortable columns, every liveness and enrollment state</td><td>P1-D02</td></tr>
+<tr><td><a href="host.html">Host detail</a></td><td>Inventory with unavailable fields, history with changed fields, enrollment and credential, status history, audit entries, clone warning</td><td>P1-D03</td></tr>
+<tr><td><a href="host-pending.html">Host awaiting enrollment</a></td><td>Pending host: token expiry instead of liveness, no inventory yet</td><td>P1-D03</td></tr>
+<tr><td><a href="host-new.html">Add host</a></td><td>Create form with errors shown in place</td><td>P1-DASH-ACTIONS</td></tr>
+<tr><td><a href="host-token.html">Enrollment token</a></td><td>One-time token with the shown-once warning and the enroll command</td><td>P1-DASH-ACTIONS</td></tr>
+<tr><td><a href="host-edit.html">Edit host</a></td><td>Name, hostname, description, notes, and tags</td><td>P1-DASH-ACTIONS</td></tr>
+<tr><td><a href="dialogs.html">Confirmations</a></td><td>Revoke credential, issue a new token (re-enroll), retire</td><td>P1-DASH-ACTIONS</td></tr>
+<tr><td><a href="audit.html">Audit log</a></td><td>Fleet-wide, read-only, filtered by actor, action, host, and date</td><td>P1-AUDIT-PAGE (#46)</td></tr>
+<tr><td><a href="settings.html">Settings</a></td><td>Liveness thresholds with an error shown in place</td><td>P1-D02</td></tr>
+<tr><td><a href="states.html">Empty and error states</a></td><td>Empty fleet, no matches, live updates lost, page not found, server error</td><td>P1-D02, P1-D05</td></tr>
+</tbody></table></div>
+<p class="note">Yellow dashed boxes like this one are review notes, not part of the design.</p>
+</main>
+</body>
+</html>

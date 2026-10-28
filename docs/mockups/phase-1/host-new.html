@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Add host · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Add host</h1><p>Creates a pending host and a one-time enrollment token for its agent.</p></div></div>
+<form class="form">
+  <div class="notice error" role="alert"><strong>The host was not created.</strong><p>Fix the two fields marked below.</p></div>
+  <div class="field"><label for="n">Name</label><input id="n" value="Lab sandbox"></div>
+  <div class="field invalid"><label for="h">Hostname</label><input id="h" value="vm 06" aria-invalid="true" aria-describedby="h-err"><p class="error-text" id="h-err">Use letters, digits, dots, and hyphens, for example vm-06.example.lan.</p></div>
+  <div class="field invalid"><label for="t">Tags</label><input id="t" value="lab, &lt;b&gt;" aria-invalid="true" aria-describedby="t-err t-hint"><p class="error-text" id="t-err">Tag "&lt;b&gt;" is invalid.</p><p class="hint" id="t-hint">Comma-separated. Up to 20 tags of 1 to 32 lowercase letters, digits, hyphens, or underscores.</p></div>
+  <div class="field"><label for="d">Description <span class="muted">(optional)</span></label><textarea id="d"></textarea></div>
+  <div class="actions"><button class="btn" type="submit">Add host</button><a class="btn quiet" href="fleet.html">Cancel</a></div>
+</form>
+</main>
+</body>
+</html>

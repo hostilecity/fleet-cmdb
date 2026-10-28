@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit log · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="audit.html" aria-current="page">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Audit log</h1><p>Every change to hosts, credentials, operators, and settings. Read-only; entries are never edited or deleted.</p></div></div>
+<form class="filters">
+  <label>Actor<select><option>Anyone</option><option>Operators</option><option>Hosts</option><option>System</option></select></label>
+  <label>Action<select><option>All actions</option><option>Host created</option><option>Host edited</option><option>Enrolled</option><option>Credential revoked</option><option>Retired</option><option>Enrollment token issued</option><option>Credential used from another machine</option><option>Setting changed</option></select></label>
+  <label>Host<input type="search" placeholder="Name or hostname"></label>
+  <label>From<input type="date"></label><label>To<input type="date"></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<div class="table-wrap"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th><th>On</th><th>Change</th></tr></thead><tbody><tr><td class="muted" style="white-space:nowrap">Today 09:20</td><td>Example Operator</td><td>Setting changed</td><td>Liveness thresholds</td><td>Online under 3 → 5 minutes</td></tr><tr><td class="muted" style="white-space:nowrap">Yesterday 14:02</td><td>Media server (host)</td><td>Credential used from another machine</td><td>Media server</td><td>Machine ID 0123…cdef → fedc…3210</td></tr><tr><td class="muted" style="white-space:nowrap">2 days ago</td><td>Example Operator</td><td>Host edited</td><td>Web A</td><td>Tags web → web, lab</td></tr><tr><td class="muted" style="white-space:nowrap">3 days ago</td><td>Example Operator</td><td>Credential revoked</td><td>Old proxy</td><td>Key fa_EXAMPLEkey07</td></tr><tr><td class="muted" style="white-space:nowrap">9 days ago</td><td>Media server (host)</td><td>Enrolled</td><td>Media server</td><td>Pending → active</td></tr><tr><td class="muted" style="white-space:nowrap">9 days ago</td><td>System</td><td>Operator allowed</td><td>second@example.com</td><td></td></tr></tbody></table></div>
+<div class="pager"><span class="muted">Newest first</span><a href="#">Older entries</a></div>
+<p class="note">Changes show old → new values. Secrets never appear here; a filtered value reads [FILTERED].</p>
+</main>
+</body>
+</html>

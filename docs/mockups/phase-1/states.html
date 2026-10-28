@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Empty and error states · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp stale"></span>Reconnecting</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Empty and error states</h1></div></div>
+<h2>No hosts yet</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No hosts in the fleet.</strong></p><p>Add a host to get an enrollment token for its agent.</p><a class="btn" href="host-new.html">Add host</a></div>
+<h2>No matches</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No hosts match "vm-99" with tag "media".</strong></p><p><a href="fleet.html">Clear the search and filters</a></p></div>
+<h2>Live updates lost</h2>
+<div class="notice" role="status"><strong>Live updates paused. Statuses on this page may be out of date.</strong><p>Reconnecting. The page catches up by itself when the connection returns.</p></div>
+<p class="note">Shown above the fleet list or host page while the live connection is down; the top bar reads "Reconnecting" with an amber lamp (P1-D05).</p>
+<h2>Page not found</h2>
+<div class="sheet"><p style="margin-top:0"><strong>There is no host or page at this address.</strong></p><p>It may have been mistyped. <a href="fleet.html">Go to the fleet</a></p></div>
+<h2>Server error</h2>
+<div class="notice error"><strong>The server could not complete that request.</strong><p>Nothing was changed. Try again; if it keeps happening, check the server logs for request <code>req-00000000000000000001</code>.</p></div>
+</main>
+</body>
+</html>
