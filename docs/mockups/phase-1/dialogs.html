@@ -10,22 +10,30 @@
 <body>
 <header class="bar">
   <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
-  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
 <div class="page-head"><div><h1>Confirmations</h1><p>Destructive actions ask first (FR-S.4). Shown here open; in the app each opens over the host page.</p></div></div>
 <div class="dialog" id="revoke" role="dialog" aria-labelledby="r-t"><h2 id="r-t">Revoke the credential for Media server?</h2>
-<p>The agent on vm-01.example.lan is refused from its next request and the host stops reporting. To let it back in, issue a new enrollment token.</p>
+<p>The agent on vm-01.example.lan is refused from its next request and the host stops reporting. To let it back in, re-enroll it.</p>
 <div class="actions"><button class="btn danger" type="button">Revoke credential</button><button class="btn quiet" type="button">Keep it</button></div></div>
-<div class="dialog" id="reenroll" role="dialog" aria-labelledby="e-t"><h2 id="e-t">Issue a new enrollment token for Media server?</h2>
-<p>The host moves to pending until the agent redeems the new token. Its current credential keeps working until then, and the agent is told to re-enroll. Any earlier unused token stops working.</p>
-<div class="actions"><button class="btn" type="button">Issue new token</button><button class="btn quiet" type="button">Cancel</button></div></div>
+<div class="dialog" id="reenroll" role="dialog" aria-labelledby="e-t"><h2 id="e-t">Re-enroll Media server</h2>
+<p>Use this when the VM lost its credential, was rebuilt, or was revoked. Choose how the VM gets its new credential:</p>
+<p><strong>Approve from the VM (recommended).</strong> On vm-01.example.lan, as root, run <code>fleet-agent install --reenroll</code>. Approve the request that appears, choosing "Re-enroll Media server". Nothing changes until you approve.</p>
+<p><strong>Issue a one-time token</strong> for an unattended reinstall. The host moves to pending now; its current credential keeps working until the token is used. Any earlier unused token stops working.</p>
+<div class="actions"><button class="btn quiet" type="button">Issue one-time token</button><button class="btn quiet" type="button">Close</button></div></div>
 <div class="dialog" id="retire" role="dialog" aria-labelledby="t-t"><h2 id="t-t">Retire Media server?</h2>
 <p>Retiring revokes the credential and removes the host from the fleet list and counts. Its inventory, history, and audit entries are kept. This cannot be undone.</p>
 <div class="field"><label for="c">Type the hostname to confirm</label><input id="c" class="mono" placeholder="vm-01.example.lan"></div>
 <div class="actions"><button class="btn danger" type="button">Retire host</button><button class="btn quiet" type="button">Cancel</button></div></div>
-<p class="note">Retire asks for the hostname because it is the only action that cannot be undone. Revoke and re-enroll can be reversed by issuing a new token, so a single button is enough.</p>
+<div class="dialog" id="halt" role="dialog" aria-labelledby="h-t"><h2 id="h-t">Halt the rollout to 0.2.0?</h2>
+<p>No more hosts are offered 0.2.0. Hosts already updating finish, and roll back by themselves if they fail. You can resume later.</p>
+<div class="actions"><button class="btn danger" type="button">Halt rollout</button><button class="btn quiet" type="button">Keep going</button></div></div>
+<div class="dialog" id="start" role="dialog" aria-labelledby="s-t"><h2 id="s-t">Start rolling out 0.2.0?</h2>
+<p>2 canary hosts (tag <span class="tag">canary</span>) update first. The next stage starts only when every canary confirms; any failure or rollback halts the rollout.</p>
+<div class="actions"><button class="btn" type="button">Start rollout</button><button class="btn quiet" type="button">Cancel</button></div></div>
+<p class="note">Retire asks for the hostname because it is the only action that cannot be undone. Revoke and re-enroll can be reversed by re-enrolling, so a single button is enough.</p>
 </main>
 </body>
 </html>

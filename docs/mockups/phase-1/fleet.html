@@ -10,11 +10,12 @@
 <body>
 <header class="bar">
   <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
-  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
-<div class="page-head"><div><h1>Fleet</h1><p>7 hosts, 5 active. Retired hosts are not listed or counted.</p></div><a class="btn" href="host-new.html">Add host</a></div>
+<div class="page-head"><div><h1>Fleet</h1><p>7 hosts, 5 active. Retired hosts are not listed or counted.</p></div><div class="actions"><a class="btn" href="agents-install.html">Install an agent</a><a class="btn quiet" href="host-new.html">Pre-register host</a></div></div>
+<div class="notice info" role="status"><strong>2 VMs are waiting for approval.</strong><p>Their installers are waiting. <a href="onboard.html">Review them</a> before they expire.</p></div>
 <div class="strip" aria-label="Fleet status">
   <a href="fleet.html?status=online"><span class="count">2</span><span class="lamp online">Online</span></a>
   <a href="fleet.html?status=stale"><span class="count">1</span><span class="lamp stale">Stale</span></a>
@@ -24,7 +25,7 @@
   <a class="aside" href="fleet.html?status=pending"><span class="count">1</span><span class="lamp pending">Pending enrollment</span></a>
   <a class="aside" href="fleet.html?status=revoked"><span class="count">1</span><span class="lamp">Revoked</span></a>
 </div>
-<p class="note">The counts are links that filter the list. Active hosts are counted by liveness; pending and revoked hosts sit apart, after the divider (FR-1.1).</p>
+<p class="note">The approval notice appears only while requests are waiting, and updates live. The counts are links that filter the list. Active hosts are counted by liveness; pending and revoked hosts sit apart, after the divider (FR-1.1).</p>
 <form class="filters" role="search">
   <label>Search name or hostname<input type="search" placeholder="vm-01 or Media server"></label>
   <label>Tag<select><option>All tags</option><option>ci</option><option>infra</option><option>lab</option><option>media</option><option>storage</option><option>web</option></select></label>

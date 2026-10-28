@@ -10,15 +10,15 @@
 <body>
 <header class="bar">
   <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
-  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
 <div class="host-head">
   <div><h1>Lab sandbox</h1><div class="sub"><span class="mono">vm-06.example.lan</span><span class="lamp pending">Pending enrollment</span><span><span class="tag">lab</span></span></div></div>
-  <div class="actions"><a class="btn quiet" href="host-edit.html">Edit</a><a class="btn quiet" href="dialogs.html#reenroll">Issue new token</a><a class="btn danger quiet" href="dialogs.html#retire">Retire</a></div>
+  <div class="actions"><a class="btn quiet" href="host-edit.html">Edit</a><a class="btn quiet" href="dialogs.html#reenroll">Re-enroll</a><a class="btn danger quiet" href="dialogs.html#retire">Retire</a></div>
 </div>
-<div class="notice info" role="status"><strong>Waiting for the agent to enroll.</strong><p>The enrollment token expires tomorrow at 18:30 UTC. If it was lost or has expired, issue a new one; the old token stops working.</p></div>
+<div class="notice info" role="status"><strong>Pre-registered. Waiting for the installer to use its token.</strong><p>The one-time token expires tomorrow at 18:30 UTC. If it was lost or has expired, re-enroll to get a new one, or run the installer on the VM without a token and approve it here; either way the old token stops working.</p></div>
 <div class="columns">
 <section class="sheet"><h2 style="margin-top:0">Inventory</h2><p class="muted">No inventory yet. It appears after the agent enrolls and sends its first report.</p></section>
 <section class="sheet"><h2 style="margin-top:0">Enrollment</h2><dl class="facts">

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Awaiting approval · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Approve a VM</h1><p>VMs running the installer wait here until you approve or reject them. Requests expire after 10 minutes.</p></div></div>
+<form class="form" style="max-width:32rem">
+  <div class="field"><label for="code">Code shown in the terminal</label><input id="code" class="code-input" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters"><p class="hint">Letters only. Case and the dash don't matter.</p></div>
+  <div class="actions"><button class="btn" type="submit">Continue</button></div>
+</form>
+<h2>Waiting for approval (2)</h2>
+<div class="table-wrap"><table><thead><tr><th>Hostname</th><th>Operating system</th><th>From</th><th>Requested</th><th>Expires</th><th></th><th></th></tr></thead><tbody><tr><td class="mono">vm-08.example.lan</td><td>Debian GNU/Linux 13 (trixie)</td><td class="mono">192.0.2.18</td><td class="muted">1 minute ago</td><td class="muted">in 9 minutes</td><td></td><td><a class="btn quiet" href="onboard-approve.html">Review</a></td></tr><tr><td class="mono">vm-01.example.lan</td><td>Debian GNU/Linux 13 (trixie)</td><td class="mono">192.0.2.10</td><td class="muted">3 minutes ago</td><td class="muted">in 7 minutes</td><td><span class="tag">matches Media server</span></td><td><a class="btn quiet" href="onboard-match.html">Review</a></td></tr></tbody></table></div>
+<h2>When nothing is waiting</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No VMs are waiting for approval.</strong></p><p>Run the installer on a VM and it appears here. <a href="agents-install.html">How to install an agent</a></p></div>
+<p class="note">The list updates live as requests arrive, are decided, or expire. The code is shown only on the review page, next to the reported facts, so it is compared there with the terminal.</p>
+</main>
+</body>
+</html>

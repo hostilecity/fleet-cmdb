@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="agents.html" aria-current="page">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Agents</h1></div><a class="btn" href="agents-install.html">Install an agent</a></div>
+<div class="notice error" role="alert"><strong>The rollout to 0.2.0 is halted: Build runner rolled back.</strong><p>0.2.0 did not complete a heartbeat within 5 minutes, so the agent went back to 0.1.0 by itself and is reporting normally. Its log said: <code>config: unknown option heartbeat_jitter_ms</code>. No other host is offered 0.2.0 until you resume.</p></div>
+<section aria-labelledby="ro">
+  <div class="host-head"><div><h2 id="ro" style="margin:0">Rollout to 0.2.0, halted</h2><div class="sub"><span>Started by Example Operator, today 08:10 UTC</span><span>Halted automatically, 08:28 UTC</span></div></div>
+  <div class="actions"><a class="btn quiet" href="#">Resume</a><a class="btn danger quiet" href="#">Cancel rollout</a></div></div>
+  <ol class="stages">
+  <li><span class="name">1. Canary</span><span class="lamp online">2 of 2 confirmed</span><span class="progress">Media server, Web A</span></li>
+  <li class="halted"><span class="name">2. 25% of the rest</span><span class="lamp offline">1 rolled back, 1 confirmed</span><span class="progress">Halted 6 minutes ago</span></li>
+  <li><span class="name">3. Everyone else</span><span class="lamp">Not started</span><span class="progress">1 host</span></li>
+</ol>
+  <div class="table-wrap"><table><thead><tr><th>Host</th><th>Stage</th><th>From</th><th>Status</th><th>Last change (UTC)</th></tr></thead><tbody><tr><td><a href="host.html">Media server</a></td><td>Canary</td><td class="mono">0.1.0</td><td><span class="lamp online">Confirmed on 0.2.0</span></td><td class="muted">Today 08:12</td></tr><tr><td><a href="host.html">Web A</a></td><td>Canary</td><td class="mono">0.1.0</td><td><span class="lamp online">Confirmed on 0.2.0</span></td><td class="muted">Today 08:13</td></tr><tr><td><a href="host.html">Backup target</a></td><td>2</td><td class="mono">0.1.0</td><td><span class="lamp online">Confirmed on 0.2.0</span></td><td class="muted">Today 08:21</td></tr><tr><td><a href="host.html">Build runner</a></td><td>2</td><td class="mono">0.1.0</td><td><span class="lamp offline">Rolled back to 0.1.0</span></td><td class="muted">Today 08:28</td></tr><tr><td><a href="host.html">DNS resolver</a></td><td>3</td><td class="mono">0.1.0</td><td><span class="lamp">Waiting for stage 3</span></td><td class="muted"></td></tr></tbody></table></div>
+</section>
+<p class="note">Resume offers 0.2.0 again to the hosts still waiting, starting with stage 2; Build runner is retried only if chosen. Cancelling leaves every host on the version it runs now; hosts that confirmed 0.2.0 stay on it, since agents never downgrade.</p>
+</main>
+</body>
+</html>

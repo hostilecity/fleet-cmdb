@@ -10,7 +10,7 @@
 <body>
 <header class="bar">
   <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
-  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
@@ -23,15 +23,22 @@
 <tr><td><a href="fleet.html">Fleet</a></td><td>Status counts, search, tag and status filters, sortable columns, every liveness and enrollment state</td><td>P1-D02</td></tr>
 <tr><td><a href="host.html">Host detail</a></td><td>Inventory with unavailable fields, history with changed fields, enrollment and credential, status history, audit entries, clone warning</td><td>P1-D03</td></tr>
 <tr><td><a href="host-pending.html">Host awaiting enrollment</a></td><td>Pending host: token expiry instead of liveness, no inventory yet</td><td>P1-D03</td></tr>
-<tr><td><a href="host-new.html">Add host</a></td><td>Create form with errors shown in place</td><td>P1-DASH-ACTIONS</td></tr>
-<tr><td><a href="host-token.html">Enrollment token</a></td><td>One-time token with the shown-once warning and the enroll command</td><td>P1-DASH-ACTIONS</td></tr>
+<tr><td><a href="agents-install.html">Install an agent</a></td><td>Download, verify, and run the one-command installer; what the terminal shows; the unattended variant</td><td>P1-D08 (P1-D06 review)</td></tr>
+<tr><td><a href="onboard.html">Awaiting approval</a></td><td>Enter the code from the terminal, or pick a waiting request; empty state</td><td>P1-D07 (P1-D06 review)</td></tr>
+<tr><td><a href="onboard-approve.html">Approve a VM</a></td><td>Code to match, what the VM reported, the host fields, approve or reject</td><td>P1-D07 (P1-D06 review)</td></tr>
+<tr><td><a href="onboard-match.html">Approve: matches a known host</a></td><td>Same machine ID as an existing host: re-enroll it or add a new one</td><td>P1-D07 (P1-D06 review)</td></tr>
+<tr><td><a href="onboard-states.html">Approval outcomes and errors</a></td><td>Approved and waiting for the installer, rejected, expired, already decided, unknown code, invalid fields</td><td>P1-D07 (P1-D06 review)</td></tr>
+<tr><td><a href="host-new.html">Pre-register host</a></td><td>For unattended installs: create the host first, with errors shown in place</td><td>P1-D04 (P1-D06 review)</td></tr>
+<tr><td><a href="host-token.html">One-time token</a></td><td>Token shown once, with the unattended install commands</td><td>P1-D04 (P1-D06 review)</td></tr>
 <tr><td><a href="host-edit.html">Edit host</a></td><td>Name, hostname, description, notes, and tags</td><td>P1-DASH-ACTIONS</td></tr>
-<tr><td><a href="dialogs.html">Confirmations</a></td><td>Revoke credential, issue a new token (re-enroll), retire</td><td>P1-DASH-ACTIONS</td></tr>
+<tr><td><a href="dialogs.html">Confirmations</a></td><td>Revoke credential, re-enroll (both ways), retire, and the rollout actions</td><td>P1-DASH-ACTIONS, P1-D09</td></tr>
+<tr><td><a href="agents.html">Agents: versions and rollout</a></td><td>Releases, the running rollout by stage and host, start a rollout</td><td>P1-D09 (P1-D06 review)</td></tr>
+<tr><td><a href="agents-halted.html">Agents: rollout halted</a></td><td>A host rolled back, so the rollout stopped; why, and resume or cancel</td><td>P1-D09 (P1-D06 review)</td></tr>
 <tr><td><a href="audit.html">Audit log</a></td><td>Fleet-wide, read-only, filtered by actor, action, host, and date</td><td>P1-AUDIT-PAGE (#46)</td></tr>
 <tr><td><a href="settings.html">Settings</a></td><td>Liveness thresholds with an error shown in place</td><td>P1-D02</td></tr>
 <tr><td><a href="states.html">Empty and error states</a></td><td>Empty fleet, no matches, live updates lost, page not found, server error</td><td>P1-D02, P1-D05</td></tr>
 </tbody></table></div>
-<p class="note">Yellow dashed boxes like this one are review notes, not part of the design.</p>
+<p class="note">Yellow dashed boxes like this one are review notes, not part of the design. Screens marked "P1-D06 review" are new in the scope change (#54, ADR 0017 and 0018) and await approval; "Host detail" and "Fleet" also gained the onboarding notice, the Agent updates section, and the Re-enroll action.</p>
 </main>
 </body>
 </html>

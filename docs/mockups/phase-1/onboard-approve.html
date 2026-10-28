@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approve a VM · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Approve a VM</h1><p>Nothing is created until you approve and the installer collects its credential.</p></div></div>
+<div style="max-width:46rem">
+  <section class="sheet" aria-labelledby="chk">
+    <h2 id="chk" style="margin-top:0">Check the request</h2>
+    <p><span class="user-code">WDJB-MJHT</span></p>
+    <p>Does the terminal on <span class="mono">vm-08.example.lan</span> show this code? If it does not, reject: someone else started this request.</p>
+    <dl class="facts">
+      <dt>Hostname</dt><dd class="mono">vm-08.example.lan</dd>
+      <dt>Operating system</dt><dd>Debian GNU/Linux 13 (trixie) <span class="muted">(debian 13)</span></dd>
+      <dt>Machine ID</dt><dd class="mono">89abcdef0123456789abcdef01234567</dd>
+      <dt>Agent</dt><dd class="mono">0.2.0</dd>
+      <dt>From address</dt><dd class="mono">192.0.2.18</dd>
+      <dt>Requested</dt><dd>1 minute ago</dd>
+      <dt>Expires</dt><dd>in 9 minutes, 08:31 UTC</dd>
+    </dl>
+    <p class="muted" style="margin-bottom:0">No existing host has this machine ID or hostname.</p>
+  </section>
+  <form class="form" style="margin-top:1.5rem;max-width:none">
+    <h2 style="margin-top:0">The new host</h2>
+    <div class="field"><label for="n">Name</label><input id="n" value="vm-08"><p class="hint">From the hostname. Give it a name you will recognise in the fleet list.</p></div>
+    <div class="field"><label for="h">Hostname</label><input id="h" class="mono" value="vm-08.example.lan"></div>
+    <div class="field"><label for="t">Tags</label><input id="t" placeholder="web, lab"><p class="hint">Comma-separated, optional.</p></div>
+    <div class="field"><label for="d">Description <span class="muted">(optional)</span></label><textarea id="d"></textarea></div>
+    <div class="field"><label for="o">Notes <span class="muted">(optional)</span></label><textarea id="o"></textarea></div>
+    <div class="actions"><button class="btn" type="submit">Approve</button><button class="btn danger quiet" type="submit">Reject</button></div>
+  </form>
+</div>
+<p class="note">The code and what the VM reported come first, so they are checked before anything is filled in. Reported values come from the VM and are shown as plain text. Reject needs no confirmation: it changes nothing but the request, and the installer can simply be run again.</p>
+</main>
+</body>
+</html>
