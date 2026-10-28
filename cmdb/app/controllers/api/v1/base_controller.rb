@@ -48,7 +48,8 @@ module Api
         raise AgentApi::ValidationFailed.new(details: errors) if errors.any?
 
         unknown = AgentApi::Schema.undeclared_pointers(schema_name, version, data)
-        logger.info("[agent_api] ignored unknown fields #{unknown.join(' ')}") if unknown.any?
+        # Field names come from the agent too, so control characters are removed before logging them.
+        logger.info("[agent_api] ignored unknown fields #{unknown.join(' ').gsub(/[[:cntrl:]]/, '').truncate(1_000)}") if unknown.any?
         data
       end
 

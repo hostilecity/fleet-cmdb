@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_27_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_27_030000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -59,6 +59,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_020000) do
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
   end
 
+  create_table "host_inventories", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.jsonb "stable", null: false
+    t.jsonb "volatile", null: false
+    t.jsonb "warnings", default: [], null: false
+    t.string "stable_hash", limit: 64, null: false
+    t.uuid "report_id", null: false
+    t.integer "schema_version", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_host_inventories_on_host_id", unique: true
+  end
+
   create_table "host_status_events", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.string "from_status"
@@ -88,12 +103,34 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_020000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.datetime "agent_reported_at"
+    t.datetime "machine_id_mismatch_at"
+    t.string "reported_machine_id", limit: 32
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
     t.index ["liveness_status"], name: "index_hosts_on_liveness_status"
     t.index ["tags"], name: "index_hosts_on_tags", using: :gin
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying, 'active'::character varying, 'revoked'::character varying, 'retired'::character varying]::text[])", name: "hosts_enrollment_state_valid"
     t.check_constraint "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying, 'stale'::character varying, 'offline'::character varying]::text[]))", name: "hosts_liveness_status_valid"
+  end
+
+  create_table "inventory_report_receipts", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.uuid "report_id", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "report_id"], name: "index_inventory_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["received_at"], name: "index_inventory_report_receipts_on_received_at"
+  end
+
+  create_table "inventory_snapshots", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.jsonb "stable", null: false
+    t.jsonb "warnings", default: [], null: false
+    t.string "stable_hash", limit: 64, null: false
+    t.uuid "report_id", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "received_at"], name: "index_inventory_snapshots_on_host_id_and_received_at"
+    t.index ["received_at"], name: "index_inventory_snapshots_on_received_at"
   end
 
   create_table "operator_allowlist_entries", force: :cascade do |t|
@@ -136,7 +173,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_020000) do
 
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
+  add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_status_events", "hosts"
+  add_foreign_key "inventory_report_receipts", "hosts"
+  add_foreign_key "inventory_snapshots", "hosts"
   add_foreign_key "operator_sessions", "operators"
 
   create_function :hosts_guard, sql_definition: <<-'SQL'
