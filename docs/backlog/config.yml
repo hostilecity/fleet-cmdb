@@ -10,7 +10,7 @@ milestones:
   - title: "Phase 0 — Scaffolding"
     description: "Agent crate, CI, and the API contract workspace. Decisions are already recorded in docs/decisions."
   - title: "Phase 1 — CMDB & inventory"
-    description: "Shared foundations plus enroll, heartbeat, inventory, liveness, and dashboard. Exit criteria: AC-1.1 to AC-1.7 in docs/requirements.md."
+    description: "Shared foundations plus install and onboarding, heartbeat, inventory, liveness, dashboard, and signed agent updates. Exit criteria: AC-1.1 to AC-1.10 in docs/requirements.md."
   - title: "Phase 2 — Config, CIS & vulnerabilities"
     description: "Config and package reporting, CIS evaluation, vulnerability matching. Exit criteria: AC-2.1 to AC-2.6."
     gate: P1-ACCEPT

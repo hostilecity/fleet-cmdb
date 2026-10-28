@@ -10,6 +10,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Payload: host identity, agent version, agent uptime, current time.
 - Failures follow the [P1-A02](p1-agent-core.md) backoff policy and never exit the process; the interval resumes on recovery.
 - Handles the response envelope (`server_time`, `directives`), ignoring directives it does not understand.
+- Applies `directives.intervals` (heartbeat and inventory seconds) within the bounds of its config, so the server can shed load fleet-wide without an agent release ([ADR 0019](../../decisions/0019-scale-direction.md)). `directives.agent_update` is handed to the updater ([P1-AGENT-UPDATE](p1-agent-update.md)).
 - Clean shutdown on signal without losing state.
 
 ### Acceptance criteria

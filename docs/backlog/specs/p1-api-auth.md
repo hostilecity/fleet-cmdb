@@ -46,7 +46,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 ### Scope
 
 - `enrollment_tokens` table (host, digest, expires at, redeemed at). Tokens are random, single-use, expire (default 24 hours, configurable), and are stored as digests.
-- Service to create a host and issue its first token, and to issue a **new** token for an existing host (re-enrollment). The token is returned once to the operator-facing caller. The dashboard flow is in [P1-D04](p1-dash-actions.md); this issue also adds rake tasks (`hosts:create`, `hosts:enroll_token`) so the flow is usable before the UI exists.
+- Service to create a host and issue its first token, and to issue a **new** token for an existing host (re-enrollment). The token is returned once to the operator-facing caller. Since [ADR 0017](../../decisions/0017-agent-onboarding.md) this is the **pre-registration** path for unattended installs; onboarding is [P1-ONBOARD](p1-onboard.md). The dashboard flow is in [P1-D04](p1-dash-actions.md); this issue also adds rake tasks (`hosts:create`, `hosts:enroll_token`) so the flow is usable before the UI exists.
 - `POST /api/v1/enroll`: unauthenticated apart from the token. Redeems the token in a single transaction: marks it used, creates the credential, moves the host `pending` to `active`, writes audit entries. The credential is returned once in the response.
 - Re-enrollment: redeeming a new token for an `active` or `revoked` host replaces the credential; the old credential stays valid until that moment and is revoked in the same transaction.
 - Stricter rate limiting per client address on the enroll endpoint, and identical error responses for unknown, expired, and used tokens.

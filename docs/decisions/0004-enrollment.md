@@ -1,6 +1,6 @@
 # ADR 0004: Enrollment flow
 
-- Status: Accepted (owner, first requirements review)
+- Status: Accepted (owner, first requirements review); amended by [ADR 0017](0017-agent-onboarding.md): these tokens remain as pre-registration, alongside dashboard-approved onboarding
 - Decision issue: DEC-04
 - Requirements: `docs/requirements.md`
 

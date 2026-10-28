@@ -1,4 +1,4 @@
-# P1-AGENT-CORE: Agent config, HTTP client, and enroll command
+# P1-AGENT-CORE: Agent config and HTTP client
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
@@ -6,11 +6,12 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- Subcommands: `run` (default), `enroll` (implemented in [P1-A03](p1-agent-core.md)), `check-config`, and `--version`.
+- Subcommands: `run` (default), `check-config`, and `--version`. `install` and `uninstall` are [P1-A10](p1-agent-install.md); `self-test` and `update-supervise` are [P1-AGENT-UPDATE](p1-agent-update.md).
 - TOML config: server URL (must be `https`), credential, heartbeat interval, inventory interval, log level, optional `ca_file` (not needed with the default Let's Encrypt certificate, [DEC-05](../../decisions/0005-hosting-tls-deployment.md)). Validation with clear messages and minimum and maximum bounds on intervals. No option exists to disable certificate verification; a test asserts an `insecure` key is rejected as unknown.
 - The credential is wrapped in a type that redacts itself in `Debug` and `Display`, so it cannot leak into logs by accident.
 - Config file permission check at startup: refuse or warn loudly if readable by group or others (behaviour per [DEC-03](../../decisions/0003-agent-privilege.md)).
 - State directory (default `/var/lib/fleet-agent`) created if missing, with strict permissions; loss of the directory must not break enrollment.
+- Server-directed intervals ([ADR 0019](../../decisions/0019-scale-direction.md)): the config intervals are the starting values and the bounds; an interval from the server is applied only within those bounds (see [P1-AGENT-REPORT](p1-agent-report.md)).
 - Structured, timestamped logging suitable for the systemd journal (key=value or JSON lines on stdout), with each report's outcome logged and no credential ever logged.
 - Graceful shutdown on `SIGTERM` and `SIGINT`.
 
@@ -28,7 +29,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - HTTPS client using `rustls`; trusts the system roots plus the optional `ca_file`. No code path disables verification.
 - Sends `Authorization: Bearer <credential>` and the agent version on every request.
 - Typed error mapping from the documented envelope ([DEC-08](../../decisions/0008-api-conventions.md)) including `401` (credential rejected), `403 reenrollment_required` (the host is being re-enrolled; also signalled by `Fleet-Enrollment-State: pending`), `426` (agent unsupported), `429` (honour `Retry-After`), `413`, and `5xx`.
-- Retry policy: exponential backoff with jitter and a cap; the agent keeps running through any outage. `401`, `403 reenrollment_required`, and `426` are logged plainly and backed off to a long interval rather than retried tightly. For `reenrollment_required` the log line tells the operator to run `fleet-agent enroll --force` with the new token.
+- Retry policy: exponential backoff with jitter and a cap; the agent keeps running through any outage. `401`, `403 reenrollment_required`, and `426` are logged plainly and backed off to a long interval rather than retried tightly. For `reenrollment_required` the log line tells the operator to run `fleet-agent install --reenroll`, or `fleet-agent install --token` with the new token.
 - Request timeouts; bounded response size.
 - Reused connection where practical.
 
@@ -39,19 +40,6 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] A `426` response produces a clear log line and the agent keeps running
 - [ ] A `401` response never causes a tight retry loop
 
-## P1-A03: Agent enroll command
+## P1-A03: Enroll command (moved)
 
-### Scope
-
-- `fleet-agent enroll --server <url> --token <token> [--ca-file <path>]` redeems the token against `POST /api/v1/enroll`.
-- Writes the config file atomically (temporary file and rename), mode `0600`, owned by the service account per [DEC-03](../../decisions/0003-agent-privilege.md).
-- Refuses to overwrite an existing credential unless `--force` is passed (re-enrollment).
-- Reads the token from an environment variable or standard input as well as the flag, so it need not appear in the process list.
-- Prints success without echoing the credential; clear error messages for expired or used tokens and for TLS failures.
-
-### Acceptance criteria
-
-- [ ] After `enroll`, `run` authenticates without further steps
-- [ ] The resulting file has the right mode and ownership
-- [ ] A failed enroll leaves no partial or empty config file
-- [ ] Neither the token nor the credential appears in output or logs
+Replaced by `fleet-agent install` in [P1-A10](p1-agent-install.md) ([ADR 0017](../../decisions/0017-agent-onboarding.md)). The config file written there follows P1-A01: atomic write, mode `0600`, owned per [DEC-03](../../decisions/0003-agent-privilege.md).

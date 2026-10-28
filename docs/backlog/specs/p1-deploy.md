@@ -49,10 +49,10 @@ NFR-2 requires a documented, restorable backup procedure before Phase 1 is consi
 
 ### Scope
 
-- Server: prerequisites, deploy, first operator, TLS, configuration reference, upgrade, backup and restore (from [P1-O01](p1-deploy.md)), where logs are, and the health endpoint.
-- Agent: download and verify, install, enroll, verify in the dashboard, upgrade, uninstall.
+- Server: prerequisites, deploy, first operator, TLS, configuration reference (including the release public keys and outbound access for release import), upgrade, backup and restore (from [P1-O01](p1-deploy.md)), where logs are, and the health endpoint.
+- Agent: the dashboard install page ([P1-D08](p1-releases.md)) as the primary path; pre-registration for unattended installs; remote updates and rollouts; manual upgrade by re-running the installer; uninstall.
 - Operations: revoke and re-enroll, retire, recover from a lost credential, change thresholds, read the audit log.
-- Troubleshooting: certificate trust errors, `401` responses, clock skew, host stuck offline.
+- Troubleshooting: certificate trust errors, `401` responses, clock skew, host stuck offline, an expired onboarding request, a halted rollout, and a rolled-back update.
 - Validate by following the documents on a clean server and clean VM using only the documents; fix gaps found.
 
 ### Acceptance criteria

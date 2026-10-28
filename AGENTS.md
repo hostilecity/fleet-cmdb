@@ -22,7 +22,7 @@ How to work on this repository. Keep context small: read what a task needs, not 
 
 - Do not build anything out of scope (`docs/requirements.md`, section 1) or from a later phase than the issue's milestone.
 - The server never sends a command line, script, or executable name to an agent. Tasks are catalog entries plus schema-valid parameters only.
-- No OTA or agent self-update. No arbitrary remote shell.
+- No OTA firmware or OS image updates. Agents update themselves only through the signed release channel with rollback in ADR 0018: never an unsigned binary, never a server-chosen downgrade. No arbitrary remote shell.
 - The agent API is served only on the private agent hostname, never through the dashboard hostname.
 - No secrets, real hostnames, or real addresses anywhere in the repository, including issues, fixtures, and examples. Use `vm-01.example.lan`.
 - Decisions are recorded in `docs/decisions/`. Do not reverse one in code; propose a new ADR.

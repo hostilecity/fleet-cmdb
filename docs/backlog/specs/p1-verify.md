@@ -6,7 +6,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- A script (for example `cmdb/script/simulate_fleet.rb`) that enrolls N fake hosts via the real API and sends heartbeats and inventory on configurable intervals, with controllable behaviours: stop heartbeating, send hostile strings, change stable fields, resend duplicate reports.
+- A script (for example `cmdb/script/simulate_fleet.rb`) that enrolls N fake hosts via the real API (pre-registration tokens; onboarding with an auto-approving test helper for scale runs) and sends heartbeats and inventory on configurable intervals, with controllable behaviours: stop heartbeating, send hostile strings, change stable fields, resend duplicate reports.
 - Doubles as development seed data and as an end-to-end check for liveness transitions with real timers (a scaled-down version of AC-1.2).
 - A repeatable load check for NFR-3: 50 simulated hosts on default intervals for at least an hour of simulated time (time scaling allowed); record fleet list load time and heartbeat p95 and compare with the targets.
 - Uses the shared example payloads from `docs/api/examples/` where possible.
@@ -23,6 +23,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - A repeatable soak script: run the agent against the [P1-O04](p1-verify.md) simulator or a test server with short intervals for at least 72 hours, including periods where the server is down or flapping.
 - Sample the agent's resident memory, open file descriptors, thread count, and state-directory size at intervals and write them to a file.
+- Include at least one update and one forced rollback during the run; staging and old versions must be cleaned up afterwards.
 - Fail criteria: monotonic growth beyond an agreed tolerance, descriptor growth, or any state-directory growth.
 - Findings and the raw samples attached to the Phase 1 delivery note.
 
