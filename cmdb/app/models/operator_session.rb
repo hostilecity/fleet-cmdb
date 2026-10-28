@@ -22,6 +22,12 @@ class OperatorSession < ApplicationRecord
     session if session&.live?(now) && session.operator.allowlisted?
   end
 
+  # Re-reads a session already authenticated, for long-lived connections (ApplicationCable::Connection).
+  def self.still_valid?(session, now: Time.current)
+    current = includes(:operator).find_by(id: session.id)
+    current.present? && current.live?(now) && current.operator.allowlisted?
+  end
+
   def self.idle_timeout = Rails.configuration.x.sessions.idle_timeout
 
   def self.absolute_timeout = Rails.configuration.x.sessions.absolute_timeout

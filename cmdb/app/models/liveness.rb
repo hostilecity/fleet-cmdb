@@ -29,6 +29,8 @@ module Liveness
     unless host.liveness_status == "online"
       HostStatusEvent.insert!({ host_id: host.id, from_status: host.liveness_status, to_status: "online", reason: "heartbeat", occurred_at: now })
     end
+    # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05).
+    FleetBroadcast.hosts_changed([ host.id ]) unless host.liveness_status == "online"
     now
   end
 
@@ -42,7 +44,9 @@ module Liveness
       if Host.connection.select_value("SELECT pg_try_advisory_xact_lock(#{EVALUATION_LOCK_KEY})")
         now ||= Time.current
         thresholds ||= Setting.liveness_thresholds
-        buckets(now, thresholds).sum { |status, condition| transition_all!(status, condition, now) }
+        changed = buckets(now, thresholds).flat_map { |status, condition| transition_all!(status, condition, now) }
+        FleetBroadcast.hosts_changed(changed)
+        changed.size
       else
         0
       end
@@ -64,13 +68,13 @@ module Liveness
     candidates = Host.active.where.not(last_seen_at: nil).where(*condition)
                      .where("hosts.liveness_status IS DISTINCT FROM ?", status)
                      .lock("FOR UPDATE SKIP LOCKED").pluck(:id, :liveness_status)
-    return 0 if candidates.empty?
+    return [] if candidates.empty?
 
     Host.where(id: candidates.map(&:first)).update_all(liveness_status: status)
     HostStatusEvent.insert_all!(candidates.map do |id, from|
       { host_id: id, from_status: from, to_status: status, reason: "evaluation", occurred_at: now }
     end)
-    candidates.size
+    candidates.map(&:first)
   end
   private_class_method :transition_all!
 end

@@ -58,8 +58,8 @@ module Cmdb
     config.x.fleet_hosts.trusted_proxies = [ IPAddr.new("127.0.0.0/8"), IPAddr.new("::1") ] + trusted
     config.action_dispatch.trusted_proxies = config.x.fleet_hosts.trusted_proxies
 
-    # Action Cable is not mounted until a dashboard feature needs it; it must then be mounted inside the
-    # dashboard host constraint with an operator-authenticated connection (P1-DASH-FLEET).
+    # Action Cable is mounted explicitly in config/routes.rb, inside the dashboard host constraint, and its
+    # connections are operator-authenticated (ApplicationCable::Connection, P1-D05).
     config.action_cable.mount_path = nil
 
     # No Turbo Native apps, so no public historical-location routes.

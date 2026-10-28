@@ -142,9 +142,11 @@ RSpec.describe "Host-based separation", type: :request do
     end
 
     it "does not route the dashboard on the agent host even if the middleware is bypassed" do
-      env = Rack::MockRequest.env_for("http://#{agent_host}/sign_in")
-      status, = Rails.application.routes.call(env)
-      expect(status).to eq(404)
+      %w[/sign_in / /settings /cable].each do |path|
+        env = Rack::MockRequest.env_for("http://#{agent_host}#{path}")
+        status, = Rails.application.routes.call(env)
+        expect(status).to eq(404), path
+      end
     end
   end
 end

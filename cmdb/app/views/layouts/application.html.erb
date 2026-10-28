@@ -1,32 +1,44 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
-    <title><%= content_for(:title) || "Fleet CMDB" %></title>
+    <title><%= content_for?(:title) ? "#{yield(:title)} · Fleet CMDB" : "Fleet CMDB" %></title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="application-name" content="Cmdb">
-    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="application-name" content="Fleet CMDB">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
-
     <%= yield :head %>
-
-    <%# Enable PWA manifest for installable apps (make sure to enable in config/routes.rb too!) %>
-    <%#= tag.link rel: "manifest", href: pwa_manifest_path(format: :json) %>
-
     <link rel="icon" href="/icon.png" type="image/png">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-    <link rel="apple-touch-icon" href="/icon.png">
-
-    <%# Includes all stylesheet files in app/assets/stylesheets %>
     <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
     <%= javascript_importmap_tags %>
   </head>
 
-  <body>
-    <% flash.each do |type, message| %>
-      <p class="flash flash-<%= type %>" role="<%= type == "alert" ? "alert" : "status" %>"><%= message %></p>
-    <% end %>
-    <%= yield %>
+  <body data-controller="live-status">
+    <header class="bar">
+      <% if current_operator %>
+        <%= link_to root_path, class: "brand" do %><span class="lamp online" aria-hidden="true"></span>Fleet CMDB<% end %>
+        <nav aria-label="Main">
+          <%= link_to "Fleet", root_path, "aria-current": (controller_name == "hosts" ? "page" : nil) %>
+          <%= link_to "Settings", settings_path, "aria-current": (controller_name == "settings" ? "page" : nil) %>
+        </nav>
+        <div class="who">
+          <span class="live" data-live-status-target="indicator" hidden><span class="lamp awaiting" data-live-status-target="lamp"></span><span data-live-status-target="label">Connecting</span></span>
+          <span class="operator" title="Signed in"><%= current_operator.display_name %></span>
+          <%= button_to "Sign out", sign_out_path, method: :delete, form_class: "inline" %>
+        </div>
+      <% else %>
+        <span class="brand"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</span>
+      <% end %>
+    </header>
+    <main>
+      <div class="notice" role="status" data-live-status-target="banner" hidden>
+        <strong>Live updates paused. Statuses on this page may be out of date.</strong>
+        <p>Reconnecting. The page catches up by itself when the connection returns.</p>
+      </div>
+      <% flash.each do |type, message| %>
+        <div class="notice flash <%= type == "alert" ? "error" : "info" %>" role="<%= type == "alert" ? "alert" : "status" %>"><strong><%= message %></strong></div>
+      <% end %>
+      <%= yield %>
+    </main>
   </body>
 </html>

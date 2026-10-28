@@ -1,0 +1,6 @@
+<div class="sub" id="<%= dom_id(host, :status) %>">
+  <span class="mono"><%= host.hostname %></span>
+  <%= status_lamp(host) %>
+  <% if host.enrollment_state == "active" %><span>Last seen <%= seen_ago(host.last_seen_at).downcase_first %></span><% end %>
+  <% if host.tags.any? %><span><% host.tags.each do |t| %><%= link_to t, root_path(tag: t), class: "tag" %><% end %></span><% end %>
+</div>

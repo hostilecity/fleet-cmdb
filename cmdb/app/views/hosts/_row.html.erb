@@ -1,0 +1,9 @@
+<tr id="<%= dom_id(host, :row) %>">
+  <td><%= link_to host.name, host_path(host) %></td>
+  <td><%= status_lamp(host) %></td>
+  <td class="muted"><%= seen_ago(host.last_seen_at) %></td>
+  <td class="mono"><%= host.hostname %></td>
+  <td><% host.tags.each do |t| %><%= link_to t, root_path(tag: t), class: "tag" %><% end %></td>
+  <td><%= host.os_name.presence || tag.span("Not reported", class: "unavailable") %></td>
+  <td class="mono"><%= host.agent_version.presence || tag.span("—", class: "unavailable") %></td>
+</tr>

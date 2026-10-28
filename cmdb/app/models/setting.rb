@@ -1,7 +1,15 @@
 # Operator-adjustable settings, typed with defaults (P1-S09). Only keys defined in DEFINITIONS exist. Change
 # them through the methods here so values are validated and every change is audited.
 class Setting < ApplicationRecord
-  class Invalid < StandardError; end
+  # field: :online, :stale, or nil when the pair is wrong together, so a form can mark the right input.
+  class Invalid < StandardError
+    attr_reader :field
+
+    def initialize(message, field: nil)
+      super(message)
+      @field = field
+    end
+  end
 
   DEFINITIONS = {
     "liveness.online_threshold_minutes" => { default: 3, range: 1..1_440 },
@@ -28,8 +36,9 @@ class Setting < ApplicationRecord
   def self.update_liveness_thresholds!(online_minutes:, stale_minutes:, actor:)
     online = whole_number(online_minutes)
     stale = whole_number(stale_minutes)
-    raise Invalid, "thresholds must be whole numbers of minutes" if online.nil? || stale.nil?
-    raise Invalid, "the online threshold must be shorter than the stale threshold" unless online < stale
+    raise Invalid.new("Enter a whole number of minutes.", field: :online) if online.nil?
+    raise Invalid.new("Enter a whole number of minutes.", field: :stale) if stale.nil?
+    raise Invalid.new("Must be shorter than the stale threshold (#{stale} minutes).", field: :online) unless online < stale
 
     transaction(requires_new: true) do
       write!("liveness.online_threshold_minutes", online, actor:)
@@ -47,7 +56,8 @@ class Setting < ApplicationRecord
 
   def self.write!(key, value, actor:)
     range = DEFINITIONS.fetch(key)[:range]
-    raise Invalid, "#{key} must be between #{range.min} and #{range.max}" unless range.cover?(value)
+    field = key.include?("online") ? :online : :stale
+    raise Invalid.new("Must be between #{range.min} and #{range.max} minutes.", field:) unless range.cover?(value)
 
     setting = lock.find_or_initialize_by(key:)
     before = setting.persisted? ? setting.value : DEFINITIONS[key][:default]

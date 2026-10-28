@@ -1,6 +1,7 @@
-<% content_for :title, "Sign in · Fleet CMDB" %>
-<main>
-  <h1>Fleet CMDB</h1>
-  <p>Sign in with an allowed Google account.</p>
-  <%= button_to "Sign in with Google", "/auth/google_oauth2", method: :post, data: { turbo: false } %>
-</main>
+<% content_for :title, "Sign in" %>
+<div class="sheet sign-in">
+  <h1>Sign in</h1>
+  <p>Use a Google account an operator has added to the allowlist.</p>
+  <%= button_to "Sign in with Google", "/auth/google_oauth2", method: :post, class: "btn", data: { turbo: false } %>
+  <p class="muted">New operators are added from the server with <code>bin/rails operators:allow</code>.</p>
+</div>

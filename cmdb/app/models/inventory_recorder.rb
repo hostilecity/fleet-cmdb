@@ -36,6 +36,7 @@ module InventoryRecorder
                    changes: { "stable_hash" => [ nil, hash ] })
     end
     check_machine_id(host, credential_id, report.machine_id, now)
+    FleetBroadcast.hosts_changed([ host_id ]) if first # the fleet row gains its operating system
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end
 
