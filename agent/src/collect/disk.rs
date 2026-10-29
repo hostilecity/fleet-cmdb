@@ -33,6 +33,9 @@ use super::{Disk, FsStats};
 /// Contract limit on the number of disks.
 pub const MAX_DISKS: usize = 64;
 
+/// Most `statvfs` calls in one collection: the first mounts by path, with room for some to fail.
+pub const MAX_STATVFS: usize = 2 * MAX_DISKS;
+
 /// Filesystem types that never hold a disk's data.
 pub const PSEUDO_FILESYSTEMS: &[&str] = &[
     "aufs",
@@ -308,6 +311,15 @@ mod tests {
         let entries = parse_mounts(b"/dev/sdb1 /mntx xfs rw 0 0\n/dev/sdc1 /mnt ext4 rw 0 0\n")
             .expect("parse");
         assert_eq!(mount_points(&select_real(entries)), ["/mntx", "/mnt"]);
+
+        // If the first mount of a device is hidden, a visible bind mount of it still counts.
+        let entries = parse_mounts(
+            b"/dev/sdb1 /srv xfs rw 0 0\n/dev/sdb1 /export xfs rw 0 0\n/dev/sdc1 /srv ext4 rw 0 0\n",
+        )
+        .expect("parse");
+        let selected = select_real(entries);
+        assert_eq!(mount_points(&selected), ["/export", "/srv"]);
+        assert_eq!(selected[0].source, b"/dev/sdb1");
 
         // A pseudo filesystem on top hides the disk too: the disk's space is not reachable there.
         let entries =

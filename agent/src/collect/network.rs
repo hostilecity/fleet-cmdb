@@ -176,10 +176,19 @@ pub fn interfaces(
         .collect();
     if interfaces.len() > MAX_INTERFACES {
         notes.push(format!(
-            "{} interfaces; reporting the first {MAX_INTERFACES} by name",
+            "{} interfaces; reporting the first {MAX_INTERFACES} by name and the primary one",
             interfaces.len()
         ));
-        interfaces.truncate(MAX_INTERFACES);
+        // The primary interface is kept even if it sorts past the limit. It sorts after every kept
+        // one, so putting it last keeps the list in name order.
+        let primary_past_limit = interfaces
+            .iter()
+            .skip(MAX_INTERFACES)
+            .position(|i| i.primary)
+            .map(|offset| interfaces.remove(MAX_INTERFACES + offset));
+        let keep = MAX_INTERFACES - usize::from(primary_past_limit.is_some());
+        interfaces.truncate(keep);
+        interfaces.extend(primary_past_limit);
     }
     let note = (!notes.is_empty()).then(|| notes.join("; "));
     (interfaces, note)
@@ -294,6 +303,25 @@ ens19\t00000000\t016433C6\t0002\t0\t0\t0\t00000000\n";
     fn no_primary_when_the_route_interface_is_not_reported() {
         let (interfaces, _) = interfaces(&[addr("ens18", "192.0.2.10", 24)], Some("docker0"));
         assert!(interfaces.iter().all(|i| !i.primary));
+    }
+
+    #[test]
+    fn the_primary_interface_survives_the_interface_limit() {
+        // eth000..eth099 sorted by name; the primary one sorts last.
+        let addrs: Vec<IfAddr> = (0..100)
+            .map(|i| addr(&format!("eth{i:03}"), &format!("192.0.2.{}", i + 1), 24))
+            .collect();
+        let (list, note) = interfaces(&addrs, Some("eth099"));
+        assert_eq!(list.len(), MAX_INTERFACES);
+        assert_eq!(list[MAX_INTERFACES - 2].name, "eth062");
+        assert_eq!(list[MAX_INTERFACES - 1].name, "eth099");
+        assert!(list[MAX_INTERFACES - 1].primary);
+        assert_eq!(list.iter().filter(|i| i.primary).count(), 1);
+        assert!(note.expect("note").contains("100 interfaces"));
+        // A primary inside the limit changes nothing.
+        let (list, _) = interfaces(&addrs, Some("eth001"));
+        assert_eq!(list.last().expect("last").name, "eth063");
+        assert!(list[1].primary);
     }
 
     #[test]

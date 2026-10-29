@@ -12,7 +12,9 @@
 //! timed out, so a hung `/proc` file or `statvfs` cannot stall the agent. A result is judged by when
 //! the read finished, not when it was picked up, so a read that finished late is a timeout even if
 //! the collector was busy elsewhere. Per-mount `statvfs` calls start once the mount table has been
-//! read, so a whole collection takes at most about twice the limit.
+//! read, so a whole collection takes at most about twice the limit. Source files must be regular files
+//! (procfs files are) and are opened without blocking, so a FIFO or device at a source path is refused
+//! at once rather than waited on.
 //!
 //! An abandoned read cannot be cancelled, so its thread lives until the read returns. A [`Collector`]
 //! remembers which sources still have a read in flight and does not start another read of the same
@@ -55,8 +57,9 @@ mod sys;
 mod system;
 
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{self, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -70,8 +73,9 @@ pub use sys::{FsStats, HostSystem, IfAddr, System};
 /// Time limit for each source read (one file or one syscall).
 pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Largest source file read, so a corrupt or hostile file cannot exhaust memory.
-const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Largest source file read, so a corrupt or hostile file cannot exhaust memory. `/proc/cpuinfo` is
+/// about 1.4 KiB per logical CPU, so a host at the contract's 4096-CPU limit needs close to 6 MiB.
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Schema limits from `docs/api/schemas/v1/inventory.request.schema.json`.
 const MAX_WARNINGS: usize = 64;
@@ -384,7 +388,12 @@ impl Collector {
             Field::Disks,
             mounts.and_then(|(path, bytes)| at(&path, disk::parse_mounts(&bytes))),
         )?;
-        let selected = disk::select_real(entries);
+        let mut selected = disk::select_real(entries);
+        // Reported disks are the first by mount path, so only those are worth a `statvfs`. Capping the
+        // calls keeps a host with thousands of mounts from starting thousands of threads.
+        selected.sort_by_cached_key(disk::MountEntry::mount_display);
+        let candidates = selected.len();
+        selected.truncate(disk::MAX_STATVFS);
 
         let deadline = Instant::now() + self.timeout;
         let pending: Vec<_> = selected
@@ -420,12 +429,11 @@ impl Collector {
             "mount point",
             warnings,
         );
-        if disks.len() > disk::MAX_DISKS {
+        if disks.len() > disk::MAX_DISKS || candidates > disk::MAX_STATVFS {
             warnings.push(
                 Field::Disks,
                 format!(
-                    "{} real mounts; reporting the first {} by mount path",
-                    disks.len(),
+                    "{candidates} real mounts; reporting the first {} by mount path",
                     disk::MAX_DISKS
                 ),
             );
@@ -481,6 +489,18 @@ impl Collector {
             "interface name",
             warnings,
         );
+        // Without this an operator would see no primary interface and no reason for it.
+        if let Some(iface) = primary
+            && !interfaces.iter().any(|i| i.primary)
+        {
+            warnings.push(
+                Field::NetworkInterfaces,
+                format!(
+                    "the default route uses {}, which is not reported (down, a container bridge, or no reportable address), so no interface is primary",
+                    iface.escape_debug()
+                ),
+            );
+        }
         Some(interfaces)
     }
 
@@ -520,11 +540,22 @@ impl Collector {
     }
 }
 
+/// Reads a regular file of at most [`MAX_FILE_BYTES`].
+///
+/// Every source is a regular file (procfs files included), so anything else is refused before it is
+/// read. The open itself never waits: `O_NONBLOCK` stops a FIFO with no writer from blocking, and
+/// `O_NOCTTY` stops a terminal device at a source path from becoming the controlling terminal of the
+/// agent, which runs as root.
 fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
     let mut bytes = Vec::new();
-    File::open(path)?
-        .take(MAX_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(io::Error::other(format!(
             "larger than {MAX_FILE_BYTES} bytes"

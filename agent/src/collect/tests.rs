@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -77,6 +76,10 @@ struct FakeSystem {
     hang: Option<Duration>,
     /// How many times `machine` was called.
     machine_calls: Arc<AtomicUsize>,
+    /// Figures for any mount point missing from `statvfs`.
+    statvfs_default: Option<FsStats>,
+    /// How many times `statvfs` was called.
+    statvfs_calls: Arc<AtomicUsize>,
 }
 
 impl FakeSystem {
@@ -116,6 +119,8 @@ impl FakeSystem {
             ]),
             hang: None,
             machine_calls: Arc::default(),
+            statvfs_default: None,
+            statvfs_calls: Arc::default(),
         }
     }
 }
@@ -132,9 +137,11 @@ impl System for FakeSystem {
     }
 
     fn statvfs(&self, path: &Path) -> io::Result<FsStats> {
+        self.statvfs_calls.fetch_add(1, Ordering::SeqCst);
         self.statvfs
             .get(path)
             .copied()
+            .or(self.statvfs_default)
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
     }
 
@@ -470,10 +477,12 @@ fn a_hung_syscall_times_out_and_the_rest_is_collected() {
 }
 
 #[test]
-fn a_hung_file_read_times_out_and_the_rest_is_collected() {
+fn a_fifo_or_device_at_a_source_path_is_refused_without_waiting() {
+    // Opening a FIFO with no writer would block a thread until the agent stops, and a device could
+    // feed endless data; neither is ever a real source, so both are refused at once (second review
+    // of #64).
     let root = FakeRoot::new();
     root.remove("/etc/machine-id");
-    // Opening a FIFO with no writer blocks, like a hung read.
     let fifo = std::ffi::CString::new(
         root.path("/etc/machine-id")
             .into_os_string()
@@ -482,28 +491,99 @@ fn a_hung_file_read_times_out_and_the_rest_is_collected() {
     .expect("path");
     // SAFETY: `fifo` is a valid NUL-terminated path.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    root.remove("/proc/uptime");
+    std::os::unix::fs::symlink("/dev/zero", root.path("/proc/uptime")).expect("symlink");
+
     let started = Instant::now();
     let inventory = Collector::with(
         root.0.clone(),
         Arc::new(FakeSystem::new()),
-        Duration::from_millis(200),
+        Duration::from_secs(5),
     )
     .collect();
-    assert!(started.elapsed() < Duration::from_secs(5));
-    assert_eq!(inventory.machine_id, None);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(
         warning_for(&inventory, Field::MachineId),
-        Some("read timed out after 200ms")
+        Some("/etc/machine-id: not a regular file")
+    );
+    assert_eq!(
+        warning_for(&inventory, Field::UptimeSeconds),
+        Some("/proc/uptime: not a regular file")
     );
     assert_eq!(
         without_warnings(&inventory),
-        nulled(&expected(), &[Field::MachineId])
+        nulled(&expected(), &[Field::MachineId, Field::UptimeSeconds])
     );
-    // Unblock the abandoned reader so its thread ends. Non-blocking, so this cannot hang the test.
-    let _ = fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(root.path("/etc/machine-id"));
+}
+
+#[test]
+fn cpuinfo_for_the_largest_allowed_host_is_read() {
+    // 4096 logical CPUs (the contract's limit) at the size of a real entry is about 6 MiB, above the
+    // old 4 MiB read cap (second review of #64).
+    let entry = |n: usize| {
+        format!(
+            "processor\t: {n}\nvendor_id\t: GenuineIntel\nmodel name\t: Example Virtual CPU @ 2.40GHz\nflags\t\t: {}\n\n",
+            "fpu vme de pse tsc msr pae mce cx8 apic ".repeat(32)
+        )
+    };
+    let cpuinfo: String = (0..4096).map(entry).collect();
+    assert!(cpuinfo.len() > 5 * 1024 * 1024, "{}", cpuinfo.len());
+    let root = FakeRoot::new();
+    root.write("/proc/cpuinfo", cpuinfo.as_bytes());
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(inventory.cpu_cores, Some(4096));
+    assert!(inventory.warnings.is_empty(), "{:#?}", inventory.warnings);
+}
+
+#[test]
+fn a_host_with_thousands_of_mounts_gets_a_bounded_number_of_statvfs_calls() {
+    let mut mounts = String::from("/dev/sda1 / ext4 rw 0 0\n");
+    // Listed in reverse path order, so the cap must pick by path, not by table position.
+    for i in (0..1000).rev() {
+        mounts.push_str(&format!("/dev/loop{i} /mnt/m{i:04} squashfs ro 0 0\n"));
+    }
+    let root = FakeRoot::new();
+    root.write("/proc/self/mounts", mounts.as_bytes());
+    let mut system = FakeSystem::new();
+    system.statvfs_default = Some(system.statvfs[Path::new("/")]);
+    let calls = Arc::clone(&system.statvfs_calls);
+    let inventory = collect_from(&root.0, system);
+    assert_eq!(calls.load(Ordering::SeqCst), disk::MAX_STATVFS);
+    let disks = inventory.disks.as_ref().expect("disks");
+    assert_eq!(disks.len(), disk::MAX_DISKS);
+    // The first by mount path, as before the cap.
+    assert_eq!(disks[0].mount, "/");
+    assert_eq!(disks[1].mount, "/mnt/m0000");
+    assert_eq!(disks[63].mount, "/mnt/m0062");
+    assert_eq!(
+        warning_for(&inventory, Field::Disks),
+        Some("1001 real mounts; reporting the first 64 by mount path")
+    );
+}
+
+#[test]
+fn a_default_route_on_an_unreported_interface_is_explained() {
+    // ens18 carries the default route but is down, so nothing can be marked primary.
+    let mut system = FakeSystem::new();
+    if let Ok(addrs) = system.addrs.as_mut() {
+        for a in addrs.iter_mut().filter(|a| a.name == "ens18") {
+            a.up = false;
+        }
+    }
+    let inventory = collect_from(&fixture_root(), system);
+    let interfaces = inventory.network_interfaces.as_ref().expect("interfaces");
+    assert_eq!(interfaces.len(), 1);
+    assert!(!interfaces[0].primary);
+    assert_eq!(
+        warning_for(&inventory, Field::NetworkInterfaces),
+        Some(
+            "the default route uses ens18, which is not reported (down, a container bridge, or no reportable address), so no interface is primary"
+        )
+    );
 }
 
 #[test]

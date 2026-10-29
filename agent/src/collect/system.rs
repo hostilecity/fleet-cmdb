@@ -19,6 +19,10 @@ fn single_value(bytes: &[u8], max: usize) -> Result<String, String> {
     if value.contains('\n') {
         return Err("more than one line".to_owned());
     }
+    // The server would strip them and store a different value than the host has.
+    if value.chars().any(char::is_control) {
+        return Err("contains control characters".to_owned());
+    }
     if value.chars().count() > max {
         return Err(format!("longer than {max} characters"));
     }
@@ -327,6 +331,12 @@ mod tests {
             Ok("6.12.48+deb13-amd64".to_owned())
         );
         assert!(parse_kernel_version(b"two\nlines\n").is_err());
+        assert_eq!(
+            parse_hostname(b"vm-01\x1b[31m.example.lan\n"),
+            Err("contains control characters".to_owned())
+        );
+        assert!(parse_hostname("vm\u{85}01".as_bytes()).is_err());
+        assert!(parse_kernel_version(b"6.12\t48\n").is_err());
     }
 
     #[test]
