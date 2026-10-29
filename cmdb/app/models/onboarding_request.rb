@@ -44,10 +44,58 @@ class OnboardingRequest < ApplicationRecord
     find_by(device_code_digest: AgentApi.digest(device_code))
   end
 
+  # A user code as typed (any case, with or without the dash or spaces) in its stored form, or nil.
+  def self.normalize_user_code(user_code)
+    letters = user_code.to_s.upcase.delete("^A-Z")
+    code = "#{letters[0, 4]}-#{letters[4, 4]}"
+    letters.length == 8 && USER_CODE_FORMAT.match?(code) ? code : nil
+  end
+
   def self.find_awaiting_by_user_code(user_code, now: Time.current)
-    code = user_code.to_s.upcase.delete("^A-Z")
-    code = "#{code[0, 4]}-#{code[4, 4]}"
-    USER_CODE_FORMAT.match?(code) ? awaiting(now).find_by(user_code: code) : nil
+    code = normalize_user_code(user_code)
+    code ? awaiting(now).find_by(user_code: code) : nil
+  end
+
+  # The newest request with this code, in any state, for the approval page (P1-D07).
+  def self.latest_by_user_code(user_code)
+    code = normalize_user_code(user_code)
+    code ? where(user_code: code).order(created_at: :desc, id: :desc).first : nil
+  end
+
+  # Existing hosts this VM may be (P1-D07): same machine ID first (from a credential, the inventory, or a
+  # clone warning), then same hostname. Retired hosts are never offered. Returns [[host, :machine_id |
+  # :hostname], ...]. Only a suggestion: nothing is attached unless the operator chooses it.
+  def matching_hosts = self.class.matching_hosts_for([ self ]).fetch(id)
+
+  # matching_hosts for many requests at once, keyed by request id, in a fixed number of queries however many
+  # requests there are (the waiting list, review of #63).
+  def self.matching_hosts_for(requests)
+    machine_ids = requests.filter_map(&:machine_id).uniq
+    hostnames = requests.filter_map { |r| r.hostname&.downcase }.uniq
+    by_machine = hosts_by_machine_id(machine_ids)
+    by_name = hostnames.any? ? Host.in_fleet.where(hostname: hostnames).order(:name).to_a.group_by(&:hostname) : {}
+
+    requests.to_h do |request|
+      name = request.hostname&.downcase
+      # A host that also has the reported hostname is the likeliest, so it comes first and is the default.
+      machine = by_machine.fetch(request.machine_id, []).sort_by { |h| [ h.hostname == name ? 0 : 1, h.name.downcase ] }
+      named = by_name.fetch(name, []).reject { |h| machine.include?(h) }
+      [ request.id, machine.map { |h| [ h, :machine_id ] } + named.map { |h| [ h, :hostname ] } ]
+    end
+  end
+
+  # { machine_id => [host, ...] } for hosts in the fleet that have the machine ID on a credential, in their
+  # inventory, or as a reported (clone warning) machine ID.
+  def self.hosts_by_machine_id(machine_ids)
+    return {} if machine_ids.empty?
+
+    pairs = AgentCredential.where(machine_id: machine_ids).distinct.pluck(:machine_id, :host_id) +
+            HostInventory.where("stable ->> 'machine_id' IN (?)", machine_ids).pluck(Arel.sql("stable ->> 'machine_id'"), :host_id)
+    hosts = Host.in_fleet.where(id: pairs.map(&:last)).or(Host.in_fleet.where(reported_machine_id: machine_ids)).index_by(&:id)
+    pairs += hosts.values.filter_map { |h| [ h.reported_machine_id, h.id ] if h.reported_machine_id.in?(machine_ids) }
+    pairs.uniq.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |(machine_id, host_id), found|
+      found[machine_id] << hosts[host_id] if hosts[host_id]
+    end.transform_values(&:uniq)
   end
 
   def self.generate_user_code

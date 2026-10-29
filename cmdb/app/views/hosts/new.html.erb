@@ -1,0 +1,7 @@
+<% content_for :title, "Pre-register host" %>
+<div class="page-head"><div><h1>Pre-register host</h1><p>For unattended installs (cloud-init, templates, scripts): creates the host now and a one-time token its installer uses instead of an approval. To install on one VM by hand, run the installer on the VM and approve it on the <%= link_to "approval page", onboard_path %> instead.</p></div></div>
+<%# A plain form post: the token is shown in this response only, which Turbo would not render. %>
+<%= form_with model: @host, url: hosts_path, scope: :host, class: "form", data: { turbo: false } do |f| %>
+  <%= render "hosts/form", f:, host: @host, error_title: "The host was not pre-registered." %>
+  <div class="actions"><button class="btn" type="submit">Pre-register host</button><%= link_to "Cancel", root_path, class: "btn quiet" %></div>
+<% end %>

@@ -1,0 +1,9 @@
+<% content_for :title, "Revoke #{@host.name}" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Revoke the credential for <%= @host.name %>?</h2>
+  <p>The agent on <span class="mono"><%= @host.hostname %></span> is refused from its next request and the host stops reporting. To let it back in, re-enroll it.</p>
+  <div class="actions">
+    <%= button_to "Revoke credential", revoke_host_path(@host), class: "btn danger", form_class: "inline" %>
+    <%= link_to "Keep it", host_path(@host), class: "btn quiet" %>
+  </div>
+</div>

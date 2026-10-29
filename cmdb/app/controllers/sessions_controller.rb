@@ -11,8 +11,9 @@ class SessionsController < ApplicationController
 
   def create
     operator = OperatorSignIn.call(request.env["omniauth.auth"])
+    return_to = session[:return_to] # start_session resets the session
     start_session(operator)
-    redirect_to root_path, notice: "Signed in as #{operator.email}."
+    redirect_to safe_return_path?(return_to) ? return_to : root_path, notice: "Signed in as #{operator.email}."
   rescue OperatorSignIn::Refused => e
     logger.info("[sign_in] refused: #{e.message}")
     reset_session

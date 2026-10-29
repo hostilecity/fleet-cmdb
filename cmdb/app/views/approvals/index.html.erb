@@ -1,0 +1,35 @@
+<% content_for :title, "Approve a VM" %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
+<div class="page-head"><div><h1>Approve a VM</h1><p>VMs running the installer wait here until you approve or reject them. Requests expire after <%= OnboardingRequest.config.ttl.in_minutes.to_i %> minutes.</p></div></div>
+<%= form_with url: onboard_path, method: :post, class: "form", id: "code_lookup", data: { controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+  <div class="field<%= " invalid" if @code_error %>">
+    <label for="code">Code shown in the terminal</label>
+    <%= text_field_tag :code, @code, id: "code", class: "code-input", placeholder: "XXXX-XXXX", autocomplete: "off", autocapitalize: "characters",
+          maxlength: 20, required: true, "aria-invalid": (@code_error ? "true" : nil), "aria-describedby": (@code_error ? "code_error code_hint" : "code_hint") %>
+    <% if @code_error %><p class="error-text" id="code_error"><%= @code_error %></p><% end %>
+    <p class="hint" id="code_hint">Letters only. Case and the dash don't matter.</p>
+  </div>
+  <div class="actions"><button class="btn" type="submit">Continue</button></div>
+<% end %>
+<% if @awaiting.any? %>
+  <h2>Waiting for approval (<%= @awaiting.size %>)</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Hostname</th><th>Operating system</th><th>From</th><th>Requested</th><th>Expires</th><th><span class="visually-hidden">Match</span></th><th><span class="visually-hidden">Action</span></th></tr></thead>
+    <tbody>
+      <% @awaiting.each do |request| %>
+        <tr id="<%= dom_id(request) %>">
+          <td class="mono"><%= request.hostname || tag.span("Not reported", class: "unavailable") %></td>
+          <td><%= request.os_name || tag.span("Not reported", class: "unavailable") %></td>
+          <td class="mono"><%= request.client_ip %></td>
+          <td class="muted"><%= seen_ago(request.created_at) %></td>
+          <td class="muted">in <%= distance_of_time_in_words(Time.current, request.expires_at) %></td>
+          <td><% if (match = @matches[request.id].first) %><span class="tag">matches <%= match.first.name %></span><% end %></td>
+          <td><%= link_to "Review", onboard_request_path(request.user_code), class: "btn quiet" %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table></div>
+<% else %>
+  <div class="sheet empty" id="nothing_waiting"><p><strong>No VMs are waiting for approval.</strong></p><p>Run the installer on a VM with <code>sudo ./fleet-agent install --server https://<%= HostSeparation.agent_host %></code> and it appears here.</p></div>
+<% end %>

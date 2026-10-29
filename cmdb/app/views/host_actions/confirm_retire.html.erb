@@ -1,0 +1,14 @@
+<% content_for :title, "Retire #{@host.name}" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Retire <%= @host.name %>?</h2>
+  <p>Retiring revokes the credential and removes the host from the fleet list and counts. Its inventory, history, and audit entries are kept. This cannot be undone.</p>
+  <%= form_with url: retire_host_path(@host), method: :post do %>
+    <div class="field<%= " invalid" if @confirm_error %>">
+      <label for="confirm_hostname">Type the hostname to confirm</label>
+      <%= text_field_tag :confirm_hostname, params[:confirm_hostname], id: "confirm_hostname", class: "mono", placeholder: @host.hostname,
+            autocomplete: "off", "aria-invalid": (@confirm_error ? "true" : nil), "aria-describedby": (@confirm_error ? "confirm_hostname_error" : nil) %>
+      <% if @confirm_error %><p class="error-text" id="confirm_hostname_error"><%= @confirm_error %></p><% end %>
+    </div>
+    <div class="actions"><button class="btn danger" type="submit">Retire host</button><%= link_to "Cancel", host_path(@host), class: "btn quiet" %></div>
+  <% end %>
+</div>

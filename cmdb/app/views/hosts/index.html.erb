@@ -1,9 +1,15 @@
 <% content_for :title, "Fleet" %>
 <%= turbo_refreshes_with method: :morph, scroll: :preserve %>
 <%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
-<div class="page-head"><div><h1>Fleet</h1><p>Retired hosts are not listed or counted.</p></div></div>
+<div class="page-head"><div><h1>Fleet</h1><p>Retired hosts are not listed or counted.</p></div><div class="actions"><%= link_to "Pre-register host", new_host_path, class: "btn quiet" %></div></div>
+<% if @awaiting_approval.positive? %>
+  <div class="notice info" role="status" id="awaiting_approval">
+    <strong><%= pluralize(@awaiting_approval, "VM is", plural: "VMs are") %> waiting for approval.</strong>
+    <p>Their installers are waiting. <%= link_to "Review them", onboard_path %> before they expire.</p>
+  </div>
+<% end %>
 <%= render "hosts/counts", counts: @counts %>
-<%= form_with url: root_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect" } do %>
+<%= form_with url: root_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
   <label>Search name or hostname<%= search_field_tag :q, @fleet.q, placeholder: "vm-01 or Media server", maxlength: 100 %></label>
   <label>Tag<%= select_tag :tag, options_for_select(@tags, @fleet.tag), include_blank: "All tags" %></label>
   <label>Status<%= select_tag :status, options_for_select(FleetList::STATUSES.invert, @fleet.status), include_blank: "All statuses" %></label>
@@ -14,7 +20,7 @@
 <% if @hosts.empty? && !@fleet.filtered? %>
   <div class="sheet empty">
     <p><strong>No hosts in the fleet.</strong></p>
-    <p>Add a host from the server with <code>bin/rails hosts:create</code> to get an enrollment token for its agent.</p>
+    <p>Run the installer on a VM and approve it on the <%= link_to "approval page", onboard_path %>, or <%= link_to "pre-register a host", new_host_path %> for an unattended install.</p>
   </div>
 <% elsif @hosts.empty? %>
   <div class="sheet empty">

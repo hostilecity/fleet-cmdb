@@ -216,7 +216,7 @@ RSpec.describe "Hosts", type: :request do
       get "/hosts/#{pending_host.id}"
       expect(page.at_css(".host-head .lamp").text).to eq("Pending enrollment")
       expect(page.at_css(".host-head").text).not_to include("Last seen")
-      expect(notice.at_css("strong").text).to eq("Waiting for the agent to enroll.")
+      expect(notice.at_css("strong").text).to eq("Pre-registered. Waiting for the installer to use its token.")
       expect(facts("Enrollment")).to include("State" => "Pending", "Credential" => "Never issued", "Token" => /\AExpires \d{4}-/)
       expect(section("Inventory").text).to include("No inventory yet.")
     end

@@ -1,0 +1,13 @@
+<%# Host fields with errors in place (FR-S.4). Used by pre-registration and edit. %>
+<% if host.errors.any? %>
+  <div class="notice error" role="alert"><strong><%= error_title %></strong><p>Fix the <%= pluralize(host.errors.attribute_names.uniq.size, "field") %> marked below.</p></div>
+<% end %>
+<%= form_field f, :name, label: "Name", maxlength: 100, required: true %>
+<%= form_field f, :hostname, label: "Hostname", class: "mono", maxlength: 253, required: true,
+      hint: "Letters, digits, dots, and hyphens, for example vm-06.example.lan." %>
+<%= form_field f, :tags, label: "Tags", value: host.tags.join(", "),
+      hint: "Comma-separated. Up to 20 tags of 1 to 32 lowercase letters, digits, hyphens, or underscores." %>
+<%= form_field f, :description, label: "Description (optional)", kind: :text_area %>
+<% if local_assigns[:notes] %>
+  <%= form_field f, :notes, label: "Notes (optional)", kind: :text_area %>
+<% end %>

@@ -1,0 +1,46 @@
+<% match_by_machine = @matches.find { |_, why| why == :machine_id } %>
+<% first_match = match_by_machine || @matches.first %>
+<% if first_match %>
+  <% host, why = first_match %>
+  <div class="notice" role="status" id="onboard_match">
+    <strong>This VM has the same <%= why == :machine_id ? "machine ID" : "hostname" %> as <%= host.name %>.</strong>
+    <p><%= host.name %> (<span class="mono"><%= host.hostname %></span>) is <%= host.enrollment_state %><%= ", last seen #{seen_ago(host.last_seen_at).downcase_first}" if host.last_seen_at %>. Choose what this request is.</p>
+  </div>
+<% end %>
+<div class="token-once">
+  <section class="sheet" aria-labelledby="check_heading">
+    <h2 id="check_heading">Check the request</h2>
+    <p><span class="user-code" id="user_code"><%= request.user_code %></span></p>
+    <p>Does the terminal on <span class="mono"><%= request.hostname || "the VM" %></span> show this code? If it does not, reject: someone else started this request.</p>
+    <%= render "approvals/facts", request: %>
+    <% if @matches.empty? %><p class="muted">No existing host has this machine ID or hostname.</p><% end %>
+  </section>
+  <%= form_with url: approve_onboard_request_path(request.user_code), method: :post, scope: :host, model: @host, class: "form", id: "approval_form",
+        data: { controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do |f| %>
+    <% if @host.errors.any? %>
+      <div class="notice error" role="alert"><strong>Not approved yet.</strong><p>Fix the <%= pluralize(@host.errors.attribute_names.uniq.size, "field") %> marked below. The request is still waiting; it expires in <%= distance_of_time_in_words(Time.current, request.expires_at) %>.</p></div>
+    <% end %>
+    <% if @matches.any? %>
+      <h2>What is this VM?</h2>
+      <% @matches.each do |host, why| %>
+        <label class="choice"><%= radio_button_tag :choice, "reenroll-#{host.id}", @choice == "reenroll-#{host.id}" %><strong><%= host.name %>, re-enrolled</strong>
+          <p>The VM was rebuilt or lost its credential. It keeps its name, tags, inventory, and history. Its current credential keeps working until the installer collects the new one, then stops.</p></label>
+      <% end %>
+      <label class="choice"><%= radio_button_tag :choice, "new", @choice == "new" %><strong>A new host</strong>
+        <p>For example a cloned VM.<% if match_by_machine %> Both will report with the same machine ID and show the clone warning until the copy gets a new one (<code>systemd-machine-id-setup</code>).<% end %> Name it below.</p></label>
+      <h3>The new host</h3>
+      <p class="hint">Used only when "A new host" is chosen.</p>
+    <% else %>
+      <h2>The new host</h2>
+    <% end %>
+    <%= form_field f, :name, label: "Name", maxlength: 100, hint: "From the hostname. Give it a name you will recognise in the fleet list." %>
+    <%= form_field f, :hostname, label: "Hostname", class: "mono", maxlength: 253 %>
+    <%= form_field f, :tags, label: "Tags", value: @host.tags.join(", "), placeholder: "web, lab", hint: "Comma-separated, optional." %>
+    <%= form_field f, :description, label: "Description (optional)", kind: :text_area %>
+    <%= form_field f, :notes, label: "Notes (optional)", kind: :text_area %>
+    <div class="actions">
+      <button class="btn" type="submit">Approve</button>
+      <button class="btn danger quiet" type="submit" formaction="<%= reject_onboard_request_path(request.user_code) %>" formnovalidate>Reject</button>
+    </div>
+  <% end %>
+</div>

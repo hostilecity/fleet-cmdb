@@ -185,3 +185,26 @@ form.inline { display: inline; }
 a.tag { text-decoration: none; color: inherit; }
 .sheet > h2:first-child, .sheet > h2:first-child + p.muted { margin-top: 0; }
 th.when { width: 11rem; }
+
+/* P1-D04, P1-D07: host actions and onboarding approval (approved mockups, P1-D06) */
+.token { white-space: pre-wrap; } /* keep the two spaces sha256sum -c needs */
+.terminal { background: var(--ink); color: #e3ebe7; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.6; padding: 0.875rem 1rem; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.5rem 0 1rem; }
+.terminal .prompt { color: #9fb3ad; user-select: none; }
+.terminal .ok { color: #8fd19e; }
+.terminal .warn { color: #f2c46d; }
+.terminal .em { color: #fff; font-weight: 500; }
+.user-code { font-family: var(--mono); font-size: 2rem; font-weight: 500; letter-spacing: 0.12em; background: var(--sheet); border: 2px solid var(--petrol); border-radius: 6px; padding: 0.25rem 0.875rem; display: inline-block; }
+.code-input { font-family: var(--mono); font-size: 1.5rem; letter-spacing: 0.12em; text-transform: uppercase; width: 12ch; }
+.choice { display: block; border: 1px solid var(--rule); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.625rem; background: var(--sheet); cursor: pointer; }
+.choice:has(input:checked) { border-color: var(--petrol); box-shadow: 0 0 0 1px var(--petrol); }
+.choice input { margin-right: 0.5rem; }
+.choice strong { display: inline; }
+.choice p { margin: 0.25rem 0 0 1.5rem; color: var(--ink-soft); font-size: 0.9375rem; }
+@media (max-width: 52rem) { .user-code { font-size: 1.5rem; } }
+.dialog .error-text { color: var(--lamp-offline); font-size: 0.875rem; margin: 0.25rem 0 0; }
+.host-head form.inline { display: inline; }
+.token-once { max-width: 46rem; }
+/* Inputs fill their field: Rails sets size from maxlength, which would otherwise overflow narrow screens. */
+.field input:not([type="radio"]):not([type="checkbox"]):not([type="number"]):not(.code-input), .field textarea { width: 100%; box-sizing: border-box; }
+.field .code-input { max-width: 100%; box-sizing: border-box; }
+.form.token-once h2 { margin-top: 1.5rem; }

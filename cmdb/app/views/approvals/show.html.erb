@@ -1,0 +1,9 @@
+<% content_for :title, "Approve a VM" %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
+<div class="page-head"><div><h1>Approve a VM</h1><p>Nothing is created until you approve and the installer collects its credential.</p></div></div>
+<% if @request.awaiting? %>
+  <%= render "approvals/review", request: @request %>
+<% else %>
+  <%= render "approvals/outcome", request: @request %>
+<% end %>

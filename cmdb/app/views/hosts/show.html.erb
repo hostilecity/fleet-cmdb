@@ -15,15 +15,23 @@
     <h1><%= @host.name %></h1>
     <%= render "hosts/status", host: @host %>
   </div>
+  <% unless @host.retired? %>
+    <div class="actions">
+      <%= link_to "Edit", edit_host_path(@host), class: "btn quiet" %>
+      <%= link_to "Re-enroll", reenroll_host_path(@host), class: "btn quiet" %>
+      <% if @host.can_transition?(:revoke) %><%= link_to "Revoke credential", revoke_host_path(@host), class: "btn danger quiet" %><% end %>
+      <%= link_to "Retire", retire_host_path(@host), class: "btn danger quiet" %>
+    </div>
+  <% end %>
 </div>
 <% if @host.enrollment_state == "pending" %>
   <div class="notice info" role="status">
     <% if @credential&.active? %>
       <strong>Re-enrollment in progress.</strong>
-      <p>The agent keeps using credential <code><%= @credential.key_id %></code> until it redeems the new token<%= ", which expires #{utc(@token.expires_at)}" if @token %>. <%= "The token has expired; issue a new one." unless @token %></p>
+      <p>The agent keeps using credential <code><%= @credential.key_id %></code> until it collects its new one<%= ", by the token that expires #{utc(@token.expires_at)} or an approved request" if @token %>. <%= "If the token or approval has lapsed, re-enroll again." unless @token %></p>
     <% else %>
-      <strong>Waiting for the agent to enroll.</strong>
-      <p><%= @token ? "The enrollment token expires #{utc(@token.expires_at)}." : "The enrollment token has expired." %> If it was lost or has expired, issue a new one; the old token stops working.</p>
+      <strong>Pre-registered. Waiting for the installer to use its token.</strong>
+      <p><%= @token ? "The one-time token expires #{utc(@token.expires_at)}." : "The one-time token has expired." %> If it was lost or has expired, re-enroll to get a new one, or run the installer on the VM without a token and approve it; either way the old token stops working.</p>
     <% end %>
   </div>
 <% elsif @host.retired? %>

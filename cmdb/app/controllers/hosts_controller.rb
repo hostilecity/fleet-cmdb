@@ -1,6 +1,9 @@
-# The fleet list and host detail pages (FR-1.5, P1-D02, P1-D03). Read-only here; operator actions arrive
-# with P1-DASH-ACTIONS.
+# The fleet list and host detail pages (FR-1.5, P1-D02, P1-D03), pre-registration and editing (P1-D04).
+# Revoke, retire, and re-enroll are in HostActionsController.
 class HostsController < ApplicationController
+  include ShowsEnrollmentToken
+
+  FIELDS = %i[name hostname tags description notes].freeze
   HISTORY_LIMIT = 25
   STATUS_HISTORY_LIMIT = 20
   AUDIT_LIMIT = 20
@@ -10,6 +13,7 @@ class HostsController < ApplicationController
     @hosts = @fleet.hosts.to_a
     @counts = FleetList.counts
     @tags = FleetList.tags
+    @awaiting_approval = OnboardingRequest.awaiting.count
   end
 
   def show
@@ -23,7 +27,42 @@ class HostsController < ApplicationController
     @actors = audit_actors(@audit_entries)
   end
 
+  # Pre-register a host for an unattended install (P1-D04, DEC-17): the host is created pending with a
+  # one-time token, shown once on the response to this POST and never again.
+  def new
+    @host = Host.new
+  end
+
+  def create
+    @host, token = Enrollment::RegisterHost.call(host_params, actor: current_operator)
+    show_token(token, created: true)
+  rescue ActiveRecord::RecordInvalid => e
+    @host = e.record
+    render :new, status: :unprocessable_content
+  end
+
+  def edit
+    @host = editable_host
+  end
+
+  def update
+    @host = editable_host
+    @host.edit!(host_params, actor: current_operator)
+    redirect_to host_path(@host), notice: "Changes saved."
+  rescue ActiveRecord::RecordInvalid
+    render :edit, status: :unprocessable_content
+  end
+
   private
+
+  def host_params = params.expect(host: FIELDS)
+
+  def editable_host
+    host = Host.find(params[:id])
+    raise ActiveRecord::RecordNotFound if host.retired? # retired hosts are kept as they were
+
+    host
+  end
 
   # Newest first, each with the changes from the snapshot before it.
   def history

@@ -53,7 +53,7 @@ Static mockups in `docs/mockups/phase-1/`, delivered as their own pull request (
 - **`/onboard`** (the `verification_uri`):
   - Asks for the user code; `/onboard/<user code>` (the `verification_uri_complete`) prefills it.
   - Both require sign-in, and the code is carried through the sign-in redirect.
-  - Code lookups are rate-limited per operator session.
+  - Code lookups are rate-limited per operator (20 a minute). The code box and `/onboard/<code>` URLs that find nothing share the budget; once it is spent, `/onboard/<code>` stops resolving too.
 - **Approval page** as in P1-D06, built on `Onboarding::Approve` and `Onboarding::Reject` ([P1-S14](p1-onboard.md)).
   - Approve and reject are POST forms with CSRF protection.
   - A request that expired or was decided while the page was open shows that state instead of an error.
