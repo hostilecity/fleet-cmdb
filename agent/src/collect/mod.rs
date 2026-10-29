@@ -9,8 +9,16 @@
 //! [`Collector::collect`] starts every source read at once, each on its own thread: one file (under a
 //! root directory, `/` in production) or one syscall through [`System`]. Each read has a time limit
 //! ([`READ_TIMEOUT`]); a read that has not finished by then is abandoned and its field reported as
-//! timed out, so a hung `/proc` file or `statvfs` cannot stall the agent. Per-mount `statvfs` calls
-//! start once the mount table has been read, so a whole collection takes at most about twice the limit.
+//! timed out, so a hung `/proc` file or `statvfs` cannot stall the agent. A result is judged by when
+//! the read finished, not when it was picked up, so a read that finished late is a timeout even if
+//! the collector was busy elsewhere. Per-mount `statvfs` calls start once the mount table has been
+//! read, so a whole collection takes at most about twice the limit.
+//!
+//! An abandoned read cannot be cancelled, so its thread lives until the read returns. A [`Collector`]
+//! remembers which sources still have a read in flight and does not start another read of the same
+//! source until it returns; that field is reported as still blocked instead. A source stuck forever
+//! therefore holds one thread, not one per collection, so the agent keeps one `Collector` for its
+//! lifetime.
 //!
 //! Parsing is separate from reading (the `system`, `disk`, and `network` modules are pure functions
 //! over bytes) so it is unit tested with fixture files. Each field is parsed independently: a missing,
@@ -18,6 +26,12 @@
 //! reason, and every other field is still collected. List facts (`disks`, `network_interfaces`) that
 //! are readable but partly incomplete keep the entries that could be read and add a warning for the
 //! rest.
+//!
+//! The collector also keeps the report acceptable to the server as a whole (review of #64): available
+//! memory larger than total memory is reported as null with a warning, and two disks or interfaces
+//! whose names would be the same once the server strips control characters (or once non-UTF-8 bytes
+//! are replaced) keep only the first, with a warning. When there are more warnings than the contract
+//! allows, every field with a warning keeps at least one.
 //!
 //! # Sources
 //!
@@ -40,11 +54,12 @@ mod network;
 mod sys;
 mod system;
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -203,6 +218,8 @@ pub struct Collector {
     root: PathBuf,
     system: Arc<dyn System>,
     timeout: Duration,
+    /// Sources with a read still running, possibly abandoned by an earlier collection.
+    in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Default for Collector {
@@ -224,6 +241,7 @@ impl Collector {
             root,
             system,
             timeout,
+            in_flight: Arc::default(),
         }
     }
 
@@ -238,7 +256,9 @@ impl Collector {
         let osrelease = self.read("/proc/sys/kernel/osrelease");
         let machine = {
             let system = Arc::clone(&self.system);
-            spawn(move || system.machine().map_err(|e| format!("uname: {e}")))
+            self.spawn("uname".to_owned(), move || {
+                system.machine().map_err(|e| format!("uname: {e}"))
+            })
         };
         let cpuinfo = self.read("/proc/cpuinfo");
         let meminfo = self.read("/proc/meminfo");
@@ -248,14 +268,14 @@ impl Collector {
         let mounts = self.read("/proc/self/mounts");
         let ifaddrs = {
             let system = Arc::clone(&self.system);
-            spawn(move || {
+            self.spawn("getifaddrs".to_owned(), move || {
                 system
                     .interface_addresses()
                     .map_err(|e| format!("getifaddrs: {e}"))
             })
         };
         let route = self.read("/proc/net/route");
-        let ipv6_route = self.read("/proc/net/ipv6_route");
+        let ipv6_route = self.read_optional(IPV6_ROUTE);
 
         let mut warnings = Warnings::default();
         let limit = self.timeout;
@@ -300,7 +320,15 @@ impl Collector {
         );
         let memory_available_bytes = warnings.field(
             Field::MemoryAvailableBytes,
-            parse_with(&meminfo, |b| system::parse_meminfo(b, "MemAvailable")),
+            parse_with(&meminfo, |b| system::parse_meminfo(b, "MemAvailable")).and_then(
+                |available| match memory_total_bytes {
+                    // The server rejects the whole report for this (review of #64).
+                    Some(total) if available > total => Err(format!(
+                        "/proc/meminfo: MemAvailable ({available} bytes) exceeds MemTotal ({total} bytes)"
+                    )),
+                    _ => Ok(available),
+                },
+            ),
         );
         let uptime_seconds = warnings.field(
             Field::UptimeSeconds,
@@ -364,7 +392,11 @@ impl Collector {
             .map(|entry| {
                 let system = Arc::clone(&self.system);
                 let path = entry.mount_path();
-                let stats = spawn(move || system.statvfs(&path).map_err(|e| e.to_string()));
+                // Debug keeps non-UTF-8 bytes distinct (`\xFF`), unlike `display`.
+                let key = format!("statvfs {path:?}");
+                let stats = self.spawn(key, move || {
+                    system.statvfs(&path).map_err(|e| e.to_string())
+                });
                 (entry, stats)
             })
             .collect();
@@ -381,6 +413,13 @@ impl Collector {
             }
         }
         disks.sort_by(|a, b| a.mount.cmp(&b.mount));
+        drop_colliding(
+            &mut disks,
+            |d| &d.mount,
+            Field::Disks,
+            "mount point",
+            warnings,
+        );
         if disks.len() > disk::MAX_DISKS {
             warnings.push(
                 Field::Disks,
@@ -399,32 +438,49 @@ impl Collector {
         &self,
         ifaddrs: Result<Vec<IfAddr>, String>,
         route: Result<(String, Vec<u8>), String>,
-        ipv6_route: Result<(String, Vec<u8>), String>,
+        ipv6_route: Result<Option<Vec<u8>>, String>,
         warnings: &mut Warnings,
     ) -> Option<Vec<NetworkInterface>> {
         let addrs = warnings.field(Field::NetworkInterfaces, ifaddrs)?;
 
         let v4 = route.and_then(|(path, bytes)| at(&path, network::default_route_v4(&bytes)));
-        // A host with IPv6 disabled has no /proc/net/ipv6_route; that is not worth a warning.
-        let v6 = ipv6_route
-            .ok()
-            .and_then(|(_, bytes)| network::default_route_v6(&bytes).ok().flatten());
         let primary = match v4 {
             Ok(Some(iface)) => Some(iface),
-            Ok(None) => v6,
-            Err(e) => {
-                warnings.push(
-                    Field::NetworkInterfaces,
-                    format!("primary interface unknown: {e}"),
-                );
-                v6
+            other => {
+                if let Err(e) = other {
+                    warnings.push(
+                        Field::NetworkInterfaces,
+                        format!("primary interface unknown: {e}"),
+                    );
+                }
+                // The IPv6 table is the fallback. Only a missing file is quiet: a host with IPv6
+                // disabled has none. Any other failure is reported, since it is now the only way to
+                // find the primary interface (review of #64).
+                let v6 = ipv6_route.and_then(|bytes| match bytes {
+                    None => Ok(None),
+                    Some(bytes) => at(IPV6_ROUTE, network::default_route_v6(&bytes)),
+                });
+                v6.unwrap_or_else(|e| {
+                    warnings.push(
+                        Field::NetworkInterfaces,
+                        format!("primary interface unknown: {e}"),
+                    );
+                    None
+                })
             }
         };
 
-        let (interfaces, dropped) = network::interfaces(&addrs, primary.as_deref());
+        let (mut interfaces, dropped) = network::interfaces(&addrs, primary.as_deref());
         if let Some(message) = dropped {
             warnings.push(Field::NetworkInterfaces, message);
         }
+        drop_colliding(
+            &mut interfaces,
+            |i| &i.name,
+            Field::NetworkInterfaces,
+            "interface name",
+            warnings,
+        );
         Some(interfaces)
     }
 
@@ -433,11 +489,22 @@ impl Collector {
         self.read_first(&[path])
     }
 
+    /// Starts reading a file that may legitimately be absent: a missing file is `Ok(None)`.
+    fn read_optional(&self, path: &'static str) -> Pending<Option<Vec<u8>>> {
+        let file = self.root.join(path.trim_start_matches('/'));
+        self.spawn(path.to_owned(), move || match read_capped(&file) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{path}: {e}")),
+        })
+    }
+
     /// Starts reading the first of `paths` that exists.
     fn read_first(&self, paths: &[&'static str]) -> Pending<(String, Vec<u8>)> {
         let root = self.root.clone();
+        let key = paths.join(" ");
         let paths = paths.to_vec();
-        spawn(move || {
+        self.spawn(key, move || {
             // When every path fails, report the first (the preferred source).
             let mut first = None;
             for path in &paths {
@@ -482,39 +549,85 @@ fn parse_with<T>(
     }
 }
 
-/// A read running on its own thread.
-struct Pending<T> {
-    receiver: Result<mpsc::Receiver<Result<T, String>>, String>,
-}
+const IPV6_ROUTE: &str = "/proc/net/ipv6_route";
 
-/// Runs `read` on a new thread. The thread is detached: if it hangs, [`Pending::wait`] gives up on it.
-fn spawn<T: Send + 'static>(
-    read: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Pending<T> {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let spawned = thread::Builder::new()
-        .name("fleet-agent-collect".to_owned())
-        .spawn(move || {
-            // The receiver may have given up already; nothing to do then.
-            let _ = sender.send(read());
-        });
-    Pending {
-        receiver: spawned
-            .map(|_| receiver)
-            .map_err(|e| format!("could not start collector thread: {e}")),
+impl Collector {
+    /// Runs `read` on a new thread, unless a read of the same `source` is still running (for
+    /// example abandoned by an earlier collection after a timeout). The thread is detached: if it
+    /// hangs, [`Pending::wait`] gives up on it, and `source` stays marked until it returns.
+    fn spawn<T: Send + 'static>(
+        &self,
+        source: String,
+        read: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Pending<T> {
+        let in_flight = Arc::clone(&self.in_flight);
+        if !lock(&in_flight).insert(source.clone()) {
+            return Pending {
+                receiver: Err(
+                    "an earlier read of this source has not returned; not starting another"
+                        .to_owned(),
+                ),
+            };
+        }
+        let guard = InFlight {
+            set: Arc::clone(&in_flight),
+            source: source.clone(),
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let spawned = thread::Builder::new()
+            .name("fleet-agent-collect".to_owned())
+            .spawn(move || {
+                let result = read();
+                let finished = Instant::now();
+                // Unmark before sending, so the next collection can read this source again.
+                drop(guard);
+                // The receiver may have given up already; nothing to do then.
+                let _ = sender.send((result, finished));
+            });
+        Pending {
+            receiver: spawned.map(|_| receiver).map_err(|e| {
+                // The closure, and the guard with it, was dropped: the source is unmarked.
+                format!("could not start collector thread: {e}")
+            }),
+        }
     }
 }
 
+/// Marks a source as being read; unmarks it when dropped (also if the read panics).
+struct InFlight {
+    set: Arc<Mutex<HashSet<String>>>,
+    source: String,
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        lock(&self.set).remove(&self.source);
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a read thread sends: its result and when it finished.
+type Finished<T> = (Result<T, String>, Instant);
+
+/// A read running on its own thread.
+struct Pending<T> {
+    receiver: Result<mpsc::Receiver<Finished<T>>, String>,
+}
+
 impl<T> Pending<T> {
-    /// The result, or a timeout error once `deadline` passes.
+    /// The result, or a timeout error if the read did not finish by `deadline`. A result that
+    /// finished late but is picked up afterwards is still a timeout (review of #64).
     fn wait(self, deadline: Instant, limit: Duration) -> Result<T, String> {
         let receiver = self.receiver?;
+        let timed_out = || Err(format!("read timed out after {}", human(limit)));
         let remaining = deadline.saturating_duration_since(Instant::now());
         match receiver.recv_timeout(remaining) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                Err(format!("read timed out after {}", human(limit)))
-            }
+            Ok((_, finished)) if finished > deadline => timed_out(),
+            Ok((result, _)) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => timed_out(),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("collector thread ended without a result".to_owned())
             }
@@ -553,10 +666,70 @@ impl Warnings {
         });
     }
 
-    fn finish(mut self) -> Vec<Warning> {
-        self.0.truncate(MAX_WARNINGS);
+    /// At most [`MAX_WARNINGS`], in the order they were raised. When some must go, the first warning
+    /// for each field is kept, so a `null` fact never loses its explanation to a run of per-mount
+    /// details (review of #64); the remaining slots go to the earliest of the rest.
+    fn finish(self) -> Vec<Warning> {
+        if self.0.len() <= MAX_WARNINGS {
+            return self.0;
+        }
+        let mut keep = vec![false; self.0.len()];
+        let mut fields = Vec::new();
+        for (i, warning) in self.0.iter().enumerate() {
+            if !fields.contains(&warning.field) {
+                fields.push(warning.field);
+                keep[i] = true;
+            }
+        }
+        let mut room = MAX_WARNINGS - fields.len();
+        for slot in keep.iter_mut().filter(|k| !**k) {
+            if room == 0 {
+                break;
+            }
+            *slot = true;
+            room -= 1;
+        }
         self.0
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(warning, keep)| keep.then_some(warning))
+            .collect()
     }
+}
+
+/// A name as the server compares it: with the control characters it strips removed (U+0000 to
+/// U+001F and U+007F to U+009F, `cmdb/lib/agent_api/inventory_report.rb`).
+fn server_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(u32::from(*c), 0..=0x1f | 0x7f..=0x9f))
+        .collect()
+}
+
+/// Keeps the first of any entries whose names the server would see as equal, with a warning for each
+/// one dropped; the server rejects a whole report with a duplicate name (review of #64). Names that
+/// differed only in non-UTF-8 bytes already look equal here, since both were decoded with U+FFFD.
+fn drop_colliding<T>(
+    items: &mut Vec<T>,
+    name: impl Fn(&T) -> &String,
+    field: Field,
+    what: &str,
+    warnings: &mut Warnings,
+) {
+    let mut seen = HashSet::new();
+    items.retain(|item| {
+        let name = name(item);
+        if seen.insert(server_key(name)) {
+            return true;
+        }
+        warnings.push(
+            field,
+            format!(
+                "{}: {what} is the same as an earlier one once control characters are removed; not reported",
+                name.escape_debug()
+            ),
+        );
+        false
+    });
 }
 
 /// Cuts `s` to at most `max` characters, marking the cut.

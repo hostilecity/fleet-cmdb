@@ -51,7 +51,8 @@ pub fn parse_architecture(machine: &str) -> Result<String, String> {
 }
 
 /// `os-release(5)`: `ID`, `VERSION_ID`, and `PRETTY_NAME`, unquoted. A key the file lacks is `None`;
-/// a file with no `KEY=value` lines at all is an error.
+/// a file with no `KEY=value` lines at all is an error, and so is invalid quoting on one of the three
+/// keys (a line with invalid quoting on any other key is skipped).
 pub fn parse_os_release(bytes: &[u8]) -> Result<OsRelease, String> {
     let mut release = OsRelease {
         id: None,
@@ -74,15 +75,22 @@ pub fn parse_os_release(bytes: &[u8]) -> Result<OsRelease, String> {
         {
             continue;
         }
+        let wanted = match key {
+            "ID" => Some((&mut release.id, 64)),
+            "VERSION_ID" => Some((&mut release.version_id, 64)),
+            "PRETTY_NAME" => Some((&mut release.pretty_name, 256)),
+            _ => None,
+        };
         let Some(value) = unquote(raw) else {
+            if wanted.is_some() {
+                // Silently dropping it would report a wrong `null` (review of #64).
+                return Err(format!("{key} has an unterminated quote"));
+            }
             continue;
         };
         assignments += 1;
-        let (slot, max) = match key {
-            "ID" => (&mut release.id, 64),
-            "VERSION_ID" => (&mut release.version_id, 64),
-            "PRETTY_NAME" => (&mut release.pretty_name, 256),
-            _ => continue,
+        let Some((slot, max)) = wanted else {
+            continue;
         };
         if value.chars().count() > max {
             return Err(format!("{key} longer than {max} characters"));
@@ -151,11 +159,18 @@ pub fn parse_cpu_model(bytes: &[u8]) -> Result<String, String> {
     Ok(model.to_owned())
 }
 
-/// Logical CPUs: the number of `processor` entries in `/proc/cpuinfo`.
+/// Logical CPUs: the number of `processor` entries in `/proc/cpuinfo`. A `processor` entry whose value
+/// is not a number makes the count unreliable, so it is an error rather than skipped (review of #64).
 pub fn parse_cpu_cores(bytes: &[u8]) -> Result<u32, String> {
-    let count = colon_fields(text(bytes)?)
-        .filter(|(key, value)| *key == "processor" && value.parse::<u32>().is_ok())
-        .count();
+    let mut count = 0usize;
+    for (key, value) in colon_fields(text(bytes)?) {
+        if key == "processor" {
+            if value.parse::<u32>().is_err() {
+                return Err(format!("\"processor\" entry {} is not a number", count + 1));
+            }
+            count += 1;
+        }
+    }
     match count {
         0 => Err("no \"processor\" lines".to_owned()),
         1..=4096 => Ok(u32::try_from(count).expect("at most 4096")),
@@ -281,6 +296,24 @@ mod tests {
     }
 
     #[test]
+    fn os_release_with_a_broken_quote_on_a_reported_key_is_an_error() {
+        // Review of #64: the fixture with PRETTY_NAME's closing quote removed must not quietly become
+        // `pretty_name: null`.
+        let broken = String::from_utf8(OS_RELEASE.to_vec())
+            .expect("utf-8")
+            .replace("(trixie)\"", "(trixie)");
+        assert_eq!(
+            parse_os_release(broken.as_bytes()),
+            Err("PRETTY_NAME has an unterminated quote".to_owned())
+        );
+        // Bad quoting on a key the agent does not report is still skipped.
+        assert_eq!(
+            parse_os_release(b"ID=debian\nHOME_URL=\"https://\n").map(|r| r.id),
+            Ok(Some("debian".to_owned()))
+        );
+    }
+
+    #[test]
     fn hostname_and_kernel() {
         assert_eq!(
             parse_hostname(b"vm-01.example.lan\n"),
@@ -316,6 +349,19 @@ mod tests {
         assert_eq!(parse_cpu_cores(CPUINFO), Ok(4));
         assert!(parse_cpu_model(b"processor\t: 0\n").is_err());
         assert!(parse_cpu_cores(b"model name\t: x\n").is_err());
+    }
+
+    #[test]
+    fn a_malformed_processor_entry_is_an_error_not_skipped() {
+        // Review of #64: three good entries and a broken one must not report 3 CPUs.
+        let broken = String::from_utf8(CPUINFO.to_vec())
+            .expect("utf-8")
+            .replacen("processor\t: 3", "processor\t: broken", 1);
+        assert_ne!(broken.as_bytes(), CPUINFO, "fixture changed");
+        assert_eq!(
+            parse_cpu_cores(broken.as_bytes()),
+            Err("\"processor\" entry 4 is not a number".to_owned())
+        );
     }
 
     #[test]

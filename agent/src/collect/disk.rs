@@ -4,6 +4,9 @@
 //!
 //! A mount is a real disk, and reported, when all of these hold:
 //!
+//! 0. It is visible: no later mount in the table sits on the same mount point or on one of its parent
+//!    directories. A mount stacked on top (an overmount) hides the one below, and `statvfs` on that
+//!    path would report the top filesystem, so only the top one is considered (review of #64).
 //! 1. Its filesystem type is not a pseudo or virtual one ([`PSEUDO_FILESYSTEMS`]: `proc`, `sysfs`,
 //!    `tmpfs`, `devtmpfs`, `cgroup2`, container `overlay`, and the like).
 //! 2. Its source is a block device, an absolute path under `/dev/`. This also leaves out network
@@ -19,9 +22,10 @@
 //! point. `size_bytes` is `f_blocks * f_frsize` and `free_bytes` is `f_bavail * f_frsize`, the `Size`
 //! and `Avail` columns of `df`. The mount list and sizes are stable; free space is volatile (DEC-07).
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::system::MAX_SAFE_INTEGER;
 use super::{Disk, FsStats};
@@ -137,11 +141,29 @@ pub fn is_real(entry: &MountEntry) -> bool {
     !PSEUDO_FILESYSTEMS.contains(&entry.fstype.as_str()) && entry.source.starts_with(b"/dev/")
 }
 
-/// Real mounts, one per source device, in mount order (rules 1 to 3).
+/// The mounts no later mount covers (rule 0), in mount order. The kernel lists mounts in the order
+/// they were made, so a mount is hidden when a later entry is at its mount point or at a parent of it.
+pub fn visible(entries: Vec<MountEntry>) -> Vec<MountEntry> {
+    let mut later: HashSet<Vec<u8>> = HashSet::new();
+    let mut kept = Vec::new();
+    for entry in entries.into_iter().rev() {
+        let hidden = Path::new(OsStr::from_bytes(&entry.mount_point))
+            .ancestors()
+            .any(|dir| later.contains(dir.as_os_str().as_bytes()));
+        later.insert(entry.mount_point.clone());
+        if !hidden {
+            kept.push(entry);
+        }
+    }
+    kept.reverse();
+    kept
+}
+
+/// Real mounts, one per source device, in mount order (rules 0 to 3).
 pub fn select_real(entries: Vec<MountEntry>) -> Vec<MountEntry> {
     let mut seen: Vec<Vec<u8>> = Vec::new();
     let mut selected = Vec::new();
-    for entry in entries {
+    for entry in visible(entries) {
         if !is_real(&entry) || seen.contains(&entry.source) {
             continue;
         }
@@ -258,10 +280,39 @@ mod tests {
     #[test]
     fn deduplicates_bind_mounts_keeping_the_first() {
         let entries = parse_mounts(
-            b"/dev/sdb1 /srv/data xfs rw 0 0\n/dev/sdb1 /export xfs rw 0 0\n/dev/sda1 / ext4 rw 0 0\n",
+            b"/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /srv/data xfs rw 0 0\n/dev/sdb1 /export xfs rw 0 0\n",
         )
         .expect("parse");
-        assert_eq!(mount_points(&select_real(entries)), ["/srv/data", "/"]);
+        assert_eq!(mount_points(&select_real(entries)), ["/", "/srv/data"]);
+    }
+
+    #[test]
+    fn an_overmount_hides_the_mount_below_it() {
+        // Review of #64: two devices stacked on /srv must not both be reported (statvfs would query
+        // the top one twice and the server would reject the duplicate mount).
+        let entries = parse_mounts(
+            b"/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /srv xfs rw 0 0\n/dev/sdc1 /srv ext4 rw 0 0\n",
+        )
+        .expect("parse");
+        let selected = select_real(entries);
+        assert_eq!(mount_points(&selected), ["/", "/srv"]);
+        assert_eq!(selected[1].source, b"/dev/sdc1");
+
+        // A mount on a parent directory hides the mounts under it that came before it...
+        let entries = parse_mounts(
+            b"/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /mnt/a xfs rw 0 0\n/dev/sdc1 /mnt ext4 rw 0 0\n/dev/sdd1 /mnt/b xfs rw 0 0\n",
+        )
+        .expect("parse");
+        // ...but not those made after it, and not a sibling that only shares a name prefix.
+        assert_eq!(mount_points(&select_real(entries)), ["/", "/mnt", "/mnt/b"]);
+        let entries = parse_mounts(b"/dev/sdb1 /mntx xfs rw 0 0\n/dev/sdc1 /mnt ext4 rw 0 0\n")
+            .expect("parse");
+        assert_eq!(mount_points(&select_real(entries)), ["/mntx", "/mnt"]);
+
+        // A pseudo filesystem on top hides the disk too: the disk's space is not reachable there.
+        let entries =
+            parse_mounts(b"/dev/sdb1 /srv xfs rw 0 0\ntmpfs /srv tmpfs rw 0 0\n").expect("parse");
+        assert!(select_real(entries).is_empty());
     }
 
     #[test]

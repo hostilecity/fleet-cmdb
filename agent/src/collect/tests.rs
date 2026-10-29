@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -74,6 +75,8 @@ struct FakeSystem {
     addrs: Result<Vec<IfAddr>, io::ErrorKind>,
     /// Sleep this long in `machine` to simulate a hung syscall.
     hang: Option<Duration>,
+    /// How many times `machine` was called.
+    machine_calls: Arc<AtomicUsize>,
 }
 
 impl FakeSystem {
@@ -112,12 +115,14 @@ impl FakeSystem {
                 addr("veth1a2b3c4", "fe80::1", 64, true, false),
             ]),
             hang: None,
+            machine_calls: Arc::default(),
         }
     }
 }
 
 impl System for FakeSystem {
     fn machine(&self) -> io::Result<String> {
+        self.machine_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(hang) = self.hang {
             std::thread::sleep(hang);
         }
@@ -286,6 +291,11 @@ const SOURCES: &[(&str, &[Field])] = &[
     ("/proc/self/mounts", &[Field::Disks]),
 ];
 
+/// The inventory as JSON without its warnings.
+fn without_warnings(inventory: &Inventory) -> serde_json::Value {
+    nulled(inventory, &[])
+}
+
 /// The inventory as JSON with the given fields set to null, for comparing the rest.
 fn nulled(inventory: &Inventory, fields: &[Field]) -> serde_json::Value {
     let mut value = serde_json::to_value(inventory).expect("serialise");
@@ -316,10 +326,12 @@ fn assert_only_these_fields_degraded(inventory: &Inventory, source: &str, fields
         "{source}: {:#?}",
         inventory.warnings
     );
+    // The actual inventory is compared as collected, so a failed field that kept a value fails here
+    // too, not only a changed field elsewhere (review of #64).
     assert_eq!(
-        nulled(inventory, fields),
+        without_warnings(inventory),
         nulled(&expected(), fields),
-        "{source}: other fields changed"
+        "{source}: a failed field is not null, or other fields changed"
     );
 }
 
@@ -484,7 +496,7 @@ fn a_hung_file_read_times_out_and_the_rest_is_collected() {
         Some("read timed out after 200ms")
     );
     assert_eq!(
-        nulled(&inventory, &[Field::MachineId]),
+        without_warnings(&inventory),
         nulled(&expected(), &[Field::MachineId])
     );
     // Unblock the abandoned reader so its thread ends. Non-blocking, so this cannot hang the test.
@@ -492,6 +504,215 @@ fn a_hung_file_read_times_out_and_the_rest_is_collected() {
         .write(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(root.path("/etc/machine-id"));
+}
+
+#[test]
+fn available_memory_above_total_is_null_with_a_warning() {
+    // Review of #64: the server rejects the whole report for this, so only that field degrades.
+    let root = FakeRoot::new();
+    root.write("/proc/meminfo", b"MemTotal: 1 kB\nMemAvailable: 2 kB\n");
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(inventory.memory_total_bytes, Some(1024));
+    assert_eq!(inventory.memory_available_bytes, None);
+    assert_eq!(
+        warning_for(&inventory, Field::MemoryAvailableBytes),
+        Some("/proc/meminfo: MemAvailable (2048 bytes) exceeds MemTotal (1024 bytes)")
+    );
+    assert_eq!(inventory.warnings.len(), 1);
+    // Equal is fine.
+    root.write("/proc/meminfo", b"MemTotal: 2 kB\nMemAvailable: 2 kB\n");
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(inventory.memory_available_bytes, Some(2048));
+    assert!(inventory.warnings.is_empty());
+}
+
+#[test]
+fn mounts_that_look_the_same_to_the_server_are_reported_once() {
+    // Review of #64: a tab the server strips, or two different invalid bytes that both decode to
+    // U+FFFD, would give the server duplicate mount keys and it would reject the whole report.
+    let root = FakeRoot::new();
+    root.write(
+        "/proc/self/mounts",
+        b"/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /mnt/a\\011b ext4 rw 0 0\n/dev/sdc1 /mnt/ab ext4 rw 0 0\n\
+/dev/sdd1 /mnt/disk\xff ext4 rw 0 0\n/dev/sde1 /mnt/disk\xfe ext4 rw 0 0\n",
+    );
+    let mut system = FakeSystem::new();
+    let stats = system.statvfs[Path::new("/")];
+    for mount in [
+        &b"/mnt/a\tb"[..],
+        b"/mnt/ab",
+        b"/mnt/disk\xff",
+        b"/mnt/disk\xfe",
+    ] {
+        system
+            .statvfs
+            .insert(PathBuf::from(std::ffi::OsStr::from_bytes(mount)), stats);
+    }
+    let inventory = collect_from(&root.0, system);
+    let mounts: Vec<&str> = inventory
+        .disks
+        .as_ref()
+        .expect("disks")
+        .iter()
+        .map(|d| d.mount.as_str())
+        .collect();
+    assert_eq!(mounts, ["/", "/mnt/a\tb", "/mnt/disk\u{fffd}"]);
+    let dropped: Vec<&str> = inventory
+        .warnings
+        .iter()
+        .map(|w| w.message.as_str())
+        .collect();
+    assert_eq!(dropped.len(), 2, "{dropped:#?}");
+    assert!(
+        dropped[0].starts_with("/mnt/ab: mount point is the same"),
+        "{dropped:#?}"
+    );
+    assert!(
+        dropped[1].starts_with("/mnt/disk\u{fffd}: mount point"),
+        "{dropped:#?}"
+    );
+    contract::assert_conforms("v1", "inventory.request", &as_report(&inventory));
+}
+
+#[test]
+fn interfaces_that_look_the_same_to_the_server_are_reported_once() {
+    let mut system = FakeSystem::new();
+    if let Ok(addrs) = system.addrs.as_mut() {
+        addrs.push(IfAddr {
+            name: "ens\u{1}19".to_owned(),
+            up: true,
+            loopback: false,
+            address: "198.51.100.30".parse().expect("address"),
+            prefix_len: 24,
+        });
+    }
+    let inventory = collect_from(&fixture_root(), system);
+    let names: Vec<&str> = inventory
+        .network_interfaces
+        .as_ref()
+        .expect("interfaces")
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
+    // Sorted by name, `ens\u{1}19` comes first, so `ens19` is the one dropped.
+    assert_eq!(names, ["ens\u{1}19", "ens18"]);
+    assert!(
+        warning_for(&inventory, Field::NetworkInterfaces)
+            .expect("warning")
+            .starts_with("ens19: interface name is the same"),
+    );
+}
+
+#[test]
+fn a_blocked_source_is_not_read_again_until_it_returns() {
+    // Review of #64: a read that never returns must hold one thread, not one per collection.
+    let mut system = FakeSystem::new();
+    system.hang = Some(Duration::from_millis(800));
+    let calls = Arc::clone(&system.machine_calls);
+    let collector = Collector::with(fixture_root(), Arc::new(system), Duration::from_millis(100));
+
+    let first = collector.collect();
+    assert_eq!(
+        warning_for(&first, Field::Architecture),
+        Some("read timed out after 100ms")
+    );
+    let second = collector.collect();
+    assert_eq!(
+        warning_for(&second, Field::Architecture),
+        Some("an earlier read of this source has not returned; not starting another")
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a second uname thread was started"
+    );
+    // Everything else is collected as usual meanwhile.
+    assert_eq!(second.hostname, expected().hostname);
+    assert_eq!(second.disks, expected().disks);
+
+    // Once the stuck read returns, the source is read again.
+    std::thread::sleep(Duration::from_millis(1000));
+    let third = collector.collect();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        warning_for(&third, Field::Architecture),
+        Some("read timed out after 100ms")
+    );
+}
+
+#[test]
+fn a_result_is_judged_by_when_the_read_finished() {
+    // Review of #64: a read that finishes after its deadline is a timeout even if it is picked up
+    // later, and one that finished in time stays valid however late it is picked up.
+    let collector = Collector::with(
+        fixture_root(),
+        Arc::new(FakeSystem::new()),
+        Duration::from_millis(100),
+    );
+    let limit = Duration::from_millis(100);
+    let deadline = Instant::now() + limit;
+    let late = collector.spawn("late".to_owned(), || {
+        std::thread::sleep(Duration::from_millis(250));
+        Ok(1)
+    });
+    let on_time = collector.spawn("on time".to_owned(), || Ok(2));
+    // Busy elsewhere until both have finished.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        late.wait(deadline, limit),
+        Err("read timed out after 100ms".to_owned())
+    );
+    assert_eq!(on_time.wait(deadline, limit), Ok(2));
+}
+
+#[test]
+fn ipv6_fallback_failures_are_reported_when_the_fallback_is_needed() {
+    // Review of #64: with no IPv4 default route the IPv6 table is the only source of `primary`.
+    let header =
+        b"Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n";
+    let root = FakeRoot::new();
+    root.write("/proc/net/route", header);
+    root.write("/proc/net/ipv6_route", b"\xff\xfe");
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    let interfaces = inventory.network_interfaces.as_ref().expect("interfaces");
+    assert!(interfaces.iter().all(|i| !i.primary));
+    assert_eq!(
+        warning_for(&inventory, Field::NetworkInterfaces),
+        Some("primary interface unknown: /proc/net/ipv6_route: not valid UTF-8")
+    );
+
+    // IPv6 disabled (no file) is quiet.
+    root.remove("/proc/net/ipv6_route");
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert!(inventory.warnings.is_empty(), "{:#?}", inventory.warnings);
+
+    // With an IPv4 default route the IPv6 table is not needed, so its state does not matter.
+    let root = FakeRoot::new();
+    root.write("/proc/net/ipv6_route", b"\xff\xfe");
+    assert_eq!(collect_from(&root.0, FakeSystem::new()), expected());
+}
+
+#[test]
+fn every_field_with_a_warning_keeps_one_when_warnings_are_capped() {
+    // Review of #64: 64 per-mount warnings must not push out the warning for a null field.
+    let mut warnings = Warnings::default();
+    for i in 0..70 {
+        warnings.push(Field::Disks, format!("/mnt/{i}: statvfs: fake failure"));
+    }
+    warnings.push(
+        Field::NetworkInterfaces,
+        "getifaddrs: fake failure".to_owned(),
+    );
+    warnings.push(Field::Architecture, "uname: fake failure".to_owned());
+    let warnings = warnings.finish();
+    assert_eq!(warnings.len(), MAX_WARNINGS);
+    let fields: Vec<Field> = warnings.iter().map(|w| w.field).collect();
+    assert_eq!(
+        fields[MAX_WARNINGS - 2..],
+        [Field::NetworkInterfaces, Field::Architecture]
+    );
+    assert_eq!(warnings[0].message, "/mnt/0: statvfs: fake failure");
+    assert_eq!(warnings[61].message, "/mnt/61: statvfs: fake failure");
 }
 
 #[test]

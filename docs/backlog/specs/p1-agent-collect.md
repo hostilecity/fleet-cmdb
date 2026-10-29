@@ -22,7 +22,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- Disks: size and free space per real mount, from `/proc/self/mounts` and `statvfs`. Exclude pseudo and virtual filesystems (`proc`, `sysfs`, `tmpfs` and similar, container overlays) using a documented rule; de-duplicate bind mounts of the same device.
+- Disks: size and free space per real mount, from `/proc/self/mounts` and `statvfs`. Exclude pseudo and virtual filesystems (`proc`, `sysfs`, `tmpfs` and similar, container overlays) using a documented rule; ignore mounts hidden by an overmount; de-duplicate bind mounts of the same device.
 - Network: addresses of interfaces that are up and not loopback, IPv4 and IPv6, excluding link-local and container bridge interfaces by documented rule; mark the interface carrying the default route (`/proc/net/route`) as primary.
 - Mount and interface lists are stable fields, free space is volatile ([DEC-07](../../decisions/0007-snapshots-and-retention.md)).
 - The exclusion and primary-interface rules are documented in [`agent/README.md`](../../../agent/README.md#collected-facts). Network filesystems are not reported (their space belongs to another machine). Without an IPv4 default route, the IPv6 default route (`/proc/net/ipv6_route`) marks the primary interface. A list that could be read only in part (one mount's `statvfs` failed, no routing table) keeps the entries that were read and adds a warning.
