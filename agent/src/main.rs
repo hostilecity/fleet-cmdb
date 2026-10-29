@@ -11,6 +11,7 @@ mod client;
 mod collect;
 mod config;
 mod logging;
+mod owner;
 mod report;
 mod retry;
 mod shutdown;
@@ -188,7 +189,7 @@ fn run(path: &Path) -> ExitCode {
     match state::ensure_dir(&config.state_dir) {
         Ok(true) => tracing::info!(
             state_dir = %config.state_dir.display(),
-            "created or secured the state directory (mode 0700)"
+            "created the state directory (mode 0700)"
         ),
         Ok(false) => {}
         Err(e) => {

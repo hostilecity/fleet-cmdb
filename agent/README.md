@@ -38,7 +38,7 @@ The config path defaults to `/etc/fleet-agent/config.toml`. Exit status: `0` suc
 
 ## Configuration
 
-TOML, root-owned, mode `0600` ([DEC-03](../docs/decisions/0003-agent-privilege.md)). The agent refuses to start if the file is readable or writable by group or others, and rejects unknown keys, so there is no way to add a setting such as `insecure`: certificate verification cannot be turned off.
+TOML, root-owned, mode `0600` ([DEC-03](../docs/decisions/0003-agent-privilege.md)). The agent refuses to start if the file is not owned by the user it runs as, is readable or writable by group or others, or contains unknown keys, so there is no way to add a setting such as `insecure`: certificate verification cannot be turned off.
 
 ```toml
 server_url = "https://fleet-agent.example.lan"   # required; https only, host and optional port
@@ -60,10 +60,12 @@ max_seconds = 21600
 
 If only `interval_seconds` is set, the default bounds widen to include it.
 
+`state_dir` is created with mode `0700` if it does not exist. An existing directory is never changed: the agent refuses to start if it is a symlink, is owned by another user, or is accessible by group or others, and says how to fix it. Never point `state_dir` at a shared directory. `ca_file` must hold only valid PEM certificates; a malformed entry is an error rather than being skipped. Config errors name the key but never repeat its value, so a misplaced credential does not end up in the logs.
+
 ## HTTP client and retries
 
 - `rustls` with the Debian trust store (`/etc/ssl/certs/ca-certificates.crt`) plus `ca_file`. Every request sends `Authorization: Bearer <credential>` and `User-Agent: fleet-agent/<version>`. Redirects are not followed and environment proxies are ignored, so the credential only goes to `server_url`. Connect timeout 10 s, request timeout 30 s, response body at most 1 MiB.
-- Errors are mapped from the envelope in [`docs/api`](../docs/api/README.md). Transient failures (unreachable, TLS, timeouts, `5xx`, other `4xx`) back off exponentially from 5 s to a cap of 5 minutes with equal jitter, and reset after a success. `401`, `403` (including `reenrollment_required`), and `426` are logged plainly and wait about 30 minutes. `429` waits at least `Retry-After` (at most an hour).
+- Errors are mapped from the envelope in [`docs/api`](../docs/api/README.md). Transient failures (unreachable, TLS, timeouts, `5xx`, other `4xx`) back off exponentially from 5 s to a cap of 5 minutes with equal jitter, and reset after a success. `401`, `403` (including `reenrollment_required`), and `426` are logged plainly and wait about 30 minutes. `429` waits at least `Retry-After`, plus up to 10% (at most a minute) so throttled agents do not retry together; only a broken header longer than a day is capped.
 - Logs are `key=value` lines with an RFC 3339 UTC timestamp on stdout, for the journal. The credential is held in a type that prints `<redacted>`; logs carry its non-secret key id.
 
 ## Layout

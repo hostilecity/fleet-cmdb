@@ -10,7 +10,7 @@
 //!   below `base / 2`, so there is no tight loop.
 //! - `401`, `403` (including `reenrollment_required`), and `426` cannot be fixed by retrying soon,
 //!   so they wait a long interval (`long`, minus up to 10% jitter).
-//! - `429` waits at least the server's `Retry-After` (up to `retry_after_max`), and at least the
+//! - `429` waits at least the server's `Retry-After` plus a little jitter (only a broken header over a day is capped), and at least the
 //!   normal backoff.
 //!
 //! Randomness comes from an injected [`Rng`], so tests are deterministic.
@@ -62,7 +62,9 @@ pub struct RetryPolicy {
     pub cap: Duration,
     /// Wait after `401`, `403`, or `426`.
     pub long: Duration,
-    /// The longest `Retry-After` the agent honours; a larger value is treated as this.
+    /// A safety ceiling on `Retry-After`, only against a broken header (a server bug sending years
+    /// would otherwise silence the fleet until restarted). Any realistic load-shedding delay is honoured
+    /// in full (ADR 0019, review of #65).
     pub retry_after_max: Duration,
 }
 
@@ -72,7 +74,7 @@ impl Default for RetryPolicy {
             base: Duration::from_secs(5),
             cap: Duration::from_secs(5 * 60),
             long: Duration::from_secs(30 * 60),
-            retry_after_max: Duration::from_secs(60 * 60),
+            retry_after_max: Duration::from_secs(24 * 60 * 60),
         }
     }
 }
@@ -160,7 +162,11 @@ impl<R: Rng> Backoff<R> {
             Class::After(after) => {
                 let ceiling = self.transient_ceiling();
                 let backoff = self.subtract_jitter(ceiling, ceiling / 2);
-                after.min(self.policy.retry_after_max).max(backoff)
+                // Never earlier than the server asked, but spread above it (up to 10%, at most a
+                // minute) so a fleet throttled together does not retry together (review of #65).
+                let after = after.min(self.policy.retry_after_max);
+                let spread = (after / 10).clamp(Duration::from_secs(1), Duration::from_secs(60));
+                self.add_jitter(after, spread).max(backoff)
             }
         }
     }
@@ -172,6 +178,12 @@ impl<R: Rng> Backoff<R> {
             .base
             .saturating_mul(1 << exponent)
             .min(self.policy.cap)
+    }
+
+    /// `value` plus a random amount in `[0, spread]`.
+    fn add_jitter(&mut self, value: Duration, spread: Duration) -> Duration {
+        let spread_ms = spread.as_millis() as u64;
+        value + Duration::from_millis(self.rng.next_u64() % (spread_ms + 1))
     }
 
     /// `value` minus a random amount in `[0, spread]`.
@@ -435,8 +447,11 @@ mod tests {
             b.next_delay(Class::Transient);
         }
         assert_eq!(b.next_delay(Class::After(secs(1))), secs(300));
-        // A huge Retry-After is limited to retry_after_max.
-        assert_eq!(b.next_delay(Class::After(secs(86_400 * 30))), secs(3600));
+        // Long load-shedding delays are honoured in full (ADR 0019, review of #65).
+        assert_eq!(b.next_delay(Class::After(secs(7200))), secs(7200));
+        assert_eq!(b.next_delay(Class::After(secs(20 * 3600))), secs(20 * 3600));
+        // Only a broken header beyond a day is limited.
+        assert_eq!(b.next_delay(Class::After(secs(86_400 * 30))), secs(86_400));
         assert_eq!(
             RetryClass::of(&ApiError::RateLimited {
                 retry_after: Some(secs(9)),
@@ -451,6 +466,27 @@ mod tests {
             }),
             Class::Transient
         );
+    }
+
+    #[test]
+    fn retry_after_is_spread_above_the_servers_delay_never_below() {
+        // A fleet throttled together must not retry together (review of #65).
+        let delays: Vec<Duration> = (0..200)
+            .map(|seed| backoff(SplitMix64::new(seed)).next_delay(Class::After(secs(60))))
+            .collect();
+        assert!(
+            delays.iter().all(|d| *d >= secs(60) && *d <= secs(66)),
+            "{delays:?}"
+        );
+        let distinct: std::collections::BTreeSet<_> = delays.iter().collect();
+        assert!(
+            distinct.len() > 100,
+            "only {} distinct delays",
+            distinct.len()
+        );
+        // The spread is at most a minute even for long delays.
+        let long = backoff(SplitMix64::new(3)).next_delay(Class::After(secs(7200)));
+        assert!(long >= secs(7200) && long <= secs(7260), "{long:?}");
     }
 
     #[test]

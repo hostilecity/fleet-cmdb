@@ -63,15 +63,24 @@ pub fn trust_roots(
     system_bundle: &Path,
     ca_file: Option<&Path>,
 ) -> Result<Vec<Certificate<'static>>, TrustError> {
+    // The system bundle is maintained by Debian; an entry the parser rejects there is skipped.
     let mut roots = match fs::read(system_bundle) {
-        Ok(pem) => pem_certificates(&pem),
+        Ok(pem) => pem_certificates(&pem).0,
         Err(_) => Vec::new(),
     };
     if let Some(path) = ca_file {
         let pem = fs::read(path).map_err(|e| {
             TrustError::CaFile(format!("cannot read `ca_file` {}: {e}", path.display()))
         })?;
-        let extra = pem_certificates(&pem);
+        // The operator's own bundle must parse completely: a skipped entry would pass check-config
+        // and then fail TLS for the server it was meant for (review of #65).
+        let (extra, problems) = pem_certificates(&pem);
+        if let Some(problem) = problems.first() {
+            return Err(TrustError::CaFile(format!(
+                "`ca_file` {} has an entry that is not a valid PEM certificate ({problem}); fix or remove it",
+                path.display()
+            )));
+        }
         if extra.is_empty() {
             return Err(TrustError::CaFile(format!(
                 "`ca_file` {} contains no PEM certificate (expected -----BEGIN CERTIFICATE-----)",
@@ -86,13 +95,19 @@ pub fn trust_roots(
     Ok(roots)
 }
 
-fn pem_certificates(pem: &[u8]) -> Vec<Certificate<'static>> {
-    ureq::tls::parse_pem(pem)
-        .filter_map(|item| match item {
-            Ok(PemItem::Certificate(cert)) => Some(cert),
-            _ => None,
-        })
-        .collect()
+/// The certificates in a PEM bundle, and a description of each entry that is malformed or is not a
+/// certificate (for example a private key), numbered from 1.
+fn pem_certificates(pem: &[u8]) -> (Vec<Certificate<'static>>, Vec<String>) {
+    let mut certificates = Vec::new();
+    let mut problems = Vec::new();
+    for (index, item) in ureq::tls::parse_pem(pem).enumerate() {
+        match item {
+            Ok(PemItem::Certificate(cert)) => certificates.push(cert),
+            Ok(_) => problems.push(format!("entry {} is not a certificate", index + 1)),
+            Err(e) => problems.push(format!("entry {} cannot be parsed: {e}", index + 1)),
+        }
+    }
+    (certificates, problems)
 }
 
 /// A failed API call, mapped from the HTTP status and the error envelope
@@ -498,6 +513,37 @@ pub(crate) mod tests {
             "{error}"
         );
         assert_eq!(trust_roots(&absent, None).unwrap_err(), TrustError::NoRoots);
+    }
+
+    #[test]
+    fn a_malformed_entry_in_ca_file_is_an_error_not_skipped() {
+        // Review of #65: a bad entry next to a good one must not pass check-config.
+        let dir = TempDir::new();
+        let pki = TestPki::generate();
+        let absent = dir.path("absent.pem");
+        assert_eq!(
+            trust_roots(&absent, Some(&dir.write("good.pem", &pki.ca_pem)))
+                .unwrap()
+                .len(),
+            1
+        );
+        for (name, extra, problem) in [
+            (
+                "key.pem",
+                "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIA==\n-----END PRIVATE KEY-----\n",
+                "entry 2 is not a certificate",
+            ),
+            (
+                "broken.pem",
+                "-----BEGIN CERTIFICATE-----\n!!!! not base64 !!!!\n-----END CERTIFICATE-----\n",
+                "entry 2 cannot be parsed",
+            ),
+        ] {
+            let bundle = dir.write(name, &format!("{}{extra}", pki.ca_pem));
+            let error = trust_roots(&absent, Some(&bundle)).unwrap_err().to_string();
+            assert!(error.contains(problem), "{error}");
+            assert!(error.contains("fix or remove it"), "{error}");
+        }
     }
 
     #[test]

@@ -26,7 +26,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -192,6 +192,8 @@ pub enum ConfigError {
     Unreadable(PathBuf, String),
     /// Readable or writable by group or others (DEC-03).
     Permissions(PathBuf, u32),
+    /// Owned by a user other than the one the agent runs as (DEC-03, review of #65).
+    Owner(PathBuf, u32, u32),
     NotAFile(PathBuf),
     /// TOML syntax error, unknown key, or wrong type.
     Parse(String),
@@ -215,6 +217,12 @@ impl fmt::Display for ConfigError {
             Self::Permissions(path, mode) => write!(
                 f,
                 "config file {} has mode {mode:04o}, which lets group or others access the agent credential; fix it with `chmod 600 {}`",
+                path.display(),
+                path.display()
+            ),
+            Self::Owner(path, owner, euid) => write!(
+                f,
+                "config file {} is owned by uid {owner}, but the agent runs as uid {euid}; another user could read the credential or change the server, so fix it with `chown {euid} {}`",
                 path.display(),
                 path.display()
             ),
@@ -251,17 +259,29 @@ struct RawInterval {
 
 impl Config {
     /// Reads, permission-checks, and validates the config file at `path`.
+    ///
+    /// The file is opened once, and the owner, mode, and contents all come from that handle, so it
+    /// cannot be swapped between the check and the read (review of #65).
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let metadata = fs::metadata(path).map_err(|e| match e.kind() {
+        Self::load_as(path, crate::owner::effective_uid())
+    }
+
+    fn load_as(path: &Path, euid: u32) -> Result<Self, ConfigError> {
+        let unreadable = |e: io::Error| match e.kind() {
             io::ErrorKind::NotFound => ConfigError::NotFound(path.to_owned()),
             _ => ConfigError::Unreadable(path.to_owned(), e.to_string()),
-        })?;
+        };
+        let mut file = fs::File::open(path).map_err(unreadable)?;
+        let metadata = file.metadata().map_err(unreadable)?;
         if !metadata.is_file() {
             return Err(ConfigError::NotAFile(path.to_owned()));
         }
+        if !crate::owner::trusted_owner(metadata.uid(), euid) {
+            return Err(ConfigError::Owner(path.to_owned(), metadata.uid(), euid));
+        }
         check_mode(path, metadata.permissions().mode())?;
-        let text = fs::read_to_string(path)
-            .map_err(|e| ConfigError::Unreadable(path.to_owned(), e.to_string()))?;
+        let mut text = String::new();
+        io::Read::read_to_string(&mut file, &mut text).map_err(unreadable)?;
         Self::from_toml(&text)
     }
 
@@ -296,10 +316,11 @@ impl Config {
         if let Some(ca_file) = &raw.ca_file
             && !ca_file.is_absolute()
         {
-            return Err(ConfigError::Invalid(format!(
-                "`ca_file` must be an absolute path, got {}",
-                ca_file.display()
-            )));
+            // The value is not echoed: a credential pasted here by mistake must not reach stderr.
+            return Err(ConfigError::Invalid(
+                "`ca_file` must be an absolute path, for example ca_file = \"/etc/fleet-agent/ca.pem\""
+                    .into(),
+            ));
         }
 
         let state_dir = raw
@@ -307,8 +328,7 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR));
         if !state_dir.is_absolute() {
             return Err(ConfigError::Invalid(format!(
-                "`state_dir` must be an absolute path, got {}",
-                state_dir.display()
+                "`state_dir` must be an absolute path, for example state_dir = \"{DEFAULT_STATE_DIR}\""
             )));
         }
 
@@ -333,7 +353,9 @@ fn check_mode(path: &Path, mode: u32) -> Result<(), ConfigError> {
 }
 
 /// Builds a parse error from the TOML message and position only. The TOML crate's full `Display`
-/// quotes the offending source line, which could be the credential line, so it is never used.
+/// quotes the offending source line, which could be the credential line, so it is never used, and
+/// every quoted value in the message is replaced: a credential pasted under the wrong key would
+/// otherwise be echoed in a type error, whatever comments or quoting surround it (review of #65).
 fn parse_error(text: &str, error: &toml::de::Error) -> ConfigError {
     let location = error.span().map(|span| {
         let before = &text[..span.start.min(text.len())];
@@ -345,24 +367,30 @@ fn parse_error(text: &str, error: &toml::de::Error) -> ConfigError {
     ConfigError::Parse(format!(
         "{}{}",
         location.unwrap_or_default(),
-        redact_credential_text(text, &message)
+        redact_quoted_values(&message)
     ))
 }
 
-/// Removes anything that looks like the configured credential value from `message`, as a second
-/// guard for messages that echo a value (for example a credential pasted under the wrong key).
-fn redact_credential_text(text: &str, message: &str) -> String {
-    let mut message = message.to_owned();
-    for line in text.lines() {
-        let Some((_, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
-        if value.contains('.') && value.len() >= 41 && message.contains(value) {
-            message = message.replace(value, "<redacted>");
+/// Replaces the contents of every `"..."` or `'...'` in `message` with `<value>`. Key names, which
+/// serde and toml quote with backticks, are kept so the message still says which key is wrong.
+fn redact_quoted_values(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars();
+    while let Some(c) = chars.next() {
+        if c == '"' || c == '\'' {
+            out.push(c);
+            out.push_str("<value>");
+            for inner in chars.by_ref() {
+                if inner == c {
+                    out.push(c);
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
         }
     }
-    message
+    out
 }
 
 fn validate_server_url(value: Option<&str>) -> Result<String, ConfigError> {
@@ -415,7 +443,13 @@ fn validate_server_url(value: Option<&str>) -> Result<String, ConfigError> {
             None => (authority, None),
         },
     };
-    let host_ok = !host.is_empty() && !(authority.starts_with('[') ^ host.contains(':'));
+    // A bracketed host must be a real IPv6 address, so `https://[foo:bar]` fails here rather than at
+    // the first connection (review of #65).
+    let host_ok = if authority.starts_with('[') {
+        host.parse::<std::net::Ipv6Addr>().is_ok()
+    } else {
+        !host.is_empty() && !host.contains(':')
+    };
     let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok_and(|p| p != 0));
     if !host_ok || !port_ok || host.contains(['[', ']']) {
         return Err(ConfigError::Invalid(format!(
@@ -543,6 +577,11 @@ pub(crate) mod tests {
             "https://fleet-agent.example.lan:0",
             "https://fleet-agent.example.lan:99999",
             "https://fleet agent.example.lan",
+            // Brackets must hold a real IPv6 literal (review of #65).
+            "https://[foo:bar]",
+            "https://[fleet-agent.example.lan]:8443",
+            "https://[]",
+            "https://2001:db8::1",
         ] {
             let text = format!("server_url = \"{url}\"\ncredential = \"{CREDENTIAL}\"\n");
             invalid(&text);
@@ -616,6 +655,57 @@ pub(crate) mod tests {
         );
         let message = invalid(&text);
         assert!(message.contains("line 4"), "{message}");
+    }
+
+    #[test]
+    fn credential_under_any_key_is_redacted_from_parse_errors() {
+        // A credential pasted under the wrong key, with either quote style or an inline comment,
+        // must not reach the logs through the TOML or serde diagnostic (review of #65).
+        for text in [
+            format!("{}log_level = \"{CREDENTIAL}\"\n", minimal()),
+            format!("{}log_level = '{CREDENTIAL}'\n", minimal()),
+            format!(
+                "{}[heartbeat]\nmin_seconds = \"{CREDENTIAL}\" # pasted\n",
+                minimal()
+            ),
+            format!("{}[inventory]\nmax_seconds = '{CREDENTIAL}'\n", minimal()),
+            format!("{}secret = \"{CREDENTIAL}\"\n", minimal()),
+            format!(
+                "{}[heartbeat]\nmin_seconds = [\"{CREDENTIAL}\"]\n",
+                minimal()
+            ),
+        ] {
+            let message = invalid(&text);
+            assert!(!message.contains("EXAMPLEkey01"), "{message}");
+        }
+    }
+
+    #[test]
+    fn redaction_keeps_key_names_and_hides_quoted_text() {
+        assert_eq!(
+            redact_quoted_values("invalid value \"abc\" for `log_level`, '1' 'x"),
+            "invalid value \"<value>\" for `log_level`, '<value>' '<value>"
+        );
+    }
+
+    #[test]
+    fn path_errors_never_repeat_the_configured_value() {
+        for key in ["ca_file", "state_dir"] {
+            let message = invalid(&format!("{}{key} = \"{CREDENTIAL}\"\n", minimal()));
+            assert!(message.contains(key), "{message}");
+            assert!(!message.contains("EXAMPLEkey01"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_config_owned_by_another_user_is_refused() {
+        let dir = crate::test_support::TempDir::new();
+        let path = dir.write("config.toml", &minimal());
+        let owner = fs::metadata(&path).unwrap().uid();
+        assert!(Config::load_as(&path, owner).is_ok());
+        let error = Config::load_as(&path, owner.wrapping_add(1)).unwrap_err();
+        assert!(matches!(error, ConfigError::Owner(..)), "{error}");
+        assert!(error.to_string().contains("chown"), "{error}");
     }
 
     #[test]

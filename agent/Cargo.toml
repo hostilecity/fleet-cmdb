@@ -10,6 +10,9 @@ publish = false
 # Dependencies are added by the issues that first use them; the planned set and the reasons are in
 # README.md. Keep this list short: the agent runs as root (DEC-03). No OpenSSL, no async runtime.
 [dependencies]
+# geteuid and open flags (O_NOFOLLOW, O_DIRECTORY) for the ownership checks on the config file and the
+# state directory (review of #65). Same version as the collectors (P1-AGENT-COLLECT) use.
+libc = "0.2.191"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # SIGTERM/SIGINT for graceful shutdown without an async runtime.
