@@ -25,10 +25,12 @@ All endpoints are under `/api/v1`, served only on the private agent hostname ([D
 | Endpoint | Auth | Request | Success |
 |---|---|---|---|
 | `POST /api/v1/enroll` | Enrollment token in the body | `enroll.request` | `201`, `enroll.response` |
+| `POST /api/v1/onboarding` | None (agent hostname only, rate-limited and capped) | `onboarding.request` | `201`, `onboarding.response` |
+| `POST /api/v1/onboarding/token` | Device code in the body | `onboarding-token.request` | `202` (pending) or `201` (approved, with the credential), `onboarding-token.response` |
 | `POST /api/v1/heartbeat` | Bearer credential | `heartbeat.request` | `200`, `heartbeat.response` |
 | `POST /api/v1/reports/inventory` | Bearer credential | `inventory.request` | `200`, `inventory.response` |
 
-Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: `POST /api/v1/onboarding` and `POST /api/v1/onboarding/token` (P1-ONBOARD), release downloads under `/api/v1/releases/` (P1-RELEASES), and the update and interval directives in `heartbeat.response` plus `POST /api/v1/agent/update-results` (P1-UPDATES). Later phases add the config, package, and task endpoints.
+Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: release downloads under `/api/v1/releases/` (P1-RELEASES), and the update and interval directives in `heartbeat.response` plus `POST /api/v1/agent/update-results` (P1-UPDATES). Later phases add the config, package, and task endpoints.
 
 ## Conventions
 
@@ -56,11 +58,13 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 | 401 | `unauthorized` | Credential missing, malformed, unknown, revoked, or for a retired host. Same body for each case |
 | 403 | `reenrollment_required` | Valid credential, but the host is `pending` because an operator issued a new enrollment token (re-enrollment). The response also has the header `Fleet-Enrollment-State: pending`. The agent logs plainly that it must be re-enrolled (`fleet-agent install --reenroll`, or `--token` with the new token) and backs off to a long interval |
 | 403 | `host_not_active` | Valid credential, but the host is in some other state that may not call this endpoint |
+| 403 | `onboarding_rejected` | An operator rejected the onboarding request. The installer stops and says so |
 | 404 | `not_found` | Unknown route |
 | 410 | `enrollment_token_invalid` | Enrollment token unknown, expired, or already used. Same body for each case |
+| 410 | `onboarding_expired` | Onboarding device code unknown, expired, or already used to collect a credential. Same body for each case; the installer starts again |
 | 413 | `payload_too_large` | Body over the endpoint's size limit |
 | 426 | `agent_version_unsupported` | `agent_version` is older than the server's minimum. The agent logs this plainly and backs off |
-| 429 | `rate_limited` | Too many requests. Honour the `Retry-After` header |
+| 429 | `rate_limited` | Too many requests, too many onboarding requests open, or onboarding polled faster than its `interval`. Honour the `Retry-After` header |
 | 500 | `internal_error` | Unexpected failure. The message never contains internals |
 
 P1-API-AUTH implements these. If it changes a code or status, it must update this table in the same pull request.
@@ -74,7 +78,7 @@ Examples are public, so every value must be obviously fake. The server contract 
 | Hostnames | Under `example.lan`, `example.com`, `example.net`, `example.org`, `.example`, `.test`, or `.invalid`, for example `vm-01.example.lan`. Any value under a `hostname` key must match this, including single-label names |
 | IPv4 addresses | Documentation ranges `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` |
 | IPv6 addresses | Documentation range `2001:db8::/32` |
-| Secrets | Any value under a `token`, `credential`, `secret`, or `password` key contains `EXAMPLE` |
+| Secrets | Any value under a `token`, `credential`, `secret`, `password`, or `device_code` key contains `EXAMPLE` |
 
 Machine IDs, boot IDs, and report IDs use visibly patterned values, for example `0123456789abcdef0123456789abcdef` and `00000000-0000-4000-8000-000000000001`.
 
@@ -111,3 +115,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | Tightened before first release (review of #44): SemVer 2.0.0 `agent_version` (build metadata allowed, leading zeros rejected), timestamp patterns reject impossible month, day, hour, minute, and second values, `architecture` accepts `null` when unreadable, network addresses must be valid IPv4 (prefix 0-32) or IPv6 (prefix 0-128) CIDRs. No version bump: v1 has no released consumers. |
 | v1 | `error.request_id` `maxLength` raised from 64 to 255, the length Rails accepts for an incoming `X-Request-Id` (P1-API-AUTH). Loosening only, so no version bump. |
 | v1 | New error code `reenrollment_required` (403) with the `Fleet-Enrollment-State: pending` header, for endpoints a re-enrolling host may not call (P1-HEARTBEAT). Additive, so no version bump. |
+| v1 | Onboarding endpoints and schemas (`onboarding.*`, `onboarding-token.*`) and error codes `onboarding_rejected` (403) and `onboarding_expired` (410) (P1-ONBOARD, DEC-17). Additive, so no version bump. |

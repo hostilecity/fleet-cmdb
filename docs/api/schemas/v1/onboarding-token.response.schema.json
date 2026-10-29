@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Onboarding token response",
+  "description": "202 with status pending while the request waits for an operator; 201 with status approved and the credential, exactly once. Rejection is 403 onboarding_rejected and expiry 410 onboarding_expired (error.response).",
+  "type": "object",
+  "required": [
+    "status",
+    "server_time"
+  ],
+  "properties": {
+    "status": {
+      "description": "pending or approved.",
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved"
+      ]
+    },
+    "credential": {
+      "description": "Permanent per-host credential, `<key_id>.<secret>`; sent as `Authorization: Bearer <credential>`. Secret: never logged.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{32,128}$"
+    },
+    "host_name": {
+      "description": "Display name the operator gave the host, for the installer's summary.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "server_time": {
+      "description": "Server clock, RFC 3339 UTC.",
+      "type": "string",
+      "maxLength": 35,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+    }
+  },
+  "if": {
+    "properties": {
+      "status": {
+        "const": "approved"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "credential",
+      "host_name"
+    ]
+  },
+  "else": {
+    "not": {
+      "anyOf": [
+        {
+          "required": [
+            "credential"
+          ]
+        },
+        {
+          "required": [
+            "host_name"
+          ]
+        }
+      ]
+    }
+  }
+}

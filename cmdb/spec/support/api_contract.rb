@@ -10,7 +10,7 @@ module ApiContract
   # Values that are allowed to look like hostnames in examples (README: "Example data").
   FAKE_DOMAIN = /(\A|\.)(example\.(lan|com|net|org)|example|test|invalid)\z/
   DOC_RANGES = %w[192.0.2.0/24 198.51.100.0/24 203.0.113.0/24 2001:db8::/32].map { |r| IPAddr.new(r) }.freeze
-  SECRET_KEYS = %w[token credential secret password].freeze
+  SECRET_KEYS = %w[token credential secret password device_code].freeze
 
   Example = Struct.new(:path, :schema_name, :version, :kind, :name, keyword_init: true) do
     def data = JSON.parse(path.read)

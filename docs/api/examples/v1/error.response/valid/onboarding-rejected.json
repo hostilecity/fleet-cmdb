@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "onboarding_rejected",
+    "message": "An operator rejected this onboarding request.",
+    "request_id": "req-00000000000000000004"
+  }
+}

@@ -10,17 +10,17 @@ Decided in [ADR 0017](../../decisions/0017-agent-onboarding.md). The dashboard s
 
 - **Contract first.** Add `onboarding.request`, `onboarding.response`, `onboarding-token.request`, and `onboarding-token.response` schemas and examples under `docs/api`, and the new error codes to the table in `docs/api/README.md`. All of these are additive to v1, so no version bump.
 - **Model.** An `onboarding_requests` table, kept apart from `hosts`. Columns:
-  - the device code digest and the user code digest;
+  - the device code digest, and the user code as is: it is shown on the approval page so the operator can match it with the terminal, and it grants nothing without a signed-in operator (unique among open requests);
   - the reported facts: hostname, OS, machine ID, agent version;
   - the client address;
-  - state: `open`, `approved`, `rejected`, `collected`, or `expired`;
+  - state: `open`, `approved`, `rejected`, or `collected`; "expired" is derived from the expiry time rather than stored;
   - the approving operator, and the host attributes the operator entered (name, tags, description, notes);
   - the re-enrollment target host, if any;
   - the expiry time.
 - **`POST /api/v1/onboarding`.**
   - Unauthenticated, on the agent hostname only (DEC-05). The body is schema-validated and the reported text normalised as for inventory: control characters stripped, lengths capped.
   - Returns `device_code` (32 random bytes, encoded), `user_code` (8 characters from an unambiguous alphabet such as `BCDFGHJKLMNPQRSTVWXZ`, shown as `XXXX-XXXX`), `verification_uri` and `verification_uri_complete` (on the dashboard hostname), `expires_in` (default 600 seconds, configurable), and `interval` (default 5 seconds).
-  - Both codes are stored as digests only.
+  - The device code is stored as a digest only.
 - **`POST /api/v1/onboarding/token`** with `device_code`:
   - `202` with `{"status": "pending"}` while the request is open;
   - `429 rate_limited` when polled faster than `interval`;

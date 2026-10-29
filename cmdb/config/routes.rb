@@ -21,6 +21,8 @@ Rails.application.routes.draw do
     namespace :api do
       namespace :v1 do
         post "enroll", to: "enrollments#create"
+        post "onboarding", to: "onboardings#create"
+        post "onboarding/token", to: "onboardings#token"
         post "heartbeat", to: "heartbeats#create"
         post "reports/inventory", to: "inventory_reports#create"
         match "", to: "base#not_found", via: :all

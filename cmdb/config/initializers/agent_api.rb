@@ -16,6 +16,16 @@ Rails.application.configure do
   # Enrollment tokens expire after this long (DEC-04: default 24 hours).
   config.x.enrollment.token_ttl ||= Integer(ENV.fetch("FLEET_ENROLLMENT_TOKEN_TTL_HOURS", "24")).hours
 
+  # Onboarding (DEC-17, P1-ONBOARD). The approval page lives on the dashboard; FLEET_DASHBOARD_URL overrides
+  # the URL derived from FLEET_DASHBOARD_HOST (for a non-default port or scheme).
+  onboarding = config.x.onboarding
+  onboarding.ttl ||= Integer(ENV.fetch("FLEET_ONBOARDING_TTL_MINUTES", "10")).minutes
+  onboarding.poll_interval ||= Integer(ENV.fetch("FLEET_ONBOARDING_POLL_SECONDS", "5")).seconds
+  onboarding.max_open ||= Integer(ENV.fetch("FLEET_ONBOARDING_MAX_OPEN", "50"))
+  onboarding.max_open_per_address ||= Integer(ENV.fetch("FLEET_ONBOARDING_MAX_OPEN_PER_ADDRESS", "5"))
+  onboarding.start_rate_limit ||= { to: Integer(ENV.fetch("FLEET_ONBOARDING_RATE_LIMIT_PER_MINUTE", "10")), within: 1.minute }
+  onboarding.dashboard_url ||= ENV["FLEET_DASHBOARD_URL"].presence
+
   config.after_initialize do
     dir = config.x.agent_api.schemas_dir
     raise "Agent API schemas not found at #{dir}; set FLEET_API_SCHEMAS_DIR" unless dir.join("v1").directory?

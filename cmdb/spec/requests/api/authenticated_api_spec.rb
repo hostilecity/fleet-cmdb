@@ -193,11 +193,12 @@ end
 
 # Outside the probe routes above: checks the application's real route table.
 RSpec.describe "Agent API routes" do
-  it "serves every /api/v1 route except enrollment and the not-found catch-all through AuthenticatedController (AC-1.6)" do
+  it "serves every /api/v1 route except enrollment, onboarding, and the not-found catch-all through AuthenticatedController (AC-1.6)" do
     api_routes = Rails.application.routes.routes.select { |route| route.path.spec.to_s.start_with?("/api/v1") }
     controllers = api_routes.filter_map { |route| route.defaults[:controller] }.uniq
-    expect(controllers).to include("api/v1/enrollments", "api/v1/base")
-    (controllers - [ "api/v1/enrollments", "api/v1/base" ]).each do |name|
+    unauthenticated = [ "api/v1/enrollments", "api/v1/onboardings", "api/v1/base" ]
+    expect(controllers).to include(*unauthenticated)
+    (controllers - unauthenticated).each do |name|
       expect("#{name}_controller".camelize.constantize).to be < Api::V1::AuthenticatedController
     end
     expect(api_routes.select { |route| route.defaults[:controller] == "api/v1/base" }.map { |route| route.defaults[:action] }.uniq).to eq([ "not_found" ])
