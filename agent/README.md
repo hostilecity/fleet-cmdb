@@ -2,7 +2,7 @@
 
 The Fleet CMDB agent: a single static Rust binary that runs as a systemd service on each VM and reports host facts to the server (FR-1.6). The fleet is Debian 13 on x86_64 ([DEC-01](../docs/decisions/0001-fleet-profile.md)), so the only release target is `x86_64-unknown-linux-musl`. The agent runs as root under a hardened unit ([DEC-03](../docs/decisions/0003-agent-privilege.md)).
 
-Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE); `run` starts, checks everything, and waits for a stop signal. Heartbeats and inventory reports arrive with P1-AGENT-REPORT, `install` and `uninstall` with P1-AGENT-INSTALL.
+Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE), and so are the read-only fact collectors (P1-AGENT-COLLECT); `run` starts, checks everything, and waits for a stop signal. Heartbeats and inventory reports, which wire in the collectors, arrive with P1-AGENT-REPORT, `install` and `uninstall` with P1-AGENT-INSTALL.
 
 ## Build and check
 
@@ -76,10 +76,26 @@ If only `interval_seconds` is set, the default bounds widen to include it.
 | `client` | HTTPS client for `/api/v1`, error mapping | P1-AGENT-CORE |
 | `retry` | Backoff with jitter and cap, long waits for `401`/`403`/`426`, `Retry-After`, failure log lines | P1-AGENT-CORE |
 | `shutdown` | Graceful stop on `SIGTERM` and `SIGINT` | P1-AGENT-CORE |
-| `collect` | Read-only system, disk, and network collectors | P1-AGENT-COLLECT |
+| `collect` | Read-only system, disk, and network collectors; see [Collected facts](#collected-facts) | P1-AGENT-COLLECT |
 | `report` | Heartbeat loop and inventory reports | P1-AGENT-REPORT |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
+
+## Collected facts
+
+`collect::Collector` gathers the fact fields of an inventory report ([`inventory.request`](../docs/api/schemas/v1/inventory.request.schema.json)); the reporter adds the envelope. It reads files and calls syscalls directly and never runs a command. The module documentation in `src/collect/` has the full source table and rules; in short:
+
+- **Graceful degradation.** Every field is read and parsed independently. A missing, unreadable, corrupt, or hung source makes that field `null` and adds a warning (`field`, `message`); the rest is still collected. Each read (one file or one syscall) has a 5 second limit, so a collection ends within about 10 seconds.
+- **System facts** come from `/proc/sys/kernel/{hostname,osrelease}`, `/etc/os-release` (or `/usr/lib/os-release`), `uname(2)`, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/uptime`, `/proc/sys/kernel/random/boot_id`, and `/etc/machine-id`. An architecture other than `x86_64` is `null` plus a warning (DEC-01).
+- **Disks** are mounts from `/proc/self/mounts` whose filesystem type is not pseudo or virtual (`proc`, `sysfs`, `tmpfs`, `devtmpfs`, `cgroup2`, `overlay`, and the others listed in `src/collect/disk.rs`) and whose source is a block device under `/dev/`; network filesystems are therefore left out. Only the first mount of each device is kept, which drops bind mounts. Sizes come from `statvfs`: `size_bytes` and `free_bytes` are the `Size` and `Avail` columns of `df`.
+- **Network interfaces** are those that are up and not loopback, minus container and VM bridges by name (`docker*`, Docker's `br-<12 hex>`, `veth*`, `virbr*`, `lxcbr*`, `lxdbr*`, `podman*`, `cni*`, `flannel*`, `cali*`, `cilium*`, `weave*`, `kube-bridge`), each with its IPv4 and IPv6 addresses in CIDR form, excluding link-local. The primary interface carries the lowest-metric IPv4 default route in `/proc/net/route`, or the IPv6 one from `/proc/net/ipv6_route` when there is no IPv4 default route.
+- **Partial lists.** When a list fact is readable but incomplete (one mount's `statvfs` failed, no routing table to pick the primary interface, a contract size limit reached), the entries that could be read are kept and a warning explains what is missing.
+
+Fixture tests use a fake root directory built from Debian 13 files in `tests/fixtures/collect/debian13/`. To see what the collectors report on the machine running the tests, compare the output of this ignored test with `hostnamectl`, `free -b`, `df -B1`, and `ip route`:
+
+```sh
+cargo test collects_from_this_host -- --ignored --nocapture
+```
 
 ## Dependencies
 
@@ -93,6 +109,7 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Config | `toml`, parse only | Config file format |
 | Logging | `tracing`, `tracing-subscriber` (`fmt` only) | Structured fields (host, `report_id`) on timestamped lines to stdout, which systemd sends to the journal |
 | Signals | `signal-hook` | Graceful `SIGTERM`/`SIGINT` handling without an async runtime or hand-written `unsafe` |
+| Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors, `geteuid` and `open` flags for the ownership checks, none of which `std` exposes. No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
 
 Test-only dependencies (`[dev-dependencies]`, never in the binary): `jsonschema` (default features off, so it never fetches remote schemas), which with `serde_json` checks payloads against the API contract in [`docs/api`](../docs/api/README.md) (in a test, use `assert_conforms` from `tests/support/contract.rs`); and `rcgen` plus `rustls`, which run a local TLS server with a certificate authority generated per test, so no certificate or key is checked in.
 

@@ -254,7 +254,7 @@
       }
     },
     "warnings": {
-      "description": "One entry per fact that could not be collected. The fact itself is null.",
+      "description": "One entry per fact that could not be collected; that fact is null. A list fact (`disks`, `network_interfaces`) that could be read only in part keeps the entries that were read and gets an entry saying what is missing.",
       "type": "array",
       "maxItems": 64,
       "items": {
