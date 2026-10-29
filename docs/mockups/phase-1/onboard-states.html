@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approval outcomes · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Approval outcomes and errors</h1></div></div>
+<h2>Approved, waiting for the installer</h2>
+<div class="notice info" role="status"><strong>Approved. Waiting for the installer on vm-08.example.lan.</strong><p>It checks every 5 seconds, so this usually takes a moment; the host appears in the fleet as soon as it does. If the installer was closed, the approval lapses at 08:31 UTC and nothing is created.</p></div>
+<h2>Collected</h2>
+<div class="notice info" role="status"><strong>Build runner 2 has joined the fleet.</strong><p><a href="host.html">Go to Build runner 2</a></p></div>
+<h2>Rejected</h2>
+<div class="notice" role="status"><strong>Rejected. Nothing was created.</strong><p>The installer stops and says so.</p></div>
+<h2>Invalid fields</h2>
+<form class="form">
+  <div class="notice error" role="alert"><strong>Not approved yet.</strong><p>Fix the field marked below. The request is still waiting; it expires in 7 minutes.</p></div>
+  <div class="field invalid"><label for="t">Tags</label><input id="t" value="ci, Build Runner!" aria-invalid="true" aria-describedby="t-err"><p class="error-text" id="t-err">Tag "build-runner!" is invalid. Use 1 to 32 lowercase letters, digits, hyphens, or underscores.</p></div>
+  <div class="actions"><button class="btn" type="submit">Approve</button><button class="btn danger quiet" type="submit">Reject</button></div>
+</form>
+<h2>Expired</h2>
+<div class="sheet"><p style="margin-top:0"><strong>This request expired at 08:31 UTC. Nothing was created.</strong></p><p>Run the installer on the VM again to get a new code.</p></div>
+<h2>Already decided</h2>
+<div class="sheet"><p style="margin-top:0"><strong>Second Operator approved this request 2 minutes ago.</strong></p><p>Nothing more to do here. <a href="onboard.html">Other waiting VMs</a></p></div>
+<h2>Unknown code</h2>
+<form class="form" style="max-width:32rem">
+  <div class="field invalid"><label for="c">Code shown in the terminal</label><input id="c" class="code-input" value="WDJB-MJHX" aria-invalid="true" aria-describedby="c-err"><p class="error-text" id="c-err">No waiting VM has this code. Check the terminal; codes expire after 10 minutes.</p></div>
+  <div class="actions"><button class="btn" type="submit">Continue</button></div>
+</form>
+<p class="note">"Unknown code" covers expired and decided requests too, so the code box reveals nothing; the request's own page (reached from the list or the link) shows the specific state.</p>
+</main>
+</body>
+</html>

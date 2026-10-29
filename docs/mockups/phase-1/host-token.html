@@ -10,20 +10,23 @@
 <body>
 <header class="bar">
   <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
-  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
-<div class="page-head"><div><h1>Lab sandbox added</h1><p class="mono">vm-06.example.lan</p></div></div>
+<div class="page-head"><div><h1>Lab sandbox pre-registered</h1><p class="mono">vm-06.example.lan</p></div></div>
 <div class="form" style="max-width:46rem">
-  <div class="notice" role="alert"><strong>Copy this token now. It is shown only once.</strong><p>Only a fingerprint is stored, so it cannot be shown again. If it is lost, issue a new token from the host page.</p></div>
+  <div class="notice" role="alert"><strong>Copy this token now. It is shown only once.</strong><p>Only a fingerprint is stored, so it cannot be shown again. If it is lost, re-enroll the host to get a new one.</p></div>
   <p>Enrollment token, valid until tomorrow 18:30 UTC:</p>
   <div class="token">EXAMPLE-enrollment-token-not-a-real-one-0001</div>
   <p class="actions" style="margin-top:.75rem"><button class="btn" type="button">Copy token</button></p>
-  <h2>Enroll the VM</h2>
-  <p>On vm-06.example.lan, as root:</p>
-  <div class="token">fleet-agent enroll --server https://agent.fleet.example.lan --token-stdin</div>
+  <h2>Install on the VM</h2>
+  <p>Download and check the agent as on <a href="agents-install.html">Install an agent</a>, then on vm-06.example.lan, as root:</p>
+  <div class="token">./fleet-agent install --server https://agent.fleet.example.lan --token-stdin</div>
   <p class="muted">Paste the token when asked, so it never appears in the process list or shell history.</p>
+  <h3>Unattended (cloud-init or a script)</h3>
+  <div class="terminal">FLEET_ENROLLMENT_TOKEN='EXAMPLE-enrollment-token-not-a-real-one-0001' ./fleet-agent install --server https://agent.fleet.example.lan --quiet</div>
+  <p class="muted">The installer reads the token from the environment and never prints it. Keep the token out of version control: it works once, until it expires.</p>
   <p><a href="host-pending.html">Go to the host</a></p>
 </div>
 </main>

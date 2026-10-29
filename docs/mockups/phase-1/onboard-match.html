@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approve a VM · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Approve a VM</h1><p>Nothing changes until you approve and the installer collects its credential.</p></div></div>
+<div class="notice" role="status"><strong>This VM has the same machine ID as Media server.</strong><p>Media server (<span class="mono">vm-01.example.lan</span>) is active and was last seen 3 hours ago. Choose what this request is.</p></div>
+  <section class="sheet" aria-labelledby="rep" style="margin-bottom:1.5rem">
+    <h2 id="rep" style="margin-top:0">Reported now, and on record</h2>
+    <div class="table-wrap"><table><thead><tr><th></th><th>This request</th><th>Media server</th></tr></thead><tbody>
+      <tr><th scope="row">Hostname</th><td class="mono">vm-01.example.lan</td><td class="mono">vm-01.example.lan</td></tr>
+      <tr><th scope="row">Machine ID</th><td class="mono">0123…cdef</td><td class="mono">0123…cdef</td></tr>
+      <tr><th scope="row">Agent</th><td class="mono">0.2.0</td><td class="mono">0.1.0</td></tr>
+      <tr><th scope="row">Address</th><td class="mono">192.0.2.10</td><td class="mono">192.0.2.10</td></tr>
+      <tr><th scope="row">State</th><td>Requested 3 minutes ago</td><td><span class="lamp stale">Stale</span>, credential active</td></tr>
+    </tbody></table></div>
+  </section>
+<div style="max-width:46rem">
+<div>
+  <section class="sheet" aria-labelledby="chk">
+    <h2 id="chk" style="margin-top:0">Check the code</h2>
+    <p><span class="user-code">KTPR-VZNB</span></p>
+    <p>Does the terminal on <span class="mono">vm-01.example.lan</span> show this code? If it does not, reject.</p>
+  </section>
+  <form class="form" style="margin-top:1.5rem;max-width:none">
+    <h2 style="margin-top:0">What is this VM?</h2>
+    <label class="choice"><input type="radio" name="kind" checked><strong>Media server, re-enrolled</strong>
+      <p>The VM was rebuilt or lost its credential. It keeps its name, tags, inventory, and history. Its current credential keeps working until the installer collects the new one, then stops.</p></label>
+    <label class="choice"><input type="radio" name="kind"><strong>A new host</strong>
+      <p>A copy of Media server, for example a cloned VM. Both will report with the same machine ID and show the clone warning until the copy gets a new one (<code>systemd-machine-id-setup</code>). You name it next.</p></label>
+    <div class="actions"><button class="btn" type="submit">Approve as re-enrollment</button><button class="btn danger quiet" type="submit">Reject</button></div>
+  </form>
+</div>
+</div>
+<p class="note">The match is a suggestion; nothing is attached to an existing host unless the operator picks it. A hostname-only match reads "has the same hostname as" and defaults to "A new host". Retired hosts are never offered. The button label follows the choice.</p>
+</main>
+</body>
+</html>

@@ -145,3 +145,36 @@ ins { text-decoration: none; background: #dcefdf; color: #1d5a2b; padding: 0 0.1
   .bar .who { margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* P1-D06: onboarding, install, and rollouts */
+.token { white-space: pre-wrap; } /* keep the two spaces sha256sum -c needs */
+.terminal { background: var(--ink); color: #e3ebe7; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.6; padding: 0.875rem 1rem; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.5rem 0 1rem; }
+.terminal .prompt { color: #9fb3ad; user-select: none; }
+.terminal .ok { color: #8fd19e; }
+.terminal .warn { color: #f2c46d; }
+.terminal .em { color: #fff; font-weight: 500; }
+.user-code { font-family: var(--mono); font-size: 2rem; font-weight: 500; letter-spacing: 0.12em; background: var(--sheet); border: 2px solid var(--petrol); border-radius: 6px; padding: 0.25rem 0.875rem; display: inline-block; }
+.code-input { font-family: var(--mono); font-size: 1.5rem; letter-spacing: 0.12em; text-transform: uppercase; width: 12ch; }
+.steps { counter-reset: step; list-style: none; padding: 0; margin: 0; }
+.steps > li { counter-increment: step; position: relative; padding-left: 2.5rem; margin-bottom: 1.25rem; }
+.steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: var(--petrol); color: #fff; font-weight: 700; display: grid; place-items: center; font-size: 0.875rem; }
+.steps h3 { margin: 0 0 0.25rem; font-size: 1rem; }
+.choice { display: block; border: 1px solid var(--rule); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.625rem; background: var(--sheet); cursor: pointer; }
+.choice:has(input:checked) { border-color: var(--petrol); box-shadow: 0 0 0 1px var(--petrol); }
+.choice input { margin-right: 0.5rem; }
+.choice strong { display: inline; }
+.choice p { margin: 0.25rem 0 0 1.5rem; color: var(--ink-soft); font-size: 0.9375rem; }
+.stages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin: 0 0 1rem; padding: 0; list-style: none; }
+.stages li { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 0.75rem 1rem; }
+.stages li.current { border-color: var(--petrol); box-shadow: 0 0 0 1px var(--petrol); }
+.stages li.halted { border-color: var(--lamp-offline); box-shadow: 0 0 0 1px var(--lamp-offline); }
+.stages .name { font-weight: 700; display: block; }
+.stages .lamp, .stages .progress { display: flex; margin-top: 0.25rem; }
+.stages .progress { display: block; font-size: 0.875rem; color: var(--ink-soft); }
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--rule); margin-bottom: 1rem; }
+.tabs a { padding: 0.5rem 0.875rem; text-decoration: none; color: var(--ink-soft); border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.tabs a[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--petrol); font-weight: 700; }
+@media (max-width: 52rem) {
+  .stages { grid-template-columns: 1fr; }
+  .user-code { font-size: 1.5rem; }
+}

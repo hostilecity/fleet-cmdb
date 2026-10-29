@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installer messages · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="agents.html" aria-current="page">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Installer messages</h1><p>What <code>fleet-agent install</code> prints in each case. Every failure says what happened and what to do next.</p></div></div>
+<h2>Rejected in the dashboard</h2>
+<div class="terminal">Waiting for approval… expires in 8:10 (Ctrl-C to cancel)
+<span class="warn">✗</span> An operator rejected this request.
+  Nothing was enrolled. The agent is installed but not running.
+  To ask again:  sudo fleet-agent install --server https://agent.fleet.example.lan
+  To remove it:  sudo fleet-agent uninstall</div>
+<h2>Not approved in time</h2>
+<div class="terminal">Waiting for approval… expires in 0:01 (Ctrl-C to cancel)
+<span class="warn">✗</span> The request expired before anyone approved it. Nothing was enrolled.
+  Run the same command again to get a new code.</div>
+<h2>Checks that fail before anything is installed</h2>
+<div class="terminal"><span class="prompt">$ </span>./fleet-agent install --server https://agent.fleet.example.lan
+<span class="warn">✗</span> The installer must run as root. Run it again with sudo.</div>
+<div class="terminal"><span class="warn">✗</span> Could not verify the certificate of agent.fleet.example.lan: certificate has expired.
+  Nothing was installed. Check the server's certificate, or the VM's clock (it reads 2026-01-01 12:00 UTC).</div>
+<div class="terminal"><span class="warn">✗</span> This VM runs Ubuntu 24.04 on x86_64. The agent supports Debian 13 on x86_64 only.</div>
+<h2>Unattended token problems</h2>
+<div class="terminal"><span class="warn">✗</span> The enrollment token is invalid, expired, or already used.
+  Pre-register the host again in the dashboard for a new token. Nothing was enrolled.</div>
+<h2>Already installed</h2>
+<div class="terminal"><span class="prompt">$ </span>sudo ./fleet-agent install --server https://agent.fleet.example.lan
+fleet-agent 0.2.0 installer
+<span class="ok">✓</span> Already enrolled as "Build runner 2"; keeping its credential
+<span class="ok">✓</span> Updated 0.1.0 → 0.2.0, service restarted, first heartbeat accepted
+  To enroll again from scratch:  sudo fleet-agent install --reenroll</div>
+<h2>Exit codes</h2>
+<div class="table-wrap"><table><thead><tr><th>Code</th><th>Meaning</th></tr></thead><tbody>
+<tr><td class="mono">0</td><td>Installed and running</td></tr>
+<tr><td class="mono">2</td><td>A check failed; nothing was installed</td></tr>
+<tr><td class="mono">3</td><td>Rejected by an operator</td></tr>
+<tr><td class="mono">4</td><td>Expired, or the token was invalid</td></tr>
+<tr><td class="mono">5</td><td>Server error; safe to run again</td></tr>
+</tbody></table></div>
+<p class="note">With <code>--quiet</code> only failures print; <code>--json</code> prints one machine-readable line for scripts. Colour is used only on a terminal, and every line starts with ✓ or ✗ so meaning never depends on colour.</p>
+</main>
+</body>
+</html>

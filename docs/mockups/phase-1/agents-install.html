@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install an agent · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="agents.html" aria-current="page">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Install an agent</h1><p>Current release <strong>0.2.0</strong>, signed and verified. Needs Debian 13 on x86_64 with systemd, root, and HTTPS access to <span class="mono">agent.fleet.example.lan</span>.</p></div></div>
+<nav class="tabs" aria-label="Install method"><a href="#one" aria-selected="true">One VM, approved here</a><a href="#unattended" aria-selected="false">Unattended</a></nav>
+<section id="one" class="sheet">
+<ol class="steps">
+<li><h3>Download the agent</h3><p>On the VM:</p>
+<div class="token">curl -fL -o fleet-agent https://agent.fleet.example.lan/api/v1/releases/0.2.0/binary</div></li>
+<li><h3>Check it</h3>
+<div class="token">echo "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  fleet-agent" | sha256sum -c</div>
+<p class="muted">It must print <code>fleet-agent: OK</code>. If it does not, do not run it.</p></li>
+<li><h3>Run the installer</h3>
+<div class="token">chmod +x fleet-agent &amp;&amp; sudo ./fleet-agent install --server https://agent.fleet.example.lan</div>
+<p class="muted">It checks the VM, installs the agent, and prints a link and a code like <code>WDJB-MJHT</code>.</p></li>
+<li><h3>Approve it here</h3><p>Open the link, or go to <a href="onboard.html">Awaiting approval</a>. Check that the code matches the terminal, name the host, and approve. The installer finishes by itself within a few seconds.</p></li>
+</ol>
+<h3>What the terminal shows</h3>
+<div class="terminal"><span class="prompt">$ </span>sudo ./fleet-agent install --server https://agent.fleet.example.lan
+fleet-agent 0.2.0 installer
+<span class="ok">✓</span> Debian GNU/Linux 13 (trixie), x86_64, running as root
+<span class="ok">✓</span> agent.fleet.example.lan reachable, certificate trusted
+<span class="ok">✓</span> Installed /usr/lib/fleet-agent/versions/0.2.0
+
+  Approve this VM in the dashboard:
+    <span class="em">https://fleet.example.lan/onboard/WDJB-MJHT</span>
+  and check that it shows the code  <span class="em">WDJB-MJHT</span>
+
+Waiting for approval… expires in 9:52 (Ctrl-C to cancel)
+<span class="ok">✓</span> Approved as "Build runner 2"
+<span class="ok">✓</span> Credential saved to /etc/fleet-agent/config.toml (root only)
+<span class="ok">✓</span> Service fleet-agent started, first heartbeat accepted
+
+Done. vm-08.example.lan is in the fleet.
+  Logs:       journalctl -u fleet-agent
+  Uninstall:  sudo fleet-agent uninstall</div>
+<p><a href="install-terminal.html">Every message the installer can show</a>, including rejection, expiry, and failed checks.</p>
+</section>
+<section id="unattended" class="sheet" style="margin-top:1.5rem">
+<h2 style="margin-top:0">Unattended: cloud-init, templates, scripts</h2>
+<p>No one is there to approve, so <a href="host-new.html">pre-register the host</a> first. You get a one-time token, valid for 24 hours, and the installer uses it instead of an approval.</p>
+<div class="terminal">#cloud-config
+runcmd:
+  - curl -fL -o /root/fleet-agent https://agent.fleet.example.lan/api/v1/releases/0.2.0/binary
+  - echo "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  /root/fleet-agent" | sha256sum -c
+  - chmod +x /root/fleet-agent
+  - FLEET_ENROLLMENT_TOKEN='EXAMPLE-enrollment-token-not-a-real-one-0001' /root/fleet-agent install --server https://agent.fleet.example.lan --quiet</div>
+<p class="muted">The token works once. A template that clones many VMs needs one pre-registration per VM.</p>
+</section>
+<h2>Afterwards</h2>
+<p>Agents update themselves when you run a rollout on the <a href="agents.html">Agents</a> page, and roll back by themselves if an update fails. To upgrade one VM by hand, run the installer from a newer release; it keeps the credential.</p>
+<p class="note">The download URL, checksum, and version always come from the release the page shows, so a copied command never mixes releases (P1-D08). The installer prints a QR code of the link under it, for approving from a phone.</p>
+</main>
+</body>
+</html>

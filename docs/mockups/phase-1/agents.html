@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="agents.html" aria-current="page">Agents</a><a href="audit.html">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Agents</h1><p>Signed releases, the version each host runs, and rollouts. Agents only install releases signed by the release key, and never move to an older version.</p></div><a class="btn" href="agents-install.html">Install an agent</a></div>
+<section aria-labelledby="ro">
+  <div class="host-head"><div><h2 id="ro" style="margin:0">Rolling out 0.2.0</h2><div class="sub"><span>Started by Example Operator, today 08:10 UTC</span><span>From 0.1.0</span></div></div>
+  <div class="actions"><a class="btn danger quiet" href="dialogs.html#halt">Halt</a><a class="btn quiet" href="dialogs.html#halt">Cancel rollout</a></div></div>
+  <ol class="stages">
+  <li><span class="name">1. Canary</span><span class="lamp online">2 of 2 confirmed</span><span class="progress">Media server, Web A</span></li>
+  <li class="current"><span class="name">2. 25% of the rest</span><span class="lamp stale">1 of 2 confirmed, 1 updating</span><span class="progress">Started 4 minutes ago</span></li>
+  <li><span class="name">3. Everyone else</span><span class="lamp">Waiting</span><span class="progress">1 host</span></li>
+</ol>
+  <div class="table-wrap"><table><thead><tr><th>Host</th><th>Stage</th><th>From</th><th>Status</th><th>Last change (UTC)</th></tr></thead><tbody><tr><td><a href="host.html">Media server</a></td><td>Canary</td><td class="mono">0.1.0</td><td><span class="lamp online">Confirmed on 0.2.0</span></td><td class="muted">Today 08:12</td></tr><tr><td><a href="host.html">Web A</a></td><td>Canary</td><td class="mono">0.1.0</td><td><span class="lamp online">Confirmed on 0.2.0</span></td><td class="muted">Today 08:13</td></tr><tr><td><a href="host.html">Backup target</a></td><td>2</td><td class="mono">0.1.0</td><td><span class="lamp online">Confirmed on 0.2.0</span></td><td class="muted">Today 08:21</td></tr><tr><td><a href="host.html">Build runner</a></td><td>2</td><td class="mono">0.1.0</td><td><span class="lamp stale">Restarted on 0.2.0, waiting for its first heartbeat</span></td><td class="muted">Today 08:23</td></tr><tr><td><a href="host.html">DNS resolver</a></td><td>3</td><td class="mono">0.1.0</td><td><span class="lamp">Waiting for stage 3</span></td><td class="muted"></td></tr></tbody></table></div>
+  <p class="muted">Not included: Lab sandbox (pending enrollment) and Old proxy (credential revoked). They update when they next run as active hosts.</p>
+</section>
+<h2>Releases</h2>
+<div class="table-wrap"><table><thead><tr><th>Version</th><th>Signature</th><th>Imported</th><th>Hosts running it</th></tr></thead><tbody>
+<tr><td class="mono">0.2.0</td><td><span class="lamp online">Verified</span> <span class="muted">key EXAMPLE-release-key-1</span></td><td class="muted">Today 08:02 by Example Operator</td><td>3</td></tr>
+<tr><td class="mono">0.1.0</td><td><span class="lamp online">Verified</span> <span class="muted">key EXAMPLE-release-key-1</span></td><td class="muted">12 days ago by Example Operator</td><td>2</td></tr>
+<tr><td class="mono">0.0.9</td><td><span class="lamp online">Verified</span> <span class="muted">key EXAMPLE-release-key-1</span></td><td class="muted">20 days ago by Example Operator</td><td>0</td></tr>
+</tbody></table></div>
+<form class="filters" style="margin-top:1rem">
+  <label>Import a release from GitHub<input placeholder="v0.3.0"></label>
+  <button class="btn quiet" type="submit">Import</button>
+  <a href="#" style="align-self:center">or upload the binary, manifest, and signature</a>
+</form>
+<h2>Start a rollout</h2>
+<form class="form">
+  <div class="notice info" role="status"><strong>One rollout at a time.</strong><p>Available when the rollout to 0.2.0 completes or is cancelled.</p></div>
+  <div class="field"><label for="v">Release</label><select id="v" disabled><option>0.2.0 (newest)</option></select></div>
+  <div class="field"><label for="c">Canary hosts</label><select id="c" disabled><option>Hosts tagged canary (2)</option><option>Choose hosts…</option></select><p class="hint">They update first; the rest follow in stages of 25% and then everyone else.</p></div>
+  <div class="actions"><button class="btn" type="button" disabled>Start rollout</button></div>
+</form>
+<p class="note">Progress updates live. A stage moves on when all its hosts confirm; any failure or rollback halts the whole rollout (see <a href="agents-halted.html">halted</a>). "Confirmed" means the new version completed a heartbeat; until then the old version is one step away.</p>
+</main>
+</body>
+</html>
