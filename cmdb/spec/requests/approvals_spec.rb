@@ -61,6 +61,44 @@ RSpec.describe "Onboarding approval", type: :request do
       follow_redirect!
       expect(page.at_css(".flash").text.squish).to eq("Too many codes tried. Wait a minute and try again.")
     end
+
+    it "spends the same budget on direct code URLs that find nothing, but not on a found request's live refreshes (review of #63)" do
+      limit = ApprovalsController::CODE_LOOKUPS_PER_MINUTE
+      (limit + 5).times { get "/onboard/#{code}" } # an open review page refreshing
+      expect(response).to have_http_status(:ok)
+
+      (limit / 2).times { post "/onboard", params: { code: "BBBB-BBBB" } }
+      (limit - (limit / 2)).times do
+        get "/onboard/CCCC-CCCC"
+        expect(response).to have_http_status(:not_found)
+      end
+      # Spent: a real code no longer resolves either, so guessed URLs cannot tell a hit from a miss.
+      [ -> { get "/onboard/#{code}" }, -> { get "/onboard/DDDD-DDDD" }, -> { post "/onboard/#{code}/reject" }, -> { post "/onboard", params: { code: } } ].each do |attempt|
+        attempt.call
+        expect(response).to redirect_to("/onboard")
+      end
+      follow_redirect!
+      expect(page.at_css(".flash").text.squish).to eq("Too many codes tried. Wait a minute and try again.")
+      expect(request_record.reload.state).to eq("open")
+    end
+
+    it "finds the matching hosts for the whole list in a fixed number of queries (review of #63)" do
+      add_matched_request = lambda do |n|
+        machine_id = format("%032x", 0xabc000 + n)
+        by_machine, = enrolled_host(name: "Machine #{n}", hostname: "vm-#{70 + n}.example.lan")
+        by_machine.agent_credentials.active.sole.update_column(:machine_id, machine_id)
+        create(:host, name: "Name #{n}", hostname: "vm-#{20 + n}.example.lan")
+        start_onboarding(client_ip: "192.0.2.#{20 + n}", hostname: "vm-#{20 + n}.example.lan", machine_id:).record
+      end
+      first = add_matched_request.call(1)
+      one = count_queries { get "/onboard" }
+      others = (2..5).map { |n| add_matched_request.call(n) }
+      five = count_queries { get "/onboard" }
+      expect(five).to eq(one)
+      [ first, *others ].each.with_index(1) do |request, n|
+        expect(page.at_css("tr#onboarding_request_#{request.id} .tag").text).to eq("matches Machine #{n}")
+      end
+    end
   end
 
   describe "reviewing" do
@@ -195,6 +233,20 @@ RSpec.describe "Onboarding approval", type: :request do
   end
 
   describe "rejecting" do
+    it "keeps showing a rejection after the request's TTL, as the installer is still told (review of #63)" do
+      second = create(:operator, name: "Second Operator")
+      other = start_onboarding(client_ip: "192.0.2.11")
+      post "/onboard/#{code}/reject"
+      Onboarding::Reject.call(request: other.record, operator: second)
+      travel_to(11.minutes.from_now) do
+        get "/onboard/#{code}"
+        expect(page.at_css("#onboard_outcome strong").text).to eq("Rejected. Nothing was created.")
+        get "/onboard/#{other.record.user_code}"
+        expect(page.at_css("#onboard_outcome strong").text).to match(/\ASecond Operator rejected this request .* ago\.\z/)
+        expect { collect_onboarding(started.device_code) }.to raise_error(AgentApi::OnboardingRejected)
+      end
+    end
+
     it "rejects without creating anything" do
       post "/onboard/#{code}/reject"
       expect(response).to redirect_to("/onboard/#{code}")

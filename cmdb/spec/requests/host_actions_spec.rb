@@ -20,6 +20,7 @@ RSpec.describe "Host actions", type: :request do
         .to change(Host, :count).by(1)
       expect(response).to have_http_status(:created)
       expect(response.headers["Cache-Control"]).to include("no-store")
+      expect(page.at_css("head meta[name='turbo-cache-control']")["content"]).to eq("no-cache") # no Turbo snapshot for Back (review of #63)
       host = Host.last
       expect(host).to have_attributes(name: "Lab sandbox", hostname: "vm-06.example.lan", tags: %w[lab ci], enrollment_state: "pending")
       token = page.at_css("#enrollment_token").text
@@ -126,6 +127,7 @@ RSpec.describe "Host actions", type: :request do
       post "/hosts/#{host.id}/reenroll"
       expect(response).to have_http_status(:ok)
       expect(response.headers["Cache-Control"]).to include("no-store")
+      expect(page.at_css("head meta[name='turbo-cache-control']")["content"]).to eq("no-cache")
       token = page.at_css("#enrollment_token").text
       expect(host.reload.enrollment_state).to eq("pending")
       expect(AgentCredential.authenticate("Bearer #{enrolled.last}")).to be_present # works until the token is used

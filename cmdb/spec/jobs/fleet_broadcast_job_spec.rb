@@ -66,6 +66,17 @@ RSpec.describe FleetBroadcastJob, type: :job do
       expect(enqueued_ids).to eq([ host.id, host.id ])
     end
 
+    it "enqueues when a token is issued without a state change: pre-registering, or a new token for a pending host (review of #63)" do
+      registered, = Enrollment::RegisterHost.call({ name: "Lab sandbox", hostname: "vm-06.example.lan" }, actor: Audit::SYSTEM)
+      expect(enqueued_ids).to eq([ registered.id ])
+      clear_enqueued_jobs
+      Enrollment::IssueToken.call(host: registered, actor: Audit::SYSTEM)
+      expect(enqueued_ids).to eq([ registered.id ])
+      clear_enqueued_jobs
+      Enrollment::IssueToken.call(host:, actor: Audit::SYSTEM) # active -> pending: the transition's one refresh
+      expect(enqueued_ids).to eq([ host.id ])
+    end
+
     it "enqueues when the first inventory arrives, so the row gains its operating system" do
       record_inventory(host)
       record_inventory(host)

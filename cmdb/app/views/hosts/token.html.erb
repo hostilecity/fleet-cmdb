@@ -1,4 +1,6 @@
 <% content_for :title, @created ? "#{@host.name} pre-registered" : "One-time token for #{@host.name}" %>
+<%# no-store keeps the token out of the HTTP cache; this keeps it out of Turbo's snapshot cache, so Back never shows it again. %>
+<% turbo_exempts_page_from_cache %>
 <% server = "https://#{HostSeparation.agent_host}" %>
 <div class="page-head"><div><h1><%= @created ? "#{@host.name} pre-registered" : "New one-time token for #{@host.name}" %></h1><p class="mono"><%= @host.hostname %></p></div></div>
 <div class="form token-once">

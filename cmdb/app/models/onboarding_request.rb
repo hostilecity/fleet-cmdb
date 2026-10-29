@@ -65,18 +65,37 @@ class OnboardingRequest < ApplicationRecord
   # Existing hosts this VM may be (P1-D07): same machine ID first (from a credential, the inventory, or a
   # clone warning), then same hostname. Retired hosts are never offered. Returns [[host, :machine_id |
   # :hostname], ...]. Only a suggestion: nothing is attached unless the operator chooses it.
-  def matching_hosts
-    by_machine = if machine_id
-      ids = AgentCredential.where(machine_id:).select(:host_id)
-      inventory = HostInventory.where("stable ->> 'machine_id' = ?", machine_id).select(:host_id)
-      found = Host.in_fleet.where(id: ids).or(Host.in_fleet.where(id: inventory)).or(Host.in_fleet.where(reported_machine_id: machine_id)).to_a
+  def matching_hosts = self.class.matching_hosts_for([ self ]).fetch(id)
+
+  # matching_hosts for many requests at once, keyed by request id, in a fixed number of queries however many
+  # requests there are (the waiting list, review of #63).
+  def self.matching_hosts_for(requests)
+    machine_ids = requests.filter_map(&:machine_id).uniq
+    hostnames = requests.filter_map { |r| r.hostname&.downcase }.uniq
+    by_machine = hosts_by_machine_id(machine_ids)
+    by_name = hostnames.any? ? Host.in_fleet.where(hostname: hostnames).order(:name).to_a.group_by(&:hostname) : {}
+
+    requests.to_h do |request|
+      name = request.hostname&.downcase
       # A host that also has the reported hostname is the likeliest, so it comes first and is the default.
-      found.sort_by { |h| [ h.hostname == hostname&.downcase ? 0 : 1, h.name.downcase ] }
-    else
-      []
+      machine = by_machine.fetch(request.machine_id, []).sort_by { |h| [ h.hostname == name ? 0 : 1, h.name.downcase ] }
+      named = by_name.fetch(name, []).reject { |h| machine.include?(h) }
+      [ request.id, machine.map { |h| [ h, :machine_id ] } + named.map { |h| [ h, :hostname ] } ]
     end
-    by_name = hostname ? Host.in_fleet.where(hostname: hostname.downcase).where.not(id: by_machine.map(&:id)).order(:name).to_a : []
-    by_machine.map { |h| [ h, :machine_id ] } + by_name.map { |h| [ h, :hostname ] }
+  end
+
+  # { machine_id => [host, ...] } for hosts in the fleet that have the machine ID on a credential, in their
+  # inventory, or as a reported (clone warning) machine ID.
+  def self.hosts_by_machine_id(machine_ids)
+    return {} if machine_ids.empty?
+
+    pairs = AgentCredential.where(machine_id: machine_ids).distinct.pluck(:machine_id, :host_id) +
+            HostInventory.where("stable ->> 'machine_id' IN (?)", machine_ids).pluck(Arel.sql("stable ->> 'machine_id'"), :host_id)
+    hosts = Host.in_fleet.where(id: pairs.map(&:last)).or(Host.in_fleet.where(reported_machine_id: machine_ids)).index_by(&:id)
+    pairs += hosts.values.filter_map { |h| [ h.reported_machine_id, h.id ] if h.reported_machine_id.in?(machine_ids) }
+    pairs.uniq.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |(machine_id, host_id), found|
+      found[machine_id] << hosts[host_id] if hosts[host_id]
+    end.transform_values(&:uniq)
   end
 
   def self.generate_user_code

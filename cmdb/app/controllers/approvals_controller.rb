@@ -4,16 +4,16 @@
 class ApprovalsController < ApplicationController
   CODE_LOOKUPS_PER_MINUTE = 20
 
-  # Typing codes is limited per operator, so the code box is no oracle for guessing codes.
-  rate_limit to: CODE_LOOKUPS_PER_MINUTE, within: 1.minute, only: :lookup, by: -> { current_operator.id },
-             store: AgentApi.rate_limit_store, name: "onboard_lookup",
-             with: -> { redirect_to onboard_path, alert: "Too many codes tried. Wait a minute and try again." }
-
+  # Resolving codes is limited per operator, so neither the code box nor /onboard/<code> is an oracle for
+  # guessing codes. Both spend one budget: every code typed in the box, and every direct URL whose code finds
+  # nothing (review of #63). A code that resolves costs nothing, so an open review page's live refreshes never
+  # use it up; once it is spent, direct URLs stop resolving too, so a hit cannot be told from a miss.
+  before_action :spend_code_lookup, only: :lookup
   before_action :load_request, only: %i[show approve reject]
 
   def index
     @awaiting = OnboardingRequest.awaiting.order(created_at: :desc).to_a
-    @matches = @awaiting.to_h { |r| [ r.id, r.matching_hosts ] }
+    @matches = OnboardingRequest.matching_hosts_for(@awaiting) # batched: a fixed number of queries per render
   end
 
   # The code box only finds requests that are waiting; expired, decided, and unknown codes all get the same
@@ -57,8 +57,26 @@ class ApprovalsController < ApplicationController
   private
 
   def load_request
+    return too_many_code_lookups if code_lookups(spend: 0) >= CODE_LOOKUPS_PER_MINUTE
+
     @request = OnboardingRequest.latest_by_user_code(params[:code])
-    render :unknown, status: :not_found unless @request
+    return if @request
+
+    code_lookups(spend: 1)
+    render :unknown, status: :not_found
+  end
+
+  def spend_code_lookup
+    too_many_code_lookups if code_lookups(spend: 1) > CODE_LOOKUPS_PER_MINUTE
+  end
+
+  # Adds spend to this operator's count for the current minute and returns the new count.
+  def code_lookups(spend:)
+    AgentApi.rate_limit_store.increment("rate-limit:onboard_lookup:#{current_operator.id}", spend, expires_in: 1.minute).to_i
+  end
+
+  def too_many_code_lookups
+    redirect_to onboard_path, alert: "Too many codes tried. Wait a minute and try again."
   end
 
   # "new" or "reenroll-<host id>"; a re-enrollment target must be one of the hosts this request matched.
