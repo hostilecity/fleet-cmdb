@@ -44,10 +44,39 @@ class OnboardingRequest < ApplicationRecord
     find_by(device_code_digest: AgentApi.digest(device_code))
   end
 
+  # A user code as typed (any case, with or without the dash or spaces) in its stored form, or nil.
+  def self.normalize_user_code(user_code)
+    letters = user_code.to_s.upcase.delete("^A-Z")
+    code = "#{letters[0, 4]}-#{letters[4, 4]}"
+    letters.length == 8 && USER_CODE_FORMAT.match?(code) ? code : nil
+  end
+
   def self.find_awaiting_by_user_code(user_code, now: Time.current)
-    code = user_code.to_s.upcase.delete("^A-Z")
-    code = "#{code[0, 4]}-#{code[4, 4]}"
-    USER_CODE_FORMAT.match?(code) ? awaiting(now).find_by(user_code: code) : nil
+    code = normalize_user_code(user_code)
+    code ? awaiting(now).find_by(user_code: code) : nil
+  end
+
+  # The newest request with this code, in any state, for the approval page (P1-D07).
+  def self.latest_by_user_code(user_code)
+    code = normalize_user_code(user_code)
+    code ? where(user_code: code).order(created_at: :desc, id: :desc).first : nil
+  end
+
+  # Existing hosts this VM may be (P1-D07): same machine ID first (from a credential, the inventory, or a
+  # clone warning), then same hostname. Retired hosts are never offered. Returns [[host, :machine_id |
+  # :hostname], ...]. Only a suggestion: nothing is attached unless the operator chooses it.
+  def matching_hosts
+    by_machine = if machine_id
+      ids = AgentCredential.where(machine_id:).select(:host_id)
+      inventory = HostInventory.where("stable ->> 'machine_id' = ?", machine_id).select(:host_id)
+      found = Host.in_fleet.where(id: ids).or(Host.in_fleet.where(id: inventory)).or(Host.in_fleet.where(reported_machine_id: machine_id)).to_a
+      # A host that also has the reported hostname is the likeliest, so it comes first and is the default.
+      found.sort_by { |h| [ h.hostname == hostname&.downcase ? 0 : 1, h.name.downcase ] }
+    else
+      []
+    end
+    by_name = hostname ? Host.in_fleet.where(hostname: hostname.downcase).where.not(id: by_machine.map(&:id)).order(:name).to_a : []
+    by_machine.map { |h| [ h, :machine_id ] } + by_name.map { |h| [ h, :hostname ] }
   end
 
   def self.generate_user_code

@@ -1,0 +1,6 @@
+<% content_for :title, "Edit #{@host.name}" %>
+<div class="page-head"><div><h1>Edit <%= @host.name %></h1><p>Changes are recorded in the audit log with the old and new values.</p></div></div>
+<%= form_with model: @host, url: host_path(@host), scope: :host, method: :patch, class: "form" do |f| %>
+  <%= render "hosts/form", f:, host: @host, notes: true, error_title: "Changes were not saved." %>
+  <div class="actions"><button class="btn" type="submit">Save changes</button><%= link_to "Cancel", host_path(@host), class: "btn quiet" %></div>
+<% end %>

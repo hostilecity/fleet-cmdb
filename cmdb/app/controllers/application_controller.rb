@@ -26,7 +26,14 @@ class ApplicationController < ActionController::Base
     Current.operator = operator_from_session
     return if Current.operator
 
+    # A page asked for while signed out (an approval link from the installer, P1-D07) is shown after sign-in.
+    session[:return_to] = request.fullpath if request.get? && safe_return_path?(request.fullpath)
     redirect_to sign_in_path
+  end
+
+  # Only a path on this site: no scheme, no host, no protocol-relative "//", and not too long.
+  def safe_return_path?(path)
+    path.is_a?(String) && path.length <= 512 && path.match?(%r{\A/(?![/\\])}) && !path.start_with?("/sign_in", "/auth/")
   end
 
   # The operator for this request's session token, or nil. Sessions live server-side (OperatorSession), so

@@ -1,0 +1,17 @@
+<% by_other = request.decided_by && request.decided_by != current_operator %>
+<% who = request.decided_by&.display_name %>
+<div id="onboard_outcome">
+<% if request.state == "collected" %>
+  <div class="notice info" role="status"><strong><%= request.host&.name || "The host" %> has joined the fleet.</strong><p><%= link_to "Go to #{request.host.name}", host_path(request.host) if request.host %></p></div>
+<% elsif request.expired? %>
+  <div class="sheet empty"><p><strong>This request expired at <%= utc(request.expires_at) %>. Nothing was created.</strong></p><p>Run the installer on the VM again to get a new code.</p></div>
+<% elsif request.state == "approved" && by_other %>
+  <div class="sheet empty"><p><strong><%= who %> approved this request <%= seen_ago(request.decided_at).downcase_first %>.</strong></p><p>Nothing more to do here. <%= link_to "Other waiting VMs", onboard_path %></p></div>
+<% elsif request.state == "approved" %>
+  <div class="notice info" role="status"><strong>Approved. Waiting for the installer on <%= request.hostname || "the VM" %>.</strong><p>It checks every <%= OnboardingRequest.config.poll_interval.to_i %> seconds, so this usually takes a moment; this page updates as soon as it does. If the installer was closed, the approval lapses at <%= utc(request.expires_at) %> and nothing is created.</p></div>
+<% elsif request.state == "rejected" && by_other %>
+  <div class="sheet empty"><p><strong><%= who %> rejected this request <%= seen_ago(request.decided_at).downcase_first %>.</strong></p><p>Nothing was created. <%= link_to "Other waiting VMs", onboard_path %></p></div>
+<% else %>
+  <div class="notice" role="status"><strong>Rejected. Nothing was created.</strong><p>The installer stops and says so. <%= link_to "Other waiting VMs", onboard_path %></p></div>
+<% end %>
+</div>

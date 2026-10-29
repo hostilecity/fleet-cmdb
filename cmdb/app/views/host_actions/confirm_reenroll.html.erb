@@ -1,0 +1,11 @@
+<% content_for :title, "Re-enroll #{@host.name}" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Re-enroll <%= @host.name %></h2>
+  <p>Use this when the VM lost its credential, was rebuilt, or was revoked. Choose how the VM gets its new credential:</p>
+  <p><strong>Approve from the VM (recommended).</strong> On <span class="mono"><%= @host.hostname %></span>, as root, run <code>fleet-agent install --reenroll</code>. Approve the request that appears on the <%= link_to "approval page", onboard_path %>, choosing "Re-enroll <%= @host.name %>". Nothing changes until you approve.</p>
+  <p><strong>Issue a one-time token</strong> for an unattended reinstall. The host moves to pending now; its current credential keeps working until the token is used. Any earlier unused token, or earlier approval, stops working.</p>
+  <div class="actions">
+    <%= button_to "Issue one-time token", reenroll_host_path(@host), class: "btn quiet", form_class: "inline", data: { turbo: false } %>
+    <%= link_to "Close", host_path(@host), class: "btn quiet" %>
+  </div>
+</div>

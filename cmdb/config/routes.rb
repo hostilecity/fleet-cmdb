@@ -35,7 +35,23 @@ Rails.application.routes.draw do
   # out (ApplicationController, P1-S01).
   constraints(dashboard_host) do
     root "hosts#index"
-    resources :hosts, only: :show
+    resources :hosts, only: %i[show new create edit update] do
+      # Each destructive action is a confirmation page (GET) and a CSRF-protected POST (FR-S.4, P1-D04).
+      member do
+        get :revoke, to: "host_actions#confirm_revoke"
+        post :revoke, to: "host_actions#revoke"
+        get :retire, to: "host_actions#confirm_retire"
+        post :retire, to: "host_actions#retire"
+        get :reenroll, to: "host_actions#confirm_reenroll"
+        post :reenroll, to: "host_actions#reenroll"
+      end
+    end
+    # Onboarding approval (P1-D07, DEC-17): the installer's verification URI is /onboard/<user code>.
+    get "onboard", to: "approvals#index", as: :onboard
+    post "onboard", to: "approvals#lookup"
+    get "onboard/:code", to: "approvals#show", as: :onboard_request
+    post "onboard/:code/approve", to: "approvals#approve", as: :approve_onboard_request
+    post "onboard/:code/reject", to: "approvals#reject", as: :reject_onboard_request
     get "settings", to: "settings#edit", as: :settings
     patch "settings", to: "settings#update"
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).

@@ -1,0 +1,9 @@
+<dl class="facts">
+  <dt>Hostname</dt><dd class="mono"><%= request.hostname || tag.span("Not reported", class: "unavailable") %></dd>
+  <dt>Operating system</dt><dd><%= request.os_name || tag.span("Not reported", class: "unavailable") %><% if request.os.is_a?(Hash) && request.os["id"] %> <span class="muted">(<%= [ request.os["id"], request.os["version_id"] ].compact.join(" ") %>)</span><% end %></dd>
+  <dt>Machine ID</dt><dd class="mono"><%= request.machine_id || tag.span("Not reported", class: "unavailable") %></dd>
+  <dt>Agent</dt><dd class="mono"><%= request.agent_version %></dd>
+  <dt>From address</dt><dd class="mono"><%= request.client_ip %></dd>
+  <dt>Requested</dt><dd><%= seen_ago(request.created_at) %></dd>
+  <dt>Expires</dt><dd>in <%= distance_of_time_in_words(Time.current, request.expires_at) %>, <%= utc(request.expires_at) %></dd>
+</dl>

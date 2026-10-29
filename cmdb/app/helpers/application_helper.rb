@@ -34,4 +34,23 @@ module ApplicationHelper
     step = ((100.0 * part / whole).clamp(0, 100) / 5).round * 5
     tag.span(tag.span(class: "w-#{step}"), class: "meter", title:, "aria-hidden": "true")
   end
+
+  # A labelled form field with its errors shown in place (FR-S.4): the input is marked aria-invalid and
+  # described by its error and hint. kind is :text_field or :text_area; value overrides the model's value.
+  def form_field(form, attribute, label:, hint: nil, kind: :text_field, value: :model, **options)
+    errors = form.object&.errors&.full_messages_for(attribute) || []
+    base = "#{form.object_name}_#{attribute}"
+    described = [ (errors.any? ? "#{base}_error" : nil), (hint ? "#{base}_hint" : nil) ].compact.join(" ").presence
+    input_options = options.merge("aria-invalid": (errors.any? ? "true" : nil), "aria-describedby": described)
+    input_options[:value] = value unless value == :model || kind == :text_area
+    input = kind == :text_area && value != :model ? form.text_area(attribute, input_options.merge(value:)) : form.public_send(kind, attribute, input_options)
+    tag.div(class: [ "field", ("invalid" if errors.any?) ]) do
+      safe_join([
+        form.label(attribute, label),
+        input,
+        (tag.p(errors.to_sentence, class: "error-text", id: "#{base}_error") if errors.any?),
+        (tag.p(hint, class: "hint", id: "#{base}_hint") if hint)
+      ].compact)
+    end
+  end
 end

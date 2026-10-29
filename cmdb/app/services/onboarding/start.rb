@@ -22,6 +22,7 @@ module Onboarding
         enforce_caps!
         device_code = SecureRandom.urlsafe_base64(32)
         record = create_with_unique_user_code(device_code)
+        FleetBroadcast.refresh # the dashboard's "waiting for approval" notice (P1-D07)
         OnboardingRequest::Started.new(record:, device_code:)
       end
     end

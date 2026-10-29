@@ -32,6 +32,7 @@ module Onboarding
                          host_attributes: @target ? nil : @host_attributes, reenroll: @target.present?, host: @target)
         Audit.record(actor: @operator, action: Audit::Actions::ONBOARDING_APPROVED, target: @request,
                      changes: { "state" => %w[open approved], "host_id" => [ nil, @target&.id ], "reenroll" => [ nil, @target.present? ] })
+        FleetBroadcast.refresh
         @request
       end
     end

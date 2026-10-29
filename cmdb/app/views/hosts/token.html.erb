@@ -1,0 +1,19 @@
+<% content_for :title, @created ? "#{@host.name} pre-registered" : "One-time token for #{@host.name}" %>
+<% server = "https://#{HostSeparation.agent_host}" %>
+<div class="page-head"><div><h1><%= @created ? "#{@host.name} pre-registered" : "New one-time token for #{@host.name}" %></h1><p class="mono"><%= @host.hostname %></p></div></div>
+<div class="form token-once">
+  <div class="notice" role="alert"><strong>Copy this token now. It is shown only once.</strong><p>Only a fingerprint is stored, so it cannot be shown again. If it is lost, re-enroll the host to get a new one.</p></div>
+  <p>Enrollment token<%= ", valid until #{utc(@token_record.expires_at)}" if @token_record %>:</p>
+  <div class="token" id="enrollment_token"><%= @token %></div>
+  <% unless @created %>
+    <p class="muted">The host is pending until the token is used. Its current credential, if any, keeps working until then. Any earlier unused token has stopped working.</p>
+  <% end %>
+  <h2>Install on the VM</h2>
+  <p>Download and check the agent, then on <span class="mono"><%= @host.hostname %></span>, as root:</p>
+  <div class="token"><%= "./fleet-agent install --server #{server} --token-stdin" %></div>
+  <p class="muted">Paste the token when asked, so it never appears in the process list or shell history.</p>
+  <h3>Unattended (cloud-init or a script)</h3>
+  <div class="terminal"><%= "FLEET_ENROLLMENT_TOKEN='#{@token}' ./fleet-agent install --server #{server} --quiet" %></div>
+  <p class="muted">The installer reads the token from the environment and never prints it. Keep the token out of version control: it works once, until it expires.</p>
+  <p><%= link_to "Go to the host", host_path(@host) %></p>
+</div>
