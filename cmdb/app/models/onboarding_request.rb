@@ -60,6 +60,15 @@ class OnboardingRequest < ApplicationRecord
     value&.to_s&.gsub(CONTROL_CHARACTERS, "")&.strip&.first(max).presence
   end
 
+  # Expires every approved, uncollected re-enrollment of host, so only the newest path can enroll it, as
+  # issuing a token expires older tokens (review of #61). Approve calls this while its own request is still
+  # open, so that request is never caught. Call under the host's row lock: Approve and Enrollment::IssueToken
+  # hold it, and Collect takes it before the request, so a collection cannot slip in between.
+  def self.supersede_reenrollments!(host, now: Time.current)
+    where(host_id: host.id, state: "approved", reenroll: true).where("expires_at > ?", now)
+      .update_all(expires_at: now, updated_at: now)
+  end
+
   def expired?(now = Time.current) = expires_at <= now
 
   def awaiting?(now = Time.current) = state == "open" && !expired?(now)

@@ -7,7 +7,8 @@ module Onboarding
   # Nothing is created yet: the host appears, or the target host gets its new credential, when the installer
   # collects (Onboarding::Collect). For a re-enrollment the target moves to pending now, as when a new
   # enrollment token is issued (FR-1.1): its old credential keeps working until collection, and any unused
-  # enrollment token for it stops working, so only the newest path can enroll it.
+  # enrollment token for it, and any earlier approved re-enrollment of it, stops working, so only the newest
+  # path can enroll it.
   class Approve
     include Decide
 
@@ -42,6 +43,7 @@ module Onboarding
 
       @target.begin_reenrollment!(actor: @operator) if @target.can_transition?(:begin_reenrollment)
       @target.enrollment_tokens.redeemable.update_all(expires_at: Time.current, updated_at: Time.current)
+      OnboardingRequest.supersede_reenrollments!(@target)
     end
 
     # Validated now, so the operator sees errors on the approval page rather than the installer failing at

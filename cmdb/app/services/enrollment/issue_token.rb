@@ -2,8 +2,8 @@ module Enrollment
   # Issues an enrollment token for a host and returns the plaintext once (DEC-04, P1-S05).
   #
   # For an active or revoked host this starts re-enrollment (FR-1.1: -> pending). An active host's credential
-  # keeps working until the new token is redeemed. Any earlier unredeemed token for the host is expired, so
-  # only the newest token works.
+  # keeps working until the new token is redeemed. Any earlier unredeemed token for the host, and any approved
+  # but uncollected onboarding re-enrollment of it, is expired, so only the newest path works.
   class IssueToken
     class HostRetired < StandardError; end
 
@@ -22,6 +22,8 @@ module Enrollment
 
         @host.begin_reenrollment!(actor: @actor) if @host.can_transition?(:begin_reenrollment)
         @host.enrollment_tokens.redeemable.update_all(expires_at: Time.current, updated_at: Time.current)
+        # An approved onboarding re-enrollment of this host is superseded too (DEC-17, review of #61).
+        OnboardingRequest.supersede_reenrollments!(@host)
         issued = EnrollmentToken.issue!(host: @host, ttl: @ttl)
         Audit.record(actor: @actor, action: Audit::Actions::HOST_ENROLLMENT_TOKEN_ISSUED, target: @host,
                      changes: { "expires_at" => [ nil, issued.record.expires_at ] })

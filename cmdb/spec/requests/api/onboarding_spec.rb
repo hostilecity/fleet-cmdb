@@ -197,6 +197,52 @@ RSpec.describe "Agent onboarding API", type: :request do
       expect(Host.count).to eq(1)
     end
 
+    it "lets only the newest approval re-enroll the host: an earlier approved request can no longer collect (review of #61)" do
+      start(ip: "192.0.2.10")
+      first = json["device_code"]
+      first_request = started_request
+      start(ip: "192.0.2.11")
+      second = json["device_code"]
+      Onboarding::Approve.call(request: first_request, operator:, target_host: host)
+      Onboarding::Approve.call(request: started_request, operator:, target_host: host)
+
+      poll(first, ip: "192.0.2.10")
+      expect_error(:gone, "onboarding_expired")
+      poll(second, ip: "192.0.2.11")
+      expect(response).to have_http_status(:created)
+      expect(AgentCredential.authenticate("Bearer #{json['credential']}").host).to eq(host)
+    end
+
+    it "lets a newer enrollment token supersede an approved re-enrollment (review of #61)" do
+      start
+      code = json["device_code"]
+      Onboarding::Approve.call(request: started_request, operator:, target_host: host)
+      token = Enrollment::IssueToken.call(host:, actor: operator)
+
+      poll(code)
+      expect_error(:gone, "onboarding_expired")
+      expect(host.reload.agent_credentials.active.sole.key_id).to eq(old_credential.split(".").first) # untouched
+      Enrollment::Redeem.call(token:, machine_id: nil, agent_version: "0.1.0", schema_version: 1)
+      expect(host.reload.enrollment_state).to eq("active")
+    end
+
+    it "supersedes only approved re-enrollments of that host" do
+      other_host, = enrolled_host(hostname: "vm-02.example.lan")
+      start(ip: "192.0.2.10")
+      mine = started_request
+      start(ip: "192.0.2.11")
+      theirs = started_request
+      start(ip: "192.0.2.12")
+      new_host_request = started_request
+      Onboarding::Approve.call(request: mine, operator:, target_host: host)
+      Onboarding::Approve.call(request: theirs, operator:, target_host: other_host)
+      Onboarding::Approve.call(request: new_host_request, operator:, attributes: { name: "New" })
+
+      Enrollment::IssueToken.call(host:, actor: operator)
+      expect(mine.reload.expired?).to be(true)
+      expect([ theirs.reload.expired?, new_host_request.reload.expired? ]).to eq([ false, false ])
+    end
+
     it "re-enrolls a revoked host" do
       host.revoke!(actor: Audit::SYSTEM)
       start
