@@ -7,15 +7,29 @@ description = "Fleet CMDB agent: reports host facts to the Fleet CMDB server"
 license = "MIT"
 publish = false
 
-# Dependencies are added by the issues that first use them; the planned set is recorded in README.md.
-# Keep this list short: the agent runs as root (DEC-03).
+# Dependencies are added by the issues that first use them; the planned set and the reasons are in
+# README.md. Keep this list short: the agent runs as root (DEC-03). No OpenSSL, no async runtime.
 [dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# SIGTERM/SIGINT for graceful shutdown without an async runtime.
+signal-hook = "0.4.5"
+# Parse only: the agent never writes TOML.
+toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
+tracing = "0.1.44"
+# Text formatter only: no ANSI colours, no env-filter (regex), no `log` bridge.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+# rustls with the ring provider; no gzip. Roots come from the system store plus `ca_file`.
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 
-# Test-only: validate payloads against the API contract in docs/api (P0-CONTRACT). Not in the binary.
-# No default features, so the validator never fetches remote schemas.
+# Test-only, never in the binary.
+# jsonschema validates payloads against the API contract in docs/api (P0-CONTRACT); no default
+# features, so the validator never fetches remote schemas. rcgen and rustls run a local TLS server
+# with a throwaway certificate authority generated per test (P1-A02).
 [dev-dependencies]
 jsonschema = { version = "0.60.1", default-features = false }
-serde_json = "1.0.154"
+rcgen = "0.14.10"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 
 [profile.release]
 lto = true
