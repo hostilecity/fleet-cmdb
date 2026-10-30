@@ -1,15 +1,13 @@
 //! `fleet-agent`: reports host facts to the Fleet CMDB server.
 //!
 //! Commands: `run` (the default), `check-config`, `--version`, and `--help` (P1-A01). `install` and
-//! `uninstall` arrive with P1-AGENT-INSTALL; heartbeats and inventory reports with P1-AGENT-REPORT.
-
-// The client, retry policy, and collectors are used by the reporting loop in P1-AGENT-REPORT; until
-// then parts of them are only exercised by tests.
-#![allow(dead_code)]
+//! `uninstall` arrive with P1-AGENT-INSTALL. `run` sends heartbeats and inventory reports
+//! ([`report`], P1-AGENT-REPORT).
 
 mod client;
 mod collect;
 mod config;
+mod fsx;
 mod logging;
 mod owner;
 mod report;
@@ -21,7 +19,7 @@ mod test_support;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::Instant;
 
 use client::Client;
 use config::{Config, DEFAULT_CONFIG_PATH, Interval};
@@ -169,6 +167,7 @@ fn check_config(path: &Path) -> ExitCode {
 
 /// `run`: starts the agent and keeps it running until `SIGTERM` or `SIGINT`.
 fn run(path: &Path) -> ExitCode {
+    let started = Instant::now();
     let config = match Config::load(path) {
         Ok(config) => config,
         Err(e) => {
@@ -177,7 +176,7 @@ fn run(path: &Path) -> ExitCode {
         }
     };
     // Config problems, including an unusable `ca_file`, go to stderr before logging starts.
-    let _client = match Client::new(&config) {
+    let client = match Client::new(&config) {
         Ok(client) => client,
         Err(e) => {
             eprintln!("fleet-agent: {e}");
@@ -217,9 +216,11 @@ fn run(path: &Path) -> ExitCode {
         inventory_seconds = config.inventory.start.as_secs(),
         "fleet-agent started"
     );
-    // P1-AGENT-REPORT replaces this wait with the heartbeat and inventory loop.
-    tracing::info!("reporting is not part of this build yet; waiting for a stop signal");
-    while !shutdown.wait(Duration::from_secs(3600)) {}
+    // Heartbeats and inventory reports until SIGTERM or SIGINT (P1-AGENT-REPORT).
+    if !report::run(&config, &client, &shutdown, started) {
+        tracing::error!("fleet-agent stopped after an internal error");
+        return ExitCode::FAILURE;
+    }
     tracing::info!("fleet-agent stopped");
     ExitCode::SUCCESS
 }

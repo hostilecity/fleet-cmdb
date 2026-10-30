@@ -13,6 +13,12 @@ publish = false
 # Syscalls std does not expose: statvfs, uname, getifaddrs for the collectors (P1-AGENT-COLLECT);
 # geteuid and O_NOFOLLOW/O_DIRECTORY for the config and state-directory ownership checks (P1-AGENT-CORE).
 libc = "0.2.191"
+# Kernel randomness (getrandom(2)) for report ids and jitter seeds. Already linked through ring.
+getrandom = "0.2.17"
+# RFC 3339 timestamps for payloads and the server's clock; no dependencies of its own.
+humantime = "2.4.0"
+# SHA-256 for the stable-facts change hash. Already linked as the rustls crypto provider.
+ring = { version = "0.17.14", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # SIGTERM/SIGINT for graceful shutdown without an async runtime.
@@ -22,6 +28,8 @@ toml = { version = "1.1.8", default-features = false, features = ["std", "serde"
 tracing = "0.1.44"
 # Text formatter only: no ANSI colours, no env-filter (regex), no `log` bridge.
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+# UUID formatting for report ids only (no `v4` feature: the bytes come from getrandom); no dependencies.
+uuid = { version = "1.29.0", default-features = false }
 # rustls with the ring provider; no gzip. Roots come from the system store plus `ca_file`.
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 

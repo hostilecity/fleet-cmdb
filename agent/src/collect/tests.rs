@@ -840,3 +840,22 @@ fn collects_from_this_host() {
     );
     contract::assert_conforms("v1", "inventory.request", &as_report(&inventory));
 }
+
+#[test]
+fn the_heartbeat_hostname_is_read_like_the_inventory_one() {
+    let root = FakeRoot::new();
+    assert_eq!(
+        hostname_under(&root.0).as_deref(),
+        Some("vm-01.example.lan")
+    );
+    assert_eq!(
+        hostname_under(&root.0),
+        collect_from(&root.0, FakeSystem::new()).hostname
+    );
+    for bad in [&b"(none)\n"[..], b"\n", b"vm\x1b[2J\n"] {
+        root.write("/proc/sys/kernel/hostname", bad);
+        assert_eq!(hostname_under(&root.0), None);
+    }
+    root.remove("/proc/sys/kernel/hostname");
+    assert_eq!(hostname_under(&root.0), None);
+}

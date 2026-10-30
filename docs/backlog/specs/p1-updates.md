@@ -12,6 +12,8 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
   - a `directives.agent_update` object: version, manifest URL, signature URL, binary URL, and rollout id;
   - a `directives.intervals` object: heartbeat and inventory seconds, bounded to the agent's allowed range.
 
+  The agent already reads `directives` as an object with `intervals` (`heartbeat_seconds`, `inventory_seconds`) and `agent_update`, and still accepts the v1 array ([P1-AGENT-REPORT](p1-agent-report.md)). Use these names, or change the agent in the same pull request.
+
   Also an `update-result.request` schema for reporting outcomes, and examples for all three.
 - **Rollouts.** A `rollouts` table: target release, canary hosts (explicit list or tag), stages (default: canaries, then 25%, then 100%), state (`running`, `halted`, `completed`, `cancelled`), and who started, halted, or resumed it. One running rollout at a time.
   - A host gets the directive only while its stage is open and it runs an older version.

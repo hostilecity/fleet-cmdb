@@ -11,6 +11,8 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use crate::fsx;
+
 /// Only the agent's service account (root, DEC-03) may use the state directory.
 pub const STATE_DIR_MODE: u32 = 0o700;
 
@@ -77,6 +79,27 @@ fn ensure_dir_as(dir: &Path, euid: u32) -> io::Result<bool> {
 
 fn refuse(dir: &Path, why: &str) -> io::Error {
     io::Error::other(format!("state directory {} {why}", dir.display()))
+}
+
+/// Mode of every record file: private to the agent.
+const RECORD_MODE: u32 = 0o600;
+
+/// Reads the record `name` from `dir`. A missing record is `Ok(None)`; a record that is not a regular
+/// file, is a symlink, or is larger than `max_bytes` is an error, which callers treat as no record.
+pub fn read_record(dir: &Path, name: &str, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
+    match fsx::read_regular(&dir.join(name), max_bytes, fsx::Symlinks::Refuse) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Replaces the record `name` in `dir` with `bytes` atomically ([`fsx::write_atomic`]): a crash or
+/// power loss leaves either the old record or the new one, never a partial file. Temporary files left
+/// by a crash during an earlier write are removed first.
+pub fn write_record(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    fsx::remove_stale_temps(dir, name)?;
+    fsx::write_atomic(&dir.join(name), bytes, RECORD_MODE)
 }
 
 #[cfg(test)]
@@ -157,6 +180,72 @@ mod tests {
             error.contains(&format!("is owned by uid {owner}")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn records_round_trip_privately_and_replace_atomically() {
+        let tmp = TempDir::new();
+        let dir = tmp.path("state");
+        ensure_dir(&dir).unwrap();
+        assert_eq!(read_record(&dir, "r.json", 1024).unwrap(), None);
+        write_record(&dir, "r.json", b"one").unwrap();
+        assert_eq!(mode(&dir.join("r.json")), 0o600);
+        write_record(&dir, "r.json", b"two").unwrap();
+        assert_eq!(
+            read_record(&dir, "r.json", 1024).unwrap().as_deref(),
+            Some(&b"two"[..])
+        );
+        // No temporary file is left behind.
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["r.json"]);
+    }
+
+    #[test]
+    fn a_leftover_temporary_file_or_symlink_is_removed_not_followed() {
+        let tmp = TempDir::new();
+        let dir = tmp.path("state");
+        ensure_dir(&dir).unwrap();
+        let target = tmp.write("target", "untouched");
+        let stale = dir.join(format!(".r.json{}99-0", fsx::TEMP_MARKER));
+        std::os::unix::fs::symlink(&target, &stale).unwrap();
+        fs::write(dir.join(format!(".r.json{}98-0", fsx::TEMP_MARKER)), "half").unwrap();
+        write_record(&dir, "r.json", b"new").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+        assert_eq!(fs::read(dir.join("r.json")).unwrap(), b"new");
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["r.json"]);
+    }
+
+    #[test]
+    fn unusual_records_are_errors_not_followed() {
+        let tmp = TempDir::new();
+        let dir = tmp.path("state");
+        ensure_dir(&dir).unwrap();
+        let target = tmp.write("target", "secret");
+        std::os::unix::fs::symlink(&target, dir.join("link.json")).unwrap();
+        assert!(read_record(&dir, "link.json", 1024).is_err());
+        fs::create_dir(dir.join("dir.json")).unwrap();
+        assert!(read_record(&dir, "dir.json", 1024).is_err());
+        fs::write(dir.join("big.json"), vec![b'x'; 2048]).unwrap();
+        let error = read_record(&dir, "big.json", 1024).unwrap_err();
+        assert!(
+            error.to_string().contains("larger than 1024 bytes"),
+            "{error}"
+        );
+        // A record cannot be written over a directory in the way.
+        assert!(write_record(&dir, "dir.json", b"x").is_err());
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(fsx::TEMP_MARKER))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

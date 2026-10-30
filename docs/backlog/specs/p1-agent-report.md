@@ -12,6 +12,11 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Handles the response envelope (`server_time`, `directives`), ignoring directives it does not understand.
 - Applies `directives.intervals` (heartbeat and inventory seconds) within the bounds of its config, so the server can shed load fleet-wide without an agent release ([ADR 0019](../../decisions/0019-scale-direction.md)). `directives.agent_update` is handed to the updater ([P1-AGENT-UPDATE](p1-agent-update.md)).
 - Clean shutdown on signal without losing state.
+- Implementation notes (agent behaviour the server side relies on):
+  - Jitter subtracts up to 10% from the interval, so a heartbeat is never later than the interval in force.
+  - Until [P1-UPDATES](p1-updates.md) adds the directives to the contract, the agent accepts `directives` as the v1 array (every entry ignored and logged by its `type`) or as an object keyed by directive name: `intervals` with `heartbeat_seconds` and `inventory_seconds` (whole seconds, each optional), and `agent_update` (kept for the updater, not acted on before P1-AGENT-UPDATE). Any other name, field, or malformed value is ignored and logged once; the heartbeat still counts as accepted.
+  - A server interval is clamped to the config's `min..=max`. An interval missing from a response returns to the configured value. Server intervals are not persisted; after a restart the configured values apply until the first heartbeat response.
+  - A difference of more than 5 minutes between `server_time` and the agent clock is logged when it starts and when it ends.
 
 ### Acceptance criteria
 
@@ -28,6 +33,11 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Persists the last-reported stable hash and boot identifier in the state directory so a restart does not report spuriously or miss a change.
 - Does not queue or replay old reports during an outage; it sends current state when the server returns.
 - Logs each report's outcome (sent, duplicate, rejected with reason) with the report id.
+- Implementation notes:
+  - The stable check runs every 60 seconds. The hash covers the stable facts and the agent version (DEC-07); free memory, free disk space, and uptime are excluded.
+  - The startup report is always sent (FR-1.3). The saved record (`inventory.json` in the state directory, written atomically after each accepted report) is the change baseline across restarts: the startup report logs whether the stable facts changed and whether the host rebooted since the last accepted report, and no extra change report follows it. A missing or corrupt record counts as none.
+  - While a report waits for its retry, a stable change or the report reaching one inventory interval in age replaces it with a new report (new id); the retry wait still applies. Nothing older is ever sent.
+  - A report rejected for its content (`400`, `413`, `422`) is not retried, since the same body would be rejected again; the next report follows the normal schedule. Other failures retry with the same id and body.
 
 ### Acceptance criteria
 
