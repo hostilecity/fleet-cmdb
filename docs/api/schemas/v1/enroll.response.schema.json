@@ -13,6 +13,12 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{32,128}$"
     },
+    "host_name": {
+      "description": "Display name the operator gave the host, for the installer's summary. Sent by servers from P1-AGENT-INSTALL on; agents treat it as optional.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
     "server_time": {
       "description": "Server clock, RFC 3339 UTC.",
       "type": "string",

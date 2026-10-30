@@ -16,7 +16,9 @@ module Api
       def create
         credential = Enrollment::Redeem.call(token: payload["token"], machine_id: payload["machine_id"],
                                              agent_version: payload["agent_version"], schema_version: payload["schema_version"])
-        render json: { credential:, server_time: Time.current.utc.iso8601 }, status: :created
+        # The name the operator gave the host, for the installer's summary (P1-AGENT-INSTALL).
+        host = AgentCredential.authenticate("Bearer #{credential}").host
+        render json: { credential:, host_name: host.name, server_time: Time.current.utc.iso8601 }, status: :created
       end
     end
   end

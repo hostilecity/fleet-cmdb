@@ -198,7 +198,8 @@ pub struct ApiResponse {
 pub struct Client {
     agent: ureq::Agent,
     server_url: String,
-    credential: Credential,
+    /// `None` only for the installer's unauthenticated calls (onboarding, enrollment, P1-A10).
+    credential: Option<Credential>,
 }
 
 impl fmt::Debug for Client {
@@ -218,7 +219,21 @@ impl Client {
 
     /// As [`Client::new`], with the system bundle path given (for tests).
     pub fn with_system_bundle(config: &Config, system_bundle: &Path) -> Result<Self, TrustError> {
-        let roots = trust_roots(system_bundle, config.ca_file.as_deref())?;
+        let mut client =
+            Self::anonymous(&config.server_url, config.ca_file.as_deref(), system_bundle)?;
+        client.credential = Some(config.credential.clone());
+        Ok(client)
+    }
+
+    /// A client that sends no credential, for the installer's calls before the host has one
+    /// (`/api/v1/onboarding`, `/api/v1/enroll`, P1-A10). `server_url` must already be validated.
+    /// Trust, timeouts, and limits are the same as for an authenticated client.
+    pub fn anonymous(
+        server_url: &str,
+        ca_file: Option<&Path>,
+        system_bundle: &Path,
+    ) -> Result<Self, TrustError> {
+        let roots = trust_roots(system_bundle, ca_file)?;
         // Verification is always on: the agent never calls `disable_verification`.
         let tls = TlsConfig::builder()
             .provider(TlsProvider::Rustls)
@@ -237,8 +252,8 @@ impl Client {
             .into();
         Ok(Self {
             agent,
-            server_url: config.server_url.clone(),
-            credential: config.credential.clone(),
+            server_url: server_url.to_owned(),
+            credential: None,
         })
     }
 
@@ -251,13 +266,14 @@ impl Client {
     pub fn post_json<T: Serialize>(&self, path: &str, body: &T) -> Result<ApiResponse, ApiError> {
         let bytes = serde_json::to_vec(body)
             .map_err(|e| ApiError::InvalidResponse(format!("cannot encode request: {e}")))?;
-        let response = self
-            .agent
-            .post(self.url(path))
-            .header(
+        let mut request = self.agent.post(self.url(path));
+        if let Some(credential) = &self.credential {
+            request = request.header(
                 "Authorization",
-                format!("Bearer {}", self.credential.expose_secret()),
-            )
+                format!("Bearer {}", credential.expose_secret()),
+            );
+        }
+        let response = request
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .send(&bytes[..])
@@ -378,9 +394,9 @@ fn read_response(mut response: Response<ureq::Body>) -> Result<ApiResponse, ApiE
     })
 }
 
-/// Reports whether an I/O error came from TLS certificate verification (used by tests).
-#[cfg(test)]
-fn is_certificate_error(message: &str) -> bool {
+/// Reports whether a transport error came from TLS certificate verification, so the installer can say
+/// "not trusted" rather than "unreachable" (P1-A10).
+pub fn is_certificate_error(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     m.contains("certificate") || m.contains("unknownissuer") || m.contains("unknown issuer")
 }

@@ -20,6 +20,7 @@ RSpec.describe "POST /api/v1/enroll", type: :request do
 
     expect(response).to have_http_status(:created)
     expect(ApiContract.errors("enroll.response", "v1", json)).to eq([])
+    expect(json["host_name"]).to eq("VM 1")
     credential = AgentCredential.authenticate("Bearer #{json['credential']}")
     expect(credential).to have_attributes(host_id: host.id, machine_id:)
     expect(host.reload).to have_attributes(enrollment_state: "active", agent_version: "0.1.0", agent_schema_version: 1)

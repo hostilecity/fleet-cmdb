@@ -267,7 +267,7 @@ impl Config {
         Self::load_as(path, crate::owner::effective_uid())
     }
 
-    fn load_as(path: &Path, euid: u32) -> Result<Self, ConfigError> {
+    pub(crate) fn load_as(path: &Path, euid: u32) -> Result<Self, ConfigError> {
         let unreadable = |e: io::Error| match e.kind() {
             io::ErrorKind::NotFound => ConfigError::NotFound(path.to_owned()),
             _ => ConfigError::Unreadable(path.to_owned(), e.to_string()),
@@ -394,7 +394,7 @@ fn redact_quoted_values(message: &str) -> String {
     out
 }
 
-fn validate_server_url(value: Option<&str>) -> Result<String, ConfigError> {
+pub(crate) fn validate_server_url(value: Option<&str>) -> Result<String, ConfigError> {
     let example = "for example server_url = \"https://fleet-agent.example.lan\"";
     let url = value.ok_or_else(|| {
         ConfigError::Invalid(format!(

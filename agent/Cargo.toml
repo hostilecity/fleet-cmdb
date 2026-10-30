@@ -11,12 +11,15 @@ publish = false
 # README.md. Keep this list short: the agent runs as root (DEC-03). No OpenSSL, no async runtime.
 [dependencies]
 # Syscalls std does not expose: statvfs, uname, getifaddrs for the collectors (P1-AGENT-COLLECT);
-# geteuid and O_NOFOLLOW/O_DIRECTORY for the config and state-directory ownership checks (P1-AGENT-CORE).
+# geteuid and O_NOFOLLOW/O_DIRECTORY for the config and state-directory ownership checks (P1-AGENT-CORE);
+# flock and termios for the installer's lock and hidden token prompt (P1-AGENT-INSTALL).
 libc = "0.2.191"
 # Kernel randomness (getrandom(2)) for report ids and jitter seeds. Already linked through ring.
 getrandom = "0.2.17"
 # RFC 3339 timestamps for payloads and the server's clock; no dependencies of its own.
 humantime = "2.4.0"
+# The installer's QR code of the approval URL (P1-A10). Pure Rust, no dependencies, no unsafe code.
+qrcodegen = "1.8.0"
 # SHA-256 for the stable-facts change hash. Already linked as the rustls crypto provider.
 ring = { version = "0.17.14", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }

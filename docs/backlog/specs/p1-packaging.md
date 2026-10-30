@@ -16,7 +16,7 @@ Signing and the side-by-side layout are decided in [ADR 0018](../../decisions/00
   - `/usr/lib/fleet-agent/versions/<version>/fleet-agent`, with `current` and `previous` symlinks;
   - `/usr/bin/fleet-agent` pointing at `current`;
   - config in `/etc/fleet-agent/`, state in `/var/lib/fleet-agent/`.
-- **systemd unit, built into the binary** and written by the installer, following [DEC-03](../../decisions/0003-agent-privilege.md): `Restart=on-failure`, `StateDirectory=`, the hardening options chosen in the ADR, and `OnFailure=` the rollback unit ([P1-A12](p1-agent-update.md)). A copy is kept in `contrib/` for review.
+- **systemd unit, built into the binary** and written by the installer, following [DEC-03](../../decisions/0003-agent-privilege.md): `Restart=on-failure`, `StateDirectory=`, the hardening options chosen in the ADR, and `OnFailure=` the rollback unit ([P1-A12](p1-agent-update.md)). A copy is kept in `contrib/` for review. The unit already exists at `agent/src/install/fleet-agent.service`, written to `/etc/systemd/system/` by [P1-A10](p1-agent-install.md) with a baseline of sandboxing options; this issue reviews and finalises it rather than creating it.
 - **`contrib/config.example.toml`** with every option documented and placeholder values only.
 - **Version.** The agent version embedded in the binary matches the tag.
 ## Acceptance criteria

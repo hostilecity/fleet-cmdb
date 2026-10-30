@@ -116,4 +116,5 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | `error.request_id` `maxLength` raised from 64 to 255, the length Rails accepts for an incoming `X-Request-Id` (P1-API-AUTH). Loosening only, so no version bump. |
 | v1 | New error code `reenrollment_required` (403) with the `Fleet-Enrollment-State: pending` header, for endpoints a re-enrolling host may not call (P1-HEARTBEAT). Additive, so no version bump. |
 | v1 | Onboarding endpoints and schemas (`onboarding.*`, `onboarding-token.*`) and error codes `onboarding_rejected` (403) and `onboarding_expired` (410) (P1-ONBOARD, DEC-17). Additive, so no version bump. |
+| v1 | `enroll.response` gains the optional `host_name`, the name the operator gave the host, for the installer's summary; example `created-with-host-name.json` (P1-AGENT-INSTALL). Additive, so no version bump. |
 | v1 | `warnings` may also explain a partly read list fact (`disks`, `network_interfaces`) that is not `null`; example `partial-lists.json` (P1-AGENT-COLLECT). Description only, so no version bump. |

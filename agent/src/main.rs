@@ -1,13 +1,14 @@
 //! `fleet-agent`: reports host facts to the Fleet CMDB server.
 //!
-//! Commands: `run` (the default), `check-config`, `--version`, and `--help` (P1-A01). `install` and
-//! `uninstall` arrive with P1-AGENT-INSTALL. `run` sends heartbeats and inventory reports
-//! ([`report`], P1-AGENT-REPORT).
+//! Commands: `run` (the default), `check-config`, `--version`, and `--help` (P1-A01); `install` and
+//! `uninstall` (P1-A10, in [`install`]). `run` sends heartbeats and inventory reports ([`report`],
+//! P1-AGENT-REPORT).
 
 mod client;
 mod collect;
 mod config;
 mod fsx;
+mod install;
 mod logging;
 mod owner;
 mod report;
@@ -44,6 +45,8 @@ Usage: fleet-agent [COMMAND] [OPTIONS]
 Commands:
   run           Run the agent (the default)
   check-config  Validate the config file and trusted certificates without contacting the server
+  install       Install, enroll, and start the agent (see `fleet-agent install --help`)
+  uninstall     Stop and remove the agent (see `fleet-agent uninstall --help`)
 
 Options:
   -c, --config PATH  Config file [default: /etc/fleet-agent/config.toml]
@@ -226,7 +229,15 @@ fn run(path: &Path) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    match parse_args(std::env::args().skip(1)) {
+    // `install` and `uninstall` have their own options and parser (P1-A10).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(
+        args.first().map(String::as_str),
+        Some("install" | "uninstall")
+    ) {
+        return install::main(args);
+    }
+    match parse_args(args) {
         Ok(Command::Version) => {
             println!("{}", version_line());
             ExitCode::SUCCESS
