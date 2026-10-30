@@ -67,6 +67,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 pub use sys::{FsStats, HostSystem, IfAddr, System};
+pub(crate) use system::parse_os_release;
 
 /// Time limit for each source read (one file or one syscall).
 pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -547,7 +548,7 @@ pub fn hostname() -> Option<String> {
     hostname_under(Path::new("/"))
 }
 
-fn hostname_under(root: &Path) -> Option<String> {
+pub(crate) fn hostname_under(root: &Path) -> Option<String> {
     let bytes = read_capped(&root.join("proc/sys/kernel/hostname")).ok()?;
     system::parse_hostname(&bytes).ok()
 }

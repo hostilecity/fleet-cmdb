@@ -36,6 +36,7 @@ mod uninstall;
 #[cfg(test)]
 mod tests;
 
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -319,10 +320,42 @@ fn usage(what: impl Into<String>, command: &str) -> InstallError {
     )
 }
 
+/// The options `install` and `uninstall` know, as typed. After `--token`, anything else is refused as a
+/// token on the command line.
+const KNOWN_OPTIONS: &[&str] = &[
+    "--server",
+    "--ca-file",
+    "--token",
+    "--token-stdin",
+    "--reenroll",
+    "--keep-state",
+    "--quiet",
+    "--json",
+    "--help",
+    "-h",
+];
+
+fn is_known_option(arg: &OsStr) -> bool {
+    arg.to_str().is_some_and(|a| {
+        let name = a.split_once('=').map_or(a, |(name, _)| name);
+        KNOWN_OPTIONS.contains(&name)
+    })
+}
+
 /// Parses the arguments after `install` or `uninstall` (`args[0]` is the subcommand).
 /// `env_token` is whether `FLEET_ENROLLMENT_TOKEN` is set.
-pub fn parse(args: &[String], env_token: bool) -> Result<Command, InstallError> {
+///
+/// Arguments are split by `lexopt`. No error repeats an argument that could be a secret
+/// ([`crate::cli::shown`]): an enrollment token can start with `-` or `--` (review of #67).
+pub fn parse(args: &[OsString], env_token: bool) -> Result<Command, InstallError> {
+    use lexopt::prelude::*;
     let (command, rest) = args.split_first().expect("a subcommand");
+    let command = if command == "install" {
+        "install"
+    } else {
+        "uninstall"
+    };
+    let is_install = command == "install";
     let mut mode = None;
     let mut set_mode = |m: Mode| {
         if mode.replace(m).is_some_and(|old| old != m) {
@@ -332,35 +365,50 @@ pub fn parse(args: &[String], env_token: bool) -> Result<Command, InstallError> 
     };
     let mut install = InstallOptions::default();
     let mut uninstall = UninstallOptions::default();
-    let mut rest = rest.iter().peekable();
-    while let Some(arg) = rest.next() {
-        let is_install = command == "install";
-        match arg.as_str() {
-            "-h" | "--help" => {
+    let mut parser = lexopt::Parser::from_args(rest.iter().cloned());
+    let lexopt_error = |e: lexopt::Error| usage(crate::cli::error_text(e), command);
+    while let Some(arg) = parser.next().map_err(lexopt_error)? {
+        match arg {
+            Short('h') | Long("help") => {
                 return Ok(Command::Help(if is_install {
                     INSTALL_USAGE
                 } else {
                     UNINSTALL_USAGE
                 }));
             }
-            "--quiet" => set_mode(Mode::Quiet)?,
-            "--json" => set_mode(Mode::Json)?,
-            "--keep-state" if !is_install => uninstall.keep_state = true,
-            "--reenroll" if is_install => install.reenroll = true,
-            "--server" | "--ca-file" if is_install => {
-                let value = rest
-                    .next()
-                    .filter(|v| !v.is_empty())
-                    .ok_or_else(|| usage(format!("{arg} needs a value"), command))?;
-                set_value(&mut install, arg, value, command)?;
+            Long("quiet") => set_mode(Mode::Quiet)?,
+            Long("json") => set_mode(Mode::Json)?,
+            Long("keep-state") if !is_install => uninstall.keep_state = true,
+            Long("reenroll") if is_install => install.reenroll = true,
+            Long(flag @ ("server" | "ca-file")) if is_install => {
+                let flag = format!("--{flag}");
+                let value = parser.value().map_err(lexopt_error)?;
+                if value.is_empty() {
+                    return Err(usage(format!("{flag} needs a value"), command));
+                }
+                set_value(&mut install, &flag, value, command)?;
             }
-            "--token" | "--token-stdin" if is_install => {
+            Long(flag @ ("token" | "token-stdin")) if is_install => {
                 // A token on the command line would show in the process list and the shell history,
-                // so `--token` takes no value. The value is not repeated in the error.
-                if arg == "--token" && rest.peek().is_some_and(|next| !next.starts_with('-')) {
+                // so `--token` takes no value: `--token=X`, or anything after `--token` that is not one
+                // of our options, is refused without repeating it.
+                let token_flag = flag == "token";
+                if parser.optional_value().is_some() {
+                    return Err(if token_flag {
+                        token_on_command_line()
+                    } else {
+                        usage("--token-stdin does not take a value", command)
+                    });
+                }
+                if token_flag
+                    && let Some(next) = parser
+                        .try_raw_args()
+                        .and_then(|raw| raw.peek().map(OsStr::to_owned))
+                    && !is_known_option(&next)
+                {
                     return Err(token_on_command_line());
                 }
-                let source = if arg == "--token" {
+                let source = if token_flag {
                     TokenSource::Prompt
                 } else {
                     TokenSource::Stdin
@@ -372,28 +420,30 @@ pub fn parse(args: &[String], env_token: bool) -> Result<Command, InstallError> 
                     ));
                 }
             }
-            other if is_install && other.starts_with("--token=") => {
-                return Err(token_on_command_line());
-            }
-            other
-                if is_install
-                    && (other.starts_with("--server=") || other.starts_with("--ca-file=")) =>
-            {
-                let (flag, value) = other.split_once('=').expect("contains =");
-                if value.is_empty() {
-                    return Err(usage(format!("{flag} needs a value"), command));
-                }
-                set_value(&mut install, flag, value, command)?;
-            }
-            other => {
-                // Never echo an argument that may be a secret pasted in the wrong place.
-                let shown = if other.starts_with('-') {
-                    other
-                } else {
-                    "(a value)"
-                };
+            Long(name) => {
                 return Err(usage(
-                    format!("unrecognised argument for {command}: {shown}"),
+                    format!(
+                        "unrecognised argument for {command}: {}",
+                        crate::cli::long(name)
+                    ),
+                    command,
+                ));
+            }
+            Short(c) => {
+                return Err(usage(
+                    format!(
+                        "unrecognised argument for {command}: {}",
+                        crate::cli::short(c)
+                    ),
+                    command,
+                ));
+            }
+            Value(value) => {
+                return Err(usage(
+                    format!(
+                        "unrecognised argument for {command}: {}",
+                        crate::cli::shown(&value.to_string_lossy())
+                    ),
                     command,
                 ));
             }
@@ -424,11 +474,15 @@ pub fn parse(args: &[String], env_token: bool) -> Result<Command, InstallError> 
 fn set_value(
     options: &mut InstallOptions,
     flag: &str,
-    value: &str,
+    value: OsString,
     command: &str,
 ) -> Result<(), InstallError> {
     let duplicate = if flag == "--server" {
-        options.server.replace(value.to_owned()).is_some()
+        // The server URL is validated in preflight; a non-UTF-8 one cannot be a URL.
+        let value = value
+            .into_string()
+            .map_err(|_| usage("--server is not valid UTF-8", command))?;
+        options.server.replace(value).is_some()
     } else {
         options.ca_file.replace(PathBuf::from(value)).is_some()
     };
@@ -448,7 +502,7 @@ fn token_on_command_line() -> InstallError {
 
 /// Entry point for `fleet-agent install ...` and `fleet-agent uninstall ...` (`args` starts with the
 /// subcommand).
-pub fn main(args: Vec<String>) -> ExitCode {
+pub fn main(args: Vec<OsString>) -> ExitCode {
     let env_token = std::env::var("FLEET_ENROLLMENT_TOKEN").ok();
     let stdout_tty = std::io::stdout().is_terminal();
     let command = match parse(&args, env_token.is_some()) {
@@ -489,7 +543,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
         machine: crate::collect::HostSystem.machine().unwrap_or_default(),
         exe: std::env::current_exe().unwrap_or_default(),
         system_ca_bundle: PathBuf::from(crate::client::SYSTEM_CA_BUNDLE),
-        systemd: Box::new(Systemctl),
+        systemd: Box::new(Systemctl::default()),
         clock: Box::new(SystemClock(shutdown)),
         env_token,
         read_token: token::read,
@@ -513,16 +567,18 @@ pub fn main(args: Vec<String>) -> ExitCode {
 
 use crate::collect::System as _;
 
-/// `sudo fleet-agent ARGS`, quoted for copying. Arguments never hold a secret (see [`parse`]).
-fn sudo_command(args: &[String]) -> String {
+/// `sudo fleet-agent ARGS`, quoted for copying. Only built after [`parse`] accepted the arguments, so
+/// none of them is a secret.
+fn sudo_command(args: &[OsString]) -> String {
     let quoted: Vec<String> = args
         .iter()
         .map(|a| {
+            let a = a.to_string_lossy();
             if !a.is_empty()
                 && a.chars()
                     .all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+".contains(c))
             {
-                a.clone()
+                a.into_owned()
             } else {
                 format!("'{}'", a.replace('\'', r"'\''"))
             }
@@ -558,7 +614,13 @@ pub fn install(host: &Host, options: &InstallOptions, ui: &mut Ui) -> Result<(),
     ui.step(4, 4, "Starting the agent");
     enroll::confirm(host, &enrolled, started, ui)?;
     host.check_interrupt()?;
-    let service = start_service(host, installed.changed || enrolled.config_written, ui)?;
+    let state_dir = host.paths.state_dir_of(&enrolled.config);
+    let service = start_service(
+        host,
+        installed.changed || enrolled.config_written,
+        &state_dir,
+        ui,
+    )?;
 
     let host_name = match &enrolled.host_name {
         Some(name) => name.clone(),
@@ -582,9 +644,15 @@ pub fn install(host: &Host, options: &InstallOptions, ui: &mut Ui) -> Result<(),
     Ok(())
 }
 
-/// Enables the unit and (re)starts it if anything changed or it is not running, then waits until it
-/// is active and stays active for a moment. Returns the service status line for the summary.
-fn start_service(host: &Host, changed: bool, ui: &mut Ui) -> Result<String, InstallError> {
+/// Enables the unit and (re)starts it if anything changed or it is not running, waits until it is
+/// active and stays active for a moment, then until the server has accepted a heartbeat from the
+/// service itself. Returns the service status line for the summary.
+fn start_service(
+    host: &Host,
+    changed: bool,
+    state_dir: &Path,
+    ui: &mut Ui,
+) -> Result<String, InstallError> {
     let systemd = &*host.systemd;
     let step_failed = |what: &str, e: String| {
         InstallError::new(
@@ -604,7 +672,8 @@ fn start_service(host: &Host, changed: bool, ui: &mut Ui) -> Result<String, Inst
         return Ok("active (running), enabled at boot".into());
     }
     systemd
-        .systemctl(&["restart", systemd::UNIT_NAME])
+        // `--no-block`: the state is polled below, so waiting inside systemctl adds only a way to hang.
+        .systemctl(&["restart", "--no-block", systemd::UNIT_NAME])
         .map_err(|e| step_failed("systemctl restart fleet-agent", e))?;
     let deadline = host.clock.now() + host.service_timeout;
     let mut settled = false;
@@ -642,7 +711,54 @@ fn start_service(host: &Host, changed: bool, ui: &mut Ui) -> Result<String, Inst
         }
     }
     ui.detail("Started fleet-agent.service; it is running.");
+    wait_for_service_heartbeat(host, state_dir, ui)?;
     Ok("active (running), enabled at boot".into())
+}
+
+/// Waits until the running service's first heartbeat was accepted: its state record
+/// ([`crate::report::ACK_RECORD`]) names the unit's main process. The installer's own heartbeat proved
+/// the credential; this proves the service, under its systemd sandbox, reaches the server too
+/// (P1-A10 step 4, review of #67).
+fn wait_for_service_heartbeat(
+    host: &Host,
+    state_dir: &Path,
+    ui: &mut Ui,
+) -> Result<(), InstallError> {
+    let systemd = &*host.systemd;
+    let not_confirmed = |what: String| {
+        InstallError::new(
+            Failure::Failed,
+            what,
+            "See why with `journalctl -u fleet-agent -n 50` (the service may not reach the server or read its config under the unit's sandboxing), fix the cause, then run the same install command again.",
+        )
+    };
+    let deadline = host.clock.now() + host.service_timeout;
+    loop {
+        let Some(pid) = systemd.main_pid() else {
+            return Err(not_confirmed(format!(
+                "fleet-agent.service stopped before the server accepted a heartbeat from it (state: {})",
+                systemd.state()
+            )));
+        };
+        let acked = crate::state::read_record(state_dir, crate::report::ACK_RECORD, 4096)
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<crate::report::Ack>(&bytes).ok())
+            .is_some_and(|ack| ack.pid == pid);
+        if acked {
+            ui.detail("The server accepted the service's first heartbeat.");
+            return Ok(());
+        }
+        if host.clock.now() >= deadline {
+            return Err(not_confirmed(format!(
+                "fleet-agent.service is running, but the server has not accepted a heartbeat from it within {} seconds",
+                host.service_timeout.as_secs()
+            )));
+        }
+        if host.clock.sleep(Duration::from_millis(500)) {
+            return Err(interrupted());
+        }
+    }
 }
 
 /// The shared parts of a successful enrollment or a kept credential.

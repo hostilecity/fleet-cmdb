@@ -33,9 +33,10 @@ use crate::config::Config;
 use crate::retry::{Backoff, RetryPolicy, Rng, SplitMix64};
 use crate::shutdown::Shutdown;
 
-pub use heartbeat::Heartbeat;
+pub use heartbeat::{ACK_RECORD, Ack, HEARTBEAT_PATH, Heartbeat, HeartbeatRequest};
 pub use intervals::Intervals;
 pub use inventory::Reporter;
+pub use time::rfc3339;
 
 /// Sends one JSON request. [`Client`] in production; a scripted fake in tests.
 pub trait Transport {
@@ -68,7 +69,7 @@ fn run_with(
             .name("fleet-agent-heartbeat".into())
             .spawn_scoped(scope, || {
                 let _stop = StopOnExit(shutdown);
-                heartbeat_loop(intervals, transport, shutdown, started);
+                heartbeat_loop(intervals, &config.state_dir, transport, shutdown, started);
             });
         let inventory = thread::Builder::new()
             .name("fleet-agent-inventory".into())
@@ -110,6 +111,7 @@ impl Drop for StopOnExit<'_> {
 
 fn heartbeat_loop(
     intervals: &Intervals,
+    state_dir: &Path,
     transport: &dyn Transport,
     shutdown: &Shutdown,
     started: Instant,
@@ -119,7 +121,8 @@ fn heartbeat_loop(
         Backoff::new(RetryPolicy::default(), seeded(1)),
         seeded(2),
         started,
-    );
+    )
+    .record_first_ack_in(state_dir.to_owned());
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();
         let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());

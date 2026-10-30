@@ -15,6 +15,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Implementation notes (agent behaviour the server side relies on):
   - Jitter subtracts up to 10% from the interval, so a heartbeat is never later than the interval in force.
   - Until [P1-UPDATES](p1-updates.md) adds the directives to the contract, the agent accepts `directives` as the v1 array (every entry ignored and logged by its `type`) or as an object keyed by directive name: `intervals` with `heartbeat_seconds` and `inventory_seconds` (whole seconds, each optional), and `agent_update` (kept for the updater, not acted on before P1-AGENT-UPDATE). Any other name, field, or malformed value is ignored and logged once; the heartbeat still counts as accepted.
+  - The first accepted heartbeat of each process is recorded in the state directory (`heartbeat.json`: process id, time, agent version), once per start, so `fleet-agent install` can confirm the service itself reaches the server ([P1-AGENT-INSTALL](p1-agent-install.md)).
   - A server interval is clamped to the config's `min..=max`. An interval missing from a response returns to the configured value. Server intervals are not persisted; after a restart the configured values apply until the first heartbeat response.
   - A difference of more than 5 minutes between `server_time` and the agent clock is logged when it starts and when it ends.
 

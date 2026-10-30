@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 // The shared helpers (atomic writes, temporary-file cleanup) live in `crate::fsx`, so the installer,
 // the collectors, and the state directory use one implementation (review of #68).
 use crate::fsx::temp_path;
-pub use crate::fsx::{remove_stale_temps, sync_dir, write_atomic, write_atomic_from};
+pub use crate::fsx::{
+    Symlinks, read_regular, remove_stale_temps, sync_dir, write_atomic, write_atomic_from,
+};
 
 /// Points the symlink `link` at `target`, replacing an existing symlink atomically (a new link is made
 /// under a temporary name and renamed over the old one). Refuses to replace anything but a symlink.

@@ -14,12 +14,13 @@
 //! never printed.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
 
 use crate::client::{ApiError, ApiResponse, Client};
 use crate::config::{Config, Credential};
+use crate::report::{HEARTBEAT_PATH, HeartbeatRequest, rfc3339};
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
 use super::configfile::{self, Carried};
@@ -90,6 +91,25 @@ fn unexpected(during: &str, response: &ApiResponse) -> InstallError {
         ),
         "Make sure --server is the Fleet CMDB agent hostname and the server is up to date, then run the same command again.",
     )
+}
+
+/// The credential in a successful enrollment or approval answer, exactly as sent and in the format the
+/// agent accepts, or an error that leaves every file as it was (review of #67). It is checked here,
+/// before the config is written, because a malformed one would otherwise replace a working config with
+/// one the service refuses; and it is never cleaned up or shortened, since a changed credential is a
+/// wrong one.
+fn received_credential(during: &str, response: &ApiResponse) -> Result<Credential, InstallError> {
+    let credential = response.body["credential"]
+        .as_str()
+        .map(Credential::new)
+        .filter(Credential::is_well_formed);
+    credential.ok_or_else(|| {
+        let mut error = unexpected(during, response);
+        error.what.push_str(
+            ": the credential is missing or not in the expected format, so nothing was saved and the existing config is unchanged",
+        );
+        error
+    })
 }
 
 /// Text from the server that will be printed: control characters removed and the length bounded.
@@ -252,9 +272,7 @@ fn by_token(
     };
     match client.post_json("/api/v1/enroll", &body) {
         Ok(response) if response.status == 201 => {
-            let credential = printable(&response.body["credential"], 300)
-                .map(Credential::new)
-                .ok_or_else(|| unexpected("enrollment", &response))?;
+            let credential = received_credential("enrollment", &response)?;
             let name = printable(&response.body["host_name"], 100);
             match &name {
                 Some(name) => ui.detail(&format!("Enrolled as \"{name}\".")),
@@ -402,9 +420,7 @@ fn poll(
                 Ok(response) => match (response.status, response.body["status"].as_str()) {
                     (202, Some("pending")) => Ok(Poll::Pending),
                     (201, Some("approved")) => {
-                        let credential = printable(&response.body["credential"], 300)
-                            .map(Credential::new)
-                            .ok_or_else(|| unexpected("onboarding", &response))?;
+                        let credential = received_credential("onboarding", &response)?;
                         Ok(Poll::Approved(
                             credential,
                             printable(&response.body["host_name"], 100),
@@ -480,28 +496,6 @@ fn poll(
     }
 }
 
-/// RFC 3339 UTC with a `Z` suffix, for example `2026-01-01T12:00:00Z`.
-pub fn rfc3339(time: SystemTime) -> String {
-    let secs = time.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let (days, rem) = (secs / 86_400, secs % 86_400);
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
-    )
-}
-
 /// Sends one heartbeat with the config as written, proving the server accepts the credential before the
 /// service is (re)started. Retries briefly on network and server errors.
 pub fn confirm(
@@ -517,7 +511,8 @@ pub fn confirm(
         ))
     })?;
     let key_id = config.credential.key_id();
-    let hostname = Facts::collect(&host.paths).hostname;
+    // The same sysctl read as the service's heartbeat, not a whole collection (review of #67).
+    let hostname = crate::collect::hostname_under(&host.paths.root);
     let waits = [
         Duration::from_secs(2),
         Duration::from_secs(5),
@@ -525,14 +520,19 @@ pub fn confirm(
     ];
     let mut attempt = 0;
     loop {
-        let body = json!({
-            "schema_version": AGENT_SCHEMA_VERSION,
-            "agent_version": AGENT_VERSION,
-            "hostname": hostname,
-            "uptime_seconds": host.clock.now().saturating_duration_since(started).as_secs(),
-            "agent_time": rfc3339(SystemTime::now()),
-        });
-        let error = match client.post_json("/api/v1/heartbeat", &body) {
+        // The service's own request type, so the contract has one definition (review of #67).
+        let body = HeartbeatRequest {
+            schema_version: AGENT_SCHEMA_VERSION,
+            agent_version: AGENT_VERSION,
+            hostname: hostname.clone(),
+            uptime_seconds: host
+                .clock
+                .now()
+                .saturating_duration_since(started)
+                .as_secs(),
+            agent_time: rfc3339(SystemTime::now()),
+        };
+        let error = match client.post_json(HEARTBEAT_PATH, &body) {
             Ok(response) if response.status == 200 => {
                 ui.detail("The server accepted a heartbeat with this VM's credential.");
                 return Ok(());
@@ -607,19 +607,6 @@ pub fn confirm(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rfc3339_formats_utc() {
-        assert_eq!(rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00Z");
-        assert_eq!(
-            rfc3339(UNIX_EPOCH + Duration::from_secs(1_767_268_800)),
-            "2026-01-01T12:00:00Z"
-        );
-        assert_eq!(
-            rfc3339(UNIX_EPOCH + Duration::from_secs(951_782_400 + 86_399)),
-            "2000-02-29T23:59:59Z"
-        );
-    }
 
     #[test]
     fn onboarding_responses_are_checked_before_anything_is_shown() {

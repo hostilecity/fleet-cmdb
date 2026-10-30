@@ -18,6 +18,8 @@ libc = "0.2.191"
 getrandom = "0.2.17"
 # RFC 3339 timestamps for payloads and the server's clock; no dependencies of its own.
 humantime = "2.4.0"
+# Splits command-line arguments (`--opt value`, `--opt=value`, non-UTF-8); no dependencies of its own.
+lexopt = "0.3.2"
 # The installer's QR code of the approval URL (P1-A10). Pure Rust, no dependencies, no unsafe code.
 qrcodegen = "1.8.0"
 # SHA-256 for the stable-facts change hash. Already linked as the rustls crypto provider.

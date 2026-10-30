@@ -36,8 +36,23 @@ pub struct HeartbeatRequest {
     pub agent_time: String,
 }
 
+/// The state record of this process's first accepted heartbeat (in the state directory). `install`
+/// waits for one whose `pid` is the service's main process, which proves the service itself, under its
+/// systemd sandbox, can reach the server with its credential (P1-A10, review of #67).
+pub const ACK_RECORD: &str = "heartbeat.json";
+
+/// What [`ACK_RECORD`] holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Ack {
+    pub pid: u32,
+    pub accepted_at: String,
+    pub agent_version: String,
+}
+
 /// Heartbeat state across iterations of the loop.
 pub struct Heartbeat<'a, R: Rng> {
+    /// Where to write [`ACK_RECORD`] after the first accepted heartbeat, if anywhere.
+    ack_dir: Option<std::path::PathBuf>,
     intervals: &'a Intervals,
     backoff: Backoff<R>,
     rng: R,
@@ -51,6 +66,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
     /// `started` is when the agent process started, for `uptime_seconds`.
     pub fn new(intervals: &'a Intervals, backoff: Backoff<R>, rng: R, started: Instant) -> Self {
         Self {
+            ack_dir: None,
             intervals,
             backoff,
             rng,
@@ -58,6 +74,30 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             accepted_once: false,
             clock_skewed: false,
             notes: Notes::default(),
+        }
+    }
+
+    /// Writes [`ACK_RECORD`] in `dir` when the first heartbeat of this process is accepted.
+    pub fn record_first_ack_in(mut self, dir: std::path::PathBuf) -> Self {
+        self.ack_dir = Some(dir);
+        self
+    }
+
+    fn record_ack(&self, wall: SystemTime) {
+        let Some(dir) = &self.ack_dir else { return };
+        let ack = Ack {
+            pid: std::process::id(),
+            accepted_at: rfc3339(wall),
+            agent_version: AGENT_VERSION.to_owned(),
+        };
+        let saved = serde_json::to_vec(&ack)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| crate::state::write_record(dir, ACK_RECORD, &bytes));
+        if let Err(e) = saved {
+            tracing::warn!(
+                state_dir = %dir.display(),
+                "cannot record the first accepted heartbeat ({e}); `fleet-agent install` will not see that this service reached the server"
+            );
         }
     }
 
@@ -102,6 +142,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                 let request_id = response.request_id.as_deref().unwrap_or("");
                 if !self.accepted_once {
                     tracing::info!(request_id, "first heartbeat accepted by the server");
+                    self.record_ack(wall);
                 } else if failures > 0 {
                     tracing::info!(
                         failed_attempts = failures,
@@ -249,6 +290,33 @@ mod tests {
             assert_eq!(value["agent_time"], "2026-01-01T12:00:00.000Z");
             assert_eq!(value["agent_version"], AGENT_VERSION);
         }
+    }
+
+    #[test]
+    fn the_first_accepted_heartbeat_of_a_process_is_recorded_once() {
+        // `install` waits for this record (review of #67): written on the first accepted heartbeat only,
+        // not on a failure, and not again every interval.
+        let dir = crate::test_support::TempDir::new();
+        let state = dir.path("state");
+        crate::state::ensure_dir(&state).unwrap();
+        let intervals = intervals();
+        let mut hb = heartbeat(&intervals, Instant::now()).record_first_ack_in(state.clone());
+        let transport = FakeTransport::new(vec![Err(ApiError::Transport("down".into()))]);
+        hb.beat(&transport, None, Instant::now(), wall());
+        assert!(!state.join(ACK_RECORD).exists());
+        transport.set_accepting(true);
+        hb.beat(&transport, None, Instant::now(), wall());
+        let ack: Ack =
+            serde_json::from_slice(&std::fs::read(state.join(ACK_RECORD)).unwrap()).unwrap();
+        assert_eq!(ack.pid, std::process::id());
+        assert_eq!(ack.agent_version, AGENT_VERSION);
+        assert_eq!(ack.accepted_at, "2026-01-01T12:00:00.000Z");
+        std::fs::remove_file(state.join(ACK_RECORD)).unwrap();
+        hb.beat(&transport, None, Instant::now(), wall());
+        assert!(
+            !state.join(ACK_RECORD).exists(),
+            "rewritten on a later heartbeat"
+        );
     }
 
     #[test]

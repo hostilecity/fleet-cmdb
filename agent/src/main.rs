@@ -4,6 +4,7 @@
 //! `uninstall` (P1-A10, in [`install`]). `run` sends heartbeats and inventory reports ([`report`],
 //! P1-AGENT-REPORT).
 
+mod cli;
 mod client;
 mod collect;
 mod config;
@@ -62,60 +63,68 @@ enum Command {
     Help,
 }
 
-/// Parses the arguments after the program name.
-fn parse_args<I, S>(args: I) -> Result<Command, String>
+/// Parses the arguments after the program name. Split by `lexopt`; error messages never repeat an
+/// argument that could be a secret ([`cli::shown`]).
+fn parse_args<I>(args: I) -> Result<Command, String>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
+    I: IntoIterator,
+    I::Item: Into<std::ffi::OsString>,
 {
-    let args: Vec<String> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
-    if let Some(first) = args.first() {
-        let only = match first.as_str() {
-            "-V" | "--version" => Some(Command::Version),
-            "-h" | "--help" => Some(Command::Help),
+    use lexopt::prelude::*;
+    let mut parser = lexopt::Parser::from_args(args);
+    let mut subcommand: Option<&'static str> = None;
+    let mut config: Option<PathBuf> = None;
+    // `--version` and `--help` stand alone.
+    let mut only: Option<(Command, &'static str)> = None;
+    let mut others = false;
+    while let Some(arg) = parser.next().map_err(cli::error_text)? {
+        let alone = match arg {
+            Short('V') | Long("version") => Some((Command::Version, "--version")),
+            Short('h') | Long("help") => Some((Command::Help, "--help")),
             _ => None,
         };
-        if let Some(command) = only {
-            return match args.get(1) {
-                Some(extra) => Err(format!("unexpected argument: {extra}")),
-                None => Ok(command),
-            };
-        }
-    }
-
-    let mut subcommand: Option<&str> = None;
-    let mut config: Option<PathBuf> = None;
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
-        let value = if arg == "-c" || arg == "--config" {
-            Some(
-                rest.next()
-                    .ok_or_else(|| format!("{arg} needs a path"))?
-                    .as_str(),
-            )
-        } else {
-            arg.strip_prefix("--config=")
-        };
-        if let Some(path) = value {
-            if config.is_some() {
-                return Err("--config given more than once".into());
+        if let Some((command, flag)) = alone {
+            if others || only.is_some() {
+                return Err(format!("{flag} cannot be combined with other arguments"));
             }
-            if path.is_empty() {
-                return Err("--config needs a path".into());
-            }
-            config = Some(PathBuf::from(path));
+            only = Some((command, flag));
             continue;
         }
-        match arg.as_str() {
-            "run" | "check-config" if subcommand.is_none() => subcommand = Some(arg),
-            "run" | "check-config" => return Err(format!("unexpected argument: {arg}")),
-            "-V" | "--version" | "-h" | "--help" => {
-                return Err(format!("{arg} cannot be combined with other arguments"));
+        if let Some((_, flag)) = &only {
+            return Err(format!("{flag} cannot be combined with other arguments"));
+        }
+        others = true;
+        match arg {
+            Short('c') | Long("config") => {
+                let path = parser.value().map_err(cli::error_text)?;
+                if path.is_empty() {
+                    return Err("--config needs a path".into());
+                }
+                if config.replace(PathBuf::from(path)).is_some() {
+                    return Err("--config given more than once".into());
+                }
             }
-            other => return Err(format!("unrecognised argument: {other}")),
+            Value(value) => match value.to_str() {
+                Some(name @ ("run" | "check-config")) if subcommand.is_none() => {
+                    subcommand = Some(if name == "run" { "run" } else { "check-config" });
+                }
+                Some(name @ ("run" | "check-config")) => {
+                    return Err(format!("unexpected argument: {name}"));
+                }
+                _ => {
+                    return Err(format!(
+                        "unrecognised argument: {}",
+                        cli::shown(&value.to_string_lossy())
+                    ));
+                }
+            },
+            Long(name) => return Err(format!("unrecognised argument: {}", cli::long(name))),
+            Short(c) => return Err(format!("unrecognised argument: {}", cli::short(c))),
         }
     }
-
+    if let Some((command, _)) = only {
+        return Ok(command);
+    }
     let config = config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     Ok(match subcommand {
         Some("check-config") => Command::CheckConfig { config },
@@ -230,9 +239,10 @@ fn run(path: &Path) -> ExitCode {
 
 fn main() -> ExitCode {
     // `install` and `uninstall` have their own options and parser (P1-A10).
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `args_os`, not `args`: a non-UTF-8 argument is a usage error, not a panic that prints it.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if matches!(
-        args.first().map(String::as_str),
+        args.first().and_then(|a| a.to_str()),
         Some("install" | "uninstall")
     ) {
         return install::main(args);

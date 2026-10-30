@@ -126,12 +126,18 @@ fn prompt_on_terminal() -> Result<Token, InstallError> {
             "Without a terminal, pass the token on standard input with --token-stdin, or in the FLEET_ENROLLMENT_TOKEN environment variable.",
         )
     };
-    let mut tty = OpenOptions::new()
+    let tty = OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
         .map_err(no_terminal)?;
-    let raw = RawMode::enable(&tty).map_err(no_terminal)?;
+    prompt_on(tty).map_err(no_terminal)?
+}
+
+/// The prompt on an open terminal (the controlling one in production, a pseudo-terminal in tests).
+/// Echo, line editing, and signal keys are off while it reads, and restored afterwards.
+fn prompt_on(mut tty: std::fs::File) -> io::Result<Result<Token, InstallError>> {
+    let raw = RawMode::enable(&tty)?;
     let _ = write!(
         tty,
         "Paste the one-time enrollment token (input is hidden) and press Enter: "
@@ -161,14 +167,14 @@ fn prompt_on_terminal() -> Result<Token, InstallError> {
     };
     drop(raw);
     let _ = writeln!(tty);
-    match outcome {
+    Ok(match outcome {
         Some(()) => Token::parse(&text),
         None => Err(InstallError::new(
             Failure::Interrupted,
             "cancelled while asking for the enrollment token; nothing was changed by enrollment",
             "Run the same command again when you have the token.",
         )),
-    }
+    })
 }
 
 /// Turns off echo, line editing, and signal keys on a terminal; restores them when dropped.
@@ -244,5 +250,89 @@ mod tests {
         let token = read(TokenSource::Env, Some(TOKEN)).unwrap();
         assert_eq!(token.expose_secret(), TOKEN);
         assert!(read(TokenSource::Env, Some("")).is_err());
+    }
+
+    /// Runs the prompt on a fresh pseudo-terminal, typing `keys`, and returns the result, everything the
+    /// terminal showed, and whether its settings were restored (review of #67).
+    fn prompt_with(keys: &[u8]) -> (Result<Token, InstallError>, String, bool) {
+        use std::os::fd::FromRawFd;
+        let (mut master, mut slave) = (0, 0);
+        // SAFETY: valid out-pointers; the other arguments may be null.
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty: {}", io::Error::last_os_error());
+        // SAFETY: openpty returned two fresh descriptors that nothing else owns.
+        let (mut master, slave) = unsafe {
+            (
+                std::fs::File::from_raw_fd(master),
+                std::fs::File::from_raw_fd(slave),
+            )
+        };
+        let lflag = |file: &std::fs::File| {
+            // SAFETY: all-zero termios is valid to be overwritten; the descriptor is open.
+            let mut t: libc::termios = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::tcgetattr(file.as_raw_fd(), &mut t) }, 0);
+            t.c_lflag
+        };
+        let before = lflag(&slave);
+        let probe = slave.try_clone().unwrap();
+        let typing = keys.to_vec();
+        let prompt = std::thread::spawn(move || prompt_on(slave));
+        // Let the prompt switch the terminal to raw mode before typing (TCSAFLUSH would drop input).
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        master.write_all(&typing).unwrap();
+        let result = match prompt.join().unwrap() {
+            Ok(result) => result,
+            Err(_) => panic!("no terminal"),
+        };
+        let restored = lflag(&probe) == before;
+        drop(probe);
+        let mut shown = Vec::new();
+        // Reading ends with EIO once every slave descriptor is closed.
+        let _ = master.read_to_end(&mut shown);
+        (
+            result,
+            String::from_utf8_lossy(&shown).into_owned(),
+            restored,
+        )
+    }
+
+    #[test]
+    fn the_hidden_prompt_reads_edits_and_never_echoes_the_token() {
+        let cases: [(Vec<u8>, bool); 5] = [
+            (format!("{TOKEN}\r").into_bytes(), true),
+            // Backspace and Ctrl-U edit the line.
+            (format!("{TOKEN}XY\x7f\x7f\n").into_bytes(), true),
+            (format!("garbage\x15{TOKEN}\r").into_bytes(), true),
+            // Ctrl-C and Ctrl-D on an empty line cancel.
+            (b"\x03".to_vec(), false),
+            (b"\x04".to_vec(), false),
+        ];
+        for (keys, accepted) in cases {
+            let (result, shown, restored) = prompt_with(&keys);
+            match result {
+                Ok(token) => {
+                    assert!(accepted, "{keys:?}");
+                    assert_eq!(token.expose_secret(), TOKEN);
+                }
+                Err(error) => {
+                    assert!(!accepted, "{keys:?}: {error}");
+                    assert_eq!(error.failure, Failure::Interrupted);
+                }
+            }
+            assert!(shown.contains("input is hidden"), "{shown:?}");
+            assert!(
+                !shown.contains("EXAMPLE") && !shown.contains("garbage"),
+                "echoed: {shown:?}"
+            );
+            assert!(restored, "terminal settings not restored for {keys:?}");
+        }
     }
 }

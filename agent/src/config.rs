@@ -95,7 +95,7 @@ impl Credential {
 
     /// Matches the `credential` pattern in `docs/api/schemas/v1/enroll.response.schema.json`:
     /// `^[A-Za-z0-9_-]{8,64}\.[A-Za-z0-9_-]{32,128}$`.
-    fn is_well_formed(&self) -> bool {
+    pub fn is_well_formed(&self) -> bool {
         let token_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
         match self.0.split_once('.') {
             Some((id, secret)) => {

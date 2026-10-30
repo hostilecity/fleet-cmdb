@@ -39,7 +39,14 @@ struct FakeSystemd {
     /// Answers to `is-active` after a restart, used before falling back to the real state.
     script: Arc<Mutex<VecDeque<String>>>,
     unavailable: Option<String>,
+    /// The state directory where the "service" records its first accepted heartbeat after a restart,
+    /// as the real one does; with `silent`, it never does (it cannot reach the server).
+    ack_dir: Arc<Mutex<Option<PathBuf>>>,
+    silent: Arc<Mutex<bool>>,
 }
+
+/// The fake service's main process id.
+const SERVICE_PID: u32 = 4242;
 
 impl FakeSystemd {
     fn calls(&self) -> Vec<String> {
@@ -68,8 +75,25 @@ impl Systemd for FakeSystemd {
             }
             ["is-enabled", _] if *self.enabled.lock().unwrap() => Ok("enabled".into()),
             ["is-enabled", _] => Err("disabled".into()),
-            ["restart", _] => {
+            ["restart", "--no-block", _] => {
                 *self.active.lock().unwrap() = true;
+                if !*self.silent.lock().unwrap()
+                    && let Some(dir) = self.ack_dir.lock().unwrap().clone()
+                {
+                    let ack = crate::report::Ack {
+                        pid: SERVICE_PID,
+                        accepted_at: "2026-01-01T12:00:07.000Z".into(),
+                        agent_version: crate::AGENT_VERSION.into(),
+                    };
+                    fs::create_dir_all(&dir).unwrap();
+                    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+                    crate::state::write_record(
+                        &dir,
+                        crate::report::ACK_RECORD,
+                        &serde_json::to_vec(&ack).unwrap(),
+                    )
+                    .unwrap();
+                }
                 Ok(String::new())
             }
             ["is-active", _] => {
@@ -86,6 +110,11 @@ impl Systemd for FakeSystemd {
                     Err("inactive".into())
                 }
             }
+            ["show", "--property=MainPID", "--value", _] => Ok(if *self.active.lock().unwrap() {
+                SERVICE_PID.to_string()
+            } else {
+                "0".into()
+            }),
             ["disable", "--now", _] => {
                 *self.enabled.lock().unwrap() = false;
                 *self.active.lock().unwrap() = false;
@@ -160,10 +189,12 @@ impl Fixture {
         fs::write(dir.path("exe"), "fake fleet-agent binary v1").unwrap();
         let pki = TestPki::generate();
         fs::write(dir.path("system-ca.pem"), &pki.ca_pem).unwrap();
+        let systemd = FakeSystemd::default();
+        *systemd.ack_dir.lock().unwrap() = Some(dir.path("root/var/lib/fleet-agent"));
         Self {
             dir,
             pki,
-            systemd: FakeSystemd::default(),
+            systemd,
             is_root: true,
             machine: "x86_64".into(),
             interrupt_after: None,
@@ -482,7 +513,7 @@ fn onboarding_install_end_to_end() {
     assert!(
         fx.systemd
             .calls()
-            .contains(&"restart fleet-agent.service".to_owned())
+            .contains(&"restart --no-block fleet-agent.service".to_owned())
     );
 
     // What the person saw.
@@ -725,6 +756,39 @@ fn reenroll_replaces_the_credential_and_keeps_other_settings() {
     assert_eq!(config.credential.expose_secret(), OTHER_CREDENTIAL);
     assert_eq!(config.log_level, crate::config::LogLevel::Debug);
     assert_eq!(config.heartbeat.start, Duration::from_secs(120));
+}
+
+#[test]
+fn a_malformed_credential_from_the_server_never_replaces_a_working_config() {
+    // Review of #67: on --reenroll the old config must survive an unusable answer byte for byte, and a
+    // credential is never cleaned up into a different one.
+    for bad in [
+        "no-dot-in-this-credential-at-all-000000000000",
+        "EXAMPLEkey01.short",
+        "EXAMPLEkey01.EXAMPLE-secret-not-a-real-credential-0001\\u0007",
+        "EXAMPLEkey01.EXAMPLE secret with spaces not a real one 01",
+    ] {
+        let fx = Fixture::new();
+        let server = fx.server(vec![probe(), onboarding_started(), approved(bad)]);
+        fx.enrolled(&server, "log_level = \"debug\"\n");
+        let before = fs::read(fx.paths().config()).unwrap();
+        let outcome = fx.install(
+            &InstallOptions {
+                reenroll: true,
+                ..InstallOptions::default()
+            },
+            Mode::Human,
+        );
+        server.finish();
+        let error = outcome.failure();
+        assert_eq!(error.failure, Failure::Server, "{bad}: {error}");
+        assert!(
+            error.what.contains("existing config is unchanged"),
+            "{error}"
+        );
+        assert!(!outcome.err.contains("EXAMPLE secret"), "{}", outcome.err);
+        assert_eq!(fs::read(fx.paths().config()).unwrap(), before, "{bad}");
+    }
 }
 
 #[test]
@@ -1192,6 +1256,60 @@ fn a_second_installer_is_refused_while_one_runs() {
 }
 
 #[test]
+fn install_waits_for_the_services_own_first_heartbeat() {
+    // Review of #67 (spec step 4): a service that runs but never reaches the server, for example
+    // because its sandbox blocks it, fails the install with where to look.
+    let mut fx = Fixture::new();
+    fx.env_token = Some(TOKEN.into());
+    *fx.systemd.silent.lock().unwrap() = true;
+    let server = fx.server(vec![probe(), enrolled_by_token(), heartbeat_ok()]);
+    let opts = InstallOptions {
+        token: Some(TokenSource::Env),
+        ..options(&server)
+    };
+    let outcome = fx.install(&opts, Mode::Human);
+    server.finish();
+    let error = outcome.failure();
+    assert_eq!(error.failure, Failure::Failed, "{error}");
+    assert!(
+        error
+            .what
+            .contains("has not accepted a heartbeat from it within 30 seconds"),
+        "{error}"
+    );
+    assert!(error.next.contains("journalctl -u fleet-agent"), "{error}");
+    // The credential was saved, so a re-run after fixing the cause keeps it.
+    assert!(fx.paths().config().exists());
+
+    // A record from another process (the service before the restart) does not count.
+    let mut fx = Fixture::new();
+    fx.env_token = Some(TOKEN.into());
+    *fx.systemd.silent.lock().unwrap() = true;
+    let state = fx.paths().state_dir();
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let old = crate::report::Ack {
+        pid: SERVICE_PID + 1,
+        accepted_at: "2026-01-01T11:00:00.000Z".into(),
+        agent_version: "0.0.9".into(),
+    };
+    crate::state::write_record(
+        &state,
+        crate::report::ACK_RECORD,
+        &serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    let server = fx.server(vec![probe(), enrolled_by_token(), heartbeat_ok()]);
+    let opts = InstallOptions {
+        token: Some(TokenSource::Env),
+        ..options(&server)
+    };
+    let outcome = fx.install(&opts, Mode::Human);
+    server.finish();
+    assert_eq!(outcome.failure().failure, Failure::Failed);
+}
+
+#[test]
 fn a_service_that_does_not_stay_up_fails_with_where_to_look() {
     let fx = Fixture::new();
     fx.systemd
@@ -1279,6 +1397,47 @@ fn preflight_not_debian_13() {
         &["cannot read /etc/os-release"],
     );
     assert_untouched(&fx);
+}
+
+#[test]
+fn preflight_reads_os_release_safely_and_like_the_collectors() {
+    // Review of #67: a FIFO at /etc/os-release must fail preflight at once rather than hang it.
+    let fx = Fixture::new();
+    let os_release = fx.dir.path("root/etc/os-release");
+    fs::remove_file(&os_release).unwrap();
+    let fifo =
+        std::ffi::CString::new(os_release.clone().into_os_string().into_encoded_bytes()).unwrap();
+    // SAFETY: `fifo` is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let started = Instant::now();
+    let outcome = fx.install(&InstallOptions::default(), Mode::Human);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_preflight(&outcome, &["cannot read /etc/os-release"]);
+    assert_untouched(&fx);
+
+    // Shell quoting is read as the collectors read it: single quotes and escapes are Debian 13.
+    fs::remove_file(&os_release).unwrap();
+    fs::write(
+        &os_release,
+        "ID='debian'\nVERSION_ID=\"13\"\nPRETTY_NAME=\"Debian \\\"13\\\" \\$X\"\n",
+    )
+    .unwrap();
+    let outcome = fx.install(&InstallOptions::default(), Mode::Human);
+    assert!(
+        !outcome.all().contains("not Debian 13"),
+        "{}",
+        outcome.all()
+    );
+    // An unterminated quote on ID is not guessed at.
+    fs::write(&os_release, "ID=\"debian\nVERSION_ID=13\n").unwrap();
+    assert_preflight(
+        &fx.install(&InstallOptions::default(), Mode::Human),
+        &["cannot identify the operating system"],
+    );
 }
 
 #[test]
@@ -1556,7 +1715,7 @@ fn uninstall_removes_everything_install_created_and_nothing_else() {
     fx.install(&options(&server), Mode::Human).ok();
     server.finish();
     // What the agent itself creates at run time.
-    fs::create_dir(fx.paths().state_dir()).unwrap();
+    fs::create_dir_all(fx.paths().state_dir()).unwrap();
     fs::set_permissions(fx.paths().state_dir(), fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(fx.paths().state_dir().join("boot_id"), "x").unwrap();
     // Something the operator added, which must survive.
@@ -1684,8 +1843,8 @@ fn uninstall_needs_root() {
 
 // --- Command line ---------------------------------------------------------------------------------
 
-fn args(list: &[&str]) -> Vec<String> {
-    list.iter().map(|s| s.to_string()).collect()
+fn args(list: &[&str]) -> Vec<std::ffi::OsString> {
+    list.iter().map(std::ffi::OsString::from).collect()
 }
 
 #[test]
@@ -1766,6 +1925,51 @@ fn a_token_on_the_command_line_is_refused_without_echoing_it() {
         )
         .is_ok()
     );
+
+    // Review of #67: tokens may start with `-` or `--` (`[A-Za-z0-9_-]`), and none of these may be
+    // repeated in the error, whichever path rejects it.
+    let dash = "-EXAMPLE-enrollment-token-not-a-real-one-0001";
+    let dashes = "--example-enrollment-token-not-a-real-one-0001";
+    let lower = "-example-enrollment-token-not-a-real-one-0001";
+    for list in [
+        vec!["install", "--token", dash],
+        vec!["install", "--token", dashes],
+        vec!["install", "--token", lower],
+        vec!["install", dash],
+        vec!["install", dashes],
+        vec!["install", lower],
+        vec!["install", "--server", "https://agent.example.lan", dash],
+        vec!["install", "--reenroll", &format!("--json={dash}")],
+        vec!["install", &format!("--reenroll={TOKEN}")],
+        vec!["install", &format!("--token-stdin={TOKEN}")],
+        vec!["uninstall", dashes],
+    ] {
+        let error = parse(&args(&list), false).unwrap_err();
+        assert_eq!(error.failure, Failure::Usage, "{list:?}");
+        for secret in [dash, dashes, lower, TOKEN] {
+            let body = secret.trim_start_matches('-');
+            assert!(!error.to_string().contains(body), "{list:?}: {error}");
+        }
+    }
+    // A known option after --token is fine, in either spelling.
+    for next in ["--server=https://x.example.lan", "--quiet", "-h"] {
+        assert!(
+            parse(&args(&["install", "--token", next]), false).is_ok(),
+            "{next}"
+        );
+    }
+}
+
+#[test]
+fn non_utf8_arguments_are_usage_errors_not_panics() {
+    use std::os::unix::ffi::OsStringExt;
+    let bad = std::ffi::OsString::from_vec(b"--server=\xff".to_vec());
+    let list = vec![std::ffi::OsString::from("install"), bad];
+    let error = parse(&list, false).unwrap_err();
+    assert_eq!(error.failure, Failure::Usage);
+    let bad = std::ffi::OsString::from_vec(b"\xffoops".to_vec());
+    let list = vec![std::ffi::OsString::from("install"), bad];
+    assert_eq!(parse(&list, false).unwrap_err().failure, Failure::Usage);
 }
 
 #[test]

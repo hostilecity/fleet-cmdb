@@ -113,30 +113,37 @@ pub fn check(host: &Host, options: &InstallOptions, ui: &mut Ui) -> Result<Plan,
     })
 }
 
+/// Largest `os-release` read; real ones are well under 1 KiB.
+const OS_RELEASE_MAX_BYTES: u64 = 64 * 1024;
+
 /// DEC-01: Debian 13 on x86_64. Returns the OS name for the summary.
 fn check_os(host: &Host) -> Result<String, InstallError> {
     let next = "fleet-agent supports Debian 13 on x86_64 only (DEC-01). Install it on a Debian 13 x86_64 VM; supporting another system needs a new decision by the fleet owner.";
+    // Read like the collectors read it (bounded, regular files only, never waiting on a FIFO) and parsed
+    // by the same parser, so preflight and the inventory agree about the system (review of #67).
     let text = host
         .paths
         .os_release()
         .iter()
-        .find_map(|p| fs::read_to_string(p).ok())
+        .find_map(|p| fsx::read_regular(p, OS_RELEASE_MAX_BYTES, fsx::Symlinks::Follow).ok())
         .ok_or_else(|| {
             fail(
                 "cannot read /etc/os-release to identify the operating system",
                 next,
             )
         })?;
-    let value = |key: &str| {
-        text.lines().find_map(|line| {
-            let (k, v) = line.split_once('=')?;
-            (k.trim() == key).then(|| v.trim().trim_matches(['"', '\'']).to_owned())
-        })
-    };
-    let id = value("ID").unwrap_or_default();
-    let version = value("VERSION_ID").unwrap_or_default();
+    let release = crate::collect::parse_os_release(&text).map_err(|e| {
+        fail(
+            format!("cannot identify the operating system: /etc/os-release {e}"),
+            next,
+        )
+    })?;
+    let id = release.id.unwrap_or_default();
+    let version = release.version_id.unwrap_or_default();
     let pretty = crate::logging::sanitize(
-        &value("PRETTY_NAME").unwrap_or_else(|| format!("{id} {version}")),
+        &release
+            .pretty_name
+            .unwrap_or_else(|| format!("{id} {version}")),
         100,
     );
     if id != "debian" || version != "13" {

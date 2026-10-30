@@ -4,9 +4,12 @@ module Enrollment
   # In one transaction: the host and then the token are locked (the same order as everywhere else), the
   # token is marked used, any active credential is revoked (re-enrollment rotates the credential), a new
   # credential is created, and the host moves pending -> active with an audit entry. Unknown, expired, used, and retired-host tokens all raise the same error. Returns the credential
-  # plaintext, which the caller returns to the agent once.
+  # plaintext, which the caller returns to the agent once. After #call, #host is the host it was redeemed
+  # for, so the caller never has to look it up again from the plaintext (review of #67).
   class Redeem
     def self.call(...) = new(...).call
+
+    attr_reader :host
 
     def initialize(token:, machine_id:, agent_version:, schema_version:)
       @token = token
@@ -20,7 +23,7 @@ module Enrollment
         # Lock order is host, then token, the same as Enrollment::IssueToken, so a token issued while
         # another is being redeemed cannot deadlock. The token is re-read under both locks.
         host_id = EnrollmentToken.host_id_for(@token) or raise AgentApi::EnrollmentTokenInvalid
-        host = Host.lock.find(host_id)
+        host = @host = Host.lock.find(host_id)
         record = EnrollmentToken.lock_for_redemption(@token)
         raise AgentApi::EnrollmentTokenInvalid unless record&.redeemable? && record.host_id == host.id
         raise AgentApi::EnrollmentTokenInvalid unless host.enrollment_state == "pending"

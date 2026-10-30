@@ -14,7 +14,7 @@ Decided in [ADR 0017](../../decisions/0017-agent-onboarding.md) and [ADR 0018](.
   3. **Enroll.**
      - **By onboarding:** start onboarding ([P1-ONBOARD](p1-onboard.md)), print the approval URL, the user code, and a QR code of the URL, then poll at the server's interval with a countdown. On approval it writes the config with the credential atomically, mode `0600`. Rejection, expiry, and Ctrl-C each print a clear message and leave no credential behind.
      - **By pre-registered token:** `--token`, or `FLEET_ENROLLMENT_TOKEN`, or `--token-stdin` uses the one-time token instead, so cloud-init and scripts need no person present. The token never appears in the process list, output, or logs: `--token` takes no value and asks for the token on the terminal with the input hidden, and a value given on the command line is refused without being repeated.
-  4. **Start.** Enable and start the unit, wait for the first acknowledged heartbeat, and print a final summary: host name as approved, version, service status, and where logs are (`journalctl -u fleet-agent`). The installer itself sends that heartbeat with the config as written, before (re)starting the unit, then waits until the unit is active and stays active; once [P1-AGENT-REPORT](p1-agent-report.md) is merged, it also waits for the service's own first acknowledged heartbeat (see "Delivered" below). The enroll response carries the host's name (`host_name`, additive to v1) so the token path can show it too.
+  4. **Start.** Enable and start the unit, wait for the first acknowledged heartbeat, and print a final summary: host name as approved, version, service status, and where logs are (`journalctl -u fleet-agent`). The installer itself sends a heartbeat with the config as written, before (re)starting the unit, so a bad credential never replaces a running service; after a (re)start it waits until the unit is active and stays active, and then for the service's own first acknowledged heartbeat: the heartbeat loop of [P1-AGENT-REPORT](p1-agent-report.md) records it in the state directory (`heartbeat.json`, with its process id), and the installer waits for a record naming the unit's main process. The enroll response carries the host's name (`host_name`, additive to v1) so the token path can show it too.
 - **Idempotent.**
   - Re-running on an enrolled VM keeps the credential and repairs or upgrades the installation; this is also the manual upgrade (NFR-4).
   - `--reenroll` starts onboarding again, for a lost or revoked credential.
@@ -26,8 +26,8 @@ Decided in [ADR 0017](../../decisions/0017-agent-onboarding.md) and [ADR 0018](.
 
 ### Delivered (#57) and what remains
 
-- Delivered: everything above, tested against a local TLS server, a fake root, and a recording systemd (`agent/src/install/tests.rs`).
-- Remains: waiting for the **service's own** first acknowledged heartbeat needs the heartbeat loop and its "acknowledged" record from P1-AGENT-REPORT (#14), which was not merged; until then the installer's own heartbeat is the confirmation. The run on a clean Debian 13 VM (AC-1.8) is recorded under P1-ACCEPT.
+- Delivered: everything above, tested against a local TLS server, a fake root, and a recording systemd (`agent/src/install/tests.rs`), including waiting for the service's own first acknowledged heartbeat once #14 merged.
+- Remains: the run on a clean Debian 13 VM (AC-1.8) is recorded under P1-ACCEPT.
 
 ### Acceptance criteria
 
