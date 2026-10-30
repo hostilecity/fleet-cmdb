@@ -6,66 +6,14 @@
 //! existing path: an unsafe path is refused with a message saying how to fix it.
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Marks the installer's temporary files, so a later run can remove any left by an interrupted one.
-pub const TEMP_MARKER: &str = ".fleet-agent-tmp-";
-
-fn temp_path(path: &Path) -> PathBuf {
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    path.with_file_name(format!(
-        ".{name}{TEMP_MARKER}{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::SeqCst)
-    ))
-}
-
-/// Flushes a directory entry change (a rename or unlink) to disk.
-pub fn sync_dir(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
-}
-
-/// Writes `contents` to `path` atomically with exactly `mode`.
-///
-/// The data goes to a new temporary file in the same directory, created with `O_EXCL | O_NOFOLLOW` and
-/// `mode`, and set to exactly `mode` on the open handle before anything is written (the umask can only
-/// remove bits, never add them, so the file is never more open than `mode`). It is flushed, renamed over
-/// `path`, and the directory is flushed. A reader sees the old file or the new one, never part of one,
-/// and a failure removes the temporary file. Renaming over a symlink replaces the link, not its target.
-pub fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
-    write_atomic_from(path, &mut &contents[..], mode)
-}
-
-/// As [`write_atomic`], copying from `source`.
-pub fn write_atomic_from(path: &Path, source: &mut dyn Read, mode: u32) -> io::Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("/"));
-    let temp = temp_path(path);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&temp)?;
-    let result = (|| {
-        file.set_permissions(fs::Permissions::from_mode(mode))?;
-        io::copy(source, &mut file)?;
-        file.flush()?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        sync_dir(dir)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
+// The shared helpers (atomic writes, temporary-file cleanup) live in `crate::fsx`, so the installer,
+// the collectors, and the state directory use one implementation (review of #68).
+use crate::fsx::temp_path;
+pub use crate::fsx::{remove_stale_temps, sync_dir, write_atomic, write_atomic_from};
 
 /// Points the symlink `link` at `target`, replacing an existing symlink atomically (a new link is made
 /// under a temporary name and renamed over the old one). Refuses to replace anything but a symlink.
@@ -182,30 +130,6 @@ pub fn ensure_dir(path: &Path, mode: u32, euid: u32) -> io::Result<bool> {
     Ok(created)
 }
 
-/// Removes temporary files left in `dir` by an interrupted run (names containing [`TEMP_MARKER`] and
-/// starting with `.{prefix}`). Returns how many were removed. A missing directory is not an error.
-pub fn remove_stale_temps(dir: &Path, prefix: &str) -> io::Result<usize> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e),
-    };
-    let start = format!(".{prefix}");
-    let mut removed = 0;
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(&start) && name.contains(TEMP_MARKER) && !entry.file_type()?.is_dir() {
-            fs::remove_file(entry.path())?;
-            removed += 1;
-        }
-    }
-    if removed > 0 {
-        sync_dir(dir)?;
-    }
-    Ok(removed)
-}
-
 /// Whether two files have the same contents.
 pub fn same_contents(a: &Path, b: &Path) -> io::Result<bool> {
     let (mut fa, mut fb) = (File::open(a)?, File::open(b)?);
@@ -280,53 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_sets_the_mode_and_leaves_no_temporary_file() {
-        let dir = TempDir::new();
-        let path = dir.path("config.toml");
-        write_atomic(&path, b"one", 0o600).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"one");
-        assert_eq!(mode(&path), 0o600);
-        // Replacing an existing, more open file gives the new file exactly the requested mode.
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        write_atomic(&path, b"two", 0o600).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"two");
-        assert_eq!(mode(&path), 0o600);
-        write_atomic(&dir.path("tool"), b"#!", 0o755).unwrap();
-        assert_eq!(mode(&dir.path("tool")), 0o755);
-        let names: Vec<_> = fs::read_dir(dir.root())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(names.len(), 2, "{names:?}");
-    }
-
-    #[test]
-    fn a_failed_write_leaves_the_old_file_and_no_temporary_file() {
-        let dir = TempDir::new();
-        // The destination is a directory, so the final rename fails after the data was written.
-        let path = dir.path("config.toml");
-        fs::create_dir(&path).unwrap();
-        assert!(write_atomic(&path, b"secret", 0o600).is_err());
-        assert!(path.is_dir());
-        let names: Vec<_> = fs::read_dir(dir.root())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(names, vec![std::ffi::OsString::from("config.toml")]);
-    }
-
-    #[test]
-    fn write_atomic_replaces_a_symlink_without_writing_through_it() {
-        let dir = TempDir::new();
-        let target = dir.write("elsewhere", "untouched");
-        let link = dir.path("config.toml");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        write_atomic(&link, b"new", 0o600).unwrap();
-        assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
-        assert_eq!(kind(&link).unwrap(), Kind::File);
-    }
-
-    #[test]
     fn replace_symlink_swaps_links_and_refuses_anything_else() {
         let dir = TempDir::new();
         let link = dir.path("current");
@@ -381,18 +258,6 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(ensure_dir(&path, 0o700, uid()).is_err());
         assert_eq!(mode(&path), 0o777);
-    }
-
-    #[test]
-    fn stale_temporary_files_are_removed() {
-        let dir = TempDir::new();
-        dir.write(&format!(".config.toml{TEMP_MARKER}1-0"), "secret");
-        dir.write("config.toml", "keep");
-        dir.write(&format!(".other{TEMP_MARKER}1-0"), "not ours");
-        assert_eq!(remove_stale_temps(dir.root(), "config.toml").unwrap(), 1);
-        assert!(dir.path("config.toml").exists());
-        assert!(dir.path(&format!(".other{TEMP_MARKER}1-0")).exists());
-        assert_eq!(remove_stale_temps(&dir.path("absent"), "x").unwrap(), 0);
     }
 
     #[test]

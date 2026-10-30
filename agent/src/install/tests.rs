@@ -893,7 +893,7 @@ fn assert_nothing_enrolled(fx: &Fixture) {
     let tree = fx.tree();
     assert!(
         tree.iter()
-            .all(|f| !f.contains("config") && !f.contains(fsx::TEMP_MARKER)),
+            .all(|f| !f.contains("config") && !f.contains(crate::fsx::TEMP_MARKER)),
         "{tree:?}"
     );
 }
@@ -1143,13 +1143,15 @@ fn leftovers_of_an_interrupted_install_are_cleaned_up_by_a_rerun() {
     fs::set_permissions(p.etc_dir(), fs::Permissions::from_mode(0o700)).unwrap();
     let temp_config = p
         .etc_dir()
-        .join(format!(".config.toml{}1-0", fsx::TEMP_MARKER));
+        .join(format!(".config.toml{}1-0", crate::fsx::TEMP_MARKER));
     fs::write(&temp_config, format!("credential = \"{OTHER_CREDENTIAL}\"")).unwrap();
     let version_dir = p.versions_dir().join(crate::AGENT_VERSION);
     fs::create_dir_all(&version_dir).unwrap();
-    let temp_binary = version_dir.join(format!(".fleet-agent{}1-0", fsx::TEMP_MARKER));
+    let temp_binary = version_dir.join(format!(".fleet-agent{}1-0", crate::fsx::TEMP_MARKER));
     fs::write(&temp_binary, "half").unwrap();
-    let temp_link = p.lib_dir().join(format!(".current{}1-0", fsx::TEMP_MARKER));
+    let temp_link = p
+        .lib_dir()
+        .join(format!(".current{}1-0", crate::fsx::TEMP_MARKER));
     std::os::unix::fs::symlink("versions/x", &temp_link).unwrap();
 
     let server = fx.server(vec![

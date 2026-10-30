@@ -49,10 +49,6 @@ impl Ui {
         }
     }
 
-    pub fn mode(&self) -> Mode {
-        self.mode
-    }
-
     fn json(&mut self, value: Value) {
         let _ = writeln!(self.out, "{value}");
         let _ = self.out.flush();

@@ -50,7 +50,7 @@ pub fn read_regular(path: &Path, max_bytes: u64, symlinks: Symlinks) -> io::Resu
 }
 
 /// A temporary name next to `path`, unique within this process and across processes.
-fn temp_path(path: &Path) -> PathBuf {
+pub(crate) fn temp_path(path: &Path) -> PathBuf {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let name = path
         .file_name()
@@ -181,6 +181,23 @@ mod tests {
         assert!(write_atomic_from(&path, &mut failing, 0o600).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "old");
         assert_eq!(names(tmp.root()), ["f"]);
+    }
+
+    #[test]
+    fn a_failed_rename_leaves_what_was_there_and_no_temporary_file() {
+        // The destination is a directory, so the rename fails after the data was written and synced.
+        let tmp = TempDir::new();
+        let path = tmp.path("config.toml");
+        fs::create_dir(&path).unwrap();
+        assert!(write_atomic(&path, b"secret", 0o600).is_err());
+        assert!(path.is_dir());
+        assert_eq!(names(tmp.root()), ["config.toml"]);
+        // Other modes are exact too (the installer writes executables).
+        write_atomic(&tmp.path("tool"), b"#!", 0o755).unwrap();
+        assert_eq!(
+            fs::metadata(tmp.path("tool")).unwrap().mode() & 0o7777,
+            0o755
+        );
     }
 
     struct FailingReader;
