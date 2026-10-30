@@ -22,8 +22,7 @@ mod inventory;
 mod time;
 
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -167,26 +166,20 @@ fn jittered(interval: Duration, rng: &mut impl Rng) -> Duration {
     interval - Duration::from_millis(rng.next_u64() % (spread + 1))
 }
 
-/// A new report id: a random (version 4) UUID from the kernel's random source.
+/// A new report id: a random (version 4) UUID from the kernel's random source (`getrandom(2)`, so no
+/// device file is needed under systemd sandboxing).
 fn new_report_id() -> io::Result<String> {
     let mut bytes = [0u8; 16];
-    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(uuid_v4(bytes))
 }
 
 /// Formats 16 random bytes as a version 4, RFC 4122 variant UUID.
-fn uuid_v4(mut bytes: [u8; 16]) -> String {
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
+fn uuid_v4(bytes: [u8; 16]) -> String {
+    uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .hyphenated()
+        .to_string()
 }
 
 /// Remembers which messages were already logged, so a server that repeats an unknown directive on

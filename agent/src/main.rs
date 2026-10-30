@@ -7,6 +7,7 @@
 mod client;
 mod collect;
 mod config;
+mod fsx;
 mod logging;
 mod owner;
 mod report;

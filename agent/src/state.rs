@@ -11,6 +11,8 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use crate::fsx;
+
 /// Only the agent's service account (root, DEC-03) may use the state directory.
 pub const STATE_DIR_MODE: u32 = 0o700;
 
@@ -85,53 +87,19 @@ const RECORD_MODE: u32 = 0o600;
 /// Reads the record `name` from `dir`. A missing record is `Ok(None)`; a record that is not a regular
 /// file, is a symlink, or is larger than `max_bytes` is an error, which callers treat as no record.
 pub fn read_record(dir: &Path, name: &str, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(dir.join(name))
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other("not a regular file"));
+    match fsx::read_regular(&dir.join(name), max_bytes, fsx::Symlinks::Refuse) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
     }
-    let mut bytes = Vec::new();
-    io::Read::read_to_end(&mut io::Read::take(file, max_bytes + 1), &mut bytes)?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(io::Error::other(format!("larger than {max_bytes} bytes")));
-    }
-    Ok(Some(bytes))
 }
 
-/// Replaces the record `name` in `dir` with `bytes` atomically: a crash or power loss leaves either the
-/// old record or the new one, never a partial file. The record is written to a temporary file, flushed
-/// to disk, renamed over the old one, and the directory is flushed so the rename itself is durable.
+/// Replaces the record `name` in `dir` with `bytes` atomically ([`fsx::write_atomic`]): a crash or
+/// power loss leaves either the old record or the new one, never a partial file. Temporary files left
+/// by a crash during an earlier write are removed first.
 pub fn write_record(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
-    let temp = dir.join(format!(".{name}.tmp"));
-    // A temporary file left by a crash is replaced; `O_NOFOLLOW` refuses a symlink planted there.
-    match fs::remove_file(&temp) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-        _ => {}
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(RECORD_MODE)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&temp)?;
-    let written = io::Write::write_all(&mut file, bytes).and_then(|()| file.sync_all());
-    drop(file);
-    if let Err(e) = written.and_then(|()| fs::rename(&temp, dir.join(name))) {
-        let _ = fs::remove_file(&temp);
-        return Err(e);
-    }
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(dir)?
-        .sync_all()
+    fsx::remove_stale_temps(dir, name)?;
+    fsx::write_atomic(&dir.join(name), bytes, RECORD_MODE)
 }
 
 #[cfg(test)]
@@ -236,15 +204,22 @@ mod tests {
     }
 
     #[test]
-    fn a_leftover_temporary_file_or_symlink_is_replaced_not_followed() {
+    fn a_leftover_temporary_file_or_symlink_is_removed_not_followed() {
         let tmp = TempDir::new();
         let dir = tmp.path("state");
         ensure_dir(&dir).unwrap();
         let target = tmp.write("target", "untouched");
-        std::os::unix::fs::symlink(&target, dir.join(".r.json.tmp")).unwrap();
+        let stale = dir.join(format!(".r.json{}99-0", fsx::TEMP_MARKER));
+        std::os::unix::fs::symlink(&target, &stale).unwrap();
+        fs::write(dir.join(format!(".r.json{}98-0", fsx::TEMP_MARKER)), "half").unwrap();
         write_record(&dir, "r.json", b"new").unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
         assert_eq!(fs::read(dir.join("r.json")).unwrap(), b"new");
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["r.json"]);
     }
 
     #[test]
@@ -265,7 +240,12 @@ mod tests {
         );
         // A record cannot be written over a directory in the way.
         assert!(write_record(&dir, "dir.json", b"x").is_err());
-        assert!(!dir.join(".dir.json.tmp").exists());
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(fsx::TEMP_MARKER))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

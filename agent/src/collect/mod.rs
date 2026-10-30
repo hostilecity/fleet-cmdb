@@ -57,9 +57,7 @@ mod sys;
 mod system;
 
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::{self, Read};
-use std::os::unix::fs::OpenOptionsExt;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -561,21 +559,7 @@ fn hostname_under(root: &Path) -> Option<String> {
 /// `O_NOCTTY` stops a terminal device at a source path from becoming the controlling terminal of the
 /// agent, which runs as root.
 fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other("not a regular file"));
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(io::Error::other(format!(
-            "larger than {MAX_FILE_BYTES} bytes"
-        )));
-    }
-    Ok(bytes)
+    crate::fsx::read_regular(path, MAX_FILE_BYTES, crate::fsx::Symlinks::Follow)
 }
 
 /// Prefixes a parse error with the source it came from.

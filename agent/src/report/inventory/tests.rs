@@ -396,14 +396,23 @@ fn every_stable_field_counts_and_no_volatile_one_does() {
     // The hash is a stable function of the facts, not of the process (it is persisted).
     assert_eq!(StableHash::of(&sample()), base);
     assert_eq!(StableHash::parse(&base.to_string()), Some(base));
+    assert!(base.to_string().starts_with("sha256:"));
+    assert_eq!(base.to_string().len(), "sha256:".len() + 64);
+    let upper = base
+        .to_string()
+        .to_uppercase()
+        .replacen("SHA256:", "sha256:", 1);
     for bad in [
-        "",
-        "fnv1a128:",
-        "fnv1a128:xyz",
-        "sha256:00",
-        "fnv1a128:0123",
+        "".to_owned(),
+        "sha256:".to_owned(),
+        "sha256:00".to_owned(),
+        format!("sha256:{}", "g".repeat(64)),
+        format!("sha256:+{}", "0".repeat(63)),
+        upper,
+        // A record from the earlier FNV-1a build: treated as no record (one extra report).
+        format!("fnv1a128:{}", "0".repeat(32)),
     ] {
-        assert_eq!(StableHash::parse(bad), None, "{bad}");
+        assert_eq!(StableHash::parse(&bad), None, "{bad}");
     }
 }
 

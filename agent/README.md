@@ -91,6 +91,7 @@ If only `interval_seconds` is set, the default bounds widen to include it.
 | `collect` | Read-only system, disk, and network collectors; see [Collected facts](#collected-facts) | P1-AGENT-COLLECT |
 | `report` | Heartbeat loop, server-directed intervals, and inventory reports; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
+| `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
 
 ## Collected facts
@@ -121,6 +122,10 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Serialisation | `serde`, `serde_json` | Standard; payloads are checked against `docs/api/` schemas (P0-CONTRACT) |
 | Config | `toml`, parse only | Config file format |
 | Logging | `tracing`, `tracing-subscriber` (`fmt` only) | Structured fields (host, `report_id`) on timestamped lines to stdout, which systemd sends to the journal |
+| Randomness | `getrandom` | Report ids and jitter seeds from the kernel (`getrandom(2)`): no file to open, so it works under systemd sandboxing, and hosts booted together do not share jitter. Already linked through `ring`, so it adds no code |
+| Report ids | `uuid`, default features off | Formats the random bytes as a version 4 UUID; no dependencies of its own |
+| Timestamps | `humantime` | RFC 3339 for `agent_time`, `collected_at`, and reading `server_time`; no dependencies of its own, so no date arithmetic is maintained here |
+| Hashing | `ring` (SHA-256) | The stable-facts change hash. Already linked as the TLS crypto provider, so it adds no code |
 | Signals | `signal-hook` | Graceful `SIGTERM`/`SIGINT` handling without an async runtime or hand-written `unsafe` |
 | Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors, `geteuid` and `open` flags for the ownership checks, none of which `std` exposes. No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
 

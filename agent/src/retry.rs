@@ -34,13 +34,28 @@ impl SplitMix64 {
         Self(seed)
     }
 
-    /// Seeded from the clock and process id, so hosts restarted together still spread out.
+    /// Seeded from the kernel's random source, so hosts cloned from one template and booted together
+    /// (same process id, nearly the same clock) still spread out (review of #68). The clock and process
+    /// id are only a fallback if `getrandom(2)` fails.
     pub fn from_entropy() -> Self {
-        let nanos = SystemTime::now()
+        let mut bytes = [0u8; 8];
+        let random = getrandom::getrandom(&mut bytes).map(|()| u64::from_ne_bytes(bytes));
+        Self(entropy_seed(
+            random.ok(),
+            SystemTime::now(),
+            std::process::id(),
+        ))
+    }
+}
+
+/// The seed: the kernel's random value when there is one, else the clock mixed with the process id.
+fn entropy_seed(random: Option<u64>, now: SystemTime, pid: u32) -> u64 {
+    random.unwrap_or_else(|| {
+        let nanos = now
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64);
-        Self(nanos ^ (u64::from(std::process::id()) << 32))
-    }
+        nanos ^ (u64::from(pid) << 32)
+    })
 }
 
 impl Rng for SplitMix64 {
@@ -553,5 +568,20 @@ mod tests {
             assert_eq!(logs.lines().count(), 1, "{logs}");
             assert!(logs.contains("retry_in_seconds="), "{logs}");
         }
+    }
+
+    #[test]
+    fn jitter_seeds_come_from_the_kernel_not_the_clock_and_pid() {
+        // Review of #68: two hosts with the same pid and clock must still get different seeds.
+        let now = UNIX_EPOCH + Duration::from_secs(1_767_268_800);
+        assert_eq!(entropy_seed(Some(7), now, 1234), 7);
+        assert_eq!(entropy_seed(Some(8), now, 1234), 8);
+        assert_eq!(
+            entropy_seed(None, now, 1234),
+            1_767_268_800_000_000_000 ^ (1234u64 << 32)
+        );
+        let seeds: std::collections::HashSet<u64> =
+            (0..100).map(|_| SplitMix64::from_entropy().0).collect();
+        assert_eq!(seeds.len(), 100);
     }
 }

@@ -1,6 +1,5 @@
 //! RFC 3339 UTC timestamps for payloads (`agent_time`, `collected_at`) and for reading the server's
-//! `server_time` (DEC-08). The agent has no date library, so the civil-date conversion is here
-//! (Howard Hinnant's `days_from_civil` and `civil_from_days`, proleptic Gregorian calendar).
+//! `server_time` (DEC-08), through `humantime` (review of #68: no calendar arithmetic of our own).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,108 +9,18 @@ const MAX_UNIX_MILLIS: u64 = 253_402_300_799_999;
 /// `time` as RFC 3339 UTC with milliseconds, for example `2026-01-01T12:00:01.250Z`.
 ///
 /// A clock set before 1970 is written as the epoch, and one past year 9999 as the end of 9999, so the
-/// payload always matches the contract's pattern; the server never uses these values for liveness.
+/// payload always matches the contract's pattern (and `humantime`, which panics past 9999, is never
+/// given such a time); the server never uses these values for liveness.
 pub fn rfc3339(time: SystemTime) -> String {
-    let millis = time
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .min(MAX_UNIX_MILLIS);
-    let secs = millis / 1000;
-    let (year, month, day) = civil_from_days(secs / 86_400);
-    let rem = secs % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60,
-        millis % 1000
-    )
+    let latest = UNIX_EPOCH + Duration::from_millis(MAX_UNIX_MILLIS);
+    humantime::format_rfc3339_millis(time.clamp(UNIX_EPOCH, latest)).to_string()
 }
 
-/// Parses an RFC 3339 UTC timestamp of the contract's form (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`, from
-/// 1970 on). Anything else, including an impossible date such as 30 February, is `None`.
+/// Parses an RFC 3339 timestamp from 1970 on, such as the server's `YYYY-MM-DDTHH:MM:SS[.fraction]Z`.
+/// An impossible date such as 30 February is `None`. Used only for the clock-skew warning, so the
+/// parser's small leniencies (a `+00:00` offset, an empty fraction) do no harm.
 pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
-    let b = text.as_bytes();
-    if b.len() < 20 || b.len() > 35 || b[b.len() - 1] != b'Z' {
-        return None;
-    }
-    let num = |range: std::ops::Range<usize>| -> Option<u64> {
-        let digits = b.get(range)?;
-        if !digits.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        std::str::from_utf8(digits).ok()?.parse().ok()
-    };
-    let sep = |i: usize, c: u8| b.get(i) == Some(&c);
-    if !(sep(4, b'-') && sep(7, b'-') && sep(10, b'T') && sep(13, b':') && sep(16, b':')) {
-        return None;
-    }
-    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
-    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
-    if year < 1970
-        || !(1..=12).contains(&month)
-        || day < 1
-        || day > days_in_month(year, month)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
-        return None;
-    }
-    let mut nanos = 0u32;
-    let rest = &b[19..b.len() - 1];
-    if !rest.is_empty() {
-        let fraction = rest.strip_prefix(b".")?;
-        if fraction.is_empty() || fraction.len() > 9 || !fraction.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        let mut scaled = 0u32;
-        for i in 0..9 {
-            scaled = scaled * 10 + fraction.get(i).map_or(0, |d| u32::from(d - b'0'));
-        }
-        nanos = scaled;
-    }
-    // A leap second (:60) is read as the following second.
-    let secs = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
-    UNIX_EPOCH.checked_add(Duration::new(secs, nanos))
-}
-
-fn is_leap(year: u64) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
-fn days_in_month(year: u64, month: u64) -> u64 {
-    match month {
-        2 if is_leap(year) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-/// Days since 1970-01-01 for a date on or after it.
-fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y / 400;
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// The date `days` after 1970-01-01.
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + u64::from(month <= 2);
-    (year, month, day)
+    humantime::parse_rfc3339(text).ok()
 }
 
 #[cfg(test)]
@@ -170,7 +79,6 @@ mod tests {
         for bad in [
             "",
             "2026-01-01T12:00:00",
-            "2026-01-01T12:00:00+00:00",
             "2026-01-01 12:00:00Z",
             "2026-02-30T12:00:00Z",
             "2025-02-29T00:00:00Z",
@@ -179,14 +87,29 @@ mod tests {
             "2026-01-01T24:00:00Z",
             "2026-01-01T12:60:00Z",
             "2026-01-01T12:00:61Z",
-            "2026-01-01T12:00:00.Z",
-            "2026-01-01T12:00:00.1234567890Z",
             "1969-12-31T23:59:59Z",
             "+026-01-01T12:00:00Z",
             "2026-01-01T12:00:0xZ",
+            // Never misread a non-UTC offset as UTC.
+            "2026-01-01T12:00:00-05:00",
         ] {
             assert_eq!(parse_rfc3339(bad), None, "{bad}");
         }
         assert!(parse_rfc3339("2024-02-29T00:00:00Z").is_some());
+    }
+
+    #[test]
+    fn the_few_lenient_forms_all_mean_the_same_utc_instant() {
+        // `humantime` accepts these; each is the instant the strict form names, so a server sending
+        // one cannot cause a wrong clock-skew reading.
+        let noon = parse_rfc3339("2026-01-01T12:00:00Z");
+        assert!(noon.is_some());
+        for lenient in [
+            "2026-01-01T12:00:00+00:00",
+            "2026-01-01T12:00:00.Z",
+            "2026-01-01T12:00:00.0000000001Z",
+        ] {
+            assert_eq!(parse_rfc3339(lenient), noon, "{lenient}");
+        }
     }
 }

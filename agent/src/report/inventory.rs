@@ -55,38 +55,46 @@ pub struct InventoryReport<'a> {
     pub facts: &'a Inventory,
 }
 
-/// A hash of the stable facts and the agent version (DEC-07): 128-bit FNV-1a over their JSON. It
-/// detects change; it is not a security boundary (a collision would delay a report by at most one
-/// inventory interval).
+/// A hash of the stable facts and the agent version (DEC-07): SHA-256 over their JSON, from `ring`,
+/// which is already linked for TLS (review of #68). It detects change. A record saved by an earlier
+/// build under another algorithm does not parse, so it counts as no record: at most one extra report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StableHash(u128);
+pub struct StableHash([u8; 32]);
 
 impl StableHash {
+    const PREFIX: &'static str = "sha256:";
+
     pub fn of(inventory: &Inventory) -> Self {
-        const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-        const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
         // Serialising plain data cannot fail; an empty input would still give a fixed hash.
         let bytes = serde_json::to_vec(&(AGENT_VERSION, inventory.stable())).unwrap_or_default();
-        let mut hash = OFFSET;
-        for byte in bytes {
-            hash ^= u128::from(byte);
-            hash = hash.wrapping_mul(PRIME);
-        }
+        let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(digest.as_ref());
         Self(hash)
     }
 
     fn parse(text: &str) -> Option<Self> {
-        let hex = text.strip_prefix("fnv1a128:")?;
-        if hex.len() != 32 {
+        let hex = text.strip_prefix(Self::PREFIX)?.as_bytes();
+        if hex.len() != 64 {
             return None;
         }
-        u128::from_str_radix(hex, 16).ok().map(Self)
+        let mut hash = [0u8; 32];
+        for (byte, pair) in hash.iter_mut().zip(hex.chunks_exact(2)) {
+            let pair = std::str::from_utf8(pair).ok()?;
+            // `from_str_radix` would accept a sign; only lowercase hex digits are ours.
+            if !pair.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return None;
+            }
+            *byte = u8::from_str_radix(pair, 16).ok()?;
+        }
+        Some(Self(hash))
     }
 }
 
 impl fmt::Display for StableHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "fnv1a128:{:032x}", self.0)
+        f.write_str(Self::PREFIX)?;
+        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
 }
 
