@@ -104,6 +104,7 @@ impl Field {
     /// Volatile facts refresh current state only; every other fact is stable and a change to it
     /// triggers an extra report and a new snapshot (FR-1.3, DEC-07). `disks` is stable except for each
     /// disk's `free_bytes`, which is volatile; see [`Inventory::stable`].
+    #[cfg(test)]
     pub fn is_volatile(self) -> bool {
         matches!(self, Field::MemoryAvailableBytes | Field::UptimeSeconds)
     }
@@ -540,6 +541,19 @@ impl Collector {
     }
 }
 
+/// The kernel hostname for a heartbeat, read and checked exactly as the inventory's `hostname`, or
+/// `None` if it cannot be read (the heartbeat then carries `null`; the credential identifies the host).
+/// Read directly rather than through a [`Collector`]: a sysctl read does not block, and the heartbeat
+/// loop must not wait for a whole collection.
+pub fn hostname() -> Option<String> {
+    hostname_under(Path::new("/"))
+}
+
+fn hostname_under(root: &Path) -> Option<String> {
+    let bytes = read_capped(&root.join("proc/sys/kernel/hostname")).ok()?;
+    system::parse_hostname(&bytes).ok()
+}
+
 /// Reads a regular file of at most [`MAX_FILE_BYTES`].
 ///
 /// Every source is a regular file (procfs files included), so anything else is refused before it is
@@ -775,7 +789,7 @@ fn truncate(s: String, max: usize) -> String {
 
 #[cfg(test)]
 #[path = "../../tests/support/contract.rs"]
-mod contract;
+pub(crate) mod contract;
 
 #[cfg(test)]
 mod tests;

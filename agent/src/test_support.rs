@@ -46,6 +46,7 @@ impl TempDir {
         path
     }
 
+    #[allow(dead_code)] // Not every test uses every helper.
     pub fn root(&self) -> &Path {
         &self.0
     }
@@ -107,13 +108,25 @@ impl TlsServer {
     /// Serves `replies` (complete HTTP responses) one per connection, in order. A connection whose
     /// TLS handshake fails uses up its reply without recording a request.
     pub fn start(pki: &TestPki, replies: Vec<String>) -> Self {
+        let mut replies = replies.into_iter();
+        Self::serve(pki, replies.len(), move |_| {
+            replies.next().unwrap_or_default()
+        })
+    }
+
+    /// Serves `count` connections, answering each request with `reply(request)`.
+    pub fn serve(
+        pki: &TestPki,
+        count: usize,
+        mut reply: impl FnMut(&str) -> String + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let config = pki.server_config();
         let handle = thread::spawn(move || {
             let mut requests = Vec::new();
-            for reply in replies {
+            for _ in 0..count {
                 let deadline = Instant::now() + Duration::from_secs(20);
                 let tcp = loop {
                     match listener.accept() {
@@ -129,10 +142,13 @@ impl TlsServer {
                 let conn = rustls::ServerConnection::new(config.clone()).unwrap();
                 let mut tls = rustls::StreamOwned::new(conn, tcp);
                 let Some(request) = read_request(&mut tls) else {
+                    // The reply is used up, as before.
+                    reply("");
                     continue;
                 };
+                let answer = reply(&request);
                 requests.push(request);
-                let _ = tls.write_all(reply.as_bytes());
+                let _ = tls.write_all(answer.as_bytes());
                 tls.conn.send_close_notify();
                 let _ = tls.flush();
             }

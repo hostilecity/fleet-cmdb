@@ -2,7 +2,7 @@
 
 The Fleet CMDB agent: a single static Rust binary that runs as a systemd service on each VM and reports host facts to the server (FR-1.6). The fleet is Debian 13 on x86_64 ([DEC-01](../docs/decisions/0001-fleet-profile.md)), so the only release target is `x86_64-unknown-linux-musl`. The agent runs as root under a hardened unit ([DEC-03](../docs/decisions/0003-agent-privilege.md)).
 
-Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE), and so are the read-only fact collectors (P1-AGENT-COLLECT); `run` starts, checks everything, and waits for a stop signal. Heartbeats and inventory reports, which wire in the collectors, arrive with P1-AGENT-REPORT, `install` and `uninstall` with P1-AGENT-INSTALL.
+Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE), and so are the read-only fact collectors (P1-AGENT-COLLECT) and heartbeats and inventory reports (P1-AGENT-REPORT); `run` reports until it gets a stop signal. `install` and `uninstall` arrive with P1-AGENT-INSTALL.
 
 ## Build and check
 
@@ -68,6 +68,18 @@ If only `interval_seconds` is set, the default bounds widen to include it.
 - Errors are mapped from the envelope in [`docs/api`](../docs/api/README.md). Transient failures (unreachable, TLS, timeouts, `5xx`, other `4xx`) back off exponentially from 5 s to a cap of 5 minutes with equal jitter, and reset after a success. `401`, `403` (including `reenrollment_required`), and `426` are logged plainly and wait about 30 minutes. `429` waits at least `Retry-After`, plus up to 10% (at most a minute) so throttled agents do not retry together; only a broken header longer than a day is capped.
 - Logs are `key=value` lines with an RFC 3339 UTC timestamp on stdout, for the journal. The credential is held in a type that prints `<redacted>`; logs carry its non-secret key id.
 
+## Heartbeats and inventory reports
+
+`run` sends heartbeats and inventory reports ([`docs/api`](../docs/api/README.md)) on two threads, so a slow collection or a hung report never delays a heartbeat. The module documentation in `src/report/` has the details.
+
+- **Heartbeats** (FR-1.2): the first at once, then every heartbeat interval minus up to 10% jitter, so never later than the interval. Each carries the hostname, agent version, agent uptime, and agent clock. A failure waits as the retry policy says and never stops the agent; the interval resumes with the next accepted heartbeat.
+- **Server-directed intervals** (ADR 0019): the heartbeat response may set `directives.intervals` (`heartbeat_seconds`, `inventory_seconds`). Each is clamped to the config's `min_seconds..=max_seconds`, logged when it changes, and dropped back to `interval_seconds` when the server stops sending it. Anything else in the response the agent does not understand, including an `agent_update` directive (acted on from P1-AGENT-UPDATE), is ignored and logged once. A clock more than 5 minutes off the server's is logged.
+- **Inventory reports** (FR-1.3, DEC-07): one at startup, one every inventory interval (minus up to 10% jitter), and one within a minute of a **stable** fact changing: the facts are collected every 60 seconds and a hash of the stable ones and the agent version is compared with the last report's. Changes to free memory, free disk space, or uptime alone send nothing extra.
+- **Retries:** a failed report is retried with the same `report_id` and body, so the server can discard a duplicate. Nothing is queued or replayed: a report still waiting for its retry is replaced by current state (a new `report_id`) when the stable facts change or once it is one interval old. A report rejected for its content (`400`, `413`, `422`) is logged with the server's code and message and not retried.
+- **Logs:** every report line carries its `report_id`, and its outcome (`sent`, `duplicate`, or rejected with the reason). Routine accepted heartbeats are logged at `debug`.
+- **State:** after each accepted report, `inventory.json` in `state_dir` records its stable hash, boot identifier, agent version, and `report_id`, written atomically. The startup report logs whether the stable facts changed and whether the host rebooted since then. A missing or corrupt record is treated as none.
+- **Stopping:** `SIGTERM` or `SIGINT` ends both loops between requests; a request in flight finishes first (at most the 30 s timeout). If either loop fails unexpectedly, the agent stops and exits with status `1`, so systemd restarts it.
+
 ## Layout
 
 | Module | Responsibility | Filled in by |
@@ -77,7 +89,7 @@ If only `interval_seconds` is set, the default bounds widen to include it.
 | `retry` | Backoff with jitter and cap, long waits for `401`/`403`/`426`, `Retry-After`, failure log lines | P1-AGENT-CORE |
 | `shutdown` | Graceful stop on `SIGTERM` and `SIGINT` | P1-AGENT-CORE |
 | `collect` | Read-only system, disk, and network collectors; see [Collected facts](#collected-facts) | P1-AGENT-COLLECT |
-| `report` | Heartbeat loop and inventory reports | P1-AGENT-REPORT |
+| `report` | Heartbeat loop, server-directed intervals, and inventory reports; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
 

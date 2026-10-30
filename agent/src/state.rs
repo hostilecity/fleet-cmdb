@@ -79,6 +79,61 @@ fn refuse(dir: &Path, why: &str) -> io::Error {
     io::Error::other(format!("state directory {} {why}", dir.display()))
 }
 
+/// Mode of every record file: private to the agent.
+const RECORD_MODE: u32 = 0o600;
+
+/// Reads the record `name` from `dir`. A missing record is `Ok(None)`; a record that is not a regular
+/// file, is a symlink, or is larger than `max_bytes` is an error, which callers treat as no record.
+pub fn read_record(dir: &Path, name: &str, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(dir.join(name))
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut io::Read::take(file, max_bytes + 1), &mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::other(format!("larger than {max_bytes} bytes")));
+    }
+    Ok(Some(bytes))
+}
+
+/// Replaces the record `name` in `dir` with `bytes` atomically: a crash or power loss leaves either the
+/// old record or the new one, never a partial file. The record is written to a temporary file, flushed
+/// to disk, renamed over the old one, and the directory is flushed so the rename itself is durable.
+pub fn write_record(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let temp = dir.join(format!(".{name}.tmp"));
+    // A temporary file left by a crash is replaced; `O_NOFOLLOW` refuses a symlink planted there.
+    match fs::remove_file(&temp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(RECORD_MODE)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temp)?;
+    let written = io::Write::write_all(&mut file, bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written.and_then(|()| fs::rename(&temp, dir.join(name))) {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(dir)?
+        .sync_all()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +212,60 @@ mod tests {
             error.contains(&format!("is owned by uid {owner}")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn records_round_trip_privately_and_replace_atomically() {
+        let tmp = TempDir::new();
+        let dir = tmp.path("state");
+        ensure_dir(&dir).unwrap();
+        assert_eq!(read_record(&dir, "r.json", 1024).unwrap(), None);
+        write_record(&dir, "r.json", b"one").unwrap();
+        assert_eq!(mode(&dir.join("r.json")), 0o600);
+        write_record(&dir, "r.json", b"two").unwrap();
+        assert_eq!(
+            read_record(&dir, "r.json", 1024).unwrap().as_deref(),
+            Some(&b"two"[..])
+        );
+        // No temporary file is left behind.
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["r.json"]);
+    }
+
+    #[test]
+    fn a_leftover_temporary_file_or_symlink_is_replaced_not_followed() {
+        let tmp = TempDir::new();
+        let dir = tmp.path("state");
+        ensure_dir(&dir).unwrap();
+        let target = tmp.write("target", "untouched");
+        std::os::unix::fs::symlink(&target, dir.join(".r.json.tmp")).unwrap();
+        write_record(&dir, "r.json", b"new").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+        assert_eq!(fs::read(dir.join("r.json")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn unusual_records_are_errors_not_followed() {
+        let tmp = TempDir::new();
+        let dir = tmp.path("state");
+        ensure_dir(&dir).unwrap();
+        let target = tmp.write("target", "secret");
+        std::os::unix::fs::symlink(&target, dir.join("link.json")).unwrap();
+        assert!(read_record(&dir, "link.json", 1024).is_err());
+        fs::create_dir(dir.join("dir.json")).unwrap();
+        assert!(read_record(&dir, "dir.json", 1024).is_err());
+        fs::write(dir.join("big.json"), vec![b'x'; 2048]).unwrap();
+        let error = read_record(&dir, "big.json", 1024).unwrap_err();
+        assert!(
+            error.to_string().contains("larger than 1024 bytes"),
+            "{error}"
+        );
+        // A record cannot be written over a directory in the way.
+        assert!(write_record(&dir, "dir.json", b"x").is_err());
+        assert!(!dir.join(".dir.json.tmp").exists());
     }
 
     #[test]

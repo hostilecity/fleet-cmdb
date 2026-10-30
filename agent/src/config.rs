@@ -79,6 +79,7 @@ pub struct Credential(String);
 
 impl Credential {
     /// Wraps a credential string. Format checks happen in [`Config::from_toml`].
+    #[allow(dead_code)] // For `install` (P1-AGENT-INSTALL).
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
