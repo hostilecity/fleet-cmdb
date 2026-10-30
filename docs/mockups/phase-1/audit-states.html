@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit log: filtered · Fleet CMDB mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="agents.html">Agents</a><a href="audit.html" aria-current="page">Audit log</a><a href="settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Audit log</h1><p>Every change to hosts, credentials, onboarding, operators, and settings. Read-only; entries are never edited or deleted.</p></div></div>
+<h2>Filtered, second page</h2>
+<form class="filters audit-filters" role="search" method="get" action="audit.html">
+  <label>Actor type<select name="actor_type"><option value="">Anyone</option><option value="operator" selected>Operator</option><option value="host">Host</option><option value="system">System</option></select></label>
+  <label>Actor<input type="search" name="actor" placeholder="Email or host name" value="alex@example.com"></label>
+  <label>Action<select name="action"><option value="">All actions</option><option value="host.edited" selected>Host edited</option></select></label>
+  <label>Target<input type="search" name="target" placeholder="Host name or hostname"></label>
+  <label>From<input type="date" name="from" value="2026-10-01"></label><label>To<input type="date" name="to" value="2026-10-28"></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<p class="applied"><span><strong>Host edited</strong> by <strong>alex@example.com</strong> (operator), <strong>1 to 28 Oct 2026</strong></span><a href="audit.html">Clear filters</a></p>
+<p class="note">The address of this view is <code>/audit?actor_type=operator&amp;actor=alex%40example.com&amp;action=host.edited&amp;from=2026-10-01&amp;to=2026-10-28&amp;before=2026-10-14T10:02:31.482113Z,4127</code>. Empty filters are left out of the URL. <code>before</code> is the (occurred_at, id) of the last entry on the previous page, so a page is one indexed range read however long the log grows; there are no page numbers or total count for the same reason. The dates are whole UTC days, both included. The Action list is shortened here; it is the full list on <a href="audit.html">the first page</a>.</p>
+<div class="table-wrap"><table class="audit">
+<thead><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Before → after</th></tr></thead>
+<tbody>
+<tr><td class="when mono">2026-10-14 09:55:10</td><td>alex@example.com<span class="kind">Operator</span></td><td>Host edited</td><td><a href="host.html">Media server</a></td><td><ul class="change-list">
+  <li><span class="key">Notes</span><del>Disk 2 is passthrough.</del> <ins>Disk 2 is passthrough; snapshot before kernel updates.</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-10-09 17:31:48</td><td>alex@example.com<span class="kind">Operator</span></td><td>Host edited</td><td><a href="host.html">Web A</a></td><td><ul class="change-list">
+  <li><span class="key">Tags</span><del class="mono">web</del> <ins class="mono">web, lab</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-10-06 12:04:22</td><td>alex@example.com<span class="kind">Operator</span></td><td>Host edited</td><td><a href="host.html">Build runner</a></td><td><ul class="change-list">
+  <li><span class="key">Name</span><del>CI runner</del> <ins>Build runner</ins></li>
+  <li><span class="key">Hostname</span><del class="mono">ci-01.example.lan</del> <ins class="mono">vm-03.example.lan</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-10-02 08:40:15</td><td>alex@example.com<span class="kind">Operator</span></td><td>Host edited</td><td><a href="host.html">Old proxy</a></td><td><ul class="change-list">
+  <li><span class="key">Description</span><del>&lt;script&gt;alert(1)&lt;/script&gt;</del> <span class="unavailable">none</span></li></ul></td></tr>
+</tbody></table></div>
+<nav class="pager" aria-label="Pages"><a rel="prev" href="#">← Newer entries</a><span class="muted">Newest first, 50 per page</span><a rel="next" href="#">Older entries →</a></nav>
+<p class="note">Newer goes back one page (<code>after=</code> the first entry here); Older continues (<code>before=</code> the last). Both keep the filters. Changing a filter starts again from the newest entry.</p>
+
+<h2>No entries match</h2>
+<form class="filters audit-filters" role="search" method="get" action="audit.html">
+  <label>Actor type<select name="actor_type"><option value="" selected>Anyone</option><option value="operator">Operator</option><option value="host">Host</option><option value="system">System</option></select></label>
+  <label>Actor<input type="search" name="actor" placeholder="Email or host name"></label>
+  <label>Action<select name="action"><option value="">All actions</option><option value="host.retired" selected>Retired</option></select></label>
+  <label>Target<input type="search" name="target" placeholder="Host name or hostname" value="Lab sandbox"></label>
+  <label>From<input type="date" name="from" value="2026-10-01"></label><label>To<input type="date" name="to" value="2026-10-28"></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<div class="sheet"><p style="margin-top:0"><strong>No entries match these filters.</strong></p><p><strong>Retired</strong> on <strong>Lab sandbox</strong> by anyone, <strong>1 to 28 Oct 2026</strong>. <a href="audit.html">Clear the filters</a> or widen the dates.</p></div>
+<p class="note">The empty state repeats the filters in words, so a mistyped target or a date range the wrong way round is easy to spot.</p>
+
+<h2 id="filtered">A filtered value</h2>
+<div class="table-wrap"><table class="audit">
+<thead><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Before → after</th></tr></thead>
+<tbody>
+<tr><td class="when mono">2026-10-12 07:18:33</td><td><a href="host.html">Backup target</a><span class="kind">Host</span></td><td>Enrolled</td><td><a href="host.html">Backup target</a></td><td><ul class="change-list">
+  <li><span class="key">Enrollment state</span><del class="mono">pending</del> <ins class="mono">active</ins></li>
+  <li><span class="key">Key</span><span class="unavailable">none</span> → <ins class="mono">fa_EXAMPLEkey04</ins></li>
+  <li><span class="key mono">recovery_hint</span><span class="mono">[FILTERED]</span></li></ul></td></tr>
+</tbody></table></div>
+<p class="note">Illustrative only: no action records a secret today, and <code>Audit::Scrubber</code> raises in development and test if one tries. If a secret-looking key slips through in production, the server stores <code>[FILTERED]</code> instead of the value, and the page shows that as recorded, without a before or after, so the gap is visible rather than hidden.</p>
+</main>
+</body>
+</html>

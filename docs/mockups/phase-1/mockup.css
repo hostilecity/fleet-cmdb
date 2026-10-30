@@ -178,3 +178,16 @@ ins { text-decoration: none; background: #dcefdf; color: #1d5a2b; padding: 0 0.1
   .stages { grid-template-columns: 1fr; }
   .user-code { font-size: 1.5rem; }
 }
+
+/* P1-AUDIT-PAGE (#46): fleet-wide audit log */
+.audit td.when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.audit .kind { display: block; font-size: 0.8125rem; color: var(--ink-soft); }
+.audit .change-list { list-style: none; padding: 0; }
+.audit .change-list .key { color: var(--ink-soft); margin-right: 0.25rem; white-space: nowrap; }
+.audit .change-list del, .audit .change-list ins { overflow-wrap: anywhere; }
+.applied { display: flex; gap: 0.5rem 1rem; flex-wrap: wrap; align-items: baseline; margin: -0.25rem 0 1rem; font-size: 0.9375rem; }
+.pager a[rel], .pager .off { white-space: nowrap; }
+.pager .off { color: var(--ink-soft); }
+.note code { overflow-wrap: anywhere; }
+.audit-filters input[type="search"] { min-width: 12rem; }
+@media (max-width: 52rem) { .audit-filters input[type="search"] { min-width: 0; } }
