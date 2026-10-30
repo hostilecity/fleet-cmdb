@@ -34,11 +34,12 @@
 <tr><td><a href="dialogs.html">Confirmations</a></td><td>Revoke credential, re-enroll (both ways), retire, and the rollout actions</td><td>P1-DASH-ACTIONS, P1-D09</td></tr>
 <tr><td><a href="agents.html">Agents: versions and rollout</a></td><td>Releases, the running rollout by stage and host, start a rollout</td><td>P1-D09 (P1-D06 review)</td></tr>
 <tr><td><a href="agents-halted.html">Agents: rollout halted</a></td><td>A host rolled back, so the rollout stopped; why, and resume or cancel</td><td>P1-D09 (P1-D06 review)</td></tr>
-<tr><td><a href="audit.html">Audit log</a></td><td>Fleet-wide, read-only, filtered by actor, action, host, and date</td><td>P1-AUDIT-PAGE (#46)</td></tr>
+<tr><td><a href="audit.html">Audit log</a></td><td>Fleet-wide and read-only: every action type, operator, host, and system actors, before and after values shown as text</td><td>P1-AUDIT-PAGE (#46 review)</td></tr>
+<tr><td><a href="audit-states.html">Audit log: filtered and empty</a></td><td>Filters by actor, action, target, and date carried in the URL; newer and older pages; no matches; a filtered secret</td><td>P1-AUDIT-PAGE (#46 review)</td></tr>
 <tr><td><a href="settings.html">Settings</a></td><td>Liveness thresholds with an error shown in place</td><td>P1-D02</td></tr>
 <tr><td><a href="states.html">Empty and error states</a></td><td>Empty fleet, no matches, live updates lost, page not found, server error</td><td>P1-D02, P1-D05</td></tr>
 </tbody></table></div>
-<p class="note">Yellow dashed boxes like this one are review notes, not part of the design. Screens marked "P1-D06 review" are new in the scope change (#54, ADR 0017 and 0018) and await approval; "Host detail" and "Fleet" also gained the onboarding notice, the Agent updates section, and the Re-enroll action.</p>
+<p class="note">Yellow dashed boxes like this one are review notes, not part of the design. Screens marked "P1-D06 review" are new in the scope change (#54, ADR 0017 and 0018) and await approval; "Host detail" and "Fleet" also gained the onboarding notice, the Agent updates section, and the Re-enroll action. Screens marked "#46 review" are the audit log reworked for P1-AUDIT-PAGE after that scope change, and await approval.</p>
 </main>
 </body>
 </html>
