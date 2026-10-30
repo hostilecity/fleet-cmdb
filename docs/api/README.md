@@ -44,7 +44,7 @@ Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent
   - Every report carries a `report_id`: a UUIDv4, generated per report and reused on retry.
   - A report whose `report_id` was already processed is answered `200` with `duplicate: true` and changes nothing.
 - **Timestamps:** RFC 3339 in UTC with a `Z` suffix, for example `2026-01-01T12:00:00Z`.
-- **Missing facts:** a fact the agent cannot read is sent as `null`, with an entry in `warnings`. The report is still sent (FR-1.3).
+- **Missing facts:** a fact the agent cannot read is sent as `null`, with an entry in `warnings`. The report is still sent (FR-1.3). A list fact (`disks`, `network_interfaces`) that could be read only in part keeps the entries that were read, with a `warnings` entry saying what is missing (P1-AGENT-COLLECT).
 - **Server checks beyond the schema:** some rules are not expressible in JSON Schema, such as free space not exceeding total. The server enforces these and answers `validation_failed`.
 - **Request IDs:** every response has an `X-Request-Id` header, and error bodies repeat it.
 
@@ -116,3 +116,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | `error.request_id` `maxLength` raised from 64 to 255, the length Rails accepts for an incoming `X-Request-Id` (P1-API-AUTH). Loosening only, so no version bump. |
 | v1 | New error code `reenrollment_required` (403) with the `Fleet-Enrollment-State: pending` header, for endpoints a re-enrolling host may not call (P1-HEARTBEAT). Additive, so no version bump. |
 | v1 | Onboarding endpoints and schemas (`onboarding.*`, `onboarding-token.*`) and error codes `onboarding_rejected` (403) and `onboarding_expired` (410) (P1-ONBOARD, DEC-17). Additive, so no version bump. |
+| v1 | `warnings` may also explain a partly read list fact (`disks`, `network_interfaces`) that is not `null`; example `partial-lists.json` (P1-AGENT-COLLECT). Description only, so no version bump. |
