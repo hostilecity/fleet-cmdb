@@ -5,10 +5,13 @@ require_relative "../../lib/ci/github_annotation"
 # - each failing example, at its file and line, with the error and the seed to reproduce it;
 # - errors outside examples (a spec file that fails to load, a :suite hook), which have no example;
 # - a summary with the counts, the seed, and the rerun command for every failure.
-# GitHub keeps at most 10 error annotations per step, so only the first few examples get their own and the
-# summary always fits.
+# GitHub keeps at most 10 error annotations per step and silently drops the rest. Two are reserved, for the
+# summary and for bin/ci's own "step failed" annotation; failing examples and errors outside examples share the
+# rest, first come first served, and whatever does not fit is counted in the summary instead.
 class GithubAnnotationsFormatter
-  MAX_EXAMPLE_ANNOTATIONS = 5
+  GITHUB_LIMIT_PER_STEP = 10
+  RESERVED = 2 # this summary and bin/ci's step annotation (lib/ci/step_annotations.rb)
+  ANNOTATION_BUDGET = GITHUB_LIMIT_PER_STEP - RESERVED
   MAX_SUMMARY_FAILURES = 30
 
   RSpec::Core::Formatters.register self, :example_failed, :message, :dump_summary
@@ -16,12 +19,12 @@ class GithubAnnotationsFormatter
   def initialize(output, configuration = RSpec.configuration)
     @output = output
     @configuration = configuration
-    @failures = 0
+    @emitted = 0
+    @unannotated_errors = 0
   end
 
   def example_failed(notification)
-    @failures += 1
-    return if @failures > MAX_EXAMPLE_ANNOTATIONS
+    return unless budget_left?
 
     example = notification.example
     file, line = example.location.delete_prefix("./").split(":")
@@ -34,6 +37,8 @@ class GithubAnnotationsFormatter
     text = notification.message.to_s.strip
     return unless text.start_with?("An error occurred")
 
+    return @unannotated_errors += 1 unless budget_left?
+
     file = text[/\AAn error occurred while loading \.\/(\S+?)\.?$/, 1]
     emit("#{text}\n\n#{seed}.", title: "RSpec: error outside examples", file: file && "cmdb/#{file}")
   end
@@ -43,10 +48,13 @@ class GithubAnnotationsFormatter
 
     reruns = summary.failed_examples.first(MAX_SUMMARY_FAILURES).map { |example| "#{rerun(example)} # #{example.full_description}" }
     reruns << "... and #{summary.failure_count - MAX_SUMMARY_FAILURES} more" if summary.failure_count > MAX_SUMMARY_FAILURES
+    reruns << "#{@unannotated_errors} more errors outside examples are not annotated; see the job log" if @unannotated_errors.positive?
     emit([ "#{summary.totals_line}, #{seed}.", *reruns ].join("\n"), title: "RSpec failed: #{summary.totals_line}, #{seed}")
   end
 
   private
+
+  def budget_left? = @emitted < ANNOTATION_BUDGET
 
   def seed = @configuration.seed_used? ? "seed #{@configuration.seed}" : "no random seed"
 
@@ -57,5 +65,8 @@ class GithubAnnotationsFormatter
   # Each command starts on a new line. The progress formatter writes its dots to the same stream without one,
   # and GitHub reads a workflow command only at the start of a line. Before #69 the annotation came out as
   # "F::error ..." and was silently ignored, so a failing example left no annotation at all.
-  def emit(message, **properties) = @output.puts("\n#{GithubAnnotation.error(message, **properties)}")
+  def emit(message, **properties)
+    @emitted += 1
+    @output.puts("\n#{GithubAnnotation.error(message, **properties)}")
+  end
 end

@@ -48,12 +48,13 @@ RSpec.describe GithubAnnotationsFormatter do
   end
 
   it "annotates only the first few examples, leaving room for the summary within GitHub's limit of 10 per step" do
-    examples = Array.new(described_class::MAX_EXAMPLE_ANNOTATIONS + 3) { |i| example_double(i + 1) }
+    examples = Array.new(described_class::ANNOTATION_BUDGET + 3) { |i| example_double(i + 1) }
     examples.each { |e| formatter.example_failed(failed(e)) }
     formatter.dump_summary(summary(failed_examples: examples))
-    expect(lines.size).to eq(described_class::MAX_EXAMPLE_ANNOTATIONS + 1)
-    expect(lines.last).to start_with("::error title=RSpec failed%3A 8 failures%2C seed 4242::")
-    expect(decode(lines.last).lines.map(&:chomp)).to eq([ "8 failures, seed 4242.", *examples.map { |e| "bundle exec rspec #{e.location_rerun_argument} --seed 4242 # #{e.full_description}" } ])
+    expect(lines.size).to eq(described_class::ANNOTATION_BUDGET + 1)
+    expect(lines.size + 1).to be <= 10 # plus bin/ci's step annotation
+    expect(lines.last).to start_with("::error title=RSpec failed%3A 11 failures%2C seed 4242::")
+    expect(decode(lines.last).lines.map(&:chomp)).to eq([ "11 failures, seed 4242.", *examples.map { |e| "bundle exec rspec #{e.location_rerun_argument} --seed 4242 # #{e.full_description}" } ])
   end
 
   it "lists at most a fixed number of failures in the summary" do
@@ -73,6 +74,16 @@ RSpec.describe GithubAnnotationsFormatter do
   it "annotates an error in a suite hook, which has no file" do
     formatter.message(message("An error occurred in a `before(:suite)` hook.\nFailure/Error: raise \"boom\""))
     expect(lines.sole).to start_with("::error title=RSpec%3A error outside examples::An error occurred in a `before(:suite)` hook.")
+  end
+
+  it "shares the budget with errors outside examples, so many load errors never push out the summary" do
+    12.times { |i| formatter.message(message("An error occurred while loading ./spec/requests/x#{i}_spec.rb.\nNameError")) }
+    formatter.example_failed(failed)
+    formatter.dump_summary(summary(failed_examples: [ example_double ], outside: 12))
+    expect(lines.size).to eq(described_class::ANNOTATION_BUDGET + 1)
+    expect(lines.size + 1).to be <= 10 # plus bin/ci's step annotation
+    expect(lines.first(described_class::ANNOTATION_BUDGET)).to all(include("title=RSpec%3A error outside examples"))
+    expect(decode(lines.last)).to end_with("4 more errors outside examples are not annotated; see the job log")
   end
 
   it "ignores RSpec's other messages" do

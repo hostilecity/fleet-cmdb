@@ -157,6 +157,9 @@ RSpec.describe "Onboarding approval", type: :request do
       twins = Array.new(2) { |i| enrolled_host(name: "Twin", hostname: "vm-6#{i}.example.lan").first }
       twins.each { |h| h.agent_credentials.active.sole.update_column(:machine_id, "89abcdef0123456789abcdef01234567") }
       named = [ create(:host, name: "Same", hostname: "vm-08.example.lan"), create(:host, name: "Same", hostname: "vm-08.example.lan") ]
+      # An UPDATE writes a new row version at the end of the heap, so a scan now returns the older host last:
+      # only the id tie-break keeps it first.
+      [ twins.first, named.first ].each { |h| h.update_column(:name, h.name) }
       get "/onboard/#{code}"
       expect(page.css("input[name=choice]").map { |i| i["value"] }).to eq((twins + named).map { |h| "reenroll-#{h.id}" } + [ "new" ])
     end
