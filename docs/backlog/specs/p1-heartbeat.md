@@ -9,7 +9,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - `POST /api/v1/heartbeat` accepting host identity, agent version, agent uptime, and the agent's current time.
 - Updates only `last_seen_at` (server time), agent version, agent schema version, and the agent-reported time (stored separately, never used for liveness). Sets `first_seen_at` on the first successful heartbeat.
 - If the host was not `online`, it becomes `online` in the same transaction and a status history row is written ([P1-S09](p1-heartbeat.md) owns the table), so recovery shows immediately rather than after the next job run.
-- Response: `{"server_time": ..., "directives": []}` per [DEC-08](../../decisions/0008-api-conventions.md).
+- Response: `{"server_time": ..., "directives": {}}` per [DEC-08](../../decisions/0008-api-conventions.md) as amended by [DEC-20](../../decisions/0020-named-heartbeat-directives.md): `directives` is an object keyed by directive name, empty until [P1-UPDATES](p1-updates.md) adds `intervals` and `agent_update`.
 - No audit entries and no loads of snapshot tables. One cheap write per request.
 
 ### Acceptance criteria

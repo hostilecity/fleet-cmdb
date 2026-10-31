@@ -8,11 +8,11 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
 
 ### Scope
 
-- **Contract first.** Additive v1 changes to `heartbeat.response`:
-  - a `directives.agent_update` object: version, manifest URL, signature URL, binary URL, and rollout id;
-  - a `directives.intervals` object: heartbeat and inventory seconds, bounded to the agent's allowed range.
+- **Contract first.** `directives` is an object keyed by directive name ([DEC-20](../../decisions/0020-named-heartbeat-directives.md)); the v1 contract already defines it. Additive v1 changes to `heartbeat.response`:
+  - define the fields of `directives.agent_update` (today only "object or `null`"): version, manifest URL, signature URL, binary URL, and rollout id;
+  - send `directives.intervals`, already defined (`heartbeat_seconds`, `inventory_seconds`, whole seconds of at least 1), bounded to the agent's allowed range.
 
-  The agent already reads `directives` as an object with `intervals` (`heartbeat_seconds`, `inventory_seconds`) and `agent_update`, and still accepts the v1 array ([P1-AGENT-REPORT](p1-agent-report.md)). Use these names, or change the agent in the same pull request.
+  The agent already reads `intervals` and keeps `agent_update` as raw JSON for the updater ([P1-AGENT-REPORT](p1-agent-report.md)). Keep these names, or change the agent in the same pull request.
 
   Also an `update-result.request` schema for reporting outcomes, and examples for all three.
 - **Rollouts.** A `rollouts` table: target release, canary hosts (explicit list or tag), stages (default: canaries, then 25%, then 100%), state (`running`, `halted`, `completed`, `cancelled`), and who started, halted, or resumed it. One running rollout at a time.

@@ -460,7 +460,7 @@ pub(crate) mod tests {
         let (result, request) = call(response(
             "200 OK",
             &["X-Request-Id: req-1"],
-            r#"{"server_time":"2026-01-01T12:00:00Z","directives":[]}"#,
+            r#"{"server_time":"2026-01-01T12:00:00Z","directives":{}}"#,
         ));
         let ok = result.unwrap();
         assert_eq!(ok.status, 200);

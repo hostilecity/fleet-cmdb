@@ -159,7 +159,7 @@ Retiring a host keeps its history and audit trail but removes it from the active
 - The agent sends a heartbeat at a configurable interval, defaulting to 60 seconds, and sends the first heartbeat immediately on start.
 - A heartbeat contains the host identity, agent version, agent uptime, and the agent's current time.
 - Heartbeats are cheap: they update `last_seen_at` and liveness only. Full inventory travels in the separate report in FR-1.3. Heartbeats do not write audit entries.
-- The heartbeat response carries the server time and an extensible envelope for server-to-agent signals. In Phase 1 it carries the agent-update directive (FR-S.5) and the heartbeat and report intervals the server wants, which the agent adopts so fleet-wide load can be adjusted without an agent release. (decided, DEC-08, DEC-18, DEC-19)
+- The heartbeat response carries the server time and an extensible envelope for server-to-agent signals: `directives`, an object keyed by directive name in which every directive is optional and agents ignore names they do not know, so new directives never break older agents. In Phase 1 it carries the agent-update directive (FR-S.5) and the heartbeat and report intervals the server wants, which the agent adopts so fleet-wide load can be adjusted without an agent release. (decided, DEC-08, DEC-18, DEC-19, DEC-20)
 - On failure, the agent retries with exponential backoff and jitter, caps the backoff, and keeps running. A server outage must never crash or exit the agent. The agent does not queue or replay missed heartbeats or reports; it sends current state once the server is reachable again.
 
 ### FR-1.3 Inventory report
@@ -368,5 +368,5 @@ A phase is done only when all of these hold:
 
 ## 10. Decisions and traceability
 
-- All nineteen decisions (`DEC-01` to `DEC-19`) are recorded as ADRs; see the index in [`docs/decisions/README.md`](decisions/README.md). To change one, add an ADR that supersedes it.
+- All twenty decisions (`DEC-01` to `DEC-20`) are recorded as ADRs; see the index in [`docs/decisions/README.md`](decisions/README.md). To change one, add an ADR that supersedes it.
 - Every `FR-*`, `NFR-*`, and `AC-*` ID in this document is covered by at least one issue in [`docs/backlog/issues.yml`](backlog/issues.yml), and every `DEC-*` has an ADR. `ruby docs/backlog/import.rb check` verifies both.

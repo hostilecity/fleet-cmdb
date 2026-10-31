@@ -40,7 +40,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 ### Scope
 
 - Record a report request for a host (types: config, packages, inventory), with the requesting operator and time; audit the request ([P1-S03](p1-hosts.md)).
-- Include outstanding requests in the heartbeat response `directives` ([DEC-08](../../decisions/0008-api-conventions.md)); the contract example is updated in [P2-X01](p2-accept.md).
+- Include outstanding requests in the heartbeat response `directives` as one named directive, for example `report_request` with the requested types ([DEC-20](../../decisions/0020-named-heartbeat-directives.md)); the schema and examples are added in [P2-X01](p2-accept.md). Adding it is an additive v1 change.
 - Clear a request when a report of that type collected after the request arrives; expire requests that are never satisfied (for example after an hour) and show that.
 - Rate limit per host.
 - Endpoint or action used by the dashboard button ([P2-D02](p2-dash-host.md)).

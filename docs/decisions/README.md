@@ -11,7 +11,7 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0005](0005-hosting-tls-deployment.md) | Docker Compose; Cloudflare tunnel for the dashboard; private agent API | DEC-05 |
 | [0006](0006-operator-authentication.md) | Google OAuth allowlist; app-level second factor for tasks | DEC-06 |
 | [0007](0007-snapshots-and-retention.md) | Snapshot semantics and retention | DEC-07 |
-| [0008](0008-api-conventions.md) | Agent API conventions | DEC-08 |
+| [0008](0008-api-conventions.md) | Agent API conventions (amended by 0020: named directives) | DEC-08 |
 | [0009](0009-repository.md) | Public repository, MIT license, hygiene | DEC-09 |
 | [0010](0010-cis-rules.md) | CIS rules: own wording, "CIS-aligned" | DEC-10 |
 | [0011](0011-vulnerability-data.md) | OSV data for Debian 13 | DEC-11 |
@@ -23,3 +23,4 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0017](0017-agent-onboarding.md) | Onboarding from the installer, approved in the dashboard | DEC-17 |
 | [0018](0018-signed-agent-updates.md) | Signed remote agent updates with automatic rollback | DEC-18 |
 | [0019](0019-scale-direction.md) | Design direction toward enterprise scale | DEC-19 |
+| [0020](0020-named-heartbeat-directives.md) | Heartbeat directives are named entries in an object | DEC-20 |

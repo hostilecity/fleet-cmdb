@@ -327,7 +327,7 @@ mod tests {
         let transport = FakeTransport::new(vec![]);
         let mut waits = Vec::new();
         for _ in 0..50 {
-            transport.push(ok(envelope(json!([]))));
+            transport.push(ok(envelope(json!({}))));
             waits.push(hb.beat(&transport, None, started, wall()));
         }
         assert!(
@@ -350,7 +350,7 @@ mod tests {
         let mut clock = Duration::ZERO;
         let mut attempts = 0;
         let (_, logs) = logs_of(|| {
-            transport.push(ok(envelope(json!([]))));
+            transport.push(ok(envelope(json!({}))));
             clock += hb.beat(&transport, None, started + clock, wall());
             while clock < secs(600) {
                 transport.push(Err(ApiError::Transport("connection refused".into())));
@@ -359,7 +359,7 @@ mod tests {
                 clock += wait;
                 attempts += 1;
             }
-            transport.push(ok(envelope(json!([]))));
+            transport.push(ok(envelope(json!({}))));
             let wait = hb.beat(&transport, None, started + clock, wall());
             assert!(wait >= secs(54) && wait <= secs(60), "{wait:?}");
         });
@@ -476,6 +476,37 @@ mod tests {
     }
 
     #[test]
+    fn an_array_of_directives_is_logged_once_and_never_fails_the_heartbeat() {
+        // ADR 0020: `directives` is an object. An array (the shape ADR 0008 first planned) is a
+        // problem, logged once, and nothing in it is acted on (ADR 0019: never fail the heartbeat).
+        let intervals = intervals();
+        let started = Instant::now();
+        let mut hb = heartbeat(&intervals, started);
+        let body = envelope(json!([{"type": "intervals", "heartbeat_seconds": 300}]));
+        let transport =
+            FakeTransport::new(vec![ok(body.clone()), ok(envelope(json!([]))), ok(body)]);
+        let (waits, logs) = logs_of(|| {
+            [
+                hb.beat(&transport, None, started, wall()),
+                hb.beat(&transport, None, started, wall()),
+                hb.beat(&transport, None, started, wall()),
+            ]
+        });
+        // Each counted as accepted: the next heartbeat waits the configured interval, not a backoff.
+        assert!(
+            waits.iter().all(|w| *w >= secs(54) && *w <= secs(60)),
+            "{waits:?}"
+        );
+        assert_eq!(
+            logs.matches("`directives` is a list, not an object")
+                .count(),
+            1,
+            "{logs}"
+        );
+        assert_eq!(intervals.heartbeat(), secs(60));
+    }
+
+    #[test]
     fn an_agent_update_directive_is_noted_not_acted_on() {
         let intervals = intervals();
         let started = Instant::now();
@@ -515,7 +546,7 @@ mod tests {
         };
         let (_, logs) = logs_of(|| {
             for offset in [10, -400, -500, 30, 20] {
-                transport.push(ok(envelope(json!([]))));
+                transport.push(ok(envelope(json!({}))));
                 hb.beat(&transport, None, started, at_server(offset));
             }
         });

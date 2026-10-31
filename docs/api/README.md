@@ -30,7 +30,7 @@ All endpoints are under `/api/v1`, served only on the private agent hostname ([D
 | `POST /api/v1/heartbeat` | Bearer credential | `heartbeat.request` | `200`, `heartbeat.response` |
 | `POST /api/v1/reports/inventory` | Bearer credential | `inventory.request` | `200`, `inventory.response` |
 
-Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: release downloads under `/api/v1/releases/` (P1-RELEASES), and the update and interval directives in `heartbeat.response` plus `POST /api/v1/agent/update-results` (P1-UPDATES). Later phases add the config, package, and task endpoints.
+Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: release downloads under `/api/v1/releases/` (P1-RELEASES), the fields of the `agent_update` directive in `heartbeat.response`, and `POST /api/v1/agent/update-results` (P1-UPDATES). The `intervals` directive is already defined (below). Later phases add the config, package, and task endpoints.
 
 ## Conventions
 
@@ -46,6 +46,9 @@ Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent
 - **Timestamps:** RFC 3339 in UTC with a `Z` suffix, for example `2026-01-01T12:00:00Z`.
 - **Missing facts:** a fact the agent cannot read is sent as `null`, with an entry in `warnings`. The report is still sent (FR-1.3). A list fact (`disks`, `network_interfaces`) that could be read only in part keeps the entries that were read, with a `warnings` entry saying what is missing (P1-AGENT-COLLECT).
 - **Server checks beyond the schema:** some rules are not expressible in JSON Schema, such as free space not exceeding total. The server enforces these and answers `validation_failed`.
+- **Heartbeat directives** ([DEC-20](../decisions/0020-named-heartbeat-directives.md)): `directives` in `heartbeat.response` is an object keyed by directive name, and `{}` when the server has nothing to say. Every directive is optional, and each is an object or `null`. An absent or `null` directive or field means no instruction. Agents ignore and log names and fields they do not know, so adding a directive, or an optional field to one, is additive (rule 1 below); changing what one means is breaking (rule 2). A malformed directive is ignored and logged, and never fails the heartbeat. Defined in v1:
+  - `intervals`: `heartbeat_seconds` and `inventory_seconds`, whole seconds of at least 1, each optional. The agent clamps each to its configured bounds and returns to its configured value when one is absent (ADR 0019).
+  - `agent_update`: the release to install (ADR 0018). Only its type (object or `null`) is fixed until P1-UPDATES defines its fields.
 - **Request IDs:** every response has an `X-Request-Id` header, and error bodies repeat it.
 
 ### Errors
@@ -118,3 +121,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | Onboarding endpoints and schemas (`onboarding.*`, `onboarding-token.*`) and error codes `onboarding_rejected` (403) and `onboarding_expired` (410) (P1-ONBOARD, DEC-17). Additive, so no version bump. |
 | v1 | `enroll.response` gains the optional `host_name`, the name the operator gave the host, for the installer's summary; example `created-with-host-name.json` (P1-AGENT-INSTALL). Additive, so no version bump. |
 | v1 | `warnings` may also explain a partly read list fact (`disks`, `network_interfaces`) that is not `null`; example `partial-lists.json` (P1-AGENT-COLLECT). Description only, so no version bump. |
+| v1 | `heartbeat.response` `directives` is an object keyed by directive name instead of an always-empty array, with `intervals` defined and `agent_update` reserved as an object; the server sends `{}` (DEC-20, amending DEC-08). Breaking for the response shape, but v1 has no released agents, so no version bump. From here on a new directive or optional directive field is additive. |
