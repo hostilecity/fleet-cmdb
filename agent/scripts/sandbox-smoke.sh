@@ -57,7 +57,7 @@ openssl x509 -req -in "$tmp/server.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pe
 
 # The unit's [Service] options, minus how the service starts and restarts.
 properties=$(sed -n '/^\[Service\]/,/^\[/p' "$unit" | grep -E '^[A-Za-z]+=' \
-    | grep -Ev '^(ExecStart|Type|Restart|RestartSec|RestartPreventExitStatus|StateDirectory)=')
+    | grep -Ev '^(ExecStart|Type|Restart|RestartSec|RestartPreventExitStatus|StateDirectory|StateDirectoryMode)=')
 [ -n "$properties" ] || { echo "sandbox-smoke: no [Service] options in $unit" >&2; exit 1; }
 
 port=8443
@@ -77,7 +77,9 @@ state_dir = "/var/lib/fleet-agent-smoke-$name"
 log_level = "debug"
 EOF
     umask 022
-    set -- --unit="fleet-agent-smoke-$name" --property="StateDirectory=fleet-agent-smoke-$name"
+    # Both runs get a private state directory: the agent refuses a shared one, sandbox or not.
+    set -- --unit="fleet-agent-smoke-$name" --property="StateDirectory=fleet-agent-smoke-$name" \
+        --property=StateDirectoryMode=0700
     if [ "$name" = sandboxed ]; then
         # One property per line of the unit; values with spaces are kept whole.
         while IFS= read -r line; do set -- "$@" --property="$line"; done <<EOF
