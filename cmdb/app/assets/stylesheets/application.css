@@ -223,4 +223,8 @@ th.when { width: 11rem; }
 .audit-filters .toggle { align-self: center; font-size: 0.9375rem; }
 .audit-filters label.invalid input { border-color: var(--lamp-offline); box-shadow: 0 0 0 1px var(--lamp-offline); }
 .audit-filters .error-text { color: var(--lamp-offline); font-size: 0.875rem; max-width: 16rem; }
-@media (max-width: 52rem) { .audit-filters input[type="search"] { min-width: 0; } }
+@media (max-width: 52rem) {
+  .audit-filters input[type="search"] { min-width: 0; }
+  .pager { flex-wrap: wrap; gap: 0.25rem 1rem; }
+  .pager > .muted { order: 3; flex-basis: 100%; text-align: center; } /* its own line under the two links */
+}
