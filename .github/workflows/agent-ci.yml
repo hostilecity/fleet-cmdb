@@ -248,7 +248,8 @@ jobs:
         run: scripts/build-release.sh x86_64-unknown-linux-musl
 
       - name: Run it under the unit's sandbox
-        run: sudo scripts/sandbox-smoke.sh target/x86_64-unknown-linux-musl/release/fleet-agent src/install/fleet-agent.service
+        # sudo resets the environment; GITHUB_ACTIONS turns on the script's annotations.
+        run: sudo GITHUB_ACTIONS=true scripts/sandbox-smoke.sh target/x86_64-unknown-linux-musl/release/fleet-agent src/install/fleet-agent.service
 
   gate:
     name: Agent CI
