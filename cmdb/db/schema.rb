@@ -10,9 +10,10 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_30_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_31_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+  enable_extension "pg_trgm"
 
   create_table "agent_credentials", force: :cascade do |t|
     t.bigint "host_id", null: false
@@ -109,7 +110,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_30_010000) do
     t.string "reported_machine_id", limit: 32
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
+    t.index ["hostname"], name: "index_hosts_on_hostname_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["liveness_status"], name: "index_hosts_on_liveness_status"
+    t.index ["name"], name: "index_hosts_on_name_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["tags"], name: "index_hosts_on_tags", using: :gin
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying::text, 'active'::character varying::text, 'revoked'::character varying::text, 'retired'::character varying::text])", name: "hosts_enrollment_state_valid"
     t.check_constraint "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying::text, 'stale'::character varying::text, 'offline'::character varying::text]))", name: "hosts_liveness_status_valid"
@@ -192,6 +195,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_30_010000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["email"], name: "index_operators_on_email"
+    t.index ["email"], name: "index_operators_on_email_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 

@@ -143,6 +143,18 @@ RSpec.describe "Audit log", type: :request do
       expect(row(edited).css(".change-list span.mono:not(.key)").map(&:text)).to eq([ "[FILTERED]" ])
     end
 
+    it "shows values and targets the page has no special display for as recorded (review of #71)" do
+      host = create(:host)
+      odd = AuditEntry.create!(actor_type: "system", action: Audit::Actions::HOST_EDITED, target_type: "Widget", target_id: 7,
+                               changeset: {}, occurred_at: base)
+      shapes = entry(target: host, changes: { "labels" => [ nil, %w[a b] ], "meta" => [ nil, { "k" => "v" } ],
+                                              "expires_at" => [ nil, "not a time" ], "cleared" => nil })
+      get "/audit", params: { from: "2026-10-14", to: "2026-10-14" }
+      expect(cells(row(odd))[3]).to eq("Widget 7")
+      expect(row(shapes).css(".change-list li").map { |li| li.text.squish })
+        .to eq([ "Token expires not a time", "cleared none", "labels a, b", "meta {\"k\":\"v\"}" ])
+    end
+
     it "renders markup in recorded values as text (NFR-1)" do
       host = create(:host, name: hostile)
       entry(actor: operator, target: host, changes: { "description" => [ hostile, "<b>Do not reboot</b> & scrub" ], hostile => [ nil, hostile ] },
@@ -385,6 +397,33 @@ RSpec.describe "Audit log", type: :request do
       get "/audit", params: { target: "Media server" }
       expect(row_ids).to include(approval.id)
       expect(cells(page.at_css("#audit_entry_#{approval.id}"))[3]).to eq("Onboarding request #{started.record.id} Host Media server")
+    end
+
+    it "follows the same links when a filter matches more hosts than are looked up one by one (review of #71)" do
+      # Past MATCH_LIMIT matching hosts, the filter is a subquery built in SQL rather than a list of ids.
+      # Both forms must select exactly the same entries, onboarding links included.
+      started = start_onboarding(hostname: "vm-08.example.lan")
+      Onboarding::Approve.call(request: started.record, operator:, attributes: { "name" => "Build runner 2" })
+      collect_onboarding(started.device_code)
+      reenrolled, = enrolled_host(name: "Build runner 3", hostname: "vm-18.example.lan")
+      pending = start_onboarding(hostname: "vm-18.example.lan")
+      Onboarding::Approve.call(request: pending.record, operator:, target_host: reenrolled)
+      create(:host, name: "Build runner 4", hostname: "vm-28.example.lan")
+
+      get "/audit", params: { target: "Build runner" }
+      by_ids = row_ids
+      expect(by_ids.size).to be >= 6
+
+      stub_const("AuditLog::MATCH_LIMIT", 1)
+      get "/audit", params: { target: "Build runner" }
+      expect(row_ids).to eq(by_ids)
+      reapproval = AuditEntry.where(action: Audit::Actions::ONBOARDING_APPROVED, target_id: pending.record.id).sole
+      first_approval = AuditEntry.where(action: Audit::Actions::ONBOARDING_APPROVED, target_id: started.record.id).sole
+      expect(row_ids).to include(reapproval.id, first_approval.id)
+
+      get "/audit", params: { actor: "Build runner" } # host actors through the subquery too
+      expect(row_ids).to include(AuditEntry.find_by!(action: Audit::Actions::HOST_ENROLLED, target_type: "Host",
+                                                     target_id: Host.find_by!(name: "Build runner 2").id).id)
     end
 
     it "does not link a request to another host that happens to share its id" do
