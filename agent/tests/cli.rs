@@ -258,3 +258,65 @@ fn run_starts_creates_state_and_stops_cleanly_on_sigterm() {
     assert!(logs.contains("fleet-agent stopped"), "{logs}");
     assert!(!logs.contains(SECRET), "credential leaked: {logs}");
 }
+
+#[test]
+fn install_and_uninstall_have_their_own_help() {
+    let (output, stdout, _) = run_with(&["--help"]);
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("install") && stdout.contains("uninstall"),
+        "{stdout}"
+    );
+    let (output, stdout, _) = run_with(&["install", "--help"]);
+    assert!(output.status.success());
+    for text in [
+        "--server URL",
+        "--token-stdin",
+        "--reenroll",
+        "--json",
+        "3 preflight failed",
+    ] {
+        assert!(stdout.contains(text), "{text}: {stdout}");
+    }
+    let (output, stdout, _) = run_with(&["uninstall", "--help"]);
+    assert!(output.status.success());
+    assert!(stdout.contains("--keep-state"), "{stdout}");
+}
+
+#[test]
+fn install_refuses_a_token_on_the_command_line_without_repeating_it() {
+    const TOKEN: &str = "EXAMPLE-enrollment-token-not-a-real-one-0001";
+    for args in [
+        vec![
+            "install",
+            "--server",
+            "https://agent.example.lan",
+            "--token",
+            TOKEN,
+        ],
+        vec!["install", &format!("--token={TOKEN}")],
+    ] {
+        let output = agent().args(&args).output().expect("run fleet-agent");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(all.contains("process list"), "{all}");
+        assert!(!all.contains(TOKEN), "token echoed: {all}");
+    }
+}
+
+#[test]
+fn install_usage_errors_exit_2_before_touching_anything() {
+    for args in [
+        vec!["install", "--quiet", "--json"],
+        vec!["install", "--bogus"],
+        vec!["uninstall", "--server", "https://agent.example.lan"],
+    ] {
+        let (output, _, stderr) = run_with(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("Next: See `fleet-agent"), "{stderr}");
+    }
+}

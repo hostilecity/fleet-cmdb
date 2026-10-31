@@ -1,0 +1,36 @@
+# Written by `fleet-agent install`; re-running the installer replaces this file and
+# `fleet-agent uninstall` removes it. Do not edit it: put local changes in a drop-in
+# with `systemctl edit fleet-agent`.
+#
+# The agent runs as root (DEC-03) with the sandboxing below. P1-PACKAGING reviews the hardening
+# (`systemd-analyze security`) and P1-AGENT-UPDATE adds the rollback hook.
+
+[Unit]
+Description=Fleet CMDB agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/fleet-agent/current/fleet-agent run
+Restart=on-failure
+RestartSec=10s
+# Exit status 78 (EX_CONFIG) means the config is invalid; restarting cannot fix that.
+RestartPreventExitStatus=78
+StateDirectory=fleet-agent
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

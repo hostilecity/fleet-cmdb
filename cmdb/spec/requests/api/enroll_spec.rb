@@ -20,12 +20,25 @@ RSpec.describe "POST /api/v1/enroll", type: :request do
 
     expect(response).to have_http_status(:created)
     expect(ApiContract.errors("enroll.response", "v1", json)).to eq([])
+    expect(json["host_name"]).to eq("VM 1")
     credential = AgentCredential.authenticate("Bearer #{json['credential']}")
     expect(credential).to have_attributes(host_id: host.id, machine_id:)
     expect(host.reload).to have_attributes(enrollment_state: "active", agent_version: "0.1.0", agent_schema_version: 1)
     entry = AuditEntry.for_target(host).chronological.last
     expect(entry).to have_attributes(action: Audit::Actions::HOST_ENROLLED, actor_type: "host", actor_id: host.id)
     expect(entry.changeset).to include("enrollment_state" => %w[pending active], "key_id" => [ nil, credential.key_id ])
+  end
+
+  it "names the host it redeemed the token for, without looking the credential up again (review of #67)" do
+    # The name comes from the host the token was redeemed for; the plaintext credential is not digested
+    # and looked up a second time just to find it.
+    allow(AgentCredential).to receive(:authenticate).and_return(nil)
+
+    enroll
+
+    expect(response).to have_http_status(:created)
+    expect(json["host_name"]).to eq("VM 1")
+    expect(AgentCredential).not_to have_received(:authenticate)
   end
 
   describe "docs/api contract examples (NFR-5)" do
@@ -167,9 +180,13 @@ RSpec.describe "POST /api/v1/enroll", type: :request do
     end
 
     it "rolls the redemption back if the request fails after redeeming, so the agent can retry" do
-      allow(Enrollment::Redeem).to receive(:call).and_wrap_original do |original, **args|
-        original.call(**args)
-        raise "failure while building the response"
+      allow(Enrollment::Redeem).to receive(:new).and_wrap_original do |original, **args|
+        original.call(**args).tap do |redemption|
+          allow(redemption).to receive(:call).and_wrap_original do |call|
+            call.call
+            raise "failure while building the response"
+          end
+        end
       end
       enroll
       expect_error(:internal_server_error, "internal_error")
@@ -177,7 +194,7 @@ RSpec.describe "POST /api/v1/enroll", type: :request do
       expect(host.agent_credentials).to be_empty
       expect(EnrollmentToken.redeemable.where(host:)).to exist
 
-      allow(Enrollment::Redeem).to receive(:call).and_call_original
+      allow(Enrollment::Redeem).to receive(:new).and_call_original
       enroll
       expect(response).to have_http_status(:created)
     end

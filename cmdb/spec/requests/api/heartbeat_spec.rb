@@ -168,7 +168,7 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
       expect { heartbeat }.not_to(change { host.reload.attributes })
       expect_error(:forbidden, "reenrollment_required")
       expect(response.headers["Fleet-Enrollment-State"]).to eq("pending")
-      expect(json.dig("error", "message")).to include("fleet-agent enroll --force")
+      expect(json.dig("error", "message")).to include("fleet-agent install --reenroll", "fleet-agent install --token")
     end
 
     it "refuses revoked and retired hosts with 401 (their credentials are revoked)" do

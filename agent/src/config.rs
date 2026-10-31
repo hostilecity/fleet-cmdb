@@ -79,7 +79,6 @@ pub struct Credential(String);
 
 impl Credential {
     /// Wraps a credential string. Format checks happen in [`Config::from_toml`].
-    #[allow(dead_code)] // For `install` (P1-AGENT-INSTALL).
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
@@ -96,7 +95,7 @@ impl Credential {
 
     /// Matches the `credential` pattern in `docs/api/schemas/v1/enroll.response.schema.json`:
     /// `^[A-Za-z0-9_-]{8,64}\.[A-Za-z0-9_-]{32,128}$`.
-    fn is_well_formed(&self) -> bool {
+    pub fn is_well_formed(&self) -> bool {
         let token_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
         match self.0.split_once('.') {
             Some((id, secret)) => {
@@ -267,7 +266,7 @@ impl Config {
         Self::load_as(path, crate::owner::effective_uid())
     }
 
-    fn load_as(path: &Path, euid: u32) -> Result<Self, ConfigError> {
+    pub(crate) fn load_as(path: &Path, euid: u32) -> Result<Self, ConfigError> {
         let unreadable = |e: io::Error| match e.kind() {
             io::ErrorKind::NotFound => ConfigError::NotFound(path.to_owned()),
             _ => ConfigError::Unreadable(path.to_owned(), e.to_string()),
@@ -394,7 +393,7 @@ fn redact_quoted_values(message: &str) -> String {
     out
 }
 
-fn validate_server_url(value: Option<&str>) -> Result<String, ConfigError> {
+pub(crate) fn validate_server_url(value: Option<&str>) -> Result<String, ConfigError> {
     let example = "for example server_url = \"https://fleet-agent.example.lan\"";
     let url = value.ok_or_else(|| {
         ConfigError::Invalid(format!(
