@@ -1,0 +1,4 @@
+# The current release public key (minisign format), built into the agent (P1-PACKAGING, ADR 0018).
+# No key yet: the owner generates it as described in docs/releases.md and replaces these lines with
+# the two lines of the minisign .pub file. With no current key the agent accepts no release and the
+# release workflow refuses to publish.

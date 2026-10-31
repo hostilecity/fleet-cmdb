@@ -179,7 +179,7 @@
   goal: "A tagged release publishes a static binary with a signed manifest, signed only after the owner's approval, plus the hardened systemd unit the installer writes."
   done:
     - "A tagged release publishes the x86_64 musl binary, manifest, checksums, and a signature that verifies against the key embedded in the agent, and untagged builds are never signed."
-    - "The unit starts on boot, restarts on failure, triggers rollback on repeated failure, and logs to the journal, with `systemd-analyze security` recorded."
+    - "The unit starts on boot, restarts on failure, and logs to the journal, with `systemd-analyze security` recorded (the rollback hook is P1-AGENT-UPDATE's)."
   blocked_by: [P1-AGENT-REPORT, P1-AGENT-INSTALL, P0-AGENT]
 
 - key: P1-DEPLOY

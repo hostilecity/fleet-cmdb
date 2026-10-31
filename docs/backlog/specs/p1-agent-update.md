@@ -33,6 +33,8 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). Server side
   3. moves `previous` and swaps `current` atomically (rename of a symlink);
   4. restarts `fleet-agent.service`;
   5. waits for the confirmation marker.
+
+  The service's sandbox ([P1-PACKAGING](p1-packaging.md), `agent/contrib/README.md`) allows no local sockets, so this issue adds `AF_UNIX` to `RestrictAddressFamilies=` for `systemd-run`; the supervisor's transient unit runs outside that sandbox.
 - **Confirmation.** The new version writes the marker only after its first heartbeat that the server acknowledged. The deadline defaults to 5 minutes.
 - **Rollback.** Without confirmation by the deadline, the supervisor swaps back to `previous`, restores state if backed up, restarts, and records `rolled_back` with the reason. The restored agent reports it.
 - **Backstops.**

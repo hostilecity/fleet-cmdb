@@ -24,3 +24,4 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0018](0018-signed-agent-updates.md) | Signed remote agent updates with automatic rollback | DEC-18 |
 | [0019](0019-scale-direction.md) | Design direction toward enterprise scale | DEC-19 |
 | [0020](0020-named-heartbeat-directives.md) | Heartbeat directives are named entries in an object | DEC-20 |
+| [0021](0021-release-signature-format.md) | Release signature format: minisign (proposed) | #15 |

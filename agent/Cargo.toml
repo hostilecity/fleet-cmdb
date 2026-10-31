@@ -22,6 +22,12 @@ humantime = "2.4.0"
 lexopt = "0.3.2"
 # The installer's QR code of the approval URL (P1-A10). Pure Rust, no dependencies, no unsafe code.
 qrcodegen = "1.8.0"
+# Verifies the minisign (Ed25519) signature of a release manifest (P1-PACKAGING, ADR 0018).
+# Verify-only, by minisign's author; no dependencies of its own.
+minisign-verify = "0.3.0"
+# Strict SemVer for release versions, and their ordering for the no-downgrade rule (ADR 0018);
+# no dependencies of its own.
+semver = "1.0.28"
 # SHA-256 for the stable-facts change hash. Already linked as the rustls crypto provider.
 ring = { version = "0.17.14", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -41,9 +47,11 @@ ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 # Test-only, never in the binary.
 # jsonschema validates payloads against the API contract in docs/api (P0-CONTRACT); no default
 # features, so the validator never fetches remote schemas. rcgen and rustls run a local TLS server
-# with a throwaway certificate authority generated per test (P1-A02).
+# with a throwaway certificate authority generated per test (P1-A02). minisign generates throwaway
+# release keys and signs test manifests, so no key is checked in (P1-PACKAGING).
 [dev-dependencies]
 jsonschema = { version = "0.60.1", default-features = false }
+minisign = "0.10.0"
 rcgen = "0.14.10"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 

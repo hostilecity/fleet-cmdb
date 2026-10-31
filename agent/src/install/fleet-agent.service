@@ -2,8 +2,11 @@
 # `fleet-agent uninstall` removes it. Do not edit it: put local changes in a drop-in
 # with `systemctl edit fleet-agent`.
 #
-# The agent runs as root (DEC-03) with the sandboxing below. P1-PACKAGING reviews the hardening
-# (`systemd-analyze security`) and P1-AGENT-UPDATE adds the rollback hook.
+# The agent runs as root (DEC-03) under the sandbox below (P1-PACKAGING). It reads
+# /etc/fleet-agent, /etc/ssl, /proc, /sys, and the mount table, calls statvfs on every
+# mount, connects out to the server, and writes only /var/lib/fleet-agent. Why each
+# option is set or left out: agent/contrib/README.md. P1-AGENT-UPDATE adds the rollback
+# hook (OnFailure=) and what the updater needs.
 
 [Unit]
 Description=Fleet CMDB agent
@@ -11,7 +14,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-Type=simple
+Type=exec
 ExecStart=/usr/lib/fleet-agent/current/fleet-agent run
 Restart=on-failure
 RestartSec=10s
@@ -20,17 +23,42 @@ RestartPreventExitStatus=78
 StateDirectory=fleet-agent
 StateDirectoryMode=0700
 UMask=0077
+
+# Privileges: root, but only one capability (statvfs and reads below directories root
+# does not own); no way to gain more.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 NoNewPrivileges=yes
-ProtectSystem=full
+RestrictSUIDSGID=yes
+
+# Filesystem: everything read-only except the state directory; home directories
+# read-only (not hidden, so mounts below /home are still measured correctly).
+ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+
+# Kernel and process interfaces: readable where the collectors need them, never writable.
+ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-RestrictSUIDSGID=yes
+ProtectClock=yes
+ProtectProc=invisible
+
+# Network: IPv4 and IPv6 to the server; netlink to list interfaces (getifaddrs).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
 RestrictRealtime=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# System calls: the set for ordinary system services, minus privileged and resource
+# controls; anything else fails with EPERM rather than killing the agent.
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

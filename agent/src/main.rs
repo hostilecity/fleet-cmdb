@@ -1,8 +1,8 @@
 //! `fleet-agent`: reports host facts to the Fleet CMDB server.
 //!
 //! Commands: `run` (the default), `check-config`, `--version`, and `--help` (P1-A01); `install` and
-//! `uninstall` (P1-A10, in [`install`]). `run` sends heartbeats and inventory reports ([`report`],
-//! P1-AGENT-REPORT).
+//! `uninstall` (P1-A10, in [`install`]); `verify-release` (P1-PACKAGING, in [`release`]). `run` sends
+//! heartbeats and inventory reports ([`report`], P1-AGENT-REPORT).
 
 mod cli;
 mod client;
@@ -12,6 +12,7 @@ mod fsx;
 mod install;
 mod logging;
 mod owner;
+mod release;
 mod report;
 mod retry;
 mod shutdown;
@@ -48,6 +49,8 @@ Commands:
   check-config  Validate the config file and trusted certificates without contacting the server
   install       Install, enroll, and start the agent (see `fleet-agent install --help`)
   uninstall     Stop and remove the agent (see `fleet-agent uninstall --help`)
+  verify-release
+                Check a downloaded release's signature and checksum (see `fleet-agent verify-release --help`)
 
 Options:
   -c, --config PATH  Config file [default: /etc/fleet-agent/config.toml]
@@ -206,10 +209,20 @@ fn run(path: &Path) -> ExitCode {
         Err(e) => {
             tracing::error!(
                 state_dir = %config.state_dir.display(),
-                "cannot prepare the state directory: {e}"
+                "cannot prepare the state directory: {}",
+                state::describe_write_error(&config.state_dir, &e)
             );
             return ExitCode::FAILURE;
         }
+    }
+    // Reporting works without state, so this does not stop the agent; but `fleet-agent install`
+    // waits for the first heartbeat to be recorded there, so say plainly why it cannot be.
+    if let Err(e) = state::check_writable(&config.state_dir) {
+        tracing::error!(
+            state_dir = %config.state_dir.display(),
+            "cannot write the state directory: {}",
+            state::describe_write_error(&config.state_dir, &e)
+        );
     }
     let shutdown = match Shutdown::on_signals() {
         Ok(shutdown) => shutdown,
@@ -246,6 +259,9 @@ fn main() -> ExitCode {
         Some("install" | "uninstall")
     ) {
         return install::main(args);
+    }
+    if args.first().and_then(|a| a.to_str()) == Some("verify-release") {
+        return release::main(args);
     }
     match parse_args(args) {
         Ok(Command::Version) => {
@@ -333,6 +349,7 @@ mod tests {
         assert!(parse_args(["--config="]).is_err());
         assert!(parse_args(["-c", "/a", "-c", "/b"]).is_err());
         assert!(parse_args(["install"]).is_err());
+        assert!(parse_args(["verify-release"]).is_err());
     }
 
     #[test]

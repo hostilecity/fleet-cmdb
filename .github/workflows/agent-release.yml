@@ -1,0 +1,253 @@
+# Agent release (P1-PACKAGING, ADR 0018). Runs only on a version tag `agent-v<version>`, for example
+# `agent-v1.2.0`: builds the static x86_64 musl binary, writes the signed manifest, and publishes a
+# GitHub release. The process, the formats, and the repository settings it relies on are in
+# docs/releases.md.
+#
+#   build    no secrets; refuses a tag that is not on main or does not match Cargo.toml
+#   sign     the only job with the release key: bound to the protected `release` environment, so it
+#            waits for the owner's approval; it sees only the manifest, runs no repository code,
+#            and holds the key in a file only for the one minisign command
+#   publish  verifies the signature with the agent's own `verify-release` and with minisign against
+#            the current key in the repository, then creates the release
+#
+# There is no other trigger, so untagged builds (Agent CI) are never signed. Actions are pinned to
+# commit SHAs because one of these jobs holds the release key; Dependabot updates them.
+name: Agent release
+
+on:
+  push:
+    tags: ['agent-v*']
+
+permissions: {}
+
+concurrency:
+  group: agent-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TARGET: x86_64-unknown-linux-musl # DEC-01
+
+jobs:
+  build:
+    name: Build ${{ github.ref_name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.names.outputs.version }}
+      binary: ${{ steps.names.outputs.binary }}
+      manifest: ${{ steps.names.outputs.manifest }}
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # to check the tag is on main
+
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+
+      - name: Check the tag
+        id: names
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          semver='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
+          if ! printf '%s\n' "$TAG" | grep -Eqx "agent-v$semver"; then
+            echo "::error::tag $TAG is not agent-v<MAJOR>.<MINOR>.<PATCH>[-<pre-release>]"
+            exit 1
+          fi
+          VERSION=${TAG#agent-v}
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "fleet-agent") | .version')
+          if [ "$VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::tag version $VERSION does not match agent/Cargo.toml version $CARGO_VERSION"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG is not on main; releases are made only from main"
+            exit 1
+          fi
+          if ! grep -v '^#' release-keys/current.pub | grep -q '^untrusted comment:'; then
+            echo "::error::agent/release-keys/current.pub holds no key; see docs/releases.md"
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "binary=fleet-agent-$VERSION-$TARGET"
+            echo "manifest=fleet-agent-$VERSION-$TARGET.manifest.json"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      # No dependency cache: a release is built from a clean state.
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: cargo build --release
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Check the binary is static and has the tag's version
+        env:
+          VERSION: ${{ steps.names.outputs.version }}
+          BIN: target/${{ env.TARGET }}/release/fleet-agent
+        run: |
+          set -eu
+          file "$BIN"
+          file "$BIN" | grep -Eq '(statically|static-pie) linked'
+          "$BIN" --version
+          # `fleet-agent <version> (agent schema <n>)`
+          if [ "$("$BIN" --version | cut -d ' ' -f 2)" != "$VERSION" ]; then
+            echo "::error::the binary does not report version $VERSION"
+            exit 1
+          fi
+
+      - name: Write the manifest and checksums
+        env:
+          VERSION: ${{ steps.names.outputs.version }}
+          BINARY: ${{ steps.names.outputs.binary }}
+          MANIFEST: ${{ steps.names.outputs.manifest }}
+        run: |
+          set -eu
+          mkdir -p ../dist
+          cp "target/$TARGET/release/fleet-agent" "../dist/$BINARY"
+          scripts/release-manifest.sh "$VERSION" "$TARGET" "../dist/$BINARY" > "../dist/$MANIFEST"
+          cat "../dist/$MANIFEST"
+          (cd ../dist && sha256sum "$BINARY" "$MANIFEST" > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Upload the manifest for signing
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: manifest
+          path: dist/${{ steps.names.outputs.manifest }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign (needs the owner's approval)
+    needs: build
+    # Belt and braces with the trigger: never sign anything but a version tag.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions: {}
+    steps:
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+
+      - name: Download the manifest
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: manifest
+          path: dist
+
+      - name: Sign the manifest
+        # The secrets reach only this step. The key line is written to a file readable only by this
+        # user and removed when the step ends, however it ends; nothing here prints it.
+        env:
+          SIGNING_KEY: ${{ secrets.AGENT_RELEASE_SIGNING_KEY }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.AGENT_RELEASE_SIGNING_KEY_PASSWORD }}
+          VERSION: ${{ needs.build.outputs.version }}
+          MANIFEST: ${{ needs.build.outputs.manifest }}
+        run: |
+          set -eu
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::the release environment has no AGENT_RELEASE_SIGNING_KEY secret; see docs/releases.md"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/release.key"
+          trap 'rm -f "$key"' EXIT
+          printf 'untrusted comment: fleet-agent release signing key\n%s\n' "$SIGNING_KEY" > "$key"
+          printf '%s\n' "$SIGNING_KEY_PASSWORD" \
+            | minisign -S -s "$key" -m "dist/$MANIFEST" -t "fleet-agent $VERSION $TARGET release manifest" > /dev/null
+          cat "dist/$MANIFEST.minisig"
+
+      - name: Upload the signature
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signature
+          path: dist/${{ needs.build.outputs.manifest }}.minisig
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Verify and publish
+    needs: [build, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+
+      - name: Download the release files
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release
+          path: dist
+
+      - name: Download the signature
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: signature
+          path: dist
+
+      - name: Verify
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          BINARY: ${{ needs.build.outputs.binary }}
+          MANIFEST: ${{ needs.build.outputs.manifest }}
+        run: |
+          set -eu
+          cd dist
+          sha256sum -c SHA256SUMS
+          chmod 0755 "$BINARY"
+          # 1. As an agent will: the keys built into this very binary, then size and SHA-256.
+          "./$BINARY" verify-release --manifest "$MANIFEST" --signature "$MANIFEST.minisig" --binary "$BINARY"
+          # 2. Independently: minisign itself, with the current key from the repository. Releases are
+          #    always signed with the current key; the next key is only trusted, never used, until a
+          #    rotation makes it current (docs/releases.md).
+          grep -v '^#' ../agent/release-keys/current.pub > "$RUNNER_TEMP/current.pub"
+          minisign -V -p "$RUNNER_TEMP/current.pub" -m "$MANIFEST"
+          # 3. The signed manifest names this tag's version and target.
+          jq -e --arg v "$VERSION" --arg t "$TARGET" '.version == $v and .target == $t' "$MANIFEST"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BINARY: ${{ needs.build.outputs.binary }}
+          MANIFEST: ${{ needs.build.outputs.manifest }}
+        run: |
+          set -eu
+          cd dist
+          prerelease=
+          case "$VERSION" in *-*) prerelease=--prerelease ;; esac
+          notes="fleet-agent $VERSION for $TARGET. Check the download with SHA256SUMS; agents verify the manifest signature (minisign, Ed25519) against the release keys built into them before installing (docs/releases.md)."
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag $prerelease \
+            --title "fleet-agent $VERSION" --notes "$notes" \
+            "$BINARY" "$MANIFEST" "$MANIFEST.minisig" SHA256SUMS
