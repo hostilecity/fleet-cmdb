@@ -17,11 +17,14 @@ module AuditEntriesHelper
     Audit::Actions::OPERATOR_ALLOWED => "Operator allowed",
     Audit::Actions::OPERATOR_DISALLOWED => "Operator removed",
     Audit::Actions::OPERATOR_SIGNED_IN => "Operator signed in",
+    Audit::Actions::RELEASE_IMPORTED => "Release imported",
+    Audit::Actions::RELEASE_IMPORT_REFUSED => "Release refused",
+    Audit::Actions::RELEASE_IMPORT_FAILED => "Release import failed",
     Audit::Actions::SETTING_CHANGED => "Setting changed"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "setting" => "Settings" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "setting" => "Settings" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
 
@@ -43,6 +46,12 @@ module AuditEntriesHelper
     "reenroll" => [ "Re-enroll", true ],
     "host_id" => [ "Host", false ],
     "email" => [ "Email", false ],
+    "version" => [ "Version", true ],
+    "source" => [ "Source", false ],
+    "reason" => [ "Reason", false ],
+    "sha256" => [ "SHA-256", true ],
+    "size" => [ "Size (bytes)", true ],
+    "key_role" => [ "Release key", false ],
     **SETTING_NAMES.keys.index_with { [ "Minutes", true ] }
   }.freeze
 
@@ -92,6 +101,7 @@ module AuditEntriesHelper
       safe_join([ "Onboarding request #{id}", (tag.span(hostname, class: "kind mono") if hostname),
                   (tag.span(safe_join([ "Host ", link_to(host.name, host_path(host)) ]), class: "kind") if host) ].compact, " ")
     when "Operator" then records.operators[id]&.email || "Operator #{id}"
+    when "AgentRelease" then link_to("Agent release #{Array(entry.changeset['version']).compact.last || id}", agents_path)
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"
       key = records.settings[id]

@@ -11,11 +11,19 @@
     <p class="muted">The host is pending until the token is used. Its current credential, if any, keeps working until then. Any earlier unused token has stopped working.</p>
   <% end %>
   <h2>Install on the VM</h2>
-  <p>Download and check the agent, then on <span class="mono"><%= @host.hostname %></span>, as root:</p>
-  <div class="token"><%= "./fleet-agent install --server #{server} --token-stdin" %></div>
+  <% release = AgentRelease.current %>
+  <% if release %>
+    <p>On <span class="mono"><%= @host.hostname %></span>, download and check the agent (release <span class="mono"><%= release.version %></span>; the check must print <code>fleet-agent: OK</code>):</p>
+    <div class="token"><%= install_download_command(release) %></div>
+    <div class="token"><%= install_check_command(release) %></div>
+    <p>Then, as root:</p>
+  <% else %>
+    <p>Download and check the agent as on <%= link_to "Install an agent", agent_install_path %>, then on <span class="mono"><%= @host.hostname %></span>, as root:</p>
+  <% end %>
+  <div class="token"><%= install_token_command(sudo: false) %></div>
   <p class="muted">Paste the token when asked, so it never appears in the process list or shell history.</p>
   <h3>Unattended (cloud-init or a script)</h3>
-  <div class="terminal"><%= "FLEET_ENROLLMENT_TOKEN='#{@token}' ./fleet-agent install --server #{server} --quiet" %></div>
+  <div class="terminal"><%= "chmod +x fleet-agent && FLEET_ENROLLMENT_TOKEN='#{@token}' ./fleet-agent install --server #{server} --quiet" %></div>
   <p class="muted">The installer reads the token from the environment and never prints it. Keep the token out of version control: it works once, until it expires.</p>
   <p><%= link_to "Go to the host", host_path(@host) %></p>
 </div>

@@ -153,6 +153,8 @@ Server-rendered Hotwire views built from the approved mockups in `../docs/mockup
 - **Host detail** (`/hosts/:id`): current inventory (unreadable facts show "Not available" with the agent's warning), inventory history with the changed fields (`InventoryDiff`), enrollment and credential state, status history, and the host's audit entries. Operator actions arrive with P1-DASH-ACTIONS.
 - **Audit log** (`/audit`, P1-AUDIT-PAGE): every audit entry, newest first, read-only. Filters (actor type and actor, action, target host, date range in whole UTC days, and "hide sign-ins") and the page position live in the query string. Pages are keyset ranges on `(occurred_at, id)`, 50 entries each, with a readable cursor (`before=2026-10-14T10:02:31.482113Z,4127`), so a page costs the same however long the log grows. `AuditLog` builds the query; the host page's "All entries for this host" link filters by host id. Onboarding approvals and rejections target the request; the log links a request to its host through the host's "Enrolled" entry and a re-enrollment approval's `host_id` (requests are pruned, the log is not), using two small partial indexes.
 - **Settings** (`/settings`): the liveness thresholds.
+- **Agents** (`/agents`, P1-RELEASES): imported releases, which key signed each, and how many hosts in the fleet run it; imports from GitHub and by upload (below). Rollouts join this page with P1-UPDATES.
+- **Install an agent** (`/agents/install`, P1-D08): the exact commands for the newest imported release that is not a pre-release (or `?version=`): download from the agent hostname, check the SHA-256, run `fleet-agent install`, then approve; and the pre-registered-token and cloud-init variants. Every URL and checksum on the page comes from the one release shown. A pre-registered host's token page shows the same download and check.
 - **Host actions** (P1-D04): pre-register (the one-time token and install commands appear only in the response to that POST, marked `no-store`), edit, and, each behind a confirmation page and a CSRF-protected POST: revoke, re-enroll (instructions for `fleet-agent install --reenroll`, or a new one-time token), and retire (the hostname must be typed).
 - **Onboarding approval** (P1-D07, `/onboard`): the installer's link opens `/onboard/<code>`, and signing in returns there. The page shows the code to match, what the VM reported, and, when the machine ID or hostname matches existing hosts, a choice between re-enrolling one and adding a new host. The code box answers unknown, expired, and decided codes alike. Code lookups are rate-limited per operator, and `/onboard/<code>` links that find nothing count against the same limit. The fleet page says while VMs are waiting, and the lists and outcomes update live.
 - **Escaping.** Everything a host or operator supplied is rendered through Rails' escaping; nothing is marked `html_safe`. Inventory meters use width classes rather than inline styles.
@@ -222,6 +224,23 @@ bin/rails hosts:enroll_token VM_HOSTNAME=vm-01.example.lan   # re-enrollment; or
 
 - **Re-enrollment.** Issuing a token for an active or revoked host moves it to `pending`. An active host's old credential keeps working until the new token is redeemed, then stops immediately. Issuing a token also expires any earlier unredeemed token for the host.
 - **Revocation.** `Host#revoke!` and `Host#retire!` revoke the host's credential in the same transaction.
+
+### Agent releases
+
+Signed agent releases ([docs/releases.md](../docs/releases.md), ADR 0018, ADR 0021) are imported into the server, which serves them to installers and agents on the agent hostname (P1-RELEASES).
+
+- **Verification** (`app/services/releases`): the same checks as the agent (`agent/src/release`), in the same order, with Ruby's OpenSSL (Ed25519 and BLAKE2b-512; no extra gem). The minisign signature and its global signature over the trusted comment must verify against a configured release key, current or next, in minisign's pre-hashed mode; then the manifest must follow its format (strict SemVer without build metadata, the one target, a SHA-256, a size of 1 byte to 64 MiB, no other fields); then the binary must have exactly that size and SHA-256. A release that fails is refused with the reason. This is defence in depth: agents verify independently.
+- **Importing.** From GitHub: an operator enters a version on the Agents page and `AgentReleaseImportJob` downloads the tag `agent-v<version>`'s assets from `https://github.com/$FLEET_RELEASE_REPOSITORY/releases/download/...` (the server needs outbound HTTPS to `github.com` and GitHub's download host). The signature is checked before the binary is downloaded. An unreachable GitHub is retried with backoff, then reported. `agent_release_imports` shows each import's outcome on the page. By upload: the three files of a GitHub release, verified while the operator waits, for a server without internet access.
+- **Audit.** Every import (`release.imported`), refusal (`release.import_refused`), and failed GitHub import (`release.import_failed`) is audited with the operator as actor, with the version and the reason.
+- **Storage.** `agent_releases` keeps the exact manifest and signature bytes; the binary is a file in `FLEET_RELEASES_DIR` (a persistent volume; Active Storage is not used), written to a staging file and renamed into place once verified. Releases are immutable, and never deleted while a host in the fleet runs them: the model and the `agent_releases_guard` trigger refuse it. Rollouts will hold a reference too (P1-UPDATES).
+- **Downloads.** `GET /api/v1/releases/<version>/manifest`, `signature`, and `binary` on the agent hostname only (`docs/api/README.md`): no credential, limited per address, never `426`, with `ETag`, `Content-Length`, and byte ranges so a broken download resumes.
+
+| Setting | Default | |
+|---|---|---|
+| `FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT` | none | The release public keys: the two lines of `agent/release-keys/current.pub` and `next.pub`, or only their base64 key line. A malformed key, or a next key without a current one, stops the boot. With no current key every import is refused. The server never holds a private key |
+| `FLEET_RELEASES_DIR` | `storage/releases` | Where release binaries are kept. Mount a persistent volume here |
+| `FLEET_RELEASE_REPOSITORY` | `hostilecity/fleet-cmdb` | The GitHub repository releases are imported from |
+| `FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE` | `60` | Release downloads per client address |
 
 ### Docker image
 

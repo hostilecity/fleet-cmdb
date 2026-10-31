@@ -25,6 +25,12 @@ Rails.application.routes.draw do
         post "onboarding/token", to: "onboardings#token"
         post "heartbeat", to: "heartbeats#create"
         post "reports/inventory", to: "inventory_reports#create"
+        # Release downloads (P1-S16): unauthenticated, limited per address, exempt from the minimum version.
+        constraints(version: %r{[^/]+}) do
+          get "releases/:version/manifest", to: "releases#manifest", format: false, as: :release_manifest
+          get "releases/:version/signature", to: "releases#signature", format: false, as: :release_signature
+          get "releases/:version/binary", to: "releases#binary", format: false, as: :release_binary
+        end
         match "", to: "base#not_found", via: :all
         match "*path", to: "base#not_found", via: :all, format: false
       end
@@ -55,6 +61,11 @@ Rails.application.routes.draw do
     # The audit log is read-only (FR-S.3, P1-AUDIT-PAGE): no create, update, or destroy routes.
     get "audit", to: "audit_entries#index", as: :audit
     get "settings", to: "settings#edit", as: :settings
+    # Agent releases and installing (P1-RELEASES). Rollouts join this page with P1-UPDATES.
+    get "agents", to: "agent_releases#index", as: :agents
+    post "agents/releases/import", to: "agent_releases#import", as: :import_agent_release
+    post "agents/releases/upload", to: "agent_releases#upload", as: :upload_agent_release
+    get "agents/install", to: "agent_installs#show", as: :agent_install
     patch "settings", to: "settings#update"
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
     mount ActionCable.server => "/cable"

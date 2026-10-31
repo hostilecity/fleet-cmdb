@@ -34,6 +34,11 @@ port ENV.fetch("PORT", 3000)
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
 
+# The largest request body Puma accepts, chunked or not, refused before it reaches Rails: the largest
+# release upload (AgentReleasesController::MAX_UPLOAD_BYTES; spec/config/puma_spec.rb keeps them equal).
+# Without it, a chunked body of any size is buffered to disk first (review of #74).
+http_content_length_limit 67_182_592
+
 # Run the Solid Queue supervisor inside of Puma for single-server deployments.
 plugin :solid_queue if ENV["SOLID_QUEUE_IN_PUMA"]
 

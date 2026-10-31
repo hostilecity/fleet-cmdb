@@ -15,6 +15,9 @@ module Audit
     OPERATOR_ALLOWED = "operator.allowed"
     OPERATOR_DISALLOWED = "operator.disallowed"
     OPERATOR_SIGNED_IN = "operator.signed_in"
+    RELEASE_IMPORTED = "release.imported"
+    RELEASE_IMPORT_REFUSED = "release.import_refused"
+    RELEASE_IMPORT_FAILED = "release.import_failed"
     SETTING_CHANGED = "setting.changed"
 
     ALL = constants.map { |name| const_get(name) }.freeze

@@ -1,0 +1,66 @@
+<% content_for :title, "Agents" %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
+<div class="page-head"><div><h1>Agents</h1><p>Signed releases and the version each host runs. Agents only install releases signed by the release key, and never move to an older version.</p></div><%= link_to "Install an agent", agent_install_path, class: "btn" %></div>
+
+<h2>Releases</h2>
+<% if @keys.empty? %>
+  <div class="notice error" role="alert"><strong>No release key is configured.</strong><p>Set <code>FLEET_RELEASE_KEY_CURRENT</code> on the server to the public key in <code>agent/release-keys/current.pub</code>. Until then every import is refused.</p></div>
+<% end %>
+<% if @releases.empty? %>
+  <div class="sheet empty" id="no_releases"><p><strong>No release imported yet.</strong></p><p>Import one from GitHub below, or upload its three files. The install page needs a release.</p></div>
+<% else %>
+  <div class="table-wrap"><table id="releases"><thead><tr><th>Version</th><th>Signature</th><th>Imported (UTC)</th><th>Hosts running it</th><th></th></tr></thead><tbody>
+  <% @releases.each do |release| %>
+    <tr id="<%= dom_id(release) %>">
+      <td class="mono"><%= release.version %><% if release.prerelease? %> <span class="muted">pre-release</span><% end %></td>
+      <td><span class="lamp online">Verified</span> <span class="muted mono"><%= release_key_label(release) %></span></td>
+      <td class="muted"><%= utc(release.imported_at) %> by <%= release.imported_by.display_name %> (<%= release.source == "github" ? "GitHub" : "upload" %>)</td>
+      <td><%= @running.fetch(release.version, 0) %></td>
+      <td><%= link_to "Install commands", agent_install_path(version: release.version) %></td>
+    </tr>
+  <% end %>
+  </tbody></table></div>
+<% end %>
+
+<h2>Import a release</h2>
+<%= form_with url: import_agent_release_path, method: :post, class: "filters", id: "import_form", data: { controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+  <% invalid = @errors&.key?(:import) %>
+  <label for="version">From GitHub (<span class="mono"><%= Releases.config.github_repository %></span>)
+    <%= text_field_tag :version, @version, id: "version", placeholder: "1.2.0", required: true, maxlength: 80, class: "mono",
+          "aria-invalid": (invalid ? "true" : nil), "aria-describedby": (invalid ? "import_error" : nil) %>
+  </label>
+  <button class="btn quiet" type="submit">Import</button>
+  <% if invalid %><p class="error-text" id="import_error" role="alert"><%= @errors[:import] %></p><% end %>
+<% end %>
+
+<details id="upload"<%= " open" if @errors&.key?(:upload) %>>
+  <summary>Or upload the binary, manifest, and signature, for a server without internet access</summary>
+  <%= form_with url: upload_agent_release_path, method: :post, multipart: true, class: "form", data: { turbo: false, controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+    <% if @errors&.key?(:upload) %>
+      <div class="notice error" role="alert"><strong>The release was not imported.</strong><p id="upload_error"><%= @errors[:upload] %></p></div>
+    <% end %>
+    <p class="muted">The three files of a GitHub release, as published: the release is verified against the release keys before it is stored.</p>
+    <div class="field"><label for="binary">Binary</label><%= file_field_tag :binary, id: "binary", required: true %><p class="hint mono">fleet-agent-&lt;version&gt;-<%= Releases::TARGET %></p></div>
+    <div class="field"><label for="manifest">Manifest</label><%= file_field_tag :manifest, id: "manifest", accept: ".json", required: true %><p class="hint mono">….manifest.json</p></div>
+    <div class="field"><label for="signature">Signature</label><%= file_field_tag :signature, id: "signature", accept: ".minisig", required: true %><p class="hint mono">….manifest.json.minisig</p></div>
+    <div class="actions"><button class="btn" type="submit">Upload and verify</button></div>
+  <% end %>
+</details>
+
+<h2>Imports</h2>
+<% if @imports.empty? %>
+  <p class="muted" id="no_imports">No imports from GitHub yet.</p>
+<% else %>
+  <div class="table-wrap"><table id="imports"><thead><tr><th>Version</th><th>Status</th><th>Requested (UTC)</th><th>Details</th></tr></thead><tbody>
+  <% @imports.each do |import| %>
+    <tr id="<%= dom_id(import) %>">
+      <td class="mono"><%= import.version %></td>
+      <td><%= import_state_lamp(import) %></td>
+      <td class="muted"><%= utc(import.created_at) %> by <%= import.operator.display_name %></td>
+      <td><%= import.reason %></td>
+    </tr>
+  <% end %>
+  </tbody></table></div>
+<% end %>
+<p class="muted">Every import, refusal, and failure is in the <%= link_to "audit log", audit_path %>.</p>
