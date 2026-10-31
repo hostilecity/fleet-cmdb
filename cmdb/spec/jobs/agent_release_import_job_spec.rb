@@ -98,6 +98,34 @@ RSpec.describe AgentReleaseImportJob, type: :job do
     expect(import.reload).to have_attributes(state: "running", reason: "could not download from GitHub (ECONNREFUSED). Retrying.")
   end
 
+  it "gives up on a download that takes longer than its deadline, however slowly it trickles (review of #74)" do
+    stub_const("Releases::Github::DEADLINE", -1) # already past when the first bytes arrive
+    stub_github
+    import = run_import
+    expect(import).to have_attributes(state: "failed", reason: "the download from GitHub took longer than -1 seconds")
+    expect(AgentRelease.count).to eq(0)
+  end
+
+  it "shows progress at the start of every attempt, so a live import is never taken for a stopped one (review of #74)" do
+    import = AgentReleaseImport.create!(version: "1.2.0", operator:, state: "running")
+    import.update_column(:updated_at, 1.hour.ago)
+    touched_before_download = nil
+    stub_request(:get, /github\.com/).to_return do
+      touched_before_download = import.reload.updated_at > 1.minute.ago
+      { status: 503 }
+    end
+    described_class.perform_now(import.id)
+    expect(touched_before_download).to be(true)
+    expect(AgentReleaseImport.stale).not_to include(import.reload)
+  end
+
+  it "finishes an import once: a worker still running after its import was closed as stopped changes nothing" do
+    import = AgentReleaseImport.create!(version: "1.2.0", operator:, state: "running")
+    import.finish!("failed", reason: AgentReleaseImport::STOPPED)
+    expect(AgentReleaseImport.find(import.id).finish!("imported")).to be(false)
+    expect(import.reload).to have_attributes(state: "failed", reason: AgentReleaseImport::STOPPED)
+  end
+
   it "follows only HTTPS redirects, and only a few" do
     stub_request(:get, "#{base}.manifest.json").to_return(status: 302, headers: { "Location" => "http://downloads.example.net/m" })
     expect(run_import.reason).to eq("GitHub redirected to a URL that is not HTTPS")

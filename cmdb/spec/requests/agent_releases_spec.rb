@@ -90,6 +90,23 @@ RSpec.describe "Agent releases", type: :request do
       end
     end
 
+    it "closes an import that stopped without finishing, audited, so the version can be imported again (review of #74)" do
+      stuck = AgentReleaseImport.create!(version: "1.3.0", operator:, state: "running")
+      fresh = AgentReleaseImport.create!(version: "1.4.0", operator:, state: "running")
+      stuck.update_column(:updated_at, (AgentReleaseImport::STALE_AFTER + 1.minute).ago)
+      fresh.update_column(:updated_at, (AgentReleaseImport::STALE_AFTER - 1.minute).ago)
+
+      expect { post "/agents/releases/import", params: { version: "1.3.0" } }.to have_enqueued_job(AgentReleaseImportJob)
+      expect(stuck.reload).to have_attributes(state: "failed", reason: AgentReleaseImport::STOPPED)
+      expect(AgentReleaseImport.in_flight.where(version: "1.3.0").sole).not_to eq(stuck)
+      expect(AuditEntry.where(action: "release.import_failed").sole).to have_attributes(actor_id: operator.id, changeset: include("version" => "1.3.0", "reason" => AgentReleaseImport::STOPPED))
+
+      # One still within its time is left alone.
+      expect { post "/agents/releases/import", params: { version: "1.4.0" } }.not_to have_enqueued_job
+      expect(page.at_css("#import_error").text).to eq("1.4.0 is already being imported.")
+      expect(fresh.reload.state).to eq("running")
+    end
+
     it "refuses a second import of a version that raced past the check" do
       allow(AgentReleaseImport).to receive(:in_flight).and_return(AgentReleaseImport.none)
       AgentReleaseImport.create!(version: "1.3.0", operator:)
@@ -136,6 +153,16 @@ RSpec.describe "Agent releases", type: :request do
       expect(response).to have_http_status(:unprocessable_content)
       expect(page.at_css("#upload_error").text).to start_with("Choose all three files")
       expect(AuditEntry.where(action: "release.import_refused")).to be_empty
+    end
+
+    it "refuses an upload without a Content-Length before reading it (review of #74)" do
+      # A chunked body behind a server other than Puma: no CONTENT_LENGTH by the time the controller runs.
+      allow_any_instance_of(AgentReleasesController).to receive(:request).and_wrap_original do |original|
+        original.call.tap { |request| request.delete_header("CONTENT_LENGTH") }
+      end
+      expect { post "/agents/releases/upload", params: upload_files(signed_release) }.not_to change(AgentRelease, :count)
+      expect(response).to have_http_status(:length_required)
+      expect(response.body).to eq("The upload needs a Content-Length.")
     end
 
     it "refuses an upload larger than a release can be before reading it" do

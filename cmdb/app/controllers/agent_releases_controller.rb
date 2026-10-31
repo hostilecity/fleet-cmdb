@@ -20,6 +20,8 @@ class AgentReleasesController < ApplicationController
     version = @version.sub(TAG_PREFIX, "")
     return refuse_form(:import, "Enter a version such as 1.2.0, without build metadata.") unless Releases.valid_version?(version)
     return refuse_form(:import, "#{version} is already imported.") if AgentRelease.exists?(version:)
+
+    AgentReleaseImport.close_stale!(version)
     return refuse_form(:import, "#{version} is already being imported.") if AgentReleaseImport.in_flight.exists?(version:)
 
     import = AgentReleaseImport.transaction(requires_new: true) do
@@ -53,8 +55,14 @@ class AgentReleasesController < ApplicationController
 
   private
 
+  # Puma buffers a chunked body and then sets its length, and refuses one over http_content_length_limit
+  # (config/puma.rb) before Rails sees it. Behind any other server, a body without a length is refused here
+  # rather than parsed. The header is read as sent: Request#content_length turns a missing one into 0, and
+  # reads the whole body to measure a chunked one (review of #74).
   def limit_upload_size
-    return if request.content_length.to_i <= MAX_UPLOAD_BYTES
+    length = request.get_header("CONTENT_LENGTH").to_s
+    return render(plain: "The upload needs a Content-Length.", status: :length_required) unless length.match?(/\A\d+\z/)
+    return if length.to_i <= MAX_UPLOAD_BYTES
 
     render plain: "The upload is larger than an agent release can be (#{Releases::MAX_BINARY_BYTES / 1.megabyte} MiB).", status: :content_too_large
   end

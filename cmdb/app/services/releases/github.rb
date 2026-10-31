@@ -8,6 +8,10 @@ module Releases
     MAX_REDIRECTS = 5
     OPEN_TIMEOUT = 10
     READ_TIMEOUT = 30
+    # The whole of one download, redirects included. READ_TIMEOUT bounds each read, not the transfer, so
+    # without this a peer sending a byte every few seconds would hold a job worker indefinitely (review of
+    # #74). 64 MiB in 5 minutes needs about 220 KB/s.
+    DEADLINE = 300
     REDIRECTS = [ 301, 302, 303, 307, 308 ].freeze
 
     # The release or one of its files does not exist. Retrying will not help.
@@ -36,19 +40,19 @@ module Releases
 
     # GETs url, following redirects to other HTTPS URLs. Returns the body as a binary String, or writes it to
     # into. A body longer than limit is cut at limit + 1 bytes, so the caller's size check fails clearly.
-    def fetch(url, limit:, into: nil, redirects: MAX_REDIRECTS)
+    def fetch(url, limit:, into: nil, redirects: MAX_REDIRECTS, deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + DEADLINE)
       uri = URI.parse(url)
       raise Unavailable, "GitHub redirected to a URL that is not HTTPS" unless uri.is_a?(URI::HTTPS)
 
       Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: OPEN_TIMEOUT, read_timeout: READ_TIMEOUT) do |http|
         http.request(Net::HTTP::Get.new(uri, "User-Agent" => "fleet-cmdb release import", "Accept" => "application/octet-stream")) do |response|
           case response.code.to_i
-          when 200 then return read(response, limit, into)
+          when 200 then return read(response, limit, into, deadline)
           when *REDIRECTS
             raise Unavailable, "GitHub redirected too many times" if redirects.zero?
 
             location = response["location"] or raise Unavailable, "GitHub sent a redirect without a location"
-            return fetch(URI.join(url, location).to_s, limit:, into:, redirects: redirects - 1)
+            return fetch(URI.join(url, location).to_s, limit:, into:, redirects: redirects - 1, deadline:)
           when 404 then raise NotFound, "GitHub has no release #{tag} in #{@repository} with the file #{File.basename(URI.parse(url).path)}"
           else raise Unavailable, "GitHub answered HTTP #{response.code}"
           end
@@ -60,10 +64,14 @@ module Releases
       raise Unavailable, "could not download from GitHub (#{e.class.name.demodulize})"
     end
 
-    def read(response, limit, into)
+    def read(response, limit, into, deadline)
       body = into ? nil : +"".b
       read = 0
       response.read_body do |chunk|
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          raise Unavailable, "the download from GitHub took longer than #{DEADLINE} seconds"
+        end
+
         chunk = chunk.byteslice(0, limit + 1 - read)
         read += chunk.bytesize
         into ? into.write(chunk) : body << chunk

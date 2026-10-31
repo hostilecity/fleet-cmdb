@@ -95,6 +95,13 @@ RSpec.describe Releases::Import do
     expect(import.reload.state).to eq("refused")
   end
 
+  it "removes the installed binary when the release's rows roll back after it was moved into place (review of #74)" do
+    allow(Audit).to receive(:record).and_raise(ActiveRecord::StatementInvalid, "connection lost")
+    expect { import(signed_release) }.to raise_error(ActiveRecord::StatementInvalid)
+    expect(AgentRelease.count).to eq(0)
+    expect(stored_files).to eq([])
+  end
+
   it "removes the staging file when storing fails" do
     release = signed_release
     allow(Releases::Store).to receive(:new).and_wrap_original do |original, dir|

@@ -67,6 +67,7 @@ module Releases
 
     def create(verified, manifest, signature, staged)
       m = verified.manifest
+      installed = false
       ApplicationRecord.transaction do
         # Serialises imports of one version, so two cannot both pass the check above and race the rename.
         ApplicationRecord.connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{ApplicationRecord.connection.quote("agent_release:#{m.version}")}))")
@@ -74,6 +75,7 @@ module Releases
         next already_imported(existing, manifest) if existing
 
         @store.install(staged, m.version, m.target)
+        installed = true
         release = AgentRelease.create!(
           version: m.version, target: m.target, sha256: m.sha256, size: m.size, manifest: manifest.b, signature: signature.b,
           trusted_comment: verified.trusted_comment, key_id: verified.key.id_hex, key_role: verified.key.role,
@@ -84,6 +86,11 @@ module Releases
                                 "key_role" => release.key_role, "source" => @source })
         Result.new(release:, created: true)
       end
+    rescue StandardError
+      # The rows rolled back, so the binary renamed into place belongs to no release: remove it rather than
+      # leave unaccounted-for state on the release volume (review of #74).
+      @store.discard(@store.path(m.version, m.target)) if installed
+      raise
     end
   end
 end

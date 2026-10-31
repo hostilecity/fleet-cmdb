@@ -18,6 +18,7 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
 - **Rollouts.** A `rollouts` table: target release, canary hosts (explicit list or tag), stages (default: canaries, then 25%, then 100%), state (`running`, `halted`, `completed`, `cancelled`), and who started, halted, or resumed it. One running rollout at a time.
   - The target release is a foreign key to `agent_releases` that restricts deletion, so a release a rollout targets is never deleted ([P1-RELEASES](p1-releases.md)).
   - The directive's URLs come from `Releases.download_url`, the same place the install page's do.
+  - Release downloads are limited per client address (60 a minute by default, `FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE`), and each update is at least three requests. A site with many VMs behind one NAT address would hit that limit when a stage opens. Spread the directive over the stage (jitter, or a cap on hosts per address at once), or limit downloads from enrolled agents by credential instead of by address. Decide it here, not in production (review of #74).
   - A host gets the directive only while its stage is open and it runs an older version.
   - A stage advances when all its hosts have confirmed, or an operator advances it.
 - **Outcomes.** `POST /api/v1/agent/update-results` (authenticated) records `succeeded`, `failed` (with reason), or `rolled_back` (with reason) in an `agent_updates` history table.

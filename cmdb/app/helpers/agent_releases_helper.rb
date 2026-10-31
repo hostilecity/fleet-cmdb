@@ -26,16 +26,21 @@ module AgentReleasesHelper
   end
 
   # cloud-init runs commands as root, from /, so the binary goes in /root and there is no sudo.
+  #
+  # The steps are one `sh -ec` script, not one runcmd entry each: cloud-init joins runcmd entries into a plain
+  # #!/bin/sh script without `set -e`, so a failed checksum would not stop it, and the unverified download
+  # would then run as root (review of #74). With -e, any failing step stops the script before the binary runs.
   def install_cloud_init(release, token: TOKEN_PLACEHOLDER)
+    script = install_cloud_init_script(release, token:).map { |line| "      #{line}\n" }.join
+    "#cloud-config\nruncmd:\n  - - sh\n    - -ec\n    - |\n#{script}"
+  end
+
+  def install_cloud_init_script(release, token: TOKEN_PLACEHOLDER)
     file = "/root/#{INSTALL_FILE}"
-    <<~YAML
-      #cloud-config
-      runcmd:
-        - #{install_download_command(release, file:)}
-        - #{install_check_command(release, file:)}
-        - chmod +x #{file}
-        - FLEET_ENROLLMENT_TOKEN='#{token}' #{file} install --server #{Releases.agent_server_url} --quiet
-    YAML
+    [ install_download_command(release, file:),
+      install_check_command(release, file:),
+      "chmod +x #{file}",
+      "FLEET_ENROLLMENT_TOKEN='#{token}' #{file} install --server #{Releases.agent_server_url} --quiet" ]
   end
 
   # The installer's approval block, as it prints it (agent/src/install/ui.rs, Ui::approval), with an example

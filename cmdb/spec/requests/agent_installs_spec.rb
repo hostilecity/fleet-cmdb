@@ -35,6 +35,30 @@ RSpec.describe "Agent install page", type: :request do
     end
   end
 
+  # The cloud-init command, parsed as cloud-init parses it: one runcmd entry, an argv.
+  def cloud_init_argv
+    cloud_init = YAML.safe_load(command("cloud_init"))
+    expect(cloud_init.keys).to eq([ "runcmd" ])
+    cloud_init["runcmd"].sole
+  end
+
+  def cloud_init_script = cloud_init_argv.last.lines.map(&:chomp)
+
+  # Runs the cloud-init command as cloud-init would (its argv, as written on the page), with /root moved to a
+  # scratch directory and a curl that "downloads" the given bytes. Returns whether the downloaded binary ran,
+  # and whether the command succeeded.
+  def run_cloud_init(argv, downloaded)
+    Dir.mktmpdir do |dir|
+      bin = FileUtils.mkdir_p(File.join(dir, "bin")).first
+      File.binwrite(File.join(dir, "download"), downloaded)
+      File.write(File.join(bin, "curl"), %(#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\ncp "#{dir}/download" "$2"\n))
+      File.chmod(0o755, File.join(bin, "curl"))
+      *shell, script = argv
+      _output, status = Open3.capture2e({ "PATH" => "#{bin}:#{ENV.fetch('PATH')}", "MARKER" => File.join(dir, "ran") }, *shell, script.gsub("/root/", "#{dir}/"))
+      [ File.exist?(File.join(dir, "ran")), status.success? ]
+    end
+  end
+
   it "says what to do when no release has been imported" do
     get "/agents/install"
     expect(response).to have_http_status(:ok)
@@ -70,11 +94,11 @@ RSpec.describe "Agent install page", type: :request do
     releases.each do |release|
       get "/agents/install", params: { version: release.version }
       expect(page.at_css("#release_version").text).to eq(release.version)
-      cloud_init = YAML.safe_load(command("cloud_init"))
-      [ command("download_command"), cloud_init["runcmd"][0] ].each do |download|
+      script = cloud_init_script
+      [ command("download_command"), script[0] ].each do |download|
         expect(download).to end_with("/api/v1/releases/#{release.version}/binary")
       end
-      [ command("check_command"), cloud_init["runcmd"][1] ].each do |check|
+      [ command("check_command"), script[1] ].each do |check|
         expect(check).to include(release.sha256)
         expect(check.scan(/\h{64}/)).to eq([ release.sha256 ])
       end
@@ -96,15 +120,27 @@ RSpec.describe "Agent install page", type: :request do
     get "/agents/install"
     known = agent_install_source[/const KNOWN_OPTIONS: &\[&str\] = &\[(.*?)\];/m, 1].scan(/"([^"]+)"/).flatten
     expect(known).to include("--server", "--token-stdin", "--quiet")
-    cloud_init = YAML.safe_load(command("cloud_init"))
-    commands = [ command("install_command"), command("token_command"), *cloud_init["runcmd"] ]
+    script = cloud_init_script
+    commands = [ command("install_command"), command("token_command"), *script ]
     install_flags = commands.grep(/fleet-agent install/).flat_map { |line| line[/fleet-agent install (.*)/, 1].scan(/(?<=\s|\A)--[a-z-]+/) }
     expect(install_flags.uniq).to contain_exactly("--server", "--token-stdin", "--quiet")
     expect(install_flags - known).to eq([])
     expect(agent_install_source).to include('std::env::var("FLEET_ENROLLMENT_TOKEN")')
-    expect(cloud_init["runcmd"].last).to eq("FLEET_ENROLLMENT_TOKEN='<one-time token>' /root/fleet-agent install --server https://agent.fleet.example.lan --quiet")
-    expect(cloud_init["runcmd"][2]).to eq("chmod +x /root/fleet-agent")
+    expect(script.last).to eq("FLEET_ENROLLMENT_TOKEN='<one-time token>' /root/fleet-agent install --server https://agent.fleet.example.lan --quiet")
+    expect(script[2]).to eq("chmod +x /root/fleet-agent")
     expect(command("cloud_init")).to start_with("#cloud-config\n")
+  end
+
+  it "never runs a cloud-init download that fails the checksum, and runs one that passes (review of #74)" do
+    binary = %(#!/bin/sh\ntouch "$MARKER"\n)
+    import_release(release = signed_release(version: "1.2.0", binary:), operator:)
+    get "/agents/install"
+    argv = cloud_init_argv
+    expect(argv.first(2)).to eq([ "sh", "-ec" ])
+    expect(fetch_download(command("download_command"))).to eq(release.binary)
+    expect(run_cloud_init(argv, release.binary)).to eq([ true, true ])
+    expect(run_cloud_init(argv, binary.sub("touch", "touch  "))).to eq([ false, false ]) # tampered: never executed
+    expect(run_cloud_init(argv, "")).to eq([ false, false ]) # empty or truncated download
   end
 
   it "shows what the installer prints for approval, as the installer prints it (agent/src/install/ui.rs)" do

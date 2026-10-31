@@ -19,7 +19,7 @@ class AgentReleaseImportJob < ApplicationJob
     return if @import.nil? || @import.finished?
 
     Current.request_id = @import.request_id
-    @import.update!(state: "running") unless @import.state == "running"
+    @import.update!(state: "running", updated_at: Time.current) # each attempt shows progress (AgentReleaseImport::STALE_AFTER)
     github = Releases::Github.new(@import.version)
     result = Releases::Import.new(operator: @import.operator, source: "github", expected_version: @import.version)
       .call(manifest: github.manifest, signature: github.signature) { |manifest| download(github, manifest) }
