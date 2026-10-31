@@ -17,7 +17,8 @@ module Api
         recorded_at = Liveness.record_heartbeat!(host_id: current_host.id, credential_id: current_credential.id,
                                                  agent_version: payload["agent_version"], agent_schema_version: payload["schema_version"],
                                                  agent_time: Time.iso8601(payload["agent_time"]))
-        render json: { server_time: recorded_at.utc.iso8601, directives: [] }
+        # Directives are named entries in an object (DEC-20); none are sent until P1-UPDATES.
+        render json: { server_time: recorded_at.utc.iso8601, directives: {} }
       end
     end
   end

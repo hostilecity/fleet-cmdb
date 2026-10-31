@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Heartbeat response",
-  "description": "200 response to POST /api/v1/heartbeat (DEC-08).",
+  "description": "200 response to POST /api/v1/heartbeat (DEC-08, DEC-20).",
   "type": "object",
   "required": [
     "server_time",
@@ -15,9 +15,49 @@
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
     },
     "directives": {
-      "description": "Server-to-agent signals. Always empty in schema version 1; Phase 2 adds report requests and Phase 3 task hints under a new schema version.",
-      "type": "array",
-      "maxItems": 0
+      "description": "Server-to-agent signals, keyed by directive name (DEC-20). Every directive is optional; an absent or null directive means no instruction. Agents ignore and log names and fields they do not know, so adding a directive or an optional field is additive. Each directive is an object or null. The server sends {} when it has nothing to say.",
+      "type": "object",
+      "properties": {
+        "intervals": {
+          "description": "Heartbeat and inventory intervals the server wants, in whole seconds (ADR 0019). Each is optional; an absent or null interval returns the agent to its configured value. The agent clamps each to its configured min..max.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "heartbeat_seconds": {
+              "description": "Heartbeat interval in seconds.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "inventory_seconds": {
+              "description": "Inventory report interval in seconds.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            }
+          }
+        },
+        "agent_update": {
+          "description": "The release to install (ADR 0018). Its fields (version, manifest, signature, and binary URLs, rollout id) are defined by P1-UPDATES; until then only the type is fixed.",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": {
+        "description": "A directive this schema version does not define. Agents ignore it.",
+        "type": [
+          "object",
+          "null"
+        ]
+      }
     }
   }
 }

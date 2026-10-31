@@ -12,7 +12,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - `POST /api/v1/tasks/:id/start`: the agent acknowledges that it has recorded the task as started locally; moves `claimed` to `running` (idempotent).
 - Expired tasks are never delivered. Another host's tasks cannot be polled or addressed (404).
 - Re-validates parameters and allowlists at claim time; a task that no longer validates becomes `refused` on the server with a reason and is not delivered.
-- Hint for the heartbeat response `directives` ("tasks available") so agents can poll promptly without tight polling.
+- Hint in the heartbeat response `directives` ("tasks available"), as one named directive ([DEC-20](../../decisions/0020-named-heartbeat-directives.md)), so agents can poll promptly without tight polling.
 
 ### Acceptance criteria
 

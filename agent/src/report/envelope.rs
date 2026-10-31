@@ -1,20 +1,21 @@
-//! The heartbeat response envelope, `{"server_time", "directives"}` (FR-1.2, DEC-08).
+//! The heartbeat response envelope, `{"server_time", "directives"}` (FR-1.2, DEC-08, DEC-20).
 //!
 //! Parsing never fails: anything this agent does not understand is ignored and listed, so the caller
 //! can log it, and the heartbeat still counts as accepted. The agent protocol outlives server releases
 //! (ADR 0019), so an older agent must keep working whatever a newer server adds.
 //!
-//! `directives` is accepted in two shapes:
+//! `directives` is an object keyed by directive name ([ADR 0020]). Every directive is optional, an
+//! absent or `null` directive or field means no instruction, and unknown names are ignored:
 //!
-//! - an array, as in the v1 contract today (`[]`; DEC-08 plans report requests and task hints as
-//!   entries). This agent acts on no entry; each one is ignored and listed by its `type`.
-//! - an object keyed by directive name, as [P1-UPDATES] plans for `intervals` and `agent_update`:
-//!   - `intervals`: `{"heartbeat_seconds": n, "inventory_seconds": n}`, either optional, whole seconds.
-//!     The caller clamps each value to the config bounds ([`crate::config::Interval`], ADR 0019).
-//!   - `agent_update`: kept as raw JSON for the updater (P1-AGENT-UPDATE); not acted on in this build.
-//!   - any other name is ignored and listed.
+//! - `intervals`: `{"heartbeat_seconds": n, "inventory_seconds": n}`, either optional, whole seconds.
+//!   The caller clamps each value to the config bounds ([`crate::config::Interval`], ADR 0019).
+//! - `agent_update`: kept as raw JSON for the updater (P1-AGENT-UPDATE); not acted on in this build.
+//! - any other name is ignored and listed.
 //!
-//! [P1-UPDATES]: ../../../docs/backlog/specs/p1-updates.md
+//! A missing or `null` `directives` is read as `{}`. Any other shape, including the array that ADR 0008
+//! first planned, is a problem: listed, ignored, and never fatal.
+//!
+//! [ADR 0020]: ../../../docs/decisions/0020-named-heartbeat-directives.md
 
 use serde_json::Value;
 
@@ -82,15 +83,6 @@ fn directives(value: &Value, envelope: &mut Envelope) {
     let mut unknown = Names::default();
     match value {
         Value::Null => {}
-        Value::Array(entries) => {
-            for entry in entries {
-                let label = entry
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .map_or_else(|| "(untyped)".to_owned(), name);
-                unknown.push(format!("directive `{label}`"));
-            }
-        }
         Value::Object(map) => {
             for (key, value) in map {
                 match key.as_str() {
@@ -107,10 +99,10 @@ fn directives(value: &Value, envelope: &mut Envelope) {
                 }
             }
         }
-        other => envelope.problems.push(format!(
-            "`directives` is {}, not a list or an object",
-            kind(other)
-        )),
+        // Includes an array, the shape ADR 0008 first planned (amended by ADR 0020).
+        other => envelope
+            .problems
+            .push(format!("`directives` is {}, not an object", kind(other))),
     }
     unknown.finish(envelope);
 }
@@ -208,25 +200,123 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn the_v1_envelope_has_nothing_to_act_on() {
-        let envelope = parse(&json!({"server_time": "2026-01-01T12:00:00Z", "directives": []}));
+    fn no_directives_means_nothing_to_act_on() {
+        for directives in [
+            json!({}),
+            json!(null),
+            json!({"intervals": null, "agent_update": null}),
+        ] {
+            let envelope =
+                parse(&json!({"server_time": "2026-01-01T12:00:00Z", "directives": directives}));
+            assert_eq!(
+                envelope,
+                Envelope {
+                    server_time: Some("2026-01-01T12:00:00Z".into()),
+                    ..Envelope::default()
+                },
+                "{directives}"
+            );
+        }
+        // A missing `directives` is read as `{}` too.
+        let envelope = parse(&json!({"server_time": "2026-01-01T12:00:00Z"}));
+        assert!(envelope.problems.is_empty() && envelope.ignored.is_empty());
+    }
+
+    #[test]
+    fn an_array_of_directives_is_a_problem_and_nothing_in_it_is_read() {
+        for directives in [
+            json!([]),
+            json!([{"type": "intervals", "heartbeat_seconds": 30}]),
+            json!([{"intervals": {"heartbeat_seconds": 30}}, {"agent_update": {"version": "9.9.9"}}]),
+        ] {
+            let envelope = parse(&json!({"directives": directives}));
+            assert_eq!(
+                envelope.problems,
+                ["`directives` is a list, not an object"],
+                "{directives}"
+            );
+            assert_eq!(
+                envelope.intervals,
+                ServerIntervals::default(),
+                "{directives}"
+            );
+            assert_eq!(envelope.agent_update, None, "{directives}");
+            assert!(envelope.ignored.is_empty(), "{directives}");
+        }
+    }
+
+    /// Every `heartbeat.response` example in `docs/api`, by kind (`valid` or `invalid`) and file name.
+    fn contract_examples(kind: &str) -> Vec<(String, Value)> {
+        let dir = crate::collect::contract::root()
+            .join("examples/v1/heartbeat.response")
+            .join(kind);
+        let mut examples: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                (
+                    name,
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap(),
+                )
+            })
+            .collect();
+        examples.sort_by(|a, b| a.0.cmp(&b.0));
+        assert!(!examples.is_empty(), "no examples in {}", dir.display());
+        examples
+    }
+
+    #[test]
+    fn valid_contract_examples_parse_without_problems() {
+        for (name, body) in contract_examples("valid") {
+            let envelope = parse(&body);
+            assert!(
+                envelope.problems.is_empty(),
+                "{name}: {:?}",
+                envelope.problems
+            );
+            assert!(envelope.server_time.is_some(), "{name}");
+            // Only `unknown-field-*` examples carry names this agent does not know.
+            assert_eq!(
+                envelope.ignored.is_empty(),
+                !name.starts_with("unknown-field-"),
+                "{name}: {:?}",
+                envelope.ignored
+            );
+        }
+        let intervals = contract_examples("valid")
+            .into_iter()
+            .find(|(name, _)| name == "intervals.json")
+            .unwrap()
+            .1;
         assert_eq!(
-            envelope,
-            Envelope {
-                server_time: Some("2026-01-01T12:00:00Z".into()),
-                ..Envelope::default()
+            parse(&intervals).intervals,
+            ServerIntervals {
+                heartbeat_seconds: Some(120),
+                inventory_seconds: Some(1800)
             }
         );
     }
 
     #[test]
-    fn the_contract_example_parses_cleanly() {
-        let example = crate::collect::contract::root()
-            .join("examples/v1/heartbeat.response/valid/phase-1.json");
-        let body: Value = serde_json::from_slice(&std::fs::read(example).unwrap()).unwrap();
-        let envelope = parse(&body);
-        assert!(envelope.ignored.is_empty() && envelope.problems.is_empty());
-        assert!(envelope.server_time.is_some());
+    fn invalid_contract_examples_are_noticed_and_not_acted_on() {
+        for (name, body) in contract_examples("invalid") {
+            let envelope = parse(&body);
+            assert_eq!(envelope.agent_update, None, "{name}");
+            // A zero interval is the one value the agent reads as a number; the caller clamps it to
+            // the configured minimum, so it cannot stop heartbeats.
+            if name != "intervals-zero.json" {
+                assert_eq!(envelope.intervals, ServerIntervals::default(), "{name}");
+            }
+            // `directives-missing.json` is read as `{}`: the agent has nothing to act on, which is
+            // what an absent `directives` means.
+            if name != "directives-missing.json" && name != "intervals-zero.json" {
+                assert!(
+                    !envelope.problems.is_empty() || !envelope.ignored.is_empty(),
+                    "{name} parsed as if valid"
+                );
+            }
+        }
     }
 
     #[test]
@@ -275,16 +365,15 @@ mod tests {
                 "field `motd`"
             ]
         );
-        // A future array form: every entry is ignored, by type.
-        let envelope = parse(&json!({
-            "directives": [{"type": "collect_config"}, {"no_type": true}, "text"]
-        }));
+        assert!(envelope.problems.is_empty());
+        // An unknown directive is ignored whatever its value, so a newer server can never break this agent.
+        let envelope = parse(&json!({"directives": {"future": true, "later": [1], "soon": null}}));
         assert_eq!(
             envelope.ignored,
             [
-                "directive `collect_config`",
-                "directive `(untyped)`",
-                "directive `(untyped)`"
+                "directive `future`",
+                "directive `later`",
+                "directive `soon`"
             ]
         );
         assert!(envelope.problems.is_empty());
@@ -298,7 +387,7 @@ mod tests {
             (json!({"server_time": 5}), "`server_time` is a number"),
             (
                 json!({"directives": "all"}),
-                "`directives` is a string, not a list or an object",
+                "`directives` is a string, not an object",
             ),
             (
                 json!({"directives": {"intervals": [60]}}),

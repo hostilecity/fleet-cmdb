@@ -390,7 +390,7 @@ fn approved(credential: &str) -> String {
 fn heartbeat_ok() -> String {
     reply(
         "200 OK",
-        r#"{"server_time":"2026-01-01T12:00:06Z","directives":[]}"#,
+        r#"{"server_time":"2026-01-01T12:00:06Z","directives":{}}"#,
     )
 }
 

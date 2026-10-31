@@ -14,11 +14,11 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     post "/api/v1/heartbeat", params: payload.to_json, headers: api_headers(as)
   end
 
-  it "answers with the server time and no directives" do
+  it "answers with the server time and an empty directives object (DEC-20)" do
     freeze_time do
       heartbeat
       expect(response).to have_http_status(:ok)
-      expect(json).to eq("server_time" => Time.current.utc.iso8601, "directives" => [])
+      expect(json).to eq("server_time" => Time.current.utc.iso8601, "directives" => {})
       expect(ApiContract.errors("heartbeat.response", "v1", json)).to eq([])
     end
   end

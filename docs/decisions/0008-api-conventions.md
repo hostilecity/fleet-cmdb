@@ -1,6 +1,6 @@
 # ADR 0008: Agent API conventions
 
-- Status: Accepted (owner, first requirements review)
+- Status: Accepted (owner, first requirements review); amended by [ADR 0020](0020-named-heartbeat-directives.md): `directives` is an object keyed by directive name, not an array
 - Decision issue: DEC-08
 - Requirements: `docs/requirements.md`
 

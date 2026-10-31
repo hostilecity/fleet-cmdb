@@ -269,7 +269,7 @@ pub(crate) mod tests {
                 None if self.accepting.get() => {
                     if path == heartbeat::HEARTBEAT_PATH {
                         ok(
-                            serde_json::json!({"server_time": "2026-01-01T12:00:00Z", "directives": []}),
+                            serde_json::json!({"server_time": "2026-01-01T12:00:00Z", "directives": {}}),
                         )
                     } else {
                         ok(serde_json::json!({"report_id": body["report_id"], "duplicate": false}))
@@ -339,7 +339,7 @@ pub(crate) mod tests {
     /// A [`TlsServer`] reply for whichever endpoint a request was for.
     fn reply_for(request: &str) -> String {
         let body = if request.starts_with("POST /api/v1/heartbeat ") {
-            r#"{"server_time":"2026-01-01T12:00:00Z","directives":[]}"#.to_owned()
+            r#"{"server_time":"2026-01-01T12:00:00Z","directives":{}}"#.to_owned()
         } else {
             let id = request
                 .split("\"report_id\":\"")
