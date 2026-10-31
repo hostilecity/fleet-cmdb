@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_30_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -40,6 +40,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_010000) do
     t.jsonb "changeset", default: {}, null: false
     t.string "request_id", limit: 255
     t.datetime "occurred_at", default: -> { "CURRENT_TIMESTAMP" }, null: false
+    t.index "((changeset #>> '{host_id,1}'::text[]))", name: "index_audit_entries_on_approved_host", where: "((action)::text = 'onboarding.approved'::text)"
+    t.index "((changeset #>> '{onboarding_request_id,1}'::text[]))", name: "index_audit_entries_on_enrolled_onboarding_request", where: "((action)::text = 'host.enrolled'::text)"
     t.index ["action", "occurred_at"], name: "index_audit_entries_on_action_and_occurred_at"
     t.index ["actor_type", "actor_id", "occurred_at"], name: "index_audit_entries_on_actor"
     t.index ["occurred_at"], name: "index_audit_entries_on_occurred_at"

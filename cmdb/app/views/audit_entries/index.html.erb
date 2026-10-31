@@ -1,0 +1,66 @@
+<% content_for :title, "Audit log" %>
+<div class="page-head"><div><h1>Audit log</h1><p>Every change to hosts, credentials, onboarding, operators, and settings. Read-only; entries are never edited or deleted.</p></div></div>
+<% if @log.invalid_cursor? %>
+  <div class="notice" role="status" id="invalid_cursor"><strong>That page link is not valid, so this shows the newest entries.</strong></div>
+<% end %>
+<% unless @log.valid? %>
+  <div class="notice error" role="alert" id="filter_errors"><strong>Fix the dates to see entries.</strong></div>
+<% end %>
+<%= form_with url: audit_path, method: :get, class: "filters audit-filters", role: "search" do %>
+  <label>Actor type<%= select_tag :actor_type, options_for_select(AuditLog::ACTOR_TYPES.invert, @log.actor_type), include_blank: "Anyone" %></label>
+  <label>Actor<%= search_field_tag :actor, @log.actor, placeholder: "Email or host name", maxlength: AuditLog::MAX_TEXT %></label>
+  <label>Action<%= select_tag :action, audit_action_options(@log.action), include_blank: "All actions" %></label>
+  <label>Target<%= search_field_tag :target, @log.target, placeholder: "Host name or hostname", maxlength: AuditLog::MAX_TEXT %></label>
+  <% %i[from to].each do |field| %>
+    <% error = @log.errors[field] %>
+    <label class="<%= "invalid" if error %>"><%= field == :from ? "From" : "To" %><%= date_field_tag field, @log.raw(field), "aria-invalid": (error ? "true" : nil), "aria-describedby": (error ? "#{field}_error" : nil) %>
+      <% if error %><span class="error-text" id="<%= field %>_error"><%= error %></span><% end %></label>
+  <% end %>
+  <%= hidden_field_tag :host_id, @log.host_id, id: nil if @log.host_id %>
+  <%= hidden_field_tag :hide_sign_ins, "1", id: nil if @log.hide_sign_ins? %>
+  <button class="btn quiet" type="submit">Apply</button>
+  <% unless @log.action %>
+    <%= link_to (@log.hide_sign_ins? ? "Show sign-ins" : "Hide sign-ins"), audit_page_path(@log.hide_sign_ins? ? @log.filter_params.except(:hide_sign_ins) : @log.filter_params.merge(hide_sign_ins: "1")), class: "toggle", id: "sign_ins_toggle" %>
+  <% end %>
+<% end %>
+<% if @log.valid? && (@log.filtered? || @log.hide_sign_ins?) %>
+  <p class="applied" id="applied_filters"><span><%= audit_filter_summary(@log) %></span><%= link_to "Clear filters", audit_path %></p>
+<% end %>
+<% if !@log.valid? %>
+  <%# Nothing is listed until the dates are fixed: results for a date the operator did not mean would mislead. %>
+<% elsif @page.entries.empty? %>
+  <div class="sheet empty" id="no_entries">
+    <% if @page.newer %>
+      <p><strong>No older entries.</strong></p>
+    <% elsif @log.filtered? %>
+      <p><strong>No entries match these filters.</strong></p>
+      <p><%= audit_filter_summary(@log) %>. <%= link_to "Clear the filters", audit_path %> or widen the dates.</p>
+    <% else %>
+      <p><strong>No entries yet.</strong></p>
+      <p>Changes to hosts, credentials, onboarding, operators, and settings are recorded here as they happen.</p>
+    <% end %>
+  </div>
+<% else %>
+  <div class="table-wrap"><table class="audit">
+    <caption class="visually-hidden">Audit entries, newest first</caption>
+    <thead><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Before → after</th></tr></thead>
+    <tbody>
+      <% @page.entries.each do |entry| %>
+        <tr id="<%= dom_id(entry) %>">
+          <td class="when mono"><time datetime="<%= entry.occurred_at.utc.iso8601(6) %>"><%= audit_time(entry.occurred_at) %></time><% if entry.request_id.present? %> <span class="kind request-id" title="Request id, as in the server log"><%= entry.request_id %></span><% end %></td>
+          <td><%= audit_actor(entry, @records) %></td>
+          <td><%= audit_label(entry.action) %></td>
+          <td><%= audit_target(entry, @records) %></td>
+          <td><%= audit_changes(entry, @records) %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table></div>
+<% end %>
+<% if @page.entries.any? || @page.newer %>
+  <nav class="pager" aria-label="Pages">
+    <% if @page.newer %><%= link_to "← Newer entries", audit_page_path(@log.filter_params.merge(@page.newer)), rel: "prev" %><% else %><span class="off" aria-disabled="true">← Newer entries</span><% end %>
+    <span class="muted">Newest first, <%= AuditLog::PER_PAGE %> per page</span>
+    <% if @page.older %><%= link_to "Older entries →", audit_page_path(@log.filter_params.merge(@page.older)), rel: "next" %><% else %><span class="off" aria-disabled="true">Older entries →</span><% end %>
+  </nav>
+<% end %>

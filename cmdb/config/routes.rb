@@ -52,6 +52,8 @@ Rails.application.routes.draw do
     get "onboard/:code", to: "approvals#show", as: :onboard_request
     post "onboard/:code/approve", to: "approvals#approve", as: :approve_onboard_request
     post "onboard/:code/reject", to: "approvals#reject", as: :reject_onboard_request
+    # The audit log is read-only (FR-S.3, P1-AUDIT-PAGE): no create, update, or destroy routes.
+    get "audit", to: "audit_entries#index", as: :audit
     get "settings", to: "settings#edit", as: :settings
     patch "settings", to: "settings#update"
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
