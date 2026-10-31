@@ -17,7 +17,7 @@ RSpec.describe "Dashboard access", type: :request do
   end
 
   it "finds the dashboard routes" do
-    expect(dashboard_routes.pluck(:name)).to include("hosts#index", "hosts#show", "settings#edit", "settings#update", *PUBLIC)
+    expect(dashboard_routes.pluck(:name)).to include("hosts#index", "hosts#show", "audit_entries#index", "settings#edit", "settings#update", *PUBLIC)
   end
 
   it "redirects anonymous requests for every non-public dashboard route to sign-in" do

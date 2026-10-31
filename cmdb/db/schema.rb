@@ -10,9 +10,10 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_31_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+  enable_extension "pg_trgm"
 
   create_table "agent_credentials", force: :cascade do |t|
     t.bigint "host_id", null: false
@@ -40,6 +41,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_010000) do
     t.jsonb "changeset", default: {}, null: false
     t.string "request_id", limit: 255
     t.datetime "occurred_at", default: -> { "CURRENT_TIMESTAMP" }, null: false
+    t.index "((changeset #>> '{host_id,1}'::text[]))", name: "index_audit_entries_on_approved_host", where: "((action)::text = 'onboarding.approved'::text)"
+    t.index "((changeset #>> '{onboarding_request_id,1}'::text[]))", name: "index_audit_entries_on_enrolled_onboarding_request", where: "((action)::text = 'host.enrolled'::text)"
     t.index ["action", "occurred_at"], name: "index_audit_entries_on_action_and_occurred_at"
     t.index ["actor_type", "actor_id", "occurred_at"], name: "index_audit_entries_on_actor"
     t.index ["occurred_at"], name: "index_audit_entries_on_occurred_at"
@@ -107,7 +110,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_010000) do
     t.string "reported_machine_id", limit: 32
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
+    t.index ["hostname"], name: "index_hosts_on_hostname_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["liveness_status"], name: "index_hosts_on_liveness_status"
+    t.index ["name"], name: "index_hosts_on_name_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["tags"], name: "index_hosts_on_tags", using: :gin
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying::text, 'active'::character varying::text, 'revoked'::character varying::text, 'retired'::character varying::text])", name: "hosts_enrollment_state_valid"
     t.check_constraint "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying::text, 'stale'::character varying::text, 'offline'::character varying::text]))", name: "hosts_liveness_status_valid"
@@ -190,6 +195,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_010000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["email"], name: "index_operators_on_email"
+    t.index ["email"], name: "index_operators_on_email_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 

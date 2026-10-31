@@ -21,6 +21,18 @@ The audit log foundation ([P1-S03](p1-hosts.md)) was delivered in P1-HOSTS. That
 - **Pagination:** keyset pagination on `(occurred_at, id)`, so the page stays fast as the log grows (audit entries are never pruned, FR-S.3). Use the existing `index_audit_entries_on_*` indexes.
 - **Escaping:** all values are escaped when rendered (NFR-1). Before and after values come from operator and agent input.
 
+## Decisions from the mockup review
+
+The owner answered the open questions on the reworked mockup (PR #66):
+
+1. **Onboarding entries and their host.** Approvals and rejections target the request. The page links a request to the host it became, and filtering by a host includes that request's entries. Requests are pruned a day after they expire, so the link comes from the log itself: the host's "Enrolled" entry records `onboarding_request_id`, and a re-enrollment approval records `host_id`. Two partial expression indexes on `audit_entries` serve these lookups. Substring matching of host names, hostnames, and operator emails (the target and actor filters, and the fleet search) is served by `pg_trgm` GIN indexes, so it does not read the whole table at fleet scale.
+2. **Text or id.** The target filter takes typed text and matches host name or hostname (case-insensitive substring, as in the fleet search), retired hosts included. The host page's "All entries for this host" link filters by exact host id (`host_id=`).
+3. **Target scope.** The target filter covers hosts only.
+4. **Phone layout.** The table scrolls sideways inside its frame, like the other tables.
+5. **Sign-ins.** "Operator signed in" stays in the default view; a one-click "Hide sign-ins" link (`hide_sign_ins=1`) hides it while no action is chosen.
+6. **Request id.** Each entry shows its request id, to match it to a server log line.
+7. **Paging.** 50 entries per page; readable keyset cursors `before=` and `after=` with `<occurred_at in UTC to the microsecond>,<id>`. A malformed or tampered cursor is ignored with a notice, and the newest page is shown. An invalid date is shown as an error in place, with no entries listed.
+
 ## Acceptance criteria
 
 - [ ] A signed-in operator sees entries newest first and can filter by actor, action, target, and date range, with pagination (request specs)

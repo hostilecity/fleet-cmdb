@@ -19,6 +19,7 @@
         <%= link_to root_path, class: "brand" do %><span class="lamp online" aria-hidden="true"></span>Fleet CMDB<% end %>
         <nav aria-label="Main">
           <%= link_to "Fleet", root_path, "aria-current": (controller_name == "hosts" ? "page" : nil) %>
+          <%= link_to "Audit log", audit_path, "aria-current": (controller_name == "audit_entries" ? "page" : nil) %>
           <%= link_to "Settings", settings_path, "aria-current": (controller_name == "settings" ? "page" : nil) %>
         </nav>
         <div class="who">

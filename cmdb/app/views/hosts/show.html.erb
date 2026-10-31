@@ -175,6 +175,7 @@
         <% end %>
       </tbody></table></div>
     <% end %>
+    <p><%= link_to "All entries for this host", audit_path(host_id: @host.id), id: "host_audit_link" %></p>
   </section>
 </div>
 </div>
