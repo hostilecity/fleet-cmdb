@@ -155,7 +155,7 @@ RSpec.describe "POST /api/v1/enroll", type: :request do
 
     it "rejects an oversize body with 413 before parsing it" do
       expect { enroll(body(hostname: "a" * 5_000)) }.not_to change(AgentCredential, :count)
-      expect_error(:payload_too_large, "payload_too_large")
+      expect_error(:content_too_large, "payload_too_large")
       expect(EnrollmentToken.redeemable.where(host:)).to exist
     end
 

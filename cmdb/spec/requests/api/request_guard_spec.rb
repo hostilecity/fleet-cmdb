@@ -38,7 +38,7 @@ RSpec.describe AgentApiRequestGuard do
 
   it "is installed with a 1 MB limit in the application" do
     post "/api/v1/enroll", params: "x" * (AgentApiRequestGuard::MAX_BODY_BYTES + 1), headers: { "CONTENT_TYPE" => "application/json" }
-    expect(response).to have_http_status(:payload_too_large)
+    expect(response).to have_http_status(:content_too_large)
     expect(response.parsed_body.dig("error", "request_id")).to eq(response.headers["X-Request-Id"])
   end
 end

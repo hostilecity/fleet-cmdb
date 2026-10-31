@@ -7,7 +7,7 @@ module ShowsEnrollmentToken
   def show_token(token, created:)
     response.headers["Cache-Control"] = "no-store"
     @token = token
-    @token_record = @host.enrollment_tokens.redeemable.order(created_at: :desc).first
+    @token_record = @host.enrollment_tokens.redeemable.order(created_at: :desc, id: :desc).first
     @created = created
     render "hosts/token", status: (created ? :created : :ok)
   end

@@ -78,7 +78,7 @@ module AgentApi
   end
 
   class PayloadTooLarge < Error
-    self.status = :payload_too_large
+    self.status = :content_too_large
     self.code = "payload_too_large"
     self.default_message = "The request body is too large."
   end

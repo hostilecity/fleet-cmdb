@@ -12,7 +12,7 @@ class ApprovalsController < ApplicationController
   before_action :load_request, only: %i[show approve reject]
 
   def index
-    @awaiting = OnboardingRequest.awaiting.order(created_at: :desc).to_a
+    @awaiting = OnboardingRequest.awaiting.order(created_at: :desc, id: :desc).to_a
     @matches = OnboardingRequest.matching_hosts_for(@awaiting) # batched: a fixed number of queries per render
   end
 

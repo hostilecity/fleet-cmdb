@@ -73,12 +73,12 @@ class OnboardingRequest < ApplicationRecord
     machine_ids = requests.filter_map(&:machine_id).uniq
     hostnames = requests.filter_map { |r| r.hostname&.downcase }.uniq
     by_machine = hosts_by_machine_id(machine_ids)
-    by_name = hostnames.any? ? Host.in_fleet.where(hostname: hostnames).order(:name).to_a.group_by(&:hostname) : {}
+    by_name = hostnames.any? ? Host.in_fleet.where(hostname: hostnames).order(:name, :id).to_a.group_by(&:hostname) : {}
 
     requests.to_h do |request|
       name = request.hostname&.downcase
       # A host that also has the reported hostname is the likeliest, so it comes first and is the default.
-      machine = by_machine.fetch(request.machine_id, []).sort_by { |h| [ h.hostname == name ? 0 : 1, h.name.downcase ] }
+      machine = by_machine.fetch(request.machine_id, []).sort_by { |h| [ h.hostname == name ? 0 : 1, h.name.downcase, h.id ] }
       named = by_name.fetch(name, []).reject { |h| machine.include?(h) }
       [ request.id, machine.map { |h| [ h, :machine_id ] } + named.map { |h| [ h, :hostname ] } ]
     end
