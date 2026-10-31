@@ -50,4 +50,8 @@ Rails.application.configure do
   # Agent API rate limits small enough to exercise in request specs (config/initializers/agent_api.rb).
   config.x.agent_api.rate_limit = { to: 10, within: 1.minute }
   config.x.agent_api.enroll_rate_limit = { to: 5, within: 1.minute }
+
+  # Release downloads limited enough to exercise (config/initializers/releases.rb). Keys and the release
+  # directory are set per example (spec/support/releases.rb).
+  config.x.releases.download_rate_limit = { to: 20, within: 1.minute }
 end

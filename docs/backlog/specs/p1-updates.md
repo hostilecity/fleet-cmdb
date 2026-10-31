@@ -16,6 +16,8 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
 
   Also an `update-result.request` schema for reporting outcomes, and examples for all three.
 - **Rollouts.** A `rollouts` table: target release, canary hosts (explicit list or tag), stages (default: canaries, then 25%, then 100%), state (`running`, `halted`, `completed`, `cancelled`), and who started, halted, or resumed it. One running rollout at a time.
+  - The target release is a foreign key to `agent_releases` that restricts deletion, so a release a rollout targets is never deleted ([P1-RELEASES](p1-releases.md)).
+  - The directive's URLs come from `Releases.download_url`, the same place the install page's do.
   - A host gets the directive only while its stage is open and it runs an older version.
   - A stage advances when all its hosts have confirmed, or an operator advances it.
 - **Outcomes.** `POST /api/v1/agent/update-results` (authenticated) records `succeeded`, `failed` (with reason), or `rolled_back` (with reason) in an `agent_updates` history table.
@@ -36,7 +38,7 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
 ### Scope
 
 - **Agent versions page**, following the approved mockups in [P1-D06](p1-dash-actions.md):
-  - imported releases;
+  - imported releases (already on `/agents` from P1-RELEASES, with the imports);
   - the running rollout with per-stage progress (pending, updating, confirmed, failed, rolled back);
   - start, advance, halt, resume, and cancel, each with confirmation.
 - **On host detail**, an "Agent updates" section with the host's update history.

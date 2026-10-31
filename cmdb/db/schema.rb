@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_31_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_31_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -30,6 +30,44 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_010000) do
     t.index ["key_id"], name: "index_agent_credentials_on_key_id", unique: true
     t.check_constraint "(state::text = 'revoked'::text) = (revoked_at IS NOT NULL)", name: "agent_credentials_revoked_at_matches_state"
     t.check_constraint "state::text = ANY (ARRAY['active'::character varying::text, 'revoked'::character varying::text])", name: "agent_credentials_state_valid"
+  end
+
+  create_table "agent_release_imports", force: :cascade do |t|
+    t.string "version", limit: 64, null: false
+    t.string "state", limit: 16, default: "queued", null: false
+    t.text "reason"
+    t.bigint "operator_id", null: false
+    t.bigint "agent_release_id"
+    t.string "request_id", limit: 255
+    t.datetime "finished_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_at"], name: "index_agent_release_imports_on_created_at"
+    t.index ["version"], name: "index_agent_release_imports_one_in_flight", unique: true, where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
+    t.check_constraint "(state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying]::text[])) = (finished_at IS NULL)", name: "agent_release_imports_finished_at_matches_state"
+    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'imported'::character varying, 'refused'::character varying, 'failed'::character varying]::text[])", name: "agent_release_imports_state_valid"
+  end
+
+  create_table "agent_releases", force: :cascade do |t|
+    t.string "version", limit: 64, null: false
+    t.string "target", limit: 64, null: false
+    t.string "sha256", limit: 64, null: false
+    t.bigint "size", null: false
+    t.binary "manifest", null: false
+    t.binary "signature", null: false
+    t.text "trusted_comment", null: false
+    t.string "key_id", limit: 16, null: false
+    t.string "key_role", limit: 16, null: false
+    t.string "source", limit: 16, null: false
+    t.bigint "imported_by_id", null: false
+    t.datetime "imported_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["version"], name: "index_agent_releases_on_version", unique: true
+    t.check_constraint "key_role::text = ANY (ARRAY['current'::character varying, 'next'::character varying]::text[])", name: "agent_releases_key_role_valid"
+    t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "agent_releases_sha256_valid"
+    t.check_constraint "size >= 1 AND size <= 67108864", name: "agent_releases_size_valid"
+    t.check_constraint "source::text = ANY (ARRAY['github'::character varying, 'upload'::character varying]::text[])", name: "agent_releases_source_valid"
   end
 
   create_table "audit_entries", force: :cascade do |t|
@@ -208,6 +246,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_010000) do
   end
 
   add_foreign_key "agent_credentials", "hosts"
+  add_foreign_key "agent_release_imports", "agent_releases"
+  add_foreign_key "agent_release_imports", "operators"
+  add_foreign_key "agent_releases", "operators", column: "imported_by_id"
   add_foreign_key "enrollment_tokens", "hosts"
   add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_status_events", "hosts"
@@ -269,6 +310,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_010000) do
       $function$
   SQL
 
+  create_function :agent_releases_guard, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.agent_releases_guard()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF TG_OP = 'TRUNCATE' THEN
+          RAISE EXCEPTION 'agent releases are not truncated'
+            USING ERRCODE = 'insufficient_privilege';
+        END IF;
+
+        -- A release is never deleted while a host in the fleet runs it (P1-RELEASES).
+        IF TG_OP = 'DELETE' THEN
+          IF EXISTS (SELECT 1 FROM hosts WHERE hosts.agent_version = OLD.version AND hosts.enrollment_state <> 'retired') THEN
+            RAISE EXCEPTION 'agent release % is in use by a host and cannot be deleted', OLD.version
+              USING ERRCODE = 'foreign_key_violation';
+          END IF;
+          RETURN OLD;
+        END IF;
+
+        -- A published release is never replaced (docs/releases.md): what was verified is what is served.
+        IF (NEW.version, NEW.target, NEW.sha256, NEW.size, NEW.manifest, NEW.signature)
+           IS DISTINCT FROM (OLD.version, OLD.target, OLD.sha256, OLD.size, OLD.manifest, OLD.signature) THEN
+          RAISE EXCEPTION 'agent releases are immutable'
+            USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        RETURN NEW;
+      END;
+      $function$
+  SQL
+
   create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
       CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
   SQL
@@ -287,5 +359,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_010000) do
 
   create_trigger :hosts_no_truncate, sql_definition: <<-SQL
       CREATE TRIGGER hosts_no_truncate BEFORE TRUNCATE ON public.hosts FOR EACH STATEMENT EXECUTE FUNCTION hosts_guard()
+  SQL
+
+  create_trigger :agent_releases_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER agent_releases_no_truncate BEFORE TRUNCATE ON public.agent_releases FOR EACH STATEMENT EXECUTE FUNCTION agent_releases_guard()
+  SQL
+
+  create_trigger :agent_releases_immutable, sql_definition: <<-SQL
+      CREATE TRIGGER agent_releases_immutable BEFORE DELETE OR UPDATE ON public.agent_releases FOR EACH ROW EXECUTE FUNCTION agent_releases_guard()
   SQL
 end

@@ -105,7 +105,7 @@ minisign -G -p next.pub -s next.key -c "fleet-agent release key 2"
 2. In **Settings > Environments > release > Environment secrets**, add `AGENT_RELEASE_SIGNING_KEY` with the **second line only** of `current.key` (the base64 line; the workflow adds the comment line back), and `AGENT_RELEASE_SIGNING_KEY_PASSWORD` with its password. A single-line secret is masked reliably in logs. Never add them as repository secrets.
 3. Back up `current.key`, `next.key`, and both passwords offline, then delete the key files from the machine.
 
-The server checks imported releases against the same public keys, from its own configuration ([P1-RELEASES](backlog/specs/p1-releases.md)).
+The server checks imported releases against the same public keys, from its own configuration ([P1-RELEASES](backlog/specs/p1-releases.md)): set `FLEET_RELEASE_KEY_CURRENT` (and, once there is one, `FLEET_RELEASE_KEY_NEXT`) to the contents of the `.pub` files (`cmdb/README.md`, "Agent releases"). After a rotation (below), update the server's keys in the same change as `current.pub`.
 
 ### Rotation
 
@@ -138,6 +138,10 @@ Releases are always signed with the key in `current.pub`: the workflow verifies 
 5. **Publish** verifies the signature twice, with the new binary's own `verify-release` and with minisign against `current.pub`, checks the manifest names the tag's version and the binary both builds made, records build provenance for the binary, and creates the GitHub release.
 
 A failed run publishes nothing; fix the cause and re-run the failed jobs, or delete the tag and tag again. A published release is never replaced: release a new version instead.
+
+## Getting a release to the fleet
+
+Once the release is published, an operator imports it on the dashboard's **Agents** page, by version from GitHub, or by uploading the binary, the manifest, and the `.minisig` for a server without internet access. The server verifies it as an agent would, refuses it with the reason if anything does not match, and audits either outcome. It then serves the three files on the agent hostname (`/api/v1/releases/<version>/...`), and **Install an agent** shows the commands for it. Rolling it out to running agents is P1-UPDATES.
 
 ## Repository settings the release relies on
 

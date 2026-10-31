@@ -29,8 +29,18 @@ All endpoints are under `/api/v1`, served only on the private agent hostname ([D
 | `POST /api/v1/onboarding/token` | Device code in the body | `onboarding-token.request` | `202` (pending) or `201` (approved, with the credential), `onboarding-token.response` |
 | `POST /api/v1/heartbeat` | Bearer credential | `heartbeat.request` | `200`, `heartbeat.response` |
 | `POST /api/v1/reports/inventory` | Bearer credential | `inventory.request` | `200`, `inventory.response` |
+| `GET /api/v1/releases/<version>/manifest`, `.../signature`, `.../binary` | None (agent hostname only, rate-limited per address) | none | `200` (or `206`, `304`, `416`), the release file's bytes |
 
-Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: release downloads under `/api/v1/releases/` (P1-RELEASES), the fields of the `agent_update` directive in `heartbeat.response`, and `POST /api/v1/agent/update-results` (P1-UPDATES). The `intervals` directive is already defined (below). Later phases add the config, package, and task endpoints.
+Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: the fields of the `agent_update` directive in `heartbeat.response`, and `POST /api/v1/agent/update-results` (P1-UPDATES). The `intervals` directive is already defined (below). Later phases add the config, package, and task endpoints.
+
+### Release downloads
+
+The files of a signed release the server has imported ([docs/releases.md](../releases.md), P1-RELEASES): the manifest (`application/json`), its minisign signature (`text/plain`), and the static binary (`application/octet-stream`), byte for byte as published. They are not JSON API responses and have no schema; agents verify them against the release keys built into them, never trusting the server's checks (ADR 0018).
+
+- **No credential:** releases are public, and the installer has none yet. Limited per client address instead (`429 rate_limited` with `Retry-After`).
+- **No minimum version:** these paths never answer `426`, so an agent too old for the rest of the API can still fetch the release that updates it (FR-S.5).
+- **Caching and resuming:** each response has a strong `ETag` (the SHA-256 of the file, quoted; for the binary, the manifest's `sha256`), `Content-Length`, and `Content-Disposition` with the release workflow's file name. `If-None-Match` gives `304`. The binary also has `Accept-Ranges: bytes` and serves one byte range (`206` with `Content-Range`; `416` past the end), honouring `If-Range`; several ranges get the whole file. A release never changes once imported.
+- **Errors:** an unknown version is `404 not_found`. URLs are location-independent: the update directive (P1-UPDATES) will carry them, so they may later point elsewhere, such as a CDN, without an agent change (ADR 0019).
 
 ## Conventions
 
@@ -62,12 +72,12 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 | 403 | `reenrollment_required` | Valid credential, but the host is `pending` because an operator issued a new enrollment token (re-enrollment). The response also has the header `Fleet-Enrollment-State: pending`. The agent logs plainly that it must be re-enrolled (`fleet-agent install --reenroll`, or `--token` with the new token) and backs off to a long interval |
 | 403 | `host_not_active` | Valid credential, but the host is in some other state that may not call this endpoint |
 | 403 | `onboarding_rejected` | An operator rejected the onboarding request. The installer stops and says so |
-| 404 | `not_found` | Unknown route |
+| 404 | `not_found` | Unknown route, or a release the server does not have |
 | 410 | `enrollment_token_invalid` | Enrollment token unknown, expired, or already used. Same body for each case |
 | 410 | `onboarding_expired` | Onboarding device code unknown, expired, or already used to collect a credential. Same body for each case; the installer starts again |
 | 413 | `payload_too_large` | Body over the endpoint's size limit |
 | 426 | `agent_version_unsupported` | `agent_version` is older than the server's minimum. The agent logs this plainly and backs off |
-| 429 | `rate_limited` | Too many requests, too many onboarding requests open, or onboarding polled faster than its `interval`. Honour the `Retry-After` header |
+| 429 | `rate_limited` | Too many requests, too many onboarding requests open, onboarding polled faster than its `interval`, or too many release downloads from one address. Honour the `Retry-After` header |
 | 500 | `internal_error` | Unexpected failure. The message never contains internals |
 
 P1-API-AUTH implements these. If it changes a code or status, it must update this table in the same pull request.
@@ -122,3 +132,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | `enroll.response` gains the optional `host_name`, the name the operator gave the host, for the installer's summary; example `created-with-host-name.json` (P1-AGENT-INSTALL). Additive, so no version bump. |
 | v1 | `warnings` may also explain a partly read list fact (`disks`, `network_interfaces`) that is not `null`; example `partial-lists.json` (P1-AGENT-COLLECT). Description only, so no version bump. |
 | v1 | `heartbeat.response` `directives` is an object keyed by directive name instead of an always-empty array, with `intervals` defined and `agent_update` reserved as an object; the server sends `{}` (DEC-20, amending DEC-08). Breaking for the response shape, but v1 has no released agents, so no version bump. From here on a new directive or optional directive field is additive. |
+| v1 | Release downloads `GET /api/v1/releases/<version>/manifest`, `signature`, and `binary`: unauthenticated, exempt from the minimum version, with `ETag`, `Content-Length`, and byte ranges (P1-RELEASES). New endpoints, so no version bump. |

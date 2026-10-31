@@ -228,3 +228,10 @@ th.when { width: 11rem; }
   .pager { flex-wrap: wrap; gap: 0.25rem 1rem; }
   .pager > .muted { order: 3; flex-basis: 100%; text-align: center; } /* its own line under the two links */
 }
+
+/* P1-RELEASES (#58): Agents page and install page */
+.sheet + .sheet { margin-top: 1.5rem; }
+#upload { margin: 0.5rem 0 1rem; }
+#upload summary { cursor: pointer; color: var(--petrol); margin-bottom: 0.75rem; }
+#upload .field input[type="file"] { width: 100%; }
+#import_form .error-text { flex-basis: 100%; }

@@ -14,6 +14,8 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). The release
   - By uploading the binary, manifest, and signature, for networks without internet access. Binaries live on a persistent volume, not in the database (Active Storage is not used).
 - **Verification on import.** The manifest signature is checked against the release public keys in server configuration, the checksum and size are checked, and the version must be strict SemVer. A failing release is refused and the failure audited. This check is defence in depth: agents verify independently.
 - **No deletion.** Releases are never deleted while any host runs them or a rollout targets them.
+  - Enforced for hosts by the model and a database trigger (`agent_releases_guard`), which also makes releases immutable. There is no delete action in the dashboard. Rollouts reference the release with a restricting foreign key ([P1-UPDATES](p1-updates.md)).
+- **Where operators do it:** the Agents page of the [P1-D06](p1-dash-actions.md) mockups (`agents.html`): the releases table, "Import a release from GitHub", and the upload. A GitHub import's progress and outcome are kept in `agent_release_imports` and shown there, since the job runs after the request.
 
 ### Acceptance criteria
 

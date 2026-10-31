@@ -193,10 +193,11 @@ end
 
 # Outside the probe routes above: checks the application's real route table.
 RSpec.describe "Agent API routes" do
-  it "serves every /api/v1 route except enrollment, onboarding, and the not-found catch-all through AuthenticatedController (AC-1.6)" do
+  it "serves every /api/v1 route except enrollment, onboarding, release downloads, and the not-found catch-all through AuthenticatedController (AC-1.6)" do
     api_routes = Rails.application.routes.routes.select { |route| route.path.spec.to_s.start_with?("/api/v1") }
     controllers = api_routes.filter_map { |route| route.defaults[:controller] }.uniq
-    unauthenticated = [ "api/v1/enrollments", "api/v1/onboardings", "api/v1/base" ]
+    # Release downloads are public: the installer has no credential yet (P1-S16). They take no host input.
+    unauthenticated = [ "api/v1/enrollments", "api/v1/onboardings", "api/v1/releases", "api/v1/base" ]
     expect(controllers).to include(*unauthenticated)
     (controllers - unauthenticated).each do |name|
       expect("#{name}_controller".camelize.constantize).to be < Api::V1::AuthenticatedController

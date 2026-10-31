@@ -1,0 +1,39 @@
+<% content_for :title, "Install an agent" %>
+<% agent_host = HostSeparation.agent_host %>
+<% if @release.nil? %>
+  <div class="page-head"><div><h1>Install an agent</h1></div></div>
+  <div class="sheet empty" id="no_release"><p><strong>No release to install yet.</strong></p><p>Import a signed release on the <%= link_to "Agents", agents_path %> page first. This page then shows the exact commands for it.</p></div>
+<% else %>
+  <div class="page-head"><div><h1>Install an agent</h1><p>Release <strong class="mono" id="release_version"><%= @release.version %></strong><%= " (a pre-release)" if @release.prerelease? %>, signature verified. Needs Debian 13 on x86_64 with systemd, root, and HTTPS access to <span class="mono"><%= agent_host %></span>.</p></div></div>
+  <nav class="tabs" aria-label="Install method"><a href="#one" aria-selected="true">One VM, approved here</a><a href="#unattended" aria-selected="false">Unattended</a></nav>
+  <section id="one" class="sheet">
+    <ol class="steps">
+      <li><h3>Download the agent</h3><p>On the VM:</p>
+        <div class="token" id="download_command"><%= install_download_command(@release) %></div>
+        <p class="muted">No curl? Install it with <code>apt install curl</code>, as root.</p></li>
+      <li><h3>Check it</h3>
+        <div class="token" id="check_command"><%= install_check_command(@release) %></div>
+        <p class="muted">It must print <code>fleet-agent: OK</code>. If it does not, do not run it: download it again. The SHA-256 is <span class="mono" id="release_sha256"><%= @release.sha256 %></span>, <%= number_with_delimiter(@release.size) %> bytes.</p></li>
+      <li><h3>Run the installer</h3>
+        <div class="token" id="install_command"><%= install_run_command %></div>
+        <p class="muted">As root without sudo, leave out <code>sudo</code>. It checks the VM, installs the agent, and prints a link and a code like <code>WDJB-MJHT</code>.</p></li>
+      <li><h3>Approve it here</h3><p>Open the link, or go to <%= link_to "Approve a VM", onboard_path %>. Check that the code matches the terminal, name the host, and approve. The installer finishes by itself within a few seconds.</p></li>
+    </ol>
+    <h3>What the terminal shows</h3>
+    <p>After checking the VM and installing, the installer waits for you with:</p>
+    <div class="terminal" id="approval_example"><%= install_approval_example %></div>
+    <p>Once approved it saves the credential, starts the service, waits for the first heartbeat, and ends with <code>Done. fleet-agent is installed, enrolled, and running.</code> If anything fails, it says what happened and what to do next. Logs: <code>journalctl -u fleet-agent</code>. To remove it: <code>sudo fleet-agent uninstall</code>.</p>
+    <p class="muted">If <span class="mono"><%= agent_host %></span> uses a private certificate authority, give its certificate to both commands: <code>curl --cacert ca.pem …</code> and <code>fleet-agent install … --ca-file ca.pem</code>.</p>
+  </section>
+  <section id="unattended" class="sheet">
+    <h2>Unattended: cloud-init, templates, scripts</h2>
+    <p>No one is there to approve, so <%= link_to "pre-register the host", new_host_path %> first. You get a one-time token, valid for <%= Rails.configuration.x.enrollment.token_ttl.in_hours.to_i %> hours, and the installer uses it instead of an approval. Download and check the agent as above, then run:</p>
+    <div class="token" id="token_command"><%= install_token_command %></div>
+    <p class="muted">Paste the token when asked, so it never appears in the process list or shell history.</p>
+    <p>Or with cloud-init, replacing <code><%= AgentReleasesHelper::TOKEN_PLACEHOLDER %></code> with the token:</p>
+    <div class="terminal" id="cloud_init"><%= install_cloud_init(@release) %></div>
+    <p class="muted">The token works once. A template that clones many VMs needs one pre-registration per VM.</p>
+  </section>
+  <h2>Afterwards</h2>
+  <p>To upgrade one VM by hand, run the installer from a newer release the same way; it keeps the credential. Other releases: <%= link_to "Agents", agents_path %>.</p>
+<% end %>

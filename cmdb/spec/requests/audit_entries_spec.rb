@@ -174,7 +174,7 @@ RSpec.describe "Audit log", type: :request do
     it "shows every action by its label, grouped in the action filter" do
       get "/audit"
       groups = page.css("select[name=action] optgroup").to_h { |g| [ g["label"], g.css("option").map { |o| o["value"] } ] }
-      expect(groups.keys).to eq(%w[Hosts Onboarding Operators Settings])
+      expect(groups.keys).to eq([ "Hosts", "Onboarding", "Operators", "Agent releases", "Settings" ])
       expect(groups.values.flatten).to match_array(Audit::Actions::ALL)
       expect(AuditEntriesHelper::AUDIT_LABELS.keys).to match_array(Audit::Actions::ALL)
     end
