@@ -22,6 +22,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 tmp=$(mktemp -d)
 pids=
+
+# In GitHub Actions, a failure is also reported as an annotation with the agent's journal, since that is
+# what someone reading the run (or its API) sees first.
+annotate() {
+    [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+    body=$(printf '%s\n' "$2" | tail -n 60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+    echo "::error title=$1::$body"
+}
+journal() { journalctl -u "fleet-agent-smoke-$1" --no-pager -o cat 2>&1 | tail -n 60; }
 cleanup() {
     for name in sandboxed baseline; do
         systemctl stop "fleet-agent-smoke-$name" 2>/dev/null || true
@@ -76,7 +85,12 @@ $properties
 EOF
     fi
     sleep 1
-    systemd-run "$@" /usr/local/lib/fleet-agent-smoke/fleet-agent run --config "$etc/config.toml"
+    if ! out=$(systemd-run "$@" /usr/local/lib/fleet-agent-smoke/fleet-agent run --config "$etc/config.toml" 2>&1); then
+        printf '%s\n' "$out" >&2
+        annotate "sandbox-smoke: systemd-run refused the $name service" "$out"
+        exit 1
+    fi
+    printf '%s\n' "$out"
     port=$((port + 1))
 done
 
@@ -95,9 +109,18 @@ for name in sandboxed baseline; do
     echo "--- journal: fleet-agent-smoke-$name"
     journalctl -u "fleet-agent-smoke-$name" --no-pager -o cat | tail -n 40
 done
-[ -n "$ok" ] || { echo "sandbox-smoke: the agent did not report and record its state within 60 seconds" >&2; exit 1; }
+if [ -z "$ok" ]; then
+    echo "sandbox-smoke: the agent did not report and record its state within 60 seconds" >&2
+    for name in sandboxed baseline; do
+        annotate "sandbox-smoke: $name agent did not report within 60 s" \
+            "$(systemctl status "fleet-agent-smoke-$name" --no-pager 2>&1 | head -n 5)
+$(ls -l "/var/lib/fleet-agent-smoke-$name" "$tmp/$name" 2>&1)
+$(journal "$name")"
+    done
+    exit 1
+fi
 
-python3 - "$tmp/sandboxed/inventory.json" "$tmp/baseline/inventory.json" <<'EOF'
+cat > "$tmp/compare.py" <<'EOF'
 import json, sys
 sandboxed, baseline = (json.load(open(path)) for path in sys.argv[1:3])
 envelope = {"schema_version", "agent_version", "report_id", "collected_at", "warnings"}
@@ -114,3 +137,10 @@ if lost or fewer or new:
     sys.exit(1)
 print("sandbox-smoke: the sandboxed agent reported every fact the unsandboxed one did, with no new warning")
 EOF
+if ! result=$(python3 "$tmp/compare.py" "$tmp/sandboxed/inventory.json" "$tmp/baseline/inventory.json" 2>&1); then
+    printf '%s\n' "$result" >&2
+    annotate "sandbox-smoke: the sandbox cost facts" "$result
+$(journal sandboxed)"
+    exit 1
+fi
+printf '%s\n' "$result"
