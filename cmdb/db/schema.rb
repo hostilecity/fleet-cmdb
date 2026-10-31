@@ -43,9 +43,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["created_at"], name: "index_agent_release_imports_on_created_at"
-    t.index ["version"], name: "index_agent_release_imports_one_in_flight", unique: true, where: "((state)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text]))"
-    t.check_constraint "(state::text = ANY (ARRAY['queued'::character varying::text, 'running'::character varying::text])) = (finished_at IS NULL)", name: "agent_release_imports_finished_at_matches_state"
-    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying::text, 'running'::character varying::text, 'imported'::character varying::text, 'refused'::character varying::text, 'failed'::character varying::text])", name: "agent_release_imports_state_valid"
+    t.index ["version"], name: "index_agent_release_imports_one_in_flight", unique: true, where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
+    t.check_constraint "(state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying]::text[])) = (finished_at IS NULL)", name: "agent_release_imports_finished_at_matches_state"
+    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'imported'::character varying, 'refused'::character varying, 'failed'::character varying]::text[])", name: "agent_release_imports_state_valid"
   end
 
   create_table "agent_releases", force: :cascade do |t|
@@ -64,10 +64,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["version"], name: "index_agent_releases_on_version", unique: true
-    t.check_constraint "key_role::text = ANY (ARRAY['current'::character varying::text, 'next'::character varying::text])", name: "agent_releases_key_role_valid"
+    t.check_constraint "key_role::text = ANY (ARRAY['current'::character varying, 'next'::character varying]::text[])", name: "agent_releases_key_role_valid"
     t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "agent_releases_sha256_valid"
     t.check_constraint "size >= 1 AND size <= 67108864", name: "agent_releases_size_valid"
-    t.check_constraint "source::text = ANY (ARRAY['github'::character varying::text, 'upload'::character varying::text])", name: "agent_releases_source_valid"
+    t.check_constraint "source::text = ANY (ARRAY['github'::character varying, 'upload'::character varying]::text[])", name: "agent_releases_source_valid"
   end
 
   create_table "audit_entries", force: :cascade do |t|
@@ -204,7 +204,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
     t.check_constraint "(state::text = 'collected'::text) = (collected_at IS NOT NULL)", name: "onboarding_requests_collected_at_matches_state"
     t.check_constraint "(state::text = 'open'::text) = (decided_at IS NULL)", name: "onboarding_requests_decided_at_matches_state"
     t.check_constraint "NOT reenroll OR host_id IS NOT NULL", name: "onboarding_requests_reenroll_has_host"
-    t.check_constraint "state::text = ANY (ARRAY['open'::character varying::text, 'approved'::character varying::text, 'rejected'::character varying::text, 'collected'::character varying::text])", name: "onboarding_requests_state_valid"
+    t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'approved'::character varying, 'rejected'::character varying, 'collected'::character varying]::text[])", name: "onboarding_requests_state_valid"
   end
 
   create_table "operator_allowlist_entries", force: :cascade do |t|
@@ -342,31 +342,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
       $function$
   SQL
 
-  create_trigger :agent_releases_no_truncate, sql_definition: <<-SQL
-      CREATE TRIGGER agent_releases_no_truncate BEFORE TRUNCATE ON public.agent_releases FOR EACH STATEMENT EXECUTE FUNCTION agent_releases_guard()
-  SQL
-
-  create_trigger :agent_releases_immutable, sql_definition: <<-SQL
-      CREATE TRIGGER agent_releases_immutable BEFORE DELETE OR UPDATE ON public.agent_releases FOR EACH ROW EXECUTE FUNCTION agent_releases_guard()
+  create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
+      CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
   SQL
 
   create_trigger :audit_entries_no_truncate, sql_definition: <<-SQL
       CREATE TRIGGER audit_entries_no_truncate BEFORE TRUNCATE ON public.audit_entries FOR EACH STATEMENT EXECUTE FUNCTION audit_entries_append_only()
   SQL
 
-  create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
-      CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
+  create_trigger :hosts_enrollment_state_guard, sql_definition: <<-SQL
+      CREATE TRIGGER hosts_enrollment_state_guard BEFORE INSERT OR UPDATE OF enrollment_state ON public.hosts FOR EACH ROW EXECUTE FUNCTION hosts_guard()
   SQL
 
   create_trigger :hosts_no_delete, sql_definition: <<-SQL
       CREATE TRIGGER hosts_no_delete BEFORE DELETE ON public.hosts FOR EACH ROW EXECUTE FUNCTION hosts_guard()
   SQL
 
-  create_trigger :hosts_enrollment_state_guard, sql_definition: <<-SQL
-      CREATE TRIGGER hosts_enrollment_state_guard BEFORE INSERT OR UPDATE OF enrollment_state ON public.hosts FOR EACH ROW EXECUTE FUNCTION hosts_guard()
-  SQL
-
   create_trigger :hosts_no_truncate, sql_definition: <<-SQL
       CREATE TRIGGER hosts_no_truncate BEFORE TRUNCATE ON public.hosts FOR EACH STATEMENT EXECUTE FUNCTION hosts_guard()
+  SQL
+
+  create_trigger :agent_releases_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER agent_releases_no_truncate BEFORE TRUNCATE ON public.agent_releases FOR EACH STATEMENT EXECUTE FUNCTION agent_releases_guard()
+  SQL
+
+  create_trigger :agent_releases_immutable, sql_definition: <<-SQL
+      CREATE TRIGGER agent_releases_immutable BEFORE DELETE OR UPDATE ON public.agent_releases FOR EACH ROW EXECUTE FUNCTION agent_releases_guard()
   SQL
 end
