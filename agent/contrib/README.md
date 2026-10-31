@@ -40,6 +40,8 @@ Deliberately not set:
 
 ### Checking it
 
+`scripts/sandbox-smoke.sh` (run in CI on the runner's systemd) runs the musl release binary as a transient service with every `[Service]` option of this unit, read from the file so the test cannot drift, against a local stand-in for the agent API, and once without them. The sandboxed run must have its heartbeat accepted, write its state, and report every fact the unsandboxed run reports, with no new warning; a system call the filter blocks (`SystemCallErrorNumber=EPERM`) would otherwise only show as a missing fact.
+
 `scripts/check-unit.sh` (run in CI) runs `systemd-analyze verify`, failing on any warning, and `systemd-analyze security`, failing above an exposure of 2.0. The exposure went from 7.6 ("EXPOSED") with the baseline unit from P1-AGENT-INSTALL to 1.9 ("OK"). The remaining points are root (0.4), access to the network (0.5 + 0.3 + 0.1), and the other options deliberately left out above. Output on systemd 255:
 
 ```text

@@ -47,7 +47,16 @@ The agent code is `agent/src/release/`; the updater (P1-AGENT-UPDATE) and `fleet
 
 Nothing in the manifest is used before its signature has verified. The updater also refuses any version not newer than the running one ([ADR 0018](decisions/0018-signed-agent-updates.md)).
 
+**Freshness is not covered (known limit).** A signed manifest never expires. The no-downgrade rule stops an older release being pushed, but nothing in the release stops someone who controls what an agent is offered from holding back a newer release (a freeze), or from offering a release that has since been withdrawn. A signature cannot be revoked, so a bad release is withdrawn by publishing a higher version. This is acceptable while the server that chooses rollouts is trusted (ADR 0018). Expiring, signed release metadata, as in TUF, is the fix to revisit before agents trust more than one operator's servers.
+
 ## Verifying a download by hand
+
+**Where it was built:** every release binary has GitHub build provenance (SLSA), showing the workflow run and commit that built it:
+
+```sh
+gh attestation verify fleet-agent-1.2.0-x86_64-unknown-linux-musl --repo hostilecity/fleet-cmdb
+```
+
 
 With an agent you already trust (it checks against the keys built into it, and changes nothing):
 
@@ -121,9 +130,12 @@ Releases are always signed with the key in `current.pub`: the workflow verifies 
    git push origin agent-v1.2.0
    ```
 
-3. **Build** runs without secrets: it refuses the tag unless it is `agent-v<SemVer>`, matches `Cargo.toml`, points at a commit on `main`, and `current.pub` holds a key. It runs the tests, builds the static binary, checks `--version`, and writes the manifest and `SHA256SUMS`.
-4. **Sign** waits for approval. In **Actions**, open the run, check the manifest the build job printed (version, size, SHA-256), and approve the `release` environment. The job sees only the manifest, writes the key to a private temporary file for the one `minisign -S` command, and deletes it.
-5. **Publish** verifies the signature twice, with the new binary's own `verify-release` and with minisign against `current.pub`, checks the manifest names the tag's version, and creates the GitHub release.
+3. **Test, build, and rebuild** run in parallel, without secrets:
+   - **Test** runs the test suite in its own job, so test code never runs where the release binary is built.
+   - **Build** refuses the tag unless it is `agent-v<SemVer>`, matches `Cargo.toml`, points at a commit on `main`, and `current.pub` holds a key. It builds the static binary reproducibly (`agent/scripts/build-release.sh`: build paths are remapped out of the binary), checks `--version`, writes the manifest and `SHA256SUMS`, and puts both in the run's summary.
+   - **Rebuild** builds the same commit again on a separate runner.
+4. **Sign** first requires the build and the rebuild to have produced byte-identical binaries, so a tampered build would have to compromise two runners identically. It then waits for approval: in **Actions**, open the run, compare the summary (version, size, SHA-256) with what you meant to release, and approve the `release` environment. The job sees only the manifest, writes the key to a private temporary file for the one `minisign -S` command, and deletes it.
+5. **Publish** verifies the signature twice, with the new binary's own `verify-release` and with minisign against `current.pub`, checks the manifest names the tag's version and the binary both builds made, records build provenance for the binary, and creates the GitHub release.
 
 A failed run publishes nothing; fix the cause and re-run the failed jobs, or delete the tag and tag again. A published release is never replaced: release a new version instead.
 
@@ -142,4 +154,4 @@ ADR 0018 makes the owner's GitHub account and the `release` environment the trus
 
 ## What CI does without a tag
 
-Agent CI (`.github/workflows/agent-ci.yml`) runs on every pull request and push to `main`. It builds the static musl binary, checks it is static and reports the `Cargo.toml` version, and uploads it as an unsigned workflow artefact on `main`. It then runs the whole release pipeline as a dry run with a key pair it generates and discards: embed the throwaway public key, build, write the manifest, sign it with minisign, verify it with `verify-release`, and check a changed manifest is refused. It never sees the release key, so an untagged build is never signed. It also checks the systemd unit with `systemd-analyze` (`agent/scripts/check-unit.sh`).
+Agent CI (`.github/workflows/agent-ci.yml`) runs on every pull request and push to `main`. It builds the static musl binary, checks it is static and reports the `Cargo.toml` version, and uploads it as an unsigned workflow artefact on `main`. It then runs the whole release pipeline as a dry run with a key pair it generates and discards: embed the throwaway public key, build, write the manifest, sign it with minisign, verify it with `verify-release`, and check a changed manifest is refused. It never sees the release key, so an untagged build is never signed. It builds the binary a second time in another directory and fails if the two differ, so a change that breaks reproducible builds is caught before a release needs one. It also checks the systemd unit with `systemd-analyze` (`agent/scripts/check-unit.sh`), and runs the musl binary under the unit's sandbox on the runner's systemd against a local stand-in for the agent API (`agent/scripts/sandbox-smoke.sh`): the sandboxed run must report every fact an unsandboxed run does, with no new warning.

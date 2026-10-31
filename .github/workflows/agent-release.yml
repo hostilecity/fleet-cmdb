@@ -3,12 +3,21 @@
 # GitHub release. The process, the formats, and the repository settings it relies on are in
 # docs/releases.md.
 #
-#   build    no secrets; refuses a tag that is not on main or does not match Cargo.toml
+#   test     the test suite, in its own job: test code never runs where the release binary is built
+#   build    no secrets; refuses a tag that is not on main or does not match Cargo.toml; builds the
+#            binary reproducibly (scripts/build-release.sh) and shows its SHA-256 in the job summary
+#   rebuild  builds the same commit again on a separate runner, as an independent witness
 #   sign     the only job with the release key: bound to the protected `release` environment, so it
-#            waits for the owner's approval; it sees only the manifest, runs no repository code,
-#            and holds the key in a file only for the one minisign command
+#            waits for the owner's approval; signs only if both builds produced the identical binary,
+#            sees only the manifest, runs no repository code, and holds the key in a file only for
+#            the one minisign command
 #   publish  verifies the signature with the agent's own `verify-release` and with minisign against
-#            the current key in the repository, then creates the release
+#            the current key in the repository, records build provenance for the binary (SLSA, `gh
+#            attestation verify`), then creates the release
+#
+# Why two builds (review of #72): building runs every dependency's build script. A signature only proves
+# the binary came out of our build job; requiring a byte-identical binary from a second, independent
+# runner means a tampered build would have to compromise both identically.
 #
 # There is no other trigger, so untagged builds (Agent CI) are never signed. Actions are pinned to
 # commit SHAs because one of these jobs holds the release key; Dependabot updates them.
@@ -30,6 +39,27 @@ env:
   TARGET: x86_64-unknown-linux-musl # DEC-01
 
 jobs:
+  test:
+    name: Test ${{ github.ref_name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      # Its own job: nothing it builds or runs reaches the release files.
+      - name: cargo test
+        run: cargo test --locked
+
   build:
     name: Build ${{ github.ref_name }}
     runs-on: ubuntu-24.04
@@ -40,6 +70,7 @@ jobs:
       version: ${{ steps.names.outputs.version }}
       binary: ${{ steps.names.outputs.binary }}
       manifest: ${{ steps.names.outputs.manifest }}
+      sha256: ${{ steps.release.outputs.sha256 }}
     defaults:
       run:
         working-directory: agent
@@ -88,12 +119,13 @@ jobs:
       - name: Install musl tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
 
-      # No dependency cache: a release is built from a clean state.
-      - name: cargo test
-        run: cargo test --locked
-
-      - name: cargo build --release
-        run: cargo build --release --locked --target "$TARGET"
+      # No dependency cache: a release is built from a clean state. Tests run in the `test` job.
+      - name: Build reproducibly
+        id: release
+        run: |
+          set -eu
+          bin=$(scripts/build-release.sh "$TARGET")
+          echo "sha256=$(sha256sum "$bin" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Check the binary is static and has the tag's version
         env:
@@ -123,6 +155,30 @@ jobs:
           cat "../dist/$MANIFEST"
           (cd ../dist && sha256sum "$BINARY" "$MANIFEST" > SHA256SUMS && cat SHA256SUMS)
 
+      - name: Show the approver what will be signed
+        # The approval of the `sign` job shows nothing about the artefact; this summary does, and the
+        # same SHA-256 must come out of the independent `rebuild` job before anything is signed.
+        env:
+          VERSION: ${{ steps.names.outputs.version }}
+          BINARY: ${{ steps.names.outputs.binary }}
+          MANIFEST: ${{ steps.names.outputs.manifest }}
+        run: |
+          set -eu
+          {
+            echo "## fleet-agent $VERSION for $TARGET"
+            echo
+            echo "Commit \`$GITHUB_SHA\`. Approve the \`sign\` job only if this is the release you meant to make."
+            echo
+            echo '```'
+            cat "../dist/SHA256SUMS"
+            echo '```'
+            echo
+            echo "Size: $(stat -c %s "../dist/$BINARY") bytes. Manifest:"
+            echo '```json'
+            cat "../dist/$MANIFEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the manifest for signing
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -139,9 +195,42 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  rebuild:
+    name: Rebuild ${{ github.ref_name }} independently
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.rebuild.outputs.sha256 }}
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build reproducibly
+        id: rebuild
+        run: |
+          set -eu
+          bin=$(scripts/build-release.sh "$TARGET")
+          sha=$(sha256sum "$bin" | cut -d ' ' -f 1)
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Independent rebuild: \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
+
   sign:
     name: Sign (needs the owner's approval)
-    needs: build
+    needs: [test, build, rebuild]
     # Belt and braces with the trigger: never sign anything but a version tag.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
     runs-on: ubuntu-24.04
@@ -149,6 +238,18 @@ jobs:
     environment: release
     permissions: {}
     steps:
+      - name: Require two identical builds
+        env:
+          BUILT: ${{ needs.build.outputs.sha256 }}
+          REBUILT: ${{ needs.rebuild.outputs.sha256 }}
+        run: |
+          set -eu
+          if [ -z "$BUILT" ] || [ "$BUILT" != "$REBUILT" ]; then
+            echo "::error::the build ($BUILT) and the independent rebuild ($REBUILT) differ; nothing is signed"
+            exit 1
+          fi
+          echo "Both builds: $BUILT"
+
       - name: Install minisign
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
 
@@ -195,6 +296,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write # create the release
+      id-token: write # build provenance: GitHub's signing identity for the attestation
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -217,6 +320,7 @@ jobs:
 
       - name: Verify
         env:
+          SHA256: ${{ needs.build.outputs.sha256 }}
           VERSION: ${{ needs.build.outputs.version }}
           BINARY: ${{ needs.build.outputs.binary }}
           MANIFEST: ${{ needs.build.outputs.manifest }}
@@ -232,8 +336,16 @@ jobs:
           #    rotation makes it current (docs/releases.md).
           grep -v '^#' ../agent/release-keys/current.pub > "$RUNNER_TEMP/current.pub"
           minisign -V -p "$RUNNER_TEMP/current.pub" -m "$MANIFEST"
-          # 3. The signed manifest names this tag's version and target.
-          jq -e --arg v "$VERSION" --arg t "$TARGET" '.version == $v and .target == $t' "$MANIFEST"
+          # 3. The signed manifest names this tag's version and target, and the binary both builds made.
+          jq -e --arg v "$VERSION" --arg t "$TARGET" --arg s "$SHA256" \
+            '.version == $v and .target == $t and .sha256 == $s' "$MANIFEST"
+
+      - name: Record build provenance
+        # SLSA provenance for the binary, signed by GitHub: which workflow run built it from which commit.
+        # Operators check it with `gh attestation verify <binary> --repo hostilecity/fleet-cmdb`.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/${{ needs.build.outputs.binary }}
 
       - name: Publish the GitHub release
         env:

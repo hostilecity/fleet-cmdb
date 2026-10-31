@@ -12,7 +12,7 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). Server side
 - **Verification.**
   - The manifest signature is checked against the embedded release public keys.
   - The binary's SHA-256 and size are checked against the manifest, and the manifest's target and version against the directive.
-  - The agent refuses any version not newer than the running one.
+  - The agent refuses any version not newer than the running one. Signed manifests do not expire, so freshness (a held-back or withdrawn release) is a known limit while the rollout server is trusted; see `docs/releases.md`.
 
   Every refusal is reported as `failed` with the reason, and nothing is installed.
 - **Self-test.** The staged binary runs its self-test (`fleet-agent self-test`: version, config parse, state readable) before anything changes.
