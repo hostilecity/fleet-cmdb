@@ -1,7 +1,10 @@
 # Agent CI (issue P0-AGENT, FR-1.6, NFR-4).
-# Runs cargo fmt, clippy, tests, a dependency audit, and the static musl release build for each target in
-# DEC-01 (x86_64-unknown-linux-musl only). Pushes to main upload the binary as a workflow artefact.
-# Publishing releases is not done here; see P1-PACKAGING.
+# Runs cargo fmt, clippy, tests, a dependency audit, the systemd unit check, the static musl release
+# build for each target in DEC-01 (x86_64-unknown-linux-musl only) with a reproducibility check, a release
+# dry run with a throwaway key, and the sandbox smoke test (the musl binary under the unit, on systemd).
+# Pushes to main upload the binary as a workflow artefact (built with the release keys in
+# agent/release-keys, unsigned). Signed releases are published only by agent-release.yml, on a version
+# tag, after the owner's approval (P1-PACKAGING, ADR 0018); nothing here has access to the release key.
 #
 # Branch protection should require the "Agent CI" job only. It always runs and passes when
 # agent/ was not touched, so path filtering never leaves a required check pending.
@@ -40,6 +43,7 @@ jobs:
             agent:
               - 'agent/**'
               - '.github/workflows/agent-ci.yml'
+              - '.github/workflows/agent-release.yml'
               - 'docs/api/**' # shared API contract (P0-CONTRACT)
 
   check:
@@ -117,17 +121,35 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
-      - name: Install musl tools
-        # Needed once a dependency compiles C code; harmless before then.
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Install musl tools and minisign
+        # musl-tools: needed once a dependency compiles C code. minisign: the release dry run below.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools minisign
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: agent
           key: ${{ matrix.target }}
 
-      - name: cargo build --release
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Build the release binary
+        # As the release workflow builds it: reproducibly (scripts/build-release.sh).
+        run: scripts/build-release.sh ${{ matrix.target }}
+
+      - name: Check the build is reproducible
+        # The release workflow signs only if two independent builds are byte-identical (review of #72);
+        # building again in another directory here catches a change that breaks that before a tag does.
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          first=$(sha256sum "target/$TARGET/release/fleet-agent" | cut -d ' ' -f 1)
+          again=$(scripts/build-release.sh "$TARGET" "$RUNNER_TEMP/rebuild")
+          second=$(sha256sum "$again" | cut -d ' ' -f 1)
+          echo "first build:  $first"
+          echo "second build: $second"
+          if [ "$first" != "$second" ]; then
+            echo "::error::the release build is not reproducible: two builds of the same commit differ"
+            exit 1
+          fi
 
       - name: Check the binary is static and runs
         env:
@@ -136,6 +158,8 @@ jobs:
           file "$BIN"
           file "$BIN" | grep -Eq '(statically|static-pie) linked'
           "$BIN" --version
+          VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "fleet-agent") | .version')
+          "$BIN" --version | grep -Eqx "fleet-agent $VERSION \(agent schema [0-9]+\)"
 
       - name: Upload binary
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -146,9 +170,90 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Release dry run with a throwaway key
+        # The release pipeline end to end, as agent-release.yml runs it, but with a key pair generated
+        # here and discarded: embed the public key, build, write the manifest, sign it with minisign,
+        # and verify it with the agent's own `verify-release`. Runs after the upload, so the published
+        # artefact never contains this key; the key file is restored at the end.
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: target/${{ matrix.target }}/release/fleet-agent
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"; git checkout -- release-keys/current.pub' EXIT
+          minisign -G -W -p "$tmp/test.pub" -s "$tmp/test.key" > /dev/null
+          cp "$tmp/test.pub" release-keys/current.pub
+          scripts/build-release.sh "$TARGET" > /dev/null
+          VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "fleet-agent") | .version')
+          scripts/release-manifest.sh "$VERSION" "$TARGET" "$BIN" > "$tmp/manifest.json"
+          minisign -S -s "$tmp/test.key" -m "$tmp/manifest.json" -t "fleet-agent $VERSION $TARGET dry run" > /dev/null
+          "$BIN" verify-release --manifest "$tmp/manifest.json" --signature "$tmp/manifest.json.minisig" --binary "$BIN"
+          # A changed manifest must not verify.
+          sed 's/"size":/"size":1/' "$tmp/manifest.json" > "$tmp/changed.json"
+          if "$BIN" verify-release --manifest "$tmp/changed.json" --signature "$tmp/manifest.json.minisig" --binary "$BIN"; then
+            echo "::error::a changed manifest verified"
+            exit 1
+          fi
+
+  unit:
+    name: systemd unit
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: systemd-analyze verify and security
+        # Fails on any warning from `verify`, or an exposure score above 2.0 (P1-PACKAGING).
+        run: scripts/check-unit.sh src/install/fleet-agent.service
+
+  sandbox:
+    name: Sandbox smoke test (musl binary under the unit)
+    # The shipped musl binary, run as a transient systemd service with every sandbox option of the unit,
+    # against a local stand-in for the agent API, and compared with an unsandboxed run: the sandbox must
+    # not cost a single fact (scripts/sandbox-smoke.sh, review of #72). GitHub's Ubuntu runners run systemd.
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: sandbox
+
+      - name: Build the release binary
+        run: scripts/build-release.sh x86_64-unknown-linux-musl
+
+      - name: Run it under the unit's sandbox
+        # sudo resets the environment; GITHUB_ACTIONS turns on the script's annotations.
+        run: sudo GITHUB_ACTIONS=true scripts/sandbox-smoke.sh target/x86_64-unknown-linux-musl/release/fleet-agent src/install/fleet-agent.service
+
   gate:
     name: Agent CI
-    needs: [changes, check, audit, build]
+    needs: [changes, check, audit, build, unit, sandbox]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -158,9 +263,11 @@ jobs:
           CHECK: ${{ needs.check.result }}
           AUDIT: ${{ needs.audit.result }}
           BUILD: ${{ needs.build.result }}
+          UNIT: ${{ needs.unit.result }}
+          SANDBOX: ${{ needs.sandbox.result }}
         run: |
-          echo "changes=$CHANGES check=$CHECK audit=$AUDIT build=$BUILD"
+          echo "changes=$CHANGES check=$CHECK audit=$AUDIT build=$BUILD unit=$UNIT sandbox=$SANDBOX"
           if [ "$CHANGES" != "success" ]; then exit 1; fi
-          for r in "$CHECK" "$AUDIT" "$BUILD"; do
+          for r in "$CHECK" "$AUDIT" "$BUILD" "$UNIT" "$SANDBOX"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then exit 1; fi
           done

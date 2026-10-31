@@ -2,7 +2,7 @@
 
 The Fleet CMDB agent: a single static Rust binary that runs as a systemd service on each VM and reports host facts to the server (FR-1.6). The fleet is Debian 13 on x86_64 ([DEC-01](../docs/decisions/0001-fleet-profile.md)), so the only release target is `x86_64-unknown-linux-musl`. The agent runs as root under a hardened unit ([DEC-03](../docs/decisions/0003-agent-privilege.md)).
 
-Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE), and so are the read-only fact collectors (P1-AGENT-COLLECT) and heartbeats and inventory reports (P1-AGENT-REPORT); `run` reports until it gets a stop signal. `install` and `uninstall` (P1-AGENT-INSTALL) install, enroll, start, and remove it.
+Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE), and so are the read-only fact collectors (P1-AGENT-COLLECT) and heartbeats and inventory reports (P1-AGENT-REPORT); `run` reports until it gets a stop signal. `install` and `uninstall` (P1-AGENT-INSTALL) install, enroll, start, and remove it. Releases are built, signed, and published on a version tag, and the systemd unit is hardened (P1-PACKAGING; see [Releases](#releases) and [`contrib/`](contrib/README.md)).
 
 ## Build and check
 
@@ -18,7 +18,7 @@ file target/x86_64-unknown-linux-musl/release/fleet-agent   # "statically linked
 target/x86_64-unknown-linux-musl/release/fleet-agent --version
 ```
 
-Building the musl target from macOS needs a cross linker. The simplest route is to build inside a Linux container or rely on CI, which uploads the binary as a workflow artefact on every push to `main`.
+Building the musl target from macOS needs a cross linker. The simplest route is to build inside a Linux container or rely on CI, which uploads the binary as a workflow artefact on every push to `main`. Those artefacts are unsigned; signed releases come only from a version tag ([Releases](#releases)).
 
 `--version` prints the agent version (from `Cargo.toml`) and the agent schema version, the integer `schema_version` sent with reports ([DEC-08](../docs/decisions/0008-api-conventions.md)):
 
@@ -33,6 +33,8 @@ fleet-agent [run] [--config PATH]          run the agent (the default command)
 fleet-agent check-config [--config PATH]   validate the config and trusted certificates; never contacts the server
 fleet-agent install [OPTIONS]              install, enroll, and start the agent (see below)
 fleet-agent uninstall [--keep-state]       stop and remove the agent (see below)
+fleet-agent verify-release --manifest PATH --signature PATH --binary PATH
+                                           check a downloaded release's signature and checksum (see Releases)
 fleet-agent --version | --help
 ```
 
@@ -101,9 +103,9 @@ min_seconds = 300
 max_seconds = 21600
 ```
 
-If only `interval_seconds` is set, the default bounds widen to include it.
+If only `interval_seconds` is set, the default bounds widen to include it. [`contrib/config.example.toml`](contrib/config.example.toml) documents every option.
 
-`state_dir` is created with mode `0700` if it does not exist. An existing directory is never changed: the agent refuses to start if it is a symlink, is owned by another user, or is accessible by group or others, and says how to fix it. Never point `state_dir` at a shared directory. `ca_file` must hold only valid PEM certificates; a malformed entry is an error rather than being skipped. Config errors name the key but never repeat its value, so a misplaced credential does not end up in the logs.
+`state_dir` is created with mode `0700` if it does not exist. Under the systemd unit only `/var/lib/fleet-agent` is writable (`ProtectSystem=strict`): for another `state_dir`, add `ReadWritePaths=<directory>` with `systemctl edit fleet-agent`; the agent checks at startup that it can write the directory and says this if it cannot. An existing directory is never changed: the agent refuses to start if it is a symlink, is owned by another user, or is accessible by group or others, and says how to fix it. Never point `state_dir` at a shared directory. `ca_file` must hold only valid PEM certificates; a malformed entry is an error rather than being skipped. Config errors name the key but never repeat its value, so a misplaced credential does not end up in the logs.
 
 ## HTTP client and retries
 
@@ -123,6 +125,16 @@ If only `interval_seconds` is set, the default bounds widen to include it.
 - **State:** after each accepted report, `inventory.json` in `state_dir` records its stable hash, boot identifier, agent version, and `report_id`, written atomically. The startup report logs whether the stable facts changed and whether the host rebooted since then. A missing or corrupt record is treated as none.
 - **Stopping:** `SIGTERM` or `SIGINT` ends both loops between requests; a request in flight finishes first (at most the 30 s timeout). If either loop fails unexpectedly, the agent stops and exits with status `1`, so systemd restarts it.
 
+## Releases
+
+A version tag `agent-v<version>` on `main` makes a release: `.github/workflows/agent-release.yml` builds the static binary, writes a manifest (version, target, SHA-256, size), has it signed with the Ed25519 release key after the owner approves the run, and publishes the binary, the manifest, its minisign signature, and `SHA256SUMS` as a GitHub release. The release public keys, current and next, are built into the agent from `release-keys/`; until the owner generates them those files hold no key and no release verifies. Formats, key generation and rotation, and the release steps: [docs/releases.md](../docs/releases.md).
+
+`fleet-agent verify-release --manifest PATH --signature PATH --binary PATH` checks a downloaded release exactly as the updater will (P1-AGENT-UPDATE): the signature against the embedded keys, then the manifest, then the binary's size and SHA-256. It changes nothing and exits `0` if verified, `1` if not (with the reason), `2` on a usage error. Run it with an agent binary you already trust.
+
+## Systemd unit
+
+`src/install/fleet-agent.service` is built into the binary and written by `install`; [`contrib/fleet-agent.service`](contrib/fleet-agent.service) is a copy for review, kept identical by a test. The sandbox and the reason for each option, with the `systemd-analyze security` result, are in [`contrib/README.md`](contrib/README.md). `scripts/check-unit.sh` runs `systemd-analyze verify` and `security` as CI does.
+
 ## Layout
 
 | Module | Responsibility | Filled in by |
@@ -136,7 +148,8 @@ If only `interval_seconds` is set, the default bounds widen to include it.
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
 | `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
-| `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL |
+| `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL, P1-PACKAGING (unit hardening) |
+| `release` | Release manifest, the release public keys built in from `release-keys/`, signature and checksum verification, `verify-release` | P1-PACKAGING |
 
 ## Collected facts
 
@@ -173,8 +186,10 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Signals | `signal-hook` | Graceful `SIGTERM`/`SIGINT` handling without an async runtime or hand-written `unsafe` |
 | Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors, `geteuid` and `open` flags for the ownership checks, `flock` and `termios` for the installer's lock and hidden token prompt, none of which `std` exposes. No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
 | Arguments | `lexopt` | Splits the command line (`--opt value`, `--opt=value`, `--`, non-UTF-8 arguments without a panic) for `run`, `check-config`, `install`, and `uninstall`. No dependencies of its own. Error messages never repeat an argument that could be a secret (`src/cli.rs`) |
+| Release signatures | `minisign-verify` | Verifies the minisign (Ed25519) signature of a release manifest against the embedded release keys ([ADR 0021](../docs/decisions/0021-release-signature-format.md), proposed). Verify-only, by minisign's author, no dependencies, used by the Tauri updater. It brings its own Ed25519 and BLAKE2b code rather than `ring`'s; legacy (not pre-hashed) signatures are refused |
+| Versions | `semver` | Strict SemVer parsing of release versions and their ordering, for the no-downgrade rule (ADR 0018). dtolnay's crate, as used by Cargo; no dependencies |
 | QR code | `qrcodegen` | The installer prints a QR code of the approval page (P1-AGENT-INSTALL). Nayuki's reference encoder: pure Rust, no dependencies, `forbid(unsafe_code)`, about 1,200 lines |
 
-Test-only dependencies (`[dev-dependencies]`, never in the binary): `jsonschema` (default features off, so it never fetches remote schemas), which with `serde_json` checks payloads against the API contract in [`docs/api`](../docs/api/README.md) (in a test, use `assert_conforms` from `tests/support/contract.rs`); and `rcgen` plus `rustls`, which run a local TLS server with a certificate authority generated per test, so no certificate or key is checked in.
+Test-only dependencies (`[dev-dependencies]`, never in the binary): `jsonschema` (default features off, so it never fetches remote schemas), which with `serde_json` checks payloads against the API contract in [`docs/api`](../docs/api/README.md) (in a test, use `assert_conforms` from `tests/support/contract.rs`); `rcgen` plus `rustls`, which run a local TLS server with a certificate authority generated per test, so no certificate or key is checked in; and `minisign`, which generates throwaway release keys and signs test manifests, so no release key is checked in either.
 
 Changing a choice in this table needs a note in the pull request that does it. CI runs a dependency audit on every pull request.

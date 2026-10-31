@@ -1,0 +1,43 @@
+# Example /etc/fleet-agent/config.toml for the Fleet CMDB agent (P1-PACKAGING). Placeholder values only.
+#
+# You do not normally write this file: `fleet-agent install` writes it, with the server address and
+# the credential it receives at enrollment, and keeps your other settings when it is run again. This
+# copy documents every option. The file must be owned by root with mode 0600 (DEC-03); the agent
+# refuses to start otherwise, and on any key it does not know, so a typo is an error, not ignored.
+#
+# Check a config without contacting the server:  fleet-agent check-config --config PATH
+
+# The agent API address: https only, a host name and an optional port, no path. Required.
+server_url = "https://agent.example.lan"
+
+# This host's credential, `<key_id>.<secret>`, written by `fleet-agent install`. Required.
+# It is never logged; log lines show only the key id before the dot.
+credential = "EXAMPLEkey01.EXAMPLE-secret-not-a-real-credential-0001"
+
+# How much goes to the journal: error, warn, info (the default), debug, or trace.
+log_level = "info"
+
+# Extra certificate authorities to trust (a PEM bundle, absolute path), for a server certificate from
+# a private CA. Not needed when it chains to the system trust store, as with Let's Encrypt (DEC-05).
+# `fleet-agent install --ca-file PATH` copies the file to this path and sets it.
+# ca_file = "/etc/fleet-agent/ca.pem"
+
+# Where the agent keeps its state (absolute path). Created with mode 0700 if missing; an existing
+# directory must be owned by root and closed to group and others. The systemd unit lets the agent
+# write only /var/lib/fleet-agent: for another directory, also add `ReadWritePaths=<directory>` in a
+# drop-in (`systemctl edit fleet-agent`).
+state_dir = "/var/lib/fleet-agent"
+
+# Heartbeat interval in seconds (FR-1.2): the agent starts with interval_seconds. The server may ask
+# for another interval (ADR 0019), which is applied only within min_seconds..=max_seconds. Each value
+# must be within 10..=3600. If only interval_seconds is set, the default bounds widen to include it.
+[heartbeat]
+interval_seconds = 60
+min_seconds = 30
+max_seconds = 600
+
+# Inventory report interval in seconds (FR-1.3), with the same rules; each value within 60..=86400.
+[inventory]
+interval_seconds = 900
+min_seconds = 300
+max_seconds = 21600

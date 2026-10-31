@@ -320,3 +320,58 @@ fn install_usage_errors_exit_2_before_touching_anything() {
         assert!(stderr.contains("Next: See `fleet-agent"), "{stderr}");
     }
 }
+
+#[test]
+fn verify_release_has_help_and_usage_errors() {
+    let (output, stdout, _) = run_with(&["verify-release", "--help"]);
+    assert!(output.status.success());
+    assert!(stdout.contains("--manifest PATH"), "{stdout}");
+    let (output, _, stderr) = run_with(&["verify-release", "--manifest", "m.json"]);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("are all required"), "{stderr}");
+    let (_, stdout, _) = run_with(&["--help"]);
+    assert!(stdout.contains("verify-release"), "{stdout}");
+}
+
+#[test]
+fn verify_release_refuses_a_release_signed_by_a_key_it_does_not_embed() {
+    // A throwaway key, generated here: the binary under test embeds only the keys in
+    // release-keys/, so this release must not verify.
+    let scratch = Scratch::new("verify-release");
+    let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let binary = b"not really a binary";
+    let sha: String = ring::digest::digest(&ring::digest::SHA256, binary)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let manifest = format!(
+        "{{\"format\":\"fleet-agent-release-manifest/1\",\"version\":\"9.9.9\",\"target\":\"x86_64-unknown-linux-musl\",\"sha256\":\"{sha}\",\"size\":{}}}\n",
+        binary.len()
+    );
+    let signature = minisign::sign(
+        Some(&pair.pk),
+        &pair.sk,
+        std::io::Cursor::new(manifest.as_bytes()),
+        None,
+        None,
+    )
+    .unwrap()
+    .into_string();
+    let path = |name: &str| scratch.0.join(name);
+    fs::write(path("m.json"), &manifest).unwrap();
+    fs::write(path("m.json.minisig"), signature).unwrap();
+    fs::write(path("bin"), binary).unwrap();
+    let (output, stdout, stderr) = run_with(&[
+        "verify-release",
+        "--manifest",
+        path("m.json").to_str().unwrap(),
+        "--signature",
+        path("m.json.minisig").to_str().unwrap(),
+        "--binary",
+        path("bin").to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("release NOT verified"), "{stderr}");
+}

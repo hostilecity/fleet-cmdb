@@ -174,6 +174,62 @@ mod tests {
         assert!(!UNIT.contains("User="));
     }
 
+    #[test]
+    fn the_contrib_copy_is_the_unit_the_installer_writes() {
+        // P1-PACKAGING keeps a copy in agent/contrib/ for review. This file is the source; after
+        // changing it, run `cp src/install/fleet-agent.service contrib/` in agent/.
+        assert!(
+            UNIT == include_str!("../../contrib/fleet-agent.service"),
+            "agent/contrib/fleet-agent.service differs from agent/src/install/fleet-agent.service"
+        );
+    }
+
+    /// The values of `key=` in the unit, in order.
+    fn values(key: &str) -> Vec<&'static str> {
+        UNIT.lines()
+            .filter_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+            .collect()
+    }
+
+    #[test]
+    fn the_sandbox_keeps_what_the_agent_needs() {
+        // P1-PACKAGING: every hardening option must leave the agent able to read /etc/fleet-agent,
+        // /proc, /sys, and the mount table, statvfs every mount, reach the network, and write its
+        // state directory. These are the options that would silently break one of those.
+        assert_eq!(values("StateDirectory"), ["fleet-agent"]);
+        assert_eq!(
+            Path::new("/var/lib").join(values("StateDirectory")[0]),
+            Path::new(crate::config::DEFAULT_STATE_DIR),
+            "ProtectSystem=strict leaves only the StateDirectory= writable"
+        );
+        // Hiding /home (ProtectHome=yes or tmpfs) would replace a /home disk by an empty mount.
+        assert_eq!(values("ProtectHome"), ["read-only"]);
+        // /proc/cpuinfo, /proc/meminfo, /proc/net/route are not per-process files.
+        assert!(values("ProcSubset").is_empty());
+        // A private UTS namespace would freeze the hostname the agent reports.
+        assert!(values("ProtectHostname").is_empty());
+        // Network to the server; netlink for getifaddrs(3).
+        assert!(values("PrivateNetwork").is_empty());
+        assert!(values("IPAddressDeny").is_empty());
+        assert_eq!(
+            values("RestrictAddressFamilies"),
+            ["AF_INET AF_INET6 AF_NETLINK"]
+        );
+        // Root without a user namespace: PrivateUsers= would hide root-owned files' ownership.
+        assert!(values("PrivateUsers").is_empty());
+        assert!(values("DynamicUser").is_empty());
+        // Blocked system calls fail with an error the collectors report, rather than killing the
+        // agent, and statfs/statvfs, getrandom, and sockets are in @system-service.
+        assert_eq!(values("SystemCallErrorNumber"), ["EPERM"]);
+        assert_eq!(
+            values("SystemCallFilter"),
+            ["@system-service", "~@privileged @resources"]
+        );
+        // The one capability: searching directories root does not own, for statvfs and reads.
+        assert_eq!(values("CapabilityBoundingSet"), ["CAP_DAC_READ_SEARCH"]);
+        assert!(values("AmbientCapabilities").is_empty());
+    }
+
     fn fake(script: &str, timeout: Duration) -> (crate::test_support::TempDir, Systemctl) {
         use std::os::unix::fs::PermissionsExt;
         let dir = crate::test_support::TempDir::new();

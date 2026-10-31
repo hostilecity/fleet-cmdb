@@ -792,4 +792,66 @@ pub(crate) mod tests {
             assert!(error.to_string().contains("chmod 600"), "{error}");
         }
     }
+
+    /// The keys serde accepts at the top level or in a table, read from its "unknown field" error,
+    /// so a new option is noticed without a list kept here by hand.
+    fn accepted_keys(text: &str) -> Vec<String> {
+        let message = Config::from_toml(text).unwrap_err().to_string();
+        let (_, expected) = message
+            .split_once("expected one of")
+            .unwrap_or_else(|| panic!("no key list in: {message}"));
+        expected
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    const EXAMPLE: &str = include_str!("../contrib/config.example.toml");
+
+    #[test]
+    fn the_example_config_documents_every_option_with_the_defaults() {
+        // P1-PACKAGING: contrib/config.example.toml documents every option, with placeholders only.
+        let example = Config::from_toml(EXAMPLE).expect("the example parses");
+        let defaults = Config::from_toml(&minimal()).unwrap();
+        assert_eq!(example.log_level, defaults.log_level);
+        assert_eq!(example.state_dir, defaults.state_dir);
+        assert_eq!(example.heartbeat, defaults.heartbeat);
+        assert_eq!(example.inventory, defaults.inventory);
+        assert!(example.server_url.ends_with(".example.lan"));
+        assert!(example.credential.expose_secret().contains("EXAMPLE"));
+
+        // With every commented-out option enabled, it still parses.
+        let enabled: String = EXAMPLE
+            .lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(rest) if rest.contains(" = ") && !rest.contains('`') => rest,
+                _ => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_ne!(enabled, EXAMPLE);
+        let enabled = Config::from_toml(&enabled).expect("the example with every option parses");
+        assert_eq!(
+            enabled.ca_file.as_deref(),
+            Some(Path::new("/etc/fleet-agent/ca.pem"))
+        );
+
+        let documented = |key: &str| {
+            EXAMPLE.lines().any(|line| {
+                let line = line.trim_start_matches("# ");
+                line.starts_with(&format!("{key} = ")) || line == format!("[{key}]")
+            })
+        };
+        let top = accepted_keys(&format!("{}\nbogus_option = 1\n", minimal()));
+        let table = accepted_keys(&format!("{}\n[heartbeat]\nbogus_option = 1\n", minimal()));
+        assert!(top.len() >= 7 && table.len() >= 3, "{top:?} {table:?}");
+        for key in top.iter().chain(&table) {
+            assert!(
+                documented(key),
+                "`{key}` is missing from contrib/config.example.toml"
+            );
+        }
+    }
 }

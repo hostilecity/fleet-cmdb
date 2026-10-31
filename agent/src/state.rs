@@ -102,6 +102,33 @@ pub fn write_record(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     fsx::write_atomic(&dir.join(name), bytes, RECORD_MODE)
 }
 
+/// Name of the empty record written and removed by [`check_writable`].
+const WRITE_PROBE: &str = "write-probe";
+
+/// Checks once, at startup, that records can be written in `dir`, so a sandbox or read-only mount that
+/// blocks the state directory is reported with how to fix it ([`describe_write_error`]), not only as
+/// later record writes failing. Leaves nothing behind.
+pub fn check_writable(dir: &Path) -> io::Result<()> {
+    write_record(dir, WRITE_PROBE, b"")?;
+    fs::remove_file(dir.join(WRITE_PROBE))
+}
+
+/// `error` from writing in the state directory `dir`, with the fix when the file system is read-only
+/// for the agent: the systemd unit (`ProtectSystem=strict`) lets it write only its own
+/// `StateDirectory=`, so a `state_dir` elsewhere also needs `ReadWritePaths=` (P1-PACKAGING).
+pub fn describe_write_error(dir: &Path, error: &io::Error) -> String {
+    if error.raw_os_error() == Some(libc::EROFS) {
+        format!(
+            "{error}. The fleet-agent.service sandbox lets the agent write only {}; for state_dir = \"{}\" add `ReadWritePaths={}` with `systemctl edit fleet-agent`, or use the default state_dir",
+            crate::config::DEFAULT_STATE_DIR,
+            dir.display(),
+            dir.display()
+        )
+    } else {
+        error.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +281,30 @@ mod tests {
         let file = tmp.write("state", "");
         let error = ensure_dir(&file).unwrap_err();
         assert!(error.to_string().contains("not a directory"));
+    }
+
+    #[test]
+    fn the_write_check_leaves_nothing_behind() {
+        let tmp = TempDir::new();
+        let dir = tmp.path("state");
+        ensure_dir(&dir).unwrap();
+        check_writable(&dir).unwrap();
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        assert!(check_writable(&tmp.path("missing")).is_err());
+    }
+
+    #[test]
+    fn a_read_only_state_directory_explains_the_sandbox() {
+        let dir = Path::new("/srv/fleet-agent-state");
+        let read_only = io::Error::from_raw_os_error(libc::EROFS);
+        let text = describe_write_error(dir, &read_only);
+        assert!(
+            text.contains("ReadWritePaths=/srv/fleet-agent-state")
+                && text.contains("systemctl edit fleet-agent")
+                && text.contains("/var/lib/fleet-agent"),
+            "{text}"
+        );
+        let other = io::Error::from_raw_os_error(libc::ENOSPC);
+        assert_eq!(describe_write_error(dir, &other), other.to_string());
     }
 }
