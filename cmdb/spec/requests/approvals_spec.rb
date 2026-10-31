@@ -2,8 +2,6 @@ require "rails_helper"
 
 # Onboarding approval in the dashboard (P1-D07, DEC-17, FR-S.1, AC-1.8).
 RSpec.describe "Onboarding approval", type: :request do
-  HOSTILE = %(<script>alert("x")</script>).freeze
-
   before do
     host! dashboard_host
     sign_in_operator
@@ -29,6 +27,14 @@ RSpec.describe "Onboarding approval", type: :request do
       expect(row.css("td").map { |td| td.text.squish }.first(3)).to eq([ "vm-08.example.lan", "Debian GNU/Linux 13 (trixie)", "192.0.2.10" ])
       expect(page.at_css("main").text).not_to include(code) # compared on the review page, next to the reported facts
       expect(row.at_css("a")["href"]).to eq("/onboard/#{code}")
+    end
+
+    it "lists the newest request first, also when two arrived at the same time (#69)" do
+      older = start_onboarding(client_ip: "192.0.2.11", hostname: "vm-30.example.lan").record
+      newer = start_onboarding(client_ip: "192.0.2.12", hostname: "vm-31.example.lan").record
+      OnboardingRequest.where(id: [ older.id, newer.id ]).update_all(created_at: Time.current.change(usec: 0))
+      get "/onboard"
+      expect(page.css("tr[id^=onboarding_request_]").map { |tr| tr["id"] }).to eq([ "onboarding_request_#{newer.id}", "onboarding_request_#{older.id}" ])
     end
 
     it "finds a waiting request from the code as typed" do
@@ -145,6 +151,14 @@ RSpec.describe "Onboarding approval", type: :request do
       get "/onboard/#{code}"
       expect(page.at_css("#onboard_match strong").text).to eq("This VM has the same hostname as Old build.")
       expect(page.css("input[name=choice]").map { |i| [ i["value"], i["checked"].present? ] }).to eq([ [ "reenroll-#{same_name.id}", false ], [ "new", true ] ])
+    end
+
+    it "orders matching hosts with the same name by age, so the default never changes between renders (#69)" do
+      twins = Array.new(2) { |i| enrolled_host(name: "Twin", hostname: "vm-6#{i}.example.lan").first }
+      twins.each { |h| h.agent_credentials.active.sole.update_column(:machine_id, "89abcdef0123456789abcdef01234567") }
+      named = [ create(:host, name: "Same", hostname: "vm-08.example.lan"), create(:host, name: "Same", hostname: "vm-08.example.lan") ]
+      get "/onboard/#{code}"
+      expect(page.css("input[name=choice]").map { |i| i["value"] }).to eq((twins + named).map { |h| "reenroll-#{h.id}" } + [ "new" ])
     end
 
     it "matches by hostname alone when the VM could not read its machine ID" do

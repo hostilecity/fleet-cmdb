@@ -2,8 +2,6 @@ require "rails_helper"
 
 # The fleet list and host detail pages (FR-1.5, P1-D02, P1-D03).
 RSpec.describe "Hosts", type: :request do
-  HOSTILE = %(<script>alert("x")</script><img src=x onerror=alert(1)>).freeze
-
   before do
     host! dashboard_host
     sign_in_operator
@@ -35,7 +33,9 @@ RSpec.describe "Hosts", type: :request do
       end
 
       it "lists every fleet column, with retired hosts neither listed nor counted" do
-        get "/"
+        # "Last seen" is relative to the clock, so render at the heartbeat's instant: a slow runner must not
+        # turn "less than 5 seconds ago" into "less than 10 seconds ago" (#69).
+        travel_to(media.reload.last_seen_at) { get "/" }
         row = page.at_css("tr#row_host_#{media.id}")
         expect(row.css("td").map { |td| td.text.squish }).to eq(
           [ "Media server", "Online", "less than 5 seconds ago", media.hostname, "media", "Debian GNU/Linux 13 (trixie)", "0.1.0" ]
@@ -209,6 +209,14 @@ RSpec.describe "Hosts", type: :request do
       expect(section("Enrollment").at_css("dd.notes br")).to be_present
       entries = section("Audit entries").css("td").map { |td| td.text.squish.sub(/, \d{4}-.*/, "") }
       expect(entries).to eq([ "First inventory receivedBy the host", "EnrolledBy the host", "Enrollment token issuedBy Example Operator", "Host createdBy Example Operator" ])
+    end
+
+    it "shows the newest credential when two have the same creation time (#69)" do
+      token = Enrollment::IssueToken.call(host:, actor: operator)
+      Enrollment::Redeem.call(token:, machine_id: nil, agent_version: "0.1.0", schema_version: 1)
+      host.agent_credentials.update_all(created_at: Time.utc(2026, 10, 14, 10)) # a tie, as under a frozen test clock
+      get "/hosts/#{host.id}"
+      expect(facts("Enrollment")["Credential"]).to eq("Active, key #{host.agent_credentials.active.sole.key_id}")
     end
 
     it "shows a pending host's enrollment state and token expiry instead of liveness" do

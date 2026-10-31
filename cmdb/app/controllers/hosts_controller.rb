@@ -19,8 +19,8 @@ class HostsController < ApplicationController
   def show
     @host = Host.includes(:inventory).find(params[:id]) # retired hosts keep their page and history
     @inventory = @host.inventory
-    @credential = @host.agent_credentials.order(created_at: :desc).first
-    @token = @host.enrollment_tokens.redeemable.order(created_at: :desc).first if @host.enrollment_state == "pending"
+    @credential = @host.agent_credentials.order(created_at: :desc, id: :desc).first
+    @token = @host.enrollment_tokens.redeemable.order(created_at: :desc, id: :desc).first if @host.enrollment_state == "pending"
     @history = history
     @status_events = @host.status_events.order(occurred_at: :desc, id: :desc).limit(STATUS_HISTORY_LIMIT)
     @audit_entries = AuditEntry.for_target(@host).order(occurred_at: :desc, id: :desc).limit(AUDIT_LIMIT).to_a

@@ -3,4 +3,6 @@ require_relative "../config/boot"
 require "active_support/continuous_integration"
 
 CI = ActiveSupport::ContinuousIntegration
+require_relative "../lib/ci/step_annotations"
+CI.prepend(CiStepAnnotations) # in GitHub Actions, name a failed step in an annotation (#69)
 require_relative "../config/ci.rb"

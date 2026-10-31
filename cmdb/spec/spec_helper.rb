@@ -10,10 +10,12 @@ end
 require_relative "support/github_annotations_formatter"
 
 RSpec.configure do |config|
-  # In GitHub Actions, failures also become annotations on the pull request (and readable through the API).
-  if ENV["GITHUB_ACTIONS"] == "true"
+  # In GitHub Actions, failures also become annotations on the pull request (and readable through the API), and
+  # the full results are written as JSON for the workflow to keep as an artifact (#69).
+  if GithubAnnotation.active?
     config.add_formatter("progress") # keep the usual output; adding a formatter replaces the default
     config.add_formatter(GithubAnnotationsFormatter)
+    config.add_formatter("json", File.expand_path("../tmp/rspec/results.json", __dir__))
   end
 
   config.expect_with :rspec do |expectations|

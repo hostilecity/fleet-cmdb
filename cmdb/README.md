@@ -57,6 +57,10 @@ bin/ci                                  # all of the above, in order (this is wh
 
 Tests never reach the network (WebMock blocks everything except localhost). Put factories in `spec/factories/` and shared helpers in `spec/support/`.
 
+Specs run in random order. To reproduce a failure, rerun with the seed RSpec printed: `bundle exec rspec spec/path_spec.rb:12 --seed 1234`. In GitHub Actions, each failing example, any error outside an example, and any failed `bin/ci` step also becomes an error annotation on the pull request (with the seed and the rerun command), because the job log cannot always be read. The workflow keeps the full `bin/ci` log and RSpec's JSON results as the `bin-ci-log` artifact.
+
+Specs that use threads (`spec/services/*_concurrency_spec.rb`) run outside the test transaction. Each thread loads its own records on its own connection: Active Record objects are not thread-safe, and sharing one between threads made a spec fail intermittently (#69).
+
 ## Databases
 
 Development uses `cmdb_development` plus `cmdb_development_cache`, `_queue`, and `_cable`, mirroring production's layout. Tests use a single `cmdb_test` database with the test adapters for jobs, cache, and cable.

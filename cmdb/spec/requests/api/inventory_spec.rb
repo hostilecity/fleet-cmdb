@@ -108,7 +108,7 @@ RSpec.describe "POST /api/v1/reports/inventory", type: :request do
     it "rejects an oversize report with 413" do
       big = report(cpu_model: "x" * 200).merge("padding" => "y" * 300.kilobytes)
       expect { send_report(big) }.not_to change(HostInventory, :count)
-      expect_error(:payload_too_large, "payload_too_large")
+      expect_error(:content_too_large, "payload_too_large")
     end
 
     ApiContract.examples.select { |e| e.version == "v1" && e.schema_name == "inventory.request" && e.kind == "invalid" }.each do |example|

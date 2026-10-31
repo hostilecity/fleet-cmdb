@@ -1,5 +1,6 @@
 # Server CI (issue P0-SERVER-CI, NFR-4).
-# Runs cmdb/bin/ci (rubocop, bundler-audit, importmap audit, brakeman, RSpec) against PostgreSQL.
+# Runs cmdb/bin/ci (rubocop, bundler-audit, importmap audit, brakeman, RSpec) against PostgreSQL. Failures are
+# reported as error annotations as well as in the log (#69).
 #
 # Branch protection should require the "Server CI" job only. It always runs and passes when
 # cmdb/ was not touched, so path filtering never leaves a required check pending.
@@ -74,8 +75,24 @@ jobs:
           working-directory: cmdb # reads cmdb/.ruby-version
           bundler-cache: true
 
+      # A failed step and each RSpec failure (with its seed) also become error annotations, which the checks
+      # API can read when the log cannot (#69). The log and RSpec's JSON results are kept as artifacts.
       - name: Run bin/ci
-        run: bin/ci
+        shell: bash # explicit, so pipefail is on and bin/ci's exit status survives the tee
+        run: |
+          mkdir -p tmp/ci
+          bin/ci 2>&1 | tee tmp/ci/bin-ci.log
+
+      - name: Keep the bin/ci log and RSpec results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bin-ci-log
+          path: |
+            cmdb/tmp/ci/bin-ci.log
+            cmdb/tmp/rspec/results.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   gate:
     name: Server CI
