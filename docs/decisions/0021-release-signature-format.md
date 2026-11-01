@@ -1,6 +1,6 @@
 # ADR 0021: Release signature format: minisign
 
-- Status: Proposed (P1-PACKAGING, #15; for the owner's acceptance)
+- Status: Accepted (owner, 2026-11-01; P1-PACKAGING, #15)
 - Decision issue: #15
 - Requirements: `FR-S.5`, `FR-1.6`, `NFR-1`
 - Refines: [ADR 0018](0018-signed-agent-updates.md), which decided Ed25519 release signatures over a manifest, signed in CI, with current and next keys built into the agent. It did not name a file format.

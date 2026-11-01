@@ -23,7 +23,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- `/health` returning JSON for application, database, and background job liveness (for example, the age of the last recurring job run). Unauthenticated, minimal, and revealing no version numbers or internals; HTTP status reflects health so monitoring can alert on it. Keep the Rails `/up` route for container health checks.
+- `/health` returning JSON for application, database, and background job liveness (for example, the age of the last recurring job run). Unauthenticated, minimal, and revealing no version numbers or internals; HTTP status reflects health so monitoring can alert on it. Include the release store: unhealthy when the files of the newest release, or of one a running rollout targets, are missing from the release directory (an existence and size check, never a scan), since every update and install depends on them. Keep the Rails `/up` route for container health checks.
 - Structured (JSON or key=value) production logs with timestamp, level, request id, host id when known, report id when present, and duration.
 - The request id is returned in API responses and error envelopes so an agent log line can be correlated with a server log line.
 

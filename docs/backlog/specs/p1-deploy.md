@@ -15,7 +15,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Document the tunnel configuration (it must not publish the agent hostname or any `/api/v1` path), the Cloudflare Access policy for the dashboard, and the internal DNS record that points the agent hostname at the server's LAN address.
 - Rails trusts the proxies for client addresses (`assume_ssl`, trusted proxies) so per-host rate limiting and logs see the right address.
 - Configuration through environment and Rails credentials, with an `.env.example` containing placeholders only. No real hostnames, addresses, tokens, or keys in the repository. The Cloudflare API token used for DNS challenges is a secret and is scoped to DNS edit for the one zone.
-- Migrations on deploy (`db:prepare`), persistent volumes for PostgreSQL and certificates, and a documented upgrade procedure.
+- Migrations on deploy (`db:prepare`), persistent volumes for PostgreSQL, certificates, and release files, and a documented upgrade procedure.
 - Verify from a VM: the agent hostname serves a trusted certificate with no custom CA; the same `/api/v1` path is **not** reachable via the public dashboard hostname.
 
 ### Acceptance criteria
@@ -35,6 +35,7 @@ NFR-2 requires a documented, restorable backup procedure before Phase 1 is consi
 ### Scope
 
 - Scheduled logical backups (for example `pg_dump` via a systemd timer or a compose sidecar) with a retention policy and a location off the server machine.
+- The release files (`FLEET_RELEASES_DIR`, [P1-RELEASES](p1-releases.md)) are in the backup or can be rebuilt: say which. Imported releases can be re-imported from GitHub, but uploaded ones cannot, and the database rows are checked against the files. The restore drill covers a release download after restore.
 - Documentation of what else is needed to restore: the Rails master key (or credentials), the Cloudflare API token and tunnel credentials, the agent hostname certificate state, and the configuration environment. These must be backed up separately and never committed.
 - A restore script or runbook, and a **restore drill**: restore into a scratch database, boot the app against it, and check that hosts, snapshots, and the audit log are present.
 - A check that fails loudly if the latest backup is older than expected (surface it in [P1-S11](p1-operability.md) health or documentation of the alert).
@@ -49,7 +50,7 @@ NFR-2 requires a documented, restorable backup procedure before Phase 1 is consi
 
 ### Scope
 
-- Server: prerequisites, deploy, first operator, TLS, configuration reference (including the release public keys and outbound access for release import), upgrade, backup and restore (from [P1-O01](p1-deploy.md)), where logs are, and the health endpoint.
+- Server: prerequisites, deploy, first operator, TLS, configuration reference (including the release public keys and outbound access for release import: `api.github.com`, `github.com`, and the release asset download hosts GitHub redirects to, over HTTPS; none is needed for uploaded releases), upgrade, backup and restore (from [P1-O01](p1-deploy.md)), where logs are, and the health endpoint.
 - Agent: the dashboard install page ([P1-D08](p1-releases.md)) as the primary path; pre-registration for unattended installs; remote updates and rollouts; manual upgrade by re-running the installer; uninstall.
 - Operations: revoke and re-enroll, retire, recover from a lost credential, change thresholds, read the audit log.
 - Troubleshooting: certificate trust errors, `401` responses, clock skew, host stuck offline, an expired onboarding request, a halted rollout, and a rolled-back update.

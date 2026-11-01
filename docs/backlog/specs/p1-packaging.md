@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Signing and the side-by-side layout are decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md); the signature format (minisign) is proposed in [ADR 0021](../../decisions/0021-release-signature-format.md). Formats, key handling, and the release steps are in [docs/releases.md](../../releases.md).
+Signing and the side-by-side layout are decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md); the signature format (minisign) is decided in [ADR 0021](../../decisions/0021-release-signature-format.md). Formats, key handling, and the release steps are in [docs/releases.md](../../releases.md).
 
 ## Scope
 

@@ -41,7 +41,7 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). Server side
   - **Crash loops:** `OnFailure=fleet-agent-rollback.service` in the unit rolls back when the new version keeps failing (`StartLimitBurst`).
   - **Reboots:** at startup, an agent that finds an unconfirmed update for its own version older than the deadline rolls back.
 - **Retention.** Two versions are kept; older ones are removed after a confirmed update.
-- **Result.** The outcome is posted to `POST /api/v1/agent/update-results` and retried until accepted.
+- **Result.** The outcome is posted to `POST /api/v1/update-results` and retried until accepted.
 
 ### Acceptance criteria
 
