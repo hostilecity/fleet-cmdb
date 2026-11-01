@@ -21,16 +21,16 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
   - Release downloads are limited per client address (60 a minute by default, `FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE`), and each update is at least three requests. A site with many VMs behind one NAT address would hit that limit when a stage opens. Spread the directive over the stage (jitter, or a cap on hosts per address at once), or limit downloads from enrolled agents by credential instead of by address. Decide it here, not in production (review of #74).
   - A host gets the directive only while its stage is open and it runs an older version.
   - A stage advances when all its hosts have confirmed, or an operator advances it.
-- **Outcomes.** `POST /api/v1/agent/update-results` (authenticated) records `succeeded`, `failed` (with reason), or `rolled_back` (with reason) in an `agent_updates` history table.
+- **Outcomes.** `POST /api/v1/update-results` (authenticated) records `succeeded`, `failed` (with reason), or `rolled_back` (with reason) in an `agent_updates` history table.
   - Any `failed` or `rolled_back` halts the rollout and audits it.
   - A host that does not report within a timeout is marked `unconfirmed`, which also halts.
-- **Minimum version.** Agents below the minimum version still receive the directive and may post results (FR-S.5): the `426` check exempts these paths, and the `426` body for other endpoints includes the directive when one applies.
+- **Minimum version.** Agents below the minimum version still receive the directive and may post results (FR-S.5): the `426` check exempts `POST /api/v1/heartbeat` (where the directive is delivered) and `POST /api/v1/update-results`, as it already exempts the release downloads. Every other endpoint, reports included, still answers `426` to an agent below the minimum; the agent does not read directives from a `426`, so none is sent there. An agent below the minimum therefore keeps heartbeating, updates itself, and resumes reporting afterwards ([DEC-18](../../decisions/0018-signed-agent-updates.md)).
 - **Intervals.** The directive carries the server's configured intervals (settings with bounds). Changing them is an audited setting.
 - **Audit.** Every rollout action and every outcome is audited.
 
 ### Acceptance criteria
 
-- [ ] AC-1.9 (server half): only hosts in an open stage that run an older version receive the directive, and an agent below the minimum version still receives it
+- [ ] AC-1.9 (server half): only hosts in an open stage that run an older version receive the directive, and an agent below the minimum version still receives it on a `200` heartbeat while its reports still get `426`
 - [ ] AC-1.10 (server half): a reported rollback or a missing confirmation halts the rollout, which resumes only by operator action
 - [ ] Every rollout action and outcome is audited, and the contract examples pass through the real endpoints
 

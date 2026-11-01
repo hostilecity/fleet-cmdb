@@ -11,7 +11,7 @@ Source for the GitHub issues that track the Fleet CMDB build, designed to be che
 | `review-notes.md` | What the requirements review found (R-01 to R-37) |
 | `_original-requirements.md` | The requirements draft as received, for diffing |
 
-Decisions are not issues: all 19 are decided and recorded as ADRs in `docs/decisions/`. There are no epic issues either; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. SETUP-01 and SETUP-02 are done.
+Decisions are not issues: all are decided and recorded as ADRs in `docs/decisions/` (see its index). There are no epic issues either; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. SETUP-01 and SETUP-02 are done.
 
 ## What a GitHub issue looks like
 

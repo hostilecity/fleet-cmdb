@@ -10,6 +10,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Agent tests that serialise real report structs and validate them against the same schemas.
 - Freeze the Phase 1 payloads as `v1` golden fixtures. Later phases must keep accepting them (or increase `schema_version` with a documented migration).
 - Test that an older agent version is still accepted, and that one below the minimum receives the documented error.
+- Test the update path as part of the contract (NFR-5): an agent version below the minimum, and the previous release, can still heartbeat, receive the `agent_update` directive, download the release files, and post `update-results`, while their reports get `426`. This test is kept in every later phase.
 - Enrollment, heartbeat, inventory validation, liveness transitions, and credential revocation each have a named test mapped to AC-1.7 for the delivery note.
 
 ### Acceptance criteria
@@ -17,6 +18,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] Changing a schema without updating the examples fails CI
 - [ ] Golden fixtures are never edited by later phases without a version bump (CI check or review rule documented)
 - [ ] A table linking AC-1.7 subjects to test names is ready for the delivery note
+- [ ] The update path stays open to an agent below the minimum version (heartbeat, directive, downloads, results), and the test is named in the delivery note
 
 ## P1-X02: Phase 1 acceptance run and delivery note
 
