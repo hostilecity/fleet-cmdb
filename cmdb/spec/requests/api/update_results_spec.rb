@@ -69,6 +69,9 @@ RSpec.describe "POST /api/v1/update-results", type: :request do
 
   it_behaves_like "the docs/api contract examples", "update-result.request", accepted: :ok do
     # The valid examples' ids stand for the rollout and release the test created.
-    def submit_example(data, valid:) = post_result(valid ? data.merge("rollout_id" => rollout.id, "version" => "0.3.0") : data)
+    def submit_example(data, valid:)
+      post_result(valid ? data.merge("rollout_id" => rollout.id, "version" => "0.3.0") : data)
+      expect(ApiContract.errors("update-result.response", "v1", json)).to eq([]) if valid && response.successful?
+    end
   end
 end
