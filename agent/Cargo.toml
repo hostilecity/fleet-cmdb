@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 # Syscalls std does not expose: statvfs, uname, getifaddrs for the collectors (P1-AGENT-COLLECT);
 # geteuid and O_NOFOLLOW/O_DIRECTORY for the config and state-directory ownership checks (P1-AGENT-CORE);
-# flock and termios for the installer's lock and hidden token prompt (P1-AGENT-INSTALL).
+# termios for the installer's hidden token prompt (P1-AGENT-INSTALL). Locks use std (File::try_lock).
 libc = "0.2.191"
 # Kernel randomness (getrandom(2)) for report ids and jitter seeds. Already linked through ring.
 getrandom = "0.2.17"

@@ -33,12 +33,12 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::layout::{
-    FileLock, LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, SUPERVISOR_UNIT,
-    free_bytes, link_version, parse_version,
+    LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, SUPERVISOR_UNIT, free_bytes,
+    link_version, parse_version,
 };
 use super::record::{Marker, Outcome, PendingResult, Phase, Record, reason};
 use super::stage;
-use crate::fsx;
+use crate::fsx::{self, Lock};
 use crate::install::{Systemd, UNIT_NAME};
 use crate::release::ReleaseKey;
 use crate::report::rfc3339;
@@ -252,9 +252,9 @@ impl Supervisor<'_> {
         }
     }
 
-    fn try_lock(&self) -> Result<Option<FileLock>, String> {
+    fn try_lock(&self) -> Result<Option<Lock>, String> {
         let state = &self.layout.state_dir;
-        FileLock::try_lock(&state.join(LOCK_FILE))
+        Lock::file(&state.join(LOCK_FILE))
             .map_err(|e| format!("cannot take the update lock in {}: {e}", state.display()))
     }
 
@@ -265,7 +265,7 @@ impl Supervisor<'_> {
     /// its own deadline plus [`OVERDUE_GRACE`]; after that it is hung and is killed (it is idempotent and
     /// writes ahead, so killing it at any point is safe), and the hook carries on from the record. There
     /// is still never more than one supervisor: the hook only proceeds once it holds the lock itself.
-    fn lock_for_rollback(&self) -> Result<FileLock, String> {
+    fn lock_for_rollback(&self) -> Result<Lock, String> {
         let state = &self.layout.state_dir;
         let mut said = false;
         let mut killed_at = None;

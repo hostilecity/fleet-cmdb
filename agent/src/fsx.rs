@@ -4,6 +4,7 @@
 //!
 //! - [`read_regular`]: read a regular file of bounded size, never waiting on a FIFO or device.
 //! - [`write_atomic`]: replace a file so a crash leaves the old contents or the new, never a mix.
+//! - [`Lock`]: an exclusive `flock` that a killed process never leaves held.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -149,11 +150,68 @@ pub fn remove_stale_temps(dir: &Path, prefix: &str) -> io::Result<usize> {
     Ok(removed)
 }
 
+/// An exclusive, non-blocking `flock` (std's [`File::try_lock`]), released when dropped or when the
+/// process dies, so a killed or rebooted holder never leaves it held.
+#[derive(Debug)]
+pub struct Lock(#[allow(dead_code)] File);
+
+impl Lock {
+    /// Locks the directory `dir` (never through a symlink), so two installers cannot run at once.
+    /// `Ok(None)` when another process holds the lock.
+    pub fn dir(dir: &Path) -> io::Result<Option<Self>> {
+        Self::acquire(
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(dir)?,
+        )
+    }
+
+    /// Locks the file at `path`, created with mode 0600 if missing (never through a symlink).
+    /// `Ok(None)` when another process holds the lock.
+    pub fn file(path: &Path) -> io::Result<Option<Self>> {
+        Self::acquire(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)?,
+        )
+    }
+
+    fn acquire(file: File) -> io::Result<Option<Self>> {
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self(file))),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(e)) => Err(e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn a_second_lock_is_refused_until_the_first_is_released() {
+        let tmp = TempDir::new();
+        let file = tmp.path("update.lock");
+        for lock in [
+            &(|| Lock::dir(tmp.root())) as &dyn Fn() -> io::Result<Option<Lock>>,
+            &|| Lock::file(&file),
+        ] {
+            let first = lock().unwrap();
+            assert!(first.is_some());
+            assert!(lock().unwrap().is_none());
+            drop(first);
+            assert!(lock().unwrap().is_some());
+        }
+    }
 
     fn names(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)

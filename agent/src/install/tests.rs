@@ -1245,9 +1245,7 @@ fn leftovers_of_an_interrupted_install_are_cleaned_up_by_a_rerun() {
 fn a_second_installer_is_refused_while_one_runs() {
     let fx = Fixture::new();
     fs::create_dir_all(fx.paths().lib_dir()).unwrap();
-    let _held = fsx::DirLock::try_lock(&fx.paths().lib_dir())
-        .unwrap()
-        .unwrap();
+    let _held = fsx::Lock::dir(&fx.paths().lib_dir()).unwrap().unwrap();
     let server = fx.server(vec![probe()]);
     let outcome = fx.install(&options(&server), Mode::Human);
     server.finish();

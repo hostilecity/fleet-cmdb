@@ -201,9 +201,7 @@ fn a_supervisor_that_is_not_the_version_being_replaced_refuses() {
 fn only_one_supervisor_runs_at_a_time() {
     let world = World::new();
     staged(&world);
-    let _held = FileLock::try_lock(&world.state().join(LOCK_FILE))
-        .unwrap()
-        .unwrap();
+    let _held = Lock::file(&world.state().join(LOCK_FILE)).unwrap().unwrap();
     assert_eq!(world.run(Intent::Resume), Ok(Ended::Busy));
     assert_eq!(world.systemd.restarts(), 0);
 }
@@ -531,10 +529,8 @@ fn switched_unconfirmed_due_in(world: &World, seconds: u64) -> u64 {
     deadline
 }
 
-fn hold_lock(world: &World) -> FileLock {
-    FileLock::try_lock(&world.state().join(LOCK_FILE))
-        .unwrap()
-        .unwrap()
+fn hold_lock(world: &World) -> Lock {
+    Lock::file(&world.state().join(LOCK_FILE)).unwrap().unwrap()
 }
 
 #[test]

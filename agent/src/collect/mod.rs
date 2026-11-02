@@ -67,6 +67,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 pub use sys::{FsStats, HostSystem, IfAddr, System};
+pub use system::parse_boot_id;
 pub(crate) use system::parse_os_release;
 
 /// Time limit for each source read (one file or one syscall).

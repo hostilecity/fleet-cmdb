@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::AGENT_VERSION;
 
-use super::fsx::{self, DirLock, Kind};
+use super::fsx::{self, Kind, Lock};
 use super::systemd::{ROLLBACK_UNIT, UNIT};
 use super::ui::Ui;
 use super::{Failure, Host, InstallError};
@@ -34,11 +34,11 @@ fn io_failed(what: &str, path: &Path, e: impl std::fmt::Display) -> InstallError
 
 /// Takes the installer lock on `/usr/lib/fleet-agent` (creating the directory), so two installs or an
 /// install and an uninstall cannot interleave.
-pub fn lock(host: &Host) -> Result<DirLock, InstallError> {
+pub fn lock(host: &Host) -> Result<Lock, InstallError> {
     let dir = host.paths.lib_dir();
     fsx::ensure_dir(&dir, 0o755, host.owner_uid)
         .map_err(|e| InstallError::failed(e.to_string()))?;
-    match DirLock::try_lock(&dir) {
+    match Lock::dir(&dir) {
         Ok(Some(lock)) => Ok(lock),
         Ok(None) => Err(InstallError::new(
             Failure::Failed,
@@ -53,7 +53,7 @@ pub fn lock(host: &Host) -> Result<DirLock, InstallError> {
 /// agent update is in progress (P1-AGENT-UPDATE): changing `/usr/lib/fleet-agent` under a supervisor
 /// could remove the version its rollback needs. Covers the default state directory and the one the
 /// existing config names.
-pub fn hold_updates(host: &Host) -> Result<Vec<crate::update::layout::FileLock>, InstallError> {
+pub fn hold_updates(host: &Host) -> Result<Vec<crate::fsx::Lock>, InstallError> {
     let mut dirs = vec![host.paths.state_dir()];
     if let Ok(config) = crate::config::Config::load_as(&host.paths.config(), host.owner_uid) {
         let other = host.paths.state_dir_of(&config);
