@@ -34,5 +34,8 @@ echo "restore drill: restoring $set_dir"
 "$ops/restore.sh" "$set_dir" "$scratch_db" "$scratch_dir/releases"
 
 # The app reads the scratch database (DATABASE_URL replaces the primary database only) and the scratch release files.
-DATABASE_URL="postgresql:///$scratch_db" FLEET_RELEASES_DIR="$scratch_dir/releases" \
+# FLEET_RESTORE_DRILL=1 swaps the Solid Cache store for an in-process memory store (config/environments/production.rb),
+# so the drill's requests never write rate-limit counters into the live cache database. The drill enqueues no jobs
+# and opens no Action Cable connection, so the queue and cable databases are not touched either.
+FLEET_RESTORE_DRILL=1 DATABASE_URL="postgresql:///$scratch_db" FLEET_RELEASES_DIR="$scratch_dir/releases" \
   COUNTS="$set_dir/counts" bin/rails backup:verify_restore

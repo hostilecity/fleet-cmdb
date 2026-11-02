@@ -9,7 +9,7 @@ A backup that has never been restored is not a backup. This page says what is ba
 | Primary database (`cmdb_production`): hosts, snapshots, status history, the audit log, operators, release rows, settings | Yes, `fleet-cmdb.dump` (`pg_dump`, custom format) | Everything the fleet knows. |
 | Release files (`FLEET_RELEASES_DIR`, `storage/releases` by default) | Yes, `releases.tar` | An uploaded release cannot be re-imported from GitHub, and the database rows are checked against these files. Imported releases could be re-imported, but one tar covers both. |
 | Queue, cache, and cable databases | No | Rebuilt by `db:prepare`; the queue only holds jobs, and recurring jobs come back from `config/recurring.yml`. A pending import is lost and can be started again. |
-| Row counts | Yes, `counts` | Taken just before the dump; the drill checks the restore holds at least this many hosts, audit entries, and releases. |
+| Row counts | Yes, `counts` | Taken just before the dump; the drill checks the restore holds at least this many hosts, audit entries, releases, and hosts with an inventory snapshot. A count query that fails stops the backup. |
 
 Each run writes one directory, `fleet-cmdb-<UTC time>/`, with the files above and `SHA256SUMS`. It appears whole or not at all.
 
@@ -27,7 +27,7 @@ Keep these in a password manager or an encrypted store, not on the same machine 
 `ops/backup/backup.sh` runs on the server machine (it needs `pg_dump`, `pg_restore`, `psql`, `tar`, `sha256sum`).
 
 1. Mount an **off-machine** location at a fixed path, for example an NFS or SMB share on `backup-01.example.lan` at `/mnt/fleet-cmdb-backups`. The script refuses a directory that is not a mount point, so a backup cannot quietly land on the server's own disk (`BACKUP_ALLOW_LOCAL=1` overrides this for tests only).
-2. Copy `ops/backup/backup.env.example` to `/etc/fleet-cmdb/backup.env` (mode 0600) and fill it in. `FLEET_RELEASES_DIR` and `FLEET_BACKUP_STATUS_FILE` must be the host paths of the same volumes the server container uses.
+2. Copy `ops/backup/backup.env.example` to `/etc/fleet-cmdb/backup.env` (mode 0600) and fill it in. `FLEET_RELEASES_DIR` and `FLEET_BACKUP_STATUS_FILE` must be the host paths of the same volumes the server container uses. If `FLEET_RELEASES_DIR` is missing while the database has release rows, the backup fails rather than writing a set without them.
 3. Install the units and start the timer (daily at 02:30 with a random delay):
 
    ```sh
@@ -42,7 +42,7 @@ Keep these in a password manager or an encrypted store, not on the same machine 
 
 ## Know when backups stop
 
-After a complete backup the script touches `FLEET_BACKUP_STATUS_FILE`. `GET /health` (agent hostname or localhost) reports the backup check as failing, and the whole endpoint as 503, when that file is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` (26). Point the uptime monitor that watches `/health` at an alert you will see. A new install is unhealthy until its first backup, which is deliberate: run the first backup straight after deploying.
+After a complete backup the script touches `FLEET_BACKUP_STATUS_FILE`. `GET /health` (agent hostname or localhost) reports the backup check as failing, and the whole endpoint as 503, when that file is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` (26). A fresh install therefore reports unhealthy until its first backup. The script makes the status directory `0755` and the file `0644` so the server's non-root user can see it; they hold no data, and the backup sets stay `0700`. Point the uptime monitor that watches `/health` at an alert you will see. A new install is unhealthy until its first backup, which is deliberate: run the first backup straight after deploying.
 
 `/health` also reports the release files: it fails when the newest release's binary is missing from `FLEET_RELEASES_DIR` or has a different size than its database row (an existence and size check only). The response names each check as `ok` or `failing` and nothing else; the server log has the detail.
 
@@ -58,7 +58,7 @@ ops/backup/restore.sh /mnt/fleet-cmdb-backups/fleet-cmdb-<time> cmdb_production 
 
 ## The restore drill
 
-The drill restores the newest backup set into a **scratch** database and release directory, boots the app against them, and checks the result. It changes nothing live and removes its scratch data afterwards.
+The drill restores the newest backup set into a **scratch** database and release directory, boots the app against them, and checks the result. It changes nothing live and removes its scratch data afterwards: it sets `FLEET_RESTORE_DRILL=1`, which swaps the live Solid Cache database for an in-process store, so its requests write no rate-limit counters to the live cache.
 
 Run it with the server's environment (the same variables the app runs with, plus the libpq variables for a role that may create databases), from the app directory:
 
@@ -71,6 +71,7 @@ It prints one line per check and exits non-zero if any fails:
 
 - the app boots against the restored database (`/up` answers 200);
 - hosts and audit entries are present, and no fewer than `counts` recorded;
+- at least as many hosts have an inventory snapshot as `counts` recorded (retention keeps each host's newest snapshot, so this never goes down);
 - release rows are present and every one has its binary on disk with the recorded size and SHA-256;
 - the newest release downloads through the agent API (`/api/v1/releases/<version>/binary`) and matches its SHA-256.
 
