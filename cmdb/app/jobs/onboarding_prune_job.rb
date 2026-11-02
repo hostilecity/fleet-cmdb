@@ -2,8 +2,6 @@
 # lets a late poll still get its documented answer; after that an unknown device code gets the same 410.
 # Decisions stay in the audit log.
 class OnboardingPruneJob < ApplicationJob
-  queue_as :default
-
   KEEP_AFTER_EXPIRY = 1.day
 
   def perform(now: Time.current)

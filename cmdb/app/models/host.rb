@@ -99,6 +99,29 @@ class Host < ApplicationRecord
   # any -> retired (terminal). Retiring also revokes the active credential (FR-1.1).
   def retire!(actor:) = transition!(:retire, actor:)
 
+  # Makes way for a new enrollment path, a new token or an approved onboarding re-enrollment (FR-1.1, DEC-17):
+  # an active or revoked host moves to pending, its unused tokens expire, and any approved re-enrollment of it
+  # is superseded, so only the newest path can enroll it (review of #61). Call under the host's row lock.
+  # Returns whether the host changed state.
+  def supersede_enrollment_paths!(actor:)
+    transitioning = can_transition?(:begin_reenrollment)
+    begin_reenrollment!(actor:) if transitioning
+    enrollment_tokens.redeemable.update_all(expires_at: Time.current, updated_at: Time.current)
+    OnboardingRequest.supersede_reenrollments!(self)
+    transitioning
+  end
+
+  # pending -> active with a new credential: an enrollment token was redeemed or an onboarding request collected.
+  # The old credential is revoked, and a new credential starts a new machine identity, so any clone warning from
+  # the old one is cleared. details are added to the audit entry. Returns the AgentCredential::Issued.
+  def enroll!(machine_id:, agent_version:, schema_version:, details: {})
+    previous = agent_credentials.active.lock.to_a.each(&:revoke!)
+    issued = AgentCredential.issue!(host: self, machine_id:)
+    update!(agent_version:, agent_schema_version: schema_version, machine_id_mismatch_at: nil, reported_machine_id: nil)
+    activate!(actor: self, details: { "key_id" => [ previous.map(&:key_id).join(",").presence, issued.record.key_id ] }.merge(details))
+    issued
+  end
+
   def can_transition?(event)
     TRANSITIONS.fetch(event)[:from].include?(enrollment_state)
   end

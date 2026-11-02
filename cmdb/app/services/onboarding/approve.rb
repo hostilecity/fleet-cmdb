@@ -42,9 +42,7 @@ module Onboarding
     def prepare_reenrollment
       raise TargetRetired, "retired hosts cannot be re-enrolled" if @target.retired?
 
-      @target.begin_reenrollment!(actor: @operator) if @target.can_transition?(:begin_reenrollment)
-      @target.enrollment_tokens.redeemable.update_all(expires_at: Time.current, updated_at: Time.current)
-      OnboardingRequest.supersede_reenrollments!(@target)
+      @target.supersede_enrollment_paths!(actor: @operator)
     end
 
     # Validated now, so the operator sees errors on the approval page rather than the installer failing at

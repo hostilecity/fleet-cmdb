@@ -76,12 +76,8 @@ module Onboarding
         host = Host.register!(request.host_attributes, actor: request.decided_by || Audit::SYSTEM)
       end
 
-      previous = host.agent_credentials.active.lock.to_a.each(&:revoke!)
-      issued = AgentCredential.issue!(host:, machine_id: request.machine_id)
-      # A new credential starts a new machine identity, so any clone warning from the old one is cleared.
-      host.update!(agent_version: @agent_version, agent_schema_version: @schema_version, machine_id_mismatch_at: nil, reported_machine_id: nil)
-      host.activate!(actor: host, details: { "key_id" => [ previous.map(&:key_id).join(",").presence, issued.record.key_id ],
-                                             "onboarding_request_id" => [ nil, request.id ] })
+      issued = host.enroll!(machine_id: request.machine_id, agent_version: @agent_version, schema_version: @schema_version,
+                            details: { "onboarding_request_id" => [ nil, request.id ] })
       request.update!(state: "collected", collected_at: now, host:)
       Result.new(status: :approved, credential: issued.plaintext, host:)
     end

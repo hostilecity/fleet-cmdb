@@ -29,12 +29,7 @@ module Enrollment
         raise AgentApi::EnrollmentTokenInvalid unless host.enrollment_state == "pending"
 
         record.update!(redeemed_at: Time.current)
-        previous = host.agent_credentials.active.lock.to_a.each(&:revoke!)
-        issued = AgentCredential.issue!(host:, machine_id: @machine_id)
-        # A new credential starts a new machine identity, so any clone warning from the old one is cleared.
-        host.update!(agent_version: @agent_version, agent_schema_version: @schema_version, machine_id_mismatch_at: nil, reported_machine_id: nil)
-        host.activate!(actor: host, details: { "key_id" => [ previous.map(&:key_id).join(",").presence, issued.record.key_id ] })
-        issued.plaintext
+        host.enroll!(machine_id: @machine_id, agent_version: @agent_version, schema_version: @schema_version).plaintext
       end
     end
   end

@@ -57,12 +57,7 @@ class HostsController < ApplicationController
 
   def host_params = params.expect(host: FIELDS)
 
-  def editable_host
-    host = Host.find(params[:id])
-    raise ActiveRecord::RecordNotFound if host.retired? # retired hosts are kept as they were
-
-    host
-  end
+  def editable_host = Host.in_fleet.find(params[:id]) # retired hosts are kept as they were
 
   # Newest first, each with the changes from the snapshot before it.
   def history

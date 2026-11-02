@@ -2,8 +2,6 @@
 # batches, keeping each host's newest snapshot and status event. Audit entries are not touched. Scheduled
 # daily in config/recurring.yml. `dry_run: true` only logs the counts.
 class RetentionPruneJob < ApplicationJob
-  queue_as :default
-
   def perform(dry_run: false)
     Retention.prune!(dry_run:)
   end

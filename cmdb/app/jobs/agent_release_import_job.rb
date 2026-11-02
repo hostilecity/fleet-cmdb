@@ -6,8 +6,6 @@
 # - failed: GitHub has no such release, or could not be reached after the retries (NFR-2: the failure is
 #   shown on the Agents page and audited, not lost).
 class AgentReleaseImportJob < ApplicationJob
-  queue_as :default
-
   ATTEMPTS = 5
 
   retry_on Releases::Github::Unavailable, wait: :polynomially_longer, attempts: ATTEMPTS do |job, error|

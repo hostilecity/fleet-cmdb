@@ -20,11 +20,7 @@ module Enrollment
         @host.lock!
         raise HostRetired, "retired hosts cannot be enrolled" if @host.retired?
 
-        transitioning = @host.can_transition?(:begin_reenrollment)
-        @host.begin_reenrollment!(actor: @actor) if transitioning
-        @host.enrollment_tokens.redeemable.update_all(expires_at: Time.current, updated_at: Time.current)
-        # An approved onboarding re-enrollment of this host is superseded too (DEC-17, review of #61).
-        OnboardingRequest.supersede_reenrollments!(@host)
+        transitioning = @host.supersede_enrollment_paths!(actor: @actor)
         issued = EnrollmentToken.issue!(host: @host, ttl: @ttl)
         Audit.record(actor: @actor, action: Audit::Actions::HOST_ENROLLMENT_TOKEN_ISSUED, target: @host,
                      changes: { "expires_at" => [ nil, issued.record.expires_at ] })
