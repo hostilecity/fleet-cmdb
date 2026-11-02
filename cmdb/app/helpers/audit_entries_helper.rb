@@ -26,6 +26,7 @@ module AuditEntriesHelper
     Audit::Actions::ROLLOUT_RESUMED => "Rollout resumed",
     Audit::Actions::ROLLOUT_CANCELLED => "Rollout cancelled",
     Audit::Actions::ROLLOUT_COMPLETED => "Rollout completed",
+    Audit::Actions::UPDATE_REQUESTED => "Agent update requested",
     Audit::Actions::UPDATE_SUCCEEDED => "Agent update succeeded",
     Audit::Actions::UPDATE_FAILED => "Agent update failed",
     Audit::Actions::UPDATE_ROLLED_BACK => "Agent update rolled back",
@@ -116,7 +117,9 @@ module AuditEntriesHelper
     when "AgentRelease" then link_to("Agent release #{Array(entry.changeset['version']).compact.last || id}", agents_path)
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"
+      # A cleared interval deletes its row, so fall back to the key the entry recorded (it is the changeset's key).
       key = records.settings[id]
+      key ||= (entry.changeset.keys & SETTING_NAMES.merge(INTERVAL_SETTING_NAMES).keys).first if entry.changeset.is_a?(Hash)
       key ? safe_join([ SETTING_NAMES.merge(INTERVAL_SETTING_NAMES).fetch(key, key), tag.span(key, class: "kind mono") ], " ") : "Setting #{id}"
     when nil then tag.span("None", class: "muted")
     else "#{entry.target_type} #{id}"

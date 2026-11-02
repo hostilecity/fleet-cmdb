@@ -94,11 +94,19 @@ module Rollouts
   # The agent_update directive for a host, or nil. Only a host chosen for a stage that is open in the running
   # rollout, whose offer time has come and which runs an older version than the release, gets one; an agent
   # below the minimum agent version is no exception (FR-S.5). It is sent on every heartbeat until the host
-  # reports a result, and the first time marks the host as updating. One indexed SELECT when there is none.
+  # reports a result, and the first time marks the host as updating and audits the request for that host. One
+  # indexed SELECT when there is none.
+  #
+  # Runs inside the heartbeat's transaction. The matching rollout row is read FOR SHARE and stays locked until that
+  # transaction commits, so a halt, cancel, or advance (which take the row FOR UPDATE) waits for heartbeats already
+  # offering, and a heartbeat that arrives during one waits and then re-reads the row: once a halt commits, no
+  # heartbeat offers the update. Heartbeats only share the lock, so they never wait for one another. Lock order is
+  # host row (the heartbeat's), then rollout, then rollout host, the same as record_result!.
   def directive_for(host_id:, agent_version:, now: Time.current)
     row = RolloutHost.joins(rollout: :agent_release)
                      .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
                      .where("rollout_hosts.stage <= rollouts.current_stage AND rollout_hosts.offer_at <= ?", now)
+                     .lock("FOR SHARE OF rollouts")
                      .pick("rollout_hosts.id", "rollout_hosts.state", "rollouts.id", "agent_releases.version")
     return nil unless row
 
@@ -106,7 +114,12 @@ module Rollouts
     current = AgentApi::AgentVersion.parse(agent_version)
     return nil unless current && current < AgentApi::AgentVersion.parse(version)
 
-    RolloutHost.where(id:, state: "pending").update_all(state: "updating", offered_at: now, updated_at: now) if state == "pending"
+    if state == "pending" && RolloutHost.where(id:, state: "pending").update_all(state: "updating", offered_at: now, updated_at: now) == 1
+      # Once per host and rollout, never on a repeat heartbeat: the request is on the host's audit trail even if the
+      # rollout is cancelled before the host reports or times out.
+      Audit.record(actor: Audit::SYSTEM, action: Audit::Actions::UPDATE_REQUESTED, target: Host.find(host_id),
+                   changes: { "rollout_id" => rollout_id, "version" => version })
+    end
     DIRECTIVE_FILES.transform_values { |file| Releases.download_url(version, file) }.merge(rollout_id:, version:)
   end
 
@@ -196,6 +209,11 @@ module Rollouts
     return if rollout.rollout_hosts.where(stage: rollout.current_stage).where.not(state: "confirmed").exists?
 
     if rollout.final_stage?
+      # After an operator advanced early, hosts of earlier stages may still be pending or updating. Completing now
+      # would stop their directives and their timeout check, so a late failure or rollback would halt nothing.
+      # Their results call back here, so the rollout completes once the last one confirms.
+      return if rollout.rollout_hosts.where(state: %w[pending updating]).exists?
+
       finish!(rollout, "completed")
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_COMPLETED, target: rollout, changes: { "state" => [ "running", "completed" ] })
     else

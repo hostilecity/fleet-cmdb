@@ -24,6 +24,7 @@ module Audit
     ROLLOUT_RESUMED = "rollout.resumed"
     ROLLOUT_CANCELLED = "rollout.cancelled"
     ROLLOUT_COMPLETED = "rollout.completed"
+    UPDATE_REQUESTED = "update.requested"
     UPDATE_SUCCEEDED = "update.succeeded"
     UPDATE_FAILED = "update.failed"
     UPDATE_ROLLED_BACK = "update.rolled_back"

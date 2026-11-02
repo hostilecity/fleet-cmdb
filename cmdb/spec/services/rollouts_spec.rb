@@ -130,6 +130,27 @@ RSpec.describe Rollouts do
       expect { Rollouts.advance!(rollout, actor: operator) }.to raise_error(Rollouts::Invalid, /final stage/)
     end
 
+    it "does not complete while hosts of an earlier stage are still pending or updating, and completes when they confirm" do
+      Rollouts.advance!(rollout, actor: operator)
+      Rollouts.advance!(rollout, actor: operator)
+      expect(rollout.reload.current_stage).to eq(2)
+      early = rollout.rollout_hosts.where(stage: [ 0, 1 ]).includes(:host).to_a
+      rollout.rollout_hosts.where(stage: 2).includes(:host).find_each { |member| report(rollout, member.host) }
+      expect(rollout.reload.state).to eq("running") # the final stage confirmed, but earlier hosts have not
+      early.first.update!(state: "updating")
+      expect(directive(early.first.host)).to be_present # still offered, and still timed out if it never reports
+      early.each { |member| report(rollout, member.host) }
+      expect(rollout.reload.state).to eq("completed")
+    end
+
+    it "halts on a late failure from an earlier stage after an operator advanced to the final stage" do
+      Rollouts.advance!(rollout, actor: operator)
+      Rollouts.advance!(rollout, actor: operator)
+      rollout.rollout_hosts.where(stage: 2).includes(:host).find_each { |member| report(rollout, member.host) }
+      report(rollout, canary, outcome: "rolled_back", reason: "health check failed")
+      expect(rollout.reload).to have_attributes(state: "halted", halt_reason: /rolled back/)
+    end
+
     it "advances through a stage that adds no host" do
       host_total = Host.count
       expect(host_total).to be >= 8
@@ -164,6 +185,26 @@ RSpec.describe Rollouts do
       first_offer = member.offered_at
       expect(directive(host)).to be_present # again on every heartbeat until a result arrives
       expect(member.reload.offered_at).to eq(first_offer)
+    end
+
+    it "audits the request for the host once, on the first offer, not on repeat heartbeats" do
+      2.times { directive(host) }
+      entry = AuditEntry.where(action: Audit::Actions::UPDATE_REQUESTED).sole
+      expect(entry).to have_attributes(actor_type: "system", target_type: "Host", target_id: host.id)
+      expect(entry.changeset).to eq("rollout_id" => rollout.id, "version" => "0.3.0")
+    end
+
+    it "keeps the request on the host's audit trail when the rollout is cancelled before a result" do
+      directive(host)
+      Rollouts.cancel!(rollout, actor: operator)
+      expect(AuditEntry.where(target_type: "Host", target_id: host.id).pluck(:action)).to include(Audit::Actions::UPDATE_REQUESTED)
+    end
+
+    it "reads the rollout row FOR SHARE, so halts and offers are serialised (spec/services/rollout_concurrency_spec.rb)" do
+      queries = []
+      callback = ->(*, payload) { queries << payload[:sql] if payload[:sql].include?("rollout_hosts") }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { directive(host) }
+      expect(queries.first).to include("FOR SHARE OF rollouts")
     end
 
     it "validates against the contract" do
