@@ -18,9 +18,7 @@ module Api
       CACHE_CONTROL = "public, max-age=86400".freeze
       CHUNK = 64.kilobytes
 
-      rate_limit to: Releases.config.download_rate_limit[:to], within: Releases.config.download_rate_limit[:within],
-                 by: -> { request.remote_ip }, store: AgentApi.rate_limit_store, name: "release_downloads", scope: "agent_api",
-                 with: -> { rate_limited!(Releases.config.download_rate_limit[:within]) }
+      limits_rate "release_downloads", Releases.config.download_rate_limit, by: -> { request.remote_ip }
 
       before_action :find_release
 

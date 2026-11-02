@@ -41,19 +41,8 @@ RSpec.describe "POST /api/v1/enroll", type: :request do
     expect(AgentCredential).not_to have_received(:authenticate)
   end
 
-  describe "docs/api contract examples (NFR-5)" do
-    ApiContract.examples.select { |e| e.version == "v1" && e.schema_name == "enroll.request" }.each do |example|
-      it "#{example.kind == 'valid' ? 'accepts' : 'rejects'} #{example.name}" do
-        payload = example.data
-        payload["token"] = token if example.kind == "valid" && payload.key?("token")
-        enroll(payload)
-        if example.kind == "valid"
-          expect(response).to have_http_status(:created)
-        else
-          expect_error(:bad_request, "validation_failed")
-        end
-      end
-    end
+  it_behaves_like "the docs/api contract examples", "enroll.request", accepted: :created do
+    def submit_example(data, valid:) = enroll(valid ? data.merge("token" => token) : data)
   end
 
   describe "single use (DEC-04)" do

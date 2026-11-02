@@ -1,16 +1,7 @@
 require "rails_helper"
 
 # The settings page (P1-D02, moved from P1-S09; FR-S.4).
-RSpec.describe "Settings", type: :request do
-  before do
-    host! dashboard_host
-    sign_in_operator
-  end
-
-  let(:operator) { Operator.find_by!(email: "operator@example.com") }
-
-  def page = Nokogiri::HTML(response.body)
-
+RSpec.describe "Settings", :signed_in, type: :request do
   it "shows the current thresholds" do
     get "/settings"
     expect(response).to have_http_status(:ok)

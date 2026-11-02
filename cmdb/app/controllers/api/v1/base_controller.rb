@@ -25,7 +25,12 @@ module Api
       rescue_from StandardError, with: :render_unexpected_error
       rescue_from AgentApi::Error, with: :render_api_error
 
-      before_action { Current.request_id = request.request_id }
+      # Rails' rate_limit with the agent API's store and the documented 429 (with Retry-After). limit is a
+      # { to:, within: } setting from config/initializers; by keys the counter (a credential, a client address).
+      def self.limits_rate(name, limit, by:, **options)
+        rate_limit(to: limit[:to], within: limit[:within], by:, store: AgentApi.rate_limit_store, name:, scope: "agent_api",
+                   with: -> { rate_limited!(limit[:within]) }, **options)
+      end
 
       # Validates the JSON body against docs/api/schemas/v<schema_version>/<name>.schema.json for the
       # given actions and exposes it as #payload.

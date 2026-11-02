@@ -26,9 +26,7 @@ RSpec.describe "Structured logging", type: :request do
 
   def request_line = lines.find { |line| line["event"] == "request" }
 
-  def send_report(payload, headers: {})
-    post "/api/v1/reports/inventory", params: payload.to_json, headers: api_headers(credential).merge(headers)
-  end
+  def send_report(payload, headers: {}) = post_api("/api/v1/reports/inventory", payload, credential, headers:)
 
   let(:report) { inventory_example("full").merge("report_id" => SecureRandom.uuid) }
 

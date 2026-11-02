@@ -4,16 +4,10 @@ require "open3"
 # "Install an agent" (P1-D08, FR-S.5, NFR-4): the commands on the page name exactly the release shown, work as
 # copied, and use the real `fleet-agent install` interface (agent/src/install). Running them on a clean
 # Debian 13 VM is part of P1-ACCEPT.
-RSpec.describe "Agent install page", type: :request do
-  let(:operator) { Operator.find_by!(email: "operator@example.com") }
+RSpec.describe "Agent install page", :signed_in, type: :request do
   let(:agent_install_source) { Rails.root.join("../agent/src/install/mod.rs").read }
 
-  before do
-    trust_release_keys
-    sign_in_operator
-  end
-
-  def page = Nokogiri::HTML(response.body)
+  before { trust_release_keys }
 
   def command(id) = page.at_css("##{id}").text
 

@@ -40,7 +40,6 @@ class HostActionsController < ApplicationController
   private
 
   def load_host
-    @host = Host.find(params[:id])
-    raise ActiveRecord::RecordNotFound if @host.retired? # nothing left to act on
+    @host = Host.in_fleet.find(params[:id]) # a retired host has nothing left to act on
   end
 end

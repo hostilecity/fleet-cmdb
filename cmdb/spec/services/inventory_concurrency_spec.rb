@@ -17,7 +17,7 @@ RSpec.describe InventoryRecorder do
   it "processes one of several identical reports sent at once and answers the rest as duplicates" do
     @host, credential = enrolled_host(hostname: "race.example.lan")
     credential_id = @host.agent_credentials.active.pick(:id)
-    payload = ApiContract.examples.find { |e| e.schema_name == "inventory.request" && e.name == "full" }.data
+    payload = inventory_example
     report = AgentApi::InventoryReport.new(payload)
     expect(credential).to be_present
 

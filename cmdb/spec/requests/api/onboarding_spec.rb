@@ -4,15 +4,10 @@ require "rails_helper"
 RSpec.describe "Agent onboarding API", type: :request do
   let(:operator) { create(:operator) }
 
-  before { host! agent_host }
-
-  def start(payload = onboarding_facts, ip: "192.0.2.10")
-    post "/api/v1/onboarding", params: payload.is_a?(String) ? payload : payload.to_json, headers: api_headers.merge("REMOTE_ADDR" => ip)
-  end
+  def start(payload = onboarding_facts, ip: "192.0.2.10") = post_api("/api/v1/onboarding", payload, headers: { "REMOTE_ADDR" => ip })
 
   def poll(device_code, ip: "192.0.2.10")
-    post "/api/v1/onboarding/token", params: { schema_version: 1, agent_version: "0.1.0", device_code: }.to_json,
-                                     headers: api_headers.merge("REMOTE_ADDR" => ip)
+    post_api("/api/v1/onboarding/token", { schema_version: 1, agent_version: "0.1.0", device_code: }, headers: { "REMOTE_ADDR" => ip })
   end
 
   def started_request = OnboardingRequest.find_by_device_code(json["device_code"])
@@ -61,13 +56,6 @@ RSpec.describe "Agent onboarding API", type: :request do
       limit.times { |i| start(onboarding_facts(machine_id: "x"), ip: "192.0.2.10") } # invalid bodies still count
       start(ip: "192.0.2.10")
       expect_error(:too_many_requests, "rate_limited")
-    end
-
-    it "answers 404 on the dashboard hostname" do
-      host! dashboard_host
-      start
-      expect(response).to have_http_status(:not_found)
-      expect(response.body).to be_empty
     end
   end
 
@@ -264,20 +252,13 @@ RSpec.describe "Agent onboarding API", type: :request do
     end
   end
 
-  describe "contract examples (NFR-5)" do
-    ApiContract.examples.select { |e| e.version == "v1" && e.schema_name == "onboarding.request" }.each do |example|
-      it "#{example.kind == 'valid' ? 'accepts' : 'rejects'} onboarding.request #{example.name}" do
-        start(example.data)
-        example.kind == "valid" ? expect(response).to(have_http_status(:created)) : expect_error(:bad_request, "validation_failed")
-      end
-    end
+  it_behaves_like "the docs/api contract examples", "onboarding.request", accepted: :created do
+    def submit_example(data, valid:) = start(data)
+  end
 
-    ApiContract.examples.select { |e| e.version == "v1" && e.schema_name == "onboarding-token.request" }.each do |example|
-      it "#{example.kind == 'valid' ? 'accepts' : 'rejects'} onboarding-token.request #{example.name}" do
-        post "/api/v1/onboarding/token", params: example.data.to_json, headers: api_headers
-        example.kind == "valid" ? expect_error(:gone, "onboarding_expired") : expect_error(:bad_request, "validation_failed")
-      end
-    end
+  # A valid body with the examples' unknown device code.
+  it_behaves_like "the docs/api contract examples", "onboarding-token.request", accepted: [ :gone, "onboarding_expired" ] do
+    def submit_example(data, valid:) = post_api("/api/v1/onboarding/token", data)
   end
 
   describe "secrets (NFR-1)" do

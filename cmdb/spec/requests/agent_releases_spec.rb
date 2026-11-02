@@ -2,17 +2,10 @@ require "rails_helper"
 
 # The Agents page's releases (P1-RELEASES, P1-S15, FR-1.5, FR-S.3): imports from GitHub and by upload, each
 # import and refusal audited with the signed-in operator as actor.
-RSpec.describe "Agent releases", type: :request do
+RSpec.describe "Agent releases", :signed_in, type: :request do
   include ActiveJob::TestHelper
 
-  before do
-    trust_release_keys
-    sign_in_operator
-  end
-
-  let(:operator) { Operator.find_by!(email: "operator@example.com") }
-
-  def page = Nokogiri::HTML(response.body)
+  before { trust_release_keys }
 
   def upload_files(release, manifest: release.manifest, signature: release.signature, binary: release.binary)
     { binary: Rack::Test::UploadedFile.new(StringIO.new(binary), "application/octet-stream", true, original_filename: "fleet-agent"),

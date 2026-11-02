@@ -1,7 +1,7 @@
 # Helpers for dashboard specs (P1-DASH-FLEET).
 module DashboardHelpers
   def inventory_example(name = "full")
-    ApiContract.examples.find { |e| e.schema_name == "inventory.request" && e.kind == "valid" && e.name == name }.data
+    ApiContract.example("inventory.request", name)
   end
 
   # Stores an inventory report for an enrolled host through InventoryRecorder, as the endpoint does.
@@ -27,6 +27,20 @@ module DashboardHelpers
   end
 end
 
+module PageHelpers
+  # The response as an HTML document, for CSS queries.
+  def page = Nokogiri::HTML(response.body)
+end
+
+# Dashboard pages as the signed-in operator@example.com: tag a group :signed_in.
+RSpec.shared_context "signed in operator" do
+  let(:operator) { Operator.find_by!(email: "operator@example.com") }
+
+  before { sign_in_operator }
+end
+
 RSpec.configure do |config|
   config.include DashboardHelpers
+  config.include PageHelpers, type: :request
+  config.include_context "signed in operator", :signed_in
 end

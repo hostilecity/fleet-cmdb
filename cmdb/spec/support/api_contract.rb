@@ -55,6 +55,14 @@ module ApiContract
     end
   end
 
+  # The examples for one schema, optionally of one kind ("valid" or "invalid").
+  def examples_for(schema_name, kind: nil, version: "v1")
+    examples.select { |e| e.schema_name == schema_name && e.version == version && (kind.nil? || e.kind == kind) }
+  end
+
+  # One valid example's payload, e.g. example("inventory.request", "full").
+  def example(schema_name, name) = examples_for(schema_name, kind: "valid").find { |e| e.name == name }.data
+
   # Every property path a schema declares, e.g. "disks[].free_bytes". Follows local $refs, items,
   # and the *Of combinators.
   def declared_paths(node, root = node, prefix = nil, out = Set.new)
