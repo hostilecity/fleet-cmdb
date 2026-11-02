@@ -49,6 +49,35 @@ pub fn lock(host: &Host) -> Result<DirLock, InstallError> {
     }
 }
 
+/// Holds the agent's update lock for as long as an install or uninstall runs, and refuses while an
+/// agent update is in progress (P1-AGENT-UPDATE): changing `/usr/lib/fleet-agent` under a supervisor
+/// could remove the version its rollback needs. Covers the default state directory and the one the
+/// existing config names.
+pub fn hold_updates(host: &Host) -> Result<Vec<crate::update::layout::FileLock>, InstallError> {
+    let mut dirs = vec![host.paths.state_dir()];
+    if let Ok(config) = crate::config::Config::load_as(&host.paths.config(), host.owner_uid) {
+        let other = host.paths.state_dir_of(&config);
+        if !dirs.contains(&other) {
+            dirs.push(other);
+        }
+    }
+    let mut held = Vec::new();
+    for dir in dirs {
+        match crate::update::hold_for_install(&dir) {
+            Ok(Some(lock)) => held.push(lock),
+            Ok(None) => {}
+            Err(why) => {
+                return Err(InstallError::new(
+                    Failure::Failed,
+                    why,
+                    "Wait for the update to finish (it rolls back by itself if the new version does not confirm), then run the command again. `journalctl -u fleet-agent-update -u fleet-agent` shows how it is going.",
+                ));
+            }
+        }
+    }
+    Ok(held)
+}
+
 pub fn install(host: &Host, ui: &mut Ui) -> Result<Installed, InstallError> {
     let paths = &host.paths;
     let uid = host.owner_uid;

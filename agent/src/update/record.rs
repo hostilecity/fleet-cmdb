@@ -55,6 +55,26 @@ pub struct Record {
     pub restarted: bool,
     #[serde(default)]
     pub rollback_reason: Option<String>,
+    /// The kernel's boot id when the update was staged. A different one later means the VM restarted
+    /// during the update, and an update the VM restarted under is never confirmed (ADR 0018).
+    #[serde(default)]
+    pub boot_id: Option<String>,
+}
+
+impl Record {
+    /// Whether the VM has restarted since the update was staged. Unknown (either boot id unreadable)
+    /// counts as not restarted; the deadline still applies.
+    pub fn rebooted(&self, boot_id: Option<&str>) -> bool {
+        matches!((self.boot_id.as_deref(), boot_id), (Some(then), Some(now)) if then != now)
+    }
+
+    /// `current` has been (or may have been) swapped to the new version.
+    pub fn past_switch(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Switched | Phase::RollingBack | Phase::Confirmed
+        )
+    }
 }
 
 impl Record {
@@ -79,6 +99,12 @@ pub struct Marker {
     pub version: String,
     pub pid: u32,
     pub confirmed_at: String,
+    /// When the server's acknowledgement arrived, as seconds since the Unix epoch.
+    #[serde(default)]
+    pub confirmed_unix: u64,
+    /// The boot it was written in.
+    #[serde(default)]
+    pub boot_id: Option<String>,
 }
 
 impl Marker {
@@ -94,9 +120,16 @@ impl Marker {
         remove(state_dir, MARKER_FILE)
     }
 
-    /// Whether this marker confirms `record`'s update.
+    /// Whether this marker confirms `record`'s update: the same rollout and version, written in the
+    /// boot the update started in, and no later than the deadline. A confirmation that came too late,
+    /// or after the VM restarted, is not one (ADR 0018), whoever reads it and whenever.
     pub fn confirms(&self, record: &Record) -> bool {
-        self.rollout_id == record.rollout_id && self.version == record.version
+        self.rollout_id == record.rollout_id
+            && self.version == record.version
+            && !record.rebooted(self.boot_id.as_deref())
+            && record
+                .deadline_unix
+                .is_none_or(|deadline| self.confirmed_unix <= deadline)
     }
 }
 
@@ -198,6 +231,7 @@ pub(crate) mod tests {
             deadline_unix: None,
             restarted: false,
             rollback_reason: None,
+            boot_id: Some("boot-1".into()),
         }
     }
 
@@ -231,6 +265,8 @@ pub(crate) mod tests {
             version: "0.2.0".into(),
             pid: 1,
             confirmed_at: "2026-01-01T12:00:00Z".into(),
+            confirmed_unix: 1_767_268_900,
+            boot_id: Some("boot-1".into()),
         };
         assert!(marker.confirms(&record()));
         assert!(
@@ -247,6 +283,34 @@ pub(crate) mod tests {
             }
             .confirms(&record())
         );
+    }
+
+    #[test]
+    fn a_marker_after_the_deadline_or_from_another_boot_confirms_nothing() {
+        let mut rec = record();
+        rec.deadline_unix = Some(1_767_269_100);
+        let marker = Marker {
+            rollout_id: 7,
+            version: "0.2.0".into(),
+            pid: 1,
+            confirmed_at: "2026-01-01T12:05:00Z".into(),
+            confirmed_unix: 1_767_269_100,
+            boot_id: Some("boot-1".into()),
+        };
+        assert!(marker.confirms(&rec), "on the deadline is in time");
+        let late = Marker {
+            confirmed_unix: 1_767_269_101,
+            ..marker.clone()
+        };
+        assert!(!late.confirms(&rec));
+        let other_boot = Marker {
+            boot_id: Some("boot-2".into()),
+            ..marker
+        };
+        assert!(!other_boot.confirms(&rec));
+        assert!(rec.rebooted(Some("boot-2")));
+        assert!(!rec.rebooted(Some("boot-1")));
+        assert!(!rec.rebooted(None));
     }
 
     #[test]

@@ -155,7 +155,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                     tracing::info!(request_id, "first heartbeat accepted by the server");
                     self.record_ack(wall);
                     if let Some(updater) = self.updater {
-                        updater.on_first_ack(wall);
+                        updater.on_first_ack(std::time::SystemTime::now());
                     }
                 } else if failures > 0 {
                     tracing::info!(

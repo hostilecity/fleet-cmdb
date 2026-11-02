@@ -15,6 +15,9 @@
 //! - **The results** (`succeeded`, `failed`, `rolled_back`) are written to the state directory by whoever
 //!   reaches them and posted to `POST /api/v1/update-results` by the running agent, over and over, until
 //!   the server accepts one ([`Updater::tick`]).
+//! - **The watchdog** ([`Updater::start_watchdog`]) runs at startup and then on a timer of its own,
+//!   independent of the heartbeat loop and its backoff: an update record with no supervisor holding the
+//!   lock (it was killed, or the VM restarted) gets one, which finishes, rolls back, or fails it.
 //!
 //! The server never sends a command, a path, or a program. The directive's URLs are only fetched, with
 //! no credential; the version becomes a path component only after it parses as a plain SemVer version;
@@ -55,7 +58,7 @@ use fetch::{Fetch, FetchError, Opened, Resume};
 use layout::{FileLock, LOCK_FILE, Layout, SUPERVISOR_UNIT, parse_version};
 use record::{Marker, Outcome, PendingResult, Phase, Record, reason};
 use stage::{Directive, StageError, Stager};
-use supervise::{Intent, Supervisor, SystemClock, unix};
+use supervise::{Intent, STALE_AFTER, Supervisor, SystemClock, unix};
 
 /// The API path for update outcomes.
 pub const RESULTS_PATH: &str = "/api/v1/update-results";
@@ -64,11 +67,11 @@ pub const RESULTS_PATH: &str = "/api/v1/update-results";
 /// carries the directive) before the update is reported `failed`.
 const MAX_ATTEMPTS: u32 = 5;
 
-/// How long an update record may sit unfinished before the agent gives up on it.
-const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
-
 /// How soon after starting a supervisor the agent may start another.
 const RELAUNCH_AFTER: Duration = Duration::from_secs(30);
+
+/// How often the watchdog looks for an update without a supervisor.
+const WATCHDOG_EVERY: Duration = Duration::from_secs(10);
 
 /// Default and allowed range of the confirmation deadline, in seconds (`update_confirm_seconds`).
 pub const DEFAULT_CONFIRM_SECONDS: u64 = 300;
@@ -144,6 +147,8 @@ struct Inner {
     self_test: Box<SelfTest>,
     free_bytes: Box<FreeBytes>,
     running: semver::Version,
+    /// The kernel's id of this boot.
+    boot_id: Option<String>,
     busy: AtomicBool,
     memory: Mutex<Memory>,
 }
@@ -202,6 +207,7 @@ impl Updater {
                 stage::run_self_test(binary, &config_for_test, version)
             }),
             Box::new(layout::free_bytes),
+            layout::boot_id(),
         )
     }
 
@@ -218,6 +224,7 @@ impl Updater {
             Box::new(tests::NoLauncher),
             Box::new(|_, _| Err("no self-test".into())),
             Box::new(layout::free_bytes),
+            None,
         )
     }
 
@@ -232,6 +239,7 @@ impl Updater {
         launcher: Box<dyn Launcher>,
         self_test: Box<SelfTest>,
         free_bytes: Box<FreeBytes>,
+        boot_id: Option<String>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -245,6 +253,7 @@ impl Updater {
                 self_test,
                 free_bytes,
                 running: semver::Version::parse(AGENT_VERSION).expect("a SemVer package version"),
+                boot_id,
                 busy: AtomicBool::new(false),
                 memory: Mutex::new(Memory::default()),
             }),
@@ -282,10 +291,11 @@ impl Updater {
         }
     }
 
-    /// This process's first heartbeat the server acknowledged: if this is the version an update is
-    /// waiting on, confirm it. This is the only thing the new version does for the update, and the
-    /// supervisor alone decides what it means.
-    pub fn on_first_ack(&self, wall: SystemTime) {
+    /// This process's first heartbeat the server acknowledged, at `acked` (when the response arrived):
+    /// if this is the version an update is waiting on, confirm it. This is the only thing the new version
+    /// does for the update, and the supervisor alone decides what it means. A confirmation after the
+    /// deadline, or after the VM restarted, is not written: ADR 0018 rolls those updates back.
+    pub fn on_first_ack(&self, acked: SystemTime) {
         let state = &self.inner.state_dir;
         let rec = match Record::read(state) {
             Ok(Some(rec)) => rec,
@@ -297,11 +307,31 @@ impl Updater {
         {
             return;
         }
+        if rec.rebooted(self.inner.boot_id.as_deref()) {
+            tracing::warn!(
+                rollout_id = rec.rollout_id,
+                "not confirming the update: the VM restarted before it was confirmed, so it will be rolled back"
+            );
+            return;
+        }
+        let acked_unix = unix(acked);
+        if rec
+            .deadline_unix
+            .is_some_and(|deadline| acked_unix > deadline)
+        {
+            tracing::warn!(
+                rollout_id = rec.rollout_id,
+                "not confirming the update: the first acknowledged heartbeat came after the deadline, so it will be rolled back"
+            );
+            return;
+        }
         let marker = Marker {
             rollout_id: rec.rollout_id,
             version: rec.version.clone(),
             pid: std::process::id(),
-            confirmed_at: rfc3339(wall),
+            confirmed_at: rfc3339(acked),
+            confirmed_unix: acked_unix,
+            boot_id: self.inner.boot_id.clone(),
         };
         match marker.write(state) {
             Ok(()) => tracing::info!(
@@ -319,6 +349,55 @@ impl Updater {
     pub fn tick(&self, transport: &dyn Transport) {
         self.inner.post_pending(transport);
         self.inner.watchdog();
+    }
+
+    /// Runs the watchdog now (the startup check: after a reboot, the update the VM restarted under gets
+    /// a supervisor, which rolls it back) and then every [`WATCHDOG_EVERY`] on a thread of its own, so
+    /// recovering an update never waits on the heartbeat loop or its backoff.
+    pub fn start_watchdog(&self) {
+        self.inner.watchdog();
+        let inner = Arc::clone(&self.inner);
+        let spawned = std::thread::Builder::new()
+            .name("fleet-agent-update-watchdog".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(WATCHDOG_EVERY);
+                    inner.watchdog();
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::error!("cannot start the update watchdog: {e}");
+        }
+    }
+}
+
+/// For `fleet-agent install` and `uninstall`: the update lock of the state directory `state_dir`, so
+/// neither can change `/usr/lib/fleet-agent` under an update. `Err` says why not: a supervisor is
+/// running, or an update is recorded and unfinished. `Ok(None)` when there is no state directory.
+pub fn hold_for_install(state_dir: &Path) -> Result<Option<FileLock>, String> {
+    if !state_dir.is_dir() {
+        return Ok(None);
+    }
+    let lock = FileLock::try_lock(&state_dir.join(LOCK_FILE)).map_err(|e| {
+        format!(
+            "cannot check for an agent update in {}: {e}",
+            state_dir.display()
+        )
+    })?;
+    let Some(lock) = lock else {
+        return Err("an agent update is in progress on this VM (its supervisor is running)".into());
+    };
+    match Record::read(state_dir) {
+        Ok(None) => Ok(Some(lock)),
+        Ok(Some(rec)) => Err(format!(
+            "an agent update to {} is in progress on this VM (recorded in {})",
+            crate::logging::sanitize(&rec.version, 64),
+            state_dir.join(layout::RECORD_FILE).display()
+        )),
+        Err(e) => Err(format!(
+            "the agent update record in {} is unreadable ({e})",
+            state_dir.display()
+        )),
     }
 }
 
@@ -405,6 +484,7 @@ impl Inner {
             deadline_unix: None,
             restarted: false,
             rollback_reason: None,
+            boot_id: self.boot_id.clone(),
         };
         record
             .write(&self.state_dir)
@@ -545,8 +625,8 @@ impl Inner {
         if self.busy.load(Ordering::SeqCst) {
             return;
         }
-        let rec = match Record::read(&self.state_dir) {
-            Ok(Some(rec)) => rec,
+        match Record::read(&self.state_dir) {
+            Ok(Some(_)) => {}
             Ok(None) => return,
             Err(e) => {
                 if self.note_once("unreadable update record") {
@@ -556,27 +636,42 @@ impl Inner {
                 return;
             }
         };
-        let age = unix(SystemTime::now()).saturating_sub(rec.started_unix);
-        if age > STALE_AFTER.as_secs() && rec.phase != Phase::Switched {
-            self.give_up(layout, &rec);
-            return;
-        }
-        match FileLock::try_lock(&self.state_dir.join(LOCK_FILE)) {
-            Ok(Some(_free)) => {}
+        let lock = match FileLock::try_lock(&self.state_dir.join(LOCK_FILE)) {
+            Ok(Some(lock)) => lock,
             Ok(None) => return, // a supervisor is working
             Err(e) => {
                 tracing::warn!("cannot check for an update supervisor: {e}");
                 return;
             }
-        }
-        let recent = self
-            .memory
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .last_launch
-            .is_some_and(|at| at.elapsed() < RELAUNCH_AFTER);
-        if recent || parse_version(&rec.from_version).is_none() {
+        };
+        // Read again under the lock: a supervisor may have finished between the two reads.
+        let rec = match Record::read(&self.state_dir) {
+            Ok(Some(rec)) => rec,
+            _ => return,
+        };
+        // Abandoned only when it provably never switched: nothing is selected that was not before.
+        // Anything else, however old, goes to a supervisor, which rolls back an unconfirmed version.
+        let age = unix(SystemTime::now()).saturating_sub(rec.started_unix);
+        let pre_switch = !rec.past_switch()
+            && layout::link_version(&layout.current()).as_deref()
+                == Some(rec.from_version.as_str());
+        if age > STALE_AFTER.as_secs() && pre_switch {
+            self.give_up(layout, &rec);
             return;
+        }
+        drop(lock);
+        {
+            let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
+            if memory
+                .last_launch
+                .is_some_and(|at| at.elapsed() < RELAUNCH_AFTER)
+                || parse_version(&rec.from_version).is_none()
+            {
+                return;
+            }
+            // Claimed here, under the same lock as the check, so the timer and a heartbeat round
+            // never both start one.
+            memory.last_launch = Some(Instant::now());
         }
         tracing::warn!(
             phase = ?rec.phase,
@@ -588,8 +683,8 @@ impl Inner {
         }
     }
 
-    /// An update that never got anywhere for a day: reported, and cleared so later offers are not
-    /// refused forever.
+    /// An update that never got to the switch in a day: reported, and cleared so later offers are not
+    /// refused forever. Only for an update that provably did not switch (checked under the lock).
     fn give_up(&self, layout: &Layout, rec: &Record) {
         tracing::error!(
             rollout_id = rec.rollout_id,
@@ -759,6 +854,8 @@ fn supervise_main(config_path: &Path, intent: Intent) -> ExitCode {
         clock: &SystemClock,
         running: &running,
         poll: Duration::from_secs(1),
+        boot_id: layout::boot_id(),
+        swap_current: crate::fsx::replace_symlink,
     };
     match supervisor.run(intent) {
         Ok(ended) => {

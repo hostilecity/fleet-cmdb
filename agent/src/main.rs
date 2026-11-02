@@ -249,6 +249,8 @@ fn run(path: &Path) -> ExitCode {
     // Remote updates (P1-AGENT-UPDATE): the heartbeat loop hands the server's directive to this.
     let config_path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
     let updater = update::Updater::from_config(&config, &config_path);
+    // The startup check, then a timer: an update without a supervisor (killed, or a VM restart) gets one.
+    updater.start_watchdog();
     // Heartbeats and inventory reports until SIGTERM or SIGINT (P1-AGENT-REPORT).
     if !report::run(&config, &client, &shutdown, started, &updater) {
         tracing::error!("fleet-agent stopped after an internal error");

@@ -273,39 +273,172 @@ fn a_supervisor_killed_before_the_switch_starts_over_and_still_ends_with_one_ver
     assert!(world.layout.binary(NEW).is_file());
 }
 
-#[test]
-fn after_a_reboot_the_deadline_counts_from_the_restart_and_a_late_confirmation_wins() {
-    let world = World::new();
-    staged(&world);
-    let mut record = Record::read(world.state()).unwrap().unwrap();
+/// A marker for the staged update, written in the current boot at `unix`.
+fn marker(world: &World, unix: u64) -> Marker {
+    Marker {
+        rollout_id: 5,
+        version: NEW.into(),
+        pid: 1,
+        confirmed_at: "2026-01-01T12:00:00Z".into(),
+        confirmed_unix: unix,
+        boot_id: world.systemd.boot.borrow().clone(),
+    }
+}
+
+/// The supervisor restarted the service into the new version 60 s ago and then died.
+fn switched_and_restarted(world: &World) -> Record {
+    let mut record = staged(world);
     fs::create_dir_all(world.layout.version_dir(NEW)).unwrap();
     fs::copy(
         world.layout.staging(NEW).join("fleet-agent"),
         world.layout.binary(NEW),
     )
     .unwrap();
+    crate::fsx::replace_symlink(&world.layout.previous(), &Path::new("versions").join(old()))
+        .unwrap();
     crate::fsx::replace_symlink(&world.layout.current(), &Path::new("versions").join(NEW)).unwrap();
-    // The service was restarted into the new version 60 s ago; the VM then rebooted, and the new
-    // version (started by systemd at boot) confirms while the next supervisor waits.
     record.phase = Phase::Switched;
     record.restarted = true;
     record.deadline_unix = Some(world.clock.0.get() + 240);
     record.write(world.state()).unwrap();
-    Marker {
-        rollout_id: 5,
-        version: NEW.into(),
-        pid: 1,
-        confirmed_at: "2026-01-01T12:00:00Z".into(),
-    }
-    .write(world.state())
-    .unwrap();
+    record
+}
+
+#[test]
+fn an_update_the_vm_restarted_under_is_rolled_back_even_if_the_new_version_then_confirms() {
+    // ADR 0018 and FR-S.5: if the VM restarts before the update is confirmed, the agent returns to
+    // the previous version. The new version, started by systemd at boot, does not confirm it, and a
+    // marker it might have written in the new boot does not count.
+    let world = World::new();
+    switched_and_restarted(&world);
+    world.reboot();
+    marker(&world, world.clock.0.get())
+        .write(world.state())
+        .unwrap();
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+    assert_eq!(world.current().as_deref(), Some(old()));
+    let result = world.pending().unwrap();
+    assert_eq!(result.outcome, Outcome::RolledBack);
+    assert!(result.reason.unwrap().contains("restarted"));
+    assert_eq!(world.inventory(), r#"{"v":"old"}"#, "the state is restored");
+}
+
+#[test]
+fn an_update_confirmed_before_the_vm_restarted_is_kept() {
+    let world = World::new();
+    switched_and_restarted(&world);
+    marker(&world, world.clock.0.get())
+        .write(world.state())
+        .unwrap();
+    world.reboot();
     assert_eq!(world.run(Intent::Resume), Ok(Ended::Confirmed));
-    assert_eq!(world.systemd.restarts(), 0, "it was not restarted again");
     assert_eq!(world.current().as_deref(), Some(NEW));
 }
 
 #[test]
-fn after_a_reboot_an_unconfirmed_version_is_rolled_back_at_the_recorded_deadline() {
+fn an_update_the_vm_restarted_under_before_the_switch_is_reported_failed() {
+    let world = World::new();
+    staged(&world);
+    world.reboot();
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::Failed));
+    assert_eq!(world.current().as_deref(), Some(old()));
+    assert_eq!(world.systemd.restarts(), 0);
+    assert!(Record::read(world.state()).unwrap().is_none());
+    assert!(
+        world
+            .pending()
+            .unwrap()
+            .reason
+            .unwrap()
+            .contains("restarted")
+    );
+}
+
+#[test]
+fn a_confirmation_after_the_deadline_is_not_success() {
+    // The supervisor died; the new version's first acknowledged heartbeat came after the deadline
+    // (an authentication backoff, say). The supervisor that resumes rolls back.
+    let world = World::new();
+    world.behaves(NEW, Agent::Silent);
+    let record = switched_and_restarted(&world);
+    let deadline = record.deadline_unix.unwrap();
+    world.clock.0.set(deadline + 120);
+    marker(&world, deadline + 1).write(world.state()).unwrap();
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+    assert_eq!(world.current().as_deref(), Some(old()));
+    // On time, it is success, whenever the supervisor reads it.
+    let world = World::new();
+    let record = switched_and_restarted(&world);
+    let deadline = record.deadline_unix.unwrap();
+    world.clock.0.set(deadline + 120);
+    marker(&world, deadline).write(world.state()).unwrap();
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::Confirmed));
+}
+
+#[test]
+fn a_day_old_update_is_failed_before_the_switch_and_rolled_back_after_it_never_dropped() {
+    // Before the switch: nothing is selected, so it is reported failed and cleared.
+    let world = World::new();
+    staged(&world);
+    world
+        .clock
+        .0
+        .set(world.clock.0.get() + STALE_AFTER.as_secs() + 1);
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::Failed));
+    assert_eq!(world.current().as_deref(), Some(old()));
+    // After the switch: the unconfirmed new version is never left selected.
+    let world = World::new();
+    world.behaves(NEW, Agent::Silent);
+    switched_and_restarted(&world);
+    world
+        .clock
+        .0
+        .set(world.clock.0.get() + STALE_AFTER.as_secs() + 1);
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+    assert_eq!(world.current().as_deref(), Some(old()));
+}
+
+#[test]
+fn the_new_version_is_stopped_before_the_state_is_restored() {
+    // The new version is running and still saving state when the rollback begins; it must not be able
+    // to overwrite what the rollback restores.
+    let world = World::new();
+    world.behaves(NEW, Agent::Silent);
+    staged(&world);
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+    assert_eq!(world.inventory(), r#"{"v":"old"}"#);
+    let calls = world.systemd.calls.borrow().clone();
+    let stop = calls.iter().position(|c| c == "stop").expect("stopped");
+    let last_restart = calls.iter().rposition(|c| c == "restart").unwrap();
+    assert!(stop < last_restart, "{calls:?}");
+}
+
+fn rename_then_fail(link: &Path, target: &Path) -> io::Result<()> {
+    crate::fsx::replace_symlink(link, target)?;
+    Err(io::Error::other("fsync of /usr/lib/fleet-agent failed"))
+}
+
+#[test]
+fn a_switch_that_took_effect_despite_an_error_is_handled_as_switched() {
+    // The rename of `current` succeeded and syncing its directory failed: the new version is selected,
+    // so the update goes on as a switched one (confirmed here), not cleaned up as a failed switch.
+    let world = World::new();
+    staged(&world);
+    world.swap_current.set(rename_then_fail);
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::Confirmed));
+    assert_eq!(world.current().as_deref(), Some(NEW));
+    assert_eq!(world.pending().unwrap().outcome, Outcome::Succeeded);
+    // And when it does not confirm, it is rolled back from the new version.
+    let world = World::new();
+    world.behaves(NEW, Agent::Silent);
+    staged(&world);
+    world.swap_current.set(rename_then_fail);
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+    assert_eq!(world.current().as_deref(), Some(old()));
+}
+
+#[test]
+fn a_resumed_supervisor_rolls_back_at_the_recorded_deadline() {
     let world = World::new();
     world.behaves(NEW, Agent::Silent);
     staged(&world);
@@ -506,14 +639,9 @@ fn the_failure_hook_never_touches_a_confirmed_or_unrelated_failure() {
     // Confirmed: the marker is there.
     let world = World::new();
     switched_unconfirmed(&world);
-    Marker {
-        rollout_id: 5,
-        version: NEW.into(),
-        pid: 1,
-        confirmed_at: "2026-01-01T12:00:00Z".into(),
-    }
-    .write(world.state())
-    .unwrap();
+    marker(&world, world.clock.0.get())
+        .write(world.state())
+        .unwrap();
     assert_eq!(world.run(Intent::Rollback("x")), Ok(Ended::NothingToDo));
     assert_eq!(world.current().as_deref(), Some(NEW));
 

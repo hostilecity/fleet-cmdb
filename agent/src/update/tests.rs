@@ -35,6 +35,9 @@ pub fn old() -> &'static str {
 /// A version newer than any this agent will ever be.
 pub const NEW: &str = "99.0.0";
 
+/// The boot id of the fake machine until a test restarts it.
+pub const BOOT: &str = "boot-1";
+
 // --- The fake machine ----------------------------------------------------------------------------
 
 /// Seconds since the Unix epoch, advanced by `sleep` instead of waiting, and something to do once that
@@ -84,6 +87,10 @@ pub struct FakeSystemd {
     pub fail_restart: Cell<bool>,
     /// The lock of another supervisor, held until `systemctl kill` kills it.
     pub other_supervisor: RefCell<Option<layout::FileLock>>,
+    /// The kernel's boot id; a test changes it to restart the VM.
+    pub boot: RefCell<Option<String>>,
+    /// The version the service is running, if it is running.
+    pub running: RefCell<Option<String>>,
 }
 
 impl FakeSystemd {
@@ -102,7 +109,18 @@ impl Systemd for FakeSystemd {
     }
 
     fn systemctl(&self, args: &[&str]) -> Result<String, String> {
+        // A running new version keeps saving its state (an inventory report in flight) until stopped.
+        if self.running.borrow().as_deref().is_some_and(|v| v != old()) {
+            fs::write(self.state_dir.join("inventory.json"), r#"{"v":"new"}"#).unwrap();
+        }
         match args {
+            ["stop", unit] => {
+                assert_eq!(*unit, UNIT_NAME);
+                self.calls.borrow_mut().push("stop".into());
+                *self.running.borrow_mut() = None;
+                *self.state.borrow_mut() = "inactive".into();
+                Ok(String::new())
+            }
             ["restart", unit] => {
                 assert_eq!(*unit, UNIT_NAME);
                 self.calls.borrow_mut().push("restart".into());
@@ -125,6 +143,7 @@ impl Systemd for FakeSystemd {
                 } else {
                     "active".into()
                 };
+                *self.running.borrow_mut() = (behaviour != Agent::Fails).then(|| version.clone());
                 if behaviour == Agent::Confirms
                     && let Ok(Some(rec)) = Record::read(&self.state_dir)
                     && rec.version == version
@@ -134,6 +153,8 @@ impl Systemd for FakeSystemd {
                         version,
                         pid: 4242,
                         confirmed_at: "2026-01-01T12:00:00Z".into(),
+                        confirmed_unix: 0,
+                        boot_id: self.boot.borrow().clone(),
                     }
                     .write(&self.state_dir)
                     .unwrap();
@@ -172,6 +193,8 @@ pub struct World {
     pub clock: FakeClock,
     pub systemd: FakeSystemd,
     pub running: semver::Version,
+    /// How the supervisor swaps `current`.
+    pub swap_current: Cell<fn(&Path, &Path) -> io::Result<()>>,
 }
 
 pub const OLD_BINARY: &[u8] = b"#!/bin/sh\n# the old agent\n";
@@ -198,6 +221,8 @@ impl World {
             state: RefCell::new("active".into()),
             fail_restart: Cell::new(false),
             other_supervisor: RefCell::default(),
+            boot: RefCell::new(Some(BOOT.into())),
+            running: RefCell::new(Some(old().into())),
         };
         Self {
             _dir: dir,
@@ -207,6 +232,7 @@ impl World {
             clock: FakeClock(Cell::new(1_767_268_800), RefCell::default()),
             systemd,
             running: semver::Version::parse(old()).unwrap(),
+            swap_current: Cell::new(crate::fsx::replace_symlink),
         }
     }
 
@@ -222,7 +248,14 @@ impl World {
             clock: &self.clock,
             running: &self.running,
             poll: Duration::from_secs(1),
+            boot_id: self.systemd.boot.borrow().clone(),
+            swap_current: self.swap_current.get(),
         }
+    }
+
+    /// Restarts the VM: a new boot id, and no supervisor or lock survives.
+    pub fn reboot(&self) {
+        *self.systemd.boot.borrow_mut() = Some("boot-2".into());
     }
 
     pub fn run(&self, intent: Intent) -> Result<supervise::Ended, String> {
@@ -264,6 +297,7 @@ impl World {
             deadline_unix: None,
             restarted: false,
             rollback_reason: None,
+            boot_id: Some(BOOT.into()),
         };
         record.write(self.state()).unwrap();
         record
@@ -338,6 +372,7 @@ impl Rig {
             Box::new(launcher.clone()),
             Box::new(move |_, _| test.lock().unwrap().clone()),
             Box::new(|_| Ok(10 << 30)),
+            Some(BOOT.into()),
         );
         Self {
             world,
@@ -723,6 +758,103 @@ fn an_update_that_never_finishes_is_given_up_after_a_day() {
     assert_eq!(result.outcome, Outcome::Failed);
     assert_eq!(result.report_id, record.report_id);
     assert!(!rig.world.layout.staging(NEW).exists());
+}
+
+#[test]
+fn a_day_old_update_that_switched_is_never_dropped_but_handed_to_a_supervisor() {
+    // Point 3 of the review of #85: whatever its age, an update past the switch keeps its record, so
+    // the supervisor can roll back the unconfirmed version; only a provably pre-switch one is given up.
+    for phase in [
+        Phase::Switching,
+        Phase::Switched,
+        Phase::RollingBack,
+        Phase::Confirmed,
+    ] {
+        let rig = Rig::new();
+        let mut record = rig.world.stage_release(NEW, &binary(100), 5);
+        record.started_unix = 1;
+        record.phase = phase;
+        record.write(rig.world.state()).unwrap();
+        if phase == Phase::Switching {
+            // Switching with `current` already swapped: the switch happened.
+            fs::create_dir_all(rig.world.layout.version_dir(NEW)).unwrap();
+            crate::fsx::replace_symlink(
+                &rig.world.layout.current(),
+                &Path::new("versions").join(NEW),
+            )
+            .unwrap();
+        }
+        rig.updater.tick(&FakeTransport::new(vec![]));
+        assert!(
+            Record::read(rig.world.state()).unwrap().is_some(),
+            "{phase:?}"
+        );
+        assert!(rig.world.pending().is_none(), "{phase:?}");
+        assert_eq!(rig.launcher.started.lock().unwrap().len(), 1, "{phase:?}");
+    }
+}
+
+#[test]
+fn the_new_version_does_not_confirm_late_or_after_a_restart_of_the_vm() {
+    let rig = Rig::new();
+    let mut record = rig.world.stage_release(AGENT_VERSION, &binary(100), 6);
+    record.from_version = "0.0.1".into();
+    record.phase = Phase::Switched;
+    record.deadline_unix = Some(1_767_268_800);
+    record.write(rig.world.state()).unwrap();
+    let at = |unix: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(unix);
+
+    // After the deadline: no marker.
+    rig.updater.on_first_ack(at(1_767_268_801));
+    assert!(Marker::read(rig.world.state()).unwrap().is_none());
+
+    // From another boot than the update's: no marker.
+    record.boot_id = Some("boot-0".into());
+    record.write(rig.world.state()).unwrap();
+    rig.updater.on_first_ack(at(1_767_268_700));
+    assert!(Marker::read(rig.world.state()).unwrap().is_none());
+
+    // In time, in the same boot: the marker carries the time of the acknowledgement and the boot.
+    record.boot_id = Some(BOOT.into());
+    record.write(rig.world.state()).unwrap();
+    rig.updater.on_first_ack(at(1_767_268_700));
+    let marker = Marker::read(rig.world.state()).unwrap().unwrap();
+    assert_eq!(marker.confirmed_unix, 1_767_268_700);
+    assert_eq!(marker.boot_id.as_deref(), Some(BOOT));
+    assert!(marker.confirms(&record));
+}
+
+#[test]
+fn install_and_uninstall_are_refused_while_an_update_is_in_progress() {
+    let world = World::new();
+    // No update: the lock is taken and held.
+    let held = hold_for_install(world.state()).unwrap().expect("a lock");
+    assert!(
+        FileLock::try_lock(&world.state().join(layout::LOCK_FILE))
+            .unwrap()
+            .is_none()
+    );
+    drop(held);
+    // A supervisor is running.
+    let supervisor = FileLock::try_lock(&world.state().join(layout::LOCK_FILE))
+        .unwrap()
+        .unwrap();
+    assert!(
+        hold_for_install(world.state())
+            .unwrap_err()
+            .contains("in progress")
+    );
+    drop(supervisor);
+    // An update is recorded, whatever its phase.
+    world.stage_release(NEW, &binary(100), 5);
+    let why = hold_for_install(world.state()).unwrap_err();
+    assert!(why.contains("update to 99.0.0 is in progress"), "{why}");
+    // No state directory: nothing to hold.
+    assert!(
+        hold_for_install(&world.state().join("absent"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

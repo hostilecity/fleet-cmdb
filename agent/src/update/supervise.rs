@@ -15,9 +15,11 @@
 //! ```
 //!
 //! Every step can be repeated, and the phase is written to the update record before the step it
-//! announces, so a supervisor that is killed, or a VM that reboots, is resumed from the same place by
-//! the next agent that finds the record without a supervisor (see [`super::Updater::tick`]) and ends
-//! with exactly one working version: `current` is swapped atomically, by renaming a link, and only the
+//! announces, so a supervisor that is killed is resumed from the same place, by the agent's watchdog
+//! (a timer of its own, and a check at startup) or by the failure hook, and ends with exactly one
+//! working version. A VM that restarts during an update is handled as ADR 0018 says: an update the VM
+//! restarted under is never confirmed, so it is rolled back (or, before the switch, reported failed).
+//! Otherwise: `current` is swapped atomically, by renaming a link, and only the
 //! supervisor moves it. The supervisor holds an exclusive lock for as long as it runs, so there is never
 //! more than one.
 //!
@@ -108,6 +110,44 @@ pub struct Supervisor<'a> {
     pub running: &'a semver::Version,
     /// How often to look for the marker and the state of the service.
     pub poll: Duration,
+    /// The kernel's id of this boot ([`super::layout::boot_id`]).
+    pub boot_id: Option<String>,
+    /// Swaps `current` (`fsx::replace_symlink`; a test can make it fail after the rename).
+    pub swap_current: fn(&Path, &Path) -> io::Result<()>,
+}
+
+/// How long an update may wait between being staged and the switch before it is abandoned.
+pub const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Why a switch did not complete.
+#[derive(Debug, PartialEq, Eq)]
+enum SwitchError {
+    /// `current` still points to the version being replaced: nothing was switched.
+    NotSwitched(String),
+    /// `current` cannot be read: whether the switch happened is unknown, so nothing is cleaned up.
+    Unknown(String),
+}
+
+/// After a failed swap of `current`, what actually happened. The rename that swaps the link can succeed
+/// and the sync of its directory fail afterwards; then the new version is selected, and the update must
+/// go on as a switched one (rolled back if it does not confirm), not be cleaned up as though nothing had
+/// changed.
+fn classify_switch_failure(layout: &Layout, rec: &Record, error: &str) -> Result<(), SwitchError> {
+    match link_version(&layout.current()) {
+        Some(v) if v == rec.version => {
+            tracing::warn!(
+                "the switch to {} took effect but did not complete cleanly ({error}); carrying on as switched",
+                rec.version
+            );
+            Ok(())
+        }
+        Some(v) if v == rec.from_version => Err(SwitchError::NotSwitched(format!(
+            "cannot switch to the new version: {error}"
+        ))),
+        _ => Err(SwitchError::Unknown(format!(
+            "cannot switch to the new version ({error}), and `current` cannot be read; the update record is kept for the next supervisor"
+        ))),
+    }
 }
 
 impl Supervisor<'_> {
@@ -137,6 +177,35 @@ impl Supervisor<'_> {
             }
         };
         self.validate(&rec)?;
+        let switched_now = link_version(&self.layout.current()).as_deref() == Some(&rec.version);
+        let rebooted = rec.rebooted(self.boot_id.as_deref());
+        if !rec.past_switch() && !switched_now {
+            if rebooted {
+                return self.fail_before_switch(
+                    &rec,
+                    "the VM restarted before the update switched to the new version",
+                );
+            }
+            let age = unix(self.clock.now()).saturating_sub(rec.started_unix);
+            if age > STALE_AFTER.as_secs() {
+                return self.fail_before_switch(
+                    &rec,
+                    "the update did not reach the switch within 24 hours",
+                );
+            }
+        } else if rebooted
+            && matches!(
+                rec.phase,
+                Phase::Staged | Phase::Switching | Phase::Switched
+            )
+            && !self.confirmed(&rec)
+        {
+            // ADR 0018: an update the VM restarted under before it was confirmed is rolled back.
+            self.to_rolling_back(
+                &mut rec,
+                "the VM restarted before the new version confirmed the update",
+            )?;
+        }
         if let Intent::Rollback(why) = intent {
             let switched = matches!(rec.phase, Phase::Switched | Phase::RollingBack)
                 || link_version(&self.layout.current()).as_deref() == Some(&rec.version);
@@ -161,7 +230,10 @@ impl Supervisor<'_> {
                     // `current` points to the new version now: from here on the update is not
                     // `failed` but waiting for confirmation, whatever else goes wrong.
                     Ok(()) => self.switched(&mut rec)?,
-                    Err(why) => return self.fail_before_switch(&rec, &why),
+                    Err(SwitchError::NotSwitched(why)) => {
+                        return self.fail_before_switch(&rec, &why);
+                    }
+                    Err(SwitchError::Unknown(why)) => return Err(why),
                 },
                 Phase::Switched => {
                     if let Some(why) = self.await_confirmation(&mut rec)? {
@@ -269,16 +341,41 @@ impl Supervisor<'_> {
             .map_err(|e| format!("cannot write the update record: {e}"))
     }
 
-    /// Verifies the staged release again, installs it, backs up the state, and swaps `current`. An
-    /// error means nothing was switched (or only `previous`, which is the version `current` already is).
-    fn install_and_switch(&self, rec: &mut Record) -> Result<(), String> {
+    /// Verifies the staged release again, installs it, backs up the state, and swaps `current`.
+    /// `NotSwitched` means nothing was switched (or only `previous`, which is the version `current`
+    /// already is).
+    fn install_and_switch(&self, rec: &mut Record) -> Result<(), SwitchError> {
         let layout = self.layout;
-        let to = parse_version(&rec.version).ok_or("bad version")?;
-        let current = link_version(&layout.current());
-        if current.as_deref() == Some(&rec.version) {
+        if link_version(&layout.current()).as_deref() == Some(&rec.version) {
             // Swapped already; the record had not caught up.
             return Ok(());
         }
+        self.prepare_switch(rec).map_err(SwitchError::NotSwitched)?;
+        rec.phase = Phase::Switching;
+        self.write(rec).map_err(SwitchError::NotSwitched)?;
+        let from_target = Path::new("versions").join(&rec.from_version);
+        let to_target = Path::new("versions").join(&rec.version);
+        if let Err(e) = fsx::replace_symlink(&layout.previous(), &from_target) {
+            return Err(SwitchError::NotSwitched(format!(
+                "cannot point `previous` to {}: {e}",
+                rec.from_version
+            )));
+        }
+        if let Err(e) = (self.swap_current)(&layout.current(), &to_target) {
+            return classify_switch_failure(layout, rec, &e.to_string());
+        }
+        tracing::info!(
+            version = rec.version.as_str(),
+            "switched `current` to the new version"
+        );
+        Ok(())
+    }
+
+    /// Everything before the swap: verify, install, back up. Nothing is selected yet.
+    fn prepare_switch(&self, rec: &Record) -> Result<(), String> {
+        let layout = self.layout;
+        let to = parse_version(&rec.version).ok_or("bad version")?;
+        let current = link_version(&layout.current());
         if current.as_deref() != Some(&rec.from_version) {
             return Err(format!(
                 "`current` points to {} instead of the version being replaced, {}",
@@ -315,20 +412,7 @@ impl Supervisor<'_> {
         // The installed file is the one that was verified.
         stage::check_file(&binary, &manifest)?;
 
-        backup_state(layout).map_err(|e| format!("cannot back up the state: {e}"))?;
-
-        rec.phase = Phase::Switching;
-        self.write(rec)?;
-        let from_target = Path::new("versions").join(&rec.from_version);
-        let to_target = Path::new("versions").join(&rec.version);
-        fsx::replace_symlink(&layout.previous(), &from_target)
-            .and_then(|()| fsx::replace_symlink(&layout.current(), &to_target))
-            .map_err(|e| format!("cannot switch to the new version: {e}"))?;
-        tracing::info!(
-            version = rec.version.as_str(),
-            "switched `current` to the new version"
-        );
-        Ok(())
+        backup_state(layout).map_err(|e| format!("cannot back up the state: {e}"))
     }
 
     fn switched(&self, rec: &mut Record) -> Result<(), String> {
@@ -400,7 +484,10 @@ impl Supervisor<'_> {
         self.write(rec)
     }
 
-    /// Back to the previous version: `current`, the state, the report, the service, in that order.
+    /// Back to the previous version: stop the new one, then `current`, the state, the report, and the
+    /// service, in that order. The new version is stopped first so nothing it still has in flight (an
+    /// inventory report being saved, say) can overwrite the state after it was restored. Every step can
+    /// be repeated, so a supervisor killed halfway is finished by the next.
     fn roll_back(&self, rec: &mut Record) -> Result<(), String> {
         let layout = self.layout;
         let binary = layout.binary(&rec.from_version);
@@ -410,13 +497,22 @@ impl Supervisor<'_> {
                 binary.display()
             ));
         }
+        if !rec.restarted
+            && let Err(e) = self.systemd.systemctl(&["stop", UNIT_NAME])
+        {
+            tracing::warn!("cannot stop the new version before restoring the state: {e}");
+        }
         fsx::replace_symlink(
             &layout.current(),
             &Path::new("versions").join(&rec.from_version),
         )
         .map_err(|e| format!("cannot point `current` back to {}: {e}", rec.from_version))?;
-        if let Err(e) = restore_state(layout) {
-            tracing::warn!("cannot restore the state records: {e}");
+        let restored = restore_state(layout);
+        if let Err(e) = &restored {
+            tracing::error!(
+                backup = %layout.backup_dir().display(),
+                "cannot restore the state records ({e}); the backup is kept"
+            );
         }
         let why = rec
             .rollback_reason
@@ -434,14 +530,14 @@ impl Supervisor<'_> {
             self.write(rec)?;
         }
         tracing::info!(version = rec.from_version.as_str(), "rolled back");
-        self.clean_up(rec, true);
+        self.clean_up(rec, true, restored.is_ok());
         Ok(())
     }
 
     fn finish_confirmed(&self, rec: &Record) -> Result<(), String> {
         self.report(rec, Outcome::Succeeded, None)?;
         prune_versions(self.layout);
-        self.clean_up(rec, false);
+        self.clean_up(rec, false, true);
         Ok(())
     }
 
@@ -449,7 +545,7 @@ impl Supervisor<'_> {
     fn fail_before_switch(&self, rec: &Record, why: &str) -> Result<Ended, String> {
         tracing::error!(reason = why, "the update stopped before the switch");
         self.report(rec, Outcome::Failed, Some(why.to_owned()))?;
-        self.clean_up(rec, true);
+        self.clean_up(rec, true, true);
         Ok(Ended::Failed)
     }
 
@@ -470,11 +566,13 @@ impl Supervisor<'_> {
     /// Removes what the update left: the staging directory and backup, the marker, and (when the new
     /// version is not the one running) its files. The record goes last, so an interrupted clean-up is
     /// repeated.
-    fn clean_up(&self, rec: &Record, remove_new_version: bool) {
+    fn clean_up(&self, rec: &Record, remove_new_version: bool, remove_backup: bool) {
         let layout = self.layout;
         let state = &layout.state_dir;
         let _ = fs::remove_dir_all(layout.staging(&rec.version));
-        let _ = fs::remove_dir_all(layout.backup_dir());
+        if remove_backup {
+            let _ = fs::remove_dir_all(layout.backup_dir());
+        }
         let _ = Marker::remove(state);
         if remove_new_version {
             let linked = [

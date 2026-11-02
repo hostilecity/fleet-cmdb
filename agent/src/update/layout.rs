@@ -110,6 +110,7 @@ pub fn link_version(link: &Path) -> Option<String> {
 
 /// An exclusive `flock` on a file, released when dropped or when the process dies (so a killed or
 /// rebooted supervisor never leaves it held).
+#[derive(Debug)]
 pub struct FileLock(#[allow(dead_code)] File);
 
 impl FileLock {
@@ -135,6 +136,14 @@ impl FileLock {
             Err(error)
         }
     }
+}
+
+/// The kernel's id of the current boot, which changes on every restart of the VM.
+pub fn boot_id() -> Option<String> {
+    let text = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let id = text.trim();
+    (!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+        .then(|| id.to_owned())
 }
 
 /// Free bytes available to unprivileged writers on the file system holding `path`.

@@ -607,6 +607,7 @@ pub fn install(host: &Host, options: &InstallOptions, ui: &mut Ui) -> Result<(),
 
     ui.step(2, 4, &format!("Installing fleet-agent {AGENT_VERSION}"));
     let _lock = layout::lock(host)?;
+    let _updates = layout::hold_updates(host)?;
     let installed = layout::install(host, ui)?;
     host.check_interrupt()?;
 

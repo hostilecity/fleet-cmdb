@@ -44,6 +44,7 @@ pub fn uninstall(host: &Host, options: &UninstallOptions, ui: &mut Ui) -> Result
         Ok(Some(lock)) => Some(lock),
         Err(_) => None, // no lib directory: nothing installed there
     };
+    let _updates = super::layout::hold_updates(host)?;
     // Read before anything is removed: a custom state directory is named only in the config.
     let config = Config::load_as(&paths.config(), uid).ok();
 
