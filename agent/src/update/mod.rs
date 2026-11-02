@@ -49,14 +49,15 @@ use serde_json::{Value, json};
 
 use crate::client::{ApiError, Client, SYSTEM_CA_BUNDLE};
 use crate::config::Config;
+use crate::fsx::Lock;
 use crate::install::{Systemctl, Systemd};
 use crate::release::{self, ReleaseKey};
 use crate::report::{Transport, rfc3339};
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
 use fetch::{Fetch, FetchError, Opened, Resume};
-use layout::{FileLock, LOCK_FILE, Layout, SUPERVISOR_UNIT, parse_version};
-use record::{Marker, Outcome, PendingResult, Phase, Record, reason};
+use layout::{LOCK_FILE, Layout, SUPERVISOR_UNIT, parse_version};
+use record::{Marker, Outcome, PendingResult, Phase, Record, StateFile, reason};
 use stage::{Directive, StageError, Stager};
 use supervise::{Intent, STALE_AFTER, Supervisor, SystemClock, unix};
 
@@ -374,11 +375,11 @@ impl Updater {
 /// For `fleet-agent install` and `uninstall`: the update lock of the state directory `state_dir`, so
 /// neither can change `/usr/lib/fleet-agent` under an update. `Err` says why not: a supervisor is
 /// running, or an update is recorded and unfinished. `Ok(None)` when there is no state directory.
-pub fn hold_for_install(state_dir: &Path) -> Result<Option<FileLock>, String> {
+pub fn hold_for_install(state_dir: &Path) -> Result<Option<Lock>, String> {
     if !state_dir.is_dir() {
         return Ok(None);
     }
-    let lock = FileLock::try_lock(&state_dir.join(LOCK_FILE)).map_err(|e| {
+    let lock = Lock::file(&state_dir.join(LOCK_FILE)).map_err(|e| {
         format!(
             "cannot check for an agent update in {}: {e}",
             state_dir.display()
@@ -636,7 +637,7 @@ impl Inner {
                 return;
             }
         };
-        let lock = match FileLock::try_lock(&self.state_dir.join(LOCK_FILE)) {
+        let lock = match Lock::file(&self.state_dir.join(LOCK_FILE)) {
             Ok(Some(lock)) => lock,
             Ok(None) => return, // a supervisor is working
             Err(e) => {
@@ -755,14 +756,7 @@ fn parse_args(args: Vec<OsString>) -> Result<Command, String> {
                 let value = parser.value().map_err(cli::error_text)?;
                 why = Some(value.to_string_lossy().into_owned());
             }
-            Value(value) => {
-                return Err(format!(
-                    "unrecognised argument: {}",
-                    cli::shown(&value.to_string_lossy())
-                ));
-            }
-            Long(flag) => return Err(format!("unrecognised argument: {}", cli::long(flag))),
-            Short(c) => return Err(format!("unrecognised argument: {}", cli::short(c))),
+            other => return Err(format!("unrecognised argument: {}", cli::arg(other))),
         }
     }
     let config = config.unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));

@@ -379,51 +379,10 @@ pub(crate) mod tests {
     use crate::release::KeyRole;
     use crate::test_support::TempDir;
     use crate::update::fetch::tests::FakeFetch;
-    use std::io::Cursor;
 
-    /// A throwaway minisign key pair. Generated for each test and discarded; nothing is checked in.
-    pub struct TestKey {
-        pair: minisign::KeyPair,
-    }
-
-    impl TestKey {
-        pub fn generate() -> Self {
-            Self {
-                pair: minisign::KeyPair::generate_unencrypted_keypair().unwrap(),
-            }
-        }
-
-        pub fn release_key(&self, role: KeyRole) -> ReleaseKey {
-            let text = self.pair.pk.to_box().unwrap().into_string();
-            ReleaseKey::from_pub_file(role, &text).unwrap()
-        }
-
-        pub fn sign(&self, data: &[u8]) -> Vec<u8> {
-            minisign::sign(
-                Some(&self.pair.pk),
-                &self.pair.sk,
-                Cursor::new(data),
-                Some("fleet-agent test release manifest"),
-                None,
-            )
-            .unwrap()
-            .into_string()
-            .into_bytes()
-        }
-    }
+    pub(crate) use crate::release::tests::{TestKey, manifest_for as manifest};
 
     pub const BASE: &str = "https://fleet-agent.example.lan/api/v1/releases";
-
-    pub fn manifest(binary: &[u8], version: &str) -> Vec<u8> {
-        let sha = release::hex(ring::digest::digest(&ring::digest::SHA256, binary).as_ref());
-        format!(
-            "{{\"format\":\"{}\",\"version\":\"{version}\",\"target\":\"{}\",\"sha256\":\"{sha}\",\"size\":{}}}\n",
-            release::MANIFEST_FORMAT,
-            release::TARGET,
-            binary.len()
-        )
-        .into_bytes()
-    }
 
     /// Puts a signed release for `version` on the fake server and returns its directive.
     pub fn publish(

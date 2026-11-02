@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::config::Config;
 
-use super::fsx::{self, DirLock, Kind};
+use super::fsx::{self, Kind, Lock};
 use super::systemd::{UNIT_MARKER, UNIT_NAME};
 use super::ui::Ui;
 use super::{Failure, Host, InstallError, UninstallOptions};
@@ -33,7 +33,7 @@ pub fn uninstall(host: &Host, options: &UninstallOptions, ui: &mut Ui) -> Result
     let mut removed: Vec<String> = Vec::new();
     let mut kept: Vec<String> = Vec::new();
 
-    let _lock = match DirLock::try_lock(&paths.lib_dir()) {
+    let _lock = match Lock::dir(&paths.lib_dir()) {
         Ok(None) => {
             return Err(InstallError::new(
                 Failure::Failed,

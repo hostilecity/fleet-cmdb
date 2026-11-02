@@ -5,15 +5,16 @@
 //! Nothing here follows a symlink it did not create, and nothing changes the mode or owner of an
 //! existing path: an unsafe path is refused with a message saying how to fix it.
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, Read};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::fs::{self, DirBuilder};
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 // The shared helpers (atomic writes, temporary-file cleanup) live in `crate::fsx`, so the installer,
 // the collectors, and the state directory use one implementation (review of #68).
 pub use crate::fsx::{
-    Symlinks, read_regular, remove_stale_temps, replace_symlink, write_atomic, write_atomic_from,
+    Lock, Symlinks, read_regular, remove_stale_temps, replace_symlink, write_atomic,
+    write_atomic_from,
 };
 
 /// What a path holds, without following a final symlink.
@@ -110,73 +111,15 @@ pub fn ensure_dir(path: &Path, mode: u32, euid: u32) -> io::Result<bool> {
 }
 
 /// Whether two files have the same contents.
+/// Files of different sizes are not read; the agent binary is a few MiB.
 pub fn same_contents(a: &Path, b: &Path) -> io::Result<bool> {
-    let (mut fa, mut fb) = (File::open(a)?, File::open(b)?);
-    if fa.metadata()?.len() != fb.metadata()?.len() {
-        return Ok(false);
-    }
-    let (mut ba, mut bb) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
-    loop {
-        let n = read_full(&mut fa, &mut ba)?;
-        let m = read_full(&mut fb, &mut bb)?;
-        if n != m || ba[..n] != bb[..m] {
-            return Ok(false);
-        }
-        if n == 0 {
-            return Ok(true);
-        }
-    }
-}
-
-fn read_full(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        match file.read(&mut buf[filled..])? {
-            0 => break,
-            n => filled += n,
-        }
-    }
-    Ok(filled)
-}
-
-/// An exclusive, non-blocking `flock` on a directory, so two installers cannot run at once. Released
-/// when dropped (or when the process exits).
-pub struct DirLock(#[allow(dead_code)] File);
-
-impl DirLock {
-    /// `Ok(None)` when another process holds the lock.
-    pub fn try_lock(dir: &Path) -> io::Result<Option<Self>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(dir)?;
-        // SAFETY: `file` is an open descriptor for the duration of the call; flock has no other inputs.
-        let rc = unsafe {
-            libc::flock(
-                std::os::fd::AsRawFd::as_raw_fd(&file),
-                libc::LOCK_EX | libc::LOCK_NB,
-            )
-        };
-        if rc == 0 {
-            return Ok(Some(Self(file)));
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-            Ok(None)
-        } else {
-            Err(error)
-        }
-    }
+    Ok(fs::metadata(a)?.len() == fs::metadata(b)?.len() && fs::read(a)? == fs::read(b)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::TempDir;
-
-    fn mode(path: &Path) -> u32 {
-        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
-    }
+    use crate::test_support::{TempDir, dir_with_mode, mode};
 
     fn uid() -> u32 {
         crate::owner::effective_uid()
@@ -201,8 +144,7 @@ mod tests {
     fn checks_refuse_symlinks_other_owners_and_open_modes() {
         let dir = TempDir::new();
         let real = dir.path("real");
-        fs::create_dir(&real).unwrap();
-        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        dir_with_mode(&real, 0o755);
         assert_eq!(check_dir(&real, uid()), None);
         assert_eq!(check_dir(&dir.path("missing"), uid()), None);
         assert!(check_private_dir(&real, uid()).unwrap().contains("0755"));
@@ -248,15 +190,5 @@ mod tests {
         assert!(same_contents(&a, &b).unwrap());
         assert!(!same_contents(&a, &c).unwrap());
         assert!(!same_contents(&a, &dir.write("d", "abcd")).unwrap());
-    }
-
-    #[test]
-    fn a_second_lock_is_refused_until_the_first_is_released() {
-        let dir = TempDir::new();
-        let first = DirLock::try_lock(dir.root()).unwrap();
-        assert!(first.is_some());
-        assert!(DirLock::try_lock(dir.root()).unwrap().is_none());
-        drop(first);
-        assert!(DirLock::try_lock(dir.root()).unwrap().is_some());
     }
 }

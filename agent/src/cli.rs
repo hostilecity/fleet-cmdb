@@ -39,6 +39,15 @@ pub fn short(c: char) -> String {
     }
 }
 
+/// An argument the parser does not know, as an error message may show it.
+pub fn arg(arg: lexopt::Arg<'_>) -> String {
+    match arg {
+        lexopt::Arg::Long(name) => long(name),
+        lexopt::Arg::Short(c) => short(c),
+        lexopt::Arg::Value(value) => shown(&value.to_string_lossy()).to_owned(),
+    }
+}
+
 /// `lexopt`'s own messages repeat the offending argument or value; these never repeat one that could be
 /// a secret (for example `--reenroll=<token>` or `--server` followed by a pasted token).
 pub fn error_text(error: lexopt::Error) -> String {

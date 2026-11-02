@@ -126,8 +126,7 @@ where
                     ));
                 }
             },
-            Long(name) => return Err(format!("unrecognised argument: {}", cli::long(name))),
-            Short(c) => return Err(format!("unrecognised argument: {}", cli::short(c))),
+            other => return Err(format!("unrecognised argument: {}", cli::arg(other))),
         }
     }
     if let Some((command, _)) = only {
@@ -306,29 +305,20 @@ mod tests {
     }
 
     #[test]
-    fn version_flags_parse() {
-        assert_eq!(parse_args(["--version"]), Ok(Command::Version));
-        assert_eq!(parse_args(["-V"]), Ok(Command::Version));
-    }
-
-    #[test]
-    fn help_flags_parse() {
-        assert_eq!(parse_args(["--help"]), Ok(Command::Help));
-        assert_eq!(parse_args(["-h"]), Ok(Command::Help));
-    }
-
-    #[test]
-    fn run_is_the_default() {
-        let run = Command::Run {
+    fn version_help_and_run_parse() {
+        let run = || Command::Run {
             config: default_config(),
         };
-        assert_eq!(parse_args(Vec::<String>::new()), Ok(run));
-        assert_eq!(
-            parse_args(["run"]),
-            Ok(Command::Run {
-                config: default_config()
-            })
-        );
+        for (args, expected) in [
+            (vec!["--version"], Command::Version),
+            (vec!["-V"], Command::Version),
+            (vec!["--help"], Command::Help),
+            (vec!["-h"], Command::Help),
+            (vec![], run()),
+            (vec!["run"], run()),
+        ] {
+            assert_eq!(parse_args(&args), Ok(expected), "{args:?}");
+        }
     }
 
     #[test]
@@ -356,18 +346,22 @@ mod tests {
 
     #[test]
     fn unknown_and_extra_arguments_are_rejected() {
-        assert!(parse_args(["--insecure"]).is_err());
-        assert!(parse_args(["--version", "extra"]).is_err());
-        assert!(parse_args(["run", "--version"]).is_err());
-        assert!(parse_args(["run", "check-config"]).is_err());
-        assert!(parse_args(["run", "run"]).is_err());
-        assert!(parse_args(["--config"]).is_err());
-        assert!(parse_args(["--config="]).is_err());
-        assert!(parse_args(["-c", "/a", "-c", "/b"]).is_err());
-        assert!(parse_args(["install"]).is_err());
-        assert!(parse_args(["verify-release"]).is_err());
-        assert!(parse_args(["self-test"]).is_err());
-        assert!(parse_args(["update-supervise"]).is_err());
+        for args in [
+            &["--insecure"][..],
+            &["--version", "extra"],
+            &["run", "--version"],
+            &["run", "check-config"],
+            &["run", "run"],
+            &["--config"],
+            &["--config="],
+            &["-c", "/a", "-c", "/b"],
+            &["install"],
+            &["verify-release"],
+            &["self-test"],
+            &["update-supervise"],
+        ] {
+            assert!(parse_args(args).is_err(), "{args:?}");
+        }
     }
 
     #[test]

@@ -465,7 +465,7 @@ pub fn is_certificate_error(message: &str) -> bool {
 pub(crate) mod tests {
     use super::*;
     use crate::config::tests as cfg;
-    use crate::test_support::{TempDir, TestPki, TlsServer};
+    use crate::test_support::{TempDir, TestPki, TlsServer, http_reply as response};
 
     fn config_for(server: &TlsServer, ca_file: Option<&Path>) -> Config {
         let mut text = format!(
@@ -483,19 +483,6 @@ pub(crate) mod tests {
     pub fn trusting_client(server: &TlsServer, pki: &TestPki, dir: &TempDir) -> Client {
         let ca = dir.write("ca.pem", &pki.ca_pem);
         Client::with_system_bundle(&config_for(server, Some(&ca)), &dir.path("absent.pem")).unwrap()
-    }
-
-    fn response(status: &str, headers: &[&str], body: &str) -> String {
-        let mut text = format!("HTTP/1.1 {status}\r\n");
-        for h in headers {
-            text.push_str(h);
-            text.push_str("\r\n");
-        }
-        text.push_str(&format!(
-            "Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        ));
-        text
     }
 
     fn error_body(code: &str, message: &str) -> String {
@@ -623,97 +610,92 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn maps_401() {
-        let (result, _) = call(response(
-            "401 Unauthorized",
-            &[],
-            &error_body("unauthorized", "no"),
-        ));
-        assert_eq!(
-            result.unwrap_err(),
-            ApiError::Unauthorized {
-                request_id: Some("00000000-0000-4000-8000-000000000001".into())
-            }
-        );
-    }
-
-    #[test]
-    fn maps_403_reenrollment_by_code_or_header() {
-        let (result, _) = call(response(
-            "403 Forbidden",
-            &[],
-            &error_body("reenrollment_required", "pending"),
-        ));
-        assert!(matches!(result, Err(ApiError::ReenrollmentRequired { .. })));
-        let (result, _) = call(response(
-            "403 Forbidden",
-            &["Fleet-Enrollment-State: pending", "X-Request-Id: req-2"],
-            "",
-        ));
-        assert_eq!(
-            result.unwrap_err(),
-            ApiError::ReenrollmentRequired {
-                request_id: Some("req-2".into())
-            }
-        );
-        let (result, _) = call(response(
-            "403 Forbidden",
-            &[],
-            &error_body("host_not_active", "no"),
-        ));
-        assert!(
-            matches!(result, Err(ApiError::Forbidden { code, .. }) if code == "host_not_active")
-        );
-    }
-
-    #[test]
-    fn maps_426_with_message() {
-        let (result, _) = call(response(
-            "426 Upgrade Required",
-            &[],
-            &error_body(
-                "agent_version_unsupported",
-                "minimum agent version is 0.2.0",
+    fn maps_error_statuses_and_envelopes() {
+        let id = || Some("00000000-0000-4000-8000-000000000001".to_owned());
+        let cases: [(&str, &[&str], String, ApiError); 9] = [
+            (
+                "401 Unauthorized",
+                &[],
+                error_body("unauthorized", "no"),
+                ApiError::Unauthorized { request_id: id() },
             ),
-        ));
-        assert!(matches!(
-            result,
-            Err(ApiError::AgentVersionUnsupported { message, .. }) if message == "minimum agent version is 0.2.0"
-        ));
-    }
-
-    #[test]
-    fn maps_429_with_retry_after() {
-        let (result, _) = call(response(
-            "429 Too Many Requests",
-            &["Retry-After: 120"],
-            &error_body("rate_limited", "slow down"),
-        ));
-        assert!(matches!(
-            result,
-            Err(ApiError::RateLimited { retry_after: Some(d), .. }) if d == Duration::from_secs(120)
-        ));
-    }
-
-    #[test]
-    fn maps_413_5xx_and_others_by_status() {
-        let (result, _) = call(response("413 Payload Too Large", &[], ""));
-        assert!(matches!(result, Err(ApiError::PayloadTooLarge { .. })));
-        let (result, _) = call(response(
-            "503 Service Unavailable",
-            &[],
-            "<html>down</html>",
-        ));
-        assert!(matches!(result, Err(ApiError::Server { status: 503, .. })));
-        let (result, _) = call(response(
-            "400 Bad Request",
-            &[],
-            &error_body("validation_failed", "bad field"),
-        ));
-        assert!(matches!(
-            result,
-            Err(ApiError::Rejected { status: 400, code, .. }) if code == "validation_failed"
-        ));
+            // 403 re-enrollment, by code or by header.
+            (
+                "403 Forbidden",
+                &[],
+                error_body("reenrollment_required", "pending"),
+                ApiError::ReenrollmentRequired { request_id: id() },
+            ),
+            (
+                "403 Forbidden",
+                &["Fleet-Enrollment-State: pending", "X-Request-Id: req-2"],
+                String::new(),
+                ApiError::ReenrollmentRequired {
+                    request_id: Some("req-2".into()),
+                },
+            ),
+            (
+                "403 Forbidden",
+                &[],
+                error_body("host_not_active", "no"),
+                ApiError::Forbidden {
+                    code: "host_not_active".into(),
+                    request_id: id(),
+                },
+            ),
+            (
+                "426 Upgrade Required",
+                &[],
+                error_body(
+                    "agent_version_unsupported",
+                    "minimum agent version is 0.2.0",
+                ),
+                ApiError::AgentVersionUnsupported {
+                    message: "minimum agent version is 0.2.0".into(),
+                    request_id: id(),
+                },
+            ),
+            (
+                "429 Too Many Requests",
+                &["Retry-After: 120"],
+                error_body("rate_limited", "slow down"),
+                ApiError::RateLimited {
+                    retry_after: Some(Duration::from_secs(120)),
+                    request_id: id(),
+                },
+            ),
+            // By status alone: no envelope, or one that is not JSON.
+            (
+                "413 Payload Too Large",
+                &[],
+                String::new(),
+                ApiError::PayloadTooLarge { request_id: None },
+            ),
+            (
+                "503 Service Unavailable",
+                &[],
+                "<html>down</html>".into(),
+                ApiError::Server {
+                    status: 503,
+                    request_id: None,
+                },
+            ),
+            (
+                "400 Bad Request",
+                &[],
+                error_body("validation_failed", "bad field"),
+                ApiError::Rejected {
+                    status: 400,
+                    code: "validation_failed".into(),
+                    message: "bad field".into(),
+                    request_id: id(),
+                },
+            ),
+        ];
+        for (status, headers, body, expected) in cases {
+            let (result, _) = call(response(status, headers, &body));
+            assert_eq!(result.unwrap_err(), expected, "{status}");
+        }
     }
 
     #[test]

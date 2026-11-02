@@ -6,7 +6,7 @@
 use std::io;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -51,25 +51,18 @@ impl Shutdown {
     /// Waits up to `timeout`, returning early with `true` if shutdown is requested.
     pub fn wait(&self, timeout: Duration) -> bool {
         let (flag, condvar) = &*self.0;
-        let deadline = Instant::now() + timeout;
-        let mut stopped = flag.lock().unwrap_or_else(|e| e.into_inner());
-        while !*stopped {
-            let now = Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            stopped = condvar
-                .wait_timeout(stopped, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
-        true
+        let stopped = flag.lock().unwrap_or_else(|e| e.into_inner());
+        let (stopped, _) = condvar
+            .wait_timeout_while(stopped, timeout, |stopped| !*stopped)
+            .unwrap_or_else(|e| e.into_inner());
+        *stopped
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn wait_times_out_without_a_request() {

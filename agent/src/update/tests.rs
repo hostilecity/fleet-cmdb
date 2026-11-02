@@ -17,7 +17,7 @@ use crate::collect::contract::assert_conforms;
 use crate::install::UNIT_NAME;
 use crate::release::KeyRole;
 use crate::report::tests::{FakeTransport, ok};
-use crate::test_support::TempDir;
+use crate::test_support::{TempDir, dir_with_mode};
 
 pub struct NoLauncher;
 
@@ -86,7 +86,7 @@ pub struct FakeSystemd {
     pub state: RefCell<String>,
     pub fail_restart: Cell<bool>,
     /// The lock of another supervisor, held until `systemctl kill` kills it.
-    pub other_supervisor: RefCell<Option<layout::FileLock>>,
+    pub other_supervisor: RefCell<Option<crate::fsx::Lock>>,
     /// The kernel's boot id; a test changes it to restart the VM.
     pub boot: RefCell<Option<String>>,
     /// The version the service is running, if it is running.
@@ -207,8 +207,7 @@ impl World {
         fs::write(layout.binary(old()), OLD_BINARY).unwrap();
         fs::set_permissions(layout.binary(old()), fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink(Path::new("versions").join(old()), layout.current()).unwrap();
-        fs::create_dir_all(&layout.state_dir).unwrap();
-        fs::set_permissions(&layout.state_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        dir_with_mode(&layout.state_dir, 0o700);
         fs::write(layout.state_dir.join("inventory.json"), r#"{"v":"old"}"#).unwrap();
         fs::write(layout.state_dir.join("heartbeat.json"), r#"{"pid":1}"#).unwrap();
         let key = TestKey::generate();
@@ -740,7 +739,7 @@ fn an_update_without_a_supervisor_gets_one_and_a_live_supervisor_is_left_alone()
     let transport = FakeTransport::new(vec![]);
 
     // A supervisor holds the lock: nothing is started.
-    let held = FileLock::try_lock(&rig.world.state().join(LOCK_FILE))
+    let held = Lock::file(&rig.world.state().join(LOCK_FILE))
         .unwrap()
         .unwrap();
     rig.updater.tick(&transport);
@@ -843,13 +842,13 @@ fn install_and_uninstall_are_refused_while_an_update_is_in_progress() {
     // No update: the lock is taken and held.
     let held = hold_for_install(world.state()).unwrap().expect("a lock");
     assert!(
-        FileLock::try_lock(&world.state().join(layout::LOCK_FILE))
+        Lock::file(&world.state().join(layout::LOCK_FILE))
             .unwrap()
             .is_none()
     );
     drop(held);
     // A supervisor is running.
-    let supervisor = FileLock::try_lock(&world.state().join(layout::LOCK_FILE))
+    let supervisor = Lock::file(&world.state().join(layout::LOCK_FILE))
         .unwrap()
         .unwrap();
     assert!(

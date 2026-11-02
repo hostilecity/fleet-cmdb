@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::fs::OpenOptions;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::os::fd::AsRawFd;
 
 use super::{Failure, InstallError};
@@ -90,8 +90,7 @@ pub fn read(source: TokenSource, env: Option<&str>) -> Result<Token, InstallErro
         TokenSource::Env => Token::parse(env.unwrap_or_default()),
         TokenSource::Prompt => prompt_on_terminal(),
         TokenSource::Stdin => {
-            // SAFETY: isatty only inspects the descriptor.
-            if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+            if io::stdin().is_terminal() {
                 prompt_on_terminal()
             } else {
                 read_line(&mut io::stdin().lock())

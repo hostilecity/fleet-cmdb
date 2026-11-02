@@ -164,7 +164,7 @@ An agent older than the server's minimum version still updates: the update path 
 | `collect` | Read-only system, disk, and network collectors; see [Collected facts](#collected-facts) | P1-AGENT-COLLECT |
 | `report` | Heartbeat loop, server-directed intervals, and inventory reports; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
-| `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup | P1-AGENT-REPORT |
+| `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup, `flock` locks | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
 | `update` | Updater: download, verify, and stage (`stage`, `fetch`), supervised switch and rollback (`supervise`), the agent's side and the `self-test`, `update-supervise`, and `update-rollback` commands | P1-AGENT-UPDATE |
 | `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL, P1-PACKAGING (unit hardening) |
@@ -199,11 +199,11 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Config | `toml`, parse only | Config file format |
 | Logging | `tracing`, `tracing-subscriber` (`fmt` only) | Structured fields (host, `report_id`) on timestamped lines to stdout, which systemd sends to the journal |
 | Randomness | `getrandom` | Report ids and jitter seeds from the kernel (`getrandom(2)`): no file to open, so it works under systemd sandboxing, and hosts booted together do not share jitter. Already linked through `ring`, so it adds no code |
-| Report ids | `uuid`, default features off | Formats the random bytes as a version 4 UUID; no dependencies of its own |
+| Report ids | `std` | `uuid_v4` in `src/report/mod.rs` sets the version 4 and RFC 4122 variant bits on 16 bytes from `getrandom` and writes them as a hyphenated UUID, checked against fixed test vectors. No crate for one format |
 | Timestamps | `humantime` | RFC 3339 for `agent_time`, `collected_at`, and reading `server_time`; no dependencies of its own, so no date arithmetic is maintained here |
 | Hashing | `ring` (SHA-256) | The stable-facts change hash. Already linked as the TLS crypto provider, so it adds no code |
 | Signals | `signal-hook` | Graceful `SIGTERM`/`SIGINT` handling without an async runtime or hand-written `unsafe` |
-| Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors, `flock` for the update lock (P1-AGENT-UPDATE), `geteuid` and `open` flags for the ownership checks, `flock` and `termios` for the installer's lock and hidden token prompt, none of which `std` exposes. No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
+| Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors (and the updater's free-space check), `geteuid` and `open` flags for the ownership checks, and `termios` for the installer's hidden token prompt, none of which `std` exposes. Locks use `std`'s `File::try_lock` (`flock`). No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
 | Arguments | `lexopt` | Splits the command line (`--opt value`, `--opt=value`, `--`, non-UTF-8 arguments without a panic) for `run`, `check-config`, `install`, and `uninstall`. No dependencies of its own. Error messages never repeat an argument that could be a secret (`src/cli.rs`) |
 | Release signatures | `minisign-verify` | Verifies the minisign (Ed25519) signature of a release manifest against the embedded release keys ([ADR 0021](../docs/decisions/0021-release-signature-format.md), proposed). Verify-only, by minisign's author, no dependencies, used by the Tauri updater. It brings its own Ed25519 and BLAKE2b code rather than `ring`'s; legacy (not pre-hashed) signatures are refused |
 | Versions | `semver` | Strict SemVer parsing of release versions and their ordering, for the no-downgrade rule (ADR 0018). dtolnay's crate, as used by Cargo; no dependencies |

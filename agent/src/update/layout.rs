@@ -15,13 +15,11 @@
 //! `<lib>` is `/usr/lib/fleet-agent`. The running agent finds it from where its own binary is:
 //! `<lib>/versions/<its own version>/fleet-agent`. Nothing about the layout comes from the server.
 
-use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::AGENT_VERSION;
+use crate::collect::{HostSystem, System};
 
 /// The binary's name inside a version directory.
 pub const BINARY_NAME: &str = "fleet-agent";
@@ -108,58 +106,18 @@ pub fn link_version(link: &Path) -> Option<String> {
         .then(|| name.to_owned())
 }
 
-/// An exclusive `flock` on a file, released when dropped or when the process dies (so a killed or
-/// rebooted supervisor never leaves it held).
-#[derive(Debug)]
-pub struct FileLock(#[allow(dead_code)] File);
-
-impl FileLock {
-    /// `Ok(None)` when another process holds it.
-    pub fn try_lock(path: &Path) -> io::Result<Option<Self>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        // SAFETY: `file` is an open descriptor for the whole call; flock has no other inputs.
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc == 0 {
-            return Ok(Some(Self(file)));
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-            Ok(None)
-        } else {
-            Err(error)
-        }
-    }
-}
-
-/// The kernel's id of the current boot, which changes on every restart of the VM.
+/// The kernel's id of the current boot, which changes on every restart of the VM (read and checked as
+/// the collectors read it).
 pub fn boot_id() -> Option<String> {
-    let text = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
-    let id = text.trim();
-    (!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
-        .then(|| id.to_owned())
+    let bytes = std::fs::read("/proc/sys/kernel/random/boot_id").ok()?;
+    crate::collect::parse_boot_id(&bytes).ok()
 }
 
-/// Free bytes available to unprivileged writers on the file system holding `path`.
+/// Free bytes available to unprivileged writers on the file system holding `path` (the collectors'
+/// `statvfs`).
 pub fn free_bytes(path: &Path) -> io::Result<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::other("path contains a NUL byte"))?;
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
-    // SAFETY: `c_path` is a valid C string and `stat` is a writable statvfs; the call fills it in.
-    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
-    if rc != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: statvfs returned 0, so it initialised the structure.
-    let stat = unsafe { stat.assume_init() };
-    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+    let stats = HostSystem.statvfs(path)?;
+    Ok(stats.blocks_available.saturating_mul(stats.fragment_size))
 }
 
 #[cfg(test)]
@@ -218,16 +176,6 @@ mod tests {
         std::os::unix::fs::symlink("/etc/passwd", &odd).unwrap();
         assert_eq!(link_version(&odd), None);
         assert_eq!(link_version(&dir.path("missing")), None);
-    }
-
-    #[test]
-    fn the_lock_is_exclusive_and_released_on_drop() {
-        let dir = TempDir::new();
-        let path = dir.path("update.lock");
-        let first = FileLock::try_lock(&path).unwrap().unwrap();
-        assert!(FileLock::try_lock(&path).unwrap().is_none());
-        drop(first);
-        assert!(FileLock::try_lock(&path).unwrap().is_some());
     }
 
     #[test]

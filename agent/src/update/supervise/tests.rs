@@ -201,9 +201,7 @@ fn a_supervisor_that_is_not_the_version_being_replaced_refuses() {
 fn only_one_supervisor_runs_at_a_time() {
     let world = World::new();
     staged(&world);
-    let _held = FileLock::try_lock(&world.state().join(LOCK_FILE))
-        .unwrap()
-        .unwrap();
+    let _held = Lock::file(&world.state().join(LOCK_FILE)).unwrap().unwrap();
     assert_eq!(world.run(Intent::Resume), Ok(Ended::Busy));
     assert_eq!(world.systemd.restarts(), 0);
 }
@@ -531,10 +529,8 @@ fn switched_unconfirmed_due_in(world: &World, seconds: u64) -> u64 {
     deadline
 }
 
-fn hold_lock(world: &World) -> FileLock {
-    FileLock::try_lock(&world.state().join(LOCK_FILE))
-        .unwrap()
-        .unwrap()
+fn hold_lock(world: &World) -> Lock {
+    Lock::file(&world.state().join(LOCK_FILE)).unwrap().unwrap()
 }
 
 #[test]
@@ -677,12 +673,10 @@ fn the_state_backup_holds_the_records_and_not_the_updaters_own_files() {
     fs::write(world.state().join(".hidden"), "x").unwrap();
     fs::create_dir_all(world.state().join("subdir")).unwrap();
     backup_state(&world.layout).unwrap();
-    let mut names: Vec<_> = fs::read_dir(world.layout.backup_dir())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    assert_eq!(names, ["heartbeat.json", "inventory.json"]);
+    assert_eq!(
+        crate::test_support::names(&world.layout.backup_dir()),
+        ["heartbeat.json", "inventory.json"]
+    );
     fs::write(world.state().join("inventory.json"), "changed").unwrap();
     restore_state(&world.layout).unwrap();
     assert_eq!(world.inventory(), r#"{"v":"old"}"#);
@@ -700,11 +694,9 @@ fn pruning_keeps_exactly_the_versions_the_links_point_to() {
     )
     .unwrap();
     prune_versions(&world.layout);
-    let mut names: Vec<_> = fs::read_dir(world.layout.versions_dir())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    assert_eq!(names, ["0.0.2".to_owned(), old().to_owned()]);
+    assert_eq!(
+        crate::test_support::names(&world.layout.versions_dir()),
+        ["0.0.2".to_owned(), old().to_owned()]
+    );
     let _ = PendingResult::read(world.state());
 }
