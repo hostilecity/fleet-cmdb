@@ -44,18 +44,34 @@ work="$BACKUP_DIR/.incoming-$stamp"
 mkdir "$work"
 trap 'rm -rf "$work"' EXIT
 
-# Counts first, then the dump: the restore must hold at least these (rows are only ever added, never removed).
-for table in hosts audit_entries agent_releases; do
-  echo "$table=$(psql --no-psqlrc -X -At -d "$db" -c "SELECT count(*) FROM $table")"
-done > "$work/counts"
+# Counts first, then the dump: the restore must hold at least these. Hosts, audit entries, and release rows are
+# never deleted. Inventory snapshots are pruned, but retention keeps each host's newest one, so the number of hosts
+# with a snapshot never goes down. Each count is its own assignment so a failed query stops the backup (an
+# `echo "$(...)"` would hide the failure from set -e).
+count() {
+  local value
+  value="$(psql --no-psqlrc -X -At -v ON_ERROR_STOP=1 -d "$db" -c "$1")"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "count query returned '$value': $1"
+  printf '%s' "$value"
+}
+hosts="$(count "SELECT count(*) FROM hosts")"
+audit_entries="$(count "SELECT count(*) FROM audit_entries")"
+agent_releases="$(count "SELECT count(*) FROM agent_releases")"
+hosts_with_inventory="$(count "SELECT count(DISTINCT host_id) FROM inventory_snapshots")"
+printf 'hosts=%s\naudit_entries=%s\nagent_releases=%s\nhosts_with_inventory=%s\n' \
+  "$hosts" "$audit_entries" "$agent_releases" "$hosts_with_inventory" > "$work/counts"
 
 pg_dump --format=custom --no-owner --no-privileges --file "$work/fleet-cmdb.dump" "$db"
 pg_restore --list "$work/fleet-cmdb.dump" > /dev/null # the dump can be read back
 
 if [ -d "$FLEET_RELEASES_DIR" ]; then
   tar -C "$FLEET_RELEASES_DIR" -cf "$work/releases.tar" .
-else
+elif [ "$agent_releases" -eq 0 ]; then
   tar -cf "$work/releases.tar" -T /dev/null # no release was ever stored: an empty archive
+else
+  # The database names releases whose files are missing. Uploaded releases cannot be re-imported, so stop before
+  # publishing this set, pruning older ones, or touching the status file: /health turns unhealthy.
+  die "FLEET_RELEASES_DIR $FLEET_RELEASES_DIR does not exist, but the database has $agent_releases release(s)"
 fi
 
 (cd "$work" && sha256sum fleet-cmdb.dump releases.tar counts > SHA256SUMS)
@@ -73,6 +89,12 @@ for i in "${!sets[@]}"; do
   fi
 done
 
-mkdir -p "$(dirname "$FLEET_BACKUP_STATUS_FILE")"
+# The server (a non-root user in its container) only needs to stat the status file, but umask 077 would make a
+# new directory 0700 and hide it. The status directory and file hold no data, so they are made readable to all;
+# the backup sets themselves stay private.
+status_dir="$(dirname "$FLEET_BACKUP_STATUS_FILE")"
+mkdir -p "$status_dir"
+chmod 0755 "$status_dir"
 touch "$FLEET_BACKUP_STATUS_FILE"
+chmod 0644 "$FLEET_BACKUP_STATUS_FILE"
 log "done"

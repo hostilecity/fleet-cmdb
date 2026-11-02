@@ -4,6 +4,8 @@ module Backup
   #
   # - the app answers /up (it booted against the restored database);
   # - hosts and audit entries are present, and not fewer than the backup recorded when it was taken;
+  # - inventory snapshots survived: at least as many hosts have one as when the backup was taken (retention
+  #   prunes snapshots but keeps each host's newest, so that number never goes down; it may legitimately be 0);
   # - every release row has its binary on disk with the recorded size and SHA-256;
   # - the newest release downloads through the agent API and matches its recorded SHA-256.
   #
@@ -28,6 +30,7 @@ module Backup
     def call
       check_boot
       COUNTED.each { |name, model| check_count(name, model) }
+      check_inventory
       AgentRelease.newest_first.each { |release| check_file(release) }
       check_download(AgentRelease.newest_first.first)
       Result.new(lines: @lines, ok: @lines.all? { |line| line.start_with?("ok ") })
@@ -59,6 +62,12 @@ module Backup
       # Hosts and audit entries must exist for the drill to mean anything; releases may legitimately be none.
       required = name == "agent_releases" ? minimum : [ minimum, 1 ].max
       check "#{name}: #{count} restored, at least #{required} expected", count >= required
+    end
+
+    def check_inventory
+      count = InventorySnapshot.distinct.count(:host_id)
+      minimum = Integer(@expected.fetch("hosts_with_inventory", 0))
+      check "inventory snapshots: #{count} hosts have one, at least #{minimum} expected", count >= minimum
     end
 
     def check_file(release)

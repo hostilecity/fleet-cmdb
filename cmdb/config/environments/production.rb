@@ -44,8 +44,10 @@ Rails.application.configure do
   # Don't log any deprecations.
   config.active_support.report_deprecations = false
 
-  # Replace the default in-process memory cache store with a durable alternative.
-  config.cache_store = :solid_cache_store
+  # Replace the default in-process memory cache store with a durable alternative. The restore drill
+  # (ops/backup/restore-drill.sh) boots against a scratch database and must not write to the live cache database,
+  # so it uses an in-process store instead.
+  config.cache_store = ENV["FLEET_RESTORE_DRILL"] == "1" ? :memory_store : :solid_cache_store
 
   # Replace the default in-process and non-durable queuing backend for Active Job.
   config.active_job.queue_adapter = :solid_queue
