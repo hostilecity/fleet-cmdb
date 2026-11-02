@@ -13,6 +13,8 @@ Rails.application.routes.draw do
   # Container and LAN health check: the agent host and localhost only, never the dashboard host (the tunnel).
   constraints(health_host) do
     get "up" => "rails/health#show", as: :rails_health_check
+    # Monitoring: database, release files, and backup freshness (P1-S11, P1-O01).
+    get "health" => "health#show", as: :health
   end
 
   # Agent API (FR-S.2, docs/api), on the private agent hostname only. Keep the catch-all last so unknown

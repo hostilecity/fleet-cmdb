@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily fleet-cmdb backup (P1-O01)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
