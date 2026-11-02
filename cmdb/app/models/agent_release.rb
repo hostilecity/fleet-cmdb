@@ -7,6 +7,8 @@ class AgentRelease < ApplicationRecord
   SOURCES = %w[github upload].freeze
 
   belongs_to :imported_by, class_name: "Operator"
+  # A release a rollout targets is never deleted (the foreign key restricts it too).
+  has_many :rollouts, dependent: :restrict_with_exception
 
   validates :version, presence: true, uniqueness: true
   validates :source, inclusion: { in: SOURCES }
@@ -39,7 +41,6 @@ class AgentRelease < ApplicationRecord
 
   private
 
-  # Rollouts that target a release (P1-UPDATES) will refuse deletion too.
   def refuse_while_in_use
     raise InUse, "agent release #{version} is in use by a host and cannot be deleted" if in_use?
   end

@@ -6,7 +6,10 @@ module Api
     #   parsing and every failure gets the documented error envelope.
     # - Bodies are validated against docs/api/schemas for the body's schema_version. Unknown fields are
     #   ignored and logged by path (never by value); wrong types and out-of-range values are rejected.
-    # - Agents older than the configured minimum get 426 agent_version_unsupported.
+    # - Agents older than the configured minimum get 426 agent_version_unsupported, except on the endpoints that
+    #   keep the update path open (FR-S.5, ADR 0018): heartbeats, which deliver the agent_update directive, and
+    #   update results. Those declare `self.enforces_minimum_agent_version = false`. Release downloads carry no
+    #   agent version at all.
     # - Write actions run in one transaction, so a failed request leaves nothing half-written.
     # - Unexpected errors return 500 internal_error without internals.
     class BaseController < ActionController::API
@@ -15,6 +18,7 @@ module Api
       ENROLLMENT_STATE_HEADER = "Fleet-Enrollment-State"
 
       class_attribute :max_body_bytes, default: 64.kilobytes
+      class_attribute :enforces_minimum_agent_version, default: true
 
       rescue_from StandardError, with: :render_unexpected_error
       rescue_from AgentApi::Error, with: :render_api_error
@@ -42,7 +46,7 @@ module Api
 
       def validated_body(schema_name)
         data = parse_body
-        check_agent_version!(data["agent_version"])
+        check_agent_version!(data["agent_version"]) if enforces_minimum_agent_version
         version = AgentApi::Schema.exists?(schema_name, data["schema_version"]) ? data["schema_version"] : AgentApi::Schema.latest_version
         errors = AgentApi::Schema.errors(schema_name, version, data)
         raise AgentApi::ValidationFailed.new(details: errors) if errors.any?

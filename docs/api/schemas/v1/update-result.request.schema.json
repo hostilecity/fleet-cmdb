@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Update result request",
+  "description": "POST /api/v1/update-results (FR-S.5, ADR 0018, P1-UPDATES). The agent reports how an update ended: it now runs the new version (succeeded), it refused or could not install it (failed), or it went back to the previous version (rolled_back). Retried until accepted, with the same report_id. Exempt from the minimum agent version, so an agent that is too old for the other endpoints can still report. The host is identified by the credential, never by a field in the body.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_version",
+    "report_id",
+    "rollout_id",
+    "version",
+    "outcome",
+    "occurred_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Payload schema version. This directory is version 1.",
+      "const": 1
+    },
+    "agent_version": {
+      "description": "Agent release version (semantic version).",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "report_id": {
+      "description": "UUIDv4, generated per result and reused on retry so the server can discard duplicates.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "rollout_id": {
+      "description": "The rollout_id of the agent_update directive this result answers.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "version": {
+      "description": "The release version the directive offered. The server refuses a result whose version is not the rollout's release.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$"
+    },
+    "outcome": {
+      "description": "succeeded: the new version authenticated and completed an acknowledged heartbeat. failed: nothing was installed, or the install did not complete. rolled_back: the new version could not confirm and the previous one was restored.",
+      "enum": [
+        "succeeded",
+        "failed",
+        "rolled_back"
+      ]
+    },
+    "reason": {
+      "description": "Why an update failed or was rolled back: required for those outcomes, plain text, no secrets. Optional (or null) for succeeded.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "occurred_at": {
+      "description": "When the outcome was reached (agent clock), RFC 3339 UTC. Stored for display only.",
+      "type": "string",
+      "maxLength": 35,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "failed",
+              "rolled_back"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

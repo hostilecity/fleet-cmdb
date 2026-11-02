@@ -44,11 +44,50 @@
           }
         },
         "agent_update": {
-          "description": "The release to install (ADR 0018). Its fields (version, manifest, signature, and binary URLs, rollout id) are defined by P1-UPDATES; until then only the type is fixed.",
+          "description": "The release to install (ADR 0018, P1-UPDATES). Sent only to a host in an open rollout stage that runs an older version, including a host below the minimum agent version, and on every heartbeat until the host reports a result or the stage closes. The agent downloads the three files, verifies them itself against the release keys built into it, and refuses any version that is not newer than the one running; the URLs only say where to fetch (location-independent, ADR 0019). The server never names a command or an executable here.",
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "required": [
+            "rollout_id",
+            "version",
+            "manifest_url",
+            "signature_url",
+            "binary_url"
+          ],
+          "properties": {
+            "rollout_id": {
+              "description": "The rollout this update belongs to; echoed in update-result.request.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "version": {
+              "description": "The release version to install (semantic version, no build metadata); the manifest's version must match.",
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$"
+            },
+            "manifest_url": {
+              "description": "Where to fetch the signed release manifest.",
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^https://[^\\s]+$"
+            },
+            "signature_url": {
+              "description": "Where to fetch the manifest's minisign signature (ADR 0021).",
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^https://[^\\s]+$"
+            },
+            "binary_url": {
+              "description": "Where to fetch the release binary; byte ranges are supported so an interrupted download resumes.",
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^https://[^\\s]+$"
+            }
+          }
         }
       },
       "additionalProperties": {

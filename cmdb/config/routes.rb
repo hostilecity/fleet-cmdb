@@ -27,6 +27,8 @@ Rails.application.routes.draw do
         post "onboarding/token", to: "onboardings#token"
         post "heartbeat", to: "heartbeats#create"
         post "reports/inventory", to: "inventory_reports#create"
+        # Update outcomes (P1-UPDATES): exempt from the minimum version, like heartbeats and release downloads.
+        post "update-results", to: "update_results#create"
         # Release downloads (P1-S16): unauthenticated, limited per address, exempt from the minimum version.
         constraints(version: %r{[^/]+}) do
           get "releases/:version/manifest", to: "releases#manifest", format: false, as: :release_manifest

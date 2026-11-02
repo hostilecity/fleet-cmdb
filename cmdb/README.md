@@ -186,7 +186,7 @@ The agent API lives under `/api/v1` (`app/controllers/api/v1`) on the agent host
 | Setting | Default | |
 |---|---|---|
 | `FLEET_API_SCHEMAS_DIR` | `../docs/api/schemas` | Where the JSON Schemas are read from |
-| `FLEET_MINIMUM_AGENT_VERSION` | `0.1.0` | Older agents get `426 agent_version_unsupported` |
+| `FLEET_MINIMUM_AGENT_VERSION` | `0.1.0` | Older agents get `426 agent_version_unsupported`, except on heartbeats, update results, and release downloads (the update path) |
 | `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints |
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
 | `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Enrollment token lifetime |
@@ -237,7 +237,7 @@ Signed agent releases ([docs/releases.md](../docs/releases.md), ADR 0018, ADR 00
 - **Verification** (`app/services/releases`): the same checks as the agent (`agent/src/release`), in the same order, with Ruby's OpenSSL (Ed25519 and BLAKE2b-512; no extra gem). The minisign signature and its global signature over the trusted comment must verify against a configured release key, current or next, in minisign's pre-hashed mode; then the manifest must follow its format (strict SemVer without build metadata, the one target, a SHA-256, a size of 1 byte to 64 MiB, no other fields); then the binary must have exactly that size and SHA-256. A release that fails is refused with the reason. This is defence in depth: agents verify independently.
 - **Importing.** From GitHub: an operator enters a version on the Agents page and `AgentReleaseImportJob` downloads the tag `agent-v<version>`'s assets from `https://github.com/$FLEET_RELEASE_REPOSITORY/releases/download/...` (the server needs outbound HTTPS to `github.com` and GitHub's download host). The signature is checked before the binary is downloaded. An unreachable GitHub is retried with backoff, then reported. `agent_release_imports` shows each import's outcome on the page. By upload: the three files of a GitHub release, verified while the operator waits, for a server without internet access.
 - **Audit.** Every import (`release.imported`), refusal (`release.import_refused`), and failed GitHub import (`release.import_failed`) is audited with the operator as actor, with the version and the reason.
-- **Storage.** `agent_releases` keeps the exact manifest and signature bytes; the binary is a file in `FLEET_RELEASES_DIR` (a persistent volume; Active Storage is not used), written to a staging file and renamed into place once verified. Releases are immutable, and never deleted while a host in the fleet runs them: the model and the `agent_releases_guard` trigger refuse it. Rollouts will hold a reference too (P1-UPDATES).
+- **Storage.** `agent_releases` keeps the exact manifest and signature bytes; the binary is a file in `FLEET_RELEASES_DIR` (a persistent volume; Active Storage is not used), written to a staging file and renamed into place once verified. Releases are immutable, and never deleted while a host in the fleet runs them: the model and the `agent_releases_guard` trigger refuse it. A rollout holds a restricting foreign key to its release too (P1-UPDATES).
 - **Downloads.** `GET /api/v1/releases/<version>/manifest`, `signature`, and `binary` on the agent hostname only (`docs/api/README.md`): no credential, limited per address, never `426`, with `ETag`, `Content-Length`, and byte ranges so a broken download resumes.
 
 | Setting | Default | |
@@ -246,6 +246,8 @@ Signed agent releases ([docs/releases.md](../docs/releases.md), ADR 0018, ADR 00
 | `FLEET_RELEASES_DIR` | `storage/releases` | Where release binaries are kept. Mount a persistent volume here |
 | `FLEET_RELEASE_REPOSITORY` | `hostilecity/fleet-cmdb` | The GitHub repository releases are imported from |
 | `FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE` | `60` | Release downloads per client address |
+| `FLEET_ROLLOUT_SPREAD_SECONDS` | `300` | Window over which opening a rollout stage spreads the update directive (P1-UPDATES) |
+| `FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES` | `30` | A host sent the update directive that has not reported by then is `unconfirmed`, which halts the rollout |
 
 ### Docker image
 

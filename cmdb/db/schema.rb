@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -68,6 +68,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
     t.check_constraint "sha256::text ~ '^[0-9a-f]{64}$'::text", name: "agent_releases_sha256_valid"
     t.check_constraint "size >= 1 AND size <= 67108864", name: "agent_releases_size_valid"
     t.check_constraint "source::text = ANY (ARRAY['github'::character varying, 'upload'::character varying]::text[])", name: "agent_releases_source_valid"
+  end
+
+  create_table "agent_updates", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "rollout_id", null: false
+    t.uuid "report_id", null: false
+    t.string "version", limit: 64, null: false
+    t.string "outcome", limit: 16, null: false
+    t.text "reason"
+    t.string "reported_agent_version", limit: 64, null: false
+    t.datetime "occurred_at", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "received_at"], name: "index_agent_updates_on_host_id_and_received_at"
+    t.index ["host_id", "report_id"], name: "index_agent_updates_on_host_id_and_report_id", unique: true
+    t.index ["rollout_id"], name: "index_agent_updates_on_rollout_id"
+    t.check_constraint "outcome::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'rolled_back'::character varying]::text[])", name: "agent_updates_outcome_valid"
   end
 
   create_table "audit_entries", force: :cascade do |t|
@@ -238,6 +254,50 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 
+  create_table "rollout_hosts", force: :cascade do |t|
+    t.bigint "rollout_id", null: false
+    t.bigint "host_id", null: false
+    t.integer "stage", null: false
+    t.string "state", limit: 16, default: "pending", null: false
+    t.datetime "offer_at", null: false
+    t.datetime "offered_at"
+    t.datetime "resolved_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_rollout_hosts_on_host_id"
+    t.index ["offered_at"], name: "index_rollout_hosts_updating", where: "((state)::text = 'updating'::text)"
+    t.index ["rollout_id", "host_id"], name: "index_rollout_hosts_on_rollout_id_and_host_id", unique: true
+    t.index ["rollout_id", "stage", "state"], name: "index_rollout_hosts_on_rollout_id_and_stage_and_state"
+    t.check_constraint "state::text = ANY (ARRAY['pending'::character varying, 'updating'::character varying, 'confirmed'::character varying, 'failed'::character varying, 'rolled_back'::character varying, 'unconfirmed'::character varying]::text[])", name: "rollout_hosts_state_valid"
+  end
+
+  create_table "rollouts", force: :cascade do |t|
+    t.bigint "agent_release_id", null: false
+    t.string "state", limit: 16, default: "running", null: false
+    t.integer "open_slot", default: 1
+    t.bigint "canary_host_ids", default: [], null: false, array: true
+    t.string "canary_tag", limit: 32
+    t.integer "stage_percents", default: [25, 100], null: false, array: true
+    t.integer "current_stage", default: 0, null: false
+    t.datetime "stage_opened_at", null: false
+    t.text "halt_reason"
+    t.bigint "started_by_id", null: false
+    t.bigint "halted_by_id"
+    t.bigint "resumed_by_id"
+    t.datetime "started_at", null: false
+    t.datetime "halted_at"
+    t.datetime "resumed_at"
+    t.datetime "finished_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_release_id"], name: "index_rollouts_on_agent_release_id"
+    t.index ["open_slot"], name: "index_rollouts_one_open", unique: true
+    t.check_constraint "(open_slot IS NOT NULL) = (state::text = ANY (ARRAY['running'::character varying, 'halted'::character varying]::text[]))", name: "rollouts_open_slot_matches_state"
+    t.check_constraint "cardinality(canary_host_ids) > 0 OR canary_tag IS NOT NULL", name: "rollouts_have_canaries"
+    t.check_constraint "current_stage >= 0 AND current_stage <= cardinality(stage_percents)", name: "rollouts_stage_in_range"
+    t.check_constraint "state::text = ANY (ARRAY['running'::character varying, 'halted'::character varying, 'completed'::character varying, 'cancelled'::character varying]::text[])", name: "rollouts_state_valid"
+  end
+
   create_table "settings", force: :cascade do |t|
     t.string "key", limit: 100, null: false
     t.jsonb "value", null: false
@@ -250,6 +310,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
   add_foreign_key "agent_release_imports", "agent_releases"
   add_foreign_key "agent_release_imports", "operators"
   add_foreign_key "agent_releases", "operators", column: "imported_by_id"
+  add_foreign_key "agent_updates", "hosts"
+  add_foreign_key "agent_updates", "rollouts"
   add_foreign_key "enrollment_tokens", "hosts"
   add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_status_events", "hosts"
@@ -258,6 +320,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_030000) do
   add_foreign_key "onboarding_requests", "hosts"
   add_foreign_key "onboarding_requests", "operators", column: "decided_by_id"
   add_foreign_key "operator_sessions", "operators"
+  add_foreign_key "rollout_hosts", "hosts"
+  add_foreign_key "rollout_hosts", "rollouts"
+  add_foreign_key "rollouts", "agent_releases", on_delete: :restrict
+  add_foreign_key "rollouts", "operators", column: "halted_by_id"
+  add_foreign_key "rollouts", "operators", column: "resumed_by_id"
+  add_foreign_key "rollouts", "operators", column: "started_by_id"
 
   create_function :hosts_guard, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.hosts_guard()
