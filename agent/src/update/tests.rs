@@ -435,6 +435,19 @@ fn a_good_directive_is_verified_staged_and_handed_to_the_supervisor() {
 }
 
 #[test]
+fn an_offer_handed_to_the_supervisor_is_not_acted_on_again_by_this_process() {
+    // The supervisor failed the update before the switch and its result was accepted (record and
+    // result gone); the server still sends the directive until it has processed the result.
+    let rig = Rig::new();
+    let offer = rig.offer(NEW, 5);
+    rig.updater.process_now(&offer);
+    Record::remove(rig.world.state()).unwrap();
+    rig.updater.process_now(&offer);
+    assert_eq!(rig.launcher.started.lock().unwrap().len(), 1);
+    assert!(Record::read(rig.world.state()).unwrap().is_none());
+}
+
+#[test]
 fn every_refusal_is_reported_failed_and_changes_nothing() {
     let rig = Rig::new();
     let key = &rig.world.key;
