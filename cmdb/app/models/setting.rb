@@ -17,7 +17,9 @@ class Setting < ApplicationRecord
     # The intervals the server asks agents to use (directives.intervals, ADR 0019). Unset by default: agents
     # then keep their configured intervals. The agent clamps them to its own bounds as well.
     "agent.heartbeat_seconds" => { default: nil, range: 10..3_600 },
-    "agent.inventory_seconds" => { default: nil, range: 60..86_400 }
+    "agent.inventory_seconds" => { default: nil, range: 60..86_400 },
+    # How long inventory snapshots, recent report ids, and host status events are kept (DEC-07, P1-S10).
+    "retention.days" => { default: 90, range: 7..3_650 }
   }.freeze
 
   AGENT_INTERVAL_KEYS = { heartbeat_seconds: "agent.heartbeat_seconds", inventory_seconds: "agent.inventory_seconds" }.freeze
@@ -49,6 +51,25 @@ class Setting < ApplicationRecord
     transaction(requires_new: true) do
       write!("liveness.online_threshold_minutes", online, actor:)
       write!("liveness.stale_threshold_minutes", stale, actor:)
+    end
+  end
+
+  # The retention window for snapshots, report ids, and status events (DEC-07).
+  def self.retention_window = get("retention.days").days
+
+  # Sets the retention window in days, audited. Audit entries are not covered: they are never pruned (DEC-07).
+  def self.update_retention_days!(days, actor:)
+    value = whole_number(days)
+    range = DEFINITIONS.fetch("retention.days")[:range]
+    raise Invalid.new("Enter a whole number of days from #{range.min} to #{range.max}.") unless value && range.cover?(value)
+
+    transaction(requires_new: true) do
+      setting = lock.find_or_initialize_by(key: "retention.days")
+      before = setting.persisted? ? setting.value : DEFINITIONS["retention.days"][:default]
+      next if before == value
+
+      setting.update!(value:)
+      Audit.record(actor:, action: Audit::Actions::SETTING_CHANGED, target: setting, changes: { "retention.days" => [ before, value ] })
     end
   end
 

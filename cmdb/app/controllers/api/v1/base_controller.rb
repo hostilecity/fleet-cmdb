@@ -51,6 +51,8 @@ module Api
         errors = AgentApi::Schema.errors(schema_name, version, data)
         raise AgentApi::ValidationFailed.new(details: errors) if errors.any?
 
+        # Only a validated report id (a UUID) reaches the log, so a log line can be matched to a report.
+        Current.report_id = data["report_id"] if data["report_id"].is_a?(String)
         unknown = AgentApi::Schema.undeclared_pointers(schema_name, version, data)
         # Field names come from the agent too, so control characters are removed before logging them.
         logger.info("[agent_api] ignored unknown fields #{unknown.join(' ').gsub(/[[:cntrl:]]/, '').truncate(1_000)}") if unknown.any?

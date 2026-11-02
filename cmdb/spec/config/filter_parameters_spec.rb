@@ -8,6 +8,7 @@ RSpec.describe "Parameter filtering" do
   %w[
     authorization credential enrollment_token api_key bearer_token
     password session_id id_token recovery_code client_secret
+    cookie session_cookie signature release_signature private_key passphrase
   ].each do |name|
     it "filters #{name}" do
       expect(filter.filter(name => "value")[name]).to eq("[FILTERED]")

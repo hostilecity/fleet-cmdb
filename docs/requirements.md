@@ -341,7 +341,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 ### NFR-4 Observability and operability
 
 - Server and agent both emit structured logs with timestamps, host identity where relevant, and request or report identifiers that let one report be traced end to end.
-- A simple health endpoint on the server reports application and database status for monitoring.
+- A simple health endpoint on the server reports application, database, release-file, backup, and background job status for monitoring.
 - Installation is documented well enough that the owner can set up the server and enroll a new VM from the documentation alone: server setup, agent install, enrollment, remote and manual upgrade, rollback, and uninstall. A newcomer can install an agent by following the dashboard's install page without other documentation.
 - Continuous integration runs server and agent tests and linting on every pull request, and builds release agent binaries for the fleet's architectures.
 

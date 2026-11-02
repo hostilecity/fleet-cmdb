@@ -65,6 +65,8 @@ Rails.application.routes.draw do
     # The audit log is read-only (FR-S.3, P1-AUDIT-PAGE): no create, update, or destroy routes.
     get "audit", to: "audit_entries#index", as: :audit
     get "settings", to: "settings#edit", as: :settings
+    # Background jobs that failed every retry (P1-O02). Read-only; the layout banner links here.
+    get "jobs/failed", to: "failed_jobs#index", as: :failed_jobs
     # Agent releases and installing (P1-RELEASES). Rollouts join this page with P1-UPDATES.
     get "agents", to: "agent_releases#index", as: :agents
     post "agents/releases/import", to: "agent_releases#import", as: :import_agent_release

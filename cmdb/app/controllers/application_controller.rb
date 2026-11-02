@@ -12,13 +12,24 @@ class ApplicationController < ActionController::Base
   before_action { Current.request_id = request.request_id }
   before_action :require_operator!
 
-  helper_method :current_operator
+  helper_method :current_operator, :failed_job_count
 
   def self.allow_unauthenticated_access(**options)
     skip_before_action :require_operator!, **options
   end
 
   private
+
+  # Jobs that failed all their retries in the last day, for the banner on every page (P1-O02). A queue database
+  # that cannot be read must not take the page down, so it shows no banner (/health reports it).
+  def failed_job_count
+    return @failed_job_count if defined?(@failed_job_count)
+
+    @failed_job_count = JobHealth.failing_count
+  rescue ActiveRecord::ActiveRecordError => e
+    logger.error("[jobs] failed-job count unavailable: #{e.class}")
+    @failed_job_count = nil
+  end
 
   def current_operator = Current.operator
 

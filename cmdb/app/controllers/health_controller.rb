@@ -4,15 +4,19 @@
 # like /up, which stays the container's liveness check.
 #
 # - database: a query succeeds.
-# - releases: the newest release's binary is on disk with the recorded size (Releases::StoreCheck).
+# - releases: the binaries of the newest release and of a running rollout's target are on disk with the
+#   recorded size (Releases::StoreCheck).
 # - backup: the last complete backup is recent enough (Backup::Status).
-#
-# Background job liveness joins these with P1-S11's remaining scope and P1-O02.
+# - failed_jobs: no background job has failed all its retries in the last day (JobHealth, P1-O02).
+# - job_liveness: the recurring liveness job has finished within the last few minutes, so the scheduler, a
+#   worker, and the queue database are working (JobHealth).
 class HealthController < ActionController::API
   CHECKS = {
     "database" => -> { ActiveRecord::Base.connection.select_value("SELECT 1") == 1 },
     "releases" => -> { Releases::StoreCheck.healthy? },
-    "backup" => -> { Backup::Status.fresh? }
+    "backup" => -> { Backup::Status.fresh? },
+    "failed_jobs" => -> { !JobHealth.failing? },
+    "job_liveness" => -> { JobHealth.liveness_recent? }
   }.freeze
 
   def show

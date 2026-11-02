@@ -44,7 +44,7 @@ Keep these in a password manager or an encrypted store, not on the same machine 
 
 After a complete backup the script touches `FLEET_BACKUP_STATUS_FILE`. `GET /health` (agent hostname or localhost) reports the backup check as failing, and the whole endpoint as 503, when that file is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` (26). Point the uptime monitor that watches `/health` at an alert you will see. A new install is unhealthy until its first backup, which is deliberate: run the first backup straight after deploying.
 
-`/health` also reports the release files: it fails when the newest release's binary is missing from `FLEET_RELEASES_DIR` or has a different size than its database row (an existence and size check only). The response names each check as `ok` or `failing` and nothing else; the server log has the detail.
+`/health` also reports the release files: it fails when the binary of the newest release, or of the release a running rollout is sending out, is missing from `FLEET_RELEASES_DIR` or has a different size than its database row (an existence and size check only). Its other checks are described in [health-and-jobs.md](health-and-jobs.md). The response names each check as `ok` or `failing` and nothing else; the server log has the detail.
 
 ## Restore
 

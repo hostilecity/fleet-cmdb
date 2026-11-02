@@ -31,9 +31,11 @@ Rails.application.configure do
   # The container health check calls http://localhost/up without TLS.
   config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
 
-  # Log to STDOUT with the current request id as a default log tag.
-  config.log_tags = [ :request_id ]
-  config.logger   = ActiveSupport::TaggedLogging.logger(STDOUT)
+  # Log to STDOUT as one JSON object per line: time, level, message, and the request id, host id, and report id
+  # when known, plus a "request completed" line with the duration (NFR-4, P1-S11). No log tags: the request id
+  # is a field, not a prefix.
+  config.logger = ActiveSupport::TaggedLogging.logger(STDOUT, formatter: StructuredLogFormatter.new)
+  config.x.logging.structured = true
 
   # Change to "debug" to log everything (including potentially personally-identifiable information!).
   config.log_level = ENV.fetch("RAILS_LOG_LEVEL", "info")
