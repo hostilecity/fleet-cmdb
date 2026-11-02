@@ -39,7 +39,7 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). Server side
 - **Confirmation.** The new version writes the marker (`update-confirmed.json`, naming the rollout and version) only after its first heartbeat that the server acknowledged. The deadline defaults to 5 minutes and is set by `update_confirm_seconds` in the config (10 to 3600).
 - **Rollback.** Without confirmation by the deadline, the supervisor swaps back to `previous`, restores state if backed up, restarts, and records `rolled_back` with the reason. The restored agent reports it.
 - **Backstops.**
-  - **Crash loops:** `OnFailure=fleet-agent-rollback.service` in the unit rolls back when the new version keeps failing (`StartLimitBurst`).
+  - **Crash loops:** `OnFailure=fleet-agent-rollback.service` in the unit rolls back when the new version keeps failing (`StartLimitBurst`). systemd may start it on every failure; while the supervisor of the update holds the lock it waits (killing that supervisor if it is still holding the lock a minute after its deadline) instead of giving up, and it acts only once it holds the lock itself.
   - **Reboots:** `update.lock` is released by a reboot, so the agent that starts afterwards (the new version, or the old one if the switch had not happened) finds the unfinished record and starts the supervisor, which finishes or rolls back.
 - **Retention.** Two versions are kept; older ones are removed after a confirmed update.
 - **Result.** The outcome is written to `update-result.json` with a stable `report_id` and posted to `POST /api/v1/update-results` by the running agent after each heartbeat, and retried until accepted (a 4xx other than 429 is dropped and logged, since retrying cannot change it).

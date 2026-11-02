@@ -138,7 +138,9 @@ inventory_from() {
     event_exists "[.[] | select(.kind == \"inventory\" and .agent_version == \"$1\" and .status == ${2:-200} and .at > $since)] | length > 0"
 }
 running_is() { [ "$(running_version)" = "$1" ]; }
-journal_has() { journalctl -u "$1" --no-pager -o cat 2>/dev/null | grep -Fq -- "$2"; }
+# journal_has UNIT TEXT: TEXT was logged by UNIT since the scenario started (an earlier scenario may have
+# logged the same).
+journal_has() { journalctl -u "$1" --since "@${since%.*}" --no-pager -o cat 2> /dev/null | grep -Fq -- "$2"; }
 
 # result_field FIELD: a field of the accepted result of the current rollout.
 result_field() {
@@ -305,9 +307,9 @@ wait_until "release 1.0.3 to start" 90 journal_has fleet-agent "update-smoke: re
 systemctl kill --signal=SIGKILL fleet-agent-update || fail "no supervisor to kill"
 wait_until "the rollback unit to roll it back and the agent to report" 240 result_accepted
 expect_result "killed supervisor, crash-looping release" rolled_back "$OLD"
+journal_has fleet-agent-rollback "update supervisor finished ended=RolledBack" \
+    || fail "the rollback was not done by the OnFailure rollback unit"
 expect_old_running "killed supervisor, crash-looping release"
-journalctl -u fleet-agent-rollback --no-pager -o cat 2> /dev/null | grep -v '^-- ' | grep -q . \
-    || fail "the OnFailure rollback unit did not run"
 
 echo "== success: a good release is installed and its result is retried"
 reset
@@ -330,14 +332,14 @@ inventory_from "$NEW" || fail "success: no inventory report from $NEW"
 echo "== below minimum: an agent the server answers 426 still updates (NFR-5)"
 reset
 set_plan "{\"min_version\": \"$NEW\"}"
-systemctl restart fleet-agent
 since=$(date +%s.%N)
+systemctl restart fleet-agent
 wait_until "inventory to be refused with 426" 60 inventory_from "$OLD" 426
 offer good "$NEW" "{\"min_version\": \"$NEW\"}"
 wait_until "the update to be reported" 150 result_accepted
 expect_result "below minimum" succeeded "$NEW"
 running_is "$NEW" || fail "below minimum: running $(running_version)"
-since=$(date +%s.%N)
+# The new version's startup inventory (since is still from before the update; inventory is every 15 min).
 wait_until "inventory from $NEW to be accepted" 90 inventory_from "$NEW" 200
 
 echo "update-smoke: every scenario passed"

@@ -14,7 +14,9 @@ Description=Fleet CMDB agent update rollback
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop
-TimeoutStartSec=300
+# It may wait for the supervisor of the failed update to finish or pass its deadline
+# (update_confirm_seconds, at most 3600) before it acts.
+TimeoutStartSec=4000
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

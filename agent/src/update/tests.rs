@@ -37,8 +37,18 @@ pub const NEW: &str = "99.0.0";
 
 // --- The fake machine ----------------------------------------------------------------------------
 
-/// Seconds since the Unix epoch, advanced by `sleep` instead of waiting.
-pub struct FakeClock(pub Cell<u64>);
+/// Seconds since the Unix epoch, advanced by `sleep` instead of waiting, and something to do once that
+/// time is reached (another process finishing, say).
+pub struct FakeClock(pub Cell<u64>, pub RefCell<Option<Alarm>>);
+
+/// Something to do at a time: `(unix seconds, what)`.
+pub type Alarm = (u64, Box<dyn FnOnce()>);
+
+impl FakeClock {
+    pub fn at(&self, unix: u64, then: impl FnOnce() + 'static) {
+        *self.1.borrow_mut() = Some((unix, Box::new(then)));
+    }
+}
 
 impl Clock for FakeClock {
     fn now(&self) -> SystemTime {
@@ -46,6 +56,10 @@ impl Clock for FakeClock {
     }
     fn sleep(&self, duration: Duration) {
         self.0.set(self.0.get() + duration.as_secs().max(1));
+        let due = matches!(&*self.1.borrow(), Some((at, _)) if *at <= self.0.get());
+        if due && let Some((_, then)) = self.1.borrow_mut().take() {
+            then();
+        }
     }
 }
 
@@ -68,6 +82,8 @@ pub struct FakeSystemd {
     pub behaviour: RefCell<HashMap<String, Agent>>,
     pub state: RefCell<String>,
     pub fail_restart: Cell<bool>,
+    /// The lock of another supervisor, held until `systemctl kill` kills it.
+    pub other_supervisor: RefCell<Option<layout::FileLock>>,
 }
 
 impl FakeSystemd {
@@ -136,6 +152,12 @@ impl Systemd for FakeSystemd {
                     Err(state)
                 }
             }
+            ["kill", "--signal=SIGKILL", unit] => {
+                assert_eq!(*unit, "fleet-agent-update.service");
+                self.calls.borrow_mut().push("kill-supervisor".into());
+                self.other_supervisor.borrow_mut().take();
+                Ok(String::new())
+            }
             other => panic!("unexpected systemctl call: {other:?}"),
         }
     }
@@ -175,13 +197,14 @@ impl World {
             behaviour: RefCell::default(),
             state: RefCell::new("active".into()),
             fail_restart: Cell::new(false),
+            other_supervisor: RefCell::default(),
         };
         Self {
             _dir: dir,
             layout,
             key,
             keys,
-            clock: FakeClock(Cell::new(1_767_268_800)),
+            clock: FakeClock(Cell::new(1_767_268_800), RefCell::default()),
             systemd,
             running: semver::Version::parse(old()).unwrap(),
         }
@@ -643,6 +666,22 @@ fn a_result_survives_a_restart_of_the_agent() {
 }
 
 // --- A supervisor that died -----------------------------------------------------------------------
+
+#[test]
+fn the_watchdog_does_not_race_this_process_handing_an_update_over() {
+    // The worker writes the record and then starts the supervisor; a heartbeat in between must not
+    // take the record for one whose supervisor died and start a second one.
+    let rig = Rig::new();
+    let mut record = rig.world.stage_release(NEW, &binary(100), 5);
+    record.started_unix = unix(SystemTime::now());
+    record.write(rig.world.state()).unwrap();
+    rig.updater.inner.busy.store(true, Ordering::SeqCst);
+    rig.updater.tick(&FakeTransport::new(vec![]));
+    assert!(rig.launcher.started.lock().unwrap().is_empty());
+    rig.updater.inner.busy.store(false, Ordering::SeqCst);
+    rig.updater.tick(&FakeTransport::new(vec![]));
+    assert_eq!(rig.launcher.started.lock().unwrap().len(), 1);
+}
 
 #[test]
 fn an_update_without_a_supervisor_gets_one_and_a_live_supervisor_is_left_alone() {

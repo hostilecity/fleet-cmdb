@@ -31,8 +31,8 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::layout::{
-    FileLock, LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, free_bytes, link_version,
-    parse_version,
+    FileLock, LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, SUPERVISOR_UNIT,
+    free_bytes, link_version, parse_version,
 };
 use super::record::{Marker, Outcome, PendingResult, Phase, Record, reason};
 use super::stage;
@@ -46,6 +46,12 @@ const FREE_SPACE_MARGIN: u64 = 4 * 1024 * 1024;
 
 /// A state record larger than this is not copied into the backup (the records are a few KiB).
 const MAX_BACKUP_FILE: u64 = 1024 * 1024;
+
+/// How long past its own deadline a supervisor may keep the lock before the failure hook stops it.
+/// A working supervisor rolls back within seconds of its deadline; one that is still holding the lock
+/// a minute later is hung (stuck in a `systemctl` call, say) and must not block the rollback.
+/// The rollback unit's `TimeoutStartSec=` (4000 s) covers the longest deadline (3600 s) plus two of these.
+pub const OVERDUE_GRACE: Duration = Duration::from_secs(60);
 
 /// Time, so tests need not wait.
 pub trait Clock {
@@ -107,8 +113,10 @@ pub struct Supervisor<'a> {
 impl Supervisor<'_> {
     pub fn run(&self, intent: Intent) -> Result<Ended, String> {
         let state = &self.layout.state_dir;
-        let lock = FileLock::try_lock(&state.join(LOCK_FILE))
-            .map_err(|e| format!("cannot take the update lock in {}: {e}", state.display()))?;
+        let lock = match intent {
+            Intent::Resume => self.try_lock()?,
+            Intent::Rollback(_) => Some(self.lock_for_rollback()?),
+        };
         let Some(_lock) = lock else {
             tracing::info!("another update supervisor is running; leaving the update to it");
             return Ok(Ended::Busy);
@@ -169,6 +177,67 @@ impl Supervisor<'_> {
                     return Ok(Ended::Confirmed);
                 }
             }
+        }
+    }
+
+    fn try_lock(&self) -> Result<Option<FileLock>, String> {
+        let state = &self.layout.state_dir;
+        FileLock::try_lock(&state.join(LOCK_FILE))
+            .map_err(|e| format!("cannot take the update lock in {}: {e}", state.display()))
+    }
+
+    /// The lock, for the failure hook. Unlike a resumed supervisor, the hook does not give up when the
+    /// lock is held: systemd starts it once per failure of the service, and the failure that starts it
+    /// may be the last one (the start limit), so if it left and the holder then died, nothing would ever
+    /// roll back. It waits instead. A supervisor that holds the lock is left to finish while it is within
+    /// its own deadline plus [`OVERDUE_GRACE`]; after that it is hung and is killed (it is idempotent and
+    /// writes ahead, so killing it at any point is safe), and the hook carries on from the record. There
+    /// is still never more than one supervisor: the hook only proceeds once it holds the lock itself.
+    fn lock_for_rollback(&self) -> Result<FileLock, String> {
+        let state = &self.layout.state_dir;
+        let mut said = false;
+        let mut killed_at = None;
+        loop {
+            if let Some(lock) = self.try_lock()? {
+                return Ok(lock);
+            }
+            if !said {
+                tracing::info!("an update supervisor holds the lock; waiting for it to finish");
+                said = true;
+            }
+            let now = unix(self.clock.now());
+            // No record (it is finishing) or an unreadable one: nothing to measure, just wait.
+            let overdue_at = match Record::read(state) {
+                Ok(Some(rec)) => Some(
+                    rec.deadline_unix
+                        .unwrap_or(rec.started_unix.saturating_add(rec.confirm_seconds))
+                        .saturating_add(OVERDUE_GRACE.as_secs()),
+                ),
+                _ => None,
+            };
+            match (overdue_at, killed_at) {
+                (Some(at), None) if now >= at => {
+                    tracing::warn!(
+                        "the update supervisor is past its deadline and still holds the lock; stopping it to roll back"
+                    );
+                    let unit = format!("{SUPERVISOR_UNIT}.service");
+                    if let Err(e) =
+                        self.systemd
+                            .systemctl(&["kill", "--signal=SIGKILL", unit.as_str()])
+                    {
+                        tracing::warn!("cannot stop the update supervisor: {e}");
+                    }
+                    killed_at = Some(now);
+                }
+                (_, Some(at)) if now >= at.saturating_add(OVERDUE_GRACE.as_secs()) => {
+                    return Err(format!(
+                        "the update lock in {} is still held after the update supervisor was stopped; not rolling back",
+                        state.display()
+                    ));
+                }
+                _ => {}
+            }
+            self.clock.sleep(self.poll);
         }
     }
 

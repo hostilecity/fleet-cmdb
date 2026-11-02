@@ -417,6 +417,12 @@ impl Inner {
                 "cannot start the update supervisor: {why}"
             )));
         }
+        // Handed over: whatever the supervisor decides, this process does not act on the offer again.
+        self.memory
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reported
+            .insert((directive.rollout_id, directive.version.to_string()));
         Ok(())
     }
 
@@ -534,6 +540,11 @@ impl Inner {
     /// restarted), start one from the version being replaced; it carries on from the recorded phase.
     fn watchdog(&self) {
         let Some(layout) = &self.layout else { return };
+        // While this process's worker is staging and handing over, the record it just wrote has no
+        // supervisor yet; that is not a dead supervisor, and starting one here would race the handover.
+        if self.busy.load(Ordering::SeqCst) {
+            return;
+        }
         let rec = match Record::read(&self.state_dir) {
             Ok(Some(rec)) => rec,
             Ok(None) => return,

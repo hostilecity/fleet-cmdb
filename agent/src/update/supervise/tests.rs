@@ -388,6 +388,119 @@ fn a_crash_loop_with_a_dead_supervisor_is_rolled_back_by_the_failure_hook() {
     assert!(!world.layout.version_dir(NEW).exists());
 }
 
+/// `switched_unconfirmed` with a deadline `seconds` from now. Returns the deadline.
+fn switched_unconfirmed_due_in(world: &World, seconds: u64) -> u64 {
+    switched_unconfirmed(world);
+    let mut record = Record::read(world.state()).unwrap().unwrap();
+    let deadline = world.clock.0.get() + seconds;
+    record.deadline_unix = Some(deadline);
+    record.write(world.state()).unwrap();
+    deadline
+}
+
+fn hold_lock(world: &World) -> FileLock {
+    FileLock::try_lock(&world.state().join(LOCK_FILE))
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn the_failure_hook_waits_for_the_lock_and_rolls_back_once_the_supervisor_holding_it_dies() {
+    // systemd starts the hook on a failure of the service while the supervisor of the failed attempt
+    // still holds the lock. If the hook gave up then and the supervisor died afterwards, nothing would
+    // roll back (the service has stopped, so no agent is left to restart a supervisor).
+    let world = World::new();
+    world.behaves(NEW, Agent::Fails);
+    let deadline = switched_unconfirmed_due_in(&world, 300);
+    let start = world.clock.0.get();
+    let held = hold_lock(&world);
+    world.clock.at(start + 20, move || drop(held)); // the supervisor is killed
+    assert_eq!(
+        world.run(Intent::Rollback("the new version kept failing")),
+        Ok(Ended::RolledBack)
+    );
+    assert!(world.clock.0.get() >= start + 20, "it did not wait");
+    assert!(world.clock.0.get() < deadline, "it waited for the deadline");
+    assert!(
+        !world
+            .systemd
+            .calls
+            .borrow()
+            .contains(&"kill-supervisor".to_owned())
+    );
+    assert_eq!(world.current().as_deref(), Some(old()));
+    assert_eq!(world.pending().unwrap().outcome, Outcome::RolledBack);
+}
+
+#[test]
+fn the_failure_hook_leaves_the_update_to_a_supervisor_that_finishes_it() {
+    let world = World::new();
+    world.behaves(NEW, Agent::Fails);
+    switched_unconfirmed_due_in(&world, 300);
+    let start = world.clock.0.get();
+    let held = hold_lock(&world);
+    let state = world.state().to_owned();
+    world.clock.at(start + 30, move || {
+        // The supervisor rolled back by itself and removed the record before it let go of the lock.
+        Record::remove(&state).unwrap();
+        drop(held);
+    });
+    assert_eq!(
+        world.run(Intent::Rollback("the new version kept failing")),
+        Ok(Ended::NothingToDo)
+    );
+    assert!(
+        !world
+            .systemd
+            .calls
+            .borrow()
+            .contains(&"kill-supervisor".to_owned())
+    );
+    assert_eq!(world.systemd.restarts(), 0);
+}
+
+#[test]
+fn the_failure_hook_stops_a_supervisor_hung_past_its_deadline_and_rolls_back() {
+    let world = World::new();
+    world.behaves(NEW, Agent::Fails);
+    let deadline = switched_unconfirmed_due_in(&world, 30);
+    *world.systemd.other_supervisor.borrow_mut() = Some(hold_lock(&world));
+    assert_eq!(
+        world.run(Intent::Rollback("the new version kept failing")),
+        Ok(Ended::RolledBack)
+    );
+    assert!(world.clock.0.get() >= deadline + OVERDUE_GRACE.as_secs());
+    assert_eq!(
+        world
+            .systemd
+            .calls
+            .borrow()
+            .iter()
+            .filter(|c| *c == "kill-supervisor")
+            .count(),
+        1
+    );
+    assert_eq!(world.current().as_deref(), Some(old()));
+    assert_eq!(world.pending().unwrap().outcome, Outcome::RolledBack);
+}
+
+#[test]
+fn the_failure_hook_never_runs_alongside_a_lock_holder_it_cannot_stop() {
+    // Whatever holds the lock, the hook proceeds only once it holds it itself: two supervisors never
+    // act at once. If killing the supervisor unit does not free it, the hook stops and changes nothing.
+    let world = World::new();
+    world.behaves(NEW, Agent::Fails);
+    switched_unconfirmed_due_in(&world, 30);
+    let _held = hold_lock(&world);
+    let error = world
+        .run(Intent::Rollback("the new version kept failing"))
+        .unwrap_err();
+    assert!(error.contains("still held"), "{error}");
+    assert_eq!(world.current().as_deref(), Some(NEW));
+    assert_eq!(world.systemd.restarts(), 0);
+    assert!(world.pending().is_none());
+}
+
 #[test]
 fn the_failure_hook_never_touches_a_confirmed_or_unrelated_failure() {
     // Confirmed: the marker is there.
