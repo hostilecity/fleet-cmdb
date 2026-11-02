@@ -29,9 +29,19 @@ All endpoints are under `/api/v1`, served only on the private agent hostname ([D
 | `POST /api/v1/onboarding/token` | Device code in the body | `onboarding-token.request` | `202` (pending) or `201` (approved, with the credential), `onboarding-token.response` |
 | `POST /api/v1/heartbeat` | Bearer credential | `heartbeat.request` | `200`, `heartbeat.response` |
 | `POST /api/v1/reports/inventory` | Bearer credential | `inventory.request` | `200`, `inventory.response` |
+| `POST /api/v1/update-results` | Bearer credential | `update-result.request` | `200`, `update-result.response` |
 | `GET /api/v1/releases/<version>/manifest`, `.../signature`, `.../binary` | None (agent hostname only, rate-limited per address) | none | `200` (or `206`, `304`, `416`), the release file's bytes |
 
-Planned for Phase 1 by the scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)), each added here with its schemas by the issue that builds it: the fields of the `agent_update` directive in `heartbeat.response`, and `POST /api/v1/agent/update-results` (P1-UPDATES). The `intervals` directive is already defined (below). Later phases add the config, package, and task endpoints.
+Later phases add the config, package, and task endpoints.
+
+### Updates
+
+The scope change in #54 ([DEC-17](../decisions/0017-agent-onboarding.md), [DEC-18](../decisions/0018-signed-agent-updates.md)) adds two pieces to the contract, built by P1-UPDATES:
+
+- **The `agent_update` directive** in `heartbeat.response` (below): the rollout, the version, and the three URLs to fetch it from.
+- **`POST /api/v1/update-results`:** the agent reports `succeeded`, `failed`, or `rolled_back` (with a `reason`) for a rollout, with a `report_id` reused on retry; a retried result is answered `200` with `duplicate: true`. `400 validation_failed` also covers a `rollout_id` the host is not part of and a `version` that is not the rollout's release (the `details` pointer names the field). A `failed` or `rolled_back` result halts the rollout.
+
+**The update path never sees `426`** (FR-S.5, DEC-18). Heartbeats, update results, and release downloads are exempt from the minimum agent version, so an agent that is too old for everything else can still heartbeat, receive the directive, download the release, and report the outcome. Every other endpoint, reports included, still answers `426 agent_version_unsupported` to it; the agent does not read directives from a `426`, so the server sends none there. The test `spec/requests/api/update_path_spec.rb` (P1-X01) guards this and is kept in every later phase.
 
 ### Release downloads
 
@@ -58,7 +68,7 @@ The files of a signed release the server has imported ([docs/releases.md](../rel
 - **Server checks beyond the schema:** some rules are not expressible in JSON Schema, such as free space not exceeding total. The server enforces these and answers `validation_failed`.
 - **Heartbeat directives** ([DEC-20](../decisions/0020-named-heartbeat-directives.md)): `directives` in `heartbeat.response` is an object keyed by directive name, and `{}` when the server has nothing to say. Every directive is optional, and each is an object or `null`. An absent or `null` directive or field means no instruction. Agents ignore and log names and fields they do not know, so adding a directive, or an optional field to one, is additive (rule 1 below); changing what one means is breaking (rule 2). A malformed directive is ignored and logged, and never fails the heartbeat. Defined in v1:
   - `intervals`: `heartbeat_seconds` and `inventory_seconds`, whole seconds of at least 1, each optional. The agent clamps each to its configured bounds and returns to its configured value when one is absent (ADR 0019).
-  - `agent_update`: the release to install (ADR 0018). Only its type (object or `null`) is fixed until P1-UPDATES defines its fields.
+  - `agent_update`: the release to install (ADR 0018). `rollout_id`, `version`, `manifest_url`, `signature_url`, and `binary_url` (all required when the directive is an object; the URLs are `https`). Sent only to a host chosen for an open stage of the running rollout that runs an older version than the release, and on every heartbeat until it reports a result. The URLs only say where to fetch; the agent verifies the release itself (ADR 0018) and the server never names a command or an executable. The server sends `intervals` only when an operator has set them (settings `agent.heartbeat_seconds` and `agent.inventory_seconds`).
 - **Request IDs:** every response has an `X-Request-Id` header, and error bodies repeat it.
 
 ### Errors
@@ -76,7 +86,7 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 | 410 | `enrollment_token_invalid` | Enrollment token unknown, expired, or already used. Same body for each case |
 | 410 | `onboarding_expired` | Onboarding device code unknown, expired, or already used to collect a credential. Same body for each case; the installer starts again |
 | 413 | `payload_too_large` | Body over the endpoint's size limit |
-| 426 | `agent_version_unsupported` | `agent_version` is older than the server's minimum. The agent logs this plainly and backs off |
+| 426 | `agent_version_unsupported` | `agent_version` is older than the server's minimum. The agent logs this plainly and backs off. Never sent by `heartbeat`, `update-results`, or the release downloads (the update path) |
 | 429 | `rate_limited` | Too many requests, too many onboarding requests open, onboarding polled faster than its `interval`, or too many release downloads from one address. Honour the `Retry-After` header |
 | 500 | `internal_error` | Unexpected failure. The message never contains internals |
 
@@ -133,3 +143,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | `warnings` may also explain a partly read list fact (`disks`, `network_interfaces`) that is not `null`; example `partial-lists.json` (P1-AGENT-COLLECT). Description only, so no version bump. |
 | v1 | `heartbeat.response` `directives` is an object keyed by directive name instead of an always-empty array, with `intervals` defined and `agent_update` reserved as an object; the server sends `{}` (DEC-20, amending DEC-08). Breaking for the response shape, but v1 has no released agents, so no version bump. From here on a new directive or optional directive field is additive. |
 | v1 | Release downloads `GET /api/v1/releases/<version>/manifest`, `signature`, and `binary`: unauthenticated, exempt from the minimum version, with `ETag`, `Content-Length`, and byte ranges (P1-RELEASES). New endpoints, so no version bump. |
+| v1 | `heartbeat.response` `directives.agent_update` gains its fields (`rollout_id`, `version`, `manifest_url`, `signature_url`, `binary_url`, all required in the object), and `directives.intervals` is sent. New endpoint `POST /api/v1/update-results` with `update-result.request` and `update-result.response`. `heartbeat` and `update-results` are exempt from the `426` minimum-version check (P1-UPDATES, DEC-18). Additive, so no version bump: no agent has released and read `agent_update` before this. |

@@ -1,0 +1,12 @@
+{
+  "server_time": "2026-01-01T12:00:00Z",
+  "directives": {
+    "agent_update": {
+      "rollout_id": 1,
+      "version": "0.2.0",
+      "manifest_url": "http://agent.example.lan/api/v1/releases/0.2.0/manifest",
+      "signature_url": "https://agent.example.lan/api/v1/releases/0.2.0/signature",
+      "binary_url": "https://agent.example.lan/api/v1/releases/0.2.0/binary"
+    }
+  }
+}

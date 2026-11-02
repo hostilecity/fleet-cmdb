@@ -9,7 +9,9 @@
 //!
 //! - `intervals`: `{"heartbeat_seconds": n, "inventory_seconds": n}`, either optional, whole seconds.
 //!   The caller clamps each value to the config bounds ([`crate::config::Interval`], ADR 0019).
-//! - `agent_update`: kept as raw JSON for the updater (P1-AGENT-UPDATE); not acted on in this build.
+//! - `agent_update`: `rollout_id`, `version`, and the manifest, signature, and binary URLs, all required.
+//!   Kept as raw JSON for the updater (P1-AGENT-UPDATE) once its fields are well formed; a directive that
+//!   lacks one, or has one of the wrong kind, is a problem and is not kept. Not acted on in this build.
 //! - any other name is ignored and listed.
 //!
 //! A missing or `null` `directives` is read as `{}`. Any other shape, including the array that ADR 0008
@@ -88,7 +90,10 @@ fn directives(value: &Value, envelope: &mut Envelope) {
                 match key.as_str() {
                     "intervals" => intervals(value, envelope),
                     "agent_update" => match value {
-                        Value::Object(_) => envelope.agent_update = Some(value.clone()),
+                        Value::Object(fields) => match agent_update_problem(fields) {
+                            None => envelope.agent_update = Some(value.clone()),
+                            Some(problem) => envelope.problems.push(problem),
+                        },
                         Value::Null => {}
                         other => envelope.problems.push(format!(
                             "directive `agent_update` is {}, not an object",
@@ -105,6 +110,35 @@ fn directives(value: &Value, envelope: &mut Envelope) {
             .push(format!("`directives` is {}, not an object", kind(other))),
     }
     unknown.finish(envelope);
+}
+
+/// The first thing wrong with an `agent_update` directive's fields, or `None`. The text names fields
+/// only, never the server's values. The agent still verifies the release itself (ADR 0018); this only
+/// keeps a directive it could not follow from reaching the updater.
+fn agent_update_problem(fields: &serde_json::Map<String, Value>) -> Option<String> {
+    let problem = |field: &str, want: &str| {
+        Some(format!(
+            "directive `agent_update.{field}` is missing or not {want}"
+        ))
+    };
+    if fields
+        .get("rollout_id")
+        .and_then(Value::as_u64)
+        .is_none_or(|id| id == 0)
+    {
+        return problem("rollout_id", "a positive whole number");
+    }
+    let version = fields.get("version").and_then(Value::as_str);
+    if !version.is_some_and(|v| semver::Version::parse(v).is_ok_and(|v| v.build.is_empty())) {
+        return problem("version", "a semantic version without build metadata");
+    }
+    for field in ["manifest_url", "signature_url", "binary_url"] {
+        let url = fields.get(field).and_then(Value::as_str);
+        if !url.is_some_and(|u| u.starts_with("https://") && !u.contains(char::is_whitespace)) {
+            return problem(field, "an https URL");
+        }
+    }
+    None
 }
 
 fn intervals(value: &Value, envelope: &mut Envelope) {
@@ -319,13 +353,71 @@ mod tests {
         }
     }
 
+    /// A well formed `agent_update` directive, as `docs/api/examples/v1/heartbeat.response` shows.
+    fn update() -> Value {
+        json!({
+            "rollout_id": 1,
+            "version": "0.2.0",
+            "manifest_url": "https://agent.example.lan/api/v1/releases/0.2.0/manifest",
+            "signature_url": "https://agent.example.lan/api/v1/releases/0.2.0/signature",
+            "binary_url": "https://agent.example.lan/api/v1/releases/0.2.0/binary"
+        })
+    }
+
+    #[test]
+    fn a_malformed_agent_update_is_a_problem_and_not_kept() {
+        for (field, value) in [
+            ("rollout_id", json!(0)),
+            ("rollout_id", json!("1")),
+            ("version", json!("latest")),
+            ("version", json!("0.2.0+build.5")),
+            ("version", json!(2)),
+            ("manifest_url", json!("http://agent.example.lan/m")),
+            ("signature_url", json!("https://agent.example.lan/a b")),
+            ("binary_url", json!(null)),
+        ] {
+            let mut directive = update();
+            directive[field] = value.clone();
+            let envelope = parse(&json!({"directives": {"agent_update": directive}}));
+            assert_eq!(envelope.agent_update, None, "{field} {value}");
+            assert_eq!(
+                envelope.problems.len(),
+                1,
+                "{field} {value}: {:?}",
+                envelope.problems
+            );
+            assert!(
+                envelope.problems[0].contains(field),
+                "{:?}",
+                envelope.problems
+            );
+        }
+        for field in [
+            "rollout_id",
+            "version",
+            "manifest_url",
+            "signature_url",
+            "binary_url",
+        ] {
+            let mut directive = update();
+            directive.as_object_mut().unwrap().remove(field);
+            let envelope = parse(&json!({"directives": {"agent_update": directive}}));
+            assert_eq!(envelope.agent_update, None, "without {field}");
+            assert!(
+                envelope.problems[0].contains(field),
+                "{:?}",
+                envelope.problems
+            );
+        }
+    }
+
     #[test]
     fn intervals_and_agent_update_are_read_from_an_object() {
         let envelope = parse(&json!({
             "server_time": "2026-01-01T12:00:00Z",
             "directives": {
                 "intervals": {"heartbeat_seconds": 120, "inventory_seconds": 1800},
-                "agent_update": {"version": "0.2.0"}
+                "agent_update": update()
             }
         }));
         assert_eq!(
@@ -335,7 +427,7 @@ mod tests {
                 inventory_seconds: Some(1800)
             }
         );
-        assert_eq!(envelope.agent_update, Some(json!({"version": "0.2.0"})));
+        assert_eq!(envelope.agent_update, Some(update()));
         assert!(envelope.ignored.is_empty() && envelope.problems.is_empty());
     }
 

@@ -15,6 +15,9 @@ development:
   liveness_evaluation:
     class: LivenessEvaluationJob
     schedule: every minute
+  rollout_timeouts:
+    class: RolloutTimeoutJob
+    schedule: every minute
   onboarding_pruning:
     class: OnboardingPruneJob
     schedule: every hour at minute 7
@@ -28,6 +31,9 @@ production:
     class: LivenessEvaluationJob
     schedule: every minute
   # DEC-17: expired onboarding requests are removed a day after they expire.
+  rollout_timeouts:
+    class: RolloutTimeoutJob
+    schedule: every minute
   onboarding_pruning:
     class: OnboardingPruneJob
     schedule: every hour at minute 7

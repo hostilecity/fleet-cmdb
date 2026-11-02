@@ -20,13 +20,24 @@ module AuditEntriesHelper
     Audit::Actions::RELEASE_IMPORTED => "Release imported",
     Audit::Actions::RELEASE_IMPORT_REFUSED => "Release refused",
     Audit::Actions::RELEASE_IMPORT_FAILED => "Release import failed",
+    Audit::Actions::ROLLOUT_STARTED => "Rollout started",
+    Audit::Actions::ROLLOUT_ADVANCED => "Rollout advanced",
+    Audit::Actions::ROLLOUT_HALTED => "Rollout halted",
+    Audit::Actions::ROLLOUT_RESUMED => "Rollout resumed",
+    Audit::Actions::ROLLOUT_CANCELLED => "Rollout cancelled",
+    Audit::Actions::ROLLOUT_COMPLETED => "Rollout completed",
+    Audit::Actions::UPDATE_SUCCEEDED => "Agent update succeeded",
+    Audit::Actions::UPDATE_FAILED => "Agent update failed",
+    Audit::Actions::UPDATE_ROLLED_BACK => "Agent update rolled back",
+    Audit::Actions::UPDATE_UNCONFIRMED => "Agent update unconfirmed",
     Audit::Actions::SETTING_CHANGED => "Setting changed"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "setting" => "Settings" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
+  INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze
 
   # Recorded field => [label, monospace]. Shown in this order; fields not listed follow, named as recorded.
   AUDIT_FIELDS = {
@@ -52,7 +63,8 @@ module AuditEntriesHelper
     "sha256" => [ "SHA-256", true ],
     "size" => [ "Size (bytes)", true ],
     "key_role" => [ "Release key", false ],
-    **SETTING_NAMES.keys.index_with { [ "Minutes", true ] }
+    **SETTING_NAMES.keys.index_with { [ "Minutes", true ] },
+    **INTERVAL_SETTING_NAMES.keys.index_with { [ "Seconds", true ] }
   }.freeze
 
   # /audit with these query parameters. Built by hand because url_for treats an :action key as the route's
@@ -105,7 +117,7 @@ module AuditEntriesHelper
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"
       key = records.settings[id]
-      key ? safe_join([ SETTING_NAMES.fetch(key, key), tag.span(key, class: "kind mono") ], " ") : "Setting #{id}"
+      key ? safe_join([ SETTING_NAMES.merge(INTERVAL_SETTING_NAMES).fetch(key, key), tag.span(key, class: "kind mono") ], " ") : "Setting #{id}"
     when nil then tag.span("None", class: "muted")
     else "#{entry.target_type} #{id}"
     end

@@ -13,8 +13,14 @@ class Setting < ApplicationRecord
 
   DEFINITIONS = {
     "liveness.online_threshold_minutes" => { default: 3, range: 1..1_440 },
-    "liveness.stale_threshold_minutes" => { default: 15, range: 2..10_080 }
+    "liveness.stale_threshold_minutes" => { default: 15, range: 2..10_080 },
+    # The intervals the server asks agents to use (directives.intervals, ADR 0019). Unset by default: agents
+    # then keep their configured intervals. The agent clamps them to its own bounds as well.
+    "agent.heartbeat_seconds" => { default: nil, range: 10..3_600 },
+    "agent.inventory_seconds" => { default: nil, range: 60..86_400 }
   }.freeze
+
+  AGENT_INTERVAL_KEYS = { heartbeat_seconds: "agent.heartbeat_seconds", inventory_seconds: "agent.inventory_seconds" }.freeze
 
   validates :key, inclusion: { in: DEFINITIONS.keys }
 
@@ -45,6 +51,37 @@ class Setting < ApplicationRecord
       write!("liveness.stale_threshold_minutes", stale, actor:)
     end
   end
+
+  # The intervals to send agents, one SELECT: { heartbeat_seconds: 120 }, with only the ones that are set. Read on
+  # every heartbeat.
+  def self.agent_intervals
+    stored = where(key: AGENT_INTERVAL_KEYS.values).pluck(:key, :value).to_h
+    AGENT_INTERVAL_KEYS.filter_map { |name, key| [ name, stored[key] ] if stored.key?(key) }.to_h
+  end
+
+  # Sets or clears (nil or blank) the intervals sent to agents, audited. A name that is not passed is left alone.
+  def self.update_agent_intervals!(actor:, **intervals)
+    unknown = intervals.keys - AGENT_INTERVAL_KEYS.keys
+    raise ArgumentError, "unknown interval #{unknown.first}" if unknown.any?
+
+    transaction(requires_new: true) { intervals.each { |name, value| write_interval!(name, value, actor:) } }
+  end
+
+  def self.write_interval!(name, value, actor:)
+    key = AGENT_INTERVAL_KEYS.fetch(name)
+    clear = value.to_s.strip.empty?
+    seconds = clear ? nil : whole_number(value)
+    range = DEFINITIONS.fetch(key)[:range]
+    raise Invalid.new("Enter a whole number of seconds from #{range.min} to #{range.max}.", field: name) unless clear || (seconds && range.cover?(seconds))
+
+    setting = lock.find_or_initialize_by(key:)
+    before = setting.persisted? ? setting.value : nil
+    return if before == seconds
+
+    seconds.nil? ? setting.destroy! : setting.update!(value: seconds)
+    Audit.record(actor:, action: Audit::Actions::SETTING_CHANGED, target: setting, changes: { key => [ before, seconds ] })
+  end
+  private_class_method :write_interval!
 
   # An Integer, or a string of digits (from a form or the command line); anything else is nil.
   def self.whole_number(value)

@@ -79,8 +79,9 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     writes = queries.grep(/\A\s*(INSERT|UPDATE|DELETE)/i)
     expect(writes.size).to eq(1), writes.inspect
     expect(writes.first).to match(/UPDATE "hosts"/)
-    # credential + host (authentication), host FOR UPDATE and credential re-check (under the lock), UPDATE
-    expect(queries.size).to be <= 5, queries.inspect
+    # credential + host (authentication), host FOR UPDATE and credential re-check (under the lock), UPDATE,
+    # then the intervals setting and the host's rollout membership (P1-UPDATES): two indexed SELECTs
+    expect(queries.size).to be <= 7, queries.inspect
     expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events/)
   end
 
@@ -143,6 +144,50 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
         expect_error(:unauthorized, "unauthorized")
         expect(target.reload.last_seen_at).to be_nil
       end
+    end
+  end
+
+  describe "directives (DEC-20, P1-UPDATES)" do
+    let(:operator) { create(:operator) }
+
+    it "sends the intervals the operator set, and only those" do
+      Setting.update_agent_intervals!(heartbeat_seconds: 120, actor: operator)
+      heartbeat
+      expect(json["directives"]).to eq("intervals" => { "heartbeat_seconds" => 120 })
+      Setting.update_agent_intervals!(inventory_seconds: 1800, actor: operator)
+      heartbeat
+      expect(json["directives"]).to eq("intervals" => { "heartbeat_seconds" => 120, "inventory_seconds" => 1800 })
+      expect(ApiContract.errors("heartbeat.response", "v1", json)).to eq([])
+    end
+
+    it "sends the agent_update directive to a host in an open stage that runs an older version, and keeps sending it" do
+      release = release_for_rollout("0.3.0")
+      rollout = start_rollout(release:, canaries: [ host ].each { |h| h.update_columns(agent_version: "0.2.0") })
+      2.times do
+        heartbeat(body(agent_version: "0.2.0"))
+        expect(json.dig("directives", "agent_update")).to include("rollout_id" => rollout.id, "version" => "0.3.0",
+                                                                  "binary_url" => Releases.download_url("0.3.0", "binary"))
+        expect(ApiContract.errors("heartbeat.response", "v1", json)).to eq([])
+      end
+      expect(rollout.rollout_hosts.sole.state).to eq("updating")
+      heartbeat(body(agent_version: "0.3.0")) # now running the release: nothing more to say
+      expect(json["directives"]).to eq({})
+    end
+
+    it "sends no agent_update to a host outside the rollout" do
+      release = release_for_rollout("0.3.0")
+      canary, = host_running("0.2.0")
+      start_rollout(release:, canaries: [ canary ])
+      host.update_columns(agent_version: "0.2.0")
+      heartbeat(body(agent_version: "0.2.0"))
+      expect(json["directives"]).to eq({})
+    end
+
+    it "answers an agent below the minimum version with 200 (FR-S.5)" do
+      allow(AgentApi.config).to receive(:minimum_agent_version).and_return("9.0.0")
+      heartbeat
+      expect(response).to have_http_status(:ok)
+      expect(host.reload.agent_version).to eq("0.1.0")
     end
   end
 

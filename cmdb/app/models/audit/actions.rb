@@ -18,6 +18,16 @@ module Audit
     RELEASE_IMPORTED = "release.imported"
     RELEASE_IMPORT_REFUSED = "release.import_refused"
     RELEASE_IMPORT_FAILED = "release.import_failed"
+    ROLLOUT_STARTED = "rollout.started"
+    ROLLOUT_ADVANCED = "rollout.advanced"
+    ROLLOUT_HALTED = "rollout.halted"
+    ROLLOUT_RESUMED = "rollout.resumed"
+    ROLLOUT_CANCELLED = "rollout.cancelled"
+    ROLLOUT_COMPLETED = "rollout.completed"
+    UPDATE_SUCCEEDED = "update.succeeded"
+    UPDATE_FAILED = "update.failed"
+    UPDATE_ROLLED_BACK = "update.rolled_back"
+    UPDATE_UNCONFIRMED = "update.unconfirmed"
     SETTING_CHANGED = "setting.changed"
 
     ALL = constants.map { |name| const_get(name) }.freeze
