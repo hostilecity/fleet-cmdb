@@ -39,8 +39,6 @@ toml = { version = "1.1.8", default-features = false, features = ["std", "serde"
 tracing = "0.1.44"
 # Text formatter only: no ANSI colours, no env-filter (regex), no `log` bridge.
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
-# UUID formatting for report ids only (no `v4` feature: the bytes come from getrandom); no dependencies.
-uuid = { version = "1.29.0", default-features = false }
 # rustls with the ring provider; no gzip. Roots come from the system store plus `ca_file`.
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 

@@ -204,12 +204,19 @@ pub(crate) fn new_report_id() -> io::Result<String> {
     Ok(uuid_v4(bytes))
 }
 
-/// Formats 16 random bytes as a version 4, RFC 4122 variant UUID.
-fn uuid_v4(bytes: [u8; 16]) -> String {
-    uuid::Builder::from_random_bytes(bytes)
-        .into_uuid()
-        .hyphenated()
-        .to_string()
+/// Formats 16 random bytes as a version 4, RFC 4122 variant UUID (RFC 9562, section 5.4).
+fn uuid_v4(mut bytes: [u8; 16]) -> String {
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let h = crate::release::hex(&bytes);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
 }
 
 /// Remembers which messages were already logged, so a server that repeats an unknown directive on
@@ -332,6 +339,9 @@ pub(crate) mod tests {
         assert!(ids.iter().all(|id| pattern(id)), "{ids:?}");
         assert_eq!(uuid_v4([0xff; 16]), "ffffffff-ffff-4fff-bfff-ffffffffffff");
         assert_eq!(uuid_v4([0; 16]), "00000000-0000-4000-8000-000000000000");
+        // Python's uuid.UUID(bytes=...) of the same bytes, with the version and variant bits set.
+        let counting: [u8; 16] = std::array::from_fn(|i| i as u8);
+        assert_eq!(uuid_v4(counting), "00010203-0405-4607-8809-0a0b0c0d0e0f");
     }
 
     #[test]

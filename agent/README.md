@@ -199,7 +199,7 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Config | `toml`, parse only | Config file format |
 | Logging | `tracing`, `tracing-subscriber` (`fmt` only) | Structured fields (host, `report_id`) on timestamped lines to stdout, which systemd sends to the journal |
 | Randomness | `getrandom` | Report ids and jitter seeds from the kernel (`getrandom(2)`): no file to open, so it works under systemd sandboxing, and hosts booted together do not share jitter. Already linked through `ring`, so it adds no code |
-| Report ids | `uuid`, default features off | Formats the random bytes as a version 4 UUID; no dependencies of its own |
+| Report ids | `std` | `uuid_v4` in `src/report/mod.rs` sets the version 4 and RFC 4122 variant bits on 16 bytes from `getrandom` and writes them as a hyphenated UUID, checked against fixed test vectors. No crate for one format |
 | Timestamps | `humantime` | RFC 3339 for `agent_time`, `collected_at`, and reading `server_time`; no dependencies of its own, so no date arithmetic is maintained here |
 | Hashing | `ring` (SHA-256) | The stable-facts change hash. Already linked as the TLS crypto provider, so it adds no code |
 | Signals | `signal-hook` | Graceful `SIGTERM`/`SIGINT` handling without an async runtime or hand-written `unsafe` |
