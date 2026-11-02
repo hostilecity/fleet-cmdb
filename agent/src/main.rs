@@ -126,8 +126,7 @@ where
                     ));
                 }
             },
-            Long(name) => return Err(format!("unrecognised argument: {}", cli::long(name))),
-            Short(c) => return Err(format!("unrecognised argument: {}", cli::short(c))),
+            other => return Err(format!("unrecognised argument: {}", cli::arg(other))),
         }
     }
     if let Some((command, _)) = only {

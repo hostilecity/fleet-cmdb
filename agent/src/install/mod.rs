@@ -423,29 +423,11 @@ pub fn parse(args: &[OsString], env_token: bool) -> Result<Command, InstallError
                     ));
                 }
             }
-            Long(name) => {
+            other => {
                 return Err(usage(
                     format!(
                         "unrecognised argument for {command}: {}",
-                        crate::cli::long(name)
-                    ),
-                    command,
-                ));
-            }
-            Short(c) => {
-                return Err(usage(
-                    format!(
-                        "unrecognised argument for {command}: {}",
-                        crate::cli::short(c)
-                    ),
-                    command,
-                ));
-            }
-            Value(value) => {
-                return Err(usage(
-                    format!(
-                        "unrecognised argument for {command}: {}",
-                        crate::cli::shown(&value.to_string_lossy())
+                        crate::cli::arg(other)
                     ),
                     command,
                 ));

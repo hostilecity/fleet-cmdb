@@ -36,7 +36,7 @@ use super::layout::{
     LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, SUPERVISOR_UNIT, free_bytes,
     link_version, parse_version,
 };
-use super::record::{Marker, Outcome, PendingResult, Phase, Record, reason};
+use super::record::{Marker, Outcome, PendingResult, Phase, Record, StateFile, reason};
 use super::stage;
 use crate::fsx::{self, Lock};
 use crate::install::{Systemd, UNIT_NAME};

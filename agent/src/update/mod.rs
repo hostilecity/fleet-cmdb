@@ -57,7 +57,7 @@ use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
 use fetch::{Fetch, FetchError, Opened, Resume};
 use layout::{LOCK_FILE, Layout, SUPERVISOR_UNIT, parse_version};
-use record::{Marker, Outcome, PendingResult, Phase, Record, reason};
+use record::{Marker, Outcome, PendingResult, Phase, Record, StateFile, reason};
 use stage::{Directive, StageError, Stager};
 use supervise::{Intent, STALE_AFTER, Supervisor, SystemClock, unix};
 
@@ -756,14 +756,7 @@ fn parse_args(args: Vec<OsString>) -> Result<Command, String> {
                 let value = parser.value().map_err(cli::error_text)?;
                 why = Some(value.to_string_lossy().into_owned());
             }
-            Value(value) => {
-                return Err(format!(
-                    "unrecognised argument: {}",
-                    cli::shown(&value.to_string_lossy())
-                ));
-            }
-            Long(flag) => return Err(format!("unrecognised argument: {}", cli::long(flag))),
-            Short(c) => return Err(format!("unrecognised argument: {}", cli::short(c))),
+            other => return Err(format!("unrecognised argument: {}", cli::arg(other))),
         }
     }
     let config = config.unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));

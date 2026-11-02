@@ -385,14 +385,7 @@ fn parse_args(args: Vec<OsString>) -> Result<Command, String> {
             Long("manifest") => (&mut manifest, "--manifest"),
             Long("signature") => (&mut signature, "--signature"),
             Long("binary") => (&mut binary, "--binary"),
-            Value(value) => {
-                return Err(format!(
-                    "unrecognised argument: {}",
-                    cli::shown(&value.to_string_lossy())
-                ));
-            }
-            Long(name) => return Err(format!("unrecognised argument: {}", cli::long(name))),
-            Short(c) => return Err(format!("unrecognised argument: {}", cli::short(c))),
+            other => return Err(format!("unrecognised argument: {}", cli::arg(other))),
         };
         let value = parser.value().map_err(cli::error_text)?;
         if value.is_empty() {

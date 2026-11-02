@@ -77,19 +77,9 @@ impl Record {
     }
 }
 
-impl Record {
-    /// `Ok(None)` when no update is in progress. A record that cannot be read is an error.
-    pub fn read(state_dir: &Path) -> io::Result<Option<Self>> {
-        read_json(state_dir, RECORD_FILE)
-    }
-
-    pub fn write(&self, state_dir: &Path) -> io::Result<()> {
-        write_json(state_dir, RECORD_FILE, self)
-    }
-
-    pub fn remove(state_dir: &Path) -> io::Result<()> {
-        remove(state_dir, RECORD_FILE)
-    }
+/// `Ok(None)` from [`StateFile::read`] when no update is in progress.
+impl StateFile for Record {
+    const NAME: &str = RECORD_FILE;
 }
 
 /// Written by the new version after its first heartbeat the server acknowledged.
@@ -107,19 +97,11 @@ pub struct Marker {
     pub boot_id: Option<String>,
 }
 
+impl StateFile for Marker {
+    const NAME: &str = MARKER_FILE;
+}
+
 impl Marker {
-    pub fn read(state_dir: &Path) -> io::Result<Option<Self>> {
-        read_json(state_dir, MARKER_FILE)
-    }
-
-    pub fn write(&self, state_dir: &Path) -> io::Result<()> {
-        write_json(state_dir, MARKER_FILE, self)
-    }
-
-    pub fn remove(state_dir: &Path) -> io::Result<()> {
-        remove(state_dir, MARKER_FILE)
-    }
-
     /// Whether this marker confirms `record`'s update: the same rollout and version, written in the
     /// boot the update started in, and no later than the deadline. A confirmation that came too late,
     /// or after the VM restarted, is not one (ADR 0018), whoever reads it and whenever.
@@ -167,18 +149,8 @@ pub struct PendingResult {
 /// Longest reason the API accepts.
 pub const MAX_REASON_CHARS: usize = 500;
 
-impl PendingResult {
-    pub fn read(state_dir: &Path) -> io::Result<Option<Self>> {
-        read_json(state_dir, RESULT_FILE)
-    }
-
-    pub fn write(&self, state_dir: &Path) -> io::Result<()> {
-        write_json(state_dir, RESULT_FILE, self)
-    }
-
-    pub fn remove(state_dir: &Path) -> io::Result<()> {
-        remove(state_dir, RESULT_FILE)
-    }
+impl StateFile for PendingResult {
+    const NAME: &str = RESULT_FILE;
 }
 
 /// A reason as the API wants it: plain text on one line, at most [`MAX_REASON_CHARS`] characters,
@@ -193,24 +165,31 @@ pub fn reason(text: &str) -> String {
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(dir: &Path, name: &str) -> io::Result<Option<T>> {
-    match crate::state::read_record(dir, name, MAX_RECORD_BYTES)? {
-        None => Ok(None),
-        Some(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| io::Error::other(format!("{name} is not valid: {e}"))),
+/// A JSON record in the state directory, read, written atomically, and removed by name.
+pub trait StateFile: Serialize + for<'de> Deserialize<'de> {
+    const NAME: &str;
+
+    /// `Ok(None)` when there is none. A record that cannot be read is an error.
+    fn read(state_dir: &Path) -> io::Result<Option<Self>> {
+        match crate::state::read_record(state_dir, Self::NAME, MAX_RECORD_BYTES)? {
+            None => Ok(None),
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| io::Error::other(format!("{} is not valid: {e}", Self::NAME))),
+        }
     }
-}
 
-fn write_json<T: Serialize>(dir: &Path, name: &str, value: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    crate::state::write_record(dir, name, &bytes)
-}
+    fn write(&self, state_dir: &Path) -> io::Result<()> {
+        let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;
+        crate::state::write_record(state_dir, Self::NAME, &bytes)
+    }
 
-fn remove(dir: &Path, name: &str) -> io::Result<()> {
-    match std::fs::remove_file(dir.join(name)) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
+    /// Removing a record that is not there is not an error.
+    fn remove(state_dir: &Path) -> io::Result<()> {
+        match std::fs::remove_file(state_dir.join(Self::NAME)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 }
 
