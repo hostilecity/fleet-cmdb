@@ -64,9 +64,10 @@ def log(**event):
 
 def save(name, body):
     path = os.path.join(DIR, name)
-    with open(path + ".tmp", "w") as f:
-        json.dump(body, f)
-    os.replace(path + ".tmp", path)
+    with LOCK:
+        with open(path + ".tmp", "w") as f:
+            json.dump(body, f)
+        os.replace(path + ".tmp", path)
 
 
 def version_tuple(text):
