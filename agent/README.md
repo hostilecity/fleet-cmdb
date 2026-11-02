@@ -164,7 +164,7 @@ An agent older than the server's minimum version still updates: the update path 
 | `collect` | Read-only system, disk, and network collectors; see [Collected facts](#collected-facts) | P1-AGENT-COLLECT |
 | `report` | Heartbeat loop, server-directed intervals, and inventory reports; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
-| `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup | P1-AGENT-REPORT |
+| `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup, `flock` locks | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
 | `update` | Updater: download, verify, and stage (`stage`, `fetch`), supervised switch and rollback (`supervise`), the agent's side and the `self-test`, `update-supervise`, and `update-rollback` commands | P1-AGENT-UPDATE |
 | `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL, P1-PACKAGING (unit hardening) |
