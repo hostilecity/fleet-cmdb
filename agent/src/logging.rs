@@ -56,41 +56,12 @@ pub fn sanitize(text: &str, max_chars: usize) -> String {
         .collect()
 }
 
-/// An in-memory log writer for tests.
+/// Captures what the agent logs, for tests.
 #[cfg(test)]
 pub(crate) mod capture {
-    use std::io::{self, Write};
-    use std::sync::{Arc, Mutex};
-
-    use tracing_subscriber::fmt::MakeWriter;
+    pub use crate::test_support::Captured;
 
     use crate::config::LogLevel;
-
-    #[derive(Clone, Default)]
-    pub struct Captured(Arc<Mutex<Vec<u8>>>);
-
-    impl Captured {
-        pub fn text(&self) -> String {
-            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
-        }
-    }
-
-    impl Write for Captured {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for Captured {
-        type Writer = Captured;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
 
     /// Runs `f` with the agent's log format (at `trace`, so nothing is filtered out) and returns
     /// what it logged.

@@ -5,13 +5,13 @@ use std::io::Cursor;
 
 use super::*;
 
-/// A throwaway minisign key pair, as `minisign -G` would make.
-struct TestKey {
+/// A throwaway minisign key pair, as `minisign -G` would make. Shared with the updater's tests.
+pub(crate) struct TestKey {
     pair: minisign::KeyPair,
 }
 
 impl TestKey {
-    fn generate() -> Self {
+    pub(crate) fn generate() -> Self {
         Self {
             pair: minisign::KeyPair::generate_unencrypted_keypair().expect("generate a key"),
         }
@@ -23,7 +23,7 @@ impl TestKey {
     }
 
     /// A `.minisig` over `data` (pre-hashed, as minisign signs by default).
-    fn sign(&self, data: &[u8]) -> Vec<u8> {
+    pub(crate) fn sign(&self, data: &[u8]) -> Vec<u8> {
         minisign::sign(
             Some(&self.pair.pk),
             &self.pair.sk,
@@ -36,7 +36,7 @@ impl TestKey {
         .into_bytes()
     }
 
-    fn release_key(&self, role: KeyRole) -> ReleaseKey {
+    pub(crate) fn release_key(&self, role: KeyRole) -> ReleaseKey {
         ReleaseKey {
             role,
             key: parse_key_file(&self.pub_file()).unwrap().unwrap(),
@@ -46,7 +46,8 @@ impl TestKey {
 
 const BINARY: &[u8] = b"\x7fELF not really a binary, but bytes to check";
 
-fn manifest_for(binary: &[u8], version: &str) -> Vec<u8> {
+/// A manifest for `binary` as the release workflow writes it.
+pub(crate) fn manifest_for(binary: &[u8], version: &str) -> Vec<u8> {
     let sha = hex(ring::digest::digest(&ring::digest::SHA256, binary).as_ref());
     format!(
         "{{\"format\":\"{MANIFEST_FORMAT}\",\"version\":\"{version}\",\"target\":\"{TARGET}\",\"sha256\":\"{sha}\",\"size\":{}}}\n",
@@ -55,17 +56,13 @@ fn manifest_for(binary: &[u8], version: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-fn signed(key: &TestKey, manifest: &[u8]) -> Vec<u8> {
-    key.sign(manifest)
-}
-
 #[test]
 fn a_release_signed_by_the_current_key_verifies() {
     let key = TestKey::generate();
     let manifest = manifest_for(BINARY, "1.2.3");
     let verified = verify_manifest(
         &manifest,
-        &signed(&key, &manifest),
+        &key.sign(&manifest),
         &[key.release_key(KeyRole::Current)],
     )
     .expect("verifies");
@@ -84,9 +81,9 @@ fn a_release_signed_by_the_next_key_verifies_during_a_rotation() {
         next.release_key(KeyRole::Next),
     ];
     let manifest = manifest_for(BINARY, "2.0.0");
-    let verified = verify_manifest(&manifest, &signed(&next, &manifest), &keys).unwrap();
+    let verified = verify_manifest(&manifest, &next.sign(&manifest), &keys).unwrap();
     assert_eq!(verified.key, KeyRole::Next);
-    let verified = verify_manifest(&manifest, &signed(&current, &manifest), &keys).unwrap();
+    let verified = verify_manifest(&manifest, &current.sign(&manifest), &keys).unwrap();
     assert_eq!(verified.key, KeyRole::Current);
 }
 
@@ -97,7 +94,7 @@ fn a_signature_by_an_unknown_key_is_refused() {
     assert_eq!(
         verify_manifest(
             &manifest,
-            &signed(&other, &manifest),
+            &other.sign(&manifest),
             &[trusted.release_key(KeyRole::Current)]
         ),
         Err(Refusal::UnknownKey)
@@ -109,7 +106,7 @@ fn a_tampered_manifest_is_refused() {
     let key = TestKey::generate();
     let keys = [key.release_key(KeyRole::Current)];
     let manifest = manifest_for(BINARY, "1.2.3");
-    let signature = signed(&key, &manifest);
+    let signature = key.sign(&manifest);
     // Same length, different version: the signature no longer matches.
     let tampered = String::from_utf8(manifest.clone())
         .unwrap()
@@ -132,7 +129,7 @@ fn a_signature_with_a_modified_trusted_comment_is_refused() {
     // minisign's global signature covers the trusted comment.
     let key = TestKey::generate();
     let manifest = manifest_for(BINARY, "1.2.3");
-    let signature = String::from_utf8(signed(&key, &manifest)).unwrap();
+    let signature = String::from_utf8(key.sign(&manifest)).unwrap();
     let modified = signature.replace("timestamp:1767268800", "timestamp:1767268801");
     assert_ne!(modified, signature);
     assert_eq!(
@@ -186,7 +183,7 @@ fn without_keys_nothing_verifies() {
     let key = TestKey::generate();
     let manifest = manifest_for(BINARY, "1.2.3");
     assert!(matches!(
-        verify_manifest(&manifest, &signed(&key, &manifest), &[]),
+        verify_manifest(&manifest, &key.sign(&manifest), &[]),
         Err(Refusal::NoKeys(_))
     ));
 }

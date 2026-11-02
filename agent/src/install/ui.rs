@@ -224,26 +224,3 @@ impl Ui {
         }
     }
 }
-
-/// A shared in-memory writer, so tests can read what the installer printed.
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-#[cfg(test)]
-impl Captured {
-    pub fn text(&self) -> String {
-        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
-    }
-}
-
-#[cfg(test)]
-impl Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}

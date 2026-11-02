@@ -7,8 +7,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -56,6 +56,69 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// Creates the directory `path` (and its parents) and sets exactly `mode` on it.
+pub fn dir_with_mode(path: impl AsRef<Path>, mode: u32) {
+    fs::create_dir_all(&path).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// The permission bits of `path` (not following a final symlink).
+pub fn mode(path: &Path) -> u32 {
+    fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+/// The names in `dir`, sorted.
+pub fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A shared in-memory writer, so tests can read what was printed or logged.
+#[derive(Clone, Default)]
+pub struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Captured {
+    pub fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// A complete HTTP/1.1 response with a JSON `body`, for [`TlsServer`]: `status` such as `200 OK`,
+/// then `headers` (`Name: value`), then the content headers.
+pub fn http_reply(status: &str, headers: &[&str], body: &str) -> String {
+    let mut text = format!("HTTP/1.1 {status}\r\n");
+    for header in headers {
+        text.push_str(header);
+        text.push_str("\r\n");
+    }
+    text.push_str(&format!(
+        "Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    ));
+    text
 }
 
 /// A throwaway CA and a `localhost` server certificate it issued.

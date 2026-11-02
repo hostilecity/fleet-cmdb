@@ -375,10 +375,7 @@ pub(crate) mod tests {
                 .unwrap_or("");
             format!(r#"{{"report_id":"{id}","duplicate":false}}"#)
         };
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Request-Id: req-1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
+        crate::test_support::http_reply("200 OK", &["X-Request-Id: req-1"], &body)
     }
 
     #[test]

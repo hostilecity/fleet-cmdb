@@ -17,7 +17,7 @@ use crate::collect::contract::assert_conforms;
 use crate::install::UNIT_NAME;
 use crate::release::KeyRole;
 use crate::report::tests::{FakeTransport, ok};
-use crate::test_support::TempDir;
+use crate::test_support::{TempDir, dir_with_mode};
 
 pub struct NoLauncher;
 
@@ -207,8 +207,7 @@ impl World {
         fs::write(layout.binary(old()), OLD_BINARY).unwrap();
         fs::set_permissions(layout.binary(old()), fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink(Path::new("versions").join(old()), layout.current()).unwrap();
-        fs::create_dir_all(&layout.state_dir).unwrap();
-        fs::set_permissions(&layout.state_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        dir_with_mode(&layout.state_dir, 0o700);
         fs::write(layout.state_dir.join("inventory.json"), r#"{"v":"old"}"#).unwrap();
         fs::write(layout.state_dir.join("heartbeat.json"), r#"{"pid":1}"#).unwrap();
         let key = TestKey::generate();

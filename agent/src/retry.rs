@@ -431,12 +431,12 @@ mod tests {
     #[test]
     fn a_401_from_a_real_server_backs_off_long() {
         use crate::client::tests::trusting_client;
-        use crate::test_support::{TempDir, TestPki, TlsServer};
+        use crate::test_support::{TempDir, TestPki, TlsServer, http_reply};
 
-        let reply = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let reply = http_reply("401 Unauthorized", &[], "");
         let pki = TestPki::generate();
         let dir = TempDir::new();
-        let server = TlsServer::start(&pki, vec![reply.to_owned(); 3]);
+        let server = TlsServer::start(&pki, vec![reply; 3]);
         let client = trusting_client(&server, &pki, &dir);
         let mut b = backoff(SplitMix64::new(11));
         let mut clock = Duration::ZERO;

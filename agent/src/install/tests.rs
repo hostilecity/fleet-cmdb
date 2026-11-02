@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::*;
-use crate::test_support::{TempDir, TestPki, TlsServer};
+use crate::test_support::{Captured, TempDir, TestPki, TlsServer, dir_with_mode, http_reply, mode};
 
 use crate::collect::contract;
 
@@ -85,8 +85,7 @@ impl Systemd for FakeSystemd {
                         accepted_at: "2026-01-01T12:00:07.000Z".into(),
                         agent_version: crate::AGENT_VERSION.into(),
                     };
-                    fs::create_dir_all(&dir).unwrap();
-                    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+                    dir_with_mode(&dir, 0o700);
                     crate::state::write_record(
                         &dir,
                         crate::report::ACK_RECORD,
@@ -237,7 +236,7 @@ impl Fixture {
 
     /// Runs `install` the way `main` does and returns the outcome and what was printed.
     fn install(&self, options: &InstallOptions, mode: Mode) -> Outcome {
-        let (out, err) = (ui::Captured::default(), ui::Captured::default());
+        let (out, err) = (Captured::default(), Captured::default());
         let mut ui = Ui::new(mode, false, Box::new(out.clone()), Box::new(err.clone()));
         let result = install(&self.host(), options, &mut ui);
         if let Err(error) = &result {
@@ -247,7 +246,7 @@ impl Fixture {
     }
 
     fn uninstall(&self, options: &UninstallOptions, mode: Mode) -> Outcome {
-        let (out, err) = (ui::Captured::default(), ui::Captured::default());
+        let (out, err) = (Captured::default(), Captured::default());
         let mut ui = Ui::new(mode, false, Box::new(out.clone()), Box::new(err.clone()));
         let result = uninstall::uninstall(&self.host(), options, &mut ui);
         if let Err(error) = &result {
@@ -262,8 +261,7 @@ impl Fixture {
 
     /// Writes an enrolled config for `server` as a previous install would have.
     fn enrolled(&self, server: &TlsServer, extra: &str) {
-        fs::create_dir_all(self.paths().etc_dir()).unwrap();
-        fs::set_permissions(self.paths().etc_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+        dir_with_mode(self.paths().etc_dir(), 0o700);
         let path = self.paths().config();
         fs::write(
             &path,
@@ -343,10 +341,7 @@ fn options(server: &TlsServer) -> InstallOptions {
 }
 
 fn reply(status: &str, body: &str) -> String {
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-Request-Id: req-1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
+    http_reply(status, &["X-Request-Id: req-1"], body)
 }
 
 fn error_reply(status: &str, code: &str) -> String {
@@ -400,10 +395,6 @@ fn body_of(request: &str) -> Value {
 
 fn path_of(request: &str) -> &str {
     request.split_whitespace().nth(1).unwrap()
-}
-
-fn mode_of(path: &Path) -> u32 {
-    fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
 fn assert_preflight(outcome: &Outcome, expected: &[&str]) {
@@ -477,7 +468,7 @@ fn onboarding_install_end_to_end() {
         fs::read_to_string(&binary).unwrap(),
         "fake fleet-agent binary v1"
     );
-    assert_eq!(mode_of(&binary), 0o755);
+    assert_eq!(mode(&binary), 0o755);
     assert_eq!(
         fs::read_link(p.current()).unwrap(),
         Path::new("versions").join(crate::AGENT_VERSION)
@@ -488,17 +479,17 @@ fn onboarding_install_end_to_end() {
         "fake fleet-agent binary v1"
     );
     assert_eq!(fs::read_to_string(p.unit()).unwrap(), systemd::UNIT);
-    assert_eq!(mode_of(&p.unit()), 0o644);
+    assert_eq!(mode(&p.unit()), 0o644);
     // The unit the service's OnFailure= starts, for rolling back an unconfirmed update.
     assert_eq!(
         fs::read_to_string(p.rollback_unit()).unwrap(),
         systemd::ROLLBACK_UNIT
     );
-    assert_eq!(mode_of(&p.rollback_unit()), 0o644);
+    assert_eq!(mode(&p.rollback_unit()), 0o644);
 
     // The config: root only, holding the credential, loadable by the agent.
-    assert_eq!(mode_of(&p.config()), 0o600);
-    assert_eq!(mode_of(&p.etc_dir()), 0o700);
+    assert_eq!(mode(&p.config()), 0o600);
+    assert_eq!(mode(&p.etc_dir()), 0o700);
     let config = Config::load_as(&p.config(), crate::owner::effective_uid()).unwrap();
     assert_eq!(config.credential.expose_secret(), CREDENTIAL);
     assert_eq!(config.server_url, first_url);
@@ -1209,8 +1200,7 @@ fn leftovers_of_an_interrupted_install_are_cleaned_up_by_a_rerun() {
     let fx = Fixture::new();
     let p = fx.paths();
     // A run killed mid-write: a temporary config (with a credential), a half-copied binary, a temp link.
-    fs::create_dir_all(p.etc_dir()).unwrap();
-    fs::set_permissions(p.etc_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    dir_with_mode(p.etc_dir(), 0o700);
     let temp_config = p
         .etc_dir()
         .join(format!(".config.toml{}1-0", crate::fsx::TEMP_MARKER));
@@ -1265,8 +1255,7 @@ fn install_and_uninstall_are_refused_while_an_agent_update_is_in_progress() {
     // version its rollback needs, so both refuse while an update is recorded and change nothing.
     let fx = Fixture::new();
     let state = fx.paths().state_dir();
-    fs::create_dir_all(&state).unwrap();
-    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    dir_with_mode(&state, 0o700);
     fs::write(
         state.join("update.json"),
         r#"{"rollout_id":5,"version":"99.0.0","from_version":"0.1.0","phase":"switched","started_unix":1,"report_id":"00000000-0000-4000-8000-0000000000aa","confirm_seconds":300}"#,
@@ -1328,8 +1317,7 @@ fn install_waits_for_the_services_own_first_heartbeat() {
     fx.env_token = Some(TOKEN.into());
     *fx.systemd.silent.lock().unwrap() = true;
     let state = fx.paths().state_dir();
-    fs::create_dir_all(&state).unwrap();
-    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    dir_with_mode(&state, 0o700);
     let old = crate::report::Ack {
         pid: SERVICE_PID + 1,
         accepted_at: "2026-01-01T11:00:00.000Z".into(),
@@ -1394,18 +1382,37 @@ fn assert_untouched(fx: &Fixture) {
 }
 
 #[test]
-fn preflight_not_root() {
-    let mut fx = Fixture::new();
-    fx.is_root = false;
-    let outcome = fx.install(&InstallOptions::default(), Mode::Human);
-    assert_preflight(
-        &outcome,
-        &[
-            "install must run as root",
-            "Run it again with sudo: sudo fleet-agent install",
-        ],
-    );
-    assert_untouched(&fx);
+fn preflight_not_root_not_x86_64_or_no_systemd() {
+    type Setup = fn(&mut Fixture);
+    let cases: [(Setup, &[&str]); 3] = [
+        (
+            |fx| fx.is_root = false,
+            &[
+                "install must run as root",
+                "Run it again with sudo: sudo fleet-agent install",
+            ],
+        ),
+        (
+            |fx| fx.machine = "aarch64".into(),
+            &["architecture is aarch64, not x86_64"],
+        ),
+        (
+            |fx| {
+                fx.systemd.unavailable =
+                    Some("systemd is not running on this machine (no /run/systemd/system)".into())
+            },
+            &["systemd is not running", "booted with systemd"],
+        ),
+    ];
+    for (setup, expected) in cases {
+        let mut fx = Fixture::new();
+        setup(&mut fx);
+        assert_preflight(
+            &fx.install(&InstallOptions::default(), Mode::Human),
+            expected,
+        );
+        assert_untouched(&fx);
+    }
 }
 
 #[test]
@@ -1480,23 +1487,6 @@ fn preflight_reads_os_release_safely_and_like_the_collectors() {
         &fx.install(&InstallOptions::default(), Mode::Human),
         &["cannot identify the operating system"],
     );
-}
-
-#[test]
-fn preflight_not_x86_64() {
-    let mut fx = Fixture::new();
-    fx.machine = "aarch64".into();
-    let outcome = fx.install(&InstallOptions::default(), Mode::Human);
-    assert_preflight(&outcome, &["architecture is aarch64, not x86_64"]);
-}
-
-#[test]
-fn preflight_no_systemd() {
-    let mut fx = Fixture::new();
-    fx.systemd.unavailable =
-        Some("systemd is not running on this machine (no /run/systemd/system)".into());
-    let outcome = fx.install(&InstallOptions::default(), Mode::Human);
-    assert_preflight(&outcome, &["systemd is not running", "booted with systemd"]);
 }
 
 #[test]
@@ -1635,12 +1625,12 @@ fn preflight_config_with_wrong_mode_or_owner_or_contents() {
     let outcome = fx.install(&InstallOptions::default(), Mode::Human);
     assert_preflight(&outcome, &["not safe to use", "chmod 600"]);
     // Refused, never "fixed": the mode is left for the operator to correct.
-    assert_eq!(mode_of(&config), 0o644);
+    assert_eq!(mode(&config), 0o644);
 
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
     let mut host_fx_uid = fx.host();
     host_fx_uid.owner_uid += 1;
-    let (out, err) = (ui::Captured::default(), ui::Captured::default());
+    let (out, err) = (Captured::default(), Captured::default());
     let mut ui = Ui::new(Mode::Human, false, Box::new(out), Box::new(err.clone()));
     let error = install(&host_fx_uid, &InstallOptions::default(), &mut ui).unwrap_err();
     assert_eq!(error.failure, Failure::Preflight);
@@ -1685,8 +1675,7 @@ fn preflight_symlinks_and_foreign_files_are_refused() {
         (
             "/var/lib/fleet-agent has mode 0755",
             Box::new(|p: &Paths| {
-                fs::create_dir(p.state_dir()).unwrap();
-                fs::set_permissions(p.state_dir(), fs::Permissions::from_mode(0o755)).unwrap();
+                dir_with_mode(p.state_dir(), 0o755);
             }),
         ),
         (
@@ -1711,8 +1700,7 @@ fn preflight_symlinks_and_foreign_files_are_refused() {
         (
             "/etc/fleet-agent has mode 0777, writable by group or others",
             Box::new(|p: &Paths| {
-                fs::create_dir(p.etc_dir()).unwrap();
-                fs::set_permissions(p.etc_dir(), fs::Permissions::from_mode(0o777)).unwrap();
+                dir_with_mode(p.etc_dir(), 0o777);
             }),
         ),
     ];
@@ -1761,8 +1749,7 @@ fn uninstall_removes_everything_install_created_and_nothing_else() {
     fx.install(&options(&server), Mode::Human).ok();
     server.finish();
     // What the agent itself creates at run time.
-    fs::create_dir_all(fx.paths().state_dir()).unwrap();
-    fs::set_permissions(fx.paths().state_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    dir_with_mode(fx.paths().state_dir(), 0o700);
     fs::write(fx.paths().state_dir().join("boot_id"), "x").unwrap();
     // Something the operator added, which must survive.
     fs::write(
@@ -2106,7 +2093,7 @@ fn real_server_install_and_uninstall() {
         token: fx.env_token.as_ref().map(|_| TokenSource::Env),
         ..InstallOptions::default()
     };
-    let (out, err) = (ui::Captured::default(), ui::Captured::default());
+    let (out, err) = (Captured::default(), Captured::default());
     let mut ui = Ui::new(
         Mode::Human,
         false,

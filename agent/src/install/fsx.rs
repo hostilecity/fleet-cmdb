@@ -119,11 +119,7 @@ pub fn same_contents(a: &Path, b: &Path) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::TempDir;
-
-    fn mode(path: &Path) -> u32 {
-        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
-    }
+    use crate::test_support::{TempDir, dir_with_mode, mode};
 
     fn uid() -> u32 {
         crate::owner::effective_uid()
@@ -148,8 +144,7 @@ mod tests {
     fn checks_refuse_symlinks_other_owners_and_open_modes() {
         let dir = TempDir::new();
         let real = dir.path("real");
-        fs::create_dir(&real).unwrap();
-        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        dir_with_mode(&real, 0o755);
         assert_eq!(check_dir(&real, uid()), None);
         assert_eq!(check_dir(&dir.path("missing"), uid()), None);
         assert!(check_private_dir(&real, uid()).unwrap().contains("0755"));

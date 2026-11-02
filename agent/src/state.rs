@@ -132,12 +132,8 @@ pub fn describe_write_error(dir: &Path, error: &io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::TempDir;
+    use crate::test_support::{TempDir, dir_with_mode, mode, names};
     use std::os::unix::fs::MetadataExt;
-
-    fn mode(path: &Path) -> u32 {
-        fs::metadata(path).unwrap().permissions().mode() & 0o7777
-    }
 
     #[test]
     fn creates_missing_directory_with_mode_0700() {
@@ -164,8 +160,7 @@ mod tests {
         // A state_dir such as /var/lib must never have its permissions rewritten (review of #65).
         let tmp = TempDir::new();
         let dir = tmp.path("shared");
-        fs::create_dir(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        dir_with_mode(&dir, 0o755);
         let error = ensure_dir(&dir).unwrap_err().to_string();
         assert!(error.contains("has mode 0755"), "{error}");
         assert!(error.contains("chmod 700"), "{error}");
@@ -176,8 +171,7 @@ mod tests {
     fn accepts_an_existing_private_directory_without_changing_it() {
         let tmp = TempDir::new();
         let dir = tmp.path("state");
-        fs::create_dir(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        dir_with_mode(&dir, 0o700);
         assert!(!ensure_dir(&dir).unwrap());
         assert_eq!(mode(&dir), 0o700);
     }
@@ -186,8 +180,7 @@ mod tests {
     fn refuses_a_symlink_even_to_a_private_directory() {
         let tmp = TempDir::new();
         let real = tmp.path("real");
-        fs::create_dir(&real).unwrap();
-        fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+        dir_with_mode(&real, 0o700);
         let link = tmp.path("state");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let error = ensure_dir(&link).unwrap_err().to_string();
@@ -223,11 +216,7 @@ mod tests {
             Some(&b"two"[..])
         );
         // No temporary file is left behind.
-        let names: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(names, ["r.json"]);
+        assert_eq!(names(&dir), ["r.json"]);
     }
 
     #[test]
@@ -242,11 +231,7 @@ mod tests {
         write_record(&dir, "r.json", b"new").unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
         assert_eq!(fs::read(dir.join("r.json")).unwrap(), b"new");
-        let names: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(names, ["r.json"]);
+        assert_eq!(names(&dir), ["r.json"]);
     }
 
     #[test]
@@ -267,12 +252,11 @@ mod tests {
         );
         // A record cannot be written over a directory in the way.
         assert!(write_record(&dir, "dir.json", b"x").is_err());
-        let leftovers: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.contains(fsx::TEMP_MARKER))
-            .collect();
-        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let leftovers = names(&dir);
+        assert!(
+            !leftovers.iter().any(|n| n.contains(fsx::TEMP_MARKER)),
+            "{leftovers:?}"
+        );
     }
 
     #[test]

@@ -194,8 +194,7 @@ impl Lock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::TempDir;
-    use std::os::unix::fs::MetadataExt;
+    use crate::test_support::{TempDir, mode, names};
 
     #[test]
     fn a_second_lock_is_refused_until_the_first_is_released() {
@@ -213,26 +212,17 @@ mod tests {
         }
     }
 
-    fn names(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-
     #[test]
     fn write_atomic_sets_the_exact_mode_and_leaves_no_temporary_file() {
         let tmp = TempDir::new();
         let path = tmp.path("f");
         write_atomic(&path, b"one", 0o600).unwrap();
-        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+        assert_eq!(mode(&path), 0o600);
         // Replacing a more open file gives the requested mode, not the old one.
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         write_atomic(&path, b"two", 0o600).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"two");
-        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+        assert_eq!(mode(&path), 0o600);
         assert_eq!(names(tmp.root()), ["f"]);
     }
 
@@ -274,10 +264,7 @@ mod tests {
         assert_eq!(names(tmp.root()), ["config.toml"]);
         // Other modes are exact too (the installer writes executables).
         write_atomic(&tmp.path("tool"), b"#!", 0o755).unwrap();
-        assert_eq!(
-            fs::metadata(tmp.path("tool")).unwrap().mode() & 0o7777,
-            0o755
-        );
+        assert_eq!(mode(&tmp.path("tool")), 0o755);
     }
 
     struct FailingReader;

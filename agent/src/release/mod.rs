@@ -31,7 +31,7 @@ use serde::Deserialize;
 use crate::fsx::{self, Symlinks};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// The only release target (DEC-01).
 pub const TARGET: &str = "x86_64-unknown-linux-musl";
@@ -79,17 +79,6 @@ impl KeyRole {
 pub struct ReleaseKey {
     pub role: KeyRole,
     key: PublicKey,
-}
-
-impl ReleaseKey {
-    /// A key from the text of a `.pub` file, for tests that sign with throwaway keys.
-    #[cfg(test)]
-    pub(crate) fn from_pub_file(role: KeyRole, text: &str) -> Result<Self, String> {
-        match parse_key_file(text)? {
-            Some(key) => Ok(Self { role, key }),
-            None => Err("no key in the file".into()),
-        }
-    }
 }
 
 /// Parses one key file: `#` lines and blank lines are ignored; what is left is either nothing (no key)
