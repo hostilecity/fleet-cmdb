@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A stand-in for the agent API and the release channel, for scripts/update-smoke.sh (P1-AGENT-UPDATE).
+"""A stand-in for the agent API and the release channel, for scripts/update-smoke.sh (P1-AGENT-UPDATE)
+and scripts/sandbox-smoke.sh (P1-PACKAGING).
 
     update-stub.py PORT CERT KEY DIR
 
@@ -7,11 +8,13 @@ DIR holds everything the test shares with the stub:
 
     plan.json                       what the stub does now; re-read on every request, written by the test
     events.jsonl                    what the stub saw, one JSON object per line (written by the stub)
+    heartbeat.json, inventory.json  the last accepted heartbeat and inventory report (written by the stub)
     releases/NAME/manifest.json     a release: its manifest, the minisign signature of the manifest,
     releases/NAME/manifest.json.minisig   and the binary (the test builds and signs them with throwaway keys)
     releases/NAME/fleet-agent
 
-plan.json (every key optional):
+plan.json (every key optional; without one, every heartbeat and inventory report is accepted with
+empty directives):
 
     "directive":  {"rollout_id": 1, "version": "1.0.1", "release": "NAME"}
                   Sent in every heartbeat response until a result for that rollout_id is accepted
@@ -59,6 +62,13 @@ def log(**event):
         f.write(json.dumps(event) + "\n")
 
 
+def save(name, body):
+    path = os.path.join(DIR, name)
+    with open(path + ".tmp", "w") as f:
+        json.dump(body, f)
+    os.replace(path + ".tmp", path)
+
+
 def version_tuple(text):
     return tuple(int(part) for part in re.findall(r"\d+", text.split("-")[0])[:3])
 
@@ -91,19 +101,20 @@ class Handler(BaseHTTPRequestHandler):
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         current = plan()
         if self.path == "/api/v1/heartbeat":
-            return self.heartbeat(current, agent, now)
+            return self.heartbeat(current, agent, now, body)
         if self.path == "/api/v1/reports/inventory":
             minimum = current.get("min_version")
             if minimum and version_tuple(agent) < version_tuple(minimum):
                 log(kind="inventory", agent_version=agent, status=426)
                 return self.error(426, "agent_version_unsupported", f"Agent {agent} is older than the minimum {minimum}.")
             log(kind="inventory", agent_version=agent, status=200)
+            save("inventory.json", body)
             return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
         if self.path == "/api/v1/update-results":
             return self.update_result(current, agent, body)
         return self.error(404, "not_found", "Not found.")
 
-    def heartbeat(self, current, agent, now):
+    def heartbeat(self, current, agent, now, body):
         slow = current.get("slow_heartbeat") or {}
         if slow.get("version") == agent:
             time.sleep(float(slow.get("seconds", 0)))
@@ -122,6 +133,7 @@ class Handler(BaseHTTPRequestHandler):
                 "binary_url": f"{base}/binary",
             }
         log(kind="heartbeat", agent_version=agent, status=200, directive=bool(directives))
+        save("heartbeat.json", body)
         self.send(200, {"server_time": now, "directives": directives})
 
     def update_result(self, current, agent, body):

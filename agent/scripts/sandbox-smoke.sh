@@ -5,7 +5,8 @@
 #
 #   sudo scripts/sandbox-smoke.sh BINARY [UNIT]      (run from agent/; UNIT defaults to the installer's)
 #
-# 1. A local HTTPS stand-in for the agent API (scripts/sandbox-stub.py) and a throwaway certificate.
+# 1. A local HTTPS stand-in for the agent API (scripts/update-stub.py, with no plan: it accepts every
+#    heartbeat and inventory report) and a throwaway certificate.
 # 2. The binary runs twice as a transient systemd service: once with every [Service] option of UNIT except
 #    how it starts and restarts (so the test cannot drift from the unit), once with none of them.
 # 3. Both must have a heartbeat accepted and write heartbeat.json and inventory.json in their state
@@ -63,7 +64,7 @@ properties=$(sed -n '/^\[Service\]/,/^\[/p' "$unit" | grep -E '^[A-Za-z]+=' \
 port=8443
 for name in sandboxed baseline; do
     mkdir -p "$tmp/$name"
-    python3 "$here/sandbox-stub.py" "$port" "$tmp/cert.pem" "$tmp/key.pem" "$tmp/$name" &
+    python3 "$here/update-stub.py" "$port" "$tmp/cert.pem" "$tmp/key.pem" "$tmp/$name" &
     pids="$pids $!"
     etc="/etc/fleet-agent-smoke-$name"
     install -d -m 0700 "$etc"
