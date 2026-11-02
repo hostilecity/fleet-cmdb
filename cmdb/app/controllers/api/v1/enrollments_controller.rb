@@ -5,9 +5,7 @@ module Api
     class EnrollmentsController < BaseController
       self.max_body_bytes = 4.kilobytes
 
-      rate_limit to: AgentApi.config.enroll_rate_limit[:to], within: AgentApi.config.enroll_rate_limit[:within],
-                 by: -> { request.remote_ip }, store: AgentApi.rate_limit_store, name: "enroll", scope: "agent_api",
-                 with: -> { rate_limited!(AgentApi.config.enroll_rate_limit[:within]) }
+      limits_rate "enroll", AgentApi.config.enroll_rate_limit, by: -> { request.remote_ip }
       validates_body_with "enroll.request"
       # The token, credential, and host change commit only once the response is built, so a failure after
       # redeeming never consumes the token without the agent receiving its credential.

@@ -6,13 +6,9 @@ module Api
     class OnboardingsController < BaseController
       self.max_body_bytes = 4.kilobytes
 
-      rate_limit to: OnboardingRequest.config.start_rate_limit[:to], within: OnboardingRequest.config.start_rate_limit[:within],
-                 by: -> { request.remote_ip }, store: AgentApi.rate_limit_store, name: "onboarding", scope: "agent_api",
-                 with: -> { rate_limited!(OnboardingRequest.config.start_rate_limit[:within]) }, only: :create
+      limits_rate "onboarding", OnboardingRequest.config.start_rate_limit, by: -> { request.remote_ip }, only: :create
       # Polling is limited per device code by Onboarding::Collect; this per-address limit only stops floods.
-      rate_limit to: AgentApi.config.rate_limit[:to], within: AgentApi.config.rate_limit[:within],
-                 by: -> { request.remote_ip }, store: AgentApi.rate_limit_store, name: "onboarding_token", scope: "agent_api",
-                 with: -> { rate_limited!(AgentApi.config.rate_limit[:within]) }, only: :token
+      limits_rate "onboarding_token", AgentApi.config.rate_limit, by: -> { request.remote_ip }, only: :token
       validates_body_with "onboarding.request", only: :create
       validates_body_with "onboarding-token.request", only: :token
       # The credential and the host commit only once the response is built, so a failure after collecting

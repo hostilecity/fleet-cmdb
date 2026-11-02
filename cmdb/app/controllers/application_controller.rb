@@ -8,8 +8,7 @@ class ApplicationController < ActionController::Base
   # Changes to the importmap will invalidate the etag for HTML responses
   stale_when_importmap_changes
 
-  # Lets audit entries record which request made a change (FR-S.3).
-  before_action { Current.request_id = request.request_id }
+  # Current.request_id, which audit entries record (FR-S.3), is set for every request by RequestContext.
   before_action :require_operator!
 
   helper_method :current_operator, :failed_job_count

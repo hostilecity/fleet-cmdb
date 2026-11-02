@@ -21,9 +21,7 @@ module Api
       rescue_from(AgentHostLock::Refused) { |refusal| render_api_error(REFUSALS.fetch(refusal.reason).new) }
 
       before_action :authenticate_agent!
-      rate_limit to: AgentApi.config.rate_limit[:to], within: AgentApi.config.rate_limit[:within],
-                 by: -> { current_credential.key_id }, store: AgentApi.rate_limit_store, name: "agent", scope: "agent_api",
-                 with: -> { rate_limited!(AgentApi.config.rate_limit[:within]) }
+      limits_rate "agent", AgentApi.config.rate_limit, by: -> { current_credential.key_id }
 
       private
 
