@@ -1,8 +1,9 @@
 //! `fleet-agent`: reports host facts to the Fleet CMDB server.
 //!
 //! Commands: `run` (the default), `check-config`, `--version`, and `--help` (P1-A01); `install` and
-//! `uninstall` (P1-A10, in [`install`]); `verify-release` (P1-PACKAGING, in [`release`]). `run` sends
-//! heartbeats and inventory reports ([`report`], P1-AGENT-REPORT).
+//! `uninstall` (P1-A10, in [`install`]); `verify-release` (P1-PACKAGING, in [`release`]); `self-test`,
+//! `update-supervise`, and `update-rollback` (P1-AGENT-UPDATE, in [`update`]). `run` sends heartbeats
+//! and inventory reports ([`report`], P1-AGENT-REPORT) and acts on the server's update directive.
 
 mod cli;
 mod client;
@@ -19,6 +20,7 @@ mod shutdown;
 mod state;
 #[cfg(test)]
 mod test_support;
+mod update;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -51,6 +53,9 @@ Commands:
   uninstall     Stop and remove the agent (see `fleet-agent uninstall --help`)
   verify-release
                 Check a downloaded release's signature and checksum (see `fleet-agent verify-release --help`)
+  self-test     Check that this binary can start with this host's config (run on a downloaded release)
+  update-supervise, update-rollback
+                Internal: run by the agent and by systemd while updating (see `fleet-agent self-test --help`)
 
 Options:
   -c, --config PATH  Config file [default: /etc/fleet-agent/config.toml]
@@ -241,8 +246,11 @@ fn run(path: &Path) -> ExitCode {
         inventory_seconds = config.inventory.start.as_secs(),
         "fleet-agent started"
     );
+    // Remote updates (P1-AGENT-UPDATE): the heartbeat loop hands the server's directive to this.
+    let config_path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    let updater = update::Updater::from_config(&config, &config_path);
     // Heartbeats and inventory reports until SIGTERM or SIGINT (P1-AGENT-REPORT).
-    if !report::run(&config, &client, &shutdown, started) {
+    if !report::run(&config, &client, &shutdown, started, &updater) {
         tracing::error!("fleet-agent stopped after an internal error");
         return ExitCode::FAILURE;
     }
@@ -262,6 +270,12 @@ fn main() -> ExitCode {
     }
     if args.first().and_then(|a| a.to_str()) == Some("verify-release") {
         return release::main(args);
+    }
+    if matches!(
+        args.first().and_then(|a| a.to_str()),
+        Some("self-test" | "update-supervise" | "update-rollback")
+    ) {
+        return update::main(args);
     }
     match parse_args(args) {
         Ok(Command::Version) => {
@@ -350,6 +364,8 @@ mod tests {
         assert!(parse_args(["-c", "/a", "-c", "/b"]).is_err());
         assert!(parse_args(["install"]).is_err());
         assert!(parse_args(["verify-release"]).is_err());
+        assert!(parse_args(["self-test"]).is_err());
+        assert!(parse_args(["update-supervise"]).is_err());
     }
 
     #[test]

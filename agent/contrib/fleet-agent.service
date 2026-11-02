@@ -5,13 +5,19 @@
 # The agent runs as root (DEC-03) under the sandbox below (P1-PACKAGING). It reads
 # /etc/fleet-agent, /etc/ssl, /proc, /sys, and the mount table, calls statvfs on every
 # mount, connects out to the server, and writes only /var/lib/fleet-agent. Why each
-# option is set or left out: agent/contrib/README.md. P1-AGENT-UPDATE adds the rollback
-# hook (OnFailure=) and what the updater needs.
+# option is set or left out: agent/contrib/README.md. For agent updates (P1-AGENT-UPDATE)
+# it can start the supervisor with systemd-run (AF_UNIX), and if a new version keeps
+# failing, systemd gives up and starts fleet-agent-rollback.service (OnFailure=).
 
 [Unit]
 Description=Fleet CMDB agent
 Wants=network-online.target
 After=network-online.target
+# Four starts within five minutes is a crash loop: the service stops being restarted and fails, which
+# starts the rollback unit. It only acts on an agent update the new version has not confirmed.
+StartLimitIntervalSec=300
+StartLimitBurst=4
+OnFailure=fleet-agent-rollback.service
 
 [Service]
 Type=exec
@@ -46,8 +52,9 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectProc=invisible
 
-# Network: IPv4 and IPv6 to the server; netlink to list interfaces (getifaddrs).
-RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+# Network: IPv4 and IPv6 to the server; netlink to list interfaces (getifaddrs); a local socket
+# to systemd, which `systemd-run` uses to start the update supervisor.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
 LockPersonality=yes

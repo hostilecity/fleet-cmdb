@@ -203,19 +203,21 @@ fn check_paths(host: &Host) -> Result<(), InstallError> {
             "The agent's state directory must be a real directory owned by root with mode 0700. If it is the agent's own, fix it with `chmod 700` or `chown root:root`; otherwise move it away.",
         ));
     }
-    for file in [paths.ca(), paths.unit()] {
+    for file in [paths.ca(), paths.unit(), paths.rollback_unit()] {
         if let Some(reason) = fsx::check_file(&file, uid) {
             return Err(unsafe_path(&file, reason, own_dir_fix));
         }
     }
-    if let Ok(text) = fs::read_to_string(paths.unit())
-        && !text.starts_with(UNIT_MARKER)
-    {
-        return Err(unsafe_path(
-            &paths.unit(),
-            "was not written by fleet-agent install".into(),
-            "Move it away (keep local changes in a drop-in made with `systemctl edit fleet-agent`).",
-        ));
+    for unit in [paths.unit(), paths.rollback_unit()] {
+        if let Ok(text) = fs::read_to_string(&unit)
+            && !text.starts_with(UNIT_MARKER)
+        {
+            return Err(unsafe_path(
+                &unit,
+                "was not written by fleet-agent install".into(),
+                "Move it away (keep local changes in a drop-in made with `systemctl edit fleet-agent`).",
+            ));
+        }
     }
     Ok(())
 }

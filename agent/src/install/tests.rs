@@ -489,6 +489,12 @@ fn onboarding_install_end_to_end() {
     );
     assert_eq!(fs::read_to_string(p.unit()).unwrap(), systemd::UNIT);
     assert_eq!(mode_of(&p.unit()), 0o644);
+    // The unit the service's OnFailure= starts, for rolling back an unconfirmed update.
+    assert_eq!(
+        fs::read_to_string(p.rollback_unit()).unwrap(),
+        systemd::ROLLBACK_UNIT
+    );
+    assert_eq!(mode_of(&p.rollback_unit()), 0o644);
 
     // The config: root only, holding the credential, loadable by the agent.
     assert_eq!(mode_of(&p.config()), 0o600);
@@ -1656,6 +1662,10 @@ fn preflight_symlinks_and_foreign_files_are_refused() {
             Box::new(|p: &Paths| fs::write(p.unit(), "[Service]\n").unwrap()),
         ),
         (
+            "fleet-agent-rollback.service was not written by fleet-agent install",
+            Box::new(|p: &Paths| fs::write(p.rollback_unit(), "[Service]\n").unwrap()),
+        ),
+        (
             "ca.pem is a symlink",
             Box::new(|p: &Paths| {
                 fs::create_dir(p.etc_dir()).unwrap();
@@ -1779,6 +1789,7 @@ fn uninstall_keep_state_keeps_the_config_for_a_reinstall() {
     assert!(
         !fx.paths().lib_dir().exists()
             && !fx.paths().unit().exists()
+            && !fx.paths().rollback_unit().exists()
             && !fx.paths().bin_link().exists()
     );
     let last: Value = serde_json::from_str(outcome.out.lines().last().unwrap()).unwrap();

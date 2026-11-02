@@ -20,7 +20,7 @@ The agent runs as root ([DEC-03](../../docs/decisions/0003-agent-privilege.md)) 
 | `PrivateTmp=yes`, `PrivateDevices=yes`, `PrivateIPC=yes` | The agent uses no shared `/tmp`, no device, and no System V IPC. It never opens `/dev/<disk>`: mount sources are only compared as text |
 | `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`, `ProtectControlGroups=yes`, `ProtectClock=yes` | `/proc/sys` and `/sys` stay readable, as the collectors need, but not writable; no modules, kernel log, cgroup changes, or clock changes |
 | `ProtectProc=invisible` | Other users' processes are hidden; the agent reads only `/proc/self/*` and system-wide files |
-| `RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK` | IPv4 and IPv6 to the server and DNS; netlink for `getifaddrs(3)`. No local (`AF_UNIX`) or packet sockets |
+| `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK` | IPv4 and IPv6 to the server and DNS; netlink for `getifaddrs(3)`; a local socket for `systemd-run`, which starts the update supervisor (P1-AGENT-UPDATE). No packet sockets |
 | `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`, `MemoryDenyWriteExecute=yes` | Nothing the agent uses |
 | `SystemCallFilter=@system-service`, `~@privileged @resources`, `SystemCallErrorNumber=EPERM` | The agent's system calls, traced while it heartbeats and reports, are all in `@system-service` and none in the denied groups. A call outside the filter fails with `EPERM`, which the collectors report as a warning, instead of killing the agent |
 | `SystemCallArchitectures=native`, `UMask=0077` | Native x86_64 calls only; files private by default |
@@ -36,13 +36,20 @@ Deliberately not set:
 
 ### What P1-AGENT-UPDATE adds
 
-[P1-AGENT-UPDATE](../../docs/backlog/specs/p1-agent-update.md) adds `OnFailure=fleet-agent-rollback.service` with a `StartLimitBurst=` crash-loop limit (until then a failing agent is restarted every 10 seconds without limit). Its updater starts the supervisor with `systemd-run`, which talks to systemd over a local socket, so it must add `AF_UNIX` to `RestrictAddressFamilies=`. The supervisor runs as its own transient unit, outside this sandbox, so this unit needs no write access to `/usr/lib/fleet-agent`; if a design gives the running agent that access, add `ReadWritePaths=/usr/lib/fleet-agent` and nothing wider.
+[P1-AGENT-UPDATE](../../docs/backlog/specs/p1-agent-update.md) adds, to `fleet-agent.service`:
+
+- `StartLimitIntervalSec=300`, `StartLimitBurst=4` and `OnFailure=fleet-agent-rollback.service`. Before it, a failing agent was restarted every 10 seconds without limit. Now four starts in five minutes is a crash loop: systemd stops restarting the service, marks it failed, and starts the rollback unit, which returns to the previous version only if an agent update has not yet been confirmed (it does nothing at any other time).
+- `AF_UNIX` in `RestrictAddressFamilies=`. The updater starts the supervisor with `systemd-run`, which talks to systemd over a local socket. This is the only option the update needed; the exposure score is checked by `scripts/check-unit.sh` as before.
+
+The supervisor runs as its own transient unit (`fleet-agent-update`), outside this sandbox, so the service needs no write access to `/usr/lib/fleet-agent`; if a design gives the running agent that access, add `ReadWritePaths=/usr/lib/fleet-agent` and nothing wider.
+
+`fleet-agent-rollback.service` (`Type=oneshot`) runs `/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop`: the previous version's binary, the one that was known to work. It has no `ProtectSystem=` because it has to change `/usr/lib/fleet-agent` and the state directory and restart the service, but it keeps the other restrictions that do not get in its way. `fleet-agent install` writes both units; `uninstall` removes both. An update does not rewrite them (see the spec's known limit).
 
 ### Checking it
 
 `scripts/sandbox-smoke.sh` (run in CI on the runner's systemd) runs the musl release binary as a transient service with every `[Service]` option of this unit, read from the file so the test cannot drift, against a local stand-in for the agent API, and once without them. The sandboxed run must have its heartbeat accepted, write its state, and report every fact the unsandboxed run reports, with no new warning; a system call the filter blocks (`SystemCallErrorNumber=EPERM`) would otherwise only show as a missing fact.
 
-`scripts/check-unit.sh` (run in CI) runs `systemd-analyze verify`, failing on any warning, and `systemd-analyze security`, failing above an exposure of 2.0. The exposure went from 7.6 ("EXPOSED") with the baseline unit from P1-AGENT-INSTALL to 1.9 ("OK"). The remaining points are root (0.4), access to the network (0.5 + 0.3 + 0.1), and the other options deliberately left out above. Output on systemd 255:
+`scripts/check-unit.sh` (run in CI) runs `systemd-analyze verify` on the service together with the rollback unit, failing on any warning, and `systemd-analyze security`, failing above an exposure of 2.0. The exposure went from 7.6 ("EXPOSED") with the baseline unit from P1-AGENT-INSTALL to 1.9 ("OK"). The remaining points are root (0.4), access to the network (0.5 + 0.3 + 0.1), and the other options deliberately left out above. Output on systemd 255:
 
 ```text
   NAME                                                        DESCRIPTION                                                                    EXPOSURE

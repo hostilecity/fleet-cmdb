@@ -63,6 +63,19 @@ pub fn uninstall(host: &Host, options: &UninstallOptions, ui: &mut Ui) -> Result
             }
         }
     }
+    // The rollback unit the service's OnFailure= starts, with the same rule.
+    let rollback = paths.rollback_unit();
+    if fs::read_to_string(&rollback).is_ok_and(|t| t.starts_with(UNIT_MARKER))
+        && fsx::check_file(&rollback, uid).is_none()
+    {
+        remove_file(&rollback, &mut removed, ui)?;
+    } else if rollback.exists() {
+        keep(
+            &mut kept,
+            ui,
+            format!("{} (not written by the installer)", rollback.display()),
+        );
+    }
     if unit_is_ours {
         remove_file(&unit, &mut removed, ui)?;
         if host.systemd.unavailable().is_none() {

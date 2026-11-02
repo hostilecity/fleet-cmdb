@@ -11,6 +11,7 @@
 //! log_level = "info"                         # optional: error, warn, info, debug, trace
 //! # ca_file = "/etc/fleet-agent/ca.pem"      # optional: extra CA bundle for a private CA
 //! # state_dir = "/var/lib/fleet-agent"       # optional
+//! # update_confirm_seconds = 300             # optional: how long a new version has to confirm
 //!
 //! [heartbeat]                                # optional; seconds
 //! interval_seconds = 60
@@ -183,6 +184,9 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub heartbeat: Interval,
     pub inventory: Interval,
+    /// How long a newly installed agent version has to get a heartbeat acknowledged by the server
+    /// before the update is rolled back, in seconds (P1-AGENT-UPDATE, ADR 0018).
+    pub update_confirm_seconds: u64,
 }
 
 /// Why a config could not be loaded. Every message says what to change.
@@ -245,6 +249,7 @@ struct RawConfig {
     log_level: Option<String>,
     ca_file: Option<PathBuf>,
     state_dir: Option<PathBuf>,
+    update_confirm_seconds: Option<u64>,
     heartbeat: Option<RawInterval>,
     inventory: Option<RawInterval>,
 }
@@ -332,11 +337,25 @@ impl Config {
             )));
         }
 
+        let update_confirm_seconds = raw
+            .update_confirm_seconds
+            .unwrap_or(crate::update::DEFAULT_CONFIRM_SECONDS);
+        if !(crate::update::MIN_CONFIRM_SECONDS..=crate::update::MAX_CONFIRM_SECONDS)
+            .contains(&update_confirm_seconds)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "`update_confirm_seconds` must be within {}..={}",
+                crate::update::MIN_CONFIRM_SECONDS,
+                crate::update::MAX_CONFIRM_SECONDS
+            )));
+        }
+
         Ok(Self {
             server_url,
             credential,
             log_level,
             ca_file: raw.ca_file,
+            update_confirm_seconds,
             state_dir,
             heartbeat: validate_interval(&HEARTBEAT_LIMITS, raw.heartbeat.unwrap_or_default())?,
             inventory: validate_interval(&INVENTORY_LIMITS, raw.inventory.unwrap_or_default())?,
@@ -819,6 +838,10 @@ pub(crate) mod tests {
         assert_eq!(example.state_dir, defaults.state_dir);
         assert_eq!(example.heartbeat, defaults.heartbeat);
         assert_eq!(example.inventory, defaults.inventory);
+        assert_eq!(
+            example.update_confirm_seconds,
+            defaults.update_confirm_seconds
+        );
         assert!(example.server_url.ends_with(".example.lan"));
         assert!(example.credential.expose_secret().contains("EXAMPLE"));
 

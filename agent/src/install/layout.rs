@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use crate::AGENT_VERSION;
 
 use super::fsx::{self, DirLock, Kind};
-use super::systemd::UNIT;
+use super::systemd::{ROLLBACK_UNIT, UNIT};
 use super::ui::Ui;
 use super::{Failure, Host, InstallError};
 
@@ -127,23 +127,32 @@ pub fn install(host: &Host, ui: &mut Ui) -> Result<Installed, InstallError> {
 
     prune_versions(host, ui)?;
 
-    // The unit, built into this binary.
-    let unit = paths.unit();
-    let same = fs::read(&unit).is_ok_and(|bytes| bytes == UNIT.as_bytes());
-    if same {
-        ui.detail(&format!("{} is up to date.", unit.display()));
-    } else {
-        fsx::remove_stale_temps(&paths.unit_dir(), super::systemd::UNIT_NAME)
+    // The units, built into this binary: the service and the rollback unit its `OnFailure=` starts.
+    let mut wrote_unit = false;
+    for (unit, text) in [(paths.unit(), UNIT), (paths.rollback_unit(), ROLLBACK_UNIT)] {
+        let same = fs::read(&unit).is_ok_and(|bytes| bytes == text.as_bytes());
+        if same {
+            ui.detail(&format!("{} is up to date.", unit.display()));
+            continue;
+        }
+        let name = unit
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        fsx::remove_stale_temps(&paths.unit_dir(), &name)
             .map_err(|e| io_failed("clean up", &paths.unit_dir(), e))?;
-        fsx::write_atomic(&unit, UNIT.as_bytes(), 0o644)
+        fsx::write_atomic(&unit, text.as_bytes(), 0o644)
             .map_err(|e| io_failed("write", &unit, e))?;
+        ui.detail(&format!("Wrote {}", unit.display()));
+        wrote_unit = true;
+    }
+    if wrote_unit {
         host.systemd.daemon_reload().map_err(|e| {
             InstallError::failed(format!(
-                "systemctl daemon-reload failed after writing {}: {e}",
-                unit.display()
+                "systemctl daemon-reload failed after writing the units in {}: {e}",
+                paths.unit_dir().display()
             ))
         })?;
-        ui.detail(&format!("Wrote {}", unit.display()));
         changed = true;
     }
     Ok(Installed { changed })

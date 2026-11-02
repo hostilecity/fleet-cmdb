@@ -1,0 +1,31 @@
+# Written by `fleet-agent install`; re-running the installer replaces this file and
+# `fleet-agent uninstall` removes it. Do not edit it.
+#
+# Started by fleet-agent.service's OnFailure= when the service gives up (it kept
+# failing, or exited with a status that must not be retried). If that happens to a
+# version that has not yet confirmed an agent update (P1-AGENT-UPDATE, ADR 0018),
+# this returns to the previous version. At any other time it does nothing. It runs
+# the previous version's binary, the one that was known to work, outside the agent's
+# sandbox: it has to change /usr/lib/fleet-agent and restart the service.
+
+[Unit]
+Description=Fleet CMDB agent update rollback
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop
+TimeoutStartSec=300
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native

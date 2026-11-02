@@ -28,6 +28,11 @@ log_level = "info"
 # drop-in (`systemctl edit fleet-agent`).
 state_dir = "/var/lib/fleet-agent"
 
+# How long, in seconds, a newly installed agent version has to get a heartbeat acknowledged by the
+# server (P1-AGENT-UPDATE, ADR 0018). Without that, the update is rolled back to the previous version.
+# Within 10..=3600. The server cannot change it.
+update_confirm_seconds = 300
+
 # Heartbeat interval in seconds (FR-1.2): the agent starts with interval_seconds. The server may ask
 # for another interval (ADR 0019), which is applied only within min_seconds..=max_seconds. Each value
 # must be within 10..=3600. If only interval_seconds is set, the default bounds widen to include it.

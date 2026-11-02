@@ -15,36 +15,44 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). Server side
   - The agent refuses any version not newer than the running one. Signed manifests do not expire, so freshness (a held-back or withdrawn release) is a known limit while the rollout server is trusted; see `docs/releases.md`.
 
   Every refusal is reported as `failed` with the reason, and nothing is installed.
-- **Self-test.** The staged binary runs its self-test (`fleet-agent self-test`: version, config parse, state readable) before anything changes.
-- **One at a time.** One update in progress; a new directive during an update is ignored until it ends.
+- **Self-test.** The staged binary runs `fleet-agent self-test --config PATH` (empty environment, 30-second limit) before anything changes. It loads the config, builds the HTTPS client with the trusted certificates, and reads the state directory, contacts nothing, and prints `self-test OK: fleet-agent VERSION (agent schema N)`; the agent requires that line with the staged version.
+- **One at a time.** One update in progress; a new directive during an update is ignored until it ends. A directive that is answered (refused, or handed to the supervisor) is not acted on again by the same agent process; a download that fails for a transient reason is tried again on the next heartbeats that carry the directive, up to 5 times, and then reported `failed`.
+- **No credential, no command.** Downloads carry no credential. Nothing the server sends becomes a path, a command, or a unit name: the version must be canonical SemVer, the URLs only say where to fetch, and the layout is found from where the agent's own binary is.
 
 ### Acceptance criteria
 
-- [ ] AC-1.9 (agent half): a tampered binary, a bad signature, an unknown key, or an older version is refused and reported, and the running version is unchanged
-- [ ] An interrupted download resumes, and running out of disk space fails cleanly
+- [x] AC-1.9 (agent half): a tampered binary, a bad signature, an unknown key, or an older version is refused and reported, and the running version is unchanged
+- [x] An interrupted download resumes, and running out of disk space fails cleanly
 
 ## P1-A12: Supervised switch, confirmation, and rollback
 
 ### Scope
 
-- **Supervisor.** The running agent starts `systemd-run --unit fleet-agent-update`, running the **current, known-good** binary as `fleet-agent update-supervise <version>`. The supervisor:
-  1. installs the staged binary into `versions/<version>/`;
-  2. backs up the state if the new version declares a state migration;
+- **Supervisor.** The running agent starts `systemd-run --unit fleet-agent-update`, running the **current, known-good** binary as `fleet-agent update-supervise --config PATH`. What to do is in the update record the agent wrote (`update.json`), never on the command line. The supervisor holds an exclusive lock (`update.lock`, released when it dies) and is a single decider with write-ahead phases, so it can be killed at any point and started again (by the agent's watchdog, which relaunches it from the old binary when it finds an unfinished record and a free lock). It:
+  1. verifies the staged files again and installs the staged binary into `versions/<version>/`;
+  2. backs up the state records (always: no release declares a state migration yet, and a copy is cheap);
   3. moves `previous` and swaps `current` atomically (rename of a symlink);
   4. restarts `fleet-agent.service`;
   5. waits for the confirmation marker.
 
-  The service's sandbox ([P1-PACKAGING](p1-packaging.md), `agent/contrib/README.md`) allows no local sockets, so this issue adds `AF_UNIX` to `RestrictAddressFamilies=` for `systemd-run`; the supervisor's transient unit runs outside that sandbox.
-- **Confirmation.** The new version writes the marker only after its first heartbeat that the server acknowledged. The deadline defaults to 5 minutes.
+  The service's sandbox ([P1-PACKAGING](p1-packaging.md), `agent/contrib/README.md`) allowed no local sockets, so this issue adds `AF_UNIX` to `RestrictAddressFamilies=` for `systemd-run`; the supervisor's transient unit runs outside that sandbox.
+- **Confirmation.** The new version writes the marker (`update-confirmed.json`, naming the rollout and version) only after its first heartbeat that the server acknowledged. The deadline defaults to 5 minutes and is set by `update_confirm_seconds` in the config (10 to 3600).
 - **Rollback.** Without confirmation by the deadline, the supervisor swaps back to `previous`, restores state if backed up, restarts, and records `rolled_back` with the reason. The restored agent reports it.
 - **Backstops.**
   - **Crash loops:** `OnFailure=fleet-agent-rollback.service` in the unit rolls back when the new version keeps failing (`StartLimitBurst`).
-  - **Reboots:** at startup, an agent that finds an unconfirmed update for its own version older than the deadline rolls back.
+  - **Reboots:** `update.lock` is released by a reboot, so the agent that starts afterwards (the new version, or the old one if the switch had not happened) finds the unfinished record and starts the supervisor, which finishes or rolls back.
 - **Retention.** Two versions are kept; older ones are removed after a confirmed update.
-- **Result.** The outcome is posted to `POST /api/v1/update-results` and retried until accepted.
+- **Result.** The outcome is written to `update-result.json` with a stable `report_id` and posted to `POST /api/v1/update-results` by the running agent after each heartbeat, and retried until accepted (a 4xx other than 429 is dropped and logged, since retrying cannot change it).
+- **Known limit.** The unit files are not refreshed by an update: a new version's `fleet-agent.service` takes effect when the operator re-runs `fleet-agent install` (or a later change adds it to the supervisor). The updater needs only the `AF_UNIX` and `OnFailure=` lines this issue adds, which are in the installed units from the first release that has an updater.
+
+### As built
+
+- Code: `agent/src/update/` (`stage` and `fetch` for P1-A11, `supervise` for P1-A12, `mod` for the agent side and the commands). State files in the state directory: `update.json`, `update-confirmed.json`, `update-result.json`, `update.lock`, `update/<version>/` (staging) and `update/backup/`.
+- Tests: unit tests with a fake clock, fake `systemctl`, and fake release channel; `agent/tests/cli.rs`; and `agent/scripts/update-smoke.sh` (CI job "Update smoke test"), which runs the real units and layout on systemd with throwaway keys and a local stand-in for the API (`update-stub.py`): refused releases, a release that exits at start, a crash-looping one, one that cannot authenticate, the supervisor killed with SIGKILL, a successful update whose result is retried, and an agent below the server's minimum version (NFR-5: the update path uses only `heartbeat`, `update-results`, and the unauthenticated release downloads, none of which return `426`).
+- Not covered by CI: a reboot in the middle of an update, and a failure run on a real VM (the third criterion of P1-A12 below), which are recorded by hand on a disposable VM. No release verifies in production until the owner generates the release keys (`docs/releases.md`).
 
 ### Acceptance criteria
 
-- [ ] AC-1.10: a release that exits at start, one that crash-loops, and one that cannot authenticate are each rolled back automatically, and the rollback is reported
+- [x] AC-1.10: a release that exits at start, one that crash-loops, and one that cannot authenticate are each rolled back automatically, and the rollback is reported
 - [ ] Killing the supervisor or rebooting the VM mid-update ends with exactly one working version running (failure tests on a disposable VM, results recorded)
-- [ ] A successful update keeps the credential and state, and the next inventory report shows the new version
+- [x] A successful update keeps the credential and state, and the next inventory report shows the new version

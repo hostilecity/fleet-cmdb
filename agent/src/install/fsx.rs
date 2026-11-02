@@ -12,32 +12,9 @@ use std::path::{Path, PathBuf};
 
 // The shared helpers (atomic writes, temporary-file cleanup) live in `crate::fsx`, so the installer,
 // the collectors, and the state directory use one implementation (review of #68).
-use crate::fsx::temp_path;
 pub use crate::fsx::{
-    Symlinks, read_regular, remove_stale_temps, sync_dir, write_atomic, write_atomic_from,
+    Symlinks, read_regular, remove_stale_temps, replace_symlink, write_atomic, write_atomic_from,
 };
-
-/// Points the symlink `link` at `target`, replacing an existing symlink atomically (a new link is made
-/// under a temporary name and renamed over the old one). Refuses to replace anything but a symlink.
-pub fn replace_symlink(link: &Path, target: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(link) {
-        Ok(m) if !m.file_type().is_symlink() => {
-            return Err(io::Error::other(format!(
-                "{} exists and is not a symlink",
-                link.display()
-            )));
-        }
-        _ => {}
-    }
-    let temp = temp_path(link);
-    std::os::unix::fs::symlink(target, &temp)?;
-    let result =
-        fs::rename(&temp, link).and_then(|()| sync_dir(link.parent().unwrap_or(Path::new("/"))));
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
 
 /// What a path holds, without following a final symlink.
 #[derive(Debug, Clone, PartialEq, Eq)]

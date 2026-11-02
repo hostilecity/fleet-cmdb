@@ -375,3 +375,81 @@ fn verify_release_refuses_a_release_signed_by_a_key_it_does_not_embed() {
     assert!(stdout.is_empty(), "{stdout}");
     assert!(stderr.contains("release NOT verified"), "{stderr}");
 }
+
+#[test]
+fn self_test_checks_the_config_and_state_without_contacting_the_server() {
+    // What the agent runs on a downloaded release before installing it (P1-AGENT-UPDATE).
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let scratch = Scratch::new("selftest");
+    fs::create_dir_all(scratch.state_dir()).unwrap();
+    let path = scratch.config(&valid_config(&url, &scratch.state_dir()), 0o600);
+    let config = path.to_str().unwrap();
+
+    let (output, stdout, stderr) = run_with(&["self-test", "--config", config]);
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert_eq!(
+        stdout.trim(),
+        format!(
+            "self-test OK: fleet-agent {} (agent schema 1)",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+    assert!(listener.accept().is_err(), "self-test contacted the server");
+
+    // A state directory that cannot be read fails, and so does a config the agent refuses.
+    fs::remove_dir_all(scratch.state_dir()).unwrap();
+    let (output, stdout, stderr) = run_with(&["self-test", "--config", config]);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stderr.contains("self-test failed"), "{stderr}");
+    assert!(stderr.contains("state directory"), "{stderr}");
+    let loose = scratch.config(&valid_config(&url, &scratch.state_dir()), 0o644);
+    let (output, _, stderr) = run_with(&["self-test", "--config", loose.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("self-test failed"), "{stderr}");
+    let (output, _, _) = run_with(&["self-test", "--config", "/nonexistent/config.toml"]);
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn the_update_commands_refuse_to_run_outside_the_installed_layout_or_with_odd_arguments() {
+    let scratch = Scratch::new("supervise");
+    fs::create_dir_all(scratch.state_dir()).unwrap();
+    let path = scratch.config(
+        &valid_config("https://agent.example.lan", &scratch.state_dir()),
+        0o600,
+    );
+    let config = path.to_str().unwrap();
+    // This test binary is not at <lib>/versions/<version>/fleet-agent, so there is nothing to switch.
+    for command in [
+        vec!["update-supervise", "--config", config],
+        vec![
+            "update-rollback",
+            "--reason",
+            "crash-loop",
+            "--config",
+            config,
+        ],
+    ] {
+        let (output, stdout, stderr) = run_with(&command);
+        assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
+        assert!(
+            !scratch.state_dir().join("update.json").exists(),
+            "nothing may be recorded"
+        );
+    }
+    for bad in [
+        vec!["update-rollback", "--config", config],
+        vec!["update-rollback", "--reason", "anything else"],
+        vec!["update-supervise", "--reason", "crash-loop"],
+        vec!["update-supervise", "--version", "1.2.3"],
+        vec!["self-test", "extra"],
+    ] {
+        let (output, _, stderr) = run_with(&bad);
+        assert_eq!(output.status.code(), Some(2), "{bad:?}: {stderr}");
+    }
+}
