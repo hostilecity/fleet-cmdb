@@ -39,7 +39,7 @@ The manifest is signed with [minisign](https://jedisct1.github.io/minisign/): Ed
 
 ### What an agent accepts
 
-The agent code is `agent/src/release/`; the updater (P1-AGENT-UPDATE) and `fleet-agent verify-release` both use it. A release is accepted only if, in this order:
+The agent code is `agent/src/release/`; the updater (`agent/src/update/`, P1-AGENT-UPDATE) and `fleet-agent verify-release` both use it. A release is accepted only if, in this order:
 
 1. the signature verifies against one of the release public keys built into the agent (below);
 2. the manifest then parses and follows every rule in the table above;

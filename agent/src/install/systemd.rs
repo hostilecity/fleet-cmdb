@@ -15,11 +15,17 @@ pub const UNIT_NAME: &str = "fleet-agent.service";
 /// The unit file, written to `/etc/systemd/system/fleet-agent.service`.
 pub const UNIT: &str = include_str!("fleet-agent.service");
 
+/// The unit `OnFailure=` of the service starts, which rolls an unconfirmed update back when the new
+/// version keeps failing (P1-AGENT-UPDATE, ADR 0018). Written by `install` next to the service unit.
+pub const ROLLBACK_UNIT_NAME: &str = "fleet-agent-rollback.service";
+pub const ROLLBACK_UNIT: &str = include_str!("fleet-agent-rollback.service");
+
 /// The first line of every unit file the installer wrote. A unit without it is not the installer's, so
 /// it is neither replaced nor removed.
 pub const UNIT_MARKER: &str = "# Written by `fleet-agent install`";
 
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
+const SYSTEMD_RUN: &str = "/usr/bin/systemd-run";
 
 /// `systemctl`, behind a trait so tests can record the calls and script the answers.
 pub trait Systemd {
@@ -67,6 +73,17 @@ impl Default for Systemctl {
     fn default() -> Self {
         Self {
             path: PathBuf::from(SYSTEMCTL),
+            timeout: SYSTEMCTL_TIMEOUT,
+        }
+    }
+}
+
+impl Systemctl {
+    /// The same runner (absolute path, fixed environment, time limit) for `systemd-run`, which the
+    /// updater uses to start its supervisor outside the agent's sandbox.
+    pub fn systemd_run() -> Self {
+        Self {
+            path: PathBuf::from(SYSTEMD_RUN),
             timeout: SYSTEMCTL_TIMEOUT,
         }
     }
@@ -184,6 +201,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_crash_loop_ends_in_the_rollback_unit() {
+        // P1-AGENT-UPDATE: four starts in five minutes is a crash loop; systemd then gives up and starts
+        // the unit that rolls back an unconfirmed update. RestartSec=10s alone would never reach
+        // systemd's default limit (five starts in ten seconds).
+        assert_eq!(values("StartLimitIntervalSec"), ["300"]);
+        assert_eq!(values("StartLimitBurst"), ["4"]);
+        assert_eq!(values("OnFailure"), [ROLLBACK_UNIT_NAME]);
+        assert_eq!(values("Restart"), ["on-failure"]);
+    }
+
+    #[test]
+    fn the_rollback_unit_runs_the_previous_version_and_is_marked_as_ours() {
+        assert!(ROLLBACK_UNIT.starts_with(UNIT_MARKER));
+        assert!(ROLLBACK_UNIT.contains(
+            "ExecStart=/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop\n"
+        ));
+        assert!(ROLLBACK_UNIT.contains("Type=oneshot\n"));
+        // It must be able to change /usr/lib/fleet-agent and the state directory.
+        assert!(!ROLLBACK_UNIT.contains("ProtectSystem"));
+        assert!(
+            ROLLBACK_UNIT == include_str!("../../contrib/fleet-agent-rollback.service"),
+            "agent/contrib/fleet-agent-rollback.service differs from the installer's"
+        );
+    }
+
     /// The values of `key=` in the unit, in order.
     fn values(key: &str) -> Vec<&'static str> {
         UNIT.lines()
@@ -211,9 +254,10 @@ mod tests {
         // Network to the server; netlink for getifaddrs(3).
         assert!(values("PrivateNetwork").is_empty());
         assert!(values("IPAddressDeny").is_empty());
+        // AF_UNIX is for `systemd-run`, which starts the update supervisor (P1-AGENT-UPDATE).
         assert_eq!(
             values("RestrictAddressFamilies"),
-            ["AF_INET AF_INET6 AF_NETLINK"]
+            ["AF_UNIX AF_INET AF_INET6 AF_NETLINK"]
         );
         // Root without a user namespace: PrivateUsers= would hide root-owned files' ownership.
         assert!(values("PrivateUsers").is_empty());

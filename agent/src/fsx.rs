@@ -103,6 +103,28 @@ pub fn write_atomic_from(path: &Path, source: &mut dyn Read, mode: u32) -> io::R
     result
 }
 
+/// Points the symlink `link` at `target`, replacing an existing symlink atomically (a new link is made
+/// under a temporary name and renamed over the old one). Refuses to replace anything but a symlink.
+pub fn replace_symlink(link: &Path, target: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(link) {
+        Ok(m) if !m.file_type().is_symlink() => {
+            return Err(io::Error::other(format!(
+                "{} exists and is not a symlink",
+                link.display()
+            )));
+        }
+        _ => {}
+    }
+    let temp = temp_path(link);
+    std::os::unix::fs::symlink(target, &temp)?;
+    let result =
+        fs::rename(&temp, link).and_then(|()| sync_dir(link.parent().unwrap_or(Path::new("/"))));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
 /// Removes temporary files left in `dir` by an interrupted run (names containing [`TEMP_MARKER`] and
 /// starting with `.{prefix}`). Returns how many were removed. A missing directory is not an error.
 pub fn remove_stale_temps(dir: &Path, prefix: &str) -> io::Result<usize> {

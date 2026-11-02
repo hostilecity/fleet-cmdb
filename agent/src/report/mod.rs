@@ -32,6 +32,7 @@ use crate::collect::Collector;
 use crate::config::Config;
 use crate::retry::{Backoff, RetryPolicy, Rng, SplitMix64};
 use crate::shutdown::Shutdown;
+use crate::update::Updater;
 
 pub use heartbeat::{ACK_RECORD, Ack, HEARTBEAT_PATH, Heartbeat, HeartbeatRequest};
 pub use intervals::Intervals;
@@ -50,8 +51,21 @@ impl Transport for Client {
 }
 
 /// Runs both loops until `shutdown` is requested. Returns `false` if a loop ended unexpectedly.
-pub fn run(config: &Config, client: &Client, shutdown: &Shutdown, started: Instant) -> bool {
-    run_with(config, client, shutdown, started, &Collector::new())
+pub fn run(
+    config: &Config,
+    client: &Client,
+    shutdown: &Shutdown,
+    started: Instant,
+    updater: &Updater,
+) -> bool {
+    run_with(
+        config,
+        client,
+        shutdown,
+        started,
+        &Collector::new(),
+        updater,
+    )
 }
 
 /// [`run`] with the transport and collector given (tests).
@@ -61,6 +75,7 @@ fn run_with(
     shutdown: &Shutdown,
     started: Instant,
     collector: &Collector,
+    updater: &Updater,
 ) -> bool {
     let intervals = Intervals::new(config.heartbeat, config.inventory);
     let intervals = &intervals;
@@ -69,7 +84,14 @@ fn run_with(
             .name("fleet-agent-heartbeat".into())
             .spawn_scoped(scope, || {
                 let _stop = StopOnExit(shutdown);
-                heartbeat_loop(intervals, &config.state_dir, transport, shutdown, started);
+                heartbeat_loop(
+                    intervals,
+                    &config.state_dir,
+                    transport,
+                    shutdown,
+                    started,
+                    updater,
+                );
             });
         let inventory = thread::Builder::new()
             .name("fleet-agent-inventory".into())
@@ -115,6 +137,7 @@ fn heartbeat_loop(
     transport: &dyn Transport,
     shutdown: &Shutdown,
     started: Instant,
+    updater: &Updater,
 ) {
     let mut heartbeat = Heartbeat::new(
         intervals,
@@ -122,10 +145,14 @@ fn heartbeat_loop(
         seeded(2),
         started,
     )
-    .record_first_ack_in(state_dir.to_owned());
+    .record_first_ack_in(state_dir.to_owned())
+    .with_updater(updater);
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();
         let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());
+        // Outcomes of updates wait on disk until the server accepts them; an update in progress with
+        // no supervisor gets one. Both are cheap when there is nothing to do.
+        updater.tick(transport);
         if shutdown.wait(wait) {
             break;
         }
@@ -171,7 +198,7 @@ fn jittered(interval: Duration, rng: &mut impl Rng) -> Duration {
 
 /// A new report id: a random (version 4) UUID from the kernel's random source (`getrandom(2)`, so no
 /// device file is needed under systemd sandboxing).
-fn new_report_id() -> io::Result<String> {
+pub(crate) fn new_report_id() -> io::Result<String> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(uuid_v4(bytes))
@@ -371,8 +398,16 @@ pub(crate) mod tests {
         let shutdown = Shutdown::default();
         let started = Instant::now();
         let (clean, requests) = thread::scope(|scope| {
-            let runner =
-                scope.spawn(|| run_with(&config, &client, &shutdown, started, &Collector::new()));
+            let runner = scope.spawn(|| {
+                run_with(
+                    &config,
+                    &client,
+                    &shutdown,
+                    started,
+                    &Collector::new(),
+                    &Updater::inert(&state_dir),
+                )
+            });
             let requests = server.finish();
             // Both requests arrived; the record is written right after the report is accepted.
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -429,7 +464,10 @@ pub(crate) mod tests {
         let shutdown = Shutdown::default();
         let collector = Collector::new();
         let started = Instant::now();
-        let clean = run_with(&config, &Panicking, &shutdown, started, &collector);
+        let updater = Updater::inert(&config.state_dir);
+        let clean = run_with(
+            &config, &Panicking, &shutdown, started, &collector, &updater,
+        );
         assert!(!clean);
         assert!(shutdown.is_requested());
         assert!(started.elapsed() < Duration::from_secs(30));

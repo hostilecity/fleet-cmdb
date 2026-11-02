@@ -2,7 +2,7 @@
 
 The Fleet CMDB agent: a single static Rust binary that runs as a systemd service on each VM and reports host facts to the server (FR-1.6). The fleet is Debian 13 on x86_64 ([DEC-01](../docs/decisions/0001-fleet-profile.md)), so the only release target is `x86_64-unknown-linux-musl`. The agent runs as root under a hardened unit ([DEC-03](../docs/decisions/0003-agent-privilege.md)).
 
-Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE), and so are the read-only fact collectors (P1-AGENT-COLLECT) and heartbeats and inventory reports (P1-AGENT-REPORT); `run` reports until it gets a stop signal. `install` and `uninstall` (P1-AGENT-INSTALL) install, enroll, start, and remove it. Releases are built, signed, and published on a version tag, and the systemd unit is hardened (P1-PACKAGING; see [Releases](#releases) and [`contrib/`](contrib/README.md)).
+Status: Phase 1 in progress. Config, logging, the state directory, the HTTPS client, and the retry policy are in place (P1-AGENT-CORE), and so are the read-only fact collectors (P1-AGENT-COLLECT) and heartbeats and inventory reports (P1-AGENT-REPORT); `run` reports until it gets a stop signal. `install` and `uninstall` (P1-AGENT-INSTALL) install, enroll, start, and remove it. Releases are built, signed, and published on a version tag, and the systemd unit is hardened (P1-PACKAGING; see [Releases](#releases) and [`contrib/`](contrib/README.md)). The agent updates itself from a signed release, with a supervisor and automatic rollback (P1-AGENT-UPDATE; see [Updates](#updates)).
 
 ## Build and check
 
@@ -35,6 +35,9 @@ fleet-agent install [OPTIONS]              install, enroll, and start the agent 
 fleet-agent uninstall [--keep-state]       stop and remove the agent (see below)
 fleet-agent verify-release --manifest PATH --signature PATH --binary PATH
                                            check a downloaded release's signature and checksum (see Releases)
+fleet-agent self-test [--config PATH]    check this binary against this host's config; never contacts the server (see Updates)
+fleet-agent update-supervise, update-rollback
+                                           internal: run by the agent and by systemd while updating (see Updates)
 fleet-agent --version | --help
 ```
 
@@ -91,6 +94,7 @@ credential = "EXAMPLEkey01.EXAMPLE-secret-not-a-real-credential-0001"   # requir
 log_level = "info"                               # error, warn, info (default), debug, trace
 # ca_file = "/etc/fleet-agent/ca.pem"            # extra CA bundle for a private CA; not needed with Let's Encrypt (DEC-05)
 # state_dir = "/var/lib/fleet-agent"             # default shown; created with mode 0700
+# update_confirm_seconds = 300                   # how long a new version has to confirm an update; 10..=3600 (see Updates)
 
 [heartbeat]                                      # optional; seconds; allowed 10..=3600
 interval_seconds = 60                            # starting interval
@@ -131,6 +135,20 @@ A version tag `agent-v<version>` on `main` makes a release: `.github/workflows/a
 
 `fleet-agent verify-release --manifest PATH --signature PATH --binary PATH` checks a downloaded release exactly as the updater will (P1-AGENT-UPDATE): the signature against the embedded keys, then the manifest, then the binary's size and SHA-256. It changes nothing and exits `0` if verified, `1` if not (with the reason), `2` on a usage error. Run it with an agent binary you already trust.
 
+## Updates
+
+The agent updates itself only through the signed release channel ([ADR 0018](../docs/decisions/0018-signed-agent-updates.md), [P1-AGENT-UPDATE](../docs/backlog/specs/p1-agent-update.md)); it never takes a command, a path, or a unit name from the server.
+
+1. **Directive.** A heartbeat answer with `directives.agent_update` (`rollout_id`, `version`, and the three release URLs) starts it. The agent refuses a version that is not newer than the one it runs, whatever the server says.
+2. **Staging.** It downloads the manifest, the signature, and the binary into `/var/lib/fleet-agent/update/<version>/` without any credential (resuming an interrupted download, within the size the manifest gives, after a free-space check), verifies the manifest signature with the embedded keys and then the binary's size and SHA-256, and runs the staged binary's `self-test`. Every refusal is posted to `POST /api/v1/update-results` as `failed` with the reason, and nothing is installed.
+3. **Switch.** The agent starts the supervisor, `fleet-agent update-supervise`, as the transient unit `fleet-agent-update` (`systemd-run`, outside the service's sandbox) from the version that is running. The supervisor installs `versions/<version>/`, copies the state records, moves `previous` and `current`, and restarts `fleet-agent`.
+4. **Confirmation.** The new version writes `update-confirmed.json` after its first heartbeat the server acknowledged. Without it within `update_confirm_seconds` (default 300), or if the service fails to start or keeps failing, the supervisor stops the new version, returns `current` to `previous`, restores the state, starts the service, and records `rolled_back` with the reason. A confirmation after the deadline does not count. Killing the supervisor does not matter: its decisions are written ahead to `update.json`, `update.lock` is released when it dies, and the agent's watchdog (at startup, then every 10 seconds, independent of heartbeats) starts it again. If the VM restarts before the update is confirmed, it is rolled back (ADR 0018). While an update is in progress, `fleet-agent install` and `uninstall` refuse to run. If the service itself gives up (`StartLimitBurst`), `OnFailure=` starts `fleet-agent-rollback.service`, which does the same from the previous binary.
+5. **Result.** The outcome (`succeeded`, `failed`, or `rolled_back`) is written to `update-result.json` and posted after each heartbeat until the server accepts it.
+
+An agent older than the server's minimum version still updates: the update path uses only `heartbeat`, `update-results`, and the public release downloads, none of which are refused with `426` (NFR-5). Two versions are kept; older ones are removed after a confirmed update. `fleet-agent self-test` can be run by hand to check a binary against this host's config. No release verifies until the owner has put real keys in `release-keys/` ([Releases](#releases)).
+
+`scripts/update-smoke.sh` is the end-to-end test CI runs on systemd with throwaway keys (see the spec's "As built"). It rewrites `/usr/lib/fleet-agent`, `/etc/fleet-agent`, and `/etc/systemd/system`, so it refuses to run outside CI unless `UPDATE_SMOKE_DISPOSABLE=yes`, and never where an agent is installed.
+
 ## Systemd unit
 
 `src/install/fleet-agent.service` is built into the binary and written by `install`; [`contrib/fleet-agent.service`](contrib/fleet-agent.service) is a copy for review, kept identical by a test. The sandbox and the reason for each option, with the `systemd-analyze security` result, are in [`contrib/README.md`](contrib/README.md). `scripts/check-unit.sh` runs `systemd-analyze verify` and `security` as CI does.
@@ -148,6 +166,7 @@ A version tag `agent-v<version>` on `main` makes a release: `.github/workflows/a
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
 | `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
+| `update` | Updater: download, verify, and stage (`stage`, `fetch`), supervised switch and rollback (`supervise`), the agent's side and the `self-test`, `update-supervise`, and `update-rollback` commands | P1-AGENT-UPDATE |
 | `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL, P1-PACKAGING (unit hardening) |
 | `release` | Release manifest, the release public keys built in from `release-keys/`, signature and checksum verification, `verify-release` | P1-PACKAGING |
 
@@ -184,7 +203,7 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Timestamps | `humantime` | RFC 3339 for `agent_time`, `collected_at`, and reading `server_time`; no dependencies of its own, so no date arithmetic is maintained here |
 | Hashing | `ring` (SHA-256) | The stable-facts change hash. Already linked as the TLS crypto provider, so it adds no code |
 | Signals | `signal-hook` | Graceful `SIGTERM`/`SIGINT` handling without an async runtime or hand-written `unsafe` |
-| Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors, `geteuid` and `open` flags for the ownership checks, `flock` and `termios` for the installer's lock and hidden token prompt, none of which `std` exposes. No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
+| Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors, `flock` for the update lock (P1-AGENT-UPDATE), `geteuid` and `open` flags for the ownership checks, `flock` and `termios` for the installer's lock and hidden token prompt, none of which `std` exposes. No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
 | Arguments | `lexopt` | Splits the command line (`--opt value`, `--opt=value`, `--`, non-UTF-8 arguments without a panic) for `run`, `check-config`, `install`, and `uninstall`. No dependencies of its own. Error messages never repeat an argument that could be a secret (`src/cli.rs`) |
 | Release signatures | `minisign-verify` | Verifies the minisign (Ed25519) signature of a release manifest against the embedded release keys ([ADR 0021](../docs/decisions/0021-release-signature-format.md), proposed). Verify-only, by minisign's author, no dependencies, used by the Tauri updater. It brings its own Ed25519 and BLAKE2b code rather than `ring`'s; legacy (not pre-hashed) signatures are refused |
 | Versions | `semver` | Strict SemVer parsing of release versions and their ordering, for the no-downgrade rule (ADR 0018). dtolnay's crate, as used by Cargo; no dependencies |

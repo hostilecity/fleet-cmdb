@@ -48,7 +48,7 @@ use crate::AGENT_VERSION;
 use crate::config::Config;
 use crate::shutdown::Shutdown;
 
-pub use systemd::{Systemctl, Systemd};
+pub use systemd::{Systemctl, Systemd, UNIT_NAME};
 pub use token::TokenSource;
 pub use ui::{Mode, Ui};
 
@@ -174,6 +174,9 @@ impl Paths {
     }
     pub fn unit(&self) -> PathBuf {
         self.unit_dir().join(systemd::UNIT_NAME)
+    }
+    pub fn rollback_unit(&self) -> PathBuf {
+        self.unit_dir().join(systemd::ROLLBACK_UNIT_NAME)
     }
     pub fn os_release(&self) -> [PathBuf; 2] {
         [self.at("/etc/os-release"), self.at("/usr/lib/os-release")]
@@ -604,6 +607,7 @@ pub fn install(host: &Host, options: &InstallOptions, ui: &mut Ui) -> Result<(),
 
     ui.step(2, 4, &format!("Installing fleet-agent {AGENT_VERSION}"));
     let _lock = layout::lock(host)?;
+    let _updates = layout::hold_updates(host)?;
     let installed = layout::install(host, ui)?;
     host.check_interrupt()?;
 

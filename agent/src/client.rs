@@ -282,6 +282,66 @@ impl Client {
     }
 }
 
+/// How long one release download may take in all (a binary of up to 64 MiB over a slow link).
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// An open response to [`Client::open_download`].
+pub struct Download {
+    /// `206`: the body starts at the byte that was asked for. `200`: it is the whole file.
+    pub partial: bool,
+    pub body: ureq::Body,
+}
+
+impl Client {
+    /// GETs `url`, a release file, with no credential (release downloads are public, P1-RELEASES).
+    ///
+    /// With `resume = Some((from, validator))` it asks for the bytes from `from` on, conditional on the
+    /// file still being the one `validator` (an `ETag`) names; the server may answer with the whole
+    /// file instead, which [`Download::partial`] tells. The credential is never sent: the URL comes
+    /// from the server's directive and may name another host.
+    pub fn open_download(
+        &self,
+        url: &str,
+        resume: Option<(u64, &str)>,
+    ) -> Result<Download, ApiError> {
+        let mut request = self
+            .agent
+            .get(url)
+            .config()
+            .timeout_global(Some(DOWNLOAD_TIMEOUT))
+            .build();
+        if let Some((from, validator)) = resume {
+            request = request
+                .header("Range", format!("bytes={from}-"))
+                .header("If-Range", validator);
+        }
+        let response = request
+            .call()
+            .map_err(|e| ApiError::Transport(transport_message(&e)))?;
+        let status = response.status();
+        match status.as_u16() {
+            200 | 206 => Ok(Download {
+                partial: status.as_u16() == 206,
+                body: response.into_body(),
+            }),
+            429 => Err(ApiError::RateLimited {
+                retry_after: retry_after(&response),
+                request_id: header(&response, "X-Request-Id"),
+            }),
+            s if status.is_server_error() => Err(ApiError::Server {
+                status: s,
+                request_id: header(&response, "X-Request-Id"),
+            }),
+            s => Err(ApiError::Rejected {
+                status: s,
+                code: String::new(),
+                message: String::new(),
+                request_id: header(&response, "X-Request-Id"),
+            }),
+        }
+    }
+}
+
 /// Describes a transport failure without quoting request headers (ureq's errors never contain them).
 fn transport_message(error: &ureq::Error) -> String {
     crate::logging::sanitize(&error.to_string(), 512)

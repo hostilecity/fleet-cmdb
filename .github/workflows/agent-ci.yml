@@ -1,7 +1,8 @@
 # Agent CI (issue P0-AGENT, FR-1.6, NFR-4).
 # Runs cargo fmt, clippy, tests, a dependency audit, the systemd unit check, the static musl release
 # build for each target in DEC-01 (x86_64-unknown-linux-musl only) with a reproducibility check, a release
-# dry run with a throwaway key, and the sandbox smoke test (the musl binary under the unit, on systemd).
+# dry run with a throwaway key, the sandbox smoke test (the musl binary under the unit, on systemd), and
+# the update smoke test (a supervised agent update and its rollbacks on systemd, P1-AGENT-UPDATE).
 # Pushes to main upload the binary as a workflow artefact (built with the release keys in
 # agent/release-keys, unsigned). Signed releases are published only by agent-release.yml, on a version
 # tag, after the owner's approval (P1-PACKAGING, ADR 0018); nothing here has access to the release key.
@@ -251,9 +252,58 @@ jobs:
         # sudo resets the environment; GITHUB_ACTIONS turns on the script's annotations.
         run: sudo GITHUB_ACTIONS=true scripts/sandbox-smoke.sh target/x86_64-unknown-linux-musl/release/fleet-agent src/install/fleet-agent.service
 
+  update:
+    name: Update smoke test (supervised update and rollback on systemd)
+    # The agent updating itself on a real systemd (P1-AGENT-UPDATE, ADR 0018): the real unit files and
+    # layout, two builds of the musl agent that trust a throwaway release key generated here, and a local
+    # stand-in for the API and the release channel. A good release is installed; tampered, unsigned,
+    # wrongly signed, older, failing, crash-looping, and unauthenticated releases are refused or rolled
+    # back; a killed supervisor is resumed or backstopped by the OnFailure unit; an agent below the
+    # server's minimum version still updates (scripts/update-smoke.sh). No private key is committed:
+    # the keys exist only in the runner's temporary directory.
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install musl tools and minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools minisign
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+          key: update
+
+      - name: Build two versions that trust a throwaway key
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/update-smoke"
+          mkdir -p "$dir"
+          minisign -G -W -p "$dir/test.pub" -s "$dir/test.key" > /dev/null
+          minisign -G -W -p "$dir/other.pub" -s "$dir/other.key" > /dev/null
+          scripts/update-smoke-build.sh 1.0.0 "$dir/test.pub" "$dir/fleet-agent-1.0.0" "$RUNNER_TEMP/update-smoke-target"
+          scripts/update-smoke-build.sh 1.0.1 "$dir/test.pub" "$dir/fleet-agent-1.0.1" "$RUNNER_TEMP/update-smoke-target"
+
+      - name: Update, refuse, and roll back under systemd
+        # sudo resets the environment; GITHUB_ACTIONS turns on the script's annotations and its
+        # permission to rewrite /usr/lib/fleet-agent, /etc/fleet-agent and /etc/systemd/system.
+        run: sudo GITHUB_ACTIONS=true scripts/update-smoke.sh "$RUNNER_TEMP/update-smoke"
+
   gate:
     name: Agent CI
-    needs: [changes, check, audit, build, unit, sandbox]
+    needs: [changes, check, audit, build, unit, sandbox, update]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -265,9 +315,10 @@ jobs:
           BUILD: ${{ needs.build.result }}
           UNIT: ${{ needs.unit.result }}
           SANDBOX: ${{ needs.sandbox.result }}
+          UPDATE: ${{ needs.update.result }}
         run: |
-          echo "changes=$CHANGES check=$CHECK audit=$AUDIT build=$BUILD unit=$UNIT sandbox=$SANDBOX"
+          echo "changes=$CHANGES check=$CHECK audit=$AUDIT build=$BUILD unit=$UNIT sandbox=$SANDBOX update=$UPDATE"
           if [ "$CHANGES" != "success" ]; then exit 1; fi
-          for r in "$CHECK" "$AUDIT" "$BUILD" "$UNIT" "$SANDBOX"; do
+          for r in "$CHECK" "$AUDIT" "$BUILD" "$UNIT" "$SANDBOX" "$UPDATE"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then exit 1; fi
           done

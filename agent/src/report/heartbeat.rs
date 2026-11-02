@@ -19,6 +19,7 @@ use super::intervals::Intervals;
 use super::time::{parse_rfc3339, rfc3339};
 use super::{Notes, Transport, jittered};
 use crate::retry::{Backoff, Rng};
+use crate::update::Updater;
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
 pub const HEARTBEAT_PATH: &str = "/api/v1/heartbeat";
@@ -53,6 +54,8 @@ pub struct Ack {
 pub struct Heartbeat<'a, R: Rng> {
     /// Where to write [`ACK_RECORD`] after the first accepted heartbeat, if anywhere.
     ack_dir: Option<std::path::PathBuf>,
+    /// Where an `agent_update` directive goes, and who learns of the first acknowledged heartbeat.
+    updater: Option<&'a Updater>,
     intervals: &'a Intervals,
     backoff: Backoff<R>,
     rng: R,
@@ -67,6 +70,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
     pub fn new(intervals: &'a Intervals, backoff: Backoff<R>, rng: R, started: Instant) -> Self {
         Self {
             ack_dir: None,
+            updater: None,
             intervals,
             backoff,
             rng,
@@ -80,6 +84,13 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
     /// Writes [`ACK_RECORD`] in `dir` when the first heartbeat of this process is accepted.
     pub fn record_first_ack_in(mut self, dir: std::path::PathBuf) -> Self {
         self.ack_dir = Some(dir);
+        self
+    }
+
+    /// Hands `agent_update` directives to `updater` and tells it of the first accepted heartbeat, which
+    /// is how a newly installed version confirms itself (P1-AGENT-UPDATE).
+    pub fn with_updater(mut self, updater: &'a Updater) -> Self {
+        self.updater = Some(updater);
         self
     }
 
@@ -143,6 +154,9 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                 if !self.accepted_once {
                     tracing::info!(request_id, "first heartbeat accepted by the server");
                     self.record_ack(wall);
+                    if let Some(updater) = self.updater {
+                        updater.on_first_ack(std::time::SystemTime::now());
+                    }
                 } else if failures > 0 {
                     tracing::info!(
                         failed_attempts = failures,
@@ -179,17 +193,20 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         }
         self.intervals.apply(envelope.intervals);
         if let Some(update) = &envelope.agent_update {
-            // P1-AGENT-UPDATE (#60) hands this directive to the updater. Until then it is only noted.
-            let version = update
-                .get("version")
-                .and_then(serde_json::Value::as_str)
-                .map_or_else(String::new, |v| crate::logging::sanitize(v, 64));
-            if self.notes.first(&format!("agent_update {version}")) {
-                tracing::info!(
-                    offered_version = version.as_str(),
-                    agent_version = AGENT_VERSION,
-                    "the server offered an agent update; this build cannot install updates, so it is ignored"
-                );
+            match self.updater {
+                Some(updater) => updater.on_directive(update),
+                None => {
+                    let version = update
+                        .get("version")
+                        .and_then(serde_json::Value::as_str)
+                        .map_or_else(String::new, |v| crate::logging::sanitize(v, 64));
+                    if self.notes.first(&format!("agent_update {version}")) {
+                        tracing::info!(
+                            offered_version = version.as_str(),
+                            "the server offered an agent update; this loop has no updater, so it is ignored"
+                        );
+                    }
+                }
             }
         }
         self.check_clock(envelope.server_time.as_deref(), wall);

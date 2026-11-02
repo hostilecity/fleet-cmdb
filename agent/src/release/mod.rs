@@ -81,6 +81,17 @@ pub struct ReleaseKey {
     key: PublicKey,
 }
 
+impl ReleaseKey {
+    /// A key from the text of a `.pub` file, for tests that sign with throwaway keys.
+    #[cfg(test)]
+    pub(crate) fn from_pub_file(role: KeyRole, text: &str) -> Result<Self, String> {
+        match parse_key_file(text)? {
+            Some(key) => Ok(Self { role, key }),
+            None => Err("no key in the file".into()),
+        }
+    }
+}
+
 /// Parses one key file: `#` lines and blank lines are ignored; what is left is either nothing (no key)
 /// or exactly a minisign public key (an `untrusted comment:` line and the base64 key line).
 fn parse_key_file(text: &str) -> Result<Option<PublicKey>, String> {
