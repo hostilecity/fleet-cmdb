@@ -15,7 +15,7 @@ publish = false
 # flock and termios for the installer's lock and hidden token prompt (P1-AGENT-INSTALL).
 libc = "0.2.191"
 # Kernel randomness (getrandom(2)) for report ids and jitter seeds. Already linked through ring.
-getrandom = "0.2.17"
+getrandom = "0.4.3"
 # RFC 3339 timestamps for payloads and the server's clock; no dependencies of its own.
 humantime = "2.4.0"
 # Splits command-line arguments (`--opt value`, `--opt=value`, non-UTF-8); no dependencies of its own.
