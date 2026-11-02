@@ -512,8 +512,11 @@ mod tests {
         let started = Instant::now();
         let mut hb = heartbeat(&intervals, started);
         let body = envelope(json!({"agent_update": {
+            "rollout_id": 1,
             "version": "0.2.0",
-            "binary_url": "https://fleet-agent.example.lan/api/v1/releases/0.2.0/fleet-agent"
+            "manifest_url": "https://fleet-agent.example.lan/api/v1/releases/0.2.0/manifest",
+            "signature_url": "https://fleet-agent.example.lan/api/v1/releases/0.2.0/signature",
+            "binary_url": "https://fleet-agent.example.lan/api/v1/releases/0.2.0/binary"
         }}));
         let transport = FakeTransport::new(vec![ok(body.clone()), ok(body)]);
         let (_, logs) = logs_of(|| {
