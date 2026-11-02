@@ -17,6 +17,8 @@ module Api
       # Tells an agent its host is waiting for a new enrollment token to be redeemed (docs/api/README.md).
       ENROLLMENT_STATE_HEADER = "Fleet-Enrollment-State"
 
+      REPORT_ID_FORMAT = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
+
       class_attribute :max_body_bytes, default: 64.kilobytes
       class_attribute :enforces_minimum_agent_version, default: true
 
@@ -51,9 +53,11 @@ module Api
         errors = AgentApi::Schema.errors(schema_name, version, data)
         raise AgentApi::ValidationFailed.new(details: errors) if errors.any?
 
-        # Only a validated report id (a UUID) reaches the log, so a log line can be matched to a report.
-        Current.report_id = data["report_id"] if data["report_id"].is_a?(String)
         unknown = AgentApi::Schema.undeclared_pointers(schema_name, version, data)
+        # Only a report id the schema declares, and so validated as a UUID, reaches the log, so a log line can be
+        # matched to a report. An undeclared report_id (a heartbeat has none) is body content and stays out; the
+        # format check is a second guard should a schema ever declare it more loosely.
+        Current.report_id = data["report_id"] if !unknown.include?("/report_id") && data["report_id"].is_a?(String) && data["report_id"].match?(REPORT_ID_FORMAT)
         # Field names come from the agent too, so control characters are removed before logging them.
         logger.info("[agent_api] ignored unknown fields #{unknown.join(' ').gsub(/[[:cntrl:]]/, '').truncate(1_000)}") if unknown.any?
         data

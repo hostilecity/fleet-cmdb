@@ -78,6 +78,17 @@ RSpec.describe "Structured logging", type: :request do
       expect(request_line).not_to have_key("host_id")
     end
 
+    it "logs no report id a schema does not declare: a heartbeat may carry one, unvalidated (review of #83)" do
+      heartbeat = { schema_version: 1, agent_version: "0.1.0", hostname: "vm-01.example.lan", uptime_seconds: 42, agent_time: Time.current.utc.iso8601,
+                    report_id: "#{'x' * 2_000} not a uuid" } # long, and within the heartbeat's 4 KB body limit
+      post "/api/v1/heartbeat", params: heartbeat.to_json, headers: api_headers(credential)
+
+      expect(response).to have_http_status(:ok)
+      expect(request_line).to include("host_id" => host.id)
+      expect(request_line).not_to have_key("report_id")
+      expect(io.string).not_to include("not a uuid")
+    end
+
     it "keeps the host and report ids of one request off the next one" do
       send_report(report)
       clear_log

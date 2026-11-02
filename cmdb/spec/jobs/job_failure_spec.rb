@@ -64,6 +64,28 @@ RSpec.describe "Background job failures" do
     travel_back
   end
 
+  it "does not count a liveness evaluation that raised and was retried as a run, only one that succeeded (review of #83)" do
+    allow(LivenessEvaluationJob).to receive(:queue_adapter).and_return(ActiveJob::QueueAdapters::SolidQueueAdapter.new)
+    calls = 0
+    allow(Liveness).to receive(:evaluate!) { (calls += 1) < 3 ? raise(ActiveRecord::Deadlocked, "deadlock") : 0 }
+    LivenessEvaluationJob.perform_later
+
+    work_once # attempt 1 raises; retry_on marks it finished and enqueues attempt 2
+    expect(SolidQueue::Job.where(class_name: "LivenessEvaluationJob").where.not(finished_at: nil).count).to eq(1)
+    expect(JobHealth).not_to be_liveness_recent
+
+    travel_to(SolidQueue::Job.order(:id).last.scheduled_at + 1.second) { work_once } # attempt 2 raises too
+    travel_to(SolidQueue::Job.order(:id).last.scheduled_at + 1.second) do
+      expect(JobHealth).not_to be_liveness_recent
+      work_once # attempt 3 succeeds
+      expect(calls).to eq(3)
+      expect(JobHealth).to be_liveness_recent
+    end
+    expect(SolidQueue::FailedExecution.count).to eq(0)
+  ensure
+    travel_back
+  end
+
   it "leaves AgentReleaseImportJob's own retry policy in place" do
     handlers = AgentReleaseImportJob.rescue_handlers.map(&:first)
     expect(handlers).to include("Releases::Github::Unavailable", "StandardError")

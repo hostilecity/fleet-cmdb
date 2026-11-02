@@ -12,7 +12,7 @@ Served on the agent hostname and on localhost, never the dashboard hostname. No 
 | `releases` | the binary of the newest release, or of a running rollout's target, is missing or has the wrong size |
 | `backup` | the last complete backup is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` ([backup-and-restore.md](backup-and-restore.md)) |
 | `failed_jobs` | a background job failed all its retries in the last 24 hours |
-| `job_liveness` | the recurring liveness evaluation has not finished in the last 5 minutes (the scheduler, a worker, or the queue database is down) |
+| `job_liveness` | the recurring liveness evaluation has not succeeded in the last 5 minutes: the scheduler, a worker, or the queue database is down, or the evaluation keeps raising (an attempt that raised and was retried does not count) |
 
 ## Failed jobs
 
