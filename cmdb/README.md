@@ -55,7 +55,7 @@ bin/bundler-audit                       # known-vulnerable gems
 bin/ci                                  # all of the above, in order (this is what CI runs)
 ```
 
-Tests never reach the network (WebMock blocks everything except localhost). Put factories in `spec/factories/` and shared helpers in `spec/support/`.
+The test environment uses two databases, `cmdb_test` and `cmdb_test_queue` (Solid Queue's tables, so specs can run and fail real jobs); `DATABASE_URL` and `QUEUE_DATABASE_URL` override their names, for example to run several checkouts side by side. Tests never reach the network (WebMock blocks everything except localhost). Put factories in `spec/factories/` and shared helpers in `spec/support/`.
 
 Specs run in random order. To reproduce a failure, rerun with the seed RSpec printed: `bundle exec rspec spec/path_spec.rb:12 --seed 1234`. In GitHub Actions, each failing example, any error outside an example, and any failed `bin/ci` step also becomes an error annotation on the pull request (with the seed and the rerun command), because the job log cannot always be read. The workflow keeps the full `bin/ci` log and RSpec's JSON results as the `bin-ci-log` artifact.
 

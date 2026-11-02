@@ -16,4 +16,14 @@ namespace :settings do
   rescue Setting::Invalid => e
     abort "Not changed: #{e.message}"
   end
+
+  desc "Set how many days snapshots, report ids, and status events are kept: DAYS=90"
+  task retention: :environment do
+    Setting.update_retention_days!(ENV.fetch("DAYS"), actor: Audit::SYSTEM)
+    puts "Snapshots, report ids, and status events are kept #{Setting.get('retention.days')} days. Audit entries are never pruned."
+  rescue KeyError
+    abort "Usage: bin/rails settings:retention DAYS=90"
+  rescue Setting::Invalid => e
+    abort "Not changed: #{e.message}"
+  end
 end

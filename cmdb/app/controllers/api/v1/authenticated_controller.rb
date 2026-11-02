@@ -33,6 +33,7 @@ module Api
 
       def authenticate_agent!
         @current_credential = AgentCredential.authenticate(request.authorization) or raise AgentApi::Unauthorized
+        Current.host_id = current_credential.host_id
         current_credential.record_use! if records_credential_use
       end
 

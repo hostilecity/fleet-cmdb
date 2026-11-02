@@ -37,6 +37,10 @@
         <strong>Live updates paused. Statuses on this page may be out of date.</strong>
         <p>Reconnecting. The page catches up by itself when the connection returns.</p>
       </div>
+      <% if current_operator && (failed = failed_job_count).to_i.positive? %>
+        <div class="notice error" role="alert" id="failed_jobs_banner"><strong><%= pluralize(failed, "background job") %> failed recently.</strong>
+          <p><%= link_to "See the failed jobs", failed_jobs_path %>. Work they were doing, such as an import or a cleanup, did not finish.</p></div>
+      <% end %>
       <% flash.each do |type, message| %>
         <div class="notice flash <%= type == "alert" ? "error" : "info" %>" role="<%= type == "alert" ? "alert" : "status" %>"><strong><%= message %></strong></div>
       <% end %>

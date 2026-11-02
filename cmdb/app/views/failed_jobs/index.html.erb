@@ -1,0 +1,26 @@
+<% content_for :title, "Failed jobs" %>
+<div class="page-head"><div><h1>Failed jobs</h1><p>Background jobs that failed every retry. Failures from the last <%= @window.in_hours.to_i %> hours also turn <code>/health</code> unhealthy.</p></div></div>
+<% if @failures.empty? %>
+  <div class="sheet empty" id="no_failed_jobs">
+    <p><strong>No failed jobs.</strong></p>
+    <p>A job that fails is retried with a growing delay first; it is listed here only after the last retry fails.</p>
+  </div>
+<% else %>
+  <% if @total > @failures.size %>
+    <p class="muted" id="failed_jobs_truncated">Showing the newest <%= @failures.size %> of <%= @total %> failed jobs.</p>
+  <% end %>
+  <div class="table-wrap"><table class="failed-jobs">
+    <caption class="visually-hidden">Failed jobs, newest first</caption>
+    <thead><tr><th>Failed (UTC)</th><th>Job</th><th>Queue</th><th>Error</th></tr></thead>
+    <tbody>
+      <% @failures.each do |failure| %>
+        <tr id="failed_job_<%= failure.id %>">
+          <td class="when mono"><time datetime="<%= failure.failed_at.utc.iso8601 %>"><%= utc(failure.failed_at) %></time></td>
+          <td class="mono"><%= failure.job_class %></td>
+          <td><%= failure.queue %></td>
+          <td><span class="mono"><%= failure.error_class %></span> <%= truncate(failure.error_message, length: 300) %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table></div>
+<% end %>

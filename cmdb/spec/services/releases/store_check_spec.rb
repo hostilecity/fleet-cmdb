@@ -37,4 +37,39 @@ RSpec.describe Releases::StoreCheck do
 
     expect(described_class).to be_healthy
   end
+
+  describe "a rollout's target (P1-UPDATES)" do
+    let!(:target) { import_release(signed_release(version: "1.0.0")) }
+    let!(:newest) { import_release(signed_release(version: "1.1.0")) }
+    let(:canary) { host_running("0.1.0").first }
+
+    it "is checked while the rollout is running, even when a newer release exists" do
+      rollout = start_rollout(release: target, canaries: [ canary ])
+      File.delete(target.binary_path)
+
+      expect(rollout.state).to eq("running")
+      expect(described_class.problems).to eq([ "1.0.0" ])
+    end
+
+    it "is not checked once the rollout is halted, completed, or cancelled" do
+      rollout = start_rollout(release: target, canaries: [ canary ])
+      File.delete(target.binary_path)
+
+      rollout.update_columns(state: "halted")
+      expect(described_class).to be_healthy
+      rollout.update_columns(state: "cancelled", open_slot: nil)
+      expect(described_class).to be_healthy
+    end
+
+    it "is listed once when it is also the newest release, and with the newest when both are missing" do
+      rollout = start_rollout(release: newest, canaries: [ canary ])
+      File.delete(newest.binary_path)
+      expect(described_class.problems).to eq([ "1.1.0" ])
+
+      rollout.update_columns(state: "halted")
+      File.delete(target.binary_path)
+      rollout.update_columns(state: "running", agent_release_id: target.id)
+      expect(described_class.problems).to contain_exactly("1.0.0", "1.1.0")
+    end
+  end
 end

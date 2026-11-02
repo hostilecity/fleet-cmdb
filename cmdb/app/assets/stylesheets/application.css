@@ -235,3 +235,7 @@ th.when { width: 11rem; }
 #upload summary { cursor: pointer; color: var(--petrol); margin-bottom: 0.75rem; }
 #upload .field input[type="file"] { width: 100%; }
 #import_form .error-text { flex-basis: 100%; }
+
+/* Text from a VM can contain bidirectional controls (an unterminated right-to-left override). Isolating each
+   element that shows such text keeps it from reordering the text around it (NFR-1, P1-S12). */
+main :is(h1, h2, h3, p, li, dd, td, th, code, ins, del, strong, span, a, .mono) { unicode-bidi: isolate; }

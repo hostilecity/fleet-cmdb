@@ -41,6 +41,9 @@ Rails.application.configure do
   config.action_controller.raise_on_missing_callback_actions = true
 
   # Hostnames for request specs (P1-S13). Request specs default to the dashboard host.
+  # Solid Queue records live in their own test database, as in production (P1-O02).
+  config.solid_queue.connects_to = { database: { writing: :queue } }
+
   config.x.fleet_hosts.dashboard = "fleet.example.lan"
   config.x.onboarding.max_open = 6
   config.x.onboarding.max_open_per_address = 3

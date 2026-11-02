@@ -26,7 +26,7 @@ module Cmdb
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
     # Common ones are `templates`, `generators`, or `middleware`, for example.
-    config.autoload_lib(ignore: %w[assets ci middleware tasks]) # lib/ci is bin/ci and spec tooling only
+    config.autoload_lib(ignore: %w[assets ci logging middleware tasks]) # lib/ci is bin/ci and spec tooling only
 
     # Configuration for the application, engines, and railties goes here.
     #
@@ -42,6 +42,11 @@ module Cmdb
     # Agent API body limit and no Rails parameter parsing for /api/ (lib/middleware, P1-S06).
     require Rails.root.join("lib/middleware/agent_api_request_guard").to_s
     config.middleware.insert_after ActionDispatch::RequestId, AgentApiRequestGuard
+
+    # The request id on every log line of the request, and JSON log lines (NFR-4, P1-S11).
+    require Rails.root.join("lib/middleware/request_context").to_s
+    config.middleware.insert_after AgentApiRequestGuard, RequestContext
+    require Rails.root.join("lib/logging/structured_log_formatter").to_s
 
     # Dashboard and agent API on separate hostnames, before anything else sees the request (P1-S13).
     require Rails.root.join("lib/middleware/host_separation").to_s

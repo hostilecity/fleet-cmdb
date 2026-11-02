@@ -6,5 +6,7 @@
 Rails.application.config.filter_parameters += [
   :passw, :email, :secret, :token, :_key, :crypt, :salt, :certificate, :otp, :ssn, :cvv, :cvc,
   # Fleet CMDB: agent credentials, enrollment tokens, OAuth and session material
-  :authorization, :credential, :bearer, :enroll, :api_key, :session, :code, :state, :id_token, :recovery
+  :authorization, :credential, :bearer, :enroll, :api_key, :session, :code, :state, :id_token, :recovery,
+  # Headers and cookies if they are ever logged as parameters, signing material, and the like (NFR-1, P1-S12)
+  :cookie, :signature, :private, :passphrase
 ]
