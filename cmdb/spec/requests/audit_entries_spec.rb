@@ -133,6 +133,16 @@ RSpec.describe "Audit log", type: :request do
       expect(by_id["audit_entry_#{removed.id}"][2..3]).to eq([ "Operator allowed", "operator@example.com" ])
     end
 
+    it "names an interval setting by its recorded key after clearing it deleted the row (review of #81)" do
+      Setting.update_agent_intervals!(heartbeat_seconds: 120, actor: operator)
+      Setting.update_agent_intervals!(heartbeat_seconds: nil, actor: operator)
+      expect(Setting.find_by(key: "agent.heartbeat_seconds")).to be_nil
+      get "/audit"
+      entries = AuditEntry.where(action: Audit::Actions::SETTING_CHANGED, target_type: "Setting").pluck(:id)
+      by_id = rows.to_h { |tr| [ tr["id"], cells(tr) ] }
+      expect(entries.map { |id| by_id["audit_entry_#{id}"][3] }).to all(eq("Agent heartbeat interval agent.heartbeat_seconds"))
+    end
+
     it "shows a value the server filtered as recorded, and unknown fields by their recorded name" do
       host = create(:host)
       entry(target: host, changes: { "recovery_hint" => Audit::Scrubber::FILTERED, "kernel_flags" => [ "a", "b" ] })

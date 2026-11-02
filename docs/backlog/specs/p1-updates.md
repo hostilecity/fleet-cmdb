@@ -28,7 +28,7 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
   - A result for a rollout the host is not part of, or for another version than the rollout's release, is `400 validation_failed`. A retried `report_id` is a `200` duplicate.
 - **Minimum version.** Agents below the minimum version still receive the directive and may post results (FR-S.5): the `426` check exempts `POST /api/v1/heartbeat` (where the directive is delivered) and `POST /api/v1/update-results`, as it already exempts the release downloads. Every other endpoint, reports included, still answers `426` to an agent below the minimum; the agent does not read directives from a `426`, so none is sent there. An agent below the minimum therefore keeps heartbeating, updates itself, and resumes reporting afterwards ([DEC-18](../../decisions/0018-signed-agent-updates.md)).
 - **Intervals.** The directive carries the intervals an operator set (settings `agent.heartbeat_seconds` 10 to 3600 and `agent.inventory_seconds` 60 to 86400; unset means the agent keeps its own). Changing them is an audited setting (`Setting.update_agent_intervals!`). A heartbeat costs two extra indexed SELECTs and no write unless the host is first offered the update.
-- **Audit.** Every rollout action and every outcome is audited.
+- **Audit.** Every rollout action and every outcome is audited, and so is the first offer of the update to each host (`update.requested`), so a host asked to update is on its audit trail even if the rollout is cancelled before it reports.
 
 ### Acceptance criteria
 
