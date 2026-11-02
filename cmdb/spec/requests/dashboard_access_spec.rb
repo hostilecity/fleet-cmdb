@@ -8,7 +8,8 @@ RSpec.describe "Dashboard access", type: :request do
   def dashboard_routes
     Rails.application.routes.routes.filter_map do |route|
       controller, action = route.defaults.values_at(:controller, :action)
-      next if controller.nil? || controller.start_with?("api/", "rails/")
+      # Not dashboard routes: the agent API, Rails' own /up, and /health (monitoring, agent hostname and localhost only).
+      next if controller.nil? || controller.start_with?("api/", "rails/") || controller == "health"
 
       verb = route.verb.presence&.split("|")&.first || "GET"
       path = route.path.spec.to_s.sub("(.:format)", "").gsub(/[:*]\w+/, "1")

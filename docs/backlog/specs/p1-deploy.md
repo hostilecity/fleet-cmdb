@@ -39,6 +39,7 @@ NFR-2 requires a documented, restorable backup procedure before Phase 1 is consi
 - Documentation of what else is needed to restore: the Rails master key (or credentials), the Cloudflare API token and tunnel credentials, the agent hostname certificate state, and the configuration environment. These must be backed up separately and never committed.
 - A restore script or runbook, and a **restore drill**: restore into a scratch database, boot the app against it, and check that hosts, snapshots, and the audit log are present.
 - A check that fails loudly if the latest backup is older than expected (surface it in [P1-S11](p1-operability.md) health or documentation of the alert).
+- Delivered as `ops/backup/` (`backup.sh`, `restore.sh`, `restore-drill.sh`, systemd units) and [docs/operations/backup-and-restore.md](../../operations/backup-and-restore.md). The backup touches a status file that `/health` watches (`FLEET_BACKUP_STATUS_FILE`, `FLEET_BACKUP_MAX_AGE_HOURS`); the drill's checks are `bin/rails backup:verify_restore`.
 
 ### Acceptance criteria
 
