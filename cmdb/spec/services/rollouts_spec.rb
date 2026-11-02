@@ -81,7 +81,7 @@ RSpec.describe Rollouts do
       host, = host_running("0.2.0")
       start_rollout(release:, canaries: [ host ])
       expect { release.destroy! }.to raise_error(ActiveRecord::DeleteRestrictionError)
-      expect { release.delete }.to raise_error(ActiveRecord::InvalidForeignKey)
+      expect { release.delete }.to raise_error(ActiveRecord::StatementInvalid, /rollouts/) # the foreign key; the error class varies with PostgreSQL's version
     end
   end
 
