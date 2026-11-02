@@ -4,7 +4,7 @@ require "rails_helper"
 # through any field (NFR-1, P1-S12, AC-1.7). Hostile values are stored directly in every agent-supplied and
 # operator-supplied field, skipping the validations that normally reject most of them, so these specs prove the
 # views escape on their own. Then every dashboard view that can show them is rendered and checked.
-RSpec.describe "Hostile input in every view", type: :request do
+RSpec.describe "Hostile input in every view", :signed_in, type: :request do
   VARIANTS = {
     "script element and event handler" => HOSTILE,
     "attribute-breaking quotes" => %(" onmouseover="alert(1)" autofocus onfocus="alert(2)" x=' onclick='alert(3)),
@@ -17,7 +17,7 @@ RSpec.describe "Hostile input in every view", type: :request do
   # The ways markup could get through, looked for in the parsed page: executable or external elements that
   # are not the layout's own, an attribute that runs code, or a link that does.
   def expect_no_injected_markup(path)
-    doc = Nokogiri::HTML(response.body)
+    doc = page
     expect(doc.css("script").reject { |script| script["nonce"] }).to be_empty, "unnonced script on #{path}"
     expect(doc.css("svg, iframe, object, embed, img[src='x']")).to be_empty, "injected element on #{path}"
     expect(doc.xpath("//@*[starts-with(name(), 'on')]").map(&:name)).to be_empty, "event handler attribute on #{path}"
@@ -29,15 +29,12 @@ RSpec.describe "Hostile input in every view", type: :request do
   # Text from the VM or operator appears as text, character for character (so nothing is silently rewritten and
   # nothing is interpreted).
   def expect_shown_as_text(value, path)
-    text = Nokogiri::HTML(response.body).at_css("body").text
+    text = page.at_css("body").text
     # Up to the first control character, which the HTML parser may normalise.
     expect(text).to include(value[/\A[^[:cntrl:]]+/].to_s.first(80)), "#{path} does not show the value as text"
   end
 
-  let(:operator) { Operator.find_by!(email: "operator@example.com") }
   let(:hostile_operator) { create(:operator, name: HOSTILE) }
-
-  before { sign_in_operator }
 
   # Error pages as production serves them, not Rails' detailed development page with its own scripts.
   around do |example|

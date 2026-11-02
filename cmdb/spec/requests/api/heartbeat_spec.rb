@@ -10,9 +10,7 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     { schema_version: 1, agent_version: "0.1.0", hostname: "vm-01.example.lan", uptime_seconds: 42, agent_time: "2026-01-01T12:00:00Z" }.merge(overrides)
   end
 
-  def heartbeat(payload = body, as: credential)
-    post "/api/v1/heartbeat", params: payload.to_json, headers: api_headers(as)
-  end
+  def heartbeat(payload = body, as: credential) = post_api("/api/v1/heartbeat", payload, as)
 
   it "answers with the server time and an empty directives object (DEC-20)" do
     freeze_time do
@@ -191,20 +189,8 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     end
   end
 
-  describe "docs/api contract examples (NFR-5)" do
-    # Valid examples include pre-release versions below the default minimum; the minimum check has its own spec.
-    before { allow(AgentApi.config).to receive(:minimum_agent_version).and_return("0.0.0") }
-
-    ApiContract.examples.select { |e| e.version == "v1" && e.schema_name == "heartbeat.request" }.each do |example|
-      it "#{example.kind == 'valid' ? 'accepts' : 'rejects'} #{example.name}" do
-        heartbeat(example.data)
-        if example.kind == "valid"
-          expect(response).to have_http_status(:ok)
-        else
-          expect_error(:bad_request, "validation_failed")
-        end
-      end
-    end
+  it_behaves_like "the docs/api contract examples", "heartbeat.request", accepted: :ok do
+    def submit_example(data, valid:) = heartbeat(data)
   end
 
   describe "hosts that may not send heartbeats" do

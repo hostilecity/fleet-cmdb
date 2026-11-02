@@ -1,18 +1,11 @@
 require "rails_helper"
 
 # The fleet-wide audit log page (FR-S.3, FR-S.4, NFR-1, P1-AUDIT-PAGE).
-RSpec.describe "Audit log", type: :request do
-  hostile = %(<script>alert("x")</script><img src=x onerror=alert(1)>).freeze
+#
+# Signing in writes "Operator allowed" and "Operator signed in", and factories write "Host created", all at the
+# database clock. The log is append-only, so examples filter or pick the entries they check.
+RSpec.describe "Audit log", :signed_in, type: :request do
   base = Time.utc(2026, 10, 14, 10, 0, 0)
-  let(:hostile) { hostile }
-
-  let(:operator) { Operator.find_by!(email: "operator@example.com") }
-
-  # Signing in writes "Operator allowed" and "Operator signed in", and factories write "Host created", all at
-  # the database clock. The log is append-only, so examples filter or pick the entries they check.
-  before { sign_in_operator }
-
-  def page = Nokogiri::HTML(response.body)
 
   def rows = page.css("table.audit tbody tr")
 
@@ -43,12 +36,6 @@ RSpec.describe "Audit log", type: :request do
       expect(response).to redirect_to(sign_in_path)
       sign_in_with_google
       expect(response).to redirect_to("/audit?action=host.edited")
-    end
-
-    it "is served on the dashboard hostname only" do
-      host! agent_host
-      get "/audit"
-      expect(response).to have_http_status(:not_found)
     end
 
     it "is in the main navigation, marked as the current page" do
@@ -166,14 +153,14 @@ RSpec.describe "Audit log", type: :request do
     end
 
     it "renders markup in recorded values as text (NFR-1)" do
-      host = create(:host, name: hostile)
-      entry(actor: operator, target: host, changes: { "description" => [ hostile, "<b>Do not reboot</b> & scrub" ], hostile => [ nil, hostile ] },
+      host = create(:host, name: HOSTILE)
+      entry(actor: operator, target: host, changes: { "description" => [ HOSTILE, "<b>Do not reboot</b> & scrub" ], HOSTILE => [ nil, HOSTILE ] },
             request_id: "<script>alert(2)</script>")
-      get "/audit", params: { target: "script", actor: hostile }
+      get "/audit", params: { target: "script", actor: HOSTILE }
       get "/audit", params: { target: "script" }
       table = page.at_css("table.audit")
       expect(table.css("script, img, b")).to be_empty
-      expect(table.text).to include(hostile, "<b>Do not reboot</b> & scrub", "<script>alert(2)</script>")
+      expect(table.text).to include(HOSTILE, "<b>Do not reboot</b> & scrub", "<script>alert(2)</script>")
       expect(response.body).to include("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;")
       expect(page.css("script:not([type])").map(&:text).grep(/alert/)).to eq([])
       get "/audit", params: { from: "<script>alert(3)</script>" }

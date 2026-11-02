@@ -4,8 +4,6 @@ require "rails_helper"
 # state-changing route, session cookie flags, and the production host allowlist. Escaping of hostile input is in
 # hostile_input_spec.rb; parameter filtering of real log output is in structured_logging_spec.rb.
 RSpec.describe "Security hardening", type: :request do
-  def page = Nokogiri::HTML(response.body)
-
   def csp = response.headers["Content-Security-Policy"].to_s
 
   def directive(name) = csp.split(";").map(&:strip).find { |d| d.start_with?("#{name} ") }

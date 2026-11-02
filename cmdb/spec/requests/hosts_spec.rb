@@ -1,14 +1,7 @@
 require "rails_helper"
 
 # The fleet list and host detail pages (FR-1.5, P1-D02, P1-D03).
-RSpec.describe "Hosts", type: :request do
-  before do
-    host! dashboard_host
-    sign_in_operator
-  end
-
-  def page = Nokogiri::HTML(response.body)
-
+RSpec.describe "Hosts", :signed_in, type: :request do
   # Page notices, without the hidden live-update banner and the flash.
   def notice = page.at_css(".notice:not(.flash):not([data-live-status-target])")
 
@@ -117,7 +110,6 @@ RSpec.describe "Hosts", type: :request do
       host.reload
     end
     let(:host) { enrolled }
-    let(:operator) { Operator.find_by!(email: "operator@example.com") }
 
     def section(heading) = page.xpath("//section[h2[normalize-space()='#{heading}']]").first
 

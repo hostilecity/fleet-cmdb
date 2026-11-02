@@ -2,21 +2,7 @@ require "rails_helper"
 
 # The failed-jobs page and the banner that links to it (NFR-4, P1-O02).
 RSpec.describe "Failed jobs", type: :request do
-  def page = Nokogiri::HTML(response.body)
-
   describe "access" do
-    it "requires an operator to be signed in" do
-      get "/jobs/failed"
-      expect(response).to redirect_to(sign_in_path)
-    end
-
-    it "is served on the dashboard hostname only" do
-      sign_in_operator
-      host! agent_host
-      get "/jobs/failed"
-      expect(response).to have_http_status(:not_found)
-    end
-
     it "is read-only: no route changes a failed job" do
       sign_in_operator
       %i[post put patch delete].each do |verb|
@@ -26,9 +12,7 @@ RSpec.describe "Failed jobs", type: :request do
     end
   end
 
-  describe "the list" do
-    before { sign_in_operator }
-
+  describe "the list", :signed_in do
     it "says so when nothing has failed" do
       get "/jobs/failed"
 
@@ -64,9 +48,7 @@ RSpec.describe "Failed jobs", type: :request do
     end
   end
 
-  describe "the banner" do
-    before { sign_in_operator }
-
+  describe "the banner", :signed_in do
     it "shows the number of recent failures on every page and links to the list" do
       failed_job
       failed_job(class_name: "OtherJob")

@@ -23,7 +23,7 @@ RSpec.describe "Host-based separation", type: :request do
     end
 
     it "returns 404 on the dashboard host, for every /api path" do
-      %w[/api /api/v1 /api/v1/enroll /api/v1/heartbeat /api/v2/anything].each do |path|
+      %w[/api /api/v1 /api/v1/enroll /api/v1/onboarding /api/v1/heartbeat /api/v1/releases/1.2.0/binary /api/v2/anything].each do |path|
         request_as(:post, path, host: dashboard_host)
         expect_empty_404
       end
@@ -38,7 +38,8 @@ RSpec.describe "Host-based separation", type: :request do
 
     it "returns 404 on the agent host for every dashboard path, including sign-in and OAuth" do
       [ [ :get, "/" ], [ :get, "/sign_in" ], [ :post, "/auth/google_oauth2" ], [ :get, "/auth/google_oauth2/callback" ],
-        [ :get, "/auth/failure" ], [ :delete, "/sign_out" ], [ :get, "/cable" ], [ :get, "/assets/application.css" ] ].each do |method, path|
+        [ :get, "/auth/failure" ], [ :delete, "/sign_out" ], [ :get, "/cable" ], [ :get, "/assets/application.css" ], [ :get, "/audit" ],
+        [ :get, "/jobs/failed" ] ].each do |method, path|
         request_as(method, path, host: agent_host)
         expect_empty_404
       end

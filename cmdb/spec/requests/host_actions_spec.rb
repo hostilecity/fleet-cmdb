@@ -1,16 +1,7 @@
 require "rails_helper"
 
 # Pre-register, edit, revoke, re-enroll, and retire (P1-D04, FR-1.1, FR-1.5, FR-S.1, FR-S.3, FR-S.4, AC-1.5).
-RSpec.describe "Host actions", type: :request do
-  before do
-    host! dashboard_host
-    sign_in_operator
-  end
-
-  let(:operator) { Operator.find_by!(email: "operator@example.com") }
-
-  def page = Nokogiri::HTML(response.body)
-
+RSpec.describe "Host actions", :signed_in, type: :request do
   describe "pre-registering a host" do
     it "creates a pending host and shows its one-time token and install commands once" do
       get "/hosts/new"

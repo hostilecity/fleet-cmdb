@@ -9,13 +9,11 @@ RSpec.describe "POST /api/v1/reports/inventory", type: :request do
   end
   let(:host) { enrolled.first.reload }
   let(:credential) { enrolled.last }
-  let(:full) { ApiContract.examples.find { |e| e.schema_name == "inventory.request" && e.kind == "valid" && e.name == "full" }.data }
+  let(:full) { inventory_example }
 
   def report(**overrides) = full.merge("report_id" => SecureRandom.uuid).merge(overrides.transform_keys(&:to_s))
 
-  def send_report(payload, as: credential)
-    post "/api/v1/reports/inventory", params: payload.to_json, headers: api_headers(as)
-  end
+  def send_report(payload, as: credential) = post_api("/api/v1/reports/inventory", payload, as)
 
   it "stores the current inventory and the first snapshot, and audits the first inventory" do
     payload = report
@@ -77,7 +75,7 @@ RSpec.describe "POST /api/v1/reports/inventory", type: :request do
   end
 
   it "stores a report with unreadable fields and its warnings" do
-    payload = ApiContract.examples.find { |e| e.schema_name == "inventory.request" && e.name == "unreadable-facts" }.data
+    payload = inventory_example("unreadable-facts")
     send_report(payload)
     expect(response).to have_http_status(:ok)
     expect(host.inventory.stable).to include("machine_id" => nil, "disks" => nil)
@@ -120,7 +118,7 @@ RSpec.describe "POST /api/v1/reports/inventory", type: :request do
 
   it "accepts every valid contract example (NFR-5)" do
     allow(AgentApi.config).to receive(:minimum_agent_version).and_return("0.0.0")
-    ApiContract.examples.select { |e| e.version == "v1" && e.schema_name == "inventory.request" && e.kind == "valid" }.each do |example|
+    ApiContract.examples_for("inventory.request", kind: "valid").each do |example|
       send_report(example.data.merge("report_id" => SecureRandom.uuid))
       expect(response).to have_http_status(:ok), "#{example.name}: #{response.body}"
     end

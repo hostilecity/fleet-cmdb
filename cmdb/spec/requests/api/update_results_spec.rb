@@ -8,9 +8,7 @@ RSpec.describe "POST /api/v1/update-results", type: :request do
   let(:release) { release_for_rollout("0.3.0") }
   let!(:rollout) { start_rollout(release:, canaries: [ host ]) }
 
-  def post_result(payload = update_result(rollout), as: credential)
-    post "/api/v1/update-results", params: payload.to_json, headers: api_headers(as)
-  end
+  def post_result(payload = update_result(rollout), as: credential) = post_api("/api/v1/update-results", payload, as)
 
   it "stores the outcome and answers with the report id (update-result.response)" do
     post_result(update_result(rollout, report_id: "00000000-0000-4000-8000-000000000001"))
@@ -69,22 +67,8 @@ RSpec.describe "POST /api/v1/update-results", type: :request do
     expect(response).to have_http_status(:ok)
   end
 
-  describe "docs/api contract examples (NFR-5)" do
-    ApiContract.examples.select { |e| e.version == "v1" && e.schema_name == "update-result.request" }.each do |example|
-      it "#{example.kind == 'valid' ? 'accepts' : 'rejects'} #{example.name}" do
-        data = example.data
-        if example.kind == "valid"
-          # The example's ids stand for the rollout and release the test created.
-          data = data.merge("rollout_id" => rollout.id, "version" => "0.3.0")
-        end
-        post_result(data)
-        if example.kind == "valid"
-          expect(response).to have_http_status(:ok)
-          expect(ApiContract.errors("update-result.response", "v1", json)).to eq([])
-        else
-          expect_error(:bad_request, "validation_failed")
-        end
-      end
-    end
+  it_behaves_like "the docs/api contract examples", "update-result.request", accepted: :ok do
+    # The valid examples' ids stand for the rollout and release the test created.
+    def submit_example(data, valid:) = post_result(valid ? data.merge("rollout_id" => rollout.id, "version" => "0.3.0") : data)
   end
 end

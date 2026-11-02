@@ -100,15 +100,6 @@ RSpec.describe "Release downloads", type: :request do
     expect(log).to include("the stored binary for 1.2.0 is missing or has the wrong size")
   end
 
-  it "is not served on the dashboard hostname" do
-    host! dashboard_host
-    %w[manifest signature binary].each do |file|
-      download(file)
-      expect(response).to have_http_status(:not_found)
-      expect(response.body).to be_empty
-    end
-  end
-
   it "needs no credential and is served to agents below the minimum version (FR-S.5)" do
     allow(AgentApi.config).to receive(:minimum_agent_version).and_return("99.0.0")
     download("binary", headers: { "Authorization" => "Bearer not-a-credential", "User-Agent" => "fleet-agent/0.0.1" })

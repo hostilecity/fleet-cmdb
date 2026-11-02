@@ -19,6 +19,11 @@ module AgentApiHelpers
     { "CONTENT_TYPE" => "application/json" }.tap { |h| h["Authorization"] = "Bearer #{credential}" if credential }
   end
 
+  # POSTs a JSON body (a Hash, or a String sent as it is) to the agent API, with the credential if given.
+  def post_api(path, payload, credential = nil, headers: {})
+    post path, params: payload.is_a?(String) ? payload : payload.to_json, headers: api_headers(credential).merge(headers)
+  end
+
   def json = response.parsed_body
 
   def expect_error(status, code)

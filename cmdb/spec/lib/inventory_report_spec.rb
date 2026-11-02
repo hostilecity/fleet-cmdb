@@ -3,7 +3,7 @@ require "rails_helper"
 # The checks AgentApi::InventoryReport applies beyond the schema. The schema already rejects most bad
 # addresses; these checks are the server's own backstop.
 RSpec.describe AgentApi::InventoryReport do
-  let(:full) { ApiContract.examples.find { |e| e.schema_name == "inventory.request" && e.name == "full" }.data }
+  let(:full) { inventory_example }
 
   def with_addresses(*addresses)
     full.merge("network_interfaces" => [ { "name" => "ens18", "primary" => true, "addresses" => addresses } ])

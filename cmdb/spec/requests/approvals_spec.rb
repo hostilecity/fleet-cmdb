@@ -1,18 +1,10 @@
 require "rails_helper"
 
 # Onboarding approval in the dashboard (P1-D07, DEC-17, FR-S.1, AC-1.8).
-RSpec.describe "Onboarding approval", type: :request do
-  before do
-    host! dashboard_host
-    sign_in_operator
-  end
-
-  let(:operator) { Operator.find_by!(email: "operator@example.com") }
+RSpec.describe "Onboarding approval", :signed_in, type: :request do
   let(:started) { start_onboarding(hostname: "vm-08.example.lan", machine_id: "89abcdef0123456789abcdef01234567") }
   let(:request_record) { started.record }
   let(:code) { request_record.user_code }
-
-  def page = Nokogiri::HTML(response.body)
 
   def facts = page.css("dl.facts dt").to_h { |dt| [ dt.text, dt.next_element.text.squish ] }
 
