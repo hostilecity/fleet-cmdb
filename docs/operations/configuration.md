@@ -25,7 +25,7 @@ Keep a copy of each with your other secrets, never in git or in the backup set (
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | Google OAuth web client for operator sign-in. Redirect URI `https://$FLEET_DASHBOARD_HOST/auth/google_oauth2/callback` |
 | `CLOUDFLARE_DNS_API_TOKEN` | required | Given to Traefik only (as `CF_DNS_API_TOKEN`), for the Let's Encrypt DNS challenge. Permissions Zone:Read and DNS:Edit, for the one zone of the agent hostname |
 | `CLOUDFLARE_TUNNEL_TOKEN` | required | Given to `cloudflared` only (as `TUNNEL_TOKEN`). The tunnel's single public hostname is the dashboard |
-| `ACME_EMAIL` | required | Let's Encrypt account email |
+| `ACME_EMAIL` | required | Let's Encrypt account email, for expiry notices. Use a real address: Let's Encrypt refuses `example.com` and other reserved domains, and no certificate is issued |
 | `ACME_CA_SERVER` | Let's Encrypt production | Set to `https://acme-staging-v02.api.letsencrypt.org/directory` for a trial run (agents will not trust the result). Delete `certs/acme.json` when switching back |
 
 ## Agent releases

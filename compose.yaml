@@ -166,6 +166,8 @@ services:
   restore-drill:
     profiles: [tools]
     image: fleet-cmdb:local
+    # Root, because backup.sh writes the backup sets as root with mode 0700. The container is removed afterwards.
+    user: "0:0"
     entrypoint: ["/ops/backup/restore-drill.sh"]
     command: []
     environment:

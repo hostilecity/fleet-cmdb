@@ -15,7 +15,7 @@ The installer stops with `presented a certificate this VM does not trust`, or th
    ```
 
    - Issuer `Let's Encrypt` and a future `notAfter`: the certificate is fine; check the VM's trust store (`apt install --reinstall ca-certificates`).
-   - Issuer `TRAEFIK DEFAULT CERT`: Traefik has no certificate for the name. Read `sudo docker compose logs traefik | grep -i acme` on the server. Usual causes: a DNS token without Zone:Read and DNS:Edit on the right zone, `FLEET_AGENT_HOST` not in that zone, or Let's Encrypt's rate limit after many attempts (use `ACME_CA_SERVER` with the staging URL while testing, then delete `/var/lib/fleet-cmdb/certs/acme.json` and restart Traefik).
+   - Issuer `TRAEFIK DEFAULT CERT`: Traefik has no certificate for the name. Read `sudo docker compose logs traefik | grep -i acme` on the server. Usual causes: `ACME_EMAIL` left at a placeholder (`invalidContact … forbidden domain`), a DNS token without Zone:Read and DNS:Edit on the right zone, `FLEET_AGENT_HOST` not in that zone, or Let's Encrypt's rate limit after many attempts (use `ACME_CA_SERVER` with the staging URL while testing, then delete `/var/lib/fleet-cmdb/certs/acme.json` and restart Traefik).
    - Issuer `(STAGING)`: `ACME_CA_SERVER` still points at staging. Comment it out, delete `certs/acme.json`, `sudo docker compose up -d traefik`.
    - A `notAfter` in the past: renewal has been failing; the Traefik log says why (often a revoked or expired Cloudflare token).
 3. **Is the name pointing at the server?** `getent hosts agent.fleet.example.com` on the VM must give the server's LAN address. A different address means the LAN DNS record is missing or the VM uses another resolver.

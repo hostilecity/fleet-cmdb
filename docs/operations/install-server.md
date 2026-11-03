@@ -121,7 +121,7 @@ openssl rand -hex 24      # for CMDB_DATABASE_PASSWORD
 sudo editor .env
 ```
 
-Fill in every uncommented value: the two hostnames, the two generated secrets, the Google client ID and secret, the Cloudflare DNS token and tunnel token, and an email address for Let's Encrypt. Set `FLEET_RELEASE_KEY_CURRENT` (and `FLEET_RELEASE_KEY_NEXT` if there is one) to the **second line** of `agent/release-keys/current.pub` (and `next.pub`); without a current key no agent release can be imported, so no agent can be installed. Leave everything else commented out unless you have a reason: [configuration.md](configuration.md) explains every setting and its default.
+Fill in every uncommented value: the two hostnames, the two generated secrets, the Google client ID and secret, the Cloudflare DNS token and tunnel token, and a real email address for Let's Encrypt (it refuses placeholder domains such as `example.com`). Set `FLEET_RELEASE_KEY_CURRENT` (and `FLEET_RELEASE_KEY_NEXT` if there is one) to the **second line** of `agent/release-keys/current.pub` (and `next.pub`); without a current key no agent release can be imported, so no agent can be installed. Leave everything else commented out unless you have a reason: [configuration.md](configuration.md) explains every setting and its default.
 
 `.env` now holds every secret of the installation. Copy it to your password manager or encrypted store now: a restore needs it ([backup-and-restore.md](backup-and-restore.md#what-is-backed-up)).
 
