@@ -424,6 +424,9 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
     end
 
     it "shows an update in progress, a failure without a reason, a slow confirmation, and hosts chosen before versions were kept" do
+      # Whole seconds: `travel` drops the sub-second part, so an offer at x.7s and a result 3 minutes later would be
+      # 179.3s apart and read "2 minutes" (failed on CI with seed 19571).
+      freeze_time
       rollout = started
       get "/hosts/#{canary_host.id}"
       expect(page.at_css("#agent_updates tbody tr").then { words(_1) }).to start_with("0.2.0 → 0.3.0, waiting Waiting for its next heartbeat.")
