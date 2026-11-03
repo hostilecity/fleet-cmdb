@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-"""A stand-in for the agent API and the release channel, for scripts/update-smoke.sh (P1-AGENT-UPDATE)
-and scripts/sandbox-smoke.sh (P1-PACKAGING).
+"""A stand-in for the agent API and the release channel, for scripts/update-smoke.sh and
+scripts/vm-test.sh (P1-AGENT-UPDATE) and scripts/sandbox-smoke.sh (P1-PACKAGING).
 
     update-stub.py PORT CERT KEY DIR
+
+Optional environment:
+
+    STUB_PUBLIC_URL     the base URL the agent reaches the stub at, for the release URLs in a directive
+                        (default https://localhost:PORT)
+    STUB_CREDENTIAL     the credential the agent must send (`Authorization: Bearer ...`); anything else
+                        gets 401. Unset: no credential is checked.
+    STUB_ENROLL_TOKEN   accept `POST /api/v1/enroll` with this one-time token, answering with
+                        STUB_CREDENTIAL (for `fleet-agent install --token-stdin`)
 
 DIR holds everything the test shares with the stub:
 
@@ -26,7 +35,8 @@ empty directives):
                                     heartbeats from that version are answered late
     "results_503": 2                the first N posts of each update result get 503
 
-It checks no credential: the test is about the update, not about authentication.
+Without STUB_CREDENTIAL it checks no credential: the smoke tests are about the update, not about
+authentication.
 """
 import datetime
 import hashlib
@@ -40,6 +50,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT, CERT, KEY, DIR = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+PUBLIC_URL = os.environ.get("STUB_PUBLIC_URL") or f"https://localhost:{PORT}"
+CREDENTIAL = os.environ.get("STUB_CREDENTIAL") or None
+ENROLL_TOKEN = os.environ.get("STUB_ENROLL_TOKEN") or None
 LOCK = threading.Lock()
 ACCEPTED = set()  # report_ids of update results already accepted
 RESULT_POSTS = {}  # report_id -> posts so far
@@ -101,6 +114,16 @@ class Handler(BaseHTTPRequestHandler):
         agent = str(body.get("agent_version", ""))
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         current = plan()
+        if self.path == "/api/v1/enroll" and ENROLL_TOKEN:
+            if body.get("token") != ENROLL_TOKEN:
+                log(kind="enroll", status=401)
+                return self.error(401, "invalid_token", "Token not valid.")
+            log(kind="enroll", status=201)
+            return self.send(201, {"credential": CREDENTIAL, "host_name": "vm-01", "server_time": now})
+        authorised = CREDENTIAL is None or self.headers.get("Authorization") == f"Bearer {CREDENTIAL}"
+        if self.path.startswith("/api/v1/") and self.path != "/api/v1/enroll" and not authorised:
+            log(kind="unauthorised", path=self.path, agent_version=agent, status=401)
+            return self.error(401, "unauthorized", "Credential rejected.")
         if self.path == "/api/v1/heartbeat":
             return self.heartbeat(current, agent, now, body)
         if self.path == "/api/v1/reports/inventory":
@@ -125,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
         directives = {}
         offer = current.get("directive")
         if offer and offer["rollout_id"] not in DONE_ROLLOUTS:
-            base = f"https://localhost:{PORT}/api/v1/releases/{offer['release']}"
+            base = f"{PUBLIC_URL}/api/v1/releases/{offer['release']}"
             directives["agent_update"] = {
                 "rollout_id": offer["rollout_id"],
                 "version": offer["version"],
