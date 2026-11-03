@@ -31,7 +31,7 @@ env:
   # Debian 13 (trixie) genericcloud, pinned to one dated build. Its SHA-512 is checked against the
   # SHA512SUMS published next to it and against the value pinned here; change both together.
   DEBIAN_CLOUD_BASE: https://cloud.debian.org/images/cloud/trixie
-  DEBIAN_IMAGE_BUILD: ''
+  DEBIAN_IMAGE_BUILD: '20261026-2643'
   DEBIAN_IMAGE_SHA512: ''
 
 jobs:
