@@ -32,7 +32,7 @@ env:
   # SHA512SUMS published next to it and against the value pinned here; change both together.
   DEBIAN_CLOUD_BASE: https://cloud.debian.org/images/cloud/trixie
   DEBIAN_IMAGE_BUILD: '20261026-2643'
-  DEBIAN_IMAGE_SHA512: ''
+  DEBIAN_IMAGE_SHA512: '3ace18e33bdd036edb49d1f79342bd01d2ab980e35194edb0b410435cd543538d286a0bd13bbb0835f7862306e3d385ce2f6a70d8ecf0bd961111166adbc1b8e'
 
 jobs:
   vm:
@@ -99,7 +99,7 @@ jobs:
             exit 1
           fi
           echo "published SHA-512 of $name: $published"
-          if [ -n "$DEBIAN_IMAGE_SHA512" ] && [ "$published" != "$DEBIAN_IMAGE_SHA512" ]; then
+          if [ "$published" != "$DEBIAN_IMAGE_SHA512" ]; then
             echo "::error::the published SHA-512 of $name differs from the one pinned in agent-vm.yml"
             exit 1
           fi
