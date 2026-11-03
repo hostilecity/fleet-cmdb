@@ -1,0 +1,14 @@
+<% version = @rollout.agent_release.version %>
+<% content_for :title, "Cancel the rollout to #{version}" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Cancel the rollout to <%= version %>?</h2>
+  <% if Rollout::OPEN_STATES.include?(@rollout.state) %>
+    <p>No more hosts are offered <%= version %>, and the rollout cannot be resumed; start a new one later. Every host stays on the version it runs now: hosts that confirmed <%= version %> stay on it, since agents never move to an older version. Hosts already updating finish, and their results are still recorded.</p>
+    <div class="actions">
+      <%= button_to "Cancel rollout", cancel_rollout_path(@rollout), class: "btn danger", form_class: "inline" %>
+      <%= link_to "Keep it", agents_path, class: "btn quiet" %>
+    </div>
+  <% else %>
+    <%= render "rollouts/not_now", rollout: @rollout %>
+  <% end %>
+</div>

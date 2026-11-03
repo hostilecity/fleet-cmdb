@@ -47,6 +47,35 @@ RSpec.describe FleetBroadcastJob, type: :job do
       expect(enqueued_ids).to eq([])
     end
 
+    it "enqueues when a heartbeat reports a new agent version, so the fleet list's agent column updates (P1-D09)" do
+      record_heartbeat(host)
+      clear_enqueued_jobs
+      record_heartbeat(host, agent_version: "0.2.0")
+      expect(enqueued_ids).to eq([ host.id ])
+      clear_enqueued_jobs
+      record_heartbeat(host, agent_version: "0.2.0")
+      expect(enqueued_ids).to eq([])
+    end
+
+    it "enqueues a refresh for every rollout action and the first offer of an update, so rollout progress is live (P1-D09)" do
+      host.update_columns(agent_version: "0.2.0")
+      rollout = start_rollout(release: release_for_rollout("0.3.0"), canaries: [ host ])
+      expect(enqueued_jobs.count { |j| j["job_class"] == "FleetBroadcastJob" }).to eq(1)
+      clear_enqueued_jobs
+      Host.transaction { Rollouts.directive_for(host_id: host.id, agent_version: "0.2.0") }
+      expect(enqueued_ids).to eq([ host.id ])
+      clear_enqueued_jobs
+      Host.transaction { Rollouts.directive_for(host_id: host.id, agent_version: "0.2.0") } # a repeat offer changes nothing shown
+      expect(enqueued_ids).to eq([])
+      operator = rollout.started_by
+      [ -> { Rollouts.halt!(rollout, actor: operator) }, -> { Rollouts.resume!(rollout, actor: operator) },
+        -> { Rollouts.advance!(rollout, actor: operator) }, -> { Rollouts.cancel!(rollout, actor: operator) } ].each do |action|
+        clear_enqueued_jobs
+        action.call
+        expect(enqueued_jobs.count { |j| j["job_class"] == "FleetBroadcastJob" }).to eq(1)
+      end
+    end
+
     it "enqueues once for all hosts an evaluation moves" do
       other = enrolled_host.first
       [ host, other ].each { |h| record_heartbeat(h) }

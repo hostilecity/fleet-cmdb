@@ -72,6 +72,16 @@ Rails.application.routes.draw do
     post "agents/releases/import", to: "agent_releases#import", as: :import_agent_release
     post "agents/releases/upload", to: "agent_releases#upload", as: :upload_agent_release
     get "agents/install", to: "agent_installs#show", as: :agent_install
+    # Rollouts (P1-D09): each action is a confirmation page (GET) and a CSRF-protected POST to the Rollouts
+    # service. Starting is confirmed too: the form on /agents asks for the confirmation page.
+    resources :rollouts, path: "agents/rollouts", only: %i[new create] do
+      member do
+        %i[advance halt resume cancel].each do |action|
+          get action, to: "rollouts#confirm_#{action}"
+          post action
+        end
+      end
+    end
     patch "settings", to: "settings#update"
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
     mount ActionCable.server => "/cable"

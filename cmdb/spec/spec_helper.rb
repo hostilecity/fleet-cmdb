@@ -4,6 +4,9 @@ unless ENV["NO_COVERAGE"]
   SimpleCov.start "rails" do
     enable_coverage :branch
     skip "/spec/"
+    # bin/ci runs the whole suite with COVERAGE_MINIMUM set, so a drop below 100% line coverage fails it. A run of
+    # a few spec files leaves it unset and only reports.
+    minimum_coverage line: Integer(ENV["COVERAGE_MINIMUM"]) if ENV["COVERAGE_MINIMUM"]
   end
 end
 

@@ -1,0 +1,14 @@
+<% version = @rollout.agent_release.version %>
+<% content_for :title, "Halt the rollout to #{version}" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Halt the rollout to <%= version %>?</h2>
+  <% if @rollout.state == "running" %>
+    <p>No more hosts are offered <%= version %>. Hosts already updating finish, and roll back by themselves if they fail. You can resume later.</p>
+    <div class="actions">
+      <%= button_to "Halt rollout", halt_rollout_path(@rollout), class: "btn danger", form_class: "inline" %>
+      <%= link_to "Keep going", agents_path, class: "btn quiet" %>
+    </div>
+  <% else %>
+    <%= render "rollouts/not_now", rollout: @rollout %>
+  <% end %>
+</div>

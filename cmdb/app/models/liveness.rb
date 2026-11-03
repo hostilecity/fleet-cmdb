@@ -29,8 +29,9 @@ module Liveness
     unless host.liveness_status == "online"
       HostStatusEvent.insert!({ host_id: host.id, from_status: host.liveness_status, to_status: "online", reason: "heartbeat", occurred_at: now })
     end
-    # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05).
-    FleetBroadcast.hosts_changed([ host.id ]) unless host.liveness_status == "online"
+    # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05) and a new agent
+    # version, such as the one an update installed (P1-D09).
+    FleetBroadcast.hosts_changed([ host.id ]) unless host.liveness_status == "online" && host.agent_version == agent_version
     now
   end
 

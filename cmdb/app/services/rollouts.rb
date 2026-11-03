@@ -12,8 +12,17 @@
 # opens. A stage advances by itself when all its hosts have confirmed, or when an operator advances it. Only
 # a running rollout sends directives; a halted one resumes only by operator action.
 module Rollouts
-  class Invalid < StandardError; end
+  # field names the start form's control the problem is with (:release, :canary_tag, :stages), or nil.
+  class Invalid < StandardError
+    attr_reader :field
 
+    def initialize(message = nil, field: nil)
+      super(message)
+      @field = field
+    end
+  end
+
+  CANARY_TAG_LIMIT = 32 # rollouts.canary_tag
   DEFAULT_STAGES = [ 25, 100 ].freeze
   DIRECTIVE_FILES = { manifest_url: "manifest", signature_url: "signature", binary_url: "binary" }.freeze
   OUTCOME_STATES = { "succeeded" => "confirmed", "failed" => "failed", "rolled_back" => "rolled_back" }.freeze
@@ -31,14 +40,8 @@ module Rollouts
   # later stages, each higher than the one before and ending at 100. Raises Invalid, changing nothing, when a
   # rollout is already open, the stages are wrong, or no canary is an active host running an older version.
   def start!(release:, actor:, canary_host_ids: [], canary_tag: nil, stage_percents: DEFAULT_STAGES)
-    percents = Array(stage_percents).map { |percent| Integer(percent, exception: false) }
-    unless percents.any? && percents.all? { |p| p&.between?(1, 100) } && percents.each_cons(2).all? { |a, b| a < b } && percents.last == 100
-      raise Invalid, "Stages must be increasing percentages ending at 100."
-    end
-
-    ids = Array(canary_host_ids).filter_map { |id| Integer(id, exception: false) }.uniq
-    tag = canary_tag.present? ? Host.normalize_tag(canary_tag) : nil
-    raise Invalid, "Name the canary hosts or a canary tag." if ids.empty? && tag.nil?
+    percents = stage_percents!(stage_percents)
+    ids, tag = canaries!(canary_host_ids, canary_tag)
 
     Rollout.transaction(requires_new: true) do
       raise Invalid, "A rollout is already open. Finish or cancel it first." if Rollout.open_now.lock.exists?
@@ -47,20 +50,47 @@ module Rollouts
       rollout = Rollout.create!(agent_release: release, started_by: actor, canary_host_ids: ids, canary_tag: tag,
                                 stage_percents: percents, started_at: now, stage_opened_at: now)
       added = open_stage!(rollout, now)
-      raise Invalid, "None of the canaries is an active host running an older version than #{release.version}." if added.zero?
+      raise Invalid.new("None of the canaries is an active host running an older version than #{release.version}.", field: :canary_tag) if added.zero?
 
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_STARTED, target: rollout,
                    changes: { "version" => [ nil, release.version ], "canary_host_ids" => ids, "canary_tag" => tag,
                               "stage_percents" => percents, "hosts_added" => added })
+      FleetBroadcast.refresh
       rollout
     end
   rescue ActiveRecord::RecordNotUnique
     raise Invalid, "A rollout is already open. Finish or cancel it first."
   end
 
+  # The stages after the canaries, from a list ([25, 100]) or the dashboard's text ("25, 100"): increasing
+  # percentages ending at 100. Raises Invalid otherwise.
+  def stage_percents!(input)
+    list = input.is_a?(String) ? input.split(/[\s,%]+/).reject(&:empty?) : Array(input)
+    percents = list.map { |percent| Integer(percent.to_s, 10, exception: false) }
+    unless percents.any? && percents.all? { |p| p&.between?(1, 100) } && percents.each_cons(2).all? { |a, b| a < b } && percents.last == 100
+      raise Invalid.new("Stages must be increasing percentages ending at 100, such as 25, 100.", field: :stages)
+    end
+
+    percents
+  end
+
+  # The hosts a rollout of release started now would take as its canaries: active hosts, named or tagged, that
+  # run an older version. What start! chooses, for the dashboard to confirm before starting. Raises Invalid
+  # when no canary is named.
+  def canary_hosts(release:, canary_host_ids: [], canary_tag: nil)
+    ids, tag = canaries!(canary_host_ids, canary_tag)
+    Host.where(id: hosts_older_than(release.semver).keys & canary_ids(ids, tag))
+  end
+
   # The operator opens the next stage now, without waiting for the current one to confirm.
-  def advance!(rollout, actor:)
+  # expected_stage is the stage the operator saw when confirming (the dashboard sends it): if another operator, or
+  # the stage's last confirmation, moved the rollout on since, nothing is advanced, so one confirmation can never
+  # skip a stage nobody chose to skip.
+  def advance!(rollout, actor:, expected_stage: nil)
     in_state!(rollout, "running") do
+      if expected_stage && rollout.current_stage != expected_stage
+        raise Invalid, "The rollout already moved on to stage #{rollout.current_stage + 1} since you opened that page."
+      end
       raise Invalid, "The rollout is already in its final stage." if rollout.final_stage?
 
       advance_stage!(rollout, actor:, reason: "advanced by an operator")
@@ -88,6 +118,7 @@ module Rollouts
       before = rollout.state
       finish!(rollout, "cancelled")
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_CANCELLED, target: rollout, changes: { "state" => [ before, "cancelled" ] })
+      FleetBroadcast.refresh
     end
   end
 
@@ -119,6 +150,7 @@ module Rollouts
       # rollout is cancelled before the host reports or times out.
       Audit.record(actor: Audit::SYSTEM, action: Audit::Actions::UPDATE_REQUESTED, target: Host.find(host_id),
                    changes: { "rollout_id" => rollout_id, "version" => version })
+      FleetBroadcast.hosts_changed([ host_id ]) # the rollout shows the host as updating (P1-D09)
     end
     DIRECTIVE_FILES.transform_values { |file| Releases.download_url(version, file) }.merge(rollout_id:, version:)
   end
@@ -181,12 +213,14 @@ module Rollouts
 
   # -- internals --
 
-  # Locks the rollout row, re-reads it, and yields when it is in the given state.
+  # Locks the rollout row, re-reads it, and yields when it is in the given state. Open dashboards refresh once
+  # the change commits (P1-D09).
   def in_state!(rollout, state, &)
     rollout.with_lock do
       raise Invalid, "The rollout is #{rollout.state}, not #{state}." unless rollout.state == state
 
       yield
+      FleetBroadcast.refresh
     end
   end
   private_class_method :in_state!
@@ -238,9 +272,10 @@ module Rollouts
   def open_stage!(rollout, now)
     stage = rollout.current_stage
     included = rollout.rollout_hosts.pluck(:host_id)
-    candidates = hosts_older_than(rollout.agent_release.semver) - included
+    versions = hosts_older_than(rollout.agent_release.semver)
+    candidates = versions.keys - included
     chosen = if stage.zero?
-      candidates & canary_ids(rollout)
+      candidates & canary_ids(rollout.canary_host_ids, rollout.canary_tag)
     else
       total = candidates.size + included.size
       wanted = (total * rollout.stage_percents.fetch(stage - 1) / 100.0).ceil - included.size
@@ -248,26 +283,38 @@ module Rollouts
     end
     rows = chosen.map do |host_id|
       { rollout_id: rollout.id, host_id:, stage:, state: "pending", offer_at: now + offer_delay(rollout, host_id),
-        created_at: now, updated_at: now }
+        from_version: versions.fetch(host_id), created_at: now, updated_at: now }
     end
     RolloutHost.insert_all!(rows) if rows.any?
     rows.size
   end
   private_class_method :open_stage!
 
+  # Active hosts that run an older version than target, as { host id => the version they run }.
   def hosts_older_than(target)
-    Host.active.where.not(agent_version: nil).pluck(:id, :agent_version).filter_map do |id, version|
+    Host.active.where.not(agent_version: nil).pluck(:id, :agent_version).each_with_object({}) do |(id, version), older|
       semver = AgentApi::AgentVersion.parse(version)
-      id if semver && semver < target
+      older[id] = version if semver && semver < target
     end
   end
   private_class_method :hosts_older_than
 
-  def canary_ids(rollout)
-    tagged = rollout.canary_tag ? Host.active.tagged(rollout.canary_tag).pluck(:id) : []
-    rollout.canary_host_ids | tagged
+  def canary_ids(ids, tag)
+    tagged = tag ? Host.active.tagged(tag).pluck(:id) : []
+    ids | tagged
   end
   private_class_method :canary_ids
+
+  # The canary host ids and tag, cleaned; at least one of them is required.
+  def canaries!(canary_host_ids, canary_tag)
+    ids = Array(canary_host_ids).filter_map { |id| Integer(id.to_s, 10, exception: false) }.uniq
+    tag = canary_tag.present? ? Host.normalize_tag(canary_tag) : nil
+    raise Invalid.new("Name the canary hosts or a canary tag.", field: :canary_tag) if ids.empty? && tag.nil?
+    raise Invalid.new("A canary tag is at most #{CANARY_TAG_LIMIT} characters.", field: :canary_tag) if tag && tag.length > CANARY_TAG_LIMIT
+
+    [ ids, tag ]
+  end
+  private_class_method :canaries!
 
   # A fixed offset per host and rollout inside the spread window, so a retry or a second stage never moves it.
   def offer_delay(rollout, host_id) = (Zlib.crc32("#{rollout.id}:#{host_id}") % config.spread).seconds
