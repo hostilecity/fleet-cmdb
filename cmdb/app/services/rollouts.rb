@@ -12,8 +12,17 @@
 # opens. A stage advances by itself when all its hosts have confirmed, or when an operator advances it. Only
 # a running rollout sends directives; a halted one resumes only by operator action.
 module Rollouts
-  class Invalid < StandardError; end
+  # field names the start form's control the problem is with (:release, :canary_tag, :stages), or nil.
+  class Invalid < StandardError
+    attr_reader :field
 
+    def initialize(message = nil, field: nil)
+      super(message)
+      @field = field
+    end
+  end
+
+  CANARY_TAG_LIMIT = 32 # rollouts.canary_tag
   DEFAULT_STAGES = [ 25, 100 ].freeze
   DIRECTIVE_FILES = { manifest_url: "manifest", signature_url: "signature", binary_url: "binary" }.freeze
   OUTCOME_STATES = { "succeeded" => "confirmed", "failed" => "failed", "rolled_back" => "rolled_back" }.freeze
@@ -41,7 +50,7 @@ module Rollouts
       rollout = Rollout.create!(agent_release: release, started_by: actor, canary_host_ids: ids, canary_tag: tag,
                                 stage_percents: percents, started_at: now, stage_opened_at: now)
       added = open_stage!(rollout, now)
-      raise Invalid, "None of the canaries is an active host running an older version than #{release.version}." if added.zero?
+      raise Invalid.new("None of the canaries is an active host running an older version than #{release.version}.", field: :canary_tag) if added.zero?
 
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_STARTED, target: rollout,
                    changes: { "version" => [ nil, release.version ], "canary_host_ids" => ids, "canary_tag" => tag,
@@ -59,7 +68,7 @@ module Rollouts
     list = input.is_a?(String) ? input.split(/[\s,%]+/).reject(&:empty?) : Array(input)
     percents = list.map { |percent| Integer(percent.to_s, 10, exception: false) }
     unless percents.any? && percents.all? { |p| p&.between?(1, 100) } && percents.each_cons(2).all? { |a, b| a < b } && percents.last == 100
-      raise Invalid, "Stages must be increasing percentages ending at 100, such as 25, 100."
+      raise Invalid.new("Stages must be increasing percentages ending at 100, such as 25, 100.", field: :stages)
     end
 
     percents
@@ -74,8 +83,14 @@ module Rollouts
   end
 
   # The operator opens the next stage now, without waiting for the current one to confirm.
-  def advance!(rollout, actor:)
+  # expected_stage is the stage the operator saw when confirming (the dashboard sends it): if another operator, or
+  # the stage's last confirmation, moved the rollout on since, nothing is advanced, so one confirmation can never
+  # skip a stage nobody chose to skip.
+  def advance!(rollout, actor:, expected_stage: nil)
     in_state!(rollout, "running") do
+      if expected_stage && rollout.current_stage != expected_stage
+        raise Invalid, "The rollout already moved on to stage #{rollout.current_stage + 1} since you opened that page."
+      end
       raise Invalid, "The rollout is already in its final stage." if rollout.final_stage?
 
       advance_stage!(rollout, actor:, reason: "advanced by an operator")
@@ -294,7 +309,8 @@ module Rollouts
   def canaries!(canary_host_ids, canary_tag)
     ids = Array(canary_host_ids).filter_map { |id| Integer(id.to_s, 10, exception: false) }.uniq
     tag = canary_tag.present? ? Host.normalize_tag(canary_tag) : nil
-    raise Invalid, "Name the canary hosts or a canary tag." if ids.empty? && tag.nil?
+    raise Invalid.new("Name the canary hosts or a canary tag.", field: :canary_tag) if ids.empty? && tag.nil?
+    raise Invalid.new("A canary tag is at most #{CANARY_TAG_LIMIT} characters.", field: :canary_tag) if tag && tag.length > CANARY_TAG_LIMIT
 
     [ ids, tag ]
   end

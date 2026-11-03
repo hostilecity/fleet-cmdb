@@ -14,9 +14,11 @@ class RolloutsController < ApplicationController
       .order(:name, :id).to_a
     @stage_percents = Rollouts.stage_percents!(@start[:stages])
     raise Rollouts::Invalid, "A rollout is already open. Finish or cancel it first." if Rollout.open_now.exists?
-    raise Rollouts::Invalid, "None of the chosen canaries is an active host running an older version than #{@release.version}." if @canaries.empty?
+    if @canaries.empty?
+      raise Rollouts::Invalid.new("None of the chosen canaries is an active host running an older version than #{@release.version}.", field: :canary_tag)
+    end
   rescue Rollouts::Invalid => e
-    refuse_start(e.message)
+    refuse_start(e.message, field: e.field)
   end
 
   def create
@@ -26,7 +28,7 @@ class RolloutsController < ApplicationController
     redirect_to agents_path, notice: "Rollout to #{@release.version} started. #{helpers.pluralize(canaries, 'canary host')} " \
                                      "#{canaries == 1 ? 'is' : 'are'} offered it on #{canaries == 1 ? 'its' : 'their'} next heartbeat."
   rescue Rollouts::Invalid => e
-    refuse_start(e.message)
+    refuse_start(e.message, field: e.field)
   end
 
   def confirm_advance; end
@@ -37,7 +39,10 @@ class RolloutsController < ApplicationController
   end
   def confirm_cancel; end
 
-  def advance = act(:advance!) { "The rollout to #{version} moved on to stage #{@rollout.current_stage + 1}." }
+  # The confirmation page sends the stage it showed; a stale page cannot open the stage after the one it named.
+  def advance = act(:advance!, expected_stage: Integer(params[:stage].to_s, 10, exception: false) || -1) do
+    "The rollout to #{version} moved on to stage #{@rollout.current_stage + 1}."
+  end
   def halt = act(:halt!) { "The rollout to #{version} is halted. No more hosts are offered it until you resume it." }
   def resume = act(:resume!) { "The rollout to #{version} is running again." }
   def cancel = act(:cancel!) { "The rollout to #{version} is cancelled. Hosts stay on the version they run now." }
@@ -51,8 +56,8 @@ class RolloutsController < ApplicationController
   def version = @rollout.agent_release.version
 
   # The notice is built after the action, from the rollout as it left it.
-  def act(method)
-    Rollouts.public_send(method, @rollout, actor: current_operator)
+  def act(method, **options)
+    Rollouts.public_send(method, @rollout, actor: current_operator, **options)
     redirect_to agents_path, notice: yield
   rescue Rollouts::Invalid => e
     redirect_to agents_path, alert: "Nothing changed: #{e.message}"
@@ -64,11 +69,14 @@ class RolloutsController < ApplicationController
                canary_host_ids: Array(params[:canary_host_ids]).map(&:to_s).compact_blank.first(AgentsPage::CANARY_CHOICE_LIMIT),
                stages: params[:stages].to_s.first(100) }
     @release = AgentRelease.find_by(version: @start[:release])
-    refuse_start("Choose a release to roll out.") unless @release
+    refuse_start("Choose a release to roll out.", field: :release) unless @release
   end
 
-  def refuse_start(message)
-    @errors = { rollout: message }
+  # The refused choices are shown again with the error, and the control it concerns is marked aria-invalid, which
+  # also keeps live refreshes from replacing them (keep-edits). A problem with no control (a rollout is already
+  # open) disables the form anyway.
+  def refuse_start(message, field: nil)
+    @errors = { rollout: message, rollout_field: field }
     load_agents_page
     render "agent_releases/index", status: :unprocessable_content
   end

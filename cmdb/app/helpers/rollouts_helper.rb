@@ -75,8 +75,10 @@ module RolloutsHelper
     version = rollout.agent_release.version
     case member.state
     when "confirmed" then [ "online", "Confirmed on #{version}", nil ]
-    when "rolled_back" then [ "offline", member.from_version ? "Rolled back to #{member.from_version}" : "Rolled back", reason ]
-    when "failed" then [ "offline", "Failed, still on #{member.from_version || 'its old version'}", reason ]
+    # Neutral: from_version is the version when the stage chose the host, and a manual upgrade or another update
+    # may have changed it since. The From column shows it as that snapshot; the outcome does not claim it runs it.
+    when "rolled_back" then [ "offline", "Rolled back", reason ]
+    when "failed" then [ "offline", "Failed", reason ]
     when "unconfirmed" then [ "offline", "No result within #{Rollouts.config.confirmation_timeout.in_minutes.to_i} minutes", nil ]
     when "updating" then [ "stale", "Offered #{version}, waiting for its result", nil ]
     else pending_status(member, rollout, version)
@@ -105,7 +107,9 @@ module RolloutsHelper
       took = (update.received_at - member.offered_at).round if update && member.offered_at
       took ? "Confirmed in #{took < 60 ? pluralize(took, 'second') : human_duration(took)}" : "Confirmed"
     when "rolled_back", "failed"
-      [ update&.reason.presence, ("back on #{member.from_version}" if member.from_version) ].compact.join("; ").upcase_first.presence || "No reason given"
+      # The version the agent reported with the result is what it ran then, unlike from_version (a snapshot).
+      [ update&.reason.presence, ("reported by #{update.reported_agent_version}" if update&.reported_agent_version.present?) ]
+        .compact.join("; ").upcase_first.presence || "No reason given"
     else
       rollout_host_status(member, rollout)[1]
     end

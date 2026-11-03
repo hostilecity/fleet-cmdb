@@ -120,22 +120,37 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       expect(page.at_css(".flash").then { words(_1) }).to eq("Rollout to 0.3.0 started. 1 canary host is offered it on its next heartbeat.")
     end
 
+    # The last value is the control marked aria-invalid, which also keeps live refreshes from replacing the refused
+    # choices and the error (keep-edits#protect; review of #89).
     {
-      "an unknown release" => [ { release: "9.9.9", canary_tag: "canary", stages: "25, 100" }, "Choose a release to roll out." ],
-      "no canary" => [ { release: "0.3.0", stages: "25, 100" }, "Name the canary hosts or a canary tag." ],
-      "stages that do not end at 100" => [ { release: "0.3.0", canary_tag: "canary", stages: "25, 50" }, "Stages must be increasing percentages ending at 100, such as 25, 100." ],
+      "an unknown release" => [ { release: "9.9.9", canary_tag: "canary", stages: "25, 100" }, "Choose a release to roll out.", "release" ],
+      "no canary" => [ { release: "0.3.0", stages: "25, 100" }, "Name the canary hosts or a canary tag.", "canary_tag" ],
+      "stages that do not end at 100" => [ { release: "0.3.0", canary_tag: "canary", stages: "25, 50" },
+                                           "Stages must be increasing percentages ending at 100, such as 25, 100.", "stages" ],
       "canaries already on the release" => [ { release: "0.3.0", canary_tag: "nobody", stages: "25, 100" },
-                                             "None of the chosen canaries is an active host running an older version than 0.3.0." ]
-    }.each do |label, (params, message)|
-      it "refuses #{label} on the Agents page, keeping the choices" do
+                                             "None of the chosen canaries is an active host running an older version than 0.3.0.", "canary_tag" ],
+      "a canary tag longer than the column" => [ { release: "0.3.0", canary_tag: "t" * 33, stages: "25, 100" },
+                                                 "A canary tag is at most 32 characters.", "canary_tag" ]
+    }.each do |label, (params, message, field)|
+      it "refuses #{label} on the Agents page, keeping the choices and marking the control invalid" do
         release
         get "/agents/rollouts/new", params: params.merge(canary_host_ids: [ "x" ])
         expect(response).to have_http_status(:unprocessable_content)
         expect(page.at_css("#start_rollout_error").then { words(_1) }).to eq("The rollout was not started. #{message}")
         expect(page.at_css("#stages")["value"]).to eq(params[:stages])
+        expect(page.css("#start_rollout [aria-invalid=true]").map { |control| control["id"] }).to eq([ field ])
+        expect(page.at_css("##{field}")["aria-errormessage"]).to eq("start_rollout_error")
         expect(page.at_css("#releases")).to be_present
         expect(Rollout.count).to eq(0)
       end
+    end
+
+    it "refuses an oversized canary tag on the POST too, with a valid canary, instead of a database error (review of #89)" do
+      release
+      post "/agents/rollouts", params: { release: "0.3.0", canary_tag: "t" * 33, canary_host_ids: [ other.first.id.to_s ], stages: "25, 100" }
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(page.at_css("#start_rollout_error").then { words(_1) }).to eq("The rollout was not started. A canary tag is at most 32 characters.")
+      expect(Rollout.count).to eq(0)
     end
 
     it "refuses while a rollout is open, on the confirmation and on the POST" do
@@ -209,12 +224,12 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       get "/agents"
       expect(page.at_css("#rollout_halted strong").text).to eq("The rollout to 0.3.0 is halted: Media server reported rolled back: config: unknown option heartbeat_jitter_ms")
       expect(page.at_css("#rollout_halted p").text).to start_with("Halted automatically, ")
-      expect(host_rows.first[3]).to eq("Rolled back to 0.2.0 config: unknown option heartbeat_jitter_ms")
+      expect(host_rows.first[3]).to eq("Rolled back config: unknown option heartbeat_jitter_ms")
       expect(stage_cards.first).to start_with("1. Canary 0 of 1 confirmed, 1 rolled back")
 
       get "/agents/rollouts/#{rollout.id}/resume"
       expect(page.at_css("#halt_reason strong").text).to eq("Why it halted: Media server reported rolled back: config: unknown option heartbeat_jitter_ms")
-      expect(page.css("#problem_hosts li").map { |li| li.then { words(_1) } }).to eq([ "Media server: Rolled back to 0.2.0 config: unknown option heartbeat_jitter_ms" ])
+      expect(page.css("#problem_hosts li").map { |li| li.then { words(_1) } }).to eq([ "Media server: Rolled back config: unknown option heartbeat_jitter_ms" ])
 
       post "/agents/rollouts/#{rollout.id}/resume"
       expect(response).to redirect_to("/agents")
@@ -238,7 +253,8 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       get "/agents/rollouts/#{rollout.id}/advance"
       expect(page.at_css("#dialog_title").text).to eq("Open stage 2 (50% of hosts) now?")
 
-      post "/agents/rollouts/#{rollout.id}/advance"
+      expect(page.at_css("form[action='/agents/rollouts/#{rollout.id}/advance'] input[name=stage]")["value"]).to eq("0")
+      post "/agents/rollouts/#{rollout.id}/advance", params: { stage: 0 }
       expect(rollout.reload.current_stage).to eq(1)
       expect(flash[:notice]).to eq("The rollout to 0.3.0 moved on to stage 2.")
       expect(AuditEntry.find_by!(action: Audit::Actions::ROLLOUT_ADVANCED)).to have_attributes(actor_type: "operator", actor_id: operator.id)
@@ -250,6 +266,20 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       expect(page.css("#rollout_actions a").map(&:text)).to eq([ "Halt", "Cancel rollout" ])
       expect(page.css("#rollout_stages .name").map(&:text)).to eq([ "1. Canary", "2. 50% of hosts", "3. Everyone else" ])
       expect(host_rows.map { |row| row[1] }).to eq(%w[Canary 2 3])
+    end
+
+    it "refuses a stale confirmation: a stage opened since the page was shown is not skipped (review of #89)" do
+      rollout = started(stage_percents: [ 50, 100 ])
+      get "/agents/rollouts/#{rollout.id}/advance" # shows "Open stage 2", for stage 0 (the canaries)
+      Rollouts.advance!(rollout, actor: operator) # another operator, or the last canary confirming, opens stage 2
+
+      expect { post "/agents/rollouts/#{rollout.id}/advance", params: { stage: 0 } }.not_to(change { rollout.reload.current_stage })
+      expect(flash[:alert]).to eq("Nothing changed: The rollout already moved on to stage 2 since you opened that page.")
+      expect(AuditEntry.where(action: Audit::Actions::ROLLOUT_ADVANCED).count).to eq(1)
+
+      post "/agents/rollouts/#{rollout.id}/advance" # no stage at all: refused the same way
+      expect(rollout.reload.current_stage).to eq(1)
+      expect(flash[:alert]).to start_with("Nothing changed: The rollout already moved on")
     end
 
     it "shows how long ago a later stage opened, or halted" do
@@ -372,7 +402,7 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
         start_rollout(release: newer, canaries: [ canary_host ], operator:).tap { offer(canary_host, "0.3.0") }
       end
       travel_to(Time.utc(2026, 1, 2, 8, 2)) do
-        report(second, canary_host, version: "0.4.0", outcome: "rolled_back", reason: "no heartbeat within 5 minutes")
+        report(second, canary_host, version: "0.4.0", agent_version: "0.3.0", outcome: "rolled_back", reason: "no heartbeat within 5 minutes")
         Rollouts.cancel!(second, actor: operator)
       end
       newest = release_for_rollout("0.5.0")
@@ -387,7 +417,7 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       rows = page.css("#agent_updates tbody tr").map { |row| row.then { words(_1) } }
       expect(rows).to eq([
         "0.3.0 → 0.5.0, not confirmed No result within 30 minutes. 2026-01-03 08:31 UTC",
-        "0.3.0 → 0.4.0, rolled back No heartbeat within 5 minutes; back on 0.3.0. 2026-01-02 08:02 UTC",
+        "0.3.0 → 0.4.0, rolled back No heartbeat within 5 minutes; reported by 0.3.0. 2026-01-02 08:02 UTC",
         "0.2.0 → 0.3.0 Confirmed in 41 seconds. 2026-01-01 08:00 UTC"
       ])
       expect(page.css("#agent_updates .lamp").map { |l| l["class"] }).to eq([ "lamp offline", "lamp offline", "lamp online" ])
@@ -406,9 +436,9 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       end
       RolloutHost.update_all(from_version: nil)
       get "/hosts/#{canary_host.id}"
-      expect(page.at_css("#agent_updates tbody tr").then { words(_1) }).to start_with("0.3.0, failed No reason given.")
+      expect(page.at_css("#agent_updates tbody tr").then { words(_1) }).to start_with("0.3.0, failed Reported by 0.2.0.")
       get "/agents"
-      expect(host_rows.first[2..3]).to eq([ "—", "Failed, still on its old version" ])
+      expect(host_rows.first[2..3]).to eq([ "—", "Failed" ])
 
       RolloutHost.update_all(state: "rolled_back")
       get "/agents"

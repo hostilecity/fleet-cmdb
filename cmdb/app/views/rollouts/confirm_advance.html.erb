@@ -6,7 +6,7 @@
     <h2 id="dialog_title">Open stage <%= following + 1 %> (<%= rollout_stage_name(@rollout, following) %>) now?</h2>
     <p>The stage's hosts are chosen now and offered <%= version %> without waiting for every host in stage <%= @rollout.current_stage + 1 %> to confirm. Hosts still updating keep their offer, and any failure or rollback still halts the rollout.</p>
     <div class="actions">
-      <%= button_to "Advance rollout", advance_rollout_path(@rollout), class: "btn", form_class: "inline" %>
+      <%= button_to "Advance rollout", advance_rollout_path(@rollout), params: { stage: @rollout.current_stage }, class: "btn", form_class: "inline" %>
       <%= link_to "Wait for this stage", agents_path, class: "btn quiet" %>
     </div>
   <% else %>
