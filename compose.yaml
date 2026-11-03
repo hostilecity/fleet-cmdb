@@ -1,0 +1,190 @@
+# The fleet-cmdb server stack (P1-O03, ADR 0005). Install guide: docs/operations/install-server.md.
+#
+#   cp .env.example .env      # then fill it in (docs/operations/configuration.md lists every setting)
+#   docker compose up -d --build
+#
+# Services:
+#   db           PostgreSQL 17. Its port is published on 127.0.0.1 only, for ops/backup/backup.sh on this machine.
+#   app          Rails (Puma) with Solid Queue inside Puma. Runs db:prepare (create and migrate) on every start.
+#   traefik      TLS for the PRIVATE agent hostname only (FLEET_AGENT_HOST), with a Let's Encrypt certificate
+#                obtained by the Cloudflare DNS challenge. Listens on port 443 of this machine, for the LAN.
+#   cloudflared  The Cloudflare tunnel connector for the PUBLIC dashboard hostname only (FLEET_DASHBOARD_HOST).
+#                It dials out to Cloudflare; nothing is published on this machine for it.
+#   restore-drill  Not started by `up` (profile "tools"): `docker compose run --rm restore-drill`
+#                  (docs/operations/backup-and-restore.md).
+#
+# Networks: traefik and cloudflared reach the app over separate networks. Rails trusts X-Forwarded-* headers only
+# from the agent-proxy network (Traefik replaces any a client sent); requests from cloudflared are not trusted, so a
+# client cannot claim the agent hostname through the tunnel with X-Forwarded-Host.
+#
+# Persistent data lives under FLEET_DATA_DIR on this machine (default /var/lib/fleet-cmdb):
+#   postgres/  the database        releases/  agent release files     backup/  the backup status file /health reads
+#   certs/     Traefik's ACME account and the agent hostname certificate
+
+name: fleet-cmdb
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Everything the Rails app reads. Settings that are not set in .env stay unset in the container, so the app's
+# defaults apply (a variable set to an empty value is passed as empty: comment it out instead).
+x-app-environment: &app-environment
+  # Fixed by this deployment; not meant to be changed in .env.
+  RAILS_ENV: production
+  PORT: "3000"
+  SOLID_QUEUE_IN_PUMA: "1"
+  PGHOST: db
+  FLEET_RELEASES_DIR: /rails/storage/releases
+  FLEET_BACKUP_STATUS_FILE: /rails/storage/backup/last_success
+  FLEET_TRUSTED_PROXIES: ${FLEET_PROXY_SUBNET:-172.30.47.0/28}
+  # Required.
+  SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env}
+  CMDB_DATABASE_PASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
+  FLEET_DASHBOARD_HOST: ${FLEET_DASHBOARD_HOST:?set FLEET_DASHBOARD_HOST in .env}
+  FLEET_AGENT_HOST: ${FLEET_AGENT_HOST:?set FLEET_AGENT_HOST in .env}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?set GOOGLE_CLIENT_SECRET in .env}
+  # Optional: passed only when set in .env.
+  FLEET_RELEASE_KEY_CURRENT:
+  FLEET_RELEASE_KEY_NEXT:
+  FLEET_RELEASE_REPOSITORY:
+  FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE:
+  FLEET_ROLLOUT_SPREAD_SECONDS:
+  FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES:
+  FLEET_MINIMUM_AGENT_VERSION:
+  FLEET_API_RATE_LIMIT_PER_MINUTE:
+  FLEET_ENROLL_RATE_LIMIT_PER_MINUTE:
+  FLEET_ENROLLMENT_TOKEN_TTL_HOURS:
+  FLEET_ONBOARDING_TTL_MINUTES:
+  FLEET_ONBOARDING_POLL_SECONDS:
+  FLEET_ONBOARDING_MAX_OPEN:
+  FLEET_ONBOARDING_MAX_OPEN_PER_ADDRESS:
+  FLEET_ONBOARDING_RATE_LIMIT_PER_MINUTE:
+  FLEET_DASHBOARD_URL:
+  FLEET_SESSION_IDLE_MINUTES:
+  FLEET_SESSION_ABSOLUTE_HOURS:
+  FLEET_BACKUP_MAX_AGE_HOURS:
+  RAILS_LOG_LEVEL:
+  RAILS_MAX_THREADS:
+  JOB_CONCURRENCY:
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cmdb
+      POSTGRES_PASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
+    volumes:
+      - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${FLEET_DB_PORT:-5432}:5432"
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cmdb", "-d", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+  app:
+    build:
+      context: ./cmdb
+      additional_contexts:
+        api: ./docs/api
+    image: fleet-cmdb:local
+    command: ["./bin/rails", "server"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *app-environment
+    volumes:
+      - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/releases:/rails/storage/releases
+      - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/backup:/rails/storage/backup:ro
+    networks: [backend, agent-proxy, tunnel]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:3000/up"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s # the first start creates and migrates the databases
+    logging: *logging
+
+  traefik:
+    image: traefik:v3.7
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    command:
+      - --global.checknewversion=false
+      - --global.sendanonymoususage=false
+      - --log.level=INFO
+      - --ping=true
+      - --entrypoints.websecure.address=:443
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --providers.file.watch=false
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL in .env}
+      - --certificatesresolvers.letsencrypt.acme.storage=/certs/acme.json
+      - --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare
+      # Check the challenge record against public resolvers: the LAN's DNS answers for the agent hostname itself.
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
+    environment:
+      FLEET_AGENT_HOST: ${FLEET_AGENT_HOST:?set FLEET_AGENT_HOST in .env}
+      CF_DNS_API_TOKEN: ${CLOUDFLARE_DNS_API_TOKEN:?set CLOUDFLARE_DNS_API_TOKEN in .env}
+    volumes:
+      - ./ops/deploy/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/certs:/certs
+    ports:
+      - "${FLEET_AGENT_BIND_ADDRESS:-0.0.0.0}:443:443"
+    networks:
+      agent-proxy:
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging: *logging
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.7
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    networks: [tunnel]
+    logging: *logging
+
+  restore-drill:
+    profiles: [tools]
+    image: fleet-cmdb:local
+    entrypoint: ["/ops/backup/restore-drill.sh"]
+    command: []
+    environment:
+      <<: *app-environment
+      BACKUP_DIR: /backups
+      PGUSER: cmdb
+      PGPASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
+    volumes:
+      - ./ops/backup:/ops/backup:ro
+      - ${BACKUP_DIR:-/mnt/fleet-cmdb-backups}:/backups:ro
+    networks: [backend]
+    logging: *logging
+
+networks:
+  backend:
+  tunnel:
+  # The only network whose clients Rails trusts for X-Forwarded-* (FLEET_TRUSTED_PROXIES): only Traefik is on it
+  # besides the app. Change FLEET_PROXY_SUBNET in .env only if this range is already used on this machine.
+  agent-proxy:
+    ipam:
+      config:
+        - subnet: ${FLEET_PROXY_SUBNET:-172.30.47.0/28}

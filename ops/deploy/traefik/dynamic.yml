@@ -1,0 +1,25 @@
+# Traefik routing for the private agent hostname (P1-O03, ADR 0005), mounted read-only by compose.yaml.
+# Traefik expands the Go template below from its environment, so FLEET_AGENT_HOST comes from .env.
+#
+# Only requests for FLEET_AGENT_HOST are routed, to the app, over HTTPS with the Let's Encrypt certificate; any
+# other name gets Traefik's 404. Rails then serves only /api/v1 and the health paths on this hostname
+# (lib/middleware/host_separation.rb). The dashboard hostname is never served here: it goes through the tunnel.
+http:
+  routers:
+    agent-api:
+      rule: 'Host(`{{ env "FLEET_AGENT_HOST" }}`)'
+      entryPoints: [websecure]
+      service: cmdb-app
+      tls:
+        certResolver: letsencrypt
+  services:
+    cmdb-app:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://app:3000"
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12

@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # check=error=true
 
-# This Dockerfile is designed for production, not development. Build it from cmdb/ with the agent API
-# schemas from docs/api passed in as a named build context (they are read at runtime; P1-API-AUTH):
+# This Dockerfile is designed for production, not development. The deployment is ../compose.yaml, which builds
+# it (docs/operations/install-server.md). To build it alone, from cmdb/, with the agent API schemas from docs/api
+# passed in as a named build context (they are read at runtime; P1-API-AUTH):
 # docker build --build-context api=../docs/api -t cmdb .
-# docker run -d -p 80:80 -e RAILS_MASTER_KEY=<value from config/master.key> --name cmdb cmdb
 
 # For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
 
@@ -77,6 +77,9 @@ COPY --chown=rails:rails --from=build /rails /rails
 # Entrypoint prepares the database.
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 
-# Start server via Thruster by default, this can be overwritten at runtime
-EXPOSE 80
-CMD ["./bin/thrust", "./bin/rails", "server"]
+# Puma directly, not through Thruster (P1-O03): HostSeparation trusts X-Forwarded-* headers only from the proxy
+# that connected, and behind Thruster every request would come from loopback, which is always trusted. TLS is
+# terminated in front of the app (Traefik for the agent hostname, the Cloudflare tunnel for the dashboard).
+ENV PORT="3000"
+EXPOSE 3000
+CMD ["./bin/rails", "server"]

@@ -119,7 +119,7 @@ The server has two faces (DEC-05), each on its own hostname:
 | Hostname (setting) | Serves | Reached through |
 |---|---|---|
 | Dashboard (`FLEET_DASHBOARD_HOST`) | Dashboard, sign-in, Google OAuth callback | The Cloudflare tunnel, behind Cloudflare Access |
-| Agent API (`FLEET_AGENT_HOST`) | `/api/v1/*`, and the `/up` health check (later also `/health`) | The LAN only, through the agent TLS proxy |
+| Agent API (`FLEET_AGENT_HOST`) | `/api/v1/*`, `/up`, and `/health` | The LAN only, through the agent TLS proxy |
 | `localhost` | `/up` only | The container health check |
 
 - **Host guard.** `lib/middleware/host_separation.rb` runs first in the middleware stack. It returns an empty 404 for a path on the wrong hostname or for an unknown host. Each route is also constrained to its hostname in `config/routes.rb`, as a second line of defence.
@@ -142,13 +142,7 @@ bin/rails operators:disallow EMAIL=you@example.com
 
 Google OAuth needs a web client in Google Cloud. Its authorised redirect URI is `https://<dashboard host>/auth/google_oauth2/callback`, or `http://localhost:3000/auth/google_oauth2/callback` for development.
 
-| Setting | Default | |
-|---|---|---|
-| `FLEET_DASHBOARD_HOST`, `FLEET_AGENT_HOST` | required in production | The two hostnames above |
-| `FLEET_TRUSTED_PROXIES` | loopback only | Comma-separated addresses or CIDRs of the tunnel connector and the agent TLS proxy. Only these may set `X-Forwarded-Host`, `X-Forwarded-For`, `Client-IP` and `Forwarded`; the host guard drops those headers from anyone else, so client addresses used for rate limits cannot be spoofed |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required in production | Google OAuth web client |
-| `FLEET_SESSION_IDLE_MINUTES` | `120` | Sign out after this long without a request |
-| `FLEET_SESSION_ABSOLUTE_HOURS` | `12` | Sign out this long after signing in, however active |
+Settings and their defaults: [docs/operations/configuration.md](../docs/operations/configuration.md).
 
 ## Dashboard
 
@@ -183,13 +177,7 @@ The agent API lives under `/api/v1` (`app/controllers/api/v1`) on the agent host
 - **Request guard.** `lib/middleware/agent_api_request_guard.rb` caps `/api/` bodies at 1 MB and stops Rails parsing or logging agent JSON. `Api::V1::BaseController` then reads, size-checks (per endpoint) and validates the raw body, and renders every failure as the documented error envelope.
 - **Authenticated endpoints** inherit from `Api::V1::AuthenticatedController`. The host is always `current_host`, from the credential; never look a host up from the request. A spec enforces both rules.
 
-| Setting | Default | |
-|---|---|---|
-| `FLEET_API_SCHEMAS_DIR` | `../docs/api/schemas` | Where the JSON Schemas are read from |
-| `FLEET_MINIMUM_AGENT_VERSION` | `0.1.0` | Older agents get `426 agent_version_unsupported`, except on heartbeats, update results, and release downloads (the update path) |
-| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints |
-| `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
-| `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Enrollment token lifetime |
+Settings and their defaults: [docs/operations/configuration.md](../docs/operations/configuration.md).
 
 ### Onboarding
 
@@ -208,13 +196,7 @@ The default way to enroll (DEC-17). The installer starts a request and an operat
   - `201` once approved, with the credential, exactly once. The host is created, or re-enrolled, in that same transaction.
 - **Cleanup.** Requests expire after 10 minutes and are deleted a day later by `OnboardingPruneJob` (`config/recurring.yml`).
 
-| Setting | Default | |
-|---|---|---|
-| `FLEET_ONBOARDING_TTL_MINUTES` | `10` | How long a request waits for approval |
-| `FLEET_ONBOARDING_POLL_SECONDS` | `5` | Minimum time between polls |
-| `FLEET_ONBOARDING_MAX_OPEN`, `FLEET_ONBOARDING_MAX_OPEN_PER_ADDRESS` | `50`, `5` | Requests awaiting approval, in total and per client address |
-| `FLEET_ONBOARDING_RATE_LIMIT_PER_MINUTE` | `10` | Starts per client address |
-| `FLEET_DASHBOARD_URL` | `https://$FLEET_DASHBOARD_HOST` | Base of the approval URL, if the dashboard uses another scheme or port |
+Settings and their defaults: [docs/operations/configuration.md](../docs/operations/configuration.md).
 
 ### Pre-registration
 
@@ -240,30 +222,25 @@ Signed agent releases ([docs/releases.md](../docs/releases.md), ADR 0018, ADR 00
 - **Storage.** `agent_releases` keeps the exact manifest and signature bytes; the binary is a file in `FLEET_RELEASES_DIR` (a persistent volume; Active Storage is not used), written to a staging file and renamed into place once verified. Releases are immutable, and never deleted while a host in the fleet runs them: the model and the `agent_releases_guard` trigger refuse it. A rollout holds a restricting foreign key to its release too (P1-UPDATES).
 - **Downloads.** `GET /api/v1/releases/<version>/manifest`, `signature`, and `binary` on the agent hostname only (`docs/api/README.md`): no credential, limited per address, never `426`, with `ETag`, `Content-Length`, and byte ranges so a broken download resumes.
 
-| Setting | Default | |
-|---|---|---|
-| `FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT` | none | The release public keys: the two lines of `agent/release-keys/current.pub` and `next.pub`, or only their base64 key line. A malformed key, or a next key without a current one, stops the boot. With no current key every import is refused. The server never holds a private key |
-| `FLEET_RELEASES_DIR` | `storage/releases` | Where release binaries are kept. Mount a persistent volume here |
-| `FLEET_RELEASE_REPOSITORY` | `hostilecity/fleet-cmdb` | The GitHub repository releases are imported from |
-| `FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE` | `60` | Release downloads per client address |
-| `FLEET_ROLLOUT_SPREAD_SECONDS` | `300` | Window over which opening a rollout stage spreads the update directive (P1-UPDATES) |
-| `FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES` | `30` | A host sent the update directive that has not reported by then is `unconfirmed`, which halts the rollout |
+Settings and their defaults: [docs/operations/configuration.md](../docs/operations/configuration.md).
 
 ### Docker image
 
-The image needs the schemas too, so build it from `cmdb/` with `docs/api` as a named build context:
+The image needs the schemas too, so build it from `cmdb/` with `docs/api` as a named build context (`../compose.yaml` does this):
 
 ```sh
 docker build --build-context api=../docs/api -t cmdb .
 ```
 
+It runs Puma directly on port 3000, without Thruster: `HostSeparation` trusts forwarded headers only from the proxy that connected, and behind Thruster every request would come from loopback. Deploying it: [docs/operations/install-server.md](../docs/operations/install-server.md).
+
 ## Secrets
 
 - `config/master.key` is generated locally and **never committed** (it is ignored). `config/credentials.yml.enc` is committed but cannot be read without that key. Back the key up with the database backup (NFR-2): a restored database without the key is not enough to run production.
-- A fresh clone does not have the key. Development and test do not need it; to create your own credentials for production, run `bin/rails credentials:edit` (this generates a new key and file).
+- A fresh clone does not have the key. Development and test do not need it, and neither does the Compose deployment, which sets `SECRET_KEY_BASE` instead ([configuration.md](../docs/operations/configuration.md#secrets)).
 - Logs filter credentials, tokens, authorization headers, and session material (`config/initializers/filter_parameter_logging.rb`, covered by `spec/config/filter_parameters_spec.rb`).
 
 ## Layout notes
 
-- `Dockerfile` is the Rails production image. The deployment stack (Compose, Cloudflare tunnel, private agent hostname) is added by its own issue.
+- `Dockerfile` is the Rails production image. The deployment stack is `../compose.yaml` (P1-O03): PostgreSQL, the app, Traefik for the private agent hostname, and the Cloudflare tunnel connector.
 - Kamal, Action Mailer, Action Mailbox, Action Text, Active Storage, and jbuilder were deliberately not generated.

@@ -8,18 +8,21 @@ Project structure:
     requirements.md
     mockups/
     decisions/
-    operations/     # runbooks: backup and restore
+    operations/     # installation and operations guides
     api/            # agent API spec, JSON Schemas, example payloads (issue P0-CONTRACT)
     backlog/        # issues.yml (issue stubs) and specs/ (implementation details, source of truth)
   cmdb/
   agent/
-  ops/              # backup, restore, and restore-drill scripts and systemd units
+  ops/              # backup scripts and units; Traefik config for the deployment
+  compose.yaml      # the server deployment (Docker Compose); settings in .env (from .env.example)
   .github/
 ```
 
+**Install it:** [server](docs/operations/install-server.md), then [agents](docs/operations/install-agent.md). All installation and operations guides, including the [configuration reference](docs/operations/configuration.md) and [troubleshooting](docs/operations/troubleshooting.md): [docs/operations/](docs/operations/README.md).
+
 - Contributing, branch and commit conventions: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Decisions (ADRs): [docs/decisions/](docs/decisions/README.md)
-- Server setup and development: [cmdb/README.md](cmdb/README.md)
+- Server development: [cmdb/README.md](cmdb/README.md)
 - Backup, restore, and the restore drill: [docs/operations/backup-and-restore.md](docs/operations/backup-and-restore.md)
 - Agent build and checks: [agent/README.md](agent/README.md)
 - Reporting a vulnerability: [SECURITY.md](SECURITY.md)
