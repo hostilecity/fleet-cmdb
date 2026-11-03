@@ -38,7 +38,7 @@ dir=${1:?usage: scripts/vm-test.sh DIR IMAGE OUT}
 image=${2:?usage: scripts/vm-test.sh DIR IMAGE OUT}
 out=${3:?usage: scripts/vm-test.sh DIR IMAGE OUT}
 here=$(cd "$(dirname "$0")" && pwd)
-# shellcheck source=update-test-lib.sh
+# shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
 . "$here/update-test-lib.sh"
 
 OLD=1.0.0
@@ -149,6 +149,13 @@ wait_until() {
 
 ssh_up() { vm_ok true; }
 
+# booted_since BOOT_ID: the VM answers, from a boot other than BOOT_ID.
+booted_since() {
+    local now
+    now=$(boot_id) || return 1
+    [ -n "$now" ] && [ "$now" != "$1" ]
+}
+
 # reboot_vm soft|hard: `systemctl reboot`, or `reboot -ff` (no sync, no unmount: a reset), then waits
 # for SSH from the new boot.
 reboot_vm() {
@@ -159,12 +166,7 @@ reboot_vm() {
         soft) vm 'systemctl reboot' > /dev/null 2>&1 || true ;;
         hard) timeout 10 ssh "${ssh_opts[@]}" -p "$SSH_PORT" tester@127.0.0.1 'sudo reboot -ff' > /dev/null 2>&1 || true ;;
     esac
-    new_boot() {
-        local now
-        now=$(boot_id) || return 1
-        [ -n "$now" ] && [ "$now" != "$before" ]
-    }
-    wait_until "the VM to come back after a $1 reboot" 300 new_boot
+    wait_until "the VM to come back after a $1 reboot" 300 booted_since "$before"
     echo "rebooted ($1); boot id $(boot_id)"
 }
 
@@ -296,6 +298,7 @@ started=$SECONDS
 since=0
 wait_until "SSH on the first boot" 300 ssh_up
 vm 'cloud-init status --wait > /dev/null || true'
+# shellcheck disable=SC2016 # expanded in the guest
 echo "vm-test: booted in $((SECONDS - started))s: $(vm '. /etc/os-release; echo "$PRETTY_NAME, $(uname -r)"')"
 
 # Journals from earlier boots are wanted when a scenario fails after a reboot.
@@ -441,6 +444,7 @@ scenario 304 "Reboot after confirmation" reboot_after_confirmation
 scenario 305 "Reboot before the switch" reboot_before_switch
 scenario 306 "Crash-looping release across a reboot" crash_loop_and_reboot
 
+# shellcheck disable=SC2016 # expanded in the guest
 os=$(vm '. /etc/os-release; echo "$PRETTY_NAME"' 2> /dev/null || echo "Debian 13")
 {
     printf '<?xml version="1.0" encoding="UTF-8"?>\n'

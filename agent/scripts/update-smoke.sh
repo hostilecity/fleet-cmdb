@@ -28,7 +28,7 @@ set -euo pipefail
 
 dir=${1:?usage: sudo scripts/update-smoke.sh DIR}
 here=$(cd "$(dirname "$0")" && pwd)
-# shellcheck source=update-test-lib.sh
+# shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
 . "$here/update-test-lib.sh"
 agent_dir=$(dirname "$here")
 [ "$(id -u)" = 0 ] || { echo "update-smoke: run as root (sudo)" >&2; exit 2; }
@@ -184,7 +184,9 @@ expect_result() { # SCENARIO OUTCOME [AGENT_VERSION]
     [ "$outcome" = "$2" ] || fail "$1: the result is $outcome, expected $2"
     [ -z "${3:-}" ] || [ "$reporter" = "$3" ] || fail "$1: the result was reported by $reporter, expected $3"
     if [ "$2" != succeeded ]; then
-        [ -n "$reason" ] && [ "$reason" != null ] || fail "$1: no reason was given"
+        if [ -z "$reason" ] || [ "$reason" = null ]; then
+            fail "$1: no reason was given"
+        fi
     fi
 }
 

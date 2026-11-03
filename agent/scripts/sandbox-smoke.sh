@@ -38,6 +38,7 @@ cleanup() {
         systemctl reset-failed "fleet-agent-smoke-$name" 2>/dev/null || true
         rm -rf "/var/lib/fleet-agent-smoke-$name" "/etc/fleet-agent-smoke-$name"
     done
+    # shellcheck disable=SC2086 # one word per process id
     [ -z "$pids" ] || kill $pids 2>/dev/null || true
     rm -rf "$tmp" /usr/local/lib/fleet-agent-smoke
 }
