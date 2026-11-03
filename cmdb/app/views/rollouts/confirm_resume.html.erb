@@ -1,0 +1,22 @@
+<% version = @rollout.agent_release.version %>
+<% content_for :title, "Resume the rollout to #{version}" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Resume the rollout to <%= version %>?</h2>
+  <% if @rollout.state == "halted" %>
+    <div class="notice error" id="halt_reason"><strong>Why it halted: <%= @rollout.halt_reason %></strong><p><%= rollout_halted_by(@rollout) %>, <%= utc(@rollout.halted_at) %>.</p></div>
+    <% if @problems.any? %>
+      <ul id="problem_hosts">
+        <% @problems.each do |member| %>
+          <li><%= member.host.name %>: <%= rollout_host_lamp(member, @rollout, reason: @update_reasons[member.host_id]) %></li>
+        <% end %>
+      </ul>
+    <% end %>
+    <p>Resuming offers <%= version %> again to the hosts still waiting. Hosts that failed, rolled back, or did not confirm are not offered it again in this rollout, and a stage with such a host moves on only when you advance it.</p>
+    <div class="actions">
+      <%= button_to "Resume rollout", resume_rollout_path(@rollout), class: "btn", form_class: "inline" %>
+      <%= link_to "Keep it halted", agents_path, class: "btn quiet" %>
+    </div>
+  <% else %>
+    <%= render "rollouts/not_now", rollout: @rollout %>
+  <% end %>
+</div>

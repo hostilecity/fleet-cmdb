@@ -177,5 +177,18 @@
     <% end %>
     <p><%= link_to "All entries for this host", audit_path(host_id: @host.id), id: "host_audit_link" %></p>
   </section>
+  <section aria-labelledby="updates_heading" id="agent_updates">
+    <h2 id="updates_heading">Agent updates</h2>
+    <% if @update_history.empty? %>
+      <p class="muted">This host has not been part of a rollout.</p>
+    <% else %>
+      <div class="table-wrap"><table><tbody>
+        <% @update_history.each do |member| %>
+          <tr id="<%= dom_id(member) %>"><td><%= agent_update_summary(member, member.rollout) %><br><span class="muted"><%= agent_update_detail(member, member.rollout, @update_results[member.rollout_id]) %></span></td></tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+    <p><%= link_to "Agent versions and rollouts", agents_path %></p>
+  </section>
 </div>
 </div>

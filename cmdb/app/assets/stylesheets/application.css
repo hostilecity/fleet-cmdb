@@ -236,6 +236,28 @@ th.when { width: 11rem; }
 #upload .field input[type="file"] { width: 100%; }
 #import_form .error-text { flex-basis: 100%; }
 
+/* P1-D09 (#59): rollouts on the Agents page (approved mockups agents.html, agents-halted.html) */
+.rollout { margin-bottom: 2rem; }
+.rollout .host-head h2 { margin: 0; }
+.stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.75rem; margin: 0 0 1rem; padding: 0; list-style: none; }
+.stages li { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 0.75rem 1rem; }
+.stages li.current { border-color: var(--petrol); box-shadow: 0 0 0 1px var(--petrol); }
+.stages li.halted { border-color: var(--lamp-offline); box-shadow: 0 0 0 1px var(--lamp-offline); }
+.stages .name { font-weight: 700; display: block; }
+.stages .lamp, .stages .progress { display: flex; margin-top: 0.25rem; }
+.stages .progress { display: block; font-size: 0.875rem; color: var(--ink-soft); }
+.stages .lamp, #rollout_hosts .lamp, #agent_updates .lamp { white-space: normal; align-items: baseline; }
+#rollout_hosts .why, #problem_hosts .why { display: block; font-size: 0.875rem; color: var(--ink-soft); overflow-wrap: anywhere; }
+#canary_choices { margin: 0 0 1rem; }
+#canary_choices summary { cursor: pointer; color: var(--petrol); margin-bottom: 0.5rem; }
+.canary-list { border: 0; margin: 0; padding: 0; max-height: 18rem; overflow-y: auto; }
+.canary-list .check { display: block; padding: 0.25rem 0; overflow-wrap: anywhere; }
+.canary-list .check input { margin-right: 0.5rem; }
+@media (max-width: 52rem) { .stages { grid-template-columns: 1fr; } }
+/* The start form while a rollout is open: visibly unavailable, not just inert. */
+.btn:disabled, .btn:disabled:hover { background: var(--rule); border-color: var(--rule); color: var(--ink-soft); cursor: not-allowed; }
+:is(input, select, textarea):disabled { background: var(--panel); color: var(--ink-soft); cursor: not-allowed; }
+
 /* Text from a VM can contain bidirectional controls (an unterminated right-to-left override). Isolating each
    element that shows such text keeps it from reordering the text around it (NFR-1, P1-S12). */
 main :is(h1, h2, h3, p, li, dd, td, th, code, ins, del, strong, span, a, .mono) { unicode-bidi: isolate; }

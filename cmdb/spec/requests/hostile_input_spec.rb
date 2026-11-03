@@ -94,6 +94,19 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
 
       let!(:failure) { failed_job(class_name: "Hostile#{SecureRandom.hex(2)}Job", queue: "default", error_class: "Error", message: text) }
 
+      # A halted rollout whose host, operator, halt reason, versions, canary tag, and reported reason are all hostile
+      # (P1-D09). Rows are written directly, as with the host above, so the views are tested on their own.
+      let!(:rollout) do
+        release = release_for_rollout("0.3.0")
+        now = Time.current
+        rollout = Rollout.create!(agent_release: release, started_by: hostile_operator, canary_host_ids: [ host.id ], canary_tag: fit(32),
+                                  state: "halted", halt_reason: text, halted_at: now, started_at: now, stage_opened_at: now)
+        RolloutHost.create!(rollout:, host:, stage: 0, state: "rolled_back", offer_at: now, offered_at: now, resolved_at: now, from_version: fit(64))
+        AgentUpdate.create!(host:, rollout:, report_id: SecureRandom.uuid, version: "0.3.0", outcome: "rolled_back", reason: text,
+                            reported_agent_version: fit(64), occurred_at: now, received_at: now)
+        rollout
+      end
+
       # [path, whether a value from above is shown on the page as text]
       def pages
         [
@@ -102,7 +115,10 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
           [ "/hosts/#{host.id}/revoke", true ], [ "/hosts/#{host.id}/retire", true ], [ "/hosts/#{host.id}/reenroll", true ],
           [ "/audit", true ], [ "/audit?actor=#{CGI.escape(text.first(100))}&target=#{CGI.escape(text.first(100))}&action=#{CGI.escape(text.first(30))}", false ],
           [ "/audit?host_id=#{host.id}", true ],
-          [ "/agents", false ], [ "/agents/install?version=#{CGI.escape(text.first(80))}", false ],
+          [ "/agents", true ], [ "/agents/install?version=#{CGI.escape(text.first(80))}", false ],
+          [ "/agents/rollouts/#{rollout.id}/resume", true ], [ "/agents/rollouts/#{rollout.id}/halt", false ],
+          [ "/agents/rollouts/#{rollout.id}/advance", false ], [ "/agents/rollouts/#{rollout.id}/cancel", false ],
+          [ "/agents/rollouts/new?release=#{CGI.escape(text.first(80))}&canary_tag=#{CGI.escape(text.first(32))}&stages=#{CGI.escape(text.first(100))}", false ],
           [ "/onboard", true ], [ "/onboard/#{onboarding.user_code}", true ], [ "/onboard/#{CGI.escape(text.first(30))}", false ],
           [ "/jobs/failed", true ], [ "/settings", false ], [ "/sign_in?return_to=#{CGI.escape(text.first(100))}", false ]
         ]
@@ -133,6 +149,27 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         expect_no_injected_markup("POST /hosts")
       end
 
+      it "escapes the rollout start confirmation, the start form's choices, and a finished rollout (P1-D09)" do
+        Rollout.where(id: rollout.id).update_all(state: "cancelled", open_slot: nil, finished_at: Time.current)
+        canary, = host_running("0.2.0")
+        canary.update_columns(name: fit(100), hostname: fit(253), tags: [ fit(32) ])
+
+        get "/agents/rollouts/new", params: { release: "0.3.0", canary_tag: fit(32), canary_host_ids: [ canary.id.to_s ], stages: "25, 100" }
+        expect(response).to have_http_status(:ok)
+        expect_no_injected_markup("/agents/rollouts/new")
+        expect_shown_as_text(text, "/agents/rollouts/new")
+
+        post "/agents/rollouts", params: { release: "0.3.0", canary_tag: fit(32), stages: text.first(100) }
+        expect(response).to have_http_status(:unprocessable_content)
+        expect_no_injected_markup("POST /agents/rollouts")
+
+        [ "/agents", "/hosts/#{host.id}" ].each do |path|
+          get path
+          expect_no_injected_markup(path)
+          expect_shown_as_text(text, path)
+        end
+      end
+
       it "escapes a retired host's name and the retirement notice" do
         Host.where(id: host.id).update_all(enrollment_state: "retired") # the transition methods validate; a stored row may not pass them
 
@@ -152,7 +189,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
 
   it "names the same views the dashboard has, so a new one cannot be forgotten here" do
     shown = %w[hosts#index hosts#show hosts#edit hosts#new host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
-               audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new]
+               audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
+               rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel]
     views = Rails.application.routes.routes.filter_map do |route|
       controller, action = route.defaults.values_at(:controller, :action)
       next unless route.verb == "GET" && controller && !controller.start_with?("api/", "rails/") && controller != "health"

@@ -46,6 +46,13 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md), with the lo
   - start, advance, halt, resume, and cancel, each with confirmation.
 - **On host detail**, an "Agent updates" section with the host's update history.
 - **Live updates.** The fleet list's agent column and the rollout progress update live over the existing stream ([P1-D05](p1-dash-fleet.md)).
+- **As built.**
+  - Each action is a confirmation page (GET) and a CSRF-protected POST that calls the `Rollouts` method, as for host actions ([P1-D04](p1-dash-actions.md)). Starting is confirmed too: the form on `/agents` (release, canaries by tag or chosen hosts, later stages such as `25, 100`) opens a page naming the canaries that would be chosen.
+  - A confirmation opened for a rollout that has since changed state says so instead of acting, and a POST the state no longer allows changes nothing and shows the service's reason.
+  - The Agents page shows the latest rollout, open or finished. Its stage cards count every host; its host table lists the first 200.
+  - `rollout_hosts.from_version` keeps the version a host ran when its stage chose it, for the "From" column and the host's "0.1.0 → 0.2.0" history.
+  - Every rollout action, and the first offer of the update to a host, refreshes open pages; so does a heartbeat that reports a new agent version.
+  - No second factor for these actions in Phase 1: like the other host actions, they need a signed-in operator only.
 
 ### Acceptance criteria
 

@@ -1,0 +1,58 @@
+<%# The latest rollout, its stages, and its hosts (P1-D09; approved mockups agents.html and agents-halted.html). %>
+<% version = rollout.agent_release.version %>
+<% if rollout.state == "halted" %>
+  <div class="notice error" role="alert" id="rollout_halted">
+    <strong>The rollout to <%= version %> is halted: <%= rollout.halt_reason %></strong>
+    <p><%= rollout_halted_by(rollout) %>, <%= utc(rollout.halted_at) %>. No other host is offered <%= version %> until an operator resumes the rollout. Hosts that roll back return to the version they ran before by themselves.</p>
+  </div>
+<% end %>
+<section aria-labelledby="rollout_heading" id="<%= dom_id(rollout) %>" class="rollout">
+  <div class="host-head">
+    <div>
+      <h2 id="rollout_heading"><%= rollout_title(rollout) %></h2>
+      <div class="sub">
+        <span>Started by <%= rollout.started_by.display_name %>, <%= utc(rollout.started_at) %></span>
+        <% if rollout.state == "halted" %><span><%= rollout_halted_by(rollout) %>, <%= utc(rollout.halted_at) %></span><% end %>
+        <% if rollout.resumed_at && rollout.state != "halted" %><span>Resumed by <%= rollout.resumed_by&.display_name || "a former operator" %>, <%= utc(rollout.resumed_at) %></span><% end %>
+        <% if rollout.finished_at %><span><%= rollout.state.capitalize %> <%= utc(rollout.finished_at) %></span><% end %>
+      </div>
+    </div>
+    <div class="actions" id="rollout_actions">
+      <% case rollout.state %>
+      <% when "running" %>
+        <% unless rollout.final_stage? %><%= link_to "Advance to the next stage", advance_rollout_path(rollout), class: "btn quiet" %><% end %>
+        <%= link_to "Halt", halt_rollout_path(rollout), class: "btn danger quiet" %>
+        <%= link_to "Cancel rollout", cancel_rollout_path(rollout), class: "btn quiet" %>
+      <% when "halted" %>
+        <%= link_to "Resume", resume_rollout_path(rollout), class: "btn quiet" %>
+        <%= link_to "Cancel rollout", cancel_rollout_path(rollout), class: "btn danger quiet" %>
+      <% end %>
+    </div>
+  </div>
+  <ol class="stages" id="rollout_stages">
+    <% (0..rollout.stage_percents.size).each do |stage| %>
+      <% counts = stage_counts.select { |(s, _), _| s == stage }.transform_keys(&:last) %>
+      <li class="<%= rollout_stage_class(rollout, stage) %>">
+        <span class="name"><%= stage + 1 %>. <%= rollout_stage_name(rollout, stage) %></span>
+        <%= rollout_stage_lamp(rollout, stage, counts) %>
+        <span class="progress"><%= rollout_stage_progress(rollout, stage, counts, canary_names) %></span>
+      </li>
+    <% end %>
+  </ol>
+  <% if hosts.empty? %>
+    <p class="muted" id="rollout_no_hosts">No host is in this rollout yet.</p>
+  <% else %>
+    <div class="table-wrap"><table id="rollout_hosts"><thead><tr><th>Host</th><th>Stage</th><th>From</th><th>Status</th><th>Last change (UTC)</th></tr></thead><tbody>
+      <% hosts.each do |member| %>
+        <tr id="<%= dom_id(member) %>">
+          <td><%= link_to member.host.name, host_path(member.host) %></td>
+          <td><%= rollout_stage_number(member.stage) %></td>
+          <td class="mono"><%= member.from_version || tag.span("—", class: "unavailable") %></td>
+          <td><%= rollout_host_lamp(member, rollout, reason: reasons[member.host_id]) %></td>
+          <td class="muted"><%= utc(member.updated_at) %></td>
+        </tr>
+      <% end %>
+    </tbody></table></div>
+    <% if total > hosts.size %><p class="muted" id="rollout_hosts_more">Showing the first <%= hosts.size %> of <%= total %> hosts. The stage counts above include all of them.</p><% end %>
+  <% end %>
+</section>

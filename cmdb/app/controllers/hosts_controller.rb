@@ -7,6 +7,7 @@ class HostsController < ApplicationController
   HISTORY_LIMIT = 25
   STATUS_HISTORY_LIMIT = 20
   AUDIT_LIMIT = 20
+  UPDATE_HISTORY_LIMIT = 20
 
   def index
     @fleet = FleetList.new(params.permit(:q, :tag, :status, :sort, :dir))
@@ -25,6 +26,7 @@ class HostsController < ApplicationController
     @status_events = @host.status_events.order(occurred_at: :desc, id: :desc).limit(STATUS_HISTORY_LIMIT)
     @audit_entries = AuditEntry.for_target(@host).order(occurred_at: :desc, id: :desc).limit(AUDIT_LIMIT).to_a
     @actors = audit_actors(@audit_entries)
+    load_update_history
   end
 
   # Pre-register a host for an unattended install (P1-D04, DEC-17): the host is created pending with a
@@ -66,6 +68,12 @@ class HostsController < ApplicationController
       previous = snapshots[i + 1]
       { snapshot:, first: previous.nil? && snapshots.size <= HISTORY_LIMIT, changes: previous ? InventoryDiff.between(previous.stable, snapshot.stable) : [] }
     end
+  end
+
+  # The host's part in each rollout, newest first, with the latest result it reported for each (P1-D09).
+  def load_update_history
+    @update_history = @host.rollout_hosts.includes(rollout: :agent_release).order(created_at: :desc, id: :desc).limit(UPDATE_HISTORY_LIMIT).to_a
+    @update_results = @host.agent_updates.where(rollout_id: @update_history.map(&:rollout_id)).order(:received_at, :id).index_by(&:rollout_id)
   end
 
   # Display names for audit actors, loaded in two queries.
