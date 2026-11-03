@@ -18,6 +18,14 @@ RSpec.describe AgentApiRequestGuard do
     expect(JSON.parse(body.join)).to eq("error" => { "code" => "payload_too_large", "message" => "The request body is too large.", "request_id" => "req-1" })
   end
 
+  it "answers exactly as AgentApi::PayloadTooLarge does, taking its status, code, and message from it" do
+    refusal = Class.new(AgentApi::Error) { self.status, self.code, self.default_message = :content_too_large, "too_big", "Too big." }
+    stub_const("AgentApi::PayloadTooLarge", refusal)
+    (status, _headers, body), = call("/api/v1/enroll", "x" * 11)
+    expect(status).to eq(413)
+    expect(JSON.parse(body.join)).to eq("error" => { "code" => "too_big", "message" => "Too big.", "request_id" => "req-1" })
+  end
+
   it "rejects an oversize body sent without Content-Length" do
     (status, *), = call("/api/v1/enroll", "x" * 11, content_length: nil)
     expect(status).to eq(413)

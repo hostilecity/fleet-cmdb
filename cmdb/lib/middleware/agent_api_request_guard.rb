@@ -33,8 +33,11 @@ class AgentApiRequestGuard
 
   private
 
+  # The same status, code, and message as AgentApi::PayloadTooLarge, which controllers raise for their tighter
+  # limits. Looked up on each call, since AgentApi is reloadable and this middleware is not.
   def too_large(env)
-    error = { code: "payload_too_large", message: "The request body is too large.", request_id: env["action_dispatch.request_id"] }
-    [ 413, { "content-type" => "application/json; charset=utf-8" }, [ { error: error.compact }.to_json ] ]
+    refusal = AgentApi::PayloadTooLarge
+    error = { code: refusal.code, message: refusal.default_message, request_id: env["action_dispatch.request_id"] }
+    [ Rack::Utils.status_code(refusal.status), { "content-type" => "application/json; charset=utf-8" }, [ { error: error.compact }.to_json ] ]
   end
 end

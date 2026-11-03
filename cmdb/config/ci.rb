@@ -10,7 +10,8 @@ CI.run do
   step "Security: Importmap vulnerability audit", "bin/importmap audit"
   step "Security: Brakeman code analysis", "bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error"
 
-  step "Tests: RSpec", "bundle exec rspec"
+  # Every line of app/ and lib/ must run in the suite: below 100% line coverage, RSpec exits non-zero.
+  step "Tests: RSpec", "COVERAGE_MINIMUM=100 bundle exec rspec"
 
 
   # Optional: set a green GitHub commit status to unblock PR merge.
