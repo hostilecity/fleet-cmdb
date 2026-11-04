@@ -9,6 +9,8 @@
 # `diagnostics` (printed into the log of a failed scenario) and `record_header` (the Markdown text above
 # the table).
 
+record_out=${record_out:-}
+record_tmp=${record_tmp:-}
 record_passed=0
 record_failed=0
 record_cases=
@@ -42,7 +44,7 @@ record_case() {
     fi
 }
 
-# scenario ROLLOUT NAME FUNCTION: runs FUNCTION in a subshell with `rollout` set, and records it.
+# scenario ID NAME FUNCTION: runs `FUNCTION ID` in a subshell, and records it.
 scenario() {
     local id=$1 name=$2 fn=$3 start log status message result=""
     start=$SECONDS
@@ -52,9 +54,7 @@ scenario() {
     set +e
     (
         set -e
-        # shellcheck disable=SC2034 # read by the scenario's functions
-        rollout=$id
-        "$fn"
+        "$fn" "$id"
     ) 2>&1 | tee "$log"
     status=${PIPESTATUS[0]}
     set -e

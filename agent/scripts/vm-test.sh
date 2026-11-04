@@ -80,6 +80,7 @@ mkdir -p "$stub/releases"
 events=$stub/events.jsonl
 : > "$events"
 stub_pid=
+rollout=0
 record_out=$out
 record_tmp=$tmp
 
@@ -367,6 +368,7 @@ echo "vm-test: installed; state files: $state_files"
 # --- Scenarios ----------------------------------------------------------------------------------------
 
 kill_before_switch() {
+    rollout=$1
     reset
     hold_supervisor on
     offer good "$NEW"
@@ -382,6 +384,7 @@ kill_before_switch() {
 }
 
 kill_after_switch() {
+    rollout=$1
     reset
     offer good "$NEW" "{\"slow_heartbeat\": {\"version\": \"$NEW\", \"seconds\": 8}}"
     wait_until "the switch to $NEW" 120 current_is "$NEW"
@@ -394,6 +397,7 @@ kill_after_switch() {
 }
 
 reset_after_switch() {
+    rollout=$1
     reset
     # The new version's heartbeats are answered late, so it cannot confirm before the reset.
     offer good "$NEW" "{\"slow_heartbeat\": {\"version\": \"$NEW\", \"seconds\": 20}}"
@@ -406,6 +410,7 @@ reset_after_switch() {
 }
 
 reboot_after_confirmation() {
+    rollout=$1
     reset
     offer good "$NEW"
     expect_result succeeded "$NEW"
@@ -420,6 +425,7 @@ reboot_after_confirmation() {
 }
 
 reboot_before_switch() {
+    rollout=$1
     reset
     hold_supervisor on
     offer good "$NEW"
@@ -431,6 +437,7 @@ reboot_before_switch() {
 }
 
 crash_loop_and_reboot() {
+    rollout=$1
     reset
     offer crash_loop "$LOOPING"
     wait_until "the switch to $LOOPING" 120 current_is "$LOOPING"
