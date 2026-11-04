@@ -40,6 +40,8 @@ out=${3:?usage: scripts/vm-test.sh DIR IMAGE OUT}
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
 . "$here/update-test-lib.sh"
+# shellcheck source-path=SCRIPTDIR source=vm-test-record.sh
+. "$here/vm-test-record.sh"
 
 OLD=1.0.0
 NEW=1.0.1
@@ -53,6 +55,9 @@ LIB=/usr/lib/fleet-agent
 STATE=/var/lib/fleet-agent
 HOLD=/run/fleet-agent-update-hold
 DROPIN=/etc/systemd/system/fleet-agent-update.service.d
+# A state record the agent never writes: the backup before a switch must carry it, and a rollback must
+# put back exactly what it held, so a lost or skipped backup shows as a difference.
+MARKER=vm-test-marker.json
 
 for file in test.key "fleet-agent-$OLD" "fleet-agent-$NEW"; do
     [ -s "$dir/$file" ] || { echo "vm-test: missing $dir/$file" >&2; exit 2; }
@@ -75,13 +80,20 @@ mkdir -p "$stub/releases"
 events=$stub/events.jsonl
 : > "$events"
 stub_pid=
+record_out=$out
+record_tmp=$tmp
 
 cleanup() {
+    local status=$?
+    set +e
+    record_write "$status"
+    [ ! -s "$out/results.md" ] || cat "$out/results.md"
     if [ -s "$tmp/qemu.pid" ]; then
         kill "$(cat "$tmp/qemu.pid")" 2> /dev/null || true
     fi
     [ -z "$stub_pid" ] || kill "$stub_pid" 2> /dev/null || true
     rm -rf "$tmp"
+    exit "$status"
 }
 trap cleanup EXIT
 
@@ -130,12 +142,6 @@ qemu-system-x86_64 -name vm-01 -machine "q35,accel=$accel" -cpu "$cpu" -m 2048 -
     -display none -serial "file:$out/console.log" -daemonize -pidfile "$tmp/qemu.pid"
 
 # --- Waiting, reporting -------------------------------------------------------------------------------
-
-# fail MESSAGE: ends the scenario (scenarios run in a subshell).
-fail() {
-    echo "vm-test: FAILED: $*" >&2
-    exit 1
-}
 
 wait_until() {
     local what=$1 seconds=$(($2 * slow)) end
@@ -229,6 +235,49 @@ reset() {
         systemctl start fleet-agent"
     since=$(date +%s.%N)
     wait_until "a heartbeat from $OLD" 90 heartbeat_from "$OLD"
+    marker_original="rollout $rollout: state $OLD wrote before the update ($(date +%s%N))"
+    write_marker "$marker_original"
+    marker_expected=$marker_original
+}
+
+write_marker() {
+    vm "printf '%s' $(printf '%q' "$1") > $STATE/$MARKER && chmod 0600 $STATE/$MARKER && sync"
+}
+
+# change_state: the state changes while the new version runs (after the backup was taken). A rollback
+# must undo this; a confirmed update must keep it.
+change_state() {
+    marker_changed="rollout $rollout: state changed while the new version ran"
+    write_marker "$marker_changed"
+}
+
+# The update has settled: no update record, no outcome waiting to be posted, no supervisor or rollback
+# unit running, and the service active. Prints what has not settled yet.
+unsettled() {
+    vm "s=''
+        [ ! -e $STATE/update.json ] || s=\"\$s the update record $STATE/update.json is still there;\"
+        [ ! -e $STATE/update-result.json ] || s=\"\$s the outcome in $STATE/update-result.json is not yet accepted;\"
+        for u in fleet-agent-update fleet-agent-rollback; do
+            a=\$(systemctl show -p ActiveState --value \$u)
+            case \$a in inactive|failed|'') ;; *) s=\"\$s \$u is \$a;\" ;; esac
+        done
+        a=\$(systemctl show -p ActiveState --value fleet-agent)
+        [ \"\$a\" = active ] || s=\"\$s fleet-agent is \$a;\"
+        printf '%s' \"\$s\"" 2> /dev/null || echo " the VM does not answer;"
+}
+
+
+# wait_settled: an accepted result is published before the supervisor cleans up and restarts the service,
+# so the final layout is inspected only once the update has settled.
+wait_settled() {
+    local seconds=$((180 * slow)) end left
+    end=$((SECONDS + seconds))
+    while true; do
+        left=$(unsettled)
+        [ -n "$left" ] || return 0
+        ((SECONDS < end)) || fail "the update did not settle within ${seconds}s:$left"
+        sleep 1
+    done
 }
 
 # expect_result OUTCOME REPORTER [REASON_TEXT]: the update result the stub accepted for this rollout.
@@ -250,9 +299,8 @@ expect_result() {
 
 # expect_one_version VERSION PREVIOUS: exactly one working version runs (PREVIOUS "-" means no link).
 expect_one_version() {
-    local version=$1 previous=$2 installed expected pid exe runs t
-    # The service may be on its way back up after the result was sent.
-    wait_until "the service to be active" 120 vm_ok 'systemctl is-active --quiet fleet-agent'
+    local version=$1 previous=$2 installed expected pid exe runs t marker
+    wait_settled
     [ "$(link_of current)" = "versions/$version" ] || fail "current is $(link_of current), expected versions/$version"
     if [ "$previous" = - ]; then
         [ -z "$(link_of previous)" ] || fail "previous is $(link_of previous), expected none"
@@ -269,8 +317,6 @@ expect_one_version() {
     [ "$exe" = "$LIB/versions/$version/fleet-agent" ] || fail "the service runs $exe, expected version $version"
     runs=$(vm "pgrep -c -f '^$LIB/current/fleet-agent run' || true")
     [ "$runs" = 1 ] || fail "$runs agent processes run, expected 1"
-    vm_ok 'systemctl is-active --quiet fleet-agent-update' && fail "an update supervisor is still running"
-    wait_until "no update in progress" 120 vm_ok "test ! -e $STATE/update.json"
     t=$(date +%s.%N)
     since=$t
     wait_until "a heartbeat from $version acknowledged by the server" 90 heartbeat_from "$version"
@@ -278,8 +324,11 @@ expect_one_version() {
     for file in $state_files; do
         vm_ok "test -s $STATE/$file" || fail "$STATE/$file is gone"
     done
+    marker=$(vm "cat $STATE/$MARKER" 2> /dev/null || echo "(missing)")
+    [ "$marker" = "$marker_expected" ] \
+        || fail "the state record $MARKER holds '$marker', expected '$marker_expected' (state lost, or not restored by the rollback)"
     event_exists '[.[] | select(.kind == "unauthorised")] | length == 0' || fail "the stub saw a request without the credential"
-    echo "one version runs: $version (previous: $previous); heartbeat acknowledged; configuration and state kept"
+    echo "one version runs: $version (previous: $previous); heartbeat acknowledged; configuration and credential unchanged; state record as expected"
 }
 
 # --- Setup --------------------------------------------------------------------------------------------
@@ -337,7 +386,10 @@ kill_after_switch() {
     offer good "$NEW" "{\"slow_heartbeat\": {\"version\": \"$NEW\", \"seconds\": 8}}"
     wait_until "the switch to $NEW" 120 current_is "$NEW"
     vm 'systemctl kill --signal=SIGKILL fleet-agent-update' || fail "no supervisor to kill"
+    change_state
     expect_result succeeded "$NEW"
+    # A confirmed update keeps what the new version wrote.
+    marker_expected=$marker_changed
     expect_one_version "$NEW" "$OLD"
 }
 
@@ -346,8 +398,10 @@ reset_after_switch() {
     # The new version's heartbeats are answered late, so it cannot confirm before the reset.
     offer good "$NEW" "{\"slow_heartbeat\": {\"version\": \"$NEW\", \"seconds\": 20}}"
     wait_until "the switch to $NEW" 120 current_is "$NEW"
+    change_state
     reboot_vm hard
     expect_result rolled_back "$OLD" "restarted"
+    # The rollback restores the state backed up before the switch.
     expect_one_version "$OLD" "$OLD"
 }
 
@@ -355,6 +409,9 @@ reboot_after_confirmation() {
     reset
     offer good "$NEW"
     expect_result succeeded "$NEW"
+    wait_settled
+    change_state
+    marker_expected=$marker_changed
     reboot_vm soft
     expect_one_version "$NEW" "$OLD"
     local results
@@ -377,6 +434,7 @@ crash_loop_and_reboot() {
     reset
     offer crash_loop "$LOOPING"
     wait_until "the switch to $LOOPING" 120 current_is "$LOOPING"
+    change_state
     reboot_vm soft
     expect_result rolled_back "$OLD" "restarted"
     expect_one_version "$OLD" "$OLD"
@@ -384,14 +442,7 @@ crash_loop_and_reboot() {
         || fail "the failure hook did not run after the reboot"
 }
 
-# --- Running and recording ----------------------------------------------------------------------------
-
-xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
-
-passed=0
-failed=0
-cases=
-rows=
+# --- Running and recording (vm-test-record.sh) -------------------------------------------------------
 
 diagnostics() {
     echo "--- layout and state"
@@ -404,37 +455,12 @@ diagnostics() {
     tail -n 30 "$events"
 }
 
-# scenario ROLLOUT NAME FUNCTION: runs one scenario in a subshell and records it.
-scenario() {
-    local id=$1 name=$2 fn=$3 start log status message
-    start=$SECONDS
-    log=$out/logs/$fn.log
-    rm -f "$tmp/last-result"
-    echo "== $name"
-    set +e
-    (
-        set -e
-        rollout=$id
-        "$fn"
-    ) 2>&1 | tee "$log"
-    status=${PIPESTATUS[0]}
-    set -e
-    local took=$((SECONDS - start)) result=""
-    [ -s "$tmp/last-result" ] && result=$(cat "$tmp/last-result")
-    if [ "$status" = 0 ]; then
-        passed=$((passed + 1))
-        cases+="  <testcase classname=\"agent-update-vm\" name=\"$(printf '%s' "$name" | xml_escape)\" time=\"$took\"/>"$'\n'
-        rows+="| $name | passed | $result | ${took}s |"$'\n'
-    else
-        failed=$((failed + 1))
-        message=$(grep 'vm-test: FAILED' "$log" | tail -n 1 | sed 's/^vm-test: FAILED: //')
-        diagnostics >> "$log" 2>&1 || true
-        cases+="  <testcase classname=\"agent-update-vm\" name=\"$(printf '%s' "$name" | xml_escape)\" time=\"$took\"><failure message=\"$(printf '%s' "$message" | xml_escape)\"/></testcase>"$'\n'
-        rows+="| $name | **failed**: $message | $result | ${took}s |"$'\n'
-        if [ -n "${GITHUB_ACTIONS:-}" ]; then
-            echo "::error title=vm-test: $name::$message (see logs/$fn.log in the vm-test-results artifact)"
-        fi
-    fi
+os="Debian 13"
+record_header() {
+    echo "## Agent update failure tests on a VM (P1-A12)"
+    echo
+    echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with \`fleet-agent install\`."
+    echo "Each scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
 scenario 301 "Supervisor killed before the switch" kill_before_switch
@@ -446,23 +472,5 @@ scenario 306 "Crash-looping release across a reboot" crash_loop_and_reboot
 
 # shellcheck disable=SC2016 # expanded in the guest
 os=$(vm '. /etc/os-release; echo "$PRETTY_NAME"' 2> /dev/null || echo "Debian 13")
-{
-    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
-    printf '<testsuite name="agent-update-vm" tests="%s" failures="%s" time="%s">\n' "$((passed + failed))" "$failed" "$SECONDS"
-    printf '%s' "$cases"
-    printf '</testsuite>\n'
-} > "$out/results.xml"
-{
-    echo "## Agent update failure tests on a VM (P1-A12)"
-    echo
-    echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with \`fleet-agent install\`."
-    echo "Each scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor, an acknowledged heartbeat) and that the configuration, credential, and state survived."
-    echo
-    echo "| Scenario | Outcome | Update result | Time |"
-    echo "| --- | --- | --- | --- |"
-    printf '%s' "$rows"
-    echo
-    echo "$passed passed, $failed failed, in ${SECONDS}s."
-} > "$out/results.md"
-cat "$out/results.md"
-[ "$failed" = 0 ]
+# The EXIT trap writes results.xml and results.md.
+[ "$record_failed" = 0 ]

@@ -50,6 +50,10 @@ jobs:
       - name: Check the test scripts with shellcheck
         run: shellcheck --version | head -n 2 && shellcheck -x scripts/*.sh
 
+      - name: Self-test the result recording
+        # Without a VM: a passing, a failing, and a dying (exit 255) scenario are all recorded.
+        run: scripts/vm-test-record-selftest.sh
+
       - name: Install pinned toolchain and target
         run: |
           rustup toolchain install
