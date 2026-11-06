@@ -14,7 +14,7 @@
           ]
         }
       ],
-      "fact": "sshd.banner",
+      "fact": "file:/etc/issue.net",
       "condition": {
         "present": false
       },

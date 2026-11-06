@@ -18,7 +18,7 @@ module CisRules
     def self.from_h(rule) = new(key: rule.fetch("key"), **DEFINITION_FIELDS.to_h { |name| [ name.to_sym, rule.fetch(name) ] })
 
     # The definition's fields except the key, as stored and audited.
-    def fields = DEFINITION_FIELDS.to_h { |name| [ name, public_send(name) ] }
+    def fields = to_h.except(:key).transform_keys(&:to_s)
 
     def content_hash = Digest::SHA256.hexdigest(CisRules.canonical_json(fields))
   end
