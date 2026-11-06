@@ -3,7 +3,11 @@
 # (P1-AGENT-UPDATE, ADR 0018): the real unit files, the real side-by-side layout, a real `systemd-run`
 # from inside the agent's sandbox, and releases signed with throwaway keys.
 #
-#   sudo scripts/update-smoke.sh DIR            (run from agent/)
+#   sudo scripts/update-smoke.sh DIR [GROUP]    (run from agent/)
+#
+# GROUP runs one part, so CI can run the parts side by side: refusals (the four refused releases), rollbacks
+# (exits at start, crash loop, no credential), or recovery (both killed supervisors, success, below minimum).
+# Without it, every scenario runs.
 #
 # DIR holds what the workflow prepared (scripts/update-smoke-build.sh, minisign -G -W): test.key and
 # other.key (throwaway private keys, never committed), and fleet-agent-1.0.0 and fleet-agent-1.0.1, the
@@ -26,7 +30,12 @@
 #   below minimum  an agent the server answers 426 on inventory still updates (NFR-5)
 set -euo pipefail
 
-dir=${1:?usage: sudo scripts/update-smoke.sh DIR}
+dir=${1:?usage: sudo scripts/update-smoke.sh DIR [refusals|rollbacks|recovery]}
+group=${2:-all}
+case "$group" in
+    all | refusals | rollbacks | recovery) ;;
+    *) echo "update-smoke: unknown group $group (refusals, rollbacks, or recovery)" >&2; exit 2 ;;
+esac
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
 . "$here/update-test-lib.sh"
@@ -229,7 +238,7 @@ server_url = "https://localhost:8443"
 credential = "EXAMPLEkey01.EXAMPLE-secret-not-a-real-credential-0001"
 ca_file = "$ETC/ca.pem"
 log_level = "debug"
-update_confirm_seconds = 30
+update_confirm_seconds = 15
 
 [heartbeat]
 interval_seconds = 10
@@ -244,6 +253,8 @@ config_before=$(sha256sum "$ETC/config.toml" "$ETC/ca.pem")
 
 # --- Scenarios ----------------------------------------------------------------------------------------
 
+in_group() { [ "$group" = all ] || [ "$group" = "$1" ]; }
+
 refused() { # RELEASE VERSION
     echo "== refused: $1 ($2)"
     reset
@@ -253,10 +264,12 @@ refused() { # RELEASE VERSION
     expect_old_running "refused $1"
     [ ! -e "$LIB/versions/$2" ] || fail "refused $1: $LIB/versions/$2 exists"
 }
-refused tampered "$NEW"
-refused unsigned "$NEW"
-refused unknown_key "$NEW"
-refused older 0.9.0
+if in_group refusals; then
+    refused tampered "$NEW"
+    refused unsigned "$NEW"
+    refused unknown_key "$NEW"
+    refused older 0.9.0
+fi
 
 rolled_back() { # SCENARIO RELEASE VERSION [EXTRA_PLAN]
     echo "== rolled back: $1"
@@ -266,9 +279,13 @@ rolled_back() { # SCENARIO RELEASE VERSION [EXTRA_PLAN]
     expect_result "$1" rolled_back "$OLD"
     expect_old_running "$1"
 }
-rolled_back "a release that exits at start" exits_at_start 1.0.2
-rolled_back "a crash-looping release" crash_loop 1.0.3
-rolled_back "a release that cannot authenticate" good "$NEW" "{\"deny_heartbeat\": [\"$NEW\"]}"
+if in_group rollbacks; then
+    rolled_back "a release that exits at start" exits_at_start 1.0.2
+    rolled_back "a crash-looping release" crash_loop 1.0.3
+    rolled_back "a release that cannot authenticate" good "$NEW" "{\"deny_heartbeat\": [\"$NEW\"]}"
+fi
+
+in_group recovery || { echo "update-smoke: every $group scenario passed"; exit 0; }
 
 echo "== killed: the supervisor dies after the switch of a good release"
 reset
@@ -322,4 +339,4 @@ running_is "$NEW" || fail "below minimum: running $(running_version)"
 # The new version's startup inventory (since is still from before the update; inventory is every 15 min).
 wait_until "inventory from $NEW to be accepted" 90 inventory_from "$NEW" 200
 
-echo "update-smoke: every scenario passed"
+echo "update-smoke: every $group scenario passed"

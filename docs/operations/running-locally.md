@@ -132,4 +132,4 @@ Stop the server and the agent, then delete `~/fleet-local` (the certificates, th
 
 ## What needs more than this
 
-The agent installer, updates, and rollbacks need systemd and a disposable machine: `agent/scripts/update-smoke.sh` and `agent/scripts/vm-test.sh` (a Debian 13 VM under QEMU). CI runs them on every agent change; they rewrite system directories, so do not run them on your own machine.
+The agent installer, updates, and rollbacks need systemd and a disposable machine: `agent/scripts/update-smoke.sh` and `agent/scripts/vm-test.sh` (a Debian 13 VM under QEMU). CI runs them on every agent change (the update smoke test also on every push to main, but not for a change to `docs/api` alone, which the agent contract tests cover); they rewrite system directories, so do not run them on your own machine.
