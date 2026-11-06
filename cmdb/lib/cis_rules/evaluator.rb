@@ -34,7 +34,7 @@ module CisRules
     module_function
 
     def call(rule, facts, os, manifest: ConfigManifest.current)
-      return not_readable("The host has not reported its operating system.") unless os.is_a?(Hash) && os["id"].is_a?(String)
+      return not_readable("The host has not reported its operating system.") unless os.is_a?(Hash) && os["id"].is_a?(String) && os["id"].present?
       return Outcome.new(result: "not_applicable", observed: nil, reason: applicability(rule, os)) unless applies?(rule.applies_to, os)
 
       fact = manifest.fact(rule.fact)
@@ -98,10 +98,15 @@ module CisRules
     def matches?(pattern, values, deadline:)
       regexp = Condition.regexp(pattern)
       values.all? do |entry|
-        raise OutOfTime if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-
-        entry.is_a?(String) && regexp.match?(entry)
+        out_of_time!(deadline)
+        matched = entry.is_a?(String) && regexp.match?(entry)
+        out_of_time!(deadline) # a match that began in time may end after the budget (review of #102)
+        matched
       end
+    end
+
+    def out_of_time!(deadline)
+      raise OutOfTime if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
     end
 
     # No permission bit in the mode that the limit does not grant (special bits included).
@@ -109,15 +114,20 @@ module CisRules
 
     # The value as reported, or, when its JSON is longer than OBSERVED_MAX_BYTES, that JSON cut short at a
     # character boundary and marked as truncated.
+    # The limit is on the stored JSON, so the cut string is measured as JSON too: its quotes and backslashes are
+    # escaped again (review of #102).
     def observed(value)
       json = value.to_json
       return value if json.bytesize <= OBSERVED_MAX_BYTES
 
-      "#{json.byteslice(0, OBSERVED_MAX_BYTES - 64).scrub('')}… (truncated from #{json.bytesize} bytes)"
+      marker = "… (truncated from #{json.bytesize} bytes)"
+      cut = ->(bytes) { "#{json.byteslice(0, bytes).scrub('')}#{marker}" }
+      keep = (0..OBSERVED_MAX_BYTES).bsearch { |bytes| cut.(bytes + 1).to_json.bytesize > OBSERVED_MAX_BYTES } # the most that fits
+      cut.(keep)
     end
 
     def not_readable(reason) = Outcome.new(result: "not_readable", observed: nil, reason: reason.to_s.truncate(REASON_MAX))
 
-    private_class_method :applies?, :applicability, :holds?, :select, :operate, :comparable, :entries, :matches?, :mode_at_most?, :observed, :not_readable
+    private_class_method :applies?, :applicability, :holds?, :select, :operate, :comparable, :entries, :matches?, :out_of_time!, :mode_at_most?, :observed, :not_readable
   end
 end

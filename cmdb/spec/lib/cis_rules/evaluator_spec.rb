@@ -92,7 +92,7 @@ RSpec.describe CisRules::Evaluator do
     end
 
     it "is not readable, before anything else, when the host has not reported its operating system" do
-      [ nil, {}, { "id" => nil } ].each do |os|
+      [ nil, {}, { "id" => nil }, { "id" => "", "version_id" => "13" }, { "id" => "  " } ].each do |os|
         expect(described_class.call(rule("sshd.permitrootlogin", { "eq" => "no" }), {}, os))
           .to have_attributes(result: "not_readable", reason: "The host has not reported its operating system.")
       end
@@ -141,6 +141,12 @@ RSpec.describe CisRules::Evaluator do
       expect(result("services.running", { "matches" => ".*" }, Array.new(1_000) { |i| "unit-#{i}.service" })).to eq("not_readable")
     end
 
+    it "is not readable when the last match ends after the budget, even if it started in time (review of #102)" do
+      clock = [ 0.0, 0.1, 0.3 ].each # when the budget starts, the check before the match, and the one after it
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { clock.next }
+      expect(result("sshd.loglevel", { "matches" => "INFO" }, "INFO")).to eq("not_readable")
+    end
+
     it "evaluates a large list well within the budget" do
       units = Array.new(1_000) { |i| format("unit-%04d.service", i) }
       expect(result("services.running", { "all" => [ { "matches" => "[a-z0-9-]+\\.service" }, { "not_in" => [ "telnet.socket" ] } ] }, units)).to eq("pass")
@@ -152,7 +158,11 @@ RSpec.describe CisRules::Evaluator do
       units = Array.new(200) { |i| format("ünit-%04d.service", i) }
       observed = evaluate("services.running", { "present" => true }, units).observed
       expect(observed).to be_a(String).and(end_with("… (truncated from #{units.to_json.bytesize} bytes)"))
-      expect(observed.bytesize).to be <= described_class::OBSERVED_MAX_BYTES
+      expect(observed.to_json.bytesize).to be <= described_class::OBSERVED_MAX_BYTES
+      plain = evaluate("services.running", { "present" => true }, Array.new(200) { |i| format("unit-%04d.service", i) }).observed
+      expect(plain.to_json.bytesize).to be_between(described_class::OBSERVED_MAX_BYTES - 64, described_class::OBSERVED_MAX_BYTES) # review of #102
+      quotes = evaluate("sshd.ciphers", { "present" => true }, Array.new(64) { "\\\"" * 20 }).observed
+      expect(quotes.to_json.bytesize).to be <= described_class::OBSERVED_MAX_BYTES
       expect(observed).to be_valid_encoding
       expect(evaluate("sshd.ciphers", { "present" => true }, [ "b", "a" ]).observed).to eq([ "b", "a" ]) # as reported, not normalised
     end
