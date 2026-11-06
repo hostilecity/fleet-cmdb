@@ -297,6 +297,7 @@ impl World {
             restarted: false,
             rollback_reason: None,
             boot_id: Some(BOOT.into()),
+            previous_before: None,
         };
         record.write(self.state()).unwrap();
         record

@@ -486,6 +486,7 @@ impl Inner {
             restarted: false,
             rollback_reason: None,
             boot_id: self.boot_id.clone(),
+            previous_before: None,
         };
         record
             .write(&self.state_dir)
