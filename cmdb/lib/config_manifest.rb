@@ -29,6 +29,12 @@ module ConfigManifest
   SAFE_INTEGER = 2**53 - 1
 
   # Which constraints each type takes, with their defaults. Published as they are, so an agent bounds what it collects.
+  # The whole numbers each limit may be, as the published schema says.
+  LIMIT_RANGES = {
+    "max_length" => 1..65_536, "item_max_length" => 1..65_536, "max_items" => 1..100_000,
+    "minimum" => -SAFE_INTEGER..SAFE_INTEGER, "maximum" => -SAFE_INTEGER..SAFE_INTEGER
+  }.freeze
+
   CONSTRAINTS = {
     "string" => { "max_length" => 256 },
     "integer" => { "minimum" => -SAFE_INTEGER, "maximum" => SAFE_INTEGER },
@@ -198,17 +204,33 @@ module ConfigManifest
     errors << "#{key}: since must be a positive integer" unless since.is_a?(Integer) && since.positive?
     errors << "#{key}: description must be 1 to 512 characters" unless description.is_a?(String) && description.length.between?(1, 512)
     fact = Fact.new(key:, type:, since:, description:, constraints:, example:)
-    problems = fact.value_errors(example)
+    limit_problems = limit_errors(constraints)
+    errors.concat(limit_problems.map { |problem| "#{key}: #{problem}" })
+    problems = limit_problems.empty? ? fact.value_errors(example) : [] # an example cannot be judged against limits that are wrong
     errors << "#{key}: its example #{problems.join(', ')}" if problems.any?
     fact
+  end
+
+  def limit_errors(constraints)
+    problems = constraints.filter_map do |name, value|
+      range = LIMIT_RANGES[name]
+      next unless range
+      next if value.is_a?(Integer) && range.cover?(value)
+
+      "#{name} must be a whole number from #{range.begin} to #{range.end}"
+    end
+    minimum, maximum = constraints.values_at("minimum", "maximum")
+    problems << "minimum is above maximum" if problems.empty? && minimum.is_a?(Integer) && maximum.is_a?(Integer) && minimum > maximum
+    problems
   end
 
   def check_set(facts, version, errors)
     facts.group_by(&:key).each { |key, same| errors << "#{key}: listed #{same.size} times" if same.size > 1 }
     return unless version.is_a?(Integer)
 
-    errors << "manifest_version is #{version} but no fact has since #{version}, or one has a higher since" unless facts.map(&:since).max == version
+    sinces = facts.map(&:since).select { |since| since.is_a?(Integer) } # a bad since has its own error
+    errors << "manifest_version is #{version} but no fact has since #{version}, or one has a higher since" unless sinces.max == version
   end
 
-  private_class_method :build, :list, :listed_fact, :path_fact, :unit_fact, :build_fact, :check_set
+  private_class_method :build, :list, :listed_fact, :path_fact, :unit_fact, :build_fact, :limit_errors, :check_set
 end

@@ -40,9 +40,10 @@
     },
     {
       "key": "sshd.permitrootlogin",
-      "type": "boolean",
+      "type": "string",
       "since": 1,
-      "description": "Whether root may log in over SSH."
+      "description": "Whether root may log in over SSH.",
+      "max_length": 32
     },
     {
       "key": "sshd.x11forwarding",

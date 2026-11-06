@@ -85,9 +85,8 @@ RSpec.describe ConfigManifest do
       expect(changed.map { |old| old["key"] }).to eq([])
     end
 
-    it "lists every fact in the manifest at an earlier version, so a new fact must be added to the fixture" do
-      released = manifest.facts.select { |f| f.since < manifest.version }.map(&:key)
-      expect(released - frozen.map { |f| f["key"] }).to eq([])
+    it "lists every fact in the manifest, so a new fact is added to the fixture in the change that adds it" do
+      expect(manifest.facts.map(&:key) - frozen.map { |f| f["key"] }).to eq([])
     end
   end
 
@@ -176,6 +175,35 @@ RSpec.describe ConfigManifest do
 
     it "refuses an example that its own fact would reject" do
       expect { load_yaml(base) { |d| d["facts"][0]["example"] = "x" * 300 } }.to raise_error(described_class::Invalid, /its example is longer than 256/)
+    end
+
+    it "reports limits that are not whole numbers in range, or that contradict each other, with the other problems (review of #100)" do
+      error = begin
+        load_yaml(base) do |d|
+          d["facts"] += [ { "key" => "a.fraction", "type" => "string", "since" => 1, "description" => "x", "max_length" => 16.5, "example" => "INFO" },
+                          { "key" => "a.quoted", "type" => "string", "since" => 1, "description" => "x", "max_length" => "16", "example" => "INFO" },
+                          { "key" => "a.zero", "type" => "string_list", "since" => 1, "description" => "x", "max_items" => 0, "item_max_length" => 70_000, "example" => [] },
+                          { "key" => "a.flag", "type" => "integer", "since" => 1, "description" => "x", "minimum" => true, "example" => 1 },
+                          { "key" => "a.crossed", "type" => "integer", "since" => 1, "description" => "x", "minimum" => 10, "maximum" => 5, "example" => 7 } ]
+        end
+      rescue described_class::Invalid => e
+        e.message
+      end
+      expect(error).to include("a.fraction: max_length must be a whole number from 1 to 65536", "a.quoted: max_length must be a whole number from 1 to 65536",
+                               "a.zero: max_items must be a whole number from 1 to 100000", "a.zero: item_max_length must be a whole number from 1 to 65536",
+                               "a.flag: minimum must be a whole number", "a.crossed: minimum is above maximum")
+      expect(error).not_to include("its example")
+    end
+
+    it "reports a fact whose since is missing or quoted instead of failing to compare versions (review of #100)" do
+      [ nil, "1" ].each do |since|
+        error = begin
+          load_yaml(base) { |d| d["facts"] += [ { "key" => "a.b", "type" => "boolean", "since" => since, "description" => "x", "example" => true } ] }
+        rescue described_class::Invalid => e
+          e.message
+        end
+        expect(error).to include("a.b: since must be a positive integer"), since.inspect
+      end
     end
 
     it "memoises the current manifest until reset" do
