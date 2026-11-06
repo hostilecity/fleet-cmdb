@@ -12,6 +12,7 @@ How to run the tests, the server, a simulated fleet, and a real agent on your ow
 ## Before you start
 
 - **Server:** Ruby 3.4.10 through chruby and PostgreSQL, as in [`cmdb/README.md`](../../cmdb/README.md#development-environment-macos), then `bin/setup --skip-server` in `cmdb/`.
+- **Local settings:** `cp .env.example .env` in `cmdb/`, then fill in `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (section 2). The app reads `cmdb/.env` whenever it starts (`bin/dev`, `bin/rails`, `bin/simulate-fleet`, and Puma in section 4), so settings in this guide go there rather than on the command line; a value set in the shell still wins. It is ignored by git; never commit it.
 - **Agent:** [rustup](https://rustup.rs); it installs the toolchain pinned in `agent/rust-toolchain.toml` on first use. The agent runs only on Linux; on macOS it runs in a Docker container (section 4).
 - **Certificates:** `openssl` (installed on macOS and most Linux systems).
 
@@ -30,19 +31,20 @@ ruby docs/backlog/import.rb check      # the backlog and specs, from the reposit
 ```sh
 cd cmdb
 bin/rails operators:allow EMAIL=you@example.com
-GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... bin/dev
+bin/dev
 ```
 
-Open <http://localhost:3000> and sign in with that Google account. Sign-in needs a Google OAuth web client whose authorised redirect URI is `http://localhost:3000/auth/google_oauth2/callback` ([`cmdb/README.md`](../../cmdb/README.md#hostnames-and-operator-sign-in)). `bin/dev` also runs the background jobs, including the liveness check that turns silent hosts stale and offline.
+Open <http://localhost:3000> and sign in with that Google account. Sign-in needs a Google OAuth web client, with its ID and secret in `cmdb/.env`, whose authorised redirect URI is `http://localhost:3000/auth/google_oauth2/callback` ([`cmdb/README.md`](../../cmdb/README.md#hostnames-and-operator-sign-in)). `bin/dev` also runs the background jobs, including the liveness check that turns silent hosts stale and offline.
 
 ## 3. A simulated fleet
 
-To fill the dashboard without any VMs, start the server with higher enrollment limits and run the simulator in another terminal:
+To fill the dashboard without any VMs, run the simulator in another terminal while `bin/dev` runs:
 
 ```sh
-FLEET_ENROLL_RATE_LIMIT_PER_MINUTE=100 GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... bin/dev
 bin/simulate-fleet --hosts 20 --duration 30m
 ```
+
+Enrolling is rate-limited per address, so with the defaults the simulator waits a few minutes for 20 hosts. To skip that, add `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE=100` to `cmdb/.env` and restart `bin/dev`. The test environment sets its own limits, so this does not change the test suite.
 
 The hosts (`sim-001` and on) report while it runs and go stale and then offline after it stops. `--load-check` and `--liveness-check` run the NFR-3 and AC-1.2 checks. See [fleet-simulator.md](fleet-simulator.md).
 
@@ -62,7 +64,7 @@ This writes `ca.pem` (the authority the agent trusts) and `cert.pem` and `key.pe
 **b. The server, on HTTP for the dashboard and HTTPS for the agent.** Instead of `bin/dev`, from `cmdb/`:
 
 ```sh
-SOLID_QUEUE_IN_PUMA=1 GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... bundle exec puma -C config/puma.rb \
+SOLID_QUEUE_IN_PUMA=1 bundle exec puma -C config/puma.rb \
   -b tcp://127.0.0.1:3000 -b "ssl://127.0.0.1:3443?key=$HOME/fleet-local/key.pem&cert=$HOME/fleet-local/cert.pem"
 ```
 
