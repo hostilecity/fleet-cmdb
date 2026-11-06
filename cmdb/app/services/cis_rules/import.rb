@@ -42,7 +42,12 @@ module CisRules
       @outcomes[CisRule.define!(rule.definition, actor: @actor, enabled: rule.enabled != false)] << key
       return if rule.enabled.nil?
 
-      @outcomes[rule.enabled ? :enabled : :disabled] << key if CisRule.find_by!(key:).public_send(rule.enabled ? :enable! : :disable!, actor: @actor)
+      stored = CisRule.find_by!(key:)
+      if rule.enabled
+        @outcomes[:enabled] << key if stored.enable!(actor: @actor)
+      elsif stored.disable!(actor: @actor)
+        @outcomes[:disabled] << key
+      end
     end
 
     def disable_missing
