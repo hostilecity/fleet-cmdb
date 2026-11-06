@@ -10,6 +10,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Doubles as development seed data and as an end-to-end check for liveness transitions with real timers (a scaled-down version of AC-1.2).
 - A repeatable load check for NFR-3: 50 simulated hosts on default intervals for at least an hour of simulated time (time scaling allowed); record fleet list load time and heartbeat p95 and compare with the targets.
 - Uses the shared example payloads from `docs/api/examples/` where possible.
+- Delivered as `cmdb/bin/simulate-fleet` ([docs/operations/fleet-simulator.md](../../operations/fleet-simulator.md)). `--load-check` runs 50 hosts for 15 minutes at four times the default rates (one simulated hour) after each host has sent 90 reports with a changed stable field; times are measured by the simulator, from sending the request to reading the last byte.
 
 ### Acceptance criteria
 

@@ -26,7 +26,7 @@ module Cmdb
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
     # Common ones are `templates`, `generators`, or `middleware`, for example.
-    config.autoload_lib(ignore: %w[assets ci logging middleware tasks]) # lib/ci is bin/ci and spec tooling only
+    config.autoload_lib(ignore: %w[assets ci fleet_simulator fleet_simulator.rb logging middleware tasks]) # lib/ci is bin/ci and spec tooling only; lib/fleet_simulator is bin/simulate-fleet
 
     # Configuration for the application, engines, and railties goes here.
     #
