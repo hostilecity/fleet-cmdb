@@ -19,6 +19,7 @@ Project structure:
 
 - Contributing, branch and commit conventions: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Decisions (ADRs): [docs/decisions/](docs/decisions/README.md)
+- Running it all locally (tests, server, a simulated fleet, a real agent): [docs/operations/running-locally.md](docs/operations/running-locally.md)
 - Server setup and development: [cmdb/README.md](cmdb/README.md)
 - Backup, restore, and the restore drill: [docs/operations/backup-and-restore.md](docs/operations/backup-and-restore.md)
 - Agent build and checks: [agent/README.md](agent/README.md)
