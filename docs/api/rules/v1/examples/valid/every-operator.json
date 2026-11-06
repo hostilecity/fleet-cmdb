@@ -84,7 +84,7 @@
       "remediation": "Example remediation."
     },
     {
-      "key": "ssh-banner-set",
+      "key": "login-banner-file",
       "reference": "Example only",
       "title": "Example rule ssh-banner-set",
       "severity": "medium",
@@ -96,7 +96,7 @@
           ]
         }
       ],
-      "fact": "sshd.banner",
+      "fact": "file:/etc/issue.net",
       "condition": {
         "present": true
       },

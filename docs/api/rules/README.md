@@ -33,10 +33,10 @@ A rule inspects one fact. Its condition is one operator, or a combinator of cond
 | `gte`, `lte` | integer | the value is at least (at most) the operand |
 | `matches` | string, list | the whole value matches the regular expression (anchored at both ends, time-limited). For a list fact: every entry matches |
 | `mode_at_most` | file | the file's mode grants nothing the operand does not (`0640` allows `0600`, not `0644`) |
-| `present`, `absent` | any | the value exists (is null: no such file, unit, or setting). The operand is always `true` |
+| `present`, `absent` | file, service | the file or unit exists (does not exist). The operand is always `true`. Other facts always have a value when they are readable |
 | `all`, `any`, `not` | | every, at least one, or not the given condition(s) |
 
-A file fact (`file:<path>`) is `{mode, owner, group}` and a service fact (`service:<unit>`) is `{active, enabled}`. Apart from `present`, `absent`, and `mode_at_most`, a condition on them names the part it tests with `field`:
+A file fact (`file:<path>`) is `{mode, owner, group}`, or null when the file does not exist, and a service fact (`service:<unit>`) is `{active, enabled}`, or null when the unit is not installed. A missing file or unit equals nothing, is in nothing, and matches nothing, so it passes only `absent`, `ne`, and `not_in`. An empty list passes `in`, `matches`, and `not_in`. Apart from `present`, `absent`, and `mode_at_most`, a condition on them names the part it tests with `field`:
 
 ```yaml
 condition:

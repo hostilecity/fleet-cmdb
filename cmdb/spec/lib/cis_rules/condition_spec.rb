@@ -7,7 +7,7 @@ RSpec.describe CisRules::Condition do
 
   it "accepts each operator on the fact types it works on" do
     {
-      "sshd.loglevel" => [ { "eq" => "INFO" }, { "ne" => "QUIET" }, { "in" => [ "INFO" ] }, { "not_in" => [ "QUIET" ] }, { "matches" => "INFO|VERBOSE" }, { "present" => true }, { "absent" => true } ],
+      "sshd.loglevel" => [ { "eq" => "INFO" }, { "ne" => "QUIET" }, { "in" => [ "INFO" ] }, { "not_in" => [ "QUIET" ] }, { "matches" => "INFO|VERBOSE" } ],
       "sshd.maxauthtries" => [ { "eq" => 4 }, { "in" => [ 3, 4 ] }, { "gte" => 1 }, { "lte" => 4 } ],
       "sshd.x11forwarding" => [ { "eq" => false }, { "ne" => true }, { "in" => [ false ] } ],
       "sshd.ciphers" => [ { "eq" => [ "aes256-gcm@openssh.com" ] }, { "in" => [ "a" ] }, { "not_in" => [ "3des-cbc" ] }, { "matches" => "aes.*" } ],
@@ -34,7 +34,10 @@ RSpec.describe CisRules::Condition do
       [ "sshd.loglevel", { "field" => "mode", "eq" => "x" } ] => "field mode is not part of a string value",
       [ "service:ssh.service", { "matches" => "x" } ] => "matches needs a field for a service_state fact (active, enabled)",
       [ "sshd.x11forwarding", { "matches" => "x" } ] => "matches works only on a string or list fact, and sshd.x11forwarding is boolean",
-      [ "sshd.loglevel", { "matches" => "(a" } ] => "matches is not a valid regular expression"
+      [ "sshd.loglevel", { "matches" => "(a" } ] => "matches is not a valid regular expression",
+      [ "sshd.banner", { "present" => true } ] => "present works only on a file or service fact; sshd.banner always has a value when it is readable",
+      [ "sshd.ciphers", { "absent" => true } ] => "absent works only on a file or service fact",
+      [ "file:/etc/shadow", { "field" => "owner", "present" => true } ] => "present works only on a file or service fact"
     }.each do |(fact, condition), problem|
       expect(problems(fact, condition).join).to start_with("/c: #{problem}"), "#{fact} #{condition}"
     end
