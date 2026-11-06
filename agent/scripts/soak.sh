@@ -282,8 +282,9 @@ done
 start_server
 sample
 note "run over after $(($(date +%s) - start))s"
-[ "$phase" != start ] && [ "$phase" != update ] && [ "$phase" != between ] && [ "$phase" != rollback ] \
-    || fail "the run ended before the update and the rollback were done (phase $phase)"
+case $phase in
+    start | update | between | rollback) fail "the run ended before the update and the rollback were done (phase $phase)" ;;
+esac
 
 # Clean-up after the update and the rollback (ADR 0018): only the versions current and previous point to
 # remain, and nothing is left of the staging, the backup, the marker, the record, or the result.
