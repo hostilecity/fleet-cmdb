@@ -155,7 +155,7 @@ The agent updates itself only through the signed release channel ([ADR 0018](../
 
 An agent older than the server's minimum version still updates: the update path uses only `heartbeat`, `update-results`, and the public release downloads, none of which are refused with `426` (NFR-5). Two versions are kept; older ones are removed after a confirmed update. `fleet-agent self-test` can be run by hand to check a binary against this host's config. No release verifies until the owner has put real keys in `release-keys/` ([Releases](#releases)).
 
-`scripts/update-smoke.sh` is the end-to-end test CI runs on systemd with throwaway keys (see the spec's "As built"). It rewrites `/usr/lib/fleet-agent`, `/etc/fleet-agent`, and `/etc/systemd/system`, so it refuses to run outside CI unless `UPDATE_SMOKE_DISPOSABLE=yes`, and never where an agent is installed.
+`scripts/update-smoke.sh` is the end-to-end test CI runs on systemd with throwaway keys (see the spec's "As built"), on every change under `agent/` and every push to main, as three parallel jobs (`refusals`, `rollbacks`, `recovery`: pass the group as a second argument to run one part). It rewrites `/usr/lib/fleet-agent`, `/etc/fleet-agent`, and `/etc/systemd/system`, so it refuses to run outside CI unless `UPDATE_SMOKE_DISPOSABLE=yes`, and never where an agent is installed.
 
 `scripts/vm-test.sh` (workflow "Agent VM tests") is the failure test on a disposable Debian 13 VM under QEMU. It installs the agent with the real installer, then kills the supervisor and restarts the VM in the middle of updates, and each time checks that exactly one working version runs (see the spec's "Recorded runs"). It needs only QEMU, runs as an unprivileged user, and uploads its results as the `vm-test-results` artifact.
 
