@@ -24,7 +24,7 @@ RSpec.describe "operators rake tasks (FR-S.4)" do
     expect(run("operators:list", nil)).to include("first@example.com  never signed in")
     expect(run("operators:disallow", "first@example.com")).to include("Removed first@example.com.")
     expect(OperatorAllowlistEntry.count).to eq(0)
-    expect(AuditEntry.where(action: [ Audit::Actions::OPERATOR_ALLOWED, Audit::Actions::OPERATOR_DISALLOWED ]).pluck(:action, :actor_type))
+    expect(AuditEntry.where(action: [ Audit::Actions::OPERATOR_ALLOWED, Audit::Actions::OPERATOR_DISALLOWED ]).order(:id).pluck(:action, :actor_type))
       .to eq([ [ "operator.allowed", "system" ], [ "operator.disallowed", "system" ] ])
   end
 

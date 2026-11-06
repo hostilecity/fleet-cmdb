@@ -18,7 +18,7 @@ RSpec.describe "Host actions", :signed_in, type: :request do
       expect(EnrollmentToken.where(token_digest: AgentApi.digest(token), host:)).to exist
       expect(page.css(".token").map(&:text)).to include("chmod +x fleet-agent && ./fleet-agent install --server https://agent.fleet.example.lan --token-stdin")
       expect(page.at_css(".terminal").text).to include("FLEET_ENROLLMENT_TOKEN='#{token}'")
-      expect(AuditEntry.for_target(host).pluck(:action, :actor_type)).to eq([ [ Audit::Actions::HOST_CREATED, "operator" ], [ Audit::Actions::HOST_ENROLLMENT_TOKEN_ISSUED, "operator" ] ])
+      expect(AuditEntry.for_target(host).order(:id).pluck(:action, :actor_type)).to eq([ [ Audit::Actions::HOST_CREATED, "operator" ], [ Audit::Actions::HOST_ENROLLMENT_TOKEN_ISSUED, "operator" ] ])
 
       get "/hosts/#{host.id}"
       expect(response.body).not_to include(token) # never shown again
