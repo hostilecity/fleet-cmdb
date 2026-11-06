@@ -34,6 +34,8 @@ The development and test databases use your macOS user over the local socket, so
 
 ## First run
 
+To run the whole system on your machine, including a real agent against this server, see [docs/operations/running-locally.md](../docs/operations/running-locally.md).
+
 From this directory, create your local settings file first (`.env` is ignored by git and loaded in development and test by `dotenv-rails`):
 
 ```sh
