@@ -140,7 +140,7 @@
           ]
         },
         "ne": {
-          "description": "Not equal to the operand (an absent value is not equal).",
+          "description": "Not equal to the operand (a part of a missing file or unit is not equal).",
           "anyOf": [
             {
               "type": [
@@ -160,15 +160,15 @@
           "$ref": "#/$defs/scalar_list"
         },
         "not_in": {
-          "description": "None of the listed values. For a list fact: no entry is one of them (an absent value passes).",
+          "description": "None of the listed values. For a list fact: no entry is one of them (a part of a missing file or unit passes).",
           "$ref": "#/$defs/scalar_list"
         },
         "present": {
-          "description": "The value exists (not null). The operand is always true.",
+          "description": "For a file or service fact: the file or unit exists. The operand is always true.",
           "const": true
         },
         "absent": {
-          "description": "The value does not exist (null: no such file, unit, or setting). The operand is always true.",
+          "description": "For a file or service fact: the file or unit does not exist. The operand is always true.",
           "const": true
         },
         "gte": {

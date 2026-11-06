@@ -11,7 +11,8 @@ module CisRules
   #   gte, lte          integer
   #   matches           string, or string_list (every entry); anchored at both ends and time-limited
   #   mode_at_most      file_attributes (its mode)
-  #   present, absent   any type: whether the value is null (no such file, unit, or setting)
+  #   present, absent   file_attributes, service_state: whether the value is null (no such file or unit; other
+  #                     facts always have a value when they are readable)
   # Combinators all, any, and not combine conditions on the same fact.
   module Condition
     OPERATORS = %w[eq ne in not_in present absent gte lte matches mode_at_most].freeze
@@ -76,6 +77,7 @@ module CisRules
       when "in", "not_in"
         item_type = type == "string_list" ? "string" : type
         "#{name} needs a list of #{item_type}s#{yaml_hint(item_type, operand)}" unless operand.all? { |item| fits?(item_type, item) }
+      when "present", "absent" then "#{name} works only on a file or service fact; #{fact.key} always has a value when it is readable" unless FIELDS.key?(fact.type) && node["field"].nil?
       when "gte", "lte" then "#{name} works only on an integer fact, and #{fact.key} is #{type}" unless type == "integer"
       when "matches" then matches_problem(operand, type, fact)
       when "mode_at_most" then "mode_at_most works only on a file fact, or its mode field" unless fact.type == "file_attributes" && [ nil, "mode" ].include?(node["field"])
