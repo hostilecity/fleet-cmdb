@@ -28,6 +28,8 @@ set -euo pipefail
 
 dir=${1:?usage: sudo scripts/update-smoke.sh DIR}
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
+. "$here/update-test-lib.sh"
 agent_dir=$(dirname "$here")
 [ "$(id -u)" = 0 ] || { echo "update-smoke: run as root (sudo)" >&2; exit 2; }
 [ -d /run/systemd/system ] || { echo "update-smoke: needs a host running systemd" >&2; exit 2; }
@@ -38,7 +40,6 @@ STATE=/var/lib/fleet-agent
 UNITS=/etc/systemd/system
 OLD=1.0.0
 NEW=1.0.1
-TARGET=x86_64-unknown-linux-musl
 
 if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${UPDATE_SMOKE_DISPOSABLE:-}" != yes ]; then
     echo "update-smoke: this rewrites $LIB, $ETC, $STATE and $UNITS; run it on a disposable machine and set UPDATE_SMOKE_DISPOSABLE=yes" >&2
@@ -147,26 +148,9 @@ result_field() {
     jq -rs "[.[] | select(.kind == \"result\" and .status == 200 and .body.rollout_id == $rollout)] | last | .body.$1" "$events"
 }
 
-# mkrelease NAME VERSION BINARY [KEY]: a signed release for the stub to serve.
-mkrelease() {
-    local name=$1 version=$2 binary=$3 key=${4:-$dir/test.key} d=$tmp/releases/$1
-    mkdir -p "$d"
-    cp "$binary" "$d/fleet-agent"
-    "$here/release-manifest.sh" "$version" "$TARGET" "$d/fleet-agent" > "$d/manifest.json"
-    minisign -S -s "$key" -m "$d/manifest.json" -x "$d/manifest.json.minisig" -t "update-smoke $name" > /dev/null
-}
-
-# mkscript FILE VERSION RUN_BODY: a "release" that passes its self-test and does RUN_BODY when run.
-mkscript() {
-    cat > "$1" <<EOF
-#!/bin/sh
-case "\$1" in
-    self-test) echo "self-test OK: fleet-agent $2 (agent schema 1)" ;;
-    --version) echo "fleet-agent $2 (agent schema 1)" ;;
-    run) $3 ;;
-esac
-EOF
-    chmod 0755 "$1"
+# release NAME VERSION BINARY [KEY]: a signed release for the stub to serve (update-test-lib.sh).
+release() {
+    mkrelease "$tmp/releases" "$1" "$2" "$3" "${4:-$dir/test.key}"
 }
 
 # reset: the installed 1.0.0 running, no update in progress, the stub offering nothing.
@@ -200,35 +184,31 @@ expect_result() { # SCENARIO OUTCOME [AGENT_VERSION]
     [ "$outcome" = "$2" ] || fail "$1: the result is $outcome, expected $2"
     [ -z "${3:-}" ] || [ "$reporter" = "$3" ] || fail "$1: the result was reported by $reporter, expected $3"
     if [ "$2" != succeeded ]; then
-        [ -n "$reason" ] && [ "$reason" != null ] || fail "$1: no reason was given"
+        if [ -z "$reason" ] || [ "$reason" = null ]; then
+            fail "$1: no reason was given"
+        fi
     fi
 }
 
 # --- Setup --------------------------------------------------------------------------------------------
 
 # A throwaway CA and a localhost server certificate it signs (as scripts/sandbox-smoke.sh does).
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=update-smoke CA" \
-    -keyout "$tmp/ca-key.pem" -out "$tmp/ca.pem" 2> /dev/null
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=localhost" \
-    -keyout "$tmp/key.pem" -out "$tmp/server.csr" 2> /dev/null
-printf 'subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' > "$tmp/ext.cnf"
-openssl x509 -req -in "$tmp/server.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pem" -CAcreateserial -days 1 \
-    -extfile "$tmp/ext.cnf" -out "$tmp/cert.pem" 2> /dev/null
+make_certs "$tmp" localhost
 
 # The releases the stub serves.
 mkdir -p "$tmp/releases"
-mkrelease good "$NEW" "$dir/fleet-agent-$NEW"
-mkrelease tampered "$NEW" "$dir/fleet-agent-$NEW"
+release good "$NEW" "$dir/fleet-agent-$NEW"
+release tampered "$NEW" "$dir/fleet-agent-$NEW"
 printf 'tampered-by-the-test' | dd of="$tmp/releases/tampered/fleet-agent" bs=1 seek=4096 conv=notrunc 2> /dev/null
-mkrelease unsigned "$NEW" "$dir/fleet-agent-$NEW"
+release unsigned "$NEW" "$dir/fleet-agent-$NEW"
 printf 'this is not a signature\n' > "$tmp/releases/unsigned/manifest.json.minisig"
-mkrelease unknown_key "$NEW" "$dir/fleet-agent-$NEW" "$dir/other.key"
+release unknown_key "$NEW" "$dir/fleet-agent-$NEW" "$dir/other.key"
 mkscript "$tmp/older.sh" 0.9.0 'exit 0'
-mkrelease older 0.9.0 "$tmp/older.sh"
+release older 0.9.0 "$tmp/older.sh"
 mkscript "$tmp/exits.sh" 1.0.2 'echo "update-smoke: release 1.0.2 refuses to start" >&2; exit 1'
-mkrelease exits_at_start 1.0.2 "$tmp/exits.sh"
+release exits_at_start 1.0.2 "$tmp/exits.sh"
 mkscript "$tmp/loops.sh" 1.0.3 'echo "update-smoke: release 1.0.3 started" >&2; sleep 2; exit 1'
-mkrelease crash_loop 1.0.3 "$tmp/loops.sh"
+release crash_loop 1.0.3 "$tmp/loops.sh"
 
 python3 "$here/update-stub.py" 8443 "$tmp/cert.pem" "$tmp/key.pem" "$tmp" &
 stub_pid=$!

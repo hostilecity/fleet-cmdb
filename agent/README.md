@@ -149,6 +149,8 @@ An agent older than the server's minimum version still updates: the update path 
 
 `scripts/update-smoke.sh` is the end-to-end test CI runs on systemd with throwaway keys (see the spec's "As built"). It rewrites `/usr/lib/fleet-agent`, `/etc/fleet-agent`, and `/etc/systemd/system`, so it refuses to run outside CI unless `UPDATE_SMOKE_DISPOSABLE=yes`, and never where an agent is installed.
 
+`scripts/vm-test.sh` (workflow "Agent VM tests") is the failure test on a disposable Debian 13 VM under QEMU. It installs the agent with the real installer, then kills the supervisor and restarts the VM in the middle of updates, and each time checks that exactly one working version runs (see the spec's "Recorded runs"). It needs only QEMU, runs as an unprivileged user, and uploads its results as the `vm-test-results` artifact.
+
 ## Systemd unit
 
 `src/install/fleet-agent.service` is built into the binary and written by `install`; [`contrib/fleet-agent.service`](contrib/fleet-agent.service) is a copy for review, kept identical by a test. The sandbox and the reason for each option, with the `systemd-analyze security` result, are in [`contrib/README.md`](contrib/README.md). `scripts/check-unit.sh` runs `systemd-analyze verify` and `security` as CI does.

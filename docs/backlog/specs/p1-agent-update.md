@@ -51,10 +51,25 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). Server side
 
 - Code: `agent/src/update/` (`stage` and `fetch` for P1-A11, `supervise` for P1-A12, `mod` for the agent side and the commands). State files in the state directory: `update.json`, `update-confirmed.json`, `update-result.json`, `update.lock`, `update/<version>/` (staging) and `update/backup/`.
 - Tests: unit tests with a fake clock, fake `systemctl`, and fake release channel; `agent/tests/cli.rs`; and `agent/scripts/update-smoke.sh` (CI job "Update smoke test"), which runs the real units and layout on systemd with throwaway keys and a local stand-in for the API (`update-stub.py`): refused releases, a release that exits at start, a crash-looping one, one that cannot authenticate, the supervisor killed with SIGKILL, a successful update whose result is retried, and an agent below the server's minimum version (NFR-5: the update path uses only `heartbeat`, `update-results`, and the unauthenticated release downloads, none of which return `426`).
-- Not covered by CI: a real reboot in the middle of an update (the boot id logic is unit tested), and a failure run on a real VM (the third criterion of P1-A12 below), which are recorded by hand on a disposable VM. No release verifies in production until the owner generates the release keys (`docs/releases.md`).
+- Not covered by CI: a long power-off (more than 24 hours) in the middle of an update, and hardware other than a QEMU/KVM guest. No release verifies in production until the owner generates the release keys (`docs/releases.md`).
+
+### Recorded runs
+
+The workflow **Agent VM tests** (`.github/workflows/agent-vm.yml`, job "Update failure tests on a Debian 13 VM") runs `agent/scripts/vm-test.sh` on every change to `agent/` and on demand. It boots Debian's official Debian 13 genericcloud image (pinned build, SHA-512 checked against Debian's SHA512SUMS and the pinned value) under QEMU with KVM, or TCG with longer timeouts. The VM is configured by a cloud-init NoCloud seed with an SSH key generated in the job. The agent is installed with the real installer against `update-stub.py` on the runner, which the guest reaches at QEMU's host address as `agent.example.lan`; release keys are throwaway. Six scenarios:
+
+- the supervisor killed with SIGKILL before the switch, held there by a test-only drop-in on its transient unit (ends `succeeded`);
+- the supervisor killed with SIGKILL after the switch (ends `succeeded`);
+- `reboot -ff` (a reset with no sync) after the switch and before confirmation (`rolled_back`);
+- a reboot after confirmation (the new version is kept);
+- a reboot before the switch (`failed`, the old version runs);
+- a crash-looping release across a reboot (`rolled_back` by the failure hook).
+
+Each scenario ends by checking that exactly one working version runs: `current` and `previous`, the installed versions, the service's binary, one agent process, no supervisor and no update record, and a heartbeat the stub acknowledged with the installer's credential. It does so only once the update has settled (no update record or pending outcome, no supervisor or rollback unit running, the service active). It also checks the update result the stub received, and that the configuration (with the credential) is byte-for-byte unchanged. Finally it checks a state record that the test writes before each update and changes while the new version runs: it must hold exactly the new content after a confirmed update and exactly the original after a rollback, so a lost or skipped state backup fails the test. Every scenario is recorded, including one that dies on an unexpected error, and the results are written however the script ends (`vm-test-record.sh`, checked without a VM by `vm-test-record-selftest.sh`). They are uploaded as the `vm-test-results` artifact (JUnit `results.xml`, `results.md`, a log per scenario, and the serial console) and shown in the job summary.
+
+First green run: [Agent VM tests #41567203390](https://github.com/hostilecity/fleet-cmdb/actions/runs/41567203390/job/125691452378) (2026-11-03, KVM, 6 passed in 295 s).
 
 ### Acceptance criteria
 
 - [x] AC-1.10: a release that exits at start, one that crash-loops, and one that cannot authenticate are each rolled back automatically, and the rollback is reported
-- [ ] Killing the supervisor or rebooting the VM mid-update ends with exactly one working version running (failure tests on a disposable VM, results recorded)
+- [x] Killing the supervisor or rebooting the VM mid-update ends with exactly one working version running (failure tests on a disposable VM, results recorded: see Recorded runs)
 - [x] A successful update keeps the credential and state, and the next inventory report shows the new version
