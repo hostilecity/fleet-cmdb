@@ -27,6 +27,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Include at least one update and one forced rollback during the run; staging and old versions must be cleaned up afterwards.
 - Fail criteria: monotonic growth beyond an agreed tolerance, descriptor growth, or any state-directory growth.
 - Findings and the raw samples attached to the Phase 1 delivery note.
+- Delivered as `agent/scripts/soak.sh` against the stand-in server `agent/scripts/update-stub.py`, judged by `agent/scripts/soak-analyse.py` ([docs/operations/agent-soak.md](../../operations/agent-soak.md)). Tolerances, over the window after the rollback less a tenth for warm-up, last quarter against first: median resident memory at most 10% (and at least 1 MiB) higher; highest descriptor and thread counts no higher; no more state-directory entries and at most 512 bytes more (records rewritten in place).
 
 ### Acceptance criteria
 

@@ -1,0 +1,94 @@
+# Agent soak test (P1-A09): the installed agent against a stand-in server that goes down and flaps, with an
+# update and a forced rollback, sampled for memory, descriptors, threads, and state-directory growth
+# (agent/scripts/soak.sh, judged by agent/scripts/soak-analyse.py).
+#
+# The 72-hour run in the Phase 1 acceptance is done on a disposable homelab VM (docs/operations/agent-soak.md):
+# a GitHub job cannot run that long. This workflow checks the soak tooling itself: on a pull request that
+# changes it, a 30-minute run with compressed cycles; by hand (workflow_dispatch), up to 5 hours. Release keys
+# are throwaway, generated in the job; none is committed. Samples and the summary are uploaded as the
+# "agent-soak" artifact.
+name: Agent soak
+
+on:
+  pull_request:
+    paths:
+      - 'agent/scripts/soak*'
+      - 'agent/scripts/update-stub.py'
+      - 'agent/scripts/update-test-lib.sh'
+      - '.github/workflows/agent-soak.yml'
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: Hours to run (at most 5)
+        default: '0.5'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: Soak the agent on systemd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    defaults:
+      run:
+        working-directory: agent
+    env:
+      HOURS: ${{ inputs.hours || '0.5' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check the hours asked for
+        run: |
+          awk -v h="$HOURS" 'BEGIN { exit !(h > 0 && h <= 5) }' || { echo "::error::hours must be more than 0 and at most 5"; exit 1; }
+
+      - name: Self-test the analysis
+        run: scripts/soak-analyse-selftest.py
+
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install musl tools and minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools minisign
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: agent
+          key: soak
+
+      - name: Build two versions that trust a throwaway key
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/soak"
+          mkdir -p "$dir"
+          minisign -G -W -p "$dir/test.pub" -s "$dir/test.key" > /dev/null
+          scripts/update-smoke-build.sh 1.0.0 "$dir/test.pub" "$dir/fleet-agent-1.0.0" "$RUNNER_TEMP/soak-target"
+          scripts/update-smoke-build.sh 1.0.1 "$dir/test.pub" "$dir/fleet-agent-1.0.1" "$RUNNER_TEMP/soak-target"
+
+      - name: Soak
+        # Cycles of 10 minutes (2 down, 2 flapping), sampled every 15 seconds, so a short run still has outages
+        # and flapping after the update and the rollback. sudo resets the environment, so it is passed explicitly.
+        run: |
+          sudo GITHUB_ACTIONS=true SOAK_HOURS="$HOURS" SOAK_CYCLE_MINUTES=10 SOAK_OUTAGE_SECONDS=120 SOAK_FLAP_SECONDS=120 \
+            SOAK_SAMPLE_SECONDS=15 scripts/soak.sh "$RUNNER_TEMP/soak" "$RUNNER_TEMP/soak-results"
+
+      - name: Job summary
+        if: always()
+        run: cat "$RUNNER_TEMP/soak-results/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - name: Keep the samples
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: agent-soak
+          path: ${{ runner.temp }}/soak-results
+          if-no-files-found: ignore
