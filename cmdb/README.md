@@ -34,7 +34,13 @@ The development and test databases use your macOS user over the local socket, so
 
 ## First run
 
-From this directory:
+From this directory, create your local settings file first (`.env` is ignored by git and loaded in development and test by `dotenv-rails`):
+
+```sh
+cp .env.example .env   # then fill in the values
+```
+
+Then:
 
 ```sh
 bin/setup --skip-server   # installs gems and creates and prepares all databases
