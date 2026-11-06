@@ -5,6 +5,15 @@
 //! `update-supervise`, and `update-rollback` (P1-AGENT-UPDATE, in [`update`]). `run` sends heartbeats
 //! and inventory reports ([`report`], P1-AGENT-REPORT) and acts on the server's update directive.
 
+// The agent is built for Linux only (DEC-01): it reads `/proc`, runs under systemd, and some system
+// structs differ elsewhere (on macOS `statvfs` counts are 32-bit, a deliberate compile error in
+// `collect::sys`). Say so first, instead of leaving only the errors that follow from it.
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "fleet-agent builds only for Linux (DEC-01). On macOS, build and test it in a Linux container: \
+     see \"Build and check\" in agent/README.md."
+);
+
 mod cli;
 mod client;
 mod collect;
