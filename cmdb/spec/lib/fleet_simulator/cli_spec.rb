@@ -26,6 +26,18 @@ RSpec.describe FleetSimulator::CLI do
     expect { run }.to raise_error(/development and test servers only/)
   end
 
+  it "silences the liveness host only after its heartbeat has been accepted in this run" do
+    host = FleetSimulator::SimHost.new(index: 1)
+    check = FleetSimulator::LivenessCheck.new(host:)
+    cli = described_class.new(out:, clock:, transport:, state_file:)
+    started = clock.now
+    cli.send(:poll_liveness, check, started, started + 45)
+    expect(check.state).to eq(:idle) # 30 s are up, but the host has not been heard from
+    host.last_heartbeat_at = started + 40
+    cli.send(:poll_liveness, check, started, started + 50)
+    expect(check.state).to eq(:awaiting_stale)
+  end
+
   it "enrolls, seeds, runs, times the fleet list, runs the liveness check, and writes the results" do
     # Few requests per host, for the test environment's rate limit of 10 a minute per credential. Nothing runs
     # the liveness job here, so the liveness check runs out of time and the exit status is 1.
@@ -52,12 +64,16 @@ RSpec.describe FleetSimulator::Report do
     described_class.new(options: FleetSimulator::Options.parse(%w[--load-check]), stats:, hosts:, started_at: start, finished_at: finish, liveness:)
   end
 
-  def record(kind, ms, status: 200, note: nil, at: start)
-    stats.record(kind:, host: "sim-001", status:, ms:, at:, note:)
+  def record(kind, ms, status: 200, note: nil, at: start, host: "sim-001")
+    stats.record(kind:, host:, status:, ms:, at:, note:)
   end
 
+  # Every host sends one accepted heartbeat and report, so the fleet counts as reporting.
+  def whole_fleet_reports = hosts.each { |h| record(:inventory, 30, host: h.name) }
+
   it "passes a load check that meets the NFR-3 targets" do
-    100.times { |i| record(:heartbeat, 20 + i % 10, at: start + i) }
+    whole_fleet_reports
+    100.times { |i| record(:heartbeat, 20 + i % 10, at: start + i, host: hosts[i % 50].name) }
     record(:fleet_list, 350)
     record(:duplicate, 10, note: "duplicate")
     expect(report.checks.map(&:passed)).to all(be(true))
@@ -67,14 +83,14 @@ RSpec.describe FleetSimulator::Report do
   end
 
   it "fails on a slow or incomplete fleet list, a slow heartbeat p95 or last quarter, too short a run, refusals, and missed duplicates" do
-    80.times { |i| record(:heartbeat, 50, at: start + i) }
+    80.times { |i| record(:heartbeat, 50, at: start + i) } # all from one host: the fleet did not report
     20.times { |i| record(:heartbeat, 250, at: start + 100 + i) }
     record(:fleet_list, 2_400)
     record(:fleet_list, 100, status: "incomplete")
     record(:inventory, 12, status: 422, note: "rejected")
     record(:duplicate, 10, note: "not recognised as a duplicate")
     failed = report(finish: start + 600).checks.reject(&:passed).map(&:name)
-    expect(failed).to contain_exactly("At least one simulated hour", "Fleet list complete and under 2000 ms every time", "Heartbeat p95 under 200 ms",
+    expect(failed).to contain_exactly("At least 50 hosts reporting", "At least one simulated hour", "Fleet list complete and under 2000 ms every time", "Heartbeat p95 under 200 ms",
                                       "Heartbeat p95 still under 200 ms in the last quarter (no degradation)", "Every heartbeat and report accepted",
                                       "Every resent report answered duplicate: true (AC-1.4)")
     expect(report.markdown).to include("- [ ] Heartbeat p95 under 200 ms: p95 250 ms over 100 heartbeats")

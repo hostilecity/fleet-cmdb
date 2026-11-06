@@ -12,7 +12,7 @@ module FleetSimulator
     BEHAVIOURS = %i[stop hostile churn duplicates].freeze
 
     attr_reader :index, :name, :hostname, :machine_id, :boot_id, :started_at, :behaviour
-    attr_accessor :credential, :host_id, :heartbeat_interval, :inventory_interval, :next_heartbeat_at,
+    attr_accessor :credential, :host_id, :last_heartbeat_at, :heartbeat_interval, :inventory_interval, :next_heartbeat_at,
                   :next_inventory_at, :silent_at, :generation, :busy
 
     # counts: { stop: 1, hostile: 2, ... }.

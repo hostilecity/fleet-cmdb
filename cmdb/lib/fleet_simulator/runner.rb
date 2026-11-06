@@ -36,8 +36,9 @@ module FleetSimulator
     # Sends seed_snapshots inventory reports per host, each with a new kernel version, before the measured run,
     # so the run starts with accumulated history (NFR-3). Recorded as "seed", not as inventory.
     def seed_snapshots(count)
-      # Round by round, one report per host each, rather than all of one host's reports in a row.
-      dispatch(Array.new(count) { @hosts.map { |host| -> { seed(host) } } }.flatten)
+      # One job per host, its reports and any rate-limit waits in order on one worker, so a host never has two
+      # requests in flight and its reports cannot overtake each other.
+      dispatch(@hosts.map { |host| -> { count.times { seed(host) } } })
     end
 
     # Runs until deadline, then waits for requests in flight. Yields the time on every round, on this thread, for
@@ -93,6 +94,7 @@ module FleetSimulator
       now = @clock.now
       response = @transport.post_api("/api/v1/heartbeat", @payloads.heartbeat(host, now:), credential: host.credential)
       record(:heartbeat, host, response, now)
+      host.last_heartbeat_at = now if response.success?
       adopt_intervals(host, response)
       host.next_heartbeat_at = now + next_delay(host.heartbeat_interval, response)
     end

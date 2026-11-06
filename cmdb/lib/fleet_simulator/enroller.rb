@@ -44,8 +44,15 @@ module FleetSimulator
 
     def attributes(host) = { name: host.name, hostname: host.hostname, tags: TAG, description: "Simulated by bin/simulate-fleet" }
 
+    # Whether the server still takes a saved credential. Only a refusal (401, or 403 for a host that is not active
+    # or is waiting to be re-enrolled) means it does not: a rate limit is waited out, and any other failure stops the
+    # run rather than re-enrolling a host whose credential may well be fine.
     def accepted?(host, credential)
-      @transport.post_api("/api/v1/heartbeat", @payloads.heartbeat(host, now: @clock.now), credential:).success?
+      response = post("/api/v1/heartbeat", @payloads.heartbeat(host, now: @clock.now), credential:)
+      return true if response.success?
+      return false if response.status.in?([ 401, 403 ])
+
+      raise Failed, "#{host.name}: checking its saved credential answered #{response.status}: #{response.body.to_s.first(300)}"
     end
 
     def redeem_token(host, existing)
@@ -68,9 +75,9 @@ module FleetSimulator
     end
 
     # Enrollment and onboarding are rate-limited per client address (DEC-08); wait as an agent would.
-    def post(path, payload)
+    def post(path, payload, credential: nil)
       loop do
-        response = @transport.post_api(path, payload)
+        response = @transport.post_api(path, payload, credential:)
         return response unless response.retry_after
 
         @out.puts "  #{path} is rate-limited; waiting #{response.retry_after}s " \

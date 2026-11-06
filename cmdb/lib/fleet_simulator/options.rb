@@ -79,6 +79,7 @@ module FleetSimulator
       raise OptionParser::InvalidArgument, "--time-scale must be positive" unless time_scale.positive?
       raise OptionParser::InvalidArgument, "--duration and --probe-interval must be positive" unless duration.positive? && probe_interval.positive?
       raise OptionParser::InvalidArgument, "--concurrency must be at least 1" unless concurrency >= 1
+      raise OptionParser::InvalidArgument, "--heartbeat-seconds and --inventory-seconds must be positive" unless heartbeat_seconds.positive? && inventory_seconds.positive?
       raise OptionParser::InvalidArgument, "--liveness-check needs a --duration of at least 10m" if liveness_check && duration < 600
       behaviours = [ stop, hostile, churn, duplicates ]
       raise OptionParser::InvalidArgument, "behaviour counts cannot be negative" if behaviours.any?(&:negative?) || seed_snapshots.negative?

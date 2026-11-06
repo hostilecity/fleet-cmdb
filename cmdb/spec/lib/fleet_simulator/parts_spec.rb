@@ -71,9 +71,9 @@ RSpec.describe "fleet simulator parts (P1-O04)" do
       expect(stats.summary(:fleet_list)).to eq(count: 0, errors: 0, p50: nil, p95: nil, p99: nil, max: nil)
     end
 
-    it "writes every sample as CSV, keeping notes to one field" do
-      stats.record(kind: :inventory, host: "sim-001", status: 422, ms: 12.345, at: Time.utc(2026, 1, 1), note: "bad, very\nbad")
-      expect(stats.to_csv).to eq("at,kind,host,status,ms,note\n2026-01-01T00:00:00.000Z,inventory,sim-001,422,12.35,bad; very bad\n")
+    it "writes every sample as RFC 4180 CSV, quoting a note with commas, quotes, or line breaks" do
+      stats.record(kind: :inventory, host: "sim-001", status: 422, ms: 12.345, at: Time.utc(2026, 1, 1), note: %({"error":"bad, very\nbad"}))
+      expect(stats.to_csv).to eq(%(at,kind,host,status,ms,note\n2026-01-01T00:00:00.000Z,inventory,sim-001,422,12.35,"{""error"":""bad, very\nbad""}"\n))
     end
   end
 

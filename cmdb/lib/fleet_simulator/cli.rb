@@ -78,7 +78,8 @@ module FleetSimulator
 
     def poll_liveness(liveness, started_at, now)
       if liveness.state == :idle
-        liveness.silence!(now) if now >= started_at + LIVENESS_START_AFTER
+        # Only once its heartbeat has been accepted in this run: a host never seen has no liveness to lose.
+        liveness.silence!(now) if now >= started_at + LIVENESS_START_AFTER && liveness.host.last_heartbeat_at
       elsif !liveness.finished?
         before = liveness.log.size
         liveness.poll(now)

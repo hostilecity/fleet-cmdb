@@ -61,7 +61,8 @@ module FleetSimulator
       since = @state == :awaiting_online ? @resumed_at : @silenced_at
       # Uncached: the job writes from another process, which never clears this process's query cache.
       event = HostStatusEvent.uncached do
-        HostStatusEvent.where(host_id: @host.host_id, to_status: status, reason:).where(occurred_at: since..).order(:occurred_at).first
+        # Bounded by the deadline, so a late transition fails rather than passing on a later poll.
+        HostStatusEvent.where(host_id: @host.host_id, to_status: status, reason:).where(occurred_at: since..deadline).order(:occurred_at).first
       end
       if event
         @log << "#{status} recorded at #{event.occurred_at.utc.iso8601} (#{(event.occurred_at - since).round}s after #{since == @silenced_at ? 'going silent' : 'resuming'})"

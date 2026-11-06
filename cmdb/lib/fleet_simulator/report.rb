@@ -80,7 +80,8 @@ module FleetSimulator
       last_quarter = @stats.quarters(:heartbeat)[:last]
       simulated = (@finished_at - @started_at) * @options.time_scale
       [
-        Check.new("At least #{Options::LOAD_CHECK[:hosts]} hosts enrolled and reporting", @hosts.count(&:credential) >= Options::LOAD_CHECK[:hosts], "#{@hosts.count(&:credential)} hosts"),
+        Check.new("At least #{Options::LOAD_CHECK[:hosts]} hosts reporting", reporting >= Options::LOAD_CHECK[:hosts],
+                  "#{reporting} of #{@hosts.size} hosts had a heartbeat and an inventory report accepted in the run"),
         Check.new("At least one simulated hour", simulated >= SIMULATED_HOUR, "#{simulated.round} s simulated"),
         Check.new("Fleet list complete and under #{FLEET_LIST_TARGET_MS} ms every time", fleet[:count].positive? && fleet[:errors].zero? && fleet[:max].to_f < FLEET_LIST_TARGET_MS,
                   "#{fleet[:count]} loads, max #{fleet[:max]} ms, p95 #{fleet[:p95]} ms, #{fleet[:errors]} failed or incomplete"),
@@ -89,6 +90,13 @@ module FleetSimulator
         Check.new("Heartbeat p95 still under #{HEARTBEAT_P95_TARGET_MS} ms in the last quarter (no degradation)", last_quarter[:p95].to_f < HEARTBEAT_P95_TARGET_MS,
                   "first quarter #{@stats.quarters(:heartbeat)[:first][:p95]} ms, last quarter #{last_quarter[:p95]} ms")
       ]
+    end
+
+    # Hosts that took part in the measured run: at least one accepted heartbeat and one accepted report. Enrolled
+    # hosts that sent nothing would otherwise pass for load (and pass the no-errors check by sending nothing).
+    def reporting
+      accepted = ->(kind) { @stats.of(kind).select { |s| s.status.to_i.between?(200, 299) }.map(&:host).to_set }
+      (accepted.(:heartbeat) & accepted.(:inventory)).size
     end
 
     # Requests from well-behaved and misbehaving hosts alike must all be accepted, and duplicates recognised.

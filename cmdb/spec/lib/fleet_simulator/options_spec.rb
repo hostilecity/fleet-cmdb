@@ -35,7 +35,7 @@ RSpec.describe FleetSimulator::Options do
 
   it "rejects impossible combinations" do
     [ %w[--hosts 0], %w[--hosts 751], %w[--time-scale 0], %w[--duration 0], %w[--concurrency 0], %w[--stop -1],
-      %w[--seed-snapshots -1], %w[--hosts 2 --stop 2 --churn 1], %w[--liveness-check --duration 5m], %w[--enroll-via email] ].each do |argv|
+      %w[--seed-snapshots -1], %w[--heartbeat-seconds 0], %w[--inventory-seconds -5], %w[--hosts 2 --stop 2 --churn 1], %w[--liveness-check --duration 5m], %w[--enroll-via email] ].each do |argv|
       expect { described_class.parse(argv) }.to raise_error(OptionParser::ParseError), argv.join(" ")
     end
   end

@@ -69,6 +69,34 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
       expect(out.string).to include("rate-limited; waiting 30s", "FLEET_ENROLL_RATE_LIMIT_PER_MINUTE")
     end
 
+    # Answers the first heartbeat (the saved-credential check) with status, and everything else for real.
+    def heartbeat_answering(status)
+      Class.new(SimpleDelegator) do
+        define_method(:post_api) do |path, payload, **options|
+          if path == "/api/v1/heartbeat" && !@answered
+            @answered = true
+            next FleetSimulator::Response.new(status:, body: "{}", headers: { "retry-after" => "5" }, ms: 1)
+          end
+          __getobj__.post_api(path, payload, **options)
+        end
+      end.new(transport)
+    end
+
+    it "waits out a rate limit on a saved credential and keeps it" do
+      saved = enrolled(1).first
+      again = enroller(transport: heartbeat_answering(429)).enroll_all(FleetSimulator::SimHost.build_all(1)).first
+      expect(again.credential).to eq(saved.credential)
+      expect(EnrollmentToken.where(host_id: saved.host_id).count).to eq(1) # never re-enrolled
+    end
+
+    it "stops on a server failure while checking a saved credential, without re-enrolling the host" do
+      saved = enrolled(1).first
+      expect { enroller(transport: heartbeat_answering(503)).enroll_all(FleetSimulator::SimHost.build_all(1)) }
+        .to raise_error(FleetSimulator::Enroller::Failed, /sim-001: checking its saved credential answered 503/)
+      expect(Host.find(saved.host_id).enrollment_state).to eq("active")
+      expect(EnrollmentToken.where(host_id: saved.host_id).count).to eq(1)
+    end
+
     it "stops with the server's answer when enrollment fails" do
       refusing = Class.new { def post_api(*, **) = FleetSimulator::Response.new(status: 422, body: '{"error":"no"}', headers: {}, ms: 1) }
       expect { enroller(transport: refusing.new).enroll_all(FleetSimulator::SimHost.build_all(1)) }
@@ -111,6 +139,25 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
       expect(InventorySnapshot.where(host_id: hosts[0].host_id).count).to eq(1)
       expect(HostInventory.find_by!(host_id: hosts[2].host_id).stable.dig("os", "pretty_name")).to eq(FleetSimulator::Payloads::HOSTILE)
       expect(stats.summary(:inventory)[:errors] + stats.summary(:heartbeat)[:errors]).to eq(0)
+    end
+
+    it "seeds each host's reports in order on one worker, never two of a host's requests at once" do
+      hosts = FleetSimulator::SimHost.build_all(2).each { |h| h.credential = h.name }
+      in_flight = Hash.new(0)
+      overlaps = []
+      lock = Mutex.new
+      watching = Class.new do
+        define_method(:post_api) do |_path, _payload, credential:|
+          lock.synchronize { overlaps << credential if (in_flight[credential] += 1) > 1 }
+          sleep 0.005
+          lock.synchronize { in_flight[credential] -= 1 }
+          FleetSimulator::Response.new(status: 200, body: "{}", headers: {}, ms: 1)
+        end
+      end
+      FleetSimulator::Runner.new(hosts:, transport: watching.new, payloads:, stats:, clock:, options: FleetSimulator::Options.parse(%w[--concurrency 6]))
+                            .seed_snapshots(4) # more workers than hosts, so idle workers would take a host's next report
+      expect(overlaps).to eq([])
+      expect(stats.of(:seed).group_by(&:host).transform_values(&:size)).to eq("sim-001" => 4, "sim-002" => 4)
     end
 
     it "seeds snapshots through the API before the run, waiting out rate limits" do
@@ -221,12 +268,29 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
       # cached answer would keep saying "no transition yet" (seen in a real run before this was fixed).
       check = FleetSimulator::LivenessCheck.new(host: enrolled(1).first)
       check.silence!(clock.now)
-      cached = []
-      watch = ->(*, payload) { cached << payload[:cached] if payload[:sql].include?("host_status_events") }
+      polls = []
+      me = Thread.current # notifications reach every thread's subscribers; count only this one's queries
+      watch = ->(*, payload) { polls << [ payload[:cached], payload[:sql] ] if Thread.current == me && payload[:sql].include?("host_status_events") }
       ActiveSupport::Notifications.subscribed(watch, "sql.active_record") do
         ActiveRecord::Base.cache { 3.times { check.poll(clock.now) } }
       end
-      expect(cached).to eq([ nil, nil, nil ])
+      expect(polls.map(&:first)).to eq([ nil, nil, nil ]), polls.inspect
+    end
+
+    it "fails a transition recorded after its deadline, even when a later poll finds it" do
+      hosts = enrolled(1)
+      travel_to(clock.now, with_usec: true)
+      run = runner(hosts, "--time-scale", "6")
+      run.start(clock.now)
+      clock.advance(11)
+      travel_to(clock.now, with_usec: true)
+      2.times { run.step(clock.now) }
+      check = FleetSimulator::LivenessCheck.new(host: hosts.first)
+      check.silence!(clock.now)
+      # Stale is due within 60 s + 120 s of going silent; it is recorded at 182 s (a late job run) and polled at 185 s.
+      HostStatusEvent.insert!({ host_id: hosts.first.host_id, from_status: "online", to_status: "stale", reason: "evaluation",
+                                occurred_at: clock.now + 182 })
+      expect(check.poll(clock.now + 185)).to eq(:failed)
     end
 
     it "fails when no transition is recorded in time, and restores nothing it did not change" do

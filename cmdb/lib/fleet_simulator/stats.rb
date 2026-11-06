@@ -45,8 +45,14 @@ module FleetSimulator
 
     # Raw samples as CSV, for the delivery note.
     def to_csv
-      rows = samples.sort_by(&:at).map { |s| [ s.at.utc.iso8601(3), s.kind, s.host, s.status, s.ms, s.note.to_s.tr(",\n", "; ") ].join(",") }
-      ([ "at,kind,host,status,ms,note" ] + rows).join("\n") << "\n"
+      rows = samples.sort_by(&:at).map { |s| [ s.at.utc.iso8601(3), s.kind, s.host, s.status, s.ms, s.note ] }
+      ([ %w[at kind host status ms note] ] + rows).map { |row| row.map { |field| self.class.csv_field(field) }.join(",") }.join("\n") << "\n"
+    end
+
+    # RFC 4180: a field with a comma, quote, or line break is quoted, with its quotes doubled.
+    def self.csv_field(value)
+      text = value.to_s
+      text.match?(/[",\r\n]/) ? %("#{text.gsub('"', '""')}") : text
     end
   end
 end
