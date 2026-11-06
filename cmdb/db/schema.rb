@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_06_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_06_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -103,6 +103,34 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_06_010000) do
     t.index ["target_type", "target_id", "occurred_at"], name: "index_audit_entries_on_target"
     t.check_constraint "(actor_type::text = 'system'::text) = (actor_id IS NULL)", name: "audit_entries_actor_id_matches_type"
     t.check_constraint "actor_type::text = ANY (ARRAY['operator'::character varying::text, 'host'::character varying::text, 'system'::character varying::text])", name: "audit_entries_actor_type_valid"
+  end
+
+  create_table "cis_rule_versions", force: :cascade do |t|
+    t.bigint "cis_rule_id", null: false
+    t.integer "version", null: false
+    t.string "reference", limit: 128, null: false
+    t.string "title", limit: 200, null: false
+    t.string "severity", limit: 16, null: false
+    t.jsonb "applies_to", null: false
+    t.string "fact", limit: 220, null: false
+    t.jsonb "condition", null: false
+    t.text "remediation", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.datetime "created_at", null: false
+    t.index ["cis_rule_id", "version"], name: "index_cis_rule_versions_on_cis_rule_id_and_version", unique: true
+    t.index ["fact"], name: "index_cis_rule_versions_on_fact"
+    t.check_constraint "severity::text = ANY (ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying]::text[])", name: "cis_rule_versions_severity"
+    t.check_constraint "version > 0", name: "cis_rule_versions_version_positive"
+  end
+
+  create_table "cis_rules", force: :cascade do |t|
+    t.string "key", limit: 64, null: false
+    t.boolean "enabled", default: true, null: false
+    t.bigint "current_version_id"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["current_version_id"], name: "index_cis_rules_on_current_version_id", unique: true
+    t.index ["key"], name: "index_cis_rules_on_key", unique: true
   end
 
   create_table "enrollment_tokens", force: :cascade do |t|
@@ -365,6 +393,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_06_010000) do
   add_foreign_key "agent_releases", "operators", column: "imported_by_id"
   add_foreign_key "agent_updates", "hosts"
   add_foreign_key "agent_updates", "rollouts"
+  add_foreign_key "cis_rule_versions", "cis_rules"
+  add_foreign_key "cis_rules", "cis_rule_versions", column: "current_version_id"
   add_foreign_key "enrollment_tokens", "hosts"
   add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_package_sets", "hosts"

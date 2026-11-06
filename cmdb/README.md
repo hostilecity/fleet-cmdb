@@ -128,6 +128,15 @@ bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 
 `GET /api/v1/manifest/config` (FR-2.1, P2-S01) publishes the facts an agent may report: `config/fact_manifest.yml`, loaded and validated as a whole by `lib/config_manifest.rb` (a manifest that does not validate stops the first use, with every problem listed), served to an active host with a strong `ETag`. Config reports (P2-S02) are validated against the same facts. To add a fact, see [docs/operations/config-facts.md](../docs/operations/config-facts.md).
 
+### CIS-aligned rules
+
+Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the operator controls; the format is in [docs/api/rules](../docs/api/rules/README.md).
+
+- **Import.** `bin/rails rules:import FILE=rules.yml` checks the whole file (`CisRules::RuleFile`: safe YAML, the JSON Schema, then each rule against the fact manifest) and writes nothing if anything is wrong, listing every problem. `DISABLE_MISSING=1` disables enabled rules the file does not list; otherwise they are left alone. `bin/rails rules:list` shows each rule's key, version, flag, severity, and fact. Imports are serialised and audited with the system actor.
+- **Storage.** `cis_rules`: the stable key, the enabled flag, and the current version. `cis_rule_versions`: one row per definition, never changed (`readonly?`), numbered from 1; an import creates one only when the definition's content hash changes.
+- **Audit.** `rule.created`, `rule.edited` (each changed field before and after, and the version), `rule.enabled`, `rule.disabled`; the audit page names the rule by its key.
+- **Image.** The schema is read at runtime from `FLEET_RULES_SCHEMA_DIR` (default `../docs/api/rules`); the Docker image copies `docs/api/rules` from the `api` build context.
+
 ### Package reports
 
 `POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`): at most 4 MiB of JSON, sent plain or once decompressed, and 1 MiB compressed. `AgentApiRequestGuard` lets this path's plain bodies past its general 1 MiB limit (`UNCOMPRESSED_LIMITS`).
@@ -279,7 +288,7 @@ Signed agent releases ([docs/releases.md](../docs/releases.md), ADR 0018, ADR 00
 
 ### Docker image
 
-The image needs the schemas too, so build it from `cmdb/` with `docs/api` as a named build context:
+The image needs the agent API schemas and the rule file schema too, so build it from `cmdb/` with `docs/api` as a named build context:
 
 ```sh
 docker build --build-context api=../docs/api -t cmdb .

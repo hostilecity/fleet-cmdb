@@ -53,7 +53,7 @@ class AuditLog
   # What the page shows for the entries' actors and targets, loaded in a fixed number of queries however
   # many entries there are. Records may be gone (a removed allowlist entry, a pruned onboarding request);
   # the page then shows what the entry itself recorded.
-  Records = Data.define(:operators, :hosts, :requests, :request_hosts, :settings, :allowlist) do
+  Records = Data.define(:operators, :hosts, :requests, :request_hosts, :settings, :allowlist, :rules) do
     def self.for(entries)
       ids = ->(type, kind) { entries.filter_map { |e| e.public_send(:"#{kind}_id") if e.public_send(:"#{kind}_type") == type }.uniq }
       request_ids = ids.("OnboardingRequest", :target)
@@ -62,13 +62,15 @@ class AuditLog
       host_ids = ids.("host", :actor) | ids.("Host", :target) | request_hosts.values
       setting_ids = ids.("Setting", :target)
       allowlist_ids = ids.("OperatorAllowlistEntry", :target)
+      rule_ids = ids.("CisRule", :target)
       new(
         operators: operator_ids.any? ? Operator.where(id: operator_ids).index_by(&:id) : {},
         hosts: host_ids.any? ? Host.where(id: host_ids).index_by(&:id) : {},
         requests: request_ids.any? ? OnboardingRequest.where(id: request_ids).index_by(&:id) : {},
         request_hosts:,
         settings: setting_ids.any? ? Setting.where(id: setting_ids).pluck(:id, :key).to_h : {},
-        allowlist: allowlist_ids.any? ? OperatorAllowlistEntry.where(id: allowlist_ids).pluck(:id, :email).to_h : {}
+        allowlist: allowlist_ids.any? ? OperatorAllowlistEntry.where(id: allowlist_ids).pluck(:id, :email).to_h : {},
+        rules: rule_ids.any? ? CisRule.where(id: rule_ids).pluck(:id, :key).to_h : {}
       )
     end
   end

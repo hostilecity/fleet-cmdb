@@ -1,0 +1,52 @@
+# A CIS-aligned rule (P2-S04, FR-2.2, DEC-12): its stable key, whether it is evaluated, and its current
+# definition. Every change is audited with before and after values (FR-S.3). Imports (CisRules::Import) and
+# the dashboard (P2-D06) both change rules through define!, enable!, and disable!.
+class CisRule < ApplicationRecord
+  has_many :versions, -> { order(:version) }, class_name: "CisRuleVersion", inverse_of: :cis_rule, dependent: :restrict_with_exception
+  belongs_to :current_version, class_name: "CisRuleVersion", optional: true
+
+  validates :key, format: { with: /\A[a-z0-9][a-z0-9-]{0,63}\z/ }
+
+  scope :enabled, -> { where(enabled: true) }
+
+  # Creates the rule, or a new version of it when the definition differs from its current one. Returns
+  # :created, :versioned, or :unchanged. Must run inside a transaction.
+  def self.define!(definition, actor:, enabled: true)
+    rule = lock.find_by(key: definition.key)
+    return rule.revise!(definition, actor:) if rule
+
+    rule = create!(key: definition.key, enabled:)
+    rule.update!(current_version: rule.versions.create!(version: 1, **version_attributes(definition)))
+    Audit.record(actor:, action: Audit::Actions::RULE_CREATED, target: rule,
+                 changes: definition.fields.transform_values { |value| [ nil, value ] }.merge("version" => [ nil, 1 ], "enabled" => [ nil, enabled ]))
+    :created
+  end
+
+  def self.version_attributes(definition) = definition.fields.symbolize_keys.merge(content_hash: definition.content_hash)
+
+  def revise!(definition, actor:)
+    before = current_version
+    return :unchanged if before.content_hash == definition.content_hash
+
+    after = versions.create!(version: before.version + 1, **self.class.version_attributes(definition))
+    update!(current_version: after)
+    changes = definition.fields.filter_map { |name, value| [ name, [ before.public_send(name), value ] ] unless before.public_send(name) == value }.to_h
+    Audit.record(actor:, action: Audit::Actions::RULE_EDITED, target: self, changes: changes.merge("version" => [ before.version, after.version ]))
+    :versioned
+  end
+
+  # True when the flag changed. Must run inside a transaction.
+  def enable!(actor:) = set_enabled!(true, actor:)
+
+  def disable!(actor:) = set_enabled!(false, actor:)
+
+  private
+
+  def set_enabled!(value, actor:)
+    return false if enabled == value
+
+    update!(enabled: value)
+    Audit.record(actor:, action: value ? Audit::Actions::RULE_ENABLED : Audit::Actions::RULE_DISABLED, target: self, changes: { "enabled" => [ !value, value ] })
+    true
+  end
+end
