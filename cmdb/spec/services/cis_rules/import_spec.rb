@@ -56,11 +56,16 @@ RSpec.describe CisRules::Import do
     )
   end
 
-  it "never changes a stored version" do
+  it "never changes or deletes a stored version, current or not (review of #101)" do
     import(rule)
-    version = CisRuleVersion.sole
-    expect { version.update!(title: "rewritten") }.to raise_error(ActiveRecord::ReadOnlyRecord)
-    expect { version.destroy! }.to raise_error(ActiveRecord::ReadOnlyRecord)
+    import(rule(title: "second"))
+    old, current = CisRule.sole.versions.to_a
+    [ old, current ].each do |version|
+      expect { version.update!(title: "rewritten") }.to raise_error(ActiveRecord::ReadOnlyRecord)
+      expect { version.destroy! }.to raise_error(ActiveRecord::ReadOnlyRecord)
+      expect { version.delete }.to raise_error(ActiveRecord::ReadOnlyRecord)
+    end
+    expect(CisRuleVersion.count).to eq(2)
   end
 
   describe "enabling and disabling (FR-S.3)" do

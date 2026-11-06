@@ -36,7 +36,8 @@ module CisRules
     end
   end
 
-  def schemer = @schemer ||= JSONSchemer.schema(JSON.parse(SCHEMA_PATH.read))
+  # Patterns follow ECMA-262, as JSON Schema says: `$` is the end of the string, so "key\n" does not pass.
+  def schemer = @schemer ||= JSONSchemer.schema(JSON.parse(SCHEMA_PATH.read), regexp_resolver: "ecma")
 
   # One rule on its own, so the file's other checks run only on rules whose shape is right.
   def rule_schemer = @rule_schemer ||= schemer.ref("#/$defs/rule")

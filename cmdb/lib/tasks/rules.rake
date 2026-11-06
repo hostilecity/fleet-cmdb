@@ -5,7 +5,8 @@ namespace :rules do
   task import: :environment do
     path = ENV.fetch("FILE") { abort "Usage: bin/rails rules:import FILE=rules.yml [DISABLE_MISSING=1]" }
     text = begin
-      File.read(path, encoding: "UTF-8")
+      # Only one byte past the limit, so an oversized file is refused without reading it all (review of #101).
+      File.open(path, "rb") { |file| file.read(CisRules::RuleFile::MAX_BYTES + 1) || "" }.force_encoding(Encoding::UTF_8)
     rescue SystemCallError => e
       abort "Cannot read #{path}: #{e.message}"
     end

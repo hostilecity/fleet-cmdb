@@ -6,5 +6,8 @@ class CisRuleVersion < ApplicationRecord
 
   def readonly? = persisted? || super
 
+  # delete skips readonly?, so it is refused here too (review of #101).
+  def delete = raise(ActiveRecord::ReadOnlyRecord, "rule versions cannot be deleted")
+
   def definition = CisRules::Definition.new(key: cis_rule.key, **CisRules::DEFINITION_FIELDS.to_h { |name| [ name.to_sym, public_send(name) ] })
 end

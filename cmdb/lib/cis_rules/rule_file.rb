@@ -5,6 +5,7 @@ module CisRules
   class RuleFile
     MAX_BYTES = 1.megabyte
     MAX_ERRORS = 200
+    JSON_NESTING = 64 # far more than a valid file needs (a condition nests at most 8 deep), and far less than would strain the parsers
 
     # enabled is nil when the file does not say, so an import leaves an existing rule's flag as it is.
     Rule = Data.define(:definition, :enabled)
@@ -22,7 +23,8 @@ module CisRules
       @rules = []
       @errors = []
       data = read(text)
-      validate(data) if @errors.empty? # a file that could not be read has nothing more to check
+      nul_problems(data) if @errors.empty?
+      validate(data) if @errors.empty? # a file that could not be read, or holds a NUL, has nothing more to check
       @rules = [] if @errors.any?
       @errors = @errors.first(MAX_ERRORS)
     end
@@ -32,15 +34,33 @@ module CisRules
       return problem("/", "is not UTF-8 text") unless text.dup.force_encoding(Encoding::UTF_8).valid_encoding?
 
       # Through JSON, so keys are strings and anything JSON cannot hold (such as .nan) is refused here.
-      JSON.parse(JSON.generate(YAML.safe_load(text, permitted_classes: [], aliases: false)))
+      JSON.parse(JSON.generate(YAML.safe_load(text, permitted_classes: [], aliases: false), max_nesting: JSON_NESTING), max_nesting: JSON_NESTING)
     rescue Psych::Exception => e
       problem("/", "is not a plain YAML or JSON document (#{e.message.truncate(200)})")
+    rescue JSON::NestingError
+      problem("/", "is nested more than #{JSON_NESTING} levels deep")
     rescue JSON::GeneratorError
       problem("/", "holds a value JSON cannot represent, such as NaN or infinity")
     end
 
+    # PostgreSQL cannot store U+0000 in text or jsonb, so a NUL anywhere is a problem in the file, not a
+    # failed write (review of #101).
+    def nul_problems(value, pointer = "")
+      case value
+      when Hash
+        value.each do |key, sub|
+          problem(pointer, "has a key containing a NUL character") if key.include?("\0")
+          nul_problems(sub, "#{pointer}/#{escape(key)}")
+        end
+      when Array then value.each_with_index { |sub, index| nul_problems(sub, "#{pointer}/#{index}") }
+      when String then problem(pointer, "contains a NUL character") if value.include?("\0")
+      end
+    end
+
+    def escape(key) = key.gsub("~", "~0").gsub("/", "~1")
+
     def validate(data)
-      CisRules.schemer.validate(data).each { |error| problem(error.fetch("data_pointer"), error.fetch("error").sub(/\Avalue at (`[^`]*`|root) /, "")) }
+      CisRules.schemer.validate(data).each { |error| problem(error.fetch("data_pointer"), error.fetch("error").sub(/\A\w+ at (`[^`]*`|root) /, "")) }
       return unless data.is_a?(Hash) && data["rules"].is_a?(Array)
 
       seen = {}

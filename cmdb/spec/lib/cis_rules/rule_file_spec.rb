@@ -57,6 +57,24 @@ RSpec.describe CisRules::RuleFile do
     expect(errors("")).to eq([ "/: is not an object" ])
   end
 
+  it "reports a condition nested past the parser's limit instead of raising (review of #101)" do
+    deep = (1..110).reduce({ "eq" => "no" }) { |inner, _| { "not" => inner } }
+    expect(errors(file(rule(condition: deep)))).to eq([ "/: is nested more than 64 levels deep" ])
+    expect(errors(file(rule(condition: (1..9).reduce({ "eq" => "no" }) { |inner, _| { "not" => inner } }))).first).to include("is nested more than 8 deep")
+  end
+
+  it "reports a NUL in any string or key, which the database cannot store, with its pointer (review of #101)" do
+    expect(errors(file(rule(title: "bad\0title", condition: { "eq" => "n\0o" }), rule(key: "b").merge("x\0" => 1))))
+      .to eq([ "/rules/0/title: contains a NUL character", "/rules/0/condition/eq: contains a NUL character", "/rules/1: has a key containing a NUL character" ])
+    expect { CisRules::Import.call(file(rule(title: "bad\0title")), actor: Audit::SYSTEM) }.not_to raise_error
+  end
+
+  it "holds patterns to the whole string, so a trailing newline is refused before it reaches the database (review of #101)" do
+    expect(errors(file(rule(key: "ssh-root-login-off\n")))).to eq([ "/rules/0/key: does not match pattern: ^[a-z0-9][a-z0-9-]{0,63}$" ])
+    expect(errors(file(rule(condition: { "eq" => "no" }, applies_to: [ { "distribution" => "debian\n" } ]))).first).to start_with("/rules/0/applies_to/0/distribution:")
+    expect(CisRule.count).to eq(0)
+  end
+
   it "lists at most 200 problems" do
     expect(errors(file(*Array.new(250) { |i| rule(key: "r#{i}", severity: "bad") })).size).to eq(200)
   end

@@ -41,6 +41,13 @@ RSpec.describe "rules rake tasks (P2-S04)" do
     expect(CisRule.count).to eq(0)
   end
 
+  it "reads no more than one byte past the size limit of a large file (review of #101)" do
+    big = write("#" * (CisRules::RuleFile::MAX_BYTES + 10_000))
+    allow(CisRules::Import).to receive(:call).and_call_original
+    expect { expect { run("rules:import", "FILE" => big) }.to output(/is larger than 1 MiB/).to_stderr }.to raise_error(SystemExit)
+    expect(CisRules::Import).to have_received(:call).with(satisfy { |text| text.bytesize == CisRules::RuleFile::MAX_BYTES + 1 }, anything)
+  end
+
   it "aborts without FILE, or with a file it cannot read" do
     expect { expect { run("rules:import") }.to output(/Usage: bin\/rails rules:import/).to_stderr }.to raise_error(SystemExit)
     expect { expect { run("rules:import", "FILE" => "/nonexistent/rules.yml") }.to output(/Cannot read \/nonexistent\/rules.yml/).to_stderr }.to raise_error(SystemExit)
