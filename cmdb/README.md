@@ -124,6 +124,10 @@ bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 - **Clone detection (FR-S.1).** A machine id different from the one the credential was enrolled with sets `hosts.machine_id_mismatch_at`. It is audited once and cleared when the host is re-enrolled.
 - **Audit entries.** Ordinary reports write none; only the first inventory and a machine id mismatch are audited.
 
+### Config fact manifest
+
+`GET /api/v1/manifest/config` (FR-2.1, P2-S01) publishes the facts an agent may report: `config/fact_manifest.yml`, loaded and validated as a whole by `lib/config_manifest.rb` (a manifest that does not validate stops the first use, with every problem listed), served to an active host with a strong `ETag`. Config reports (P2-S02) are validated against the same facts. To add a fact, see [docs/operations/config-facts.md](../docs/operations/config-facts.md).
+
 ### Package reports
 
 `POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`): at most 4 MiB of JSON, sent plain or once decompressed, and 1 MiB compressed. `AgentApiRequestGuard` lets this path's plain bodies past its general 1 MiB limit (`UNCOMPRESSED_LIMITS`).

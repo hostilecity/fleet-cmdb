@@ -1,0 +1,94 @@
+# Every fact released in a config manifest (P2-S01), with the limits it was released with. A fact is never
+# removed, renamed, retyped, or given a different `since`, and its limits may be loosened but never tightened, and a list never changes between ordered and not,
+# because a report made against an older manifest version must stay valid (docs/operations/config-facts.md).
+# When you add a fact, add its line here in the same change. Never edit an existing line.
+facts:
+  - { key: "auto_updates.enabled", type: boolean, since: 1 }
+  - { key: "auto_updates.installed", type: boolean, since: 1 }
+  - { key: "file:/boot/grub/grub.cfg", type: file_attributes, since: 1 }
+  - { key: "file:/etc/cron.d", type: file_attributes, since: 1 }
+  - { key: "file:/etc/cron.daily", type: file_attributes, since: 1 }
+  - { key: "file:/etc/cron.hourly", type: file_attributes, since: 1 }
+  - { key: "file:/etc/cron.monthly", type: file_attributes, since: 1 }
+  - { key: "file:/etc/cron.weekly", type: file_attributes, since: 1 }
+  - { key: "file:/etc/crontab", type: file_attributes, since: 1 }
+  - { key: "file:/etc/fstab", type: file_attributes, since: 1 }
+  - { key: "file:/etc/group", type: file_attributes, since: 1 }
+  - { key: "file:/etc/group-", type: file_attributes, since: 1 }
+  - { key: "file:/etc/gshadow", type: file_attributes, since: 1 }
+  - { key: "file:/etc/gshadow-", type: file_attributes, since: 1 }
+  - { key: "file:/etc/issue", type: file_attributes, since: 1 }
+  - { key: "file:/etc/issue.net", type: file_attributes, since: 1 }
+  - { key: "file:/etc/login.defs", type: file_attributes, since: 1 }
+  - { key: "file:/etc/motd", type: file_attributes, since: 1 }
+  - { key: "file:/etc/passwd", type: file_attributes, since: 1 }
+  - { key: "file:/etc/passwd-", type: file_attributes, since: 1 }
+  - { key: "file:/etc/shadow", type: file_attributes, since: 1 }
+  - { key: "file:/etc/shadow-", type: file_attributes, since: 1 }
+  - { key: "file:/etc/ssh/sshd_config", type: file_attributes, since: 1 }
+  - { key: "file:/etc/sudoers", type: file_attributes, since: 1 }
+  - { key: "firewall.backend", type: string, since: 1, max_length: 32 }
+  - { key: "firewall.enabled", type: boolean, since: 1 }
+  - { key: "login_defs.encrypt_method", type: string, since: 1, max_length: 16 }
+  - { key: "login_defs.pass_max_days", type: integer, since: 1, minimum: -1, maximum: 99999 }
+  - { key: "login_defs.pass_min_days", type: integer, since: 1, minimum: -1, maximum: 99999 }
+  - { key: "login_defs.pass_warn_age", type: integer, since: 1, minimum: -1, maximum: 99999 }
+  - { key: "login_defs.umask", type: string, since: 1, max_length: 8 }
+  - { key: "pwquality.dcredit", type: integer, since: 1, minimum: -256, maximum: 256 }
+  - { key: "pwquality.lcredit", type: integer, since: 1, minimum: -256, maximum: 256 }
+  - { key: "pwquality.maxrepeat", type: integer, since: 1, minimum: 0, maximum: 256 }
+  - { key: "pwquality.minclass", type: integer, since: 1, minimum: 0, maximum: 4 }
+  - { key: "pwquality.minlen", type: integer, since: 1, minimum: 0, maximum: 256 }
+  - { key: "pwquality.ocredit", type: integer, since: 1, minimum: -256, maximum: 256 }
+  - { key: "pwquality.retry", type: integer, since: 1, minimum: 0, maximum: 100 }
+  - { key: "pwquality.ucredit", type: integer, since: 1, minimum: -256, maximum: 256 }
+  - { key: "service:apache2.service", type: service_state, since: 1 }
+  - { key: "service:apparmor.service", type: service_state, since: 1 }
+  - { key: "service:auditd.service", type: service_state, since: 1 }
+  - { key: "service:avahi-daemon.service", type: service_state, since: 1 }
+  - { key: "service:chrony.service", type: service_state, since: 1 }
+  - { key: "service:cron.service", type: service_state, since: 1 }
+  - { key: "service:cups.service", type: service_state, since: 1 }
+  - { key: "service:firewalld.service", type: service_state, since: 1 }
+  - { key: "service:isc-dhcp-server.service", type: service_state, since: 1 }
+  - { key: "service:nfs-server.service", type: service_state, since: 1 }
+  - { key: "service:nftables.service", type: service_state, since: 1 }
+  - { key: "service:nginx.service", type: service_state, since: 1 }
+  - { key: "service:rpcbind.service", type: service_state, since: 1 }
+  - { key: "service:rsh.socket", type: service_state, since: 1 }
+  - { key: "service:rsyslog.service", type: service_state, since: 1 }
+  - { key: "service:smbd.service", type: service_state, since: 1 }
+  - { key: "service:snmpd.service", type: service_state, since: 1 }
+  - { key: "service:ssh.service", type: service_state, since: 1 }
+  - { key: "service:systemd-journald.service", type: service_state, since: 1 }
+  - { key: "service:systemd-timesyncd.service", type: service_state, since: 1 }
+  - { key: "service:telnet.socket", type: service_state, since: 1 }
+  - { key: "service:ufw.service", type: service_state, since: 1 }
+  - { key: "service:unattended-upgrades.service", type: service_state, since: 1 }
+  - { key: "service:vsftpd.service", type: service_state, since: 1 }
+  - { key: "services.enabled", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
+  - { key: "services.running", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
+  - { key: "sshd.allowtcpforwarding", type: string, since: 1, max_length: 16 }
+  - { key: "sshd.banner", type: string, since: 1, max_length: 256 }
+  - { key: "sshd.ciphers", type: string_list, since: 1, max_items: 64, item_max_length: 256, ordered: true }
+  - { key: "sshd.clientalivecountmax", type: integer, since: 1, minimum: 0, maximum: 1000 }
+  - { key: "sshd.clientaliveinterval", type: integer, since: 1, minimum: 0, maximum: 86400 }
+  - { key: "sshd.hostbasedauthentication", type: boolean, since: 1 }
+  - { key: "sshd.ignorerhosts", type: boolean, since: 1 }
+  - { key: "sshd.kexalgorithms", type: string_list, since: 1, max_items: 64, item_max_length: 256, ordered: true }
+  - { key: "sshd.logingracetime", type: integer, since: 1, minimum: 0, maximum: 86400 }
+  - { key: "sshd.loglevel", type: string, since: 1, max_length: 16 }
+  - { key: "sshd.macs", type: string_list, since: 1, max_items: 64, item_max_length: 256, ordered: true }
+  - { key: "sshd.maxauthtries", type: integer, since: 1, minimum: 0, maximum: 1000 }
+  - { key: "sshd.maxsessions", type: integer, since: 1, minimum: 0, maximum: 1000 }
+  - { key: "sshd.passwordauthentication", type: boolean, since: 1 }
+  - { key: "sshd.permitemptypasswords", type: boolean, since: 1 }
+  - { key: "sshd.permitrootlogin", type: string, since: 1, max_length: 32 }
+  - { key: "sshd.permituserenvironment", type: boolean, since: 1 }
+  - { key: "sshd.pubkeyauthentication", type: boolean, since: 1 }
+  - { key: "sshd.usepam", type: boolean, since: 1 }
+  - { key: "sshd.x11forwarding", type: boolean, since: 1 }
+  - { key: "useradd.inactive", type: integer, since: 1, minimum: -1, maximum: 99999 }
+  - { key: "users.accounts", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
+  - { key: "users.login", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
+  - { key: "users.uid0", type: string_list, since: 1, max_items: 100, item_max_length: 256, ordered: false }

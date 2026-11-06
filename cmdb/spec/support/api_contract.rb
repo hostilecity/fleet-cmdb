@@ -108,7 +108,12 @@ module ApiContract
     out
   end
 
+  # A fact key in the config manifest (`sshd.permitrootlogin`, `file:/etc/shadow`) looks like a dotted hostname.
+  FACT_KEY = %r{\A(?:[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+|file:/\S+|service:\S+)\z}
+
   def string_problems(string, key, out)
+    return if key == "key" && string.match?(FACT_KEY)
+
     if SECRET_KEYS.include?(key) && !string.include?("EXAMPLE")
       out << "#{key} value #{string.inspect} does not contain EXAMPLE"
     end
