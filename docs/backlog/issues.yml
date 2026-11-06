@@ -199,10 +199,10 @@
   milestone: 1
   labels: ["area:server", "area:agent", "area:ops"]
   covers: [NFR-3, AC-1.2, FR-1.2, FR-1.3, FR-1.6]
-  goal: "A fleet simulator and soak script prove the system holds up at 50 hosts and the agent runs for days without leaking."
+  goal: "A fleet simulator proves the system holds up at 50 hosts, and a soak test checks that the agent does not leak or restart itself."
   done:
     - "50 simulated hosts keep the fleet list under 2 s and heartbeat p95 under 200 ms."
-    - "A 72-hour agent run including server outages, an update, and a forced rollback shows flat memory, file descriptors, and state-directory size."
+    - "The soak script and its analysis are committed and pass a run on systemd with server outages, flapping, an update, and a forced rollback; the 72-hour run is P2-SOAK."
   blocked_by: [P1-HEARTBEAT, P1-INVENTORY, P1-DASH-FLEET, P1-AGENT-REPORT, P1-AGENT-UPDATE]
 
 - key: P1-ONBOARD
@@ -370,6 +370,17 @@
     - "A VM without dpkg reports `unsupported` explicitly."
   blocked_by: [P2-AGENT-FACTS]
 
+- key: P2-SOAK
+  title: "72-hour agent soak run"
+  milestone: 2
+  labels: ["area:agent", "area:ops"]
+  covers: [FR-1.6, FR-1.2, NFR-3]
+  goal: "The agent runs for 72 hours through server outages, an update, and a forced rollback without leaking or restarting itself."
+  done:
+    - "A 72-hour run of agent/scripts/soak.sh on a disposable VM passes every check at the tolerances in P1-A09."
+    - "Its summary and raw samples are attached to the Phase 2 delivery note."
+  blocked_by: [P1-VERIFY]
+
 - key: P2-ACCEPT
   title: "Phase 2 retention, performance, contract tests, acceptance"
   milestone: 2
@@ -379,7 +390,7 @@
   done:
     - "AC-2.1 to AC-2.6 have recorded evidence, and Phase 1 golden fixtures pass unchanged against the Phase 2 server."
     - "The fleet list and compliance view load under 2 s at 50 hosts and heartbeat p95 stays under 200 ms."
-  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET]
+  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET, P2-SOAK]
 
 - key: P3-TASK-MODEL
   title: "Task catalog, task and batch models, state machine"

@@ -22,14 +22,15 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- A repeatable soak script: run the agent against the [P1-O04](p1-verify.md) simulator or a test server with short intervals for at least 72 hours, including periods where the server is down or flapping.
+- A repeatable soak script: run the agent against the [P1-O04](p1-verify.md) simulator or a test server with short intervals for at least 72 hours, including periods where the server is down or flapping. The 72-hour run itself is deferred to [P2-SOAK](p2-soak.md), so nothing is deployed in Phase 1; this section delivers the script and its analysis, checked by shorter runs on systemd.
 - Sample the agent's resident memory, open file descriptors, thread count, and state-directory size at intervals and write them to a file.
 - Include at least one update and one forced rollback during the run; staging and old versions must be cleaned up afterwards.
 - Fail criteria: monotonic growth beyond an agreed tolerance, descriptor growth, or any state-directory growth.
-- Findings and the raw samples attached to the Phase 1 delivery note.
+- Findings and the raw samples of the 72-hour run attached to the Phase 2 delivery note ([P2-SOAK](p2-soak.md)); the shorter runs here are recorded in the pull request.
+- Delivered as `agent/scripts/soak.sh` against the stand-in server `agent/scripts/update-stub.py`, judged by `agent/scripts/soak-analyse.py` ([docs/operations/agent-soak.md](../../operations/agent-soak.md)). Tolerances (agreed by the owner as the defaults), over the window after the rollback less a tenth for warm-up, last quarter against first: median resident memory at most 10% (and at least 1 MiB) higher; highest descriptor and thread counts no higher; no more state-directory entries and at most 512 bytes more (records rewritten in place).
 
 ### Acceptance criteria
 
-- [ ] A 72-hour run completes with flat memory, descriptors, and disk usage
+- [ ] A run on systemd completes with flat memory, descriptors, and disk usage (the 72-hour run is [P2-SOAK](p2-soak.md))
 - [ ] The agent survives repeated server outages during the run without restarting itself
 - [ ] The script and results are committed or linked

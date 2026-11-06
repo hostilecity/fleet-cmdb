@@ -6,17 +6,17 @@
 update_test_lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 UPDATE_TEST_TARGET=x86_64-unknown-linux-musl
 
-# make_certs DIR NAME: a throwaway CA (DIR/ca.pem) and a server certificate for the DNS name NAME
-# that it signs (DIR/cert.pem, DIR/key.pem). The agent rightly refuses a self-signed CA certificate
-# presented as the server's own.
+# make_certs DIR NAME [DAYS]: a throwaway CA (DIR/ca.pem) and a server certificate for the DNS name NAME
+# that it signs (DIR/cert.pem, DIR/key.pem), both valid for DAYS days (default 1). The agent rightly
+# refuses a self-signed CA certificate presented as the server's own.
 make_certs() {
-    local d=$1 name=$2
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=update test CA" \
+    local d=$1 name=$2 days=${3:-1}
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days "$days" -subj "/CN=update test CA" \
         -keyout "$d/ca-key.pem" -out "$d/ca.pem" 2> /dev/null
     openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$name" \
         -keyout "$d/key.pem" -out "$d/server.csr" 2> /dev/null
     printf 'subjectAltName=DNS:%s\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' "$name" > "$d/ext.cnf"
-    openssl x509 -req -in "$d/server.csr" -CA "$d/ca.pem" -CAkey "$d/ca-key.pem" -CAcreateserial -days 1 \
+    openssl x509 -req -in "$d/server.csr" -CA "$d/ca.pem" -CAkey "$d/ca-key.pem" -CAcreateserial -days "$days" \
         -extfile "$d/ext.cnf" -out "$d/cert.pem" 2> /dev/null
 }
 
