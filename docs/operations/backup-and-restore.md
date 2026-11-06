@@ -15,10 +15,10 @@ Each run writes one directory, `fleet-cmdb-<UTC time>/`, with the files above an
 
 **Back up separately, never in this set and never in git** (the dump contains the whole inventory and audit log, and none of these):
 
-- the Rails master key (`config/master.key`) or `RAILS_MASTER_KEY`, and `SECRET_KEY_BASE` if set;
-- the environment file: hostnames, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `CMDB_DATABASE_PASSWORD`, the release public keys (`FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT`);
-- the Cloudflare API token (DNS edit for the one zone) and the tunnel credentials;
-- the agent hostname certificate state (the proxy's ACME account and certificate volume). It can be re-issued by the DNS challenge, so losing it costs minutes, not data.
+- the environment file, `/opt/fleet-cmdb/.env` in the Compose deployment ([install-server.md](install-server.md)): `SECRET_KEY_BASE`, hostnames, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `CMDB_DATABASE_PASSWORD`, the release public keys (`FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT`), the Cloudflare DNS API token (DNS edit for the one zone), and the tunnel token;
+- the Rails master key (`config/master.key`) or `RAILS_MASTER_KEY`, only if you run the app with your own credentials file (the Compose deployment does not use one);
+- `/etc/fleet-cmdb/backup.env`;
+- the agent hostname certificate state (`/var/lib/fleet-cmdb/certs`, Traefik's ACME account and certificate). It can be re-issued by the DNS challenge, so losing it costs minutes, not data.
 
 Keep these in a password manager or an encrypted store, not on the same machine as the server. Treat backup sets as sensitive too: restrict the location to the backup account (the scripts write files mode 0600) and encrypt it at rest.
 
@@ -48,10 +48,14 @@ After a complete backup the script touches `FLEET_BACKUP_STATUS_FILE`. `GET /hea
 
 ## Restore
 
-To recover a lost server, bring up a new PostgreSQL server and empty volumes, restore the secrets above, then:
+To recover a lost server with the Compose deployment: install the machine as in [install-server.md](install-server.md) up to step 8, putting back `.env` and `/etc/fleet-cmdb/backup.env` from your secrets store, but **start only the database**, with an empty `/var/lib/fleet-cmdb/postgres` and an empty `releases` directory, and mount the backup location:
 
 ```sh
-ops/backup/restore.sh /mnt/fleet-cmdb-backups/fleet-cmdb-<time> cmdb_production /var/lib/fleet-cmdb/releases
+cd /opt/fleet-cmdb
+sudo docker compose up -d --wait db
+sudo bash -c 'set -a; . /etc/fleet-cmdb/backup.env; ops/backup/restore.sh /mnt/fleet-cmdb-backups/fleet-cmdb-<time> cmdb_production /var/lib/fleet-cmdb/releases'
+sudo chown -R 1000:1000 /var/lib/fleet-cmdb/releases
+sudo docker compose up -d
 ```
 
 `restore.sh` verifies the checksums, creates the database (it refuses one that exists), restores it with `pg_restore --exit-on-error` (dropping it again if that fails), and unpacks the release files into an empty directory. Then start the stack (`db:prepare` creates the queue, cache, and cable databases and applies any newer migrations), and run the drill checks below against production data if you want a receipt. Agents need nothing: their credentials are in the database and they reconnect on their next heartbeat. The agent hostname certificate is re-issued automatically if its state was lost.
@@ -60,7 +64,15 @@ ops/backup/restore.sh /mnt/fleet-cmdb-backups/fleet-cmdb-<time> cmdb_production 
 
 The drill restores the newest backup set into a **scratch** database and release directory, boots the app against them, and checks the result. It changes nothing live and removes its scratch data afterwards: it sets `FLEET_RESTORE_DRILL=1`, which swaps the live Solid Cache database for an in-process store, so its requests write no rate-limit counters to the live cache.
 
-Run it with the server's environment (the same variables the app runs with, plus the libpq variables for a role that may create databases), from the app directory:
+With the Compose deployment, run it as a one-off container of the app image, which has the server's environment and reaches the database container (set `BACKUP_DIR` in `.env` to the backup location first):
+
+```sh
+cd /opt/fleet-cmdb
+sudo docker compose run --rm restore-drill
+# or a chosen set: sudo docker compose run --rm restore-drill /backups/fleet-cmdb-<time>
+```
+
+Elsewhere, run it with the server's environment (the same variables the app runs with, plus the libpq variables for a role that may create databases), from the app directory:
 
 ```sh
 BACKUP_DIR=/mnt/fleet-cmdb-backups RAILS_ENV=production ops/backup/restore-drill.sh

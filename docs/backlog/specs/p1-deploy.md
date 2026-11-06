@@ -26,6 +26,14 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] Certificate renewal is automatic and its failure is visible (log or health)
 - [ ] Rebuilding the stack from backups restores state (ties into [P1-O01](p1-deploy.md))
 
+### As built
+
+- `compose.yaml` and `.env.example` at the repository root; `ops/deploy/traefik/dynamic.yml`. Services: `db` (PostgreSQL 17, port on `127.0.0.1` only for `ops/backup/backup.sh` on the host; 17 matches Debian 13's client), `app` (Puma with Solid Queue in Puma, `db:prepare` on every start), `traefik` (the agent hostname only, Let's Encrypt by the Cloudflare DNS challenge, port 443 for the LAN), `cloudflared` (token-based tunnel; its one public hostname, the dashboard, is configured in Cloudflare and documented), and `restore-drill` (profile `tools`). Persistent data is bind-mounted under `FLEET_DATA_DIR` (`/var/lib/fleet-cmdb`), so the backup script sees the same paths.
+- **Trusted proxies:** Traefik and `cloudflared` reach the app over separate Docker networks, and `FLEET_TRUSTED_PROXIES` is only Traefik's network. `cloudflared` is deliberately not trusted: it passes on headers a browser sent, so trusting it would let a client claim the agent hostname with `X-Forwarded-Host` through the tunnel. Every IP-keyed rate limit is on the agent hostname, where Traefik replaces client `X-Forwarded-*` headers, so it sees each VM's address; dashboard requests are seen as coming from the connector.
+- **No Thruster:** the image runs Puma directly on port 3000. Behind Thruster every request reaches Rails from loopback, which `HostSeparation` always trusts, so a forged `X-Forwarded-Host` would pass (confirmed against the app in production mode).
+- **Release import egress:** the import uses only `github.com` and the download host it redirects to (`release-assets.githubusercontent.com`), not `api.github.com`.
+- **Verification:** `.github/workflows/deploy-ci.yml` runs `ops/deploy/smoke-test.sh` on every relevant change: the stack starts healthy, the agent hostname serves `/api/v1` and health only through Traefik, the dashboard hostname refuses `/api/v1` from the tunnel network (also with a forged `X-Forwarded-Host`), `/health` is 503 until the first backup, the restore drill passes, and the documented restore rebuilds the stack. The tunnel, Access, and a trusted certificate need real accounts: the acceptance criteria above that depend on them are checked on the owner's server by following [install-server.md](../../operations/install-server.md).
+
 ## P1-O01: Database backup and tested restore procedure
 
 ### Context
@@ -62,3 +70,7 @@ NFR-2 requires a documented, restorable backup procedure before Phase 1 is consi
 - [ ] The owner (or a fresh reader) completes server setup and enrolls a VM from the documents alone
 - [ ] Every command in the docs has been run at least once
 - [ ] Documentation links from the root `README.md`
+
+### As built
+
+[docs/operations/](../../operations/README.md): `install-server.md`, `configuration.md` (every environment variable the server reads, checked against every `ENV` use in `cmdb/`), `install-agent.md`, `fleet-operations.md`, `troubleshooting.md`, with the existing `backup-and-restore.md` and `health-and-jobs.md`. The settings tables formerly in `cmdb/README.md` moved to `configuration.md`. Rollouts are started from the Rails console until their dashboard view ([P1-UPDATES](p1-updates.md), P1-D09) arrives; `install-agent.md` says so and should switch to the dashboard then.

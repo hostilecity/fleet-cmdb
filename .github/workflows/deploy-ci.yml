@@ -1,0 +1,81 @@
+# Deploy CI (P1-O03, P1-O01): checks the Docker Compose deployment. Lints the deployment and backup scripts, then
+# runs ops/deploy/smoke-test.sh, which follows docs/operations/install-server.md with throwaway settings: build and
+# start the stack, check the agent and dashboard hostname separation, back up, run the restore drill, and rebuild the
+# stack from the backup. The Cloudflare tunnel, Access, and a trusted Let's Encrypt certificate need real accounts and
+# are not covered here.
+#
+# Branch protection may require the "Deploy CI" job. It always runs and passes when nothing it checks changed.
+name: Deploy CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read # paths-filter lists PR files through the API
+
+concurrency:
+  group: deploy-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect deployment changes
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.deploy }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            deploy:
+              - 'compose.yaml'
+              - '.env.example'
+              - 'ops/**'
+              - 'cmdb/**'
+              - 'docs/api/**'
+              - '.github/workflows/deploy-ci.yml'
+
+  smoke:
+    name: Compose smoke test
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: shellcheck
+        run: shellcheck ops/deploy/*.sh ops/backup/*.sh
+
+      - name: Install the PostgreSQL 17 client (backup.sh runs on the host, against PostgreSQL 17)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-17
+          /usr/lib/postgresql/17/bin/pg_dump --version
+
+      - name: Smoke test
+        run: sudo env "PATH=/usr/lib/postgresql/17/bin:$PATH" DEPLOY_SMOKE_DISPOSABLE=yes ops/deploy/smoke-test.sh
+
+  gate:
+    name: Deploy CI
+    needs: [changes, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SMOKE: ${{ needs.smoke.result }}
+        run: |
+          echo "changes=$CHANGES smoke=$SMOKE"
+          if [ "$CHANGES" != "success" ]; then exit 1; fi
+          if [ "$SMOKE" = "failure" ] || [ "$SMOKE" = "cancelled" ]; then exit 1; fi
