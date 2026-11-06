@@ -29,10 +29,11 @@ All endpoints are under `/api/v1`, served only on the private agent hostname ([D
 | `POST /api/v1/onboarding/token` | Device code in the body | `onboarding-token.request` | `202` (pending) or `201` (approved, with the credential), `onboarding-token.response` |
 | `POST /api/v1/heartbeat` | Bearer credential | `heartbeat.request` | `200`, `heartbeat.response` |
 | `POST /api/v1/reports/inventory` | Bearer credential | `inventory.request` | `200`, `inventory.response` |
+| `POST /api/v1/reports/packages` | Bearer credential | `packages.request`, optionally gzip | `200`, `packages.response` |
 | `POST /api/v1/update-results` | Bearer credential | `update-result.request` | `200`, `update-result.response` |
 | `GET /api/v1/releases/<version>/manifest`, `.../signature`, `.../binary` | None (agent hostname only, rate-limited per address) | none | `200` (or `206`, `304`, `416`), the release file's bytes |
 
-Later phases add the config, package, and task endpoints.
+Later phases add the config and task endpoints.
 
 ### Updates
 
@@ -69,6 +70,8 @@ The files of a signed release the server has imported ([docs/releases.md](../rel
 - **Heartbeat directives** ([DEC-20](../decisions/0020-named-heartbeat-directives.md)): `directives` in `heartbeat.response` is an object keyed by directive name, and `{}` when the server has nothing to say. Every directive is optional, and each is an object or `null`. An absent or `null` directive or field means no instruction. Agents ignore and log names and fields they do not know, so adding a directive, or an optional field to one, is additive (rule 1 below); changing what one means is breaking (rule 2). A malformed directive is ignored and logged, and never fails the heartbeat. Defined in v1:
   - `intervals`: `heartbeat_seconds` and `inventory_seconds`, whole seconds of at least 1, each optional. The agent clamps each to its configured bounds and returns to its configured value when one is absent (ADR 0019).
   - `agent_update`: the release to install (ADR 0018). `rollout_id`, `version`, `manifest_url`, `signature_url`, and `binary_url` (all required when the directive is an object; the URLs are `https`). Sent only to a host chosen for an open stage of the running rollout that runs an older version than the release, and on every heartbeat until it reports a result. The URLs only say where to fetch; the agent verifies the release itself (ADR 0018) and the server never names a command or an executable. The server sends `intervals` only when an operator has set them (settings `agent.heartbeat_seconds` and `agent.inventory_seconds`).
+- **Compression:** `POST /api/v1/reports/packages` also takes a body sent with `Content-Encoding: gzip`; its size limit (4 MiB) applies to the decompressed body, and the compressed body may be at most 1 MiB. Every other endpoint, and any other encoding, answers `400 validation_failed`.
+- **Package reports** (FR-2.3): `manager` is `dpkg`, or `unsupported` with an `unsupported_reason` and no packages, so a host whose packages cannot be listed is never shown as having none. Each package has its `name`, `version` exactly as dpkg records it (with any epoch), `architecture`, and `source` package (`null` when dpkg records none). A name and architecture appear at most once (`400 validation_failed` with the pointer otherwise). Versions are compared with dpkg's rules, never as strings (FR-2.4).
 - **Request IDs:** every response has an `X-Request-Id` header, and error bodies repeat it.
 
 ### Errors
@@ -144,3 +147,4 @@ Both CI workflows run when anything under `docs/api/` changes.
 | v1 | `heartbeat.response` `directives` is an object keyed by directive name instead of an always-empty array, with `intervals` defined and `agent_update` reserved as an object; the server sends `{}` (DEC-20, amending DEC-08). Breaking for the response shape, but v1 has no released agents, so no version bump. From here on a new directive or optional directive field is additive. |
 | v1 | Release downloads `GET /api/v1/releases/<version>/manifest`, `signature`, and `binary`: unauthenticated, exempt from the minimum version, with `ETag`, `Content-Length`, and byte ranges (P1-RELEASES). New endpoints, so no version bump. |
 | v1 | `heartbeat.response` `directives.agent_update` gains its fields (`rollout_id`, `version`, `manifest_url`, `signature_url`, `binary_url`, all required in the object), and `directives.intervals` is sent. New endpoint `POST /api/v1/update-results` with `update-result.request` and `update-result.response`. `heartbeat` and `update-results` are exempt from the `426` minimum-version check (P1-UPDATES, DEC-18). Additive, so no version bump: no agent has released and read `agent_update` before this. |
+| v1 | New endpoint `POST /api/v1/reports/packages` with `packages.request` and `packages.response`, the only endpoint that takes `Content-Encoding: gzip` (P2-PACKAGES). New endpoint, so no version bump. |

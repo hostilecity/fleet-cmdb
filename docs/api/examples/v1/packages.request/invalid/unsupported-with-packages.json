@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.2.0",
+  "report_id": "00000000-0000-4000-8000-000000000001",
+  "collected_at": "2026-01-01T12:00:00Z",
+  "manager": "unsupported",
+  "unsupported_reason": "rpm found",
+  "packages": [
+    {
+      "name": "base-files",
+      "version": "13.8",
+      "architecture": "amd64",
+      "source": "base-files"
+    },
+    {
+      "name": "libssl3t64",
+      "version": "3.5.1-1+deb13u1",
+      "architecture": "amd64",
+      "source": "openssl"
+    },
+    {
+      "name": "openssl",
+      "version": "3.5.1-1+deb13u1",
+      "architecture": "amd64",
+      "source": "openssl"
+    },
+    {
+      "name": "tzdata",
+      "version": "2025b-4+deb13u1",
+      "architecture": "all",
+      "source": "tzdata"
+    },
+    {
+      "name": "vim",
+      "version": "2:9.1.1230-2",
+      "architecture": "amd64",
+      "source": "vim"
+    },
+    {
+      "name": "libc6",
+      "version": "2.41-12",
+      "architecture": "i386",
+      "source": "glibc"
+    },
+    {
+      "name": "libc6",
+      "version": "2.41-12",
+      "architecture": "amd64",
+      "source": "glibc"
+    },
+    {
+      "name": "local-tool",
+      "version": "0.1",
+      "architecture": "amd64",
+      "source": null
+    }
+  ],
+  "warnings": []
+}

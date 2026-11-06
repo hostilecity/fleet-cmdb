@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_02_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_06_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -129,6 +129,34 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_010000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["host_id"], name: "index_host_inventories_on_host_id", unique: true
+  end
+
+  create_table "host_package_sets", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "manager", limit: 16, null: false
+    t.string "unsupported_reason", limit: 512
+    t.integer "package_count", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "warnings", default: [], null: false
+    t.uuid "report_id", null: false
+    t.integer "schema_version", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_host_package_sets_on_host_id", unique: true
+    t.check_constraint "(manager::text = 'unsupported'::text) = (unsupported_reason IS NOT NULL)", name: "host_package_sets_reason_iff_unsupported"
+    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying]::text[])", name: "host_package_sets_manager_valid"
+  end
+
+  create_table "host_packages", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "name", limit: 128, null: false
+    t.string "architecture", limit: 32, null: false
+    t.string "version", limit: 256, null: false
+    t.string "source", limit: 128
+    t.index ["host_id", "name", "architecture"], name: "index_host_packages_on_host_id_and_name_and_architecture", unique: true
+    t.index ["source"], name: "index_host_packages_on_source"
   end
 
   create_table "host_status_events", force: :cascade do |t|
@@ -254,6 +282,30 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_010000) do
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 
+  create_table "package_report_receipts", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.uuid "report_id", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "report_id"], name: "index_package_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["received_at"], name: "index_package_report_receipts_on_received_at"
+  end
+
+  create_table "package_snapshots", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "manager", limit: 16, null: false
+    t.string "unsupported_reason", limit: 512
+    t.integer "package_count", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "packages", null: false
+    t.jsonb "warnings", default: [], null: false
+    t.uuid "report_id", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "received_at"], name: "index_package_snapshots_on_host_id_and_received_at"
+    t.index ["received_at"], name: "index_package_snapshots_on_received_at"
+    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying]::text[])", name: "package_snapshots_manager_valid"
+  end
+
   create_table "rollout_hosts", force: :cascade do |t|
     t.bigint "rollout_id", null: false
     t.bigint "host_id", null: false
@@ -315,12 +367,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_010000) do
   add_foreign_key "agent_updates", "rollouts"
   add_foreign_key "enrollment_tokens", "hosts"
   add_foreign_key "host_inventories", "hosts"
+  add_foreign_key "host_package_sets", "hosts"
+  add_foreign_key "host_packages", "hosts"
   add_foreign_key "host_status_events", "hosts"
   add_foreign_key "inventory_report_receipts", "hosts"
   add_foreign_key "inventory_snapshots", "hosts"
   add_foreign_key "onboarding_requests", "hosts"
   add_foreign_key "onboarding_requests", "operators", column: "decided_by_id"
   add_foreign_key "operator_sessions", "operators"
+  add_foreign_key "package_report_receipts", "hosts"
+  add_foreign_key "package_snapshots", "hosts"
   add_foreign_key "rollout_hosts", "hosts"
   add_foreign_key "rollout_hosts", "rollouts"
   add_foreign_key "rollouts", "agent_releases", on_delete: :restrict

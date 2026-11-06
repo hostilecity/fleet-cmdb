@@ -124,6 +124,18 @@ bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 - **Clone detection (FR-S.1).** A machine id different from the one the credential was enrolled with sets `hosts.machine_id_mismatch_at`. It is audited once and cleared when the host is re-enrolled.
 - **Audit entries.** Ordinary reports write none; only the first inventory and a machine id mismatch are audited.
 
+### Package reports
+
+`POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`; at most 4 MiB once decompressed):
+
+- **Validation.** The body is validated against `docs/api`; `lib/agent_api/package_report.rb` then refuses a package listed twice for one architecture. `manager: unsupported` carries a reason and no packages. A version dpkg would refuse is stored as reported; matching treats it as not evaluated.
+- **Storage.** `PackageRecorder` stores a valid report under the host row lock:
+  - `package_report_receipts`: report ids already processed. A retried report is answered `duplicate: true` and changes nothing.
+  - `host_package_sets`: the manager (or that it is unsupported, and why), the package count, the content hash, and warnings, updated on every report.
+  - `host_packages`: one row per installed package, replaced when the set changes; indexed by source package for matching.
+  - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows, written only when the content hash changes. Retention keeps the newest per host.
+- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4).
+
 ## Hostnames and operator sign-in
 
 The server has two faces (DEC-05), each on its own hostname:

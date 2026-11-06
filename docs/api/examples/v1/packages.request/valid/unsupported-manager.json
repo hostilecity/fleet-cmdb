@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.2.0",
+  "report_id": "00000000-0000-4000-8000-000000000001",
+  "collected_at": "2026-01-01T12:00:00Z",
+  "manager": "unsupported",
+  "unsupported_reason": "No dpkg database at /var/lib/dpkg/status; rpm was found, which is not supported",
+  "packages": [],
+  "warnings": []
+}
