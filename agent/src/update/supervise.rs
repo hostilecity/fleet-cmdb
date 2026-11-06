@@ -36,7 +36,9 @@ use super::layout::{
     LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, SUPERVISOR_UNIT, free_bytes,
     link_version, parse_version,
 };
-use super::record::{Marker, Outcome, PendingResult, Phase, Record, StateFile, reason};
+use super::record::{
+    Marker, Outcome, PendingResult, Phase, PreviousLink, Record, StateFile, reason,
+};
 use super::stage;
 use crate::fsx::{self, Lock};
 use crate::install::{Systemd, UNIT_NAME};
@@ -351,6 +353,14 @@ impl Supervisor<'_> {
             return Ok(());
         }
         self.prepare_switch(rec).map_err(SwitchError::NotSwitched)?;
+        // Recorded before `previous` moves, and only once, so a supervisor resumed after the move cannot
+        // record the moved link as the original.
+        if rec.previous_before.is_none() {
+            rec.previous_before = Some(match link_version(&layout.previous()) {
+                Some(version) => PreviousLink::Version(version),
+                None => PreviousLink::Missing,
+            });
+        }
         rec.phase = Phase::Switching;
         self.write(rec).map_err(SwitchError::NotSwitched)?;
         let from_target = Path::new("versions").join(&rec.from_version);
@@ -507,6 +517,7 @@ impl Supervisor<'_> {
             &Path::new("versions").join(&rec.from_version),
         )
         .map_err(|e| format!("cannot point `current` back to {}: {e}", rec.from_version))?;
+        restore_previous(layout, rec);
         let restored = restore_state(layout);
         if let Err(e) = &restored {
             tracing::error!(
@@ -586,6 +597,29 @@ impl Supervisor<'_> {
             }
         }
         let _ = Record::remove(state);
+    }
+}
+
+/// Puts `previous` back where it pointed before the switch, so the version rolled back to keeps its own
+/// rollback target and the version before it is not left installed with nothing pointing to it (ADR 0018:
+/// two kept). Only a link the switch set (to `from_version`) is changed, so repeating it is harmless. Left
+/// alone when the record does not say (an older agent wrote it) or that version is no longer installed.
+fn restore_previous(layout: &Layout, rec: &Record) {
+    let link = layout.previous();
+    if link_version(&link).as_deref() != Some(rec.from_version.as_str()) {
+        return;
+    }
+    let restored = match &rec.previous_before {
+        Some(PreviousLink::Version(version))
+            if *version != rec.from_version && layout.binary(version).is_file() =>
+        {
+            fsx::replace_symlink(&link, &Path::new("versions").join(version))
+        }
+        Some(PreviousLink::Missing) => fs::remove_file(&link),
+        _ => return,
+    };
+    if let Err(e) = restored {
+        tracing::warn!("cannot put `previous` back as it was before the update: {e}");
     }
 }
 

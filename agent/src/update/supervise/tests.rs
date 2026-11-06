@@ -5,7 +5,7 @@ use std::fs;
 
 use super::*;
 use crate::update::layout::{LOCK_FILE, MARKER_FILE};
-use crate::update::record::{Marker, PendingResult, Phase, Record};
+use crate::update::record::{Marker, PendingResult, Phase, PreviousLink, Record};
 use crate::update::stage::tests::binary;
 use crate::update::supervise::{Ended, Intent};
 use crate::update::tests::{Agent, NEW, World, old};
@@ -95,6 +95,120 @@ fn a_release_that_exits_at_start_is_rolled_back_and_reported() {
         r#"{"v":"old"}"#,
         "the state the old version last saw is back"
     );
+}
+
+/// Installs `version` beside the others, as an earlier update would have left it.
+fn installed(world: &World, version: &str) {
+    fs::create_dir_all(world.layout.version_dir(version)).unwrap();
+    fs::write(world.layout.binary(version), b"#!/bin/sh\n").unwrap();
+}
+
+fn point_previous(world: &World, version: &str) {
+    crate::fsx::replace_symlink(
+        &world.layout.previous(),
+        &Path::new("versions").join(version),
+    )
+    .unwrap();
+}
+
+fn versions(world: &World) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(world.layout.versions_dir())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_rollback_puts_previous_back_so_two_versions_remain_and_both_are_linked() {
+    // Found by the soak test (P1-A09): after an update was rolled back, `previous` pointed to the version
+    // rolled back to, and the version before it stayed installed with nothing pointing to it.
+    let world = World::new();
+    installed(&world, "0.0.1");
+    point_previous(&world, "0.0.1");
+    world.behaves(NEW, Agent::Fails);
+    staged(&world);
+
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+
+    assert_eq!(world.current().as_deref(), Some(old()));
+    assert_eq!(world.previous().as_deref(), Some("0.0.1"));
+    let mut expected = vec!["0.0.1".to_owned(), old().to_owned()];
+    expected.sort();
+    assert_eq!(versions(&world), expected);
+}
+
+#[test]
+fn a_rollback_of_the_first_update_after_an_install_leaves_no_previous() {
+    let world = World::new();
+    world.behaves(NEW, Agent::Fails);
+    staged(&world);
+
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+
+    assert_eq!(world.current().as_deref(), Some(old()));
+    assert!(
+        fs::symlink_metadata(world.layout.previous()).is_err(),
+        "there was no previous before the update, so there is none after it"
+    );
+    assert_eq!(versions(&world), vec![old().to_owned()]);
+}
+
+#[test]
+fn a_resumed_switch_keeps_the_original_previous_rather_than_the_moved_one() {
+    let world = World::new();
+    installed(&world, "0.0.1");
+    world.behaves(NEW, Agent::Fails);
+    let mut record = staged(&world);
+    // A first supervisor recorded `previous` (0.0.1), moved it to the running version, and died.
+    record.previous_before = Some(PreviousLink::Version("0.0.1".into()));
+    record.phase = Phase::Switching;
+    record.write(world.state()).unwrap();
+    point_previous(&world, old());
+
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+    assert_eq!(world.previous().as_deref(), Some("0.0.1"));
+}
+
+#[test]
+fn a_rollback_leaves_previous_alone_when_the_record_does_not_say_or_that_version_is_gone() {
+    for previous_before in [None, Some(PreviousLink::Version("0.0.1".into()))] {
+        let world = World::new();
+        staged(&world);
+        // Switched by a supervisor from before `previous_before` existed, or the earlier version has
+        // since been removed (0.0.1 is never installed here).
+        let mut record = Record::read(world.state()).unwrap().unwrap();
+        installed(&world, NEW);
+        point_previous(&world, old());
+        crate::fsx::replace_symlink(&world.layout.current(), &Path::new("versions").join(NEW))
+            .unwrap();
+        record.phase = Phase::Switched;
+        record.previous_before = previous_before.clone();
+        record.write(world.state()).unwrap();
+        world.behaves(NEW, Agent::Fails);
+
+        assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+        assert_eq!(world.current().as_deref(), Some(old()));
+        assert_eq!(
+            world.previous().as_deref(),
+            Some(old()),
+            "{previous_before:?}: left as the switch set it"
+        );
+    }
+}
+
+#[test]
+fn a_rollback_repeated_after_previous_was_put_back_changes_nothing() {
+    let world = World::new();
+    installed(&world, "0.0.1");
+    point_previous(&world, "0.0.1");
+    let mut record = staged(&world);
+    record.from_version = old().into();
+    record.previous_before = Some(PreviousLink::Version("0.0.1".into()));
+    // Already back where it was: a second rollback pass must not move it.
+    super::restore_previous(&world.layout, &record);
+    assert_eq!(world.previous().as_deref(), Some("0.0.1"));
 }
 
 #[test]

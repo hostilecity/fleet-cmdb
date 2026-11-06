@@ -405,8 +405,8 @@ reset_after_switch() {
     change_state
     reboot_vm hard
     expect_result rolled_back "$OLD" "restarted"
-    # The rollback restores the state backed up before the switch.
-    expect_one_version "$OLD" "$OLD"
+    # The rollback restores the state backed up before the switch, and `previous` as it was (none).
+    expect_one_version "$OLD" -
 }
 
 reboot_after_confirmation() {
@@ -444,7 +444,7 @@ crash_loop_and_reboot() {
     change_state
     reboot_vm soft
     expect_result rolled_back "$OLD" "restarted"
-    expect_one_version "$OLD" "$OLD"
+    expect_one_version "$OLD" - # `previous` put back as it was before the update (none)
     vm "journalctl -b -u fleet-agent-rollback --no-pager -o cat" | grep -q "update supervisor finished" \
         || fail "the failure hook did not run after the reboot"
 }
