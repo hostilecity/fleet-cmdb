@@ -23,7 +23,10 @@ module Advisories
     def base_score(vector)
       return nil unless vector.is_a?(String) && vector.match?(PREFIX)
 
-      metrics = vector.sub(PREFIX, "").split("/").to_h { |part| part.split(":", 2) }
+      parts = vector.sub(PREFIX, "").split("/").map { |part| part.split(":", 2) }
+      return nil unless parts.all? { |pair| pair.size == 2 } # "/A" rather than "/A:H" (review of #103)
+
+      metrics = parts.to_h
       return nil unless WEIGHTS.all? { |metric, values| values.key?(metrics[metric]) }
 
       changed = metrics["S"] == "C"

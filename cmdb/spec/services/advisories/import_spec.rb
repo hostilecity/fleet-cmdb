@@ -82,6 +82,22 @@ RSpec.describe Advisories::Import do
     )
   end
 
+  it "reports a record of a shape the parser did not expect as malformed instead of rolling back the import (review of #103)" do
+    allow(Advisories::Severity).to receive(:of).and_call_original
+    allow(Advisories::Severity).to receive(:of).with(hash_including("id" => "DSA-2-1"), anything).and_raise(NoMethodError, "undefined method")
+    result = import_advisories(osv_record(id: "DSA-1-1"), osv_record(id: "DSA-2-1"))
+    expect(Advisory.pluck(:advisory_id)).to eq([ "DSA-1-1" ])
+    expect(result.import.problems).to eq([ { "location" => "DSA-2-1.json", "id" => "DSA-2-1", "problem" => "could not be read (NoMethodError)" } ])
+  end
+
+  it "imports records whose free-form severity fields have unexpected shapes, with an unknown severity (review of #103)" do
+    result = import_advisories(osv_record(id: "DSA-1-1", database_specific: "HIGH"),
+                               osv_record(id: "DSA-2-1", severity: [ { "type" => "CVSS_V3", "score" => "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A" } ]),
+                               osv_record(id: "DSA-3-1").tap { |r| r["affected"][0]["ecosystem_specific"] = "high" })
+    expect(result.import.counts).to include("created" => 3, "malformed" => 0)
+    expect(Advisory.pluck(:severity).uniq).to eq([ "unknown" ])
+  end
+
   it "lists at most PROBLEM_LIMIT problems but counts them all" do
     stub_const("#{described_class}::PROBLEM_LIMIT", 2)
     result = import_advisories("x", "y", "z")
@@ -119,6 +135,14 @@ RSpec.describe Advisories::Import do
       back = import_advisories(osv_record(id: "DSA-1-1", package: "openssl"), osv_record(id: "DSA-2-1", package: "curl"), full: true)
       expect(Advisory.find_by(advisory_id: "DSA-2-1")).to have_attributes(withdrawn_reason: nil, withdrawn_at: nil)
       expect(back.import.counts).to include("updated" => 1, "absent" => 0)
+    end
+
+    it "do not mark absent an advisory newer than everything in the data set, as an older archive would (review of #103)" do
+      import_advisories(osv_record(id: "DSA-3-1", modified: "2026-10-25T00:00:00Z"))
+      result = import_advisories(osv_record(id: "DSA-1-1", package: "openssl"), full: true) # an archive from 2026-10-20
+      expect(Advisory.find_by(advisory_id: "DSA-3-1")).to have_attributes(withdrawn_reason: nil)
+      expect(Advisory.find_by(advisory_id: "DSA-2-1")).to have_attributes(withdrawn_reason: "absent") # as old as the archive
+      expect(result.import.counts["absent"]).to eq(1)
     end
 
     it "do not mark anything absent when a record was malformed, or for ecosystems the import has nothing for" do

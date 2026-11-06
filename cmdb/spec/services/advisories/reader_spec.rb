@@ -39,6 +39,13 @@ RSpec.describe Advisories::Reader do
     expect { entries(osv_directory("{}", "{}")) }.to raise_error(Advisories::Unreadable, /has more than 1 JSON files/)
   end
 
+  it "counts refused entries toward the archive's total, so many oversized ones cannot pass it (review of #103)" do
+    stub_const("#{described_class}::MAX_RECORD_BYTES", 10)
+    stub_const("#{described_class}::MAX_TOTAL_BYTES", 30)
+    zip = osv_zip((1..3).to_h { |i| [ "big#{i}.json", "y" * 1000 ] })
+    expect { entries(zip) }.to raise_error(Advisories::Unreadable, "all.zip holds more than 0 GiB of JSON")
+  end
+
   it "reports an entry that cannot be decompressed as a problem" do
     zip = osv_zip("a.json" => "{}")
     allow_any_instance_of(Zip::Entry).to receive(:get_input_stream).and_raise(Zlib::DataError, "invalid stored block lengths")

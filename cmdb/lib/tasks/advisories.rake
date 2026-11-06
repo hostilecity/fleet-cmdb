@@ -17,11 +17,16 @@ namespace :advisories do
   end
 
   desc "Refresh advisory data from the configured feed now (FLEET_ADVISORY_FEED_URL)"
+  # Runs once, without the job's retries; a failure is recorded and audited as the job's last attempt would be.
   task refresh: :environment do
-    result = AdvisoryFeedRefreshJob.new.perform
+    job = AdvisoryFeedRefreshJob.new
+    begin
+      result = job.perform
+    rescue StandardError => e
+      import = job.give_up(e)
+      abort "Refresh failed: #{import.reason}"
+    end
     result ? AdvisoriesTask.print(result.import) : puts("No feed is configured (FLEET_ADVISORY_FEED_URL is empty).")
-  rescue Advisories::Feed::Unavailable, Advisories::Unreadable => e
-    abort "Refresh failed: #{e.message}"
   end
 
   desc "Show how fresh each ecosystem's advisory data is"

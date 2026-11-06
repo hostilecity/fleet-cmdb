@@ -60,6 +60,9 @@ RSpec.describe "advisories rake tasks" do
     it "says why a refresh failed, and when no feed is configured" do
       stub_request(:get, "https://advisories.example.org/all.zip").to_return(status: 404)
       expect { expect { run("advisories:refresh") }.to output(/Refresh failed: the advisory feed at advisories.example.org answered HTTP 404/).to_stderr }.to raise_error(SystemExit)
+      # recorded and audited like the job's last attempt, so advisories:status shows it (review of #103)
+      expect(AdvisoryImport.sole).to have_attributes(state: "failed", origin: "feed", reason: "the advisory feed at advisories.example.org answered HTTP 404")
+      expect(AuditEntry.sole.action).to eq("advisory.import_failed")
       Advisories.config.feed_url = nil
       expect(run("advisories:refresh")).to include("No feed is configured")
     end

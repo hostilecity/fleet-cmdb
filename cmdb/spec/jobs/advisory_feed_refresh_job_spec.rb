@@ -105,10 +105,27 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
     stub_feed
     expect { refresh }.to raise_error(Advisories::Feed::Unavailable, "the advisory feed at advisories.example.org sent more than 0 MiB")
     Advisories.config.max_download_bytes = saved
-    stub_const("Advisories::Feed::DEADLINE", -1)
-    expect { refresh }.to raise_error(Advisories::Feed::Unavailable, "the download from the advisory feed at advisories.example.org took longer than -1 seconds")
   ensure
     Advisories.config.max_download_bytes = saved
+  end
+
+  it "bounds the whole exchange, so a server slow to send its status line or headers cannot hold a worker (review of #103)" do
+    stub_const("Advisories::Feed::DEADLINE", 0.2)
+    stub_request(:get, url).to_return { sleep 1; { status: 200, body: archive } } # stands in for headers trickling in
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    expect { Advisories::Feed.new.fetch }.to raise_error(Advisories::Feed::Unavailable, "the download from the advisory feed at advisories.example.org took longer than 0.2 seconds")
+    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.9
+  end
+
+  it "downloads the whole archive again, not conditionally, after an import with malformed records (review of #103)" do
+    with_bad = osv_zip("DSA-1-1.json" => osv_record(id: "DSA-1-1"), "bad.json" => "not json").binread
+    stub_feed(body: with_bad)
+    refresh
+    expect(AdvisoryImport.sole.counts["malformed"]).to eq(1)
+    stub_feed
+    refresh
+    expect(a_request(:get, url).with(headers: { "If-None-Match" => /./ })).not_to have_been_made
+    expect(AdvisoryImport.order(:id).last.counts).to include("created" => 1, "unchanged" => 1, "malformed" => 0)
   end
 
   it "follows a few HTTPS redirects, sending the token only to the configured host" do

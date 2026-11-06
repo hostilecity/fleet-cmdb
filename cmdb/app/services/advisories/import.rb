@@ -74,7 +74,14 @@ module Advisories
       @counts["records"] += 1
       raise Record::Malformed, entry.problem if entry.problem
 
-      Record.parse(entry.bytes).tap { |record| @counts["rejected_urls"] += record.rejected_urls }
+      begin
+        Record.parse(entry.bytes).tap { |record| @counts["rejected_urls"] += record.rejected_urls }
+      rescue StandardError => e
+        # A shape Record did not anticipate must not roll back the whole import (review of #103).
+        raise e if e.is_a?(Record::Malformed)
+
+        raise Record::Malformed, "could not be read (#{e.class.name})"
+      end
     rescue Record::Malformed => e
       @counts["malformed"] += 1
       @problems << { "location" => entry.location, "id" => id_of(entry), "problem" => e.message } if @problems.size < PROBLEM_LIMIT
@@ -96,6 +103,7 @@ module Advisories
       changes = records.select do |record|
         @seen << record.advisory_id
         record.package_keys.each { |ecosystem, _| @ecosystems << ecosystem }
+        @newest = [ @newest, record.modified_at ].compact.max
         classify(record, existing[record.advisory_id])
       end
       write(changes, existing) if changes.any?
@@ -139,7 +147,11 @@ module Advisories
     def sweep_absent
       return if @ecosystems.empty?
 
-      stored = Advisory.current.where(id: AdvisoryPackage.where(ecosystem: @ecosystems.to_a).select(:advisory_id)).pluck(:id, :advisory_id)
+      # Only advisories no newer than the newest record here: an older archive, or an older download that
+      # imports after a newer one, cannot know about advisories published since, so their absence proves
+      # nothing (review of #103).
+      stored = Advisory.current.where(id: AdvisoryPackage.where(ecosystem: @ecosystems.to_a).select(:advisory_id))
+                       .where(modified_at: ..@newest).pluck(:id, :advisory_id)
       absent = stored.reject { |_, advisory_id| @seen.include?(advisory_id) }.map(&:first)
       return if absent.empty?
 

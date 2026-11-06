@@ -63,7 +63,9 @@ module Advisories
 
         entries.sort_by(&:name).each do |entry|
           entry_result = read_entry(entry)
-          total += entry_result.bytes&.bytesize.to_i
+          # What was decompressed counts even when the entry is refused, so many oversized or broken entries
+          # cannot get past the total (review of #103).
+          total += entry_result.bytes ? entry_result.bytes.bytesize : MAX_RECORD_BYTES + 1
           raise Unreadable, "#{@name} holds more than #{MAX_TOTAL_BYTES / 1.gigabyte} GiB of JSON" if total > MAX_TOTAL_BYTES
 
           yield entry_result

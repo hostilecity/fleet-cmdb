@@ -3,7 +3,7 @@
 #
 # The download is conditional on the last successful one's validators: a "not modified" answer is recorded as
 # a successful refresh of the same ecosystems, so freshness reflects that the data was checked (it imports
-# nothing, so it is not audited). Imports are serialised by Advisories::Import's lock. A failure of
+# nothing, so it is not audited). A download that had malformed records is not asked about conditionally. Imports are serialised by Advisories::Import's lock. A failure of
 # any kind (the feed unreachable or timing out, an HTTP error, an archive that cannot be read) is retried with
 # backoff; after the last attempt it is recorded as a failed import, audited, and raised again, so Solid Queue
 # keeps it as a failed job and it shows on the dashboard banner and in /health (NFR-2, P1-O02).
@@ -24,6 +24,10 @@ class AdvisoryFeedRefreshJob < ApplicationJob
 
     @source = feed.source
     last = AdvisoryImport.succeeded.where(origin: "feed", source: @source).order(finished_at: :desc, id: :desc).first
+    # Ask conditionally only when the last download imported cleanly: after malformed records, the same archive
+    # is fetched again, so a fixed importer or a raised limit gets another chance at them and at the absence
+    # sweep they blocked (review of #103).
+    last = nil if last && last.counts["malformed"].to_i.positive?
     download = feed.fetch(etag: last&.etag, last_modified: last&.last_modified)
     result = download.not_modified? ? not_modified(last) : import(download)
     logger.info("[advisories] feed refresh from #{@source} succeeded: #{result.import.counts.to_json}")
@@ -35,13 +39,15 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     download&.close!
   end
 
-  # Called by retry_on once the retries are used up.
+  # Called by retry_on once the retries are used up, and by bin/rails advisories:refresh on its one attempt.
+  # Returns the failed AdvisoryImport.
   def give_up(error)
     reason = case error
     when Advisories::Feed::Unavailable, Advisories::Unreadable then error.message
     else "the refresh failed on the server (#{error.class.name}); see the server log"
     end
-    logger.error("[advisories] feed refresh failed after #{ATTEMPTS} attempts: #{reason}")
+    attempts = [ executions, 1 ].max
+    logger.error("[advisories] feed refresh failed after #{attempts} #{'attempt'.pluralize(attempts)}: #{reason}")
     Advisories::Import.record_failure(origin: "feed", source: @source || Advisories::Feed.new.source, reason:, full: true)
   end
 

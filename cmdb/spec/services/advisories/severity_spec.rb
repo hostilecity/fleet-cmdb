@@ -19,7 +19,8 @@ RSpec.describe Advisories::Severity do
 
     it "returns nil for anything that is not a complete v3 base vector" do
       [ nil, 9.8, "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N", "AV:N/AC:L/Au:N/C:P/I:P/A:P",
-        "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H", "CVSS:3.1/AV:X/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" ].each do |vector|
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H", "CVSS:3.1/AV:X/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A" ].each do |vector| # the last, a metric without a value (review of #103)
         expect(described_class.base_score(vector)).to be_nil
       end
     end
@@ -47,6 +48,11 @@ RSpec.describe Advisories::Severity do
     expect(severity_of("database_specific" => { "urgency" => "medium*" }).level).to eq("medium")
     expect(severity_of("database_specific" => { "urgency" => "not yet assigned" })).to have_attributes(level: "unknown", raw: "urgency: not yet assigned")
     expect(severity_of({})).to have_attributes(level: "unknown", raw: nil)
+  end
+
+  it "ignores database_specific and ecosystem_specific that are not objects (review of #103)" do
+    expect(severity_of("database_specific" => "HIGH")).to have_attributes(level: "unknown")
+    expect(severity_of("affected" => [ { "ecosystem_specific" => "high" } ], "database_specific" => [ "x" ]).level).to eq("unknown")
   end
 
   it "keeps a v2 or v4 vector as the raw value without scoring it, and prefers a v3 vector to any word" do

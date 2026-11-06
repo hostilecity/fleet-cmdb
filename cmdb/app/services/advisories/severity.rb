@@ -24,10 +24,10 @@ module Advisories
       v3 = vectors.find { |_, vector| Cvss3.base_score(vector) }
       return Result.new(level: band(Cvss3.base_score(v3.last)), raw: clean(v3.last)) if v3
 
-      word = text(data.dig("database_specific", "severity"))
+      word = text(field(data["database_specific"], "severity"))
       return Result.new(level: WORDS[word.downcase], raw: clean("database_specific.severity: #{word}")) if word && WORDS.key?(word.downcase)
 
-      urgency = affected.filter_map { |entry| text(entry.dig("ecosystem_specific", "urgency")) }.first || text(data.dig("database_specific", "urgency"))
+      urgency = affected.filter_map { |entry| text(field(entry["ecosystem_specific"], "urgency")) }.first || text(field(data["database_specific"], "urgency"))
       if urgency
         level = URGENCIES[urgency.downcase.delete_suffix("*")] || "unknown" # the tracker marks an unconfirmed urgency with *
         return Result.new(level:, raw: clean("urgency: #{urgency}"))
@@ -50,6 +50,9 @@ module Advisories
 
       list.filter_map { |entry| [ entry["type"], entry["score"] ] if entry.is_a?(Hash) && entry["score"].is_a?(String) }
     end
+
+    # container[key] when container is an object; OSV leaves these free-form, so a string is possible (review of #103).
+    def field(container, key) = container.is_a?(Hash) ? container[key] : nil
 
     def text(value) = value.is_a?(String) && value.present? ? value.strip : nil
 

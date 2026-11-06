@@ -8,14 +8,18 @@ module Advisories
   class Feed
     OPEN_TIMEOUT = 15
     READ_TIMEOUT = 60
-    # The whole download, redirects included: READ_TIMEOUT bounds each read, so a server trickling bytes
-    # could otherwise hold a worker indefinitely. 512 MiB in 15 minutes needs about 600 KB/s.
+    # The whole exchange, connection, headers, redirects, and body included: READ_TIMEOUT bounds each read, so a
+    # server trickling bytes could otherwise hold a worker indefinitely. Enforced with Timeout around the whole
+    # fetch, since a slow status line or headers never reach a body callback (review of #103). 512 MiB in 15 minutes needs about 600 KB/s.
     DEADLINE = 900
     MAX_REDIRECTS = 3
     REDIRECTS = [ 301, 302, 303, 307, 308 ].freeze
 
     # The download failed. The refresh job retries it with backoff, then reports it.
     class Unavailable < StandardError; end
+
+    # Raised by Timeout inside the exchange; not a Timeout::Error, so get's network rescue leaves it to fetch.
+    class DeadlineExceeded < StandardError; end
 
     # file: a Tempfile holding the archive (nil when not modified). Close it with close!.
     Download = Data.define(:file, :etag, :last_modified) do
@@ -43,9 +47,12 @@ module Advisories
       headers["If-None-Match"] = etag if etag
       headers["If-Modified-Since"] = last_modified if last_modified
       headers["Authorization"] = "Bearer #{@token}" if @token
-      download = get(@url, headers, file, MAX_REDIRECTS, monotonic + DEADLINE)
+      download = Timeout.timeout(DEADLINE, DeadlineExceeded) { get(@url, headers, file, MAX_REDIRECTS) }
       file.close! if download.not_modified?
       download
+    rescue DeadlineExceeded
+      file&.close!
+      raise Unavailable, deadline_message
     rescue StandardError
       file&.close!
       raise
@@ -55,9 +62,9 @@ module Advisories
 
     def host = URI.parse(@url).host
 
-    def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    def deadline_message = "the download from the advisory feed at #{host} took longer than #{DEADLINE} seconds"
 
-    def get(url, headers, file, redirects, deadline)
+    def get(url, headers, file, redirects)
       uri = URI.parse(url)
       raise Unavailable, "the advisory feed at #{host} redirected to a URL that is not HTTPS" unless uri.is_a?(URI::HTTPS)
 
@@ -66,7 +73,7 @@ module Advisories
         http.request(Net::HTTP::Get.new(uri, headers)) do |response|
           case response.code.to_i
           when 200
-            read(response, file, deadline)
+            read(response, file)
             return Download.new(file:, etag: response["etag"]&.first(256), last_modified: response["last-modified"]&.first(64))
           when 304
             raise Unavailable, "the advisory feed at #{host} answered 304 to a request that was not conditional" unless headers.key?("If-None-Match") || headers.key?("If-Modified-Since")
@@ -78,7 +85,7 @@ module Advisories
             location = response["location"] or raise Unavailable, "the advisory feed at #{host} sent a redirect without a location"
             # The credential goes only to the configured host.
             target = URI.join(url, location)
-            return get(target.to_s, target.host == host ? headers : headers.except("Authorization"), file, redirects - 1, deadline)
+            return get(target.to_s, target.host == host ? headers : headers.except("Authorization"), file, redirects - 1)
           else
             raise Unavailable, "the advisory feed at #{host} answered HTTP #{response.code.to_i}"
           end
@@ -90,13 +97,11 @@ module Advisories
       raise Unavailable, "could not download from the advisory feed at #{host} (#{e.class.name.demodulize})"
     end
 
-    def read(response, file, deadline)
+    def read(response, file)
       file.truncate(0)
       file.rewind
       written = 0
       response.read_body do |chunk|
-        raise Unavailable, "the download from the advisory feed at #{host} took longer than #{DEADLINE} seconds" if monotonic > deadline
-
         written += chunk.bytesize
         raise Unavailable, "the advisory feed at #{host} sent more than #{@max_bytes / 1.megabyte} MiB" if written > @max_bytes
 
