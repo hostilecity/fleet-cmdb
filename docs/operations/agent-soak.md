@@ -1,6 +1,6 @@
 # Agent soak test
 
-`agent/scripts/soak.sh` (P1-A09) runs the installed agent for days against a stand-in server that goes down and flaps, puts it through one update and one forced rollback, and samples it for leaks. `agent/scripts/soak-analyse.py` judges the samples. The Phase 1 acceptance needs one 72-hour run that passes, with its summary and samples attached to the delivery note.
+`agent/scripts/soak.sh` (P1-A09) runs the installed agent for days against a stand-in server that goes down and flaps, puts it through one update and one forced rollback, and samples it for leaks. `agent/scripts/soak-analyse.py` judges the samples. One 72-hour run that passes, with its summary and samples attached to the delivery note, is required in Phase 2 ([P2-SOAK](../backlog/specs/p2-soak.md)); it was deferred from Phase 1 so that nothing is deployed yet.
 
 ## What a run does
 
@@ -51,6 +51,6 @@ sudo systemd-run --unit=fleet-soak --setenv=SOAK_DISPOSABLE=yes --working-direct
 journalctl -fu fleet-soak      # follow it; it ends after 72 hours
 ```
 
-Running it as a transient unit keeps it going after you log out. `SOAK_HOURS`, `SOAK_SAMPLE_SECONDS`, `SOAK_CYCLE_MINUTES`, `SOAK_OUTAGE_SECONDS`, and `SOAK_FLAP_SECONDS` (each with `--setenv`) change the schedule. The unit exits 0 when every check passes. `$HOME/soak-results` then holds `summary.md`, `samples.csv`, `events.log`, and the agent's journal; attach `summary.md` and `samples.csv` to the Phase 1 delivery note. The throwaway key never leaves the build machine and the VM; delete both afterwards.
+Running it as a transient unit keeps it going after you log out. `SOAK_HOURS`, `SOAK_SAMPLE_SECONDS`, `SOAK_CYCLE_MINUTES`, `SOAK_OUTAGE_SECONDS`, and `SOAK_FLAP_SECONDS` (each with `--setenv`) change the schedule. The unit exits 0 when every check passes. `$HOME/soak-results` then holds `summary.md`, `samples.csv`, `events.log`, and the agent's journal; attach `summary.md` and `samples.csv` to the Phase 2 delivery note. The throwaway key never leaves the build machine and the VM; delete both afterwards.
 
 The **Agent soak** workflow runs the same script for 30 minutes on a pull request that changes it, and for up to 5 hours by hand, to check the tooling. It cannot replace the 72-hour run.
