@@ -289,14 +289,24 @@ case $phase in
 esac
 
 # Clean-up after the update and the rollback (ADR 0018): only the versions current and previous point to
-# remain, and nothing is left of the staging, the backup, the marker, the record, or the result.
+# remain, and nothing is left of the staging, the backup, the marker, the record, or the result. Problems are
+# collected rather than fatal, so the leak analysis below always runs and both verdicts are reported.
+problems=()
 installed=$(find "$LIB/versions" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
 linked=$(for link in current previous; do basename "$(readlink "$LIB/$link")"; done | sort -u | tr '\n' ' ')
-[ "$installed" = "$linked" ] || fail "installed versions are '$installed', expected only current and previous: '$linked'"
+[ "$installed" = "$linked" ] || problems+=("installed versions are '$installed', expected only current and previous: '$linked'")
 for leftover in "$STATE/update.json" "$STATE/update-confirmed.json" "$STATE/update-result.json" "$LIB/versions/$LOOPING"; do
-    [ ! -e "$leftover" ] || fail "$leftover was left behind"
+    [ ! -e "$leftover" ] || problems+=("$leftover was left behind")
 done
-[ -z "$(find "$STATE/update" -mindepth 1 2> /dev/null)" ] || fail "staging or backup files were left in $STATE/update"
-note "clean-up checked: $installed installed, no update leftovers"
+[ -z "$(find "$STATE/update" -mindepth 1 2> /dev/null)" ] || problems+=("staging or backup files were left in $STATE/update")
+note "clean-up: $installed installed (current and previous: $linked); ${#problems[@]} problem(s)"
 
-python3 "$here/soak-analyse.py" "$samples" "$out/summary.md" --hours "$HOURS" --sample-seconds "$SAMPLE"
+analysis=0
+python3 "$here/soak-analyse.py" "$samples" "$out/summary.md" --hours "$HOURS" --sample-seconds "$SAMPLE" || analysis=$?
+if [ "${#problems[@]}" -gt 0 ]; then
+    { echo; echo "## Clean-up"; echo; printf -- '- [ ] %s\n' "${problems[@]}"; } >> "$out/summary.md"
+    for problem in "${problems[@]}"; do note "clean-up: $problem"; done
+fi
+if [ "$analysis" != 0 ] || [ "${#problems[@]}" != 0 ]; then
+    fail "the soak did not pass (analysis exit $analysis, ${#problems[@]} clean-up problem(s)); see summary.md"
+fi
