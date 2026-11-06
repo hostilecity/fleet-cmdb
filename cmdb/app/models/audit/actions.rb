@@ -1,5 +1,5 @@
 module Audit
-  # Every audit action name, in one place (FR-S.3). Later phases add rule changes and task actions.
+  # Every audit action name, in one place (FR-S.3). Phase 3 adds task actions.
   module Actions
     HOST_CREATED = "host.created"
     HOST_EDITED = "host.edited"
@@ -30,6 +30,10 @@ module Audit
     UPDATE_ROLLED_BACK = "update.rolled_back"
     UPDATE_UNCONFIRMED = "update.unconfirmed"
     SETTING_CHANGED = "setting.changed"
+    RULE_CREATED = "rule.created"
+    RULE_EDITED = "rule.edited"
+    RULE_ENABLED = "rule.enabled"
+    RULE_DISABLED = "rule.disabled"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

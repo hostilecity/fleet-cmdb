@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "rules": [
+    {
+      "key": "Ssh-Root",
+      "reference": "Example only",
+      "title": "Example rule Ssh-Root",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "sshd.permitrootlogin",
+      "condition": {
+        "eq": "no"
+      },
+      "remediation": "Example remediation."
+    }
+  ]
+}

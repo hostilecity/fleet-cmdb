@@ -31,11 +31,15 @@ module AuditEntriesHelper
     Audit::Actions::UPDATE_FAILED => "Agent update failed",
     Audit::Actions::UPDATE_ROLLED_BACK => "Agent update rolled back",
     Audit::Actions::UPDATE_UNCONFIRMED => "Agent update unconfirmed",
-    Audit::Actions::SETTING_CHANGED => "Setting changed"
+    Audit::Actions::SETTING_CHANGED => "Setting changed",
+    Audit::Actions::RULE_CREATED => "Rule created",
+    Audit::Actions::RULE_EDITED => "Rule edited",
+    Audit::Actions::RULE_ENABLED => "Rule enabled",
+    Audit::Actions::RULE_DISABLED => "Rule disabled"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
   INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze
@@ -64,6 +68,14 @@ module AuditEntriesHelper
     "sha256" => [ "SHA-256", true ],
     "size" => [ "Size (bytes)", true ],
     "key_role" => [ "Release key", false ],
+    "title" => [ "Title", false ],
+    "reference" => [ "Reference", false ],
+    "severity" => [ "Severity", true ],
+    "applies_to" => [ "Applies to", true ],
+    "fact" => [ "Fact", true ],
+    "condition" => [ "Condition", true ],
+    "remediation" => [ "Remediation", false ],
+    "enabled" => [ "Enabled", true ],
     **SETTING_NAMES.keys.index_with { [ "Minutes", true ] },
     **INTERVAL_SETTING_NAMES.keys.index_with { [ "Seconds", true ] }
   }.freeze
@@ -115,6 +127,7 @@ module AuditEntriesHelper
                   (tag.span(safe_join([ "Host ", link_to(host.name, host_path(host)) ]), class: "kind") if host) ].compact, " ")
     when "Operator" then records.operators[id]&.email || "Operator #{id}"
     when "AgentRelease" then link_to("Agent release #{Array(entry.changeset['version']).compact.last || id}", agents_path)
+    when "CisRule" then safe_join([ "Rule", tag.span(records.rules[id] || id.to_s, class: "kind mono") ], " ")
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"
       # A cleared interval deletes its row, so fall back to the key the entry recorded (it is the changeset's key).
