@@ -91,6 +91,10 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 65536
+          },
+          "ordered": {
+            "description": "`string_list`: whether the order of the entries carries meaning (for example ciphers). The server sorts a list that is not ordered before comparing reports, so an agent need not.",
+            "type": "boolean"
           }
         }
       }

@@ -6,7 +6,9 @@
 #   string           text, at most max_length characters
 #   integer          a whole number from minimum to maximum
 #   boolean          true or false
-#   string_list      a list of at most max_items strings of at most item_max_length characters
+#   string_list      a list of at most max_items strings of at most item_max_length characters; `ordered` says
+#                    whether the order carries meaning (ciphers do, running services do not). The server sorts
+#                    a list that is not ordered, so a reordering is no change
 #   file_attributes  {mode, owner, group} of a file, or null when the file does not exist
 #   service_state    {active, enabled} of a systemd unit, or null when no such unit is installed
 #
@@ -31,7 +33,7 @@ module ConfigManifest
     "string" => { "max_length" => 256 },
     "integer" => { "minimum" => -SAFE_INTEGER, "maximum" => SAFE_INTEGER },
     "boolean" => {},
-    "string_list" => { "max_items" => 200, "item_max_length" => 256 },
+    "string_list" => { "max_items" => 200, "item_max_length" => 256, "ordered" => false },
     "file_attributes" => {},
     "service_state" => {}
   }.freeze
@@ -54,6 +56,9 @@ module ConfigManifest
 
     # What the manifest endpoint publishes for this fact.
     def as_json(*) = { "key" => key, "type" => type, "since" => since, "description" => description }.merge(constraints)
+
+    # An unordered list in a canonical order; any other value as it is.
+    def normalize(value) = type == "string_list" && !constraints["ordered"] && value.is_a?(Array) ? value.sort : value
 
     private
 
@@ -163,6 +168,7 @@ module ConfigManifest
     key = entry["key"].to_s
     type = entry["type"]
     errors << "#{key}: key must look like sshd.permitrootlogin" unless key.match?(NAMED_KEY)
+    errors << "#{key}: ordered must be true or false" if entry.key?("ordered") && ![ true, false ].include?(entry["ordered"])
     unless CONSTRAINTS.key?(type)
       errors << "#{key}: unknown type #{type.inspect}"
       return nil

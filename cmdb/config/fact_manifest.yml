@@ -6,7 +6,8 @@
 # given another type (add a new key instead); a new fact has `since` set to a new, higher manifest_version;
 # and spec/fixtures/config_manifest/frozen_facts.yml gains the new fact in the same change.
 #
-# Types: string, integer, boolean, string_list, file_attributes, service_state (see ConfigManifest).
+# Types: string, integer, boolean, string_list, file_attributes, service_state (see ConfigManifest). A string_list
+# whose order does not matter needs nothing; one whose order does (ciphers) says `ordered: true`.
 # `example` is a valid value, used by the specs and the docs; it is not published.
 manifest_version: 1
 
@@ -115,18 +116,21 @@ facts:
     since: 1
     description: "Ciphers SSH offers, in order."
     max_items: 64
+    ordered: true
     example: ["chacha20-poly1305@openssh.com", "aes256-gcm@openssh.com"]
   - key: sshd.macs
     type: string_list
     since: 1
     description: "Message authentication codes SSH offers, in order."
     max_items: 64
+    ordered: true
     example: ["hmac-sha2-512-etm@openssh.com", "hmac-sha2-256-etm@openssh.com"]
   - key: sshd.kexalgorithms
     type: string_list
     since: 1
     description: "Key exchange algorithms SSH offers, in order."
     max_items: 64
+    ordered: true
     example: ["sntrup761x25519-sha512@openssh.com", "curve25519-sha256"]
   - key: login_defs.pass_max_days
     type: integer

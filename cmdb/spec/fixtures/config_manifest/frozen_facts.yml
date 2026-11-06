@@ -1,5 +1,5 @@
 # Every fact released in a config manifest (P2-S01), with the limits it was released with. A fact is never
-# removed, renamed, retyped, or given a different `since`, and its limits may be loosened but never tightened,
+# removed, renamed, retyped, or given a different `since`, and its limits may be loosened but never tightened, and a list never changes between ordered and not,
 # because a report made against an older manifest version must stay valid (docs/operations/config-facts.md).
 # When you add a fact, add its line here in the same change. Never edit an existing line.
 facts:
@@ -66,19 +66,19 @@ facts:
   - { key: "service:ufw.service", type: service_state, since: 1 }
   - { key: "service:unattended-upgrades.service", type: service_state, since: 1 }
   - { key: "service:vsftpd.service", type: service_state, since: 1 }
-  - { key: "services.enabled", type: string_list, since: 1, max_items: 1000, item_max_length: 256 }
-  - { key: "services.running", type: string_list, since: 1, max_items: 1000, item_max_length: 256 }
+  - { key: "services.enabled", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
+  - { key: "services.running", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
   - { key: "sshd.allowtcpforwarding", type: string, since: 1, max_length: 16 }
   - { key: "sshd.banner", type: string, since: 1, max_length: 256 }
-  - { key: "sshd.ciphers", type: string_list, since: 1, max_items: 64, item_max_length: 256 }
+  - { key: "sshd.ciphers", type: string_list, since: 1, max_items: 64, item_max_length: 256, ordered: true }
   - { key: "sshd.clientalivecountmax", type: integer, since: 1, minimum: 0, maximum: 1000 }
   - { key: "sshd.clientaliveinterval", type: integer, since: 1, minimum: 0, maximum: 86400 }
   - { key: "sshd.hostbasedauthentication", type: boolean, since: 1 }
   - { key: "sshd.ignorerhosts", type: boolean, since: 1 }
-  - { key: "sshd.kexalgorithms", type: string_list, since: 1, max_items: 64, item_max_length: 256 }
+  - { key: "sshd.kexalgorithms", type: string_list, since: 1, max_items: 64, item_max_length: 256, ordered: true }
   - { key: "sshd.logingracetime", type: integer, since: 1, minimum: 0, maximum: 86400 }
   - { key: "sshd.loglevel", type: string, since: 1, max_length: 16 }
-  - { key: "sshd.macs", type: string_list, since: 1, max_items: 64, item_max_length: 256 }
+  - { key: "sshd.macs", type: string_list, since: 1, max_items: 64, item_max_length: 256, ordered: true }
   - { key: "sshd.maxauthtries", type: integer, since: 1, minimum: 0, maximum: 1000 }
   - { key: "sshd.maxsessions", type: integer, since: 1, minimum: 0, maximum: 1000 }
   - { key: "sshd.passwordauthentication", type: boolean, since: 1 }
@@ -89,6 +89,6 @@ facts:
   - { key: "sshd.usepam", type: boolean, since: 1 }
   - { key: "sshd.x11forwarding", type: boolean, since: 1 }
   - { key: "useradd.inactive", type: integer, since: 1, minimum: -1, maximum: 99999 }
-  - { key: "users.accounts", type: string_list, since: 1, max_items: 1000, item_max_length: 256 }
-  - { key: "users.login", type: string_list, since: 1, max_items: 1000, item_max_length: 256 }
-  - { key: "users.uid0", type: string_list, since: 1, max_items: 100, item_max_length: 256 }
+  - { key: "users.accounts", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
+  - { key: "users.login", type: string_list, since: 1, max_items: 1000, item_max_length: 256, ordered: false }
+  - { key: "users.uid0", type: string_list, since: 1, max_items: 100, item_max_length: 256, ordered: false }

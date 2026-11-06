@@ -42,7 +42,8 @@ RSpec.describe ConfigManifest do
 
     it "publishes the limits an agent must stay within" do
       expect(manifest.fact("sshd.maxauthtries").as_json).to include("type" => "integer", "minimum" => 0, "maximum" => 1000)
-      expect(manifest.fact("sshd.ciphers").as_json).to include("max_items" => 64, "item_max_length" => 256)
+      expect(manifest.fact("sshd.ciphers").as_json).to include("max_items" => 64, "item_max_length" => 256, "ordered" => true)
+      expect(manifest.fact("services.running").as_json).to include("ordered" => false)
       expect(manifest.fact("sshd.loglevel").as_json).to include("max_length" => 16)
       expect(manifest.fact("file:/etc/passwd").as_json.keys).to match_array(%w[key type since description])
     end
@@ -79,6 +80,11 @@ RSpec.describe ConfigManifest do
       expect(tighter).to eq([])
     end
 
+    it "keeps whether each released list is ordered, because that decides what counts as a change" do
+      changed = frozen.select { |old| old.key?("ordered") }.reject { |old| manifest.fact(old["key"])&.constraints&.fetch("ordered") == old["ordered"] }
+      expect(changed.map { |old| old["key"] }).to eq([])
+    end
+
     it "lists every fact in the manifest at an earlier version, so a new fact must be added to the fixture" do
       released = manifest.facts.select { |f| f.since < manifest.version }.map(&:key)
       expect(released - frozen.map { |f| f["key"] }).to eq([])
@@ -103,6 +109,13 @@ RSpec.describe ConfigManifest do
       expect(errors("sshd.ciphers", [ "a" * 257 ])).to eq([ "has an entry longer than 256 characters" ])
       expect(errors("sshd.ciphers", [ "a", 1 ])).to eq([ "must be a list of strings" ])
       expect(errors("sshd.ciphers", "a")).to eq([ "must be a list of strings" ])
+    end
+
+    it "sorts a list whose order has no meaning and leaves an ordered one alone" do
+      expect(manifest.fact("services.running").normalize([ "ssh.service", "cron.service" ])).to eq([ "cron.service", "ssh.service" ])
+      expect(manifest.fact("sshd.ciphers").normalize([ "b", "a" ])).to eq([ "b", "a" ])
+      expect(manifest.fact("sshd.loglevel").normalize("b")).to eq("b")
+      expect(manifest.fact("services.running").normalize("not a list")).to eq("not a list")
     end
 
     it "accepts a file's mode, owner, and group, or null for no such file" do
@@ -140,6 +153,7 @@ RSpec.describe ConfigManifest do
           d["manifest_version"] = 3
           d["facts"] += [ { "key" => "Bad", "type" => "string", "since" => 1, "description" => "x", "example" => "x" },
                           { "key" => "a.b", "type" => "regex", "since" => 1, "description" => "x" },
+                          { "key" => "a.d", "type" => "string_list", "since" => 1, "description" => "x", "ordered" => "yes", "example" => [] },
                           { "key" => "a.c", "type" => "integer", "since" => 0, "description" => "", "minimum" => 1, "max_length" => 3, "example" => "x" },
                           { "key" => "sshd.loglevel", "type" => "string", "since" => 1, "description" => "again", "example" => "x" } ]
           d["files"] = [ { "path" => "etc/passwd", "since" => 1, "description" => "x" } ]
@@ -149,7 +163,7 @@ RSpec.describe ConfigManifest do
         e.message
       end
       expect(error).to include("Bad: key must look like", "a.b: unknown type \"regex\"", "a.c: since must be a positive integer", "a.c: description must be 1 to 512 characters",
-                               "a.c: unknown or misplaced fields max_length", "a.c: its example must be an integer", "sshd.loglevel: listed 2 times",
+                               "a.d: ordered must be true or false", "a.c: unknown or misplaced fields max_length", "a.c: its example must be an integer", "sshd.loglevel: listed 2 times",
                                "etc/passwd: path must be absolute", "bad unit: unit name is not valid", "manifest_version is 3 but no fact has since 3")
     end
 

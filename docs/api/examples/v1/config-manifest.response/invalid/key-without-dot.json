@@ -20,7 +20,8 @@
       "since": 1,
       "description": "Ciphers SSH offers, in order.",
       "max_items": 64,
-      "item_max_length": 256
+      "item_max_length": 256,
+      "ordered": true
     },
     {
       "key": "loglevel",
