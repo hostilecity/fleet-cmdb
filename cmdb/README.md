@@ -150,6 +150,39 @@ Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the opera
   - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows, written only when the content hash changes. Retention keeps the newest per host.
 - **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). With an unsupported manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
 
+### Advisory data
+
+Vulnerability advisories (FR-2.4, DEC-11, P2-S10, P2-S13) are OSV records for the fleet profile's ecosystems: `Ecosystems` (`app/models/ecosystems.rb`) maps an inventory's os id and version to one, and only `debian` `13` → `Debian:13` is listed (DEC-01). Records for other ecosystems are skipped.
+
+- **Import** (`Advisories::Import`, `app/services/advisories`), from a `.json` file, a directory of them, or a `.zip` archive such as OSV's `all.zip`. Each run is one transaction, so input that cannot be read at all imports nothing.
+  - **Idempotent** by advisory id and `modified`: the same or an older record changes nothing, and a newer one replaces the advisory and its packages.
+  - **Malformed records** are skipped and reported with where they were and why, and the valid records import.
+  - **Limits:** each document is read to at most 2 MiB, and an archive may be at most `FLEET_ADVISORY_MAX_DOWNLOAD_MB` and hold at most a million documents and 8 GiB of JSON.
+  - **Stored:** text has control characters removed and a length cap, and only `http` and `https` reference URLs are kept.
+  - **Severity** is normalised to critical, high, medium, low, or unknown by the rule in `Advisories::Severity` (a CVSS v3 score, then a severity word, then a Debian urgency), keeping the raw value.
+  - **Withdrawn advisories** are kept and marked. A *full* import (the refresh, or `FULL=1`) is the whole data set for its ecosystems, so an advisory it does not contain is marked withdrawn as `absent`: OSV moves withdrawn records out of an ecosystem's archive. That sweep is skipped when any record was malformed.
+  - **Audit:** every import is audited (`advisory.imported`, `advisory.import_failed`) with the operator or the system as actor, the source, and the counts.
+- **Storage.** `advisories` holds each advisory at its newest version. `advisory_packages` holds one row per advisory, ecosystem, and source package, with the OSV `ECOSYSTEM` ranges' events, indexed by ecosystem and package for matching. `advisory_imports` records every import, which is how freshness is known.
+- **Scheduled refresh.** `AdvisoryFeedRefreshJob` runs every 6 hours in production (`config/recurring.yml`).
+  - It downloads `FLEET_ADVISORY_FEED_URL` over HTTPS with the certificate verified, conditionally (`If-None-Match`, `If-Modified-Since`), within 15 minutes, and imports it as a full data set.
+  - A failure of any kind is retried with backoff. After the last attempt it is recorded and audited, and the job fails, so it shows on the failed-jobs banner and in `/health`.
+  - Errors and logs name only the feed's host, never its path, query, or token.
+- **Freshness.** Data is as fresh as the last successful full import with records for the ecosystem. The fleet page shows when each ecosystem's data was last updated, and a warning when it is older than `FLEET_ADVISORY_MAX_AGE_HOURS` or was never refreshed. A partial import adds data but does not count.
+
+```sh
+bin/rails advisories:import FILE=path/to/all.zip FULL=1   # a complete archive, for a server without internet access
+bin/rails advisories:import FILE=path/to/DSA-5800-1.json  # one advisory (or a directory of them)
+bin/rails advisories:refresh                              # run the scheduled refresh now
+bin/rails advisories:status                               # freshness per ecosystem and the last import
+```
+
+| Setting | Default | |
+|---|---|---|
+| `FLEET_ADVISORY_FEED_URL` | `https://storage.googleapis.com/osv-vulnerabilities/Debian/all.zip` | The OSV archive the refresh downloads (Debian's covers every release; only `Debian:13` is kept). HTTPS only, or empty to turn the refresh off |
+| `FLEET_ADVISORY_FEED_TOKEN` | none | Sent as a bearer token, for a mirror that needs one; also read from credentials (`advisories.feed_token`). Never logged or shown |
+| `FLEET_ADVISORY_MAX_DOWNLOAD_MB` | `512` | The largest archive downloaded or imported |
+| `FLEET_ADVISORY_MAX_AGE_HOURS` | `48` | Older data shows a warning on the dashboard |
+
 ## Hostnames and operator sign-in
 
 The server has two faces (DEC-05), each on its own hostname:

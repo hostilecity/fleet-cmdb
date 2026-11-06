@@ -10,10 +10,59 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_06_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
+
+  create_table "advisories", force: :cascade do |t|
+    t.string "advisory_id", limit: 128, null: false
+    t.string "source", limit: 256, null: false
+    t.string "summary", limit: 512
+    t.string "aliases", default: [], null: false, array: true
+    t.string "severity", limit: 16, null: false
+    t.string "severity_raw", limit: 512
+    t.string "reference_url", limit: 2048
+    t.datetime "published_at"
+    t.datetime "modified_at", null: false
+    t.datetime "withdrawn_at"
+    t.string "withdrawn_reason", limit: 16
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["advisory_id"], name: "index_advisories_on_advisory_id", unique: true
+    t.check_constraint "(withdrawn_at IS NULL) = (withdrawn_reason IS NULL) AND (withdrawn_reason::text = ANY (ARRAY['withdrawn'::character varying, 'absent'::character varying]::text[]))", name: "advisories_withdrawn_reason_valid"
+    t.check_constraint "severity::text = ANY (ARRAY['critical'::character varying, 'high'::character varying, 'medium'::character varying, 'low'::character varying, 'unknown'::character varying]::text[])", name: "advisories_severity_valid"
+  end
+
+  create_table "advisory_imports", force: :cascade do |t|
+    t.bigint "operator_id"
+    t.string "origin", limit: 8, null: false
+    t.string "source", limit: 256, null: false
+    t.boolean "full", default: false, null: false
+    t.string "state", limit: 16, null: false
+    t.string "ecosystems", default: [], null: false, array: true
+    t.jsonb "counts", default: {}, null: false
+    t.jsonb "problems", default: [], null: false
+    t.string "reason", limit: 512
+    t.string "etag", limit: 256
+    t.string "last_modified", limit: 64
+    t.datetime "started_at", null: false
+    t.datetime "finished_at", null: false
+    t.index ["finished_at"], name: "index_advisory_imports_on_finished_at"
+    t.index ["operator_id"], name: "index_advisory_imports_on_operator_id"
+    t.check_constraint "origin::text = ANY (ARRAY['feed'::character varying, 'file'::character varying]::text[])", name: "advisory_imports_origin_valid"
+    t.check_constraint "state::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying]::text[])", name: "advisory_imports_state_valid"
+  end
+
+  create_table "advisory_packages", force: :cascade do |t|
+    t.bigint "advisory_id", null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.string "package", limit: 128, null: false
+    t.jsonb "ranges", null: false
+    t.string "fixed_version", limit: 256
+    t.index ["advisory_id", "ecosystem", "package"], name: "index_advisory_packages_unique", unique: true
+    t.index ["ecosystem", "package"], name: "index_advisory_packages_on_ecosystem_and_package"
+  end
 
   create_table "agent_credentials", force: :cascade do |t|
     t.bigint "host_id", null: false
@@ -387,6 +436,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_06_020000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  add_foreign_key "advisory_imports", "operators"
+  add_foreign_key "advisory_packages", "advisories", on_delete: :cascade
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "agent_release_imports", "agent_releases"
   add_foreign_key "agent_release_imports", "operators"

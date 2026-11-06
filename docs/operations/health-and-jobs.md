@@ -38,3 +38,11 @@ bin/rails settings:retention DAYS=120    # 7 to 3650; audited
 ```
 
 A dry run (counts only) from the Rails console: `RetentionPruneJob.perform_now(dry_run: true)`. The log line `[retention] deleted … older than …` states the counts of every run.
+
+## Advisory data
+
+The server downloads OSV advisory data every 6 hours (`FLEET_ADVISORY_FEED_URL`, outbound HTTPS to `storage.googleapis.com` by default; `cmdb/README.md`, "Advisory data"). The fleet page says when each ecosystem's data was last updated, and shows a warning when it is older than `FLEET_ADVISORY_MAX_AGE_HOURS` (48 by default) or has never been refreshed. Until then, vulnerability findings may be missing.
+
+- **A failed refresh** is retried 5 times with backoff, then appears on the failed-jobs banner and page as `AdvisoryFeedRefreshJob`, in `/health` as `failed_jobs`, and in the audit log as "Advisory import failed" with the reason.
+- **To refresh now:** `bin/rails advisories:refresh`. To see freshness and the last import: `bin/rails advisories:status`.
+- **A server without internet access:** set `FLEET_ADVISORY_FEED_URL=` (empty). Download `all.zip` elsewhere, copy it over, and run `bin/rails advisories:import FILE=all.zip FULL=1`. `FULL=1` says it is the complete data set, so it counts as a refresh. A single advisory file adds data but does not.

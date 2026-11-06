@@ -34,6 +34,8 @@ module Audit
     RULE_EDITED = "rule.edited"
     RULE_ENABLED = "rule.enabled"
     RULE_DISABLED = "rule.disabled"
+    ADVISORY_IMPORTED = "advisory.imported"
+    ADVISORY_IMPORT_FAILED = "advisory.import_failed"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end
