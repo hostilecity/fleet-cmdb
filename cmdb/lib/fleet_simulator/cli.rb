@@ -22,7 +22,9 @@ module FleetSimulator
       options = Options.parse(argv)
       raise "bin/simulate-fleet is for development and test servers only" if Rails.env.production?
 
-      simulate(options)
+      # bin/rails runner turns the query cache on; the server changes what the simulator reads from another
+      # process, so a cached answer would go stale without ever being cleared.
+      ActiveRecord::Base.uncached { simulate(options) }
     rescue OptionParser::ParseError => e
       usage("#{e.message}\n\n#{Options.help}", 2)
     end

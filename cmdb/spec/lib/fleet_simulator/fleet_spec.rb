@@ -216,6 +216,19 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
       expect(Setting.liveness_thresholds).to eq(online: 3.minutes, stale: 15.minutes)
     end
 
+    it "asks the database on every poll, even with the query cache on (as under bin/rails runner)" do
+      # The liveness job writes from another process, which never clears this process's query cache, so a
+      # cached answer would keep saying "no transition yet" (seen in a real run before this was fixed).
+      check = FleetSimulator::LivenessCheck.new(host: enrolled(1).first)
+      check.silence!(clock.now)
+      cached = []
+      watch = ->(*, payload) { cached << payload[:cached] if payload[:sql].include?("host_status_events") }
+      ActiveSupport::Notifications.subscribed(watch, "sql.active_record") do
+        ActiveRecord::Base.cache { 3.times { check.poll(clock.now) } }
+      end
+      expect(cached).to eq([ nil, nil, nil ])
+    end
+
     it "fails when no transition is recorded in time, and restores nothing it did not change" do
       check = FleetSimulator::LivenessCheck.new(host: enrolled(1).first)
       check.restore!

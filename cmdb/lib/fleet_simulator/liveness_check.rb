@@ -59,7 +59,10 @@ module FleetSimulator
 
     def await(status, reason, deadline, now)
       since = @state == :awaiting_online ? @resumed_at : @silenced_at
-      event = HostStatusEvent.where(host_id: @host.host_id, to_status: status, reason:).where(occurred_at: since..).order(:occurred_at).first
+      # Uncached: the job writes from another process, which never clears this process's query cache.
+      event = HostStatusEvent.uncached do
+        HostStatusEvent.where(host_id: @host.host_id, to_status: status, reason:).where(occurred_at: since..).order(:occurred_at).first
+      end
       if event
         @log << "#{status} recorded at #{event.occurred_at.utc.iso8601} (#{(event.occurred_at - since).round}s after #{since == @silenced_at ? 'going silent' : 'resuming'})"
         yield
