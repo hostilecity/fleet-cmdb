@@ -517,7 +517,6 @@ impl Supervisor<'_> {
             &Path::new("versions").join(&rec.from_version),
         )
         .map_err(|e| format!("cannot point `current` back to {}: {e}", rec.from_version))?;
-        restore_previous(layout, rec);
         let restored = restore_state(layout);
         if let Err(e) = &restored {
             tracing::error!(
@@ -542,6 +541,9 @@ impl Supervisor<'_> {
         }
         tracing::info!(version = rec.from_version.as_str(), "rolled back");
         self.clean_up(rec, true, restored.is_ok());
+        // Last, once the record is gone: until then the failure hook may still have to finish this rollback,
+        // and it runs `previous/fleet-agent` as the version being replaced.
+        restore_previous(layout, rec);
         Ok(())
     }
 
@@ -604,6 +606,11 @@ impl Supervisor<'_> {
 /// rollback target and the version before it is not left installed with nothing pointing to it (ADR 0018:
 /// two kept). Only a link the switch set (to `from_version`) is changed, so repeating it is harmless. Left
 /// alone when the record does not say (an older agent wrote it) or that version is no longer installed.
+///
+/// Called only after a rollback has finished and its record is removed: `previous` is how the failure hook
+/// finds the version being replaced (`fleet-agent-rollback.service`), so it must not move while the hook
+/// may still be needed. Interrupted before this, `previous` simply stays on the version rolled back to,
+/// as it did before this was done, and the next successful update prunes the earlier version.
 fn restore_previous(layout: &Layout, rec: &Record) {
     let link = layout.previous();
     if link_version(&link).as_deref() != Some(rec.from_version.as_str()) {
@@ -615,7 +622,9 @@ fn restore_previous(layout: &Layout, rec: &Record) {
         {
             fsx::replace_symlink(&link, &Path::new("versions").join(version))
         }
-        Some(PreviousLink::Missing) => fs::remove_file(&link),
+        // Synced like `replace_symlink`, so the removal survives a power loss.
+        Some(PreviousLink::Missing) => fs::remove_file(&link)
+            .and_then(|()| fsx::sync_dir(link.parent().unwrap_or(Path::new("/")))),
         _ => return,
     };
     if let Err(e) = restored {

@@ -140,6 +140,46 @@ fn a_rollback_puts_previous_back_so_two_versions_remain_and_both_are_linked() {
 }
 
 #[test]
+fn previous_stays_on_the_version_rolled_back_to_until_the_rollback_is_finished() {
+    // The failure hook runs `previous/fleet-agent`, and a supervisor acts only as the version being replaced
+    // (`validate`). While a rollback is unfinished, `previous` must still name that version, or a hook run
+    // after a dead supervisor would be refused (or find no binary) and the agent could stay down.
+    for previous_before in [Some("0.0.1"), None] {
+        let world = World::new();
+        if let Some(version) = previous_before {
+            installed(&world, version);
+            point_previous(&world, version);
+        }
+        world.behaves(NEW, Agent::Fails);
+        staged(&world);
+        world.systemd.fail_restart.set(true);
+        assert!(world.run(Intent::Resume).is_err(), "the restart back fails");
+        assert_eq!(world.current().as_deref(), Some(old()));
+        assert_eq!(
+            Record::read(world.state()).unwrap().unwrap().phase,
+            Phase::RollingBack
+        );
+        assert_eq!(
+            world.previous().as_deref(),
+            Some(old()),
+            "{previous_before:?}: the hook can still finish the rollback"
+        );
+        assert!(
+            world.layout.previous().join("fleet-agent").is_file(),
+            "{previous_before:?}: the hook's binary is there"
+        );
+
+        world.systemd.fail_restart.set(false);
+        assert_eq!(world.run(Intent::Resume), Ok(Ended::RolledBack));
+        assert_eq!(
+            world.previous().as_deref(),
+            previous_before,
+            "put back once finished"
+        );
+    }
+}
+
+#[test]
 fn a_rollback_of_the_first_update_after_an_install_leaves_no_previous() {
     let world = World::new();
     world.behaves(NEW, Agent::Fails);
