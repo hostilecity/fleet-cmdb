@@ -19,20 +19,43 @@ RSpec.describe Retention do
     InventoryReportReceipt.create!(host:, report_id: SecureRandom.uuid, received_at: now - age_days.days)
   end
 
+  def package_snapshot(host, age_days)
+    at = now - age_days.days
+    PackageSnapshot.create!(host:, manager: "dpkg", package_count: 0, content_hash: SecureRandom.hex(32), packages: [], report_id: SecureRandom.uuid,
+                            collected_at: at, received_at: at)
+  end
+
+  def package_receipt(host, age_days)
+    PackageReportReceipt.create!(host:, report_id: SecureRandom.uuid, received_at: now - age_days.days)
+  end
+
   def old_audit_entry(age_days)
     AuditEntry.create!(actor_type: "system", action: Audit::Actions::HOST_EDITED, changeset: {}, occurred_at: now - age_days.days)
   end
 
   describe ".prune!" do
     it "removes rows older than the window and keeps newer ones, by default 90 days" do
-      old = [ snapshot(host, 120), snapshot(host, 100), status_event(host, 95, to: "stale"), receipt(host, 91) ]
-      kept = [ snapshot(host, 89), snapshot(host, 5), status_event(host, 10, to: "offline"), receipt(host, 89) ]
+      old = [ snapshot(host, 120), snapshot(host, 100), status_event(host, 95, to: "stale"), receipt(host, 91),
+              package_snapshot(host, 120), package_receipt(host, 91) ]
+      kept = [ snapshot(host, 89), snapshot(host, 5), status_event(host, 10, to: "offline"), receipt(host, 89),
+               package_snapshot(host, 89), package_receipt(host, 89) ]
 
       counts = described_class.prune!(now:)
 
-      expect(counts).to eq("inventory_snapshots" => 2, "inventory_report_receipts" => 1, "host_status_events" => 1)
+      expect(counts).to eq("inventory_snapshots" => 2, "inventory_report_receipts" => 1, "package_snapshots" => 1,
+                           "package_report_receipts" => 1, "host_status_events" => 1)
       expect(old.map { |row| row.class.exists?(row.id) }).to all(be(false))
       expect(kept.map { |row| row.class.exists?(row.id) }).to all(be(true))
+    end
+
+    it "always keeps the newest package snapshot of each host, whatever its age (P2-S08)" do
+      old = package_snapshot(host, 400)
+      newest = package_snapshot(host, 200)
+      only = package_snapshot(other, 365)
+
+      described_class.prune!(now:)
+
+      expect([ old, newest, only ].map { |row| PackageSnapshot.exists?(row.id) }).to eq([ false, true, true ])
     end
 
     it "always keeps the newest snapshot and status event of each host, whatever their age" do
@@ -116,7 +139,7 @@ RSpec.describe Retention do
 
       described_class.prune!(now:)
 
-      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 host_status_events=0 older than 2026-08-03T12:00:00Z/)
+      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 package_snapshots=0 package_report_receipts=0 host_status_events=0 older than 2026-08-03T12:00:00Z/)
     end
   end
 

@@ -53,6 +53,8 @@ RSpec.describe "Update path compatibility (P1-X01)", type: :request do
     host, credential = host_running("0.2.0")
     post_api("/api/v1/reports/inventory", { schema_version: 1, agent_version: "0.2.0", report_id: SecureRandom.uuid }, credential)
     expect_error(:upgrade_required, "agent_version_unsupported")
+    post_api("/api/v1/reports/packages", { schema_version: 1, agent_version: "0.2.0", report_id: SecureRandom.uuid }, credential)
+    expect_error(:upgrade_required, "agent_version_unsupported")
     post "/api/v1/enroll", params: { schema_version: 1, agent_version: "0.2.0", token: "EXAMPLE-token" }.to_json, headers: api_headers
     expect_error(:upgrade_required, "agent_version_unsupported")
     expect(host.reload.agent_version).to eq("0.2.0")

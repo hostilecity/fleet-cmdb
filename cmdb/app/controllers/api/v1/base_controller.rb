@@ -4,6 +4,9 @@ module Api
     #
     # - JSON bodies are read and parsed here, not through Rails params, so the size limit applies before any
     #   parsing and every failure gets the documented error envelope.
+    # - An endpoint that sets accepts_gzip takes a body sent with Content-Encoding: gzip. max_body_bytes then
+    #   limits the decompressed body, read only that far, so a small compressed body cannot expand without
+    #   bound; the compressed body is limited by AgentApiRequestGuard. Other encodings are refused.
     # - Bodies are validated against docs/api/schemas for the body's schema_version. Unknown fields are
     #   ignored and logged by path (never by value); wrong types and out-of-range values are rejected.
     # - Agents older than the configured minimum get 426 agent_version_unsupported, except on the endpoints that
@@ -20,6 +23,7 @@ module Api
       REPORT_ID_FORMAT = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
 
       class_attribute :max_body_bytes, default: 64.kilobytes
+      class_attribute :accepts_gzip, default: false
       class_attribute :enforces_minimum_agent_version, default: true
 
       rescue_from StandardError, with: :render_unexpected_error
@@ -81,14 +85,41 @@ module Api
         raise AgentApi::ValidationFailed.new("The request body is not valid JSON.")
       end
 
-      # Reads at most max_body_bytes, whether or not Content-Length is sent.
+      # Reads at most max_body_bytes, whether or not Content-Length is sent, decompressing a gzip body first
+      # where the endpoint accepts one.
       def read_body
+        body =
+          case request.headers["Content-Encoding"].to_s.strip.downcase
+          when "", "identity" then read_plain_body
+          when "gzip" then accepts_gzip ? read_gzip_body : unsupported_encoding!
+          else unsupported_encoding!
+          end
+        body.force_encoding(Encoding::UTF_8)
+      end
+
+      def read_plain_body
         raise AgentApi::PayloadTooLarge if request.content_length.to_i > max_body_bytes
 
         body = request.body.read(max_body_bytes + 1).to_s
         raise AgentApi::PayloadTooLarge if body.bytesize > max_body_bytes
 
-        body.force_encoding(Encoding::UTF_8)
+        body
+      end
+
+      # GzipReader#read(n) stops after n decompressed bytes; reading to the end checks the length and CRC.
+      def read_gzip_body
+        reader = Zlib::GzipReader.new(request.body)
+        body = reader.read(max_body_bytes + 1).to_s
+        raise AgentApi::PayloadTooLarge if body.bytesize > max_body_bytes
+
+        reader.finish
+        body
+      rescue Zlib::Error
+        raise AgentApi::ValidationFailed.new("The request body is not valid gzip.")
+      end
+
+      def unsupported_encoding!
+        raise AgentApi::ValidationFailed.new("The request body's Content-Encoding is not supported#{' (use gzip or none)' if accepts_gzip}.")
       end
 
       def check_agent_version!(reported)

@@ -11,6 +11,8 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Diff service for two package snapshots: installed, removed, and version-changed packages.
 - Triggers vulnerability matching ([P2-S11](p2-vulns.md)) after a new snapshot.
 - An explicitly unsupported manager is stored as such and shown, not treated as an empty package list.
+- Delivered as `POST /api/v1/reports/packages` (`docs/api`, `packages.request`; `cmdb/README.md`, "Package reports"). The body may be gzip: up to 4 MiB of JSON, plain or decompressed (read only that far), and 1 MiB compressed; 20,000 packages at most. Versions are any printable ASCII without spaces, so one dpkg only warns about is never refused. Storage: `host_package_sets` (manager, reason, count, content hash, warnings), `host_packages` (one row per package, indexed by source), `package_snapshots` (the set as compact rows, written only when the hash changes, retained like inventory snapshots), `package_report_receipts`. `PackageDiff` lists installs, removals, and changes, each an upgrade or downgrade by dpkg order, and is not available when either side is an unsupported manager (an unknown set, not an empty one) ([P2-S09](#p2-s09-package-version-comparison-library-dpkg)). Showing an unsupported manager is part of [P2-DASH-HOST](p2-dash-host.md); the call to vulnerability matching after a new snapshot is added with [P2-S11](p2-vulns.md), which builds the matching.
+- Measured (`spec/requests/api/package_reports_spec.rb`, sandbox, PostgreSQL in the same machine): a 3,000-package report (280 KiB of JSON, 27 KiB gzip) stores in 0.33 s; a report changing 300 of them in 0.31 s; their diff takes 0.04 s.
 
 ### Acceptance criteria
 

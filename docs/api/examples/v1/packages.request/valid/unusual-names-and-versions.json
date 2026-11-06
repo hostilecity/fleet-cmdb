@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.2.0",
+  "report_id": "00000000-0000-4000-8000-000000000001",
+  "collected_at": "2026-01-01T12:00:00Z",
+  "manager": "dpkg",
+  "unsupported_reason": null,
+  "packages": [
+    {
+      "name": "local_tool",
+      "version": "1.0_1",
+      "architecture": "amd64",
+      "source": "local_tool"
+    },
+    {
+      "name": "odd-version",
+      "version": "2.0-1$local",
+      "architecture": "all",
+      "source": null
+    },
+    {
+      "name": "not-comparable",
+      "version": "1.0-",
+      "architecture": "amd64",
+      "source": null
+    }
+  ],
+  "warnings": []
+}
