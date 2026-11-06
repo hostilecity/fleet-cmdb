@@ -162,7 +162,9 @@ sample() {
 
 # --- Setup ----------------------------------------------------------------------------------------------
 
-make_certs "$tmp" localhost
+# Certificates outlive the run with two days to spare: an expired one would end the soak's contact with the
+# server partway through, and the rest of the run would measure an agent that cannot report.
+make_certs "$tmp" localhost $((TOTAL / 86400 + 3))
 mkdir -p "$tmp/releases"
 mkrelease "$tmp/releases" good "$NEW" "$dir/fleet-agent-$NEW" "$dir/test.key"
 mkscript "$tmp/loops.sh" "$LOOPING" 'echo "soak: release '"$LOOPING"' started" >&2; sleep 2; exit 1'
@@ -297,4 +299,4 @@ done
 [ -z "$(find "$STATE/update" -mindepth 1 2> /dev/null)" ] || fail "staging or backup files were left in $STATE/update"
 note "clean-up checked: $installed installed, no update leftovers"
 
-python3 "$here/soak-analyse.py" "$samples" "$out/summary.md" --hours "$HOURS"
+python3 "$here/soak-analyse.py" "$samples" "$out/summary.md" --hours "$HOURS" --sample-seconds "$SAMPLE"

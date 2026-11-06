@@ -46,7 +46,8 @@ def run(**change):
                    state_entries=4, versions=2, server_up=int(phase != "outage"))
         for fn in change.values():
             fn(row, i)
-        rows.append(row)
+        if not row.pop("drop", False):
+            rows.append(row)
     return rows
 
 
@@ -87,6 +88,22 @@ def restart_in_outage(row, i):
         row["pid"] = 400
 
 
+def restart_after_rollback(row, i):
+    # The first sample after the rollback ended (i == 64, steady) already shows a new process.
+    if i >= 64:
+        row["pid"] = 500
+
+
+def gap_in_the_middle(row, i):
+    if 100 <= i < 160:  # an hour with no samples
+        row["drop"] = True
+
+
+def late_first_sample(row, i):
+    if i < 5:
+        row["drop"] = True
+
+
 def not_running(row, i):
     if i == 150:
         row["pid"], row["rss_kib"], row["fds"], row["threads"] = 0, None, None, None
@@ -105,6 +122,9 @@ CASES = [
     ("a growing state directory", {"m": grow_state}, {"state"}, HOURS),
     ("a restart during an outage", {"m": restart_in_outage}, {"no restarts"}, HOURS),
     ("the agent not running", {"m": not_running}, {"no restarts"}, HOURS),
+    ("a restart just after the rollback ended", {"m": restart_after_rollback}, {"no restarts"}, HOURS),
+    ("an hour without samples", {"m": gap_in_the_middle}, {"complete"}, HOURS),
+    ("no samples at the start", {"m": late_first_sample}, {"complete"}, HOURS),
     ("a run shorter than asked", {}, {"complete"}, 72),
 ]
 

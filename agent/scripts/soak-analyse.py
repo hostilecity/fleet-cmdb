@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Verdict on an agent soak run (P1-A09), from the samples scripts/soak.sh wrote.
 
-    soak-analyse.py SAMPLES.csv SUMMARY.md [--hours H]
+    soak-analyse.py SAMPLES.csv SUMMARY.md [--hours H] [--sample-seconds S]
 
 Writes a Markdown summary and exits 1 when a check fails. The checks, and the tolerances they allow:
 
-  complete      the samples cover the run (H hours, less two sample intervals)
+  complete      the samples cover the run: the first within two sample intervals of the start, the last within two of
+                the end (H hours), and no gap between two samples longer than three intervals
   update        an update and a forced rollback both happened
   no restarts   the agent's main PID and systemd's restart count change only during the update and the
                 rollback: never during an outage, flapping, or a steady period, and the agent is always running
@@ -45,7 +46,9 @@ def load(path):
 def restarts_outside_updates(rows):
     problems = []
     for before, after in zip(rows, rows[1:]):
-        if before["phase"] in ALLOWED or after["phase"] in ALLOWED:
+        # Exempt only a change that lands on an update or rollback sample. soak.sh labels the sample that ends a
+        # phase with that phase, so it is the baseline for the next interval, where any change is a restart.
+        if after["phase"] in ALLOWED:
             continue
         if after["pid"] == 0:
             problems.append(f"no agent process at {after['elapsed_s']}s ({after['phase']})")
@@ -86,15 +89,19 @@ def values(rows, key):
     return [r[key] for r in rows if r[key] is not None]
 
 
-def analyse(rows, hours):
+def analyse(rows, hours, sample_seconds=60):
     checks = []
 
     def check(name, passed, detail):
         checks.append((name, bool(passed), detail))
 
-    sample_interval = statistics.median(b["epoch"] - a["epoch"] for a, b in zip(rows, rows[1:])) if len(rows) > 1 else 0
     covered = rows[-1]["elapsed_s"] if rows else 0
-    check("complete", covered >= hours * 3600 - 2 * sample_interval, f"{covered / 3600:.2f} h of {hours} h, {len(rows)} samples")
+    first = rows[0]["elapsed_s"] if rows else 0
+    gaps = [(b["elapsed_s"] - a["elapsed_s"], a["elapsed_s"]) for a, b in zip(rows, rows[1:])]
+    widest, at = max(gaps, default=(0, 0))
+    check("complete",
+          rows and first <= 2 * sample_seconds and covered >= hours * 3600 - 2 * sample_seconds and widest <= 3 * sample_seconds,
+          f"{covered / 3600:.2f} h of {hours} h, {len(rows)} samples, first at {first}s, widest gap {widest}s (at {at}s)")
     phases = {r["phase"] for r in rows}
     check("update", {"update", "rollback"} <= phases, "update and rollback seen" if {"update", "rollback"} <= phases else f"phases seen: {sorted(phases)}")
     problems = restarts_outside_updates(rows)
@@ -159,9 +166,10 @@ def main(argv=None):
     parser.add_argument("samples")
     parser.add_argument("summary")
     parser.add_argument("--hours", type=float, default=72)
+    parser.add_argument("--sample-seconds", type=float, default=60)
     args = parser.parse_args(argv)
     rows = load(args.samples)
-    checks, stats, measured = analyse(rows, args.hours)
+    checks, stats, measured = analyse(rows, args.hours, args.sample_seconds)
     text = markdown(rows, args.hours, checks, stats, measured)
     with open(args.summary, "w") as f:
         f.write(text)
