@@ -61,6 +61,10 @@ Specs run in random order. To reproduce a failure, rerun with the seed RSpec pri
 
 Specs that use threads (`spec/services/*_concurrency_spec.rb`) run outside the test transaction. Each thread loads its own records on its own connection: Active Record objects are not thread-safe, and sharing one between threads made a spec fail intermittently (#69).
 
+### Fleet simulator and load check
+
+`bin/simulate-fleet` runs fake hosts against a running development server through the real agent API: seed data, the NFR-3 load check (`--load-check`), and a scaled-down AC-1.2 liveness check (`--liveness-check`). See [docs/operations/fleet-simulator.md](../docs/operations/fleet-simulator.md).
+
 ## Databases
 
 Development uses `cmdb_development` plus `cmdb_development_cache`, `_queue`, and `_cable`, mirroring production's layout. Tests use a single `cmdb_test` database with the test adapters for jobs, cache, and cable.

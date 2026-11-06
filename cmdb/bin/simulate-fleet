@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fleet simulator and NFR-3 load check (P1-O04): bin/simulate-fleet --help, and
+# docs/operations/fleet-simulator.md. Development and test servers only.
+cd "$(dirname "$0")/.." || exit 1
+exec bin/rails runner script/simulate_fleet.rb "$@"
