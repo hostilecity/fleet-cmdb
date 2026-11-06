@@ -27,7 +27,7 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
   describe FleetSimulator::Enroller do
     it "registers hosts and redeems their tokens at the enroll endpoint, keeping the credentials privately" do
       hosts = enrolled(2)
-      expect(Host.where(name: %w[sim-001 sim-002]).pluck(:enrollment_state, :tags, :hostname))
+      expect(Host.where(name: %w[sim-001 sim-002]).order(:name).pluck(:enrollment_state, :tags, :hostname))
         .to eq([ [ "active", [ "simulator" ], "sim-001.example.lan" ], [ "active", [ "simulator" ], "sim-002.example.lan" ] ])
       expect(hosts.map(&:host_id)).to eq(Host.where(name: %w[sim-001 sim-002]).order(:name).ids)
       expect(JSON.parse(state_file.read)).to eq(hosts.to_h { |h| [ h.name, h.credential ] })
