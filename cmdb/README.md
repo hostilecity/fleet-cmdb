@@ -189,7 +189,7 @@ bin/rails advisories:status                               # freshness per ecosys
 
 - **Matching.**
   - It matches on source package name, or the binary name when dpkg records no source.
-  - It applies OSV's range algorithm with dpkg's version order (`PackageVersions`), never string comparison.
+  - It applies OSV's range algorithm, `limit` included, with dpkg's version order (`PackageVersions`), never string comparison. A finding's fixed version is the fix of the range the installed version is in.
 - **Findings.** `vulnerability_findings` holds one finding per host, advisory, and installed binary package (name and architecture), so each binary built from an affected source has its own.
   - **States:** `open`, `resolved` with a resolution (`fixed`, `removed`, `withdrawn`, or `not_affected`), and `reopened` when the condition returns, for example after a downgrade or a reinstall.
   - **Timestamps:** `first_seen_at`, `resolved_at`, and `reopened_at`.
@@ -198,8 +198,8 @@ bin/rails advisories:status                               # freshness per ecosys
   - **One package** whose version, or whose advisory's version, dpkg cannot parse is listed as not evaluated, and its finding is left as it was.
 - **When it runs.** `VulnerabilityMatchJob` runs after each commit that adds a package snapshot (for that host) and after each import (for the packages it changed, plus hosts not yet evaluated). Agents are not involved.
   - **Idempotent:** running it again changes nothing.
-  - **Concurrency:** it holds a transaction-scoped advisory lock per host.
-  - **Cost:** a fixed number of queries whatever the package count. 50 hosts by 2,000 packages take about 5 s.
+  - **Concurrency:** each host is matched in its own short transaction under its row lock (`FOR UPDATE`), the lock package reports take, so it never sees half of a report.
+  - **Cost:** a fixed number of queries per host whatever its package count. 50 hosts by 2,000 packages take about 5 s.
 
 ```sh
 bin/rails vulnerabilities:match   # match every host now

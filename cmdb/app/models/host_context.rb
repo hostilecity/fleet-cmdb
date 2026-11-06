@@ -12,11 +12,15 @@ class HostContext
 
   attr_reader :host_id, :ecosystem, :reason, :detail
 
+  # The ecosystems some successful import had data for.
+  def self.ecosystems_with_data
+    AdvisoryImport.succeeded.from("advisory_imports, unnest(advisory_imports.ecosystems) AS ecosystem").distinct.pluck("ecosystem").to_set
+  end
+
   # One HostContext per id, in id order.
-  def self.load(ids)
+  def self.load(ids, with_data: ecosystems_with_data)
     os = HostInventory.where(host_id: ids).pluck(:host_id, Arel.sql("stable -> 'os'")).to_h
     sets = HostPackageSet.where(host_id: ids).pluck(:host_id, :manager, :unsupported_reason).to_h { |id, *rest| [ id, rest ] }
-    with_data = AdvisoryImport.succeeded.from("advisory_imports, unnest(advisory_imports.ecosystems) AS ecosystem").distinct.pluck("ecosystem").to_set
     ids.map { |id| new(id, os.key?(id), os[id], sets[id], with_data) }
   end
 
