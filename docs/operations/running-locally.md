@@ -24,7 +24,7 @@ cd agent && cargo fmt --check && cargo clippy --all-targets -- -D warnings && ca
 ruby docs/backlog/import.rb check      # the backlog and specs, from the repository root
 ```
 
-`bin/ci` needs PostgreSQL running. A subset is quicker: `NO_COVERAGE=1 bundle exec rspec spec/requests` in `cmdb/`.
+`bin/ci` needs PostgreSQL running. A subset is quicker: `NO_COVERAGE=1 bundle exec rspec spec/requests` in `cmdb/`. The agent builds only on Linux; on macOS, run its checks in a Linux container as in [`agent/README.md`](../../agent/README.md#build-and-check).
 
 ## 2. The server
 
@@ -114,12 +114,13 @@ target/release/fleet-agent run --config ~/fleet-local/config.toml
 
 It logs the startup inventory report and its first accepted heartbeat, and `local-agent` turns online in the dashboard with this machine's inventory. `Ctrl-C` stops it; the host then turns stale and offline. It also logs that it cannot update itself: updates need the installed layout under `/usr/lib/fleet-agent`, which only `fleet-agent install` creates on a VM.
 
-**On macOS** (not yet verified): build and run the agent in Linux containers instead of step e. Use container paths in the config (`ca_file = "/fleet-local/ca.pem"`, `state_dir = "/fleet-local/state"`), and from the repository root:
+**On macOS** (not yet verified): the agent does not build on macOS, so build and run it in Linux containers instead of step e. Use container paths in the config (`ca_file = "/fleet-local/ca.pem"`, `state_dir = "/fleet-local/state"`), and from the repository root:
 
 ```sh
-docker run --rm -v "$PWD/agent":/src -w /src rust:1.97-bookworm cargo build --release
+docker run --rm -v "$PWD/agent":/src -w /src -e CARGO_TARGET_DIR=/src/target/linux \
+  -v fleet-agent-cargo:/usr/local/cargo/registry rust:1.97-bookworm cargo build --release
 docker run --rm -it --add-host agent.localhost:host-gateway \
-  -v "$PWD/agent/target/release/fleet-agent":/usr/local/bin/fleet-agent:ro -v "$HOME/fleet-local":/fleet-local \
+  -v "$PWD/agent/target/linux/release/fleet-agent":/usr/local/bin/fleet-agent:ro -v "$HOME/fleet-local":/fleet-local \
   debian:13 fleet-agent run --config /fleet-local/config.toml
 ```
 

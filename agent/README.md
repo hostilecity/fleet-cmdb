@@ -18,7 +18,15 @@ file target/x86_64-unknown-linux-musl/release/fleet-agent   # "statically linked
 target/x86_64-unknown-linux-musl/release/fleet-agent --version
 ```
 
-Building the musl target from macOS needs a cross linker. The simplest route is to build inside a Linux container or rely on CI, which uploads the binary as a workflow artefact on every push to `main`. Those artefacts are unsigned; signed releases come only from a version tag ([Releases](#releases)).
+The agent builds and runs only on Linux ([DEC-01](../docs/decisions/0001-fleet-profile.md)): it reads `/proc`, runs under systemd, and some system structures differ elsewhere, so on macOS even `cargo build` stops with an error saying so. On macOS, run the same commands in a Linux container, from the repository root (not yet verified on a Mac; CI is the reference):
+
+```sh
+docker run --rm -v "$PWD/agent":/src -w /src -e CARGO_TARGET_DIR=/src/target/linux \
+  -v fleet-agent-cargo:/usr/local/cargo/registry rust:1.97-bookworm \
+  sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --release'
+```
+
+The binary lands in `agent/target/linux/release/fleet-agent`, a Linux binary for the container's architecture; `CARGO_TARGET_DIR` keeps it apart from anything built on the Mac itself, and the named volume keeps downloaded crates between runs. CI also uploads the musl binary as a workflow artefact on every push to `main`. Those artefacts are unsigned; signed releases come only from a version tag ([Releases](#releases)).
 
 `--version` prints the agent version (from `Cargo.toml`) and the agent schema version, the integer `schema_version` sent with reports ([DEC-08](../docs/decisions/0008-api-conventions.md)):
 
