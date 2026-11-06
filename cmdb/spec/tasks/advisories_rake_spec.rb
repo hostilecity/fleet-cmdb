@@ -78,3 +78,17 @@ RSpec.describe "advisories rake tasks" do
     end
   end
 end
+
+RSpec.describe "vulnerabilities rake tasks" do
+  before(:all) { Rails.application.load_tasks if Rake::Task.tasks.none? { |task| task.name == "vulnerabilities:match" } }
+
+  it "matches every host in the fleet now and prints the outcome" do
+    allow(VulnerabilityMatchJob).to receive(:perform_later)
+    debian_host
+    enrolled_host
+    import_advisories(osv_record(id: "DSA-1-1"))
+    Rake::Task["vulnerabilities:match"].reenable
+    expect { Rake::Task["vulnerabilities:match"].invoke }
+      .to output("1 hosts evaluated, 1 not evaluated; 1 findings opened, 0 reopened, 0 resolved.\n").to_stdout
+  end
+end

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -250,6 +250,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_010000) do
     t.check_constraint "to_status::text = ANY (ARRAY['online'::character varying::text, 'stale'::character varying::text, 'offline'::character varying::text])", name: "host_status_events_to_status_valid"
   end
 
+  create_table "host_vulnerability_evaluations", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "ecosystem", limit: 64
+    t.string "state", limit: 16, null: false
+    t.string "reason", limit: 32
+    t.string "detail", limit: 512
+    t.jsonb "not_evaluated", default: [], null: false
+    t.integer "not_evaluated_count", default: 0, null: false
+    t.datetime "evaluated_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_host_vulnerability_evaluations_on_host_id", unique: true
+    t.check_constraint "(state::text = 'not_evaluated'::text) = (reason IS NOT NULL)", name: "host_vulnerability_evaluations_reason_iff_not_evaluated"
+    t.check_constraint "state::text = ANY (ARRAY['evaluated'::character varying, 'not_evaluated'::character varying]::text[])", name: "host_vulnerability_evaluations_state_valid"
+  end
+
   create_table "hosts", force: :cascade do |t|
     t.string "name", limit: 100, null: false
     t.string "hostname", limit: 253, null: false
@@ -436,6 +452,30 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_010000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "vulnerability_findings", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "advisory_id", null: false
+    t.string "package", limit: 128, null: false
+    t.string "architecture", limit: 32, null: false
+    t.string "source", limit: 128, null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.string "installed_version", limit: 256, null: false
+    t.string "fixed_version", limit: 256
+    t.string "state", limit: 16, null: false
+    t.string "resolution", limit: 16
+    t.datetime "first_seen_at", null: false
+    t.datetime "resolved_at"
+    t.datetime "reopened_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
+    t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
+    t.index ["host_id", "source"], name: "index_vulnerability_findings_on_host_id_and_source"
+    t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
+    t.check_constraint "(state::text = 'resolved'::text) = (resolution IS NOT NULL) AND (resolution::text = ANY (ARRAY['fixed'::character varying, 'removed'::character varying, 'withdrawn'::character varying, 'not_affected'::character varying]::text[]))", name: "vulnerability_findings_resolution_valid"
+    t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'reopened'::character varying]::text[])", name: "vulnerability_findings_state_valid"
+  end
+
   add_foreign_key "advisory_imports", "operators"
   add_foreign_key "advisory_packages", "advisories", on_delete: :cascade
   add_foreign_key "agent_credentials", "hosts"
@@ -451,6 +491,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_010000) do
   add_foreign_key "host_package_sets", "hosts"
   add_foreign_key "host_packages", "hosts"
   add_foreign_key "host_status_events", "hosts"
+  add_foreign_key "host_vulnerability_evaluations", "hosts"
+  add_foreign_key "vulnerability_findings", "advisories"
+  add_foreign_key "vulnerability_findings", "hosts"
   add_foreign_key "inventory_report_receipts", "hosts"
   add_foreign_key "inventory_snapshots", "hosts"
   add_foreign_key "onboarding_requests", "hosts"

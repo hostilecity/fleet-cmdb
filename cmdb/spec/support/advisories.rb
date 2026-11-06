@@ -34,6 +34,25 @@ module AdvisoryHelpers
     path
   end
 
+  # Stores a dpkg package report for an enrolled host through PackageRecorder, as the endpoint does. packages:
+  # [[name, version, source], ...] (amd64), or full Hashes.
+  def report_packages(host, packages, manager: "dpkg", unsupported_reason: nil)
+    list = packages.map { |p| p.is_a?(Hash) ? p : { "name" => p[0], "version" => p[1], "architecture" => p[3] || "amd64", "source" => p[2] } }
+    payload = { "report_id" => SecureRandom.uuid, "schema_version" => 1, "collected_at" => Time.current.utc.iso8601, "manager" => manager,
+                "unsupported_reason" => unsupported_reason, "packages" => list, "warnings" => [] }.compact
+    Host.transaction do
+      PackageRecorder.record!(host_id: host.id, credential_id: host.agent_credentials.active.pick(:id), report: AgentApi::PackageReport.new(payload))
+    end
+  end
+
+  # An enrolled Debian 13 host with an inventory (os overrides it) and, unless packages is nil, a package report.
+  def debian_host(packages: [ [ "openssl", "3.5.0-1", "openssl" ] ], os: nil, **attributes)
+    host = enrolled_host(**attributes).first
+    record_inventory(host, **(os ? { os: } : {}))
+    report_packages(host, packages) if packages
+    host
+  end
+
   def import_advisories(*records, full: false, origin: "file", source: "test.zip", operator: nil)
     Advisories::Import.new(origin:, source:, full:, operator:).call(Advisories::Reader.new(osv_directory(*records)))
   end

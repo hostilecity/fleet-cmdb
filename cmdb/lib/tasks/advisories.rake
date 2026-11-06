@@ -57,3 +57,12 @@ module AdvisoriesTask
     puts "  (only the first #{Advisories::Import::PROBLEM_LIMIT} are listed)" if counts["malformed"] > import.problems.size
   end
 end
+
+namespace :vulnerabilities do
+  desc "Match every host in the fleet against the advisory data now (normally done after each package report and import)"
+  task match: :environment do
+    outcome = VulnerabilityMatcher.match!(Host.in_fleet.pluck(:id))
+    puts "#{outcome.evaluated} hosts evaluated, #{outcome.not_evaluated} not evaluated; " \
+         "#{outcome.opened} findings opened, #{outcome.reopened} reopened, #{outcome.resolved} resolved."
+  end
+end

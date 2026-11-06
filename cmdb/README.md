@@ -183,6 +183,28 @@ bin/rails advisories:status                               # freshness per ecosys
 | `FLEET_ADVISORY_MAX_DOWNLOAD_MB` | `512` | The largest archive downloaded or imported |
 | `FLEET_ADVISORY_MAX_AGE_HOURS` | `48` | Older data shows a warning on the dashboard |
 
+### Vulnerability findings
+
+`VulnerabilityMatcher` (P2-S11, FR-2.4, AC-2.4) matches each host's installed packages against the advisories for its ecosystem.
+
+- **Matching.**
+  - It matches on source package name, or the binary name when dpkg records no source.
+  - It applies OSV's range algorithm with dpkg's version order (`PackageVersions`), never string comparison.
+- **Findings.** `vulnerability_findings` holds one finding per host, advisory, and installed binary package (name and architecture), so each binary built from an affected source has its own.
+  - **States:** `open`, `resolved` with a resolution (`fixed`, `removed`, `withdrawn`, or `not_affected`), and `reopened` when the condition returns, for example after a downgrade or a reinstall.
+  - **Timestamps:** `first_seen_at`, `resolved_at`, and `reopened_at`.
+- **Not evaluated.** `host_vulnerability_evaluations` records each host's last run.
+  - **A whole host** is "not evaluated", with the reason, when it has no inventory, is on a distribution outside the fleet profile, has no package report, has an unsupported package manager, or has no advisory data for its ecosystem. Its findings are left as they were.
+  - **One package** whose version, or whose advisory's version, dpkg cannot parse is listed as not evaluated, and its finding is left as it was.
+- **When it runs.** `VulnerabilityMatchJob` runs after each commit that adds a package snapshot (for that host) and after each import (for the packages it changed, plus hosts not yet evaluated). Agents are not involved.
+  - **Idempotent:** running it again changes nothing.
+  - **Concurrency:** it holds a transaction-scoped advisory lock per host.
+  - **Cost:** a fixed number of queries whatever the package count. 50 hosts by 2,000 packages take about 5 s.
+
+```sh
+bin/rails vulnerabilities:match   # match every host now
+```
+
 ## Hostnames and operator sign-in
 
 The server has two faces (DEC-05), each on its own hostname:

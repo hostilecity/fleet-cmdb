@@ -17,7 +17,7 @@ module Advisories
   #   since the missing advisory may be the one that could not be read.
   #
   # The result's changed_packages, { "Debian:13" => ["openssl"] }, names every package an added, changed,
-  # or withdrawn advisory affects or affected, for targeted re-matching (P2-S11).
+  # or withdrawn advisory affects or affected; VulnerabilityMatchJob re-matches them once the import commits (P2-S11).
   class Import
     Result = Data.define(:import, :changed_packages)
 
@@ -64,7 +64,10 @@ module Advisories
                                         started_at:, finished_at: Time.current)
         Audit.record(actor: @operator || Audit::SYSTEM, action: Audit::Actions::ADVISORY_IMPORTED, target: import,
                      changes: { "origin" => @origin, "source" => @source, "full" => @full, "ecosystems" => import.ecosystems.join(", "), "counts" => @counts })
-        Result.new(import:, changed_packages: @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] })
+        changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
+        # Targeted re-matching (P2-S11), after commit; it also evaluates hosts that had no advisory data yet.
+        VulnerabilityMatchJob.after_import(changed) if changed.any? || @ecosystems.any?
+        Result.new(import:, changed_packages: changed)
       end
     end
 
