@@ -83,6 +83,18 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(HostPackage.where(host:)).to be_empty
     end
 
+    it "makes the diff to and from an unsupported manager unavailable, not everything removed or installed (review of #98)" do
+      send_report(report)
+      send_report(unsupported)
+      send_report(report)
+      first, to_unsupported, back = PackageSnapshot.where(host:).chronological.to_a
+      [ PackageDiff.for(to_unsupported), PackageDiff.for(back) ].each do |diff|
+        expect(diff).to have_attributes(available?: false, unavailable_reason: PackageDiff::UNAVAILABLE, installed: [], removed: [], changed: [])
+      end
+      expect(PackageDiff.for(first)).to have_attributes(available?: true, unavailable_reason: nil)
+      expect(PackageDiff.between(first, back)).to have_attributes(available?: true, empty?: true)
+    end
+
     it "is refused with packages, or without a reason" do
       send_report(unsupported.merge("packages" => example["packages"]))
       expect_error(:bad_request, "validation_failed")
@@ -105,6 +117,33 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
     send_report(report(packages:))
     expect(response).to have_http_status(:ok)
     expect(HostPackage.find_by!(host:).version).to eq("1.0-")
+  end
+
+  it "round-trips names and versions dpkg takes with only a warning, such as an underscore (review of #98)" do
+    payload = ApiContract.example("packages.request", "unusual-names-and-versions").merge("report_id" => SecureRandom.uuid)
+    send_report(payload)
+    expect(response).to have_http_status(:ok)
+    expect(stored_packages).to eq(sorted(payload["packages"]))
+    expect(payload["packages"].map { |p| PackageVersions::Dpkg.valid?(p["version"]) }).to eq([ true, true, false ])
+  end
+
+  describe "size limits (review of #98)" do
+    def padded(bytes) = report.merge("padding" => "a" * bytes).to_json # an unknown field: ignored and logged
+
+    it "takes an uncompressed report past the general 1 MiB limit, up to the endpoint's 4 MiB, and refuses a larger one" do
+      send_report(padded(1.5.megabytes))
+      expect(response).to have_http_status(:ok)
+      send_report(padded(4.megabytes))
+      expect_error(:content_too_large, "payload_too_large")
+    end
+
+    it "holds a compressed report to 1 MiB on the wire, even when it would expand to less than 4 MiB" do
+      body = gzip(report.merge("padding" => Base64.strict_encode64(SecureRandom.random_bytes(1_200_000))).to_json)
+      expect(body.bytesize).to be > 1.megabyte
+      send_report(body, headers: { "Content-Encoding" => "gzip" })
+      expect_error(:content_too_large, "payload_too_large")
+      expect(PackageReportReceipt.count).to eq(0)
+    end
   end
 
   describe "gzip bodies" do

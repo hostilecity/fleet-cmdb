@@ -4,22 +4,32 @@
 #
 #   PackageDiff.between(older_snapshot, newer_snapshot)
 #   PackageDiff.for(snapshot) # against the host's snapshot before it; everything is installed for the first
+#
+# A set from an unsupported package manager is unknown, not empty (review of #98): a diff with one on either
+# side is not available (available? is false, with the reason) and lists nothing, so moving to or from an
+# unsupported manager is never shown as every package removed or installed.
 class PackageDiff
   Change = Data.define(:name, :architecture, :from, :to, :direction)
 
   DIRECTIONS = { -1 => :upgrade, 0 => :same, 1 => :downgrade, invalid: :invalid }.freeze
+  UNAVAILABLE = "the package manager was unsupported, so the package set is unknown"
 
-  attr_reader :installed, :removed, :changed
+  attr_reader :installed, :removed, :changed, :unavailable_reason
 
   # older and newer are PackageSnapshots, or arrays of AgentApi::PackageReport::Package (nil for nothing).
-  def self.between(older, newer, scheme: PackageVersions::Dpkg) = new(list(older), list(newer), scheme)
+  def self.between(older, newer, scheme: PackageVersions::Dpkg)
+    return new([], [], scheme, unavailable_reason: UNAVAILABLE) if [ older, newer ].any? { |set| set.respond_to?(:unsupported?) && set.unsupported? }
+
+    new(list(older), list(newer), scheme)
+  end
 
   def self.for(snapshot, scheme: PackageVersions::Dpkg) = between(snapshot.previous, snapshot, scheme:)
 
   def self.list(set) = set.respond_to?(:package_list) ? set.package_list : Array(set)
   private_class_method :list
 
-  def initialize(older, newer, scheme)
+  def initialize(older, newer, scheme, unavailable_reason: nil)
+    @unavailable_reason = unavailable_reason
     before = older.index_by(&:key)
     after = newer.index_by(&:key)
     @installed = after.except(*before.keys).values.sort_by(&:key)
@@ -33,6 +43,7 @@ class PackageDiff
     end.sort_by { |c| [ c.name, c.architecture ] }
   end
 
+  def available? = unavailable_reason.nil?
   def empty? = installed.empty? && removed.empty? && changed.empty?
   def upgraded = changed.select { |c| c.direction == :upgrade }
   def downgraded = changed.select { |c| c.direction == :downgrade }

@@ -66,16 +66,16 @@
         ],
         "properties": {
           "name": {
-            "description": "Binary package name, for example `openssl`.",
+            "description": "Binary package name as dpkg records it (lower case), for example `openssl`.",
             "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9+.-]{0,127}$"
+            "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
           },
           "version": {
-            "description": "Installed version exactly as the package manager records it, with any epoch, for example `1:3.5.1-1+deb13u1`. Compared with dpkg's rules, never as a string (FR-2.4).",
+            "description": "Installed version exactly as the package manager records it, with any epoch, for example `1:3.5.1-1+deb13u1`: any printable ASCII without spaces. Compared with dpkg's rules, never as a string (FR-2.4); a version dpkg cannot compare is stored and marked not evaluated, not refused (P2-S09).",
             "type": "string",
             "minLength": 1,
             "maxLength": 256,
-            "pattern": "^[A-Za-z0-9.+~:-]+$"
+            "pattern": "^[!-~]+$"
           },
           "architecture": {
             "description": "Package architecture, for example `amd64` or `all`.",
@@ -88,7 +88,7 @@
               "string",
               "null"
             ],
-            "pattern": "^[a-z0-9][a-z0-9+.-]{0,127}$"
+            "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
           }
         }
       }

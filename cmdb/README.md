@@ -126,7 +126,7 @@ bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 
 ### Package reports
 
-`POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`; at most 4 MiB once decompressed):
+`POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`): at most 4 MiB of JSON, sent plain or once decompressed, and 1 MiB compressed. `AgentApiRequestGuard` lets this path's plain bodies past its general 1 MiB limit (`UNCOMPRESSED_LIMITS`).
 
 - **Validation.** The body is validated against `docs/api`; `lib/agent_api/package_report.rb` then refuses a package listed twice for one architecture. `manager: unsupported` carries a reason and no packages. A version dpkg would refuse is stored as reported; matching treats it as not evaluated.
 - **Storage.** `PackageRecorder` stores a valid report under the host row lock:
@@ -134,7 +134,7 @@ bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
   - `host_package_sets`: the manager (or that it is unsupported, and why), the package count, the content hash, and warnings, updated on every report.
   - `host_packages`: one row per installed package, replaced when the set changes; indexed by source package for matching.
   - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows, written only when the content hash changes. Retention keeps the newest per host.
-- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4).
+- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). With an unsupported manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
 
 ## Hostnames and operator sign-in
 
