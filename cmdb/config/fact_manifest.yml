@@ -1,0 +1,399 @@
+# The configuration fact manifest (FR-2.1, P2-S01): every fact an agent may report, as data. Published at
+# GET /api/v1/manifest/config. The agent reads this list and collects the facts it knows how to read; it never
+# runs anything the manifest names, because the manifest names no commands, only fact keys.
+#
+# Rules for changing it are in docs/operations/config-facts.md. In short: a fact is never removed, renamed, or
+# given another type (add a new key instead); a new fact has `since` set to a new, higher manifest_version;
+# and spec/fixtures/config_manifest/frozen_facts.yml gains the new fact in the same change.
+#
+# Types: string, integer, boolean, string_list, file_attributes, service_state (see ConfigManifest).
+# `example` is a valid value, used by the specs and the docs; it is not published.
+manifest_version: 1
+
+facts:
+  - key: sshd.permitrootlogin
+    type: string
+    since: 1
+    description: "Whether root may log in over SSH (`yes`, `no`, `prohibit-password`, or `forced-commands-only`)."
+    max_length: 32
+    example: "no"
+  - key: sshd.passwordauthentication
+    type: boolean
+    since: 1
+    description: "Whether SSH accepts password logins."
+    example: false
+  - key: sshd.permitemptypasswords
+    type: boolean
+    since: 1
+    description: "Whether SSH accepts accounts with empty passwords."
+    example: false
+  - key: sshd.pubkeyauthentication
+    type: boolean
+    since: 1
+    description: "Whether SSH accepts public key logins."
+    example: true
+  - key: sshd.hostbasedauthentication
+    type: boolean
+    since: 1
+    description: "Whether SSH accepts host-based authentication."
+    example: false
+  - key: sshd.ignorerhosts
+    type: boolean
+    since: 1
+    description: "Whether SSH ignores `.rhosts` and `.shosts` files."
+    example: true
+  - key: sshd.permituserenvironment
+    type: boolean
+    since: 1
+    description: "Whether SSH lets users set environment variables."
+    example: false
+  - key: sshd.x11forwarding
+    type: boolean
+    since: 1
+    description: "Whether SSH forwards X11 connections."
+    example: false
+  - key: sshd.usepam
+    type: boolean
+    since: 1
+    description: "Whether SSH uses PAM for authentication and session setup."
+    example: true
+  - key: sshd.allowtcpforwarding
+    type: string
+    since: 1
+    description: "Whether SSH allows TCP forwarding (`yes`, `no`, `local`, or `remote`)."
+    max_length: 16
+    example: "no"
+  - key: sshd.loglevel
+    type: string
+    since: 1
+    description: "SSH log verbosity, for example `INFO` or `VERBOSE`."
+    max_length: 16
+    example: "VERBOSE"
+  - key: sshd.maxauthtries
+    type: integer
+    since: 1
+    description: "Authentication attempts allowed per connection."
+    minimum: 0
+    maximum: 1000
+    example: 4
+  - key: sshd.maxsessions
+    type: integer
+    since: 1
+    description: "Sessions allowed per network connection."
+    minimum: 0
+    maximum: 1000
+    example: 10
+  - key: sshd.logingracetime
+    type: integer
+    since: 1
+    description: "Seconds allowed to log in before the connection is dropped."
+    minimum: 0
+    maximum: 86400
+    example: 60
+  - key: sshd.clientaliveinterval
+    type: integer
+    since: 1
+    description: "Seconds of silence before SSH probes the client."
+    minimum: 0
+    maximum: 86400
+    example: 15
+  - key: sshd.clientalivecountmax
+    type: integer
+    since: 1
+    description: "Unanswered probes before SSH drops the client."
+    minimum: 0
+    maximum: 1000
+    example: 3
+  - key: sshd.banner
+    type: string
+    since: 1
+    description: "Path of the pre-login banner file, or `none`."
+    max_length: 256
+    example: "/etc/issue.net"
+  - key: sshd.ciphers
+    type: string_list
+    since: 1
+    description: "Ciphers SSH offers, in order."
+    max_items: 64
+    example: ["chacha20-poly1305@openssh.com", "aes256-gcm@openssh.com"]
+  - key: sshd.macs
+    type: string_list
+    since: 1
+    description: "Message authentication codes SSH offers, in order."
+    max_items: 64
+    example: ["hmac-sha2-512-etm@openssh.com", "hmac-sha2-256-etm@openssh.com"]
+  - key: sshd.kexalgorithms
+    type: string_list
+    since: 1
+    description: "Key exchange algorithms SSH offers, in order."
+    max_items: 64
+    example: ["sntrup761x25519-sha512@openssh.com", "curve25519-sha256"]
+  - key: login_defs.pass_max_days
+    type: integer
+    since: 1
+    description: "Maximum days a password may be used (`PASS_MAX_DAYS` in `/etc/login.defs`); 99999 means never expires."
+    minimum: -1
+    maximum: 99999
+    example: 365
+  - key: login_defs.pass_min_days
+    type: integer
+    since: 1
+    description: "Minimum days between password changes (`PASS_MIN_DAYS`)."
+    minimum: -1
+    maximum: 99999
+    example: 1
+  - key: login_defs.pass_warn_age
+    type: integer
+    since: 1
+    description: "Days of warning before a password expires (`PASS_WARN_AGE`)."
+    minimum: -1
+    maximum: 99999
+    example: 7
+  - key: login_defs.umask
+    type: string
+    since: 1
+    description: "Default umask for new users (`UMASK`)."
+    max_length: 8
+    example: "027"
+  - key: login_defs.encrypt_method
+    type: string
+    since: 1
+    description: "Password hashing method (`ENCRYPT_METHOD`), for example `YESCRYPT`."
+    max_length: 16
+    example: "YESCRYPT"
+  - key: useradd.inactive
+    type: integer
+    since: 1
+    description: "Days after a password expires before the account is locked (`INACTIVE` in `/etc/default/useradd`); -1 means never."
+    minimum: -1
+    maximum: 99999
+    example: 30
+  - key: pwquality.minlen
+    type: integer
+    since: 1
+    description: "Minimum password length (`minlen` in pwquality)."
+    minimum: 0
+    maximum: 256
+    example: 14
+  - key: pwquality.minclass
+    type: integer
+    since: 1
+    description: "Minimum character classes in a password (`minclass`)."
+    minimum: 0
+    maximum: 4
+    example: 4
+  - key: pwquality.maxrepeat
+    type: integer
+    since: 1
+    description: "Maximum identical consecutive characters (`maxrepeat`)."
+    minimum: 0
+    maximum: 256
+    example: 3
+  - key: pwquality.retry
+    type: integer
+    since: 1
+    description: "Password prompts before giving up (`retry`)."
+    minimum: 0
+    maximum: 100
+    example: 3
+  - key: pwquality.dcredit
+    type: integer
+    since: 1
+    description: "Credit or requirement for digits in a password (`dcredit`); negative means required."
+    minimum: -256
+    maximum: 256
+    example: -1
+  - key: pwquality.ucredit
+    type: integer
+    since: 1
+    description: "Credit or requirement for upper-case letters in a password (`ucredit`); negative means required."
+    minimum: -256
+    maximum: 256
+    example: -1
+  - key: pwquality.lcredit
+    type: integer
+    since: 1
+    description: "Credit or requirement for lower-case letters in a password (`lcredit`); negative means required."
+    minimum: -256
+    maximum: 256
+    example: -1
+  - key: pwquality.ocredit
+    type: integer
+    since: 1
+    description: "Credit or requirement for other characters in a password (`ocredit`); negative means required."
+    minimum: -256
+    maximum: 256
+    example: -1
+  - key: firewall.backend
+    type: string
+    since: 1
+    description: "Which firewall mechanism is present: `ufw`, `firewalld`, `nftables`, `iptables`, or `none`."
+    max_length: 32
+    example: "ufw"
+  - key: firewall.enabled
+    type: boolean
+    since: 1
+    description: "Whether that firewall is enabled and active."
+    example: true
+  - key: auto_updates.installed
+    type: boolean
+    since: 1
+    description: "Whether the automatic update mechanism (`unattended-upgrades` on Debian) is installed."
+    example: true
+  - key: auto_updates.enabled
+    type: boolean
+    since: 1
+    description: "Whether automatic updates are enabled (its apt timers and settings)."
+    example: true
+  - key: services.running
+    type: string_list
+    since: 1
+    description: "systemd service units that are running."
+    max_items: 1000
+    example: ["cron.service", "ssh.service"]
+  - key: services.enabled
+    type: string_list
+    since: 1
+    description: "systemd service units that are enabled to start at boot."
+    max_items: 1000
+    example: ["cron.service", "ssh.service"]
+  - key: users.accounts
+    type: string_list
+    since: 1
+    description: "Local accounts from `/etc/passwd`, each as `name:uid:home:shell`."
+    max_items: 1000
+    example: ["root:0:/root:/bin/bash", "daemon:1:/usr/sbin:/usr/sbin/nologin"]
+  - key: users.login
+    type: string_list
+    since: 1
+    description: "Names of local accounts whose shell allows login."
+    max_items: 1000
+    example: ["root"]
+  - key: users.uid0
+    type: string_list
+    since: 1
+    description: "Names of local accounts with user id 0."
+    max_items: 100
+    example: ["root"]
+
+# Each path becomes a fact `file:<path>` of type file_attributes: its mode, owner, and group, read with stat
+# only (never the contents), or null when the file does not exist.
+files:
+  - path: /etc/passwd
+    since: 1
+    description: "User accounts."
+  - path: /etc/passwd-
+    since: 1
+    description: "Backup of the user accounts."
+  - path: /etc/group
+    since: 1
+    description: "Groups."
+  - path: /etc/group-
+    since: 1
+    description: "Backup of the groups."
+  - path: /etc/shadow
+    since: 1
+    description: "Password hashes. Only its mode, owner, and group are read, never its contents."
+  - path: /etc/shadow-
+    since: 1
+    description: "Backup of the password hashes. Only its mode, owner, and group are read."
+  - path: /etc/gshadow
+    since: 1
+    description: "Group passwords. Only its mode, owner, and group are read."
+  - path: /etc/gshadow-
+    since: 1
+    description: "Backup of the group passwords. Only its mode, owner, and group are read."
+  - path: /etc/ssh/sshd_config
+    since: 1
+    description: "SSH server configuration."
+  - path: /etc/sudoers
+    since: 1
+    description: "sudo configuration."
+  - path: /etc/login.defs
+    since: 1
+    description: "Login defaults."
+  - path: /etc/fstab
+    since: 1
+    description: "Filesystem mounts."
+  - path: /etc/crontab
+    since: 1
+    description: "System cron table."
+  - path: /etc/cron.d
+    since: 1
+    description: "System cron fragments."
+  - path: /etc/cron.hourly
+    since: 1
+    description: "Hourly cron jobs."
+  - path: /etc/cron.daily
+    since: 1
+    description: "Daily cron jobs."
+  - path: /etc/cron.weekly
+    since: 1
+    description: "Weekly cron jobs."
+  - path: /etc/cron.monthly
+    since: 1
+    description: "Monthly cron jobs."
+  - path: /etc/issue
+    since: 1
+    description: "Pre-login banner for local logins."
+  - path: /etc/issue.net
+    since: 1
+    description: "Pre-login banner for network logins."
+  - path: /etc/motd
+    since: 1
+    description: "Message of the day."
+  - path: /boot/grub/grub.cfg
+    since: 1
+    description: "Boot loader configuration."
+
+# Each unit becomes a fact `service:<unit>` of type service_state: whether it is active and whether it is
+# enabled, or null when no such unit is installed.
+services:
+  - unit: ssh.service
+    since: 1
+  - unit: cron.service
+    since: 1
+  - unit: unattended-upgrades.service
+    since: 1
+  - unit: ufw.service
+    since: 1
+  - unit: firewalld.service
+    since: 1
+  - unit: nftables.service
+    since: 1
+  - unit: auditd.service
+    since: 1
+  - unit: rsyslog.service
+    since: 1
+  - unit: systemd-journald.service
+    since: 1
+  - unit: chrony.service
+    since: 1
+  - unit: systemd-timesyncd.service
+    since: 1
+  - unit: apparmor.service
+    since: 1
+  - unit: telnet.socket
+    since: 1
+  - unit: rsh.socket
+    since: 1
+  - unit: avahi-daemon.service
+    since: 1
+  - unit: cups.service
+    since: 1
+  - unit: nfs-server.service
+    since: 1
+  - unit: rpcbind.service
+    since: 1
+  - unit: smbd.service
+    since: 1
+  - unit: snmpd.service
+    since: 1
+  - unit: vsftpd.service
+    since: 1
+  - unit: isc-dhcp-server.service
+    since: 1
+  - unit: apache2.service
+    since: 1
+  - unit: nginx.service
+    since: 1

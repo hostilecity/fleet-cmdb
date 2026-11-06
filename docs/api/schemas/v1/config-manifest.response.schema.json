@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config fact manifest",
+  "description": "200 response to GET /api/v1/manifest/config (FR-2.1, P2-S01): the versioned list of configuration facts an agent may report. The manifest names fact keys only, never commands. A fact is never removed, renamed, or given another type, so a report made against an older manifest_version stays valid. Sent with a strong ETag; `If-None-Match` gives `304`.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "manifest_version",
+    "facts"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Payload schema version. This directory is version 1.",
+      "const": 1
+    },
+    "manifest_version": {
+      "description": "The manifest's version. A config report states the version it was made against, and the facts it must contain are those with `since` up to that version.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "facts": {
+      "description": "Every fact, sorted by key. `file:<path>` facts are the files the server wants the mode, owner, and group of; `service:<unit>` facts are the systemd units it wants the state of.",
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "type",
+          "since",
+          "description"
+        ],
+        "properties": {
+          "key": {
+            "description": "The fact's key, as used in a config report: a dotted name such as `sshd.permitrootlogin`, `file:<absolute path>`, or `service:<unit name>`.",
+            "type": "string",
+            "maxLength": 220,
+            "pattern": "^([a-z][a-z0-9_]*(\\.[a-z0-9_]+)+|file:/[A-Za-z0-9._/+-]{1,200}|service:[A-Za-z0-9._@+-]{1,100})$"
+          },
+          "type": {
+            "description": "The value type: `string`, `integer`, `boolean`, `string_list`, `file_attributes` (`{mode, owner, group}` or `null` for no such file), or `service_state` (`{active, enabled}` or `null` for no such unit).",
+            "type": "string",
+            "enum": [
+              "string",
+              "integer",
+              "boolean",
+              "string_list",
+              "file_attributes",
+              "service_state"
+            ]
+          },
+          "since": {
+            "description": "The manifest version that introduced the fact.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "description": {
+            "description": "What the fact is, for the operator.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "max_length": {
+            "description": "`string`: the longest value, in characters.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          },
+          "minimum": {
+            "description": "`integer`: the smallest value.",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "maximum": {
+            "description": "`integer`: the largest value.",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "max_items": {
+            "description": "`string_list`: the most entries. An agent reports no more than this.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "item_max_length": {
+            "description": "`string_list`: the longest entry, in characters.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          }
+        }
+      }
+    }
+  }
+}

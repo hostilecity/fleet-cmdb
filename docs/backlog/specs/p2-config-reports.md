@@ -11,6 +11,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Initial facts cover SSH server settings, password and login policy values, firewall enabled state, automatic updates enabled state, permissions on a defined list of sensitive files, running and enabled services, and local user accounts with login shells (FR-2.1). The file list is part of the manifest, not hard-coded in the agent.
 - Schema and examples added to `docs/api/` ([SETUP-06](p0-contract.md)).
 - Adding a fact is a manifest change plus agent support; old agents simply report new facts as unsupported.
+- Delivered as `cmdb/config/fact_manifest.yml` (89 facts: 43 settings, 22 files, 24 services) loaded by `ConfigManifest` (`cmdb/lib/config_manifest.rb`), published at `GET /api/v1/manifest/config` (`config-manifest.response` in `docs/api/`), with the procedure in [docs/operations/config-facts.md](../../operations/config-facts.md). Facts are never removed, retyped, or tightened: `spec/fixtures/config_manifest/frozen_facts.yml` and its specs enforce it. File attributes and service states are `null` when the file or unit does not exist. The handling of an unknown manifest version or key in a report is part of P2-S02.
 
 ### Acceptance criteria
 

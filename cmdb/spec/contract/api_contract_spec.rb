@@ -86,6 +86,13 @@ RSpec.describe "Agent API contract (docs/api)" do
       expect(problems).to include(/nas\.home\.arpa/, /10\.0\.0\.5/, /fd00::5/, /credential value/)
     end
 
+    it "accepts fact keys in the config manifest, only under a field named key" do
+      expect(ApiContract.real_data_problems({ "key" => "sshd.permitrootlogin" })).to eq([])
+      expect(ApiContract.real_data_problems({ "key" => "file:/etc/shadow" })).to eq([])
+      expect(ApiContract.real_data_problems({ "description" => "sshd.permitrootlogin" })).to include(/sshd\.permitrootlogin/)
+      expect(ApiContract.real_data_problems({ "key" => "Nas.Home.Arpa" })).to include(/Nas\.Home\.Arpa/)
+    end
+
     it "flags single-label hostnames under a hostname key" do
       expect(ApiContract.real_data_problems({ "hostname" => "nas" })).to include(/hostname "nas"/)
       expect(ApiContract.real_data_problems({ "hostname" => "vm-01.example.lan" })).to eq([])
