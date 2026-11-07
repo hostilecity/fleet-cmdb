@@ -69,6 +69,8 @@ Rails.application.routes.draw do
         get "vulnerabilities/package", to: "host_vulnerabilities#package", as: :package_vulnerabilities
       end
     end
+    # Fleet compliance (P2-D05): read-only; filters, sort, and page are in the URL.
+    get "compliance", to: "compliance#index", as: :compliance
     # Onboarding approval (P1-D07, DEC-17): the installer's verification URI is /onboard/<user code>.
     get "onboard", to: "approvals#index", as: :onboard
     post "onboard", to: "approvals#lookup"

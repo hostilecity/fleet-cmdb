@@ -18,6 +18,10 @@ class HostsController < ApplicationController
     @tags = FleetList.tags
     @awaiting_approval = OnboardingRequest.awaiting.count
     @advisory_freshness = Advisories::Freshness.statuses
+    # The compliance panel and the two compliance columns (P2-D05, owner decision Q8); only active hosts are tracked.
+    @compliance = FleetCompliance.rows_for(@hosts.select { |host| host.enrollment_state == "active" })
+    @compliance_totals = FleetCompliance.totals
+    @rules_defined = CisRule.exists?
   end
 
   def show

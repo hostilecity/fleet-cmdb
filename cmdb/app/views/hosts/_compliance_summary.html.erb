@@ -1,0 +1,18 @@
+<%# The fleet list's compliance panel (P2-D05, owner decision Q8): the fleet-wide open counts of the Compliance view, in two sentences. Not evaluated is said in words, never as 0. Locals: totals (FleetCompliance::Totals), rules_defined. %>
+<section class="sheet flat compliance-panel" aria-labelledby="compliance_summary_h" id="compliance_summary">
+  <div class="group-head"><h2 id="compliance_summary_h">Compliance</h2><%= link_to "View fleet compliance", compliance_path %></div>
+  <p>
+    <% if !rules_defined %>
+      CIS-aligned checks are not evaluated: no rules are defined.
+    <% elsif totals.cis_evaluated.zero? %>
+      CIS-aligned checks are not evaluated on any of the <%= pluralize(totals.hosts, "active host") %> yet.
+    <% else %>
+      <strong><%= totals.cis_failed %></strong> open CIS-aligned check <%= "failure".pluralize(totals.cis_failed) %> (<%= critical_and_high(totals.cis) %>) on <%= totals.cis_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.
+    <% end %>
+    <% if totals.vulns_evaluated.zero? && totals.vulns_open.zero? %>
+      Vulnerabilities are not evaluated on any of the <%= pluralize(totals.hosts, "active host") %> yet.
+    <% else %>
+      <strong><%= totals.vulns_open %></strong> open vulnerability <%= "finding".pluralize(totals.vulns_open) %> (<%= critical_and_high(totals.vulns) %>) on <%= totals.vulns_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.
+    <% end %>
+  </p>
+</section>

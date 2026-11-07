@@ -1,0 +1,99 @@
+<% content_for :title, "Compliance" %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
+<% totals = @totals %>
+<div class="page-head"><div><h1>Compliance</h1><p>CIS-aligned check results and open vulnerability findings for the <%= pluralize(totals.hosts, "active host") %>. Retired hosts are not counted.</p></div></div>
+<%= render "hosts/advisory_freshness", statuses: @advisory_freshness %>
+<% if totals.hosts.zero? %>
+  <div class="sheet empty" id="no_active_hosts">
+    <p><strong>No active hosts to show.</strong></p>
+    <p>Compliance covers active hosts. Install the agent on a VM and approve it to see it here.</p>
+    <%= link_to "Install an agent", agent_install_path, class: "btn" %>
+  </div>
+<% else %>
+  <% unless @rules_defined %>
+    <div class="notice info" role="status" id="no_rules"><strong>No rules are defined.</strong><p>CIS pass rates and failure counts are blank until rules are imported. Open vulnerability findings are not affected.</p></div>
+  <% end %>
+  <section aria-labelledby="cis_totals_h" id="cis_totals">
+    <div class="strip-title"><h2 id="cis_totals_h">Open CIS-aligned check failures</h2>
+      <span class="muted"><%= totals.cis_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.<%= " Not evaluated hosts are not counted." if totals.cis_evaluated < totals.hosts %></span></div>
+    <% if totals.cis_evaluated.zero? %>
+      <p class="sheet flat"><span class="not-eval">Not evaluated</span> No active host has a CIS-aligned check result yet, so there is nothing to count. This is not zero failures.</p>
+    <% else %>
+      <div class="sevstrip four" role="group" aria-label="Open CIS-aligned check failures by severity">
+        <% FleetCompliance::CIS_SEVERITIES.each do |severity| %>
+          <%= link_to compliance_path(cis: severity), "aria-current": (@compliance.cis == severity ? "true" : nil) do %><span class="count"><%= totals.cis[severity] %></span><span class="sev <%= severity %>"><%= severity.capitalize %></span><% end %>
+        <% end %>
+      </div>
+      <p class="muted" id="fleet_pass_rate">Fleet pass rate: <strong><%= pass_percent(totals.pass_rate) %></strong>, <%= totals.cis_passed %> of <%= pluralize(totals.cis_counted, "check") %> pass on the <%= pluralize(totals.cis_evaluated, "host") %> evaluated.</p>
+    <% end %>
+  </section>
+  <section aria-labelledby="vuln_totals_h" id="vuln_totals">
+    <div class="strip-title"><h2 id="vuln_totals_h">Open vulnerability findings</h2>
+      <span class="muted"><%= totals.vulns_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.<% if totals.vulns_not_evaluated.positive? %> <%= pluralize(totals.vulns_not_evaluated, "host is", plural: "hosts are") %> not evaluated: <%= link_to "see which and why", compliance_path(status: "not_evaluated") %>.<% end %></span></div>
+    <% if totals.vulns_evaluated.zero? && totals.vulns_open.zero? %>
+      <p class="sheet flat"><span class="not-eval">Not evaluated</span> No active host has been matched against advisory data yet, so there is nothing to count. This is not zero findings.</p>
+    <% else %>
+      <div class="sevstrip" role="group" aria-label="Open vulnerability findings by severity">
+        <% FleetCompliance::VULN_SEVERITIES.each do |severity| %>
+          <%= link_to compliance_path(vuln: severity), "aria-current": (@compliance.vuln == severity ? "true" : nil) do %><span class="count"><%= totals.vulns[severity] %></span><span class="sev <%= severity %>"><%= severity.capitalize %></span><% end %>
+        <% end %>
+      </div>
+    <% end %>
+  </section>
+  <%= form_with url: compliance_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+    <label>Search name or hostname<%= search_field_tag :q, @compliance.q, placeholder: "vm-01 or Media server", maxlength: FleetCompliance::QUERY_MAX %></label>
+    <label>Tag<%= select_tag :tag, options_for_select(@tags, @compliance.tag), include_blank: "All tags" %></label>
+    <label>Status<%= select_tag :status, options_for_select(FleetCompliance::STATUSES.invert, @compliance.status), include_blank: "All hosts" %></label>
+    <label>Sort<%= select_tag :sort, options_for_select(FleetCompliance::SORTS.invert, @compliance.sort) %></label>
+    <%= hidden_field_tag :cis, @compliance.cis if @compliance.cis %>
+    <%= hidden_field_tag :vuln, @compliance.vuln if @compliance.vuln %>
+    <button class="btn quiet" type="submit">Apply</button>
+  <% end %>
+  <% if @compliance.cis || @compliance.vuln %>
+    <p class="applied" id="severity_filter">
+      <span>Showing hosts with open <%= @compliance.cis ? "#{@compliance.cis} CIS-aligned check failures" : "#{@compliance.vuln} vulnerability findings" %>.</span>
+      <%= link_to "Show every host", compliance_path(@compliance.params_with(cis: nil, vuln: nil)) %>
+    </p>
+  <% end %>
+  <% if @rows.empty? %>
+    <div class="sheet empty" id="no_matches">
+      <p><strong>No hosts match <%= [ (@compliance.q && %("#{@compliance.q}")), (@compliance.tag && %(tag "#{@compliance.tag}")),
+                                       (@compliance.status && %(status "#{FleetCompliance::STATUSES[@compliance.status]}")),
+                                       (@compliance.cis && %(open #{@compliance.cis} CIS-aligned check failures)),
+                                       (@compliance.vuln && %(open #{@compliance.vuln} vulnerability findings)) ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>
+      <p><%= link_to "Clear the search and filters", compliance_path %></p>
+    </div>
+  <% else %>
+    <div class="table-wrap"><table id="compliance_table">
+      <caption class="visually-hidden">Compliance by host, <%= FleetCompliance::SORTS[@compliance.sort].downcase %></caption>
+      <thead>
+        <tr class="group">
+          <th rowspan="2" scope="col" aria-sort="<%= @compliance.aria_sort("name") %>"><%= link_to "Host", compliance_path(@compliance.params_with(sort: "name")) %></th>
+          <th rowspan="2" scope="col" aria-sort="<%= @compliance.aria_sort("pass_rate") %>"><%= link_to "CIS pass rate", compliance_path(@compliance.params_with(sort: "pass_rate")) %></th>
+          <th colspan="<%= FleetCompliance::CIS_SEVERITIES.size %>" scope="colgroup">Open CIS-aligned check failures</th>
+          <th colspan="<%= FleetCompliance::VULN_SEVERITIES.size %>" scope="colgroup">Open vulnerability findings</th>
+          <th rowspan="2" scope="col">Last reports</th>
+        </tr>
+        <tr>
+          <% (FleetCompliance::CIS_SEVERITIES + FleetCompliance::VULN_SEVERITIES).each do |severity| %><th scope="col" class="num"><%= severity.capitalize %></th><% end %>
+        </tr>
+      </thead>
+      <tbody>
+        <%= render partial: "compliance/row", collection: @rows, as: :row, locals: { rules_defined: @rules_defined } %>
+      </tbody>
+    </table></div>
+    <% if @compliance.pages > 1 %>
+      <nav class="pager" aria-label="Host pages" id="compliance_pager">
+        <span>Hosts <%= number_with_delimiter(@compliance.first_row) %>&ndash;<%= number_with_delimiter(@compliance.last_row) %> of <%= number_with_delimiter(@compliance.total) %><%= " matching" if @compliance.filtered? %></span>
+        <span>
+          <% if @compliance.page > 1 %><%= link_to "Previous", compliance_path(@compliance.params_with(page: (@compliance.page - 1 if @compliance.page > 2))), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+          &middot; Page <%= @compliance.page %> of <%= @compliance.pages %> &middot;
+          <% if @compliance.page < @compliance.pages %><%= link_to "Next", compliance_path(@compliance.params_with(page: @compliance.page + 1)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+        </span>
+      </nav>
+    <% else %>
+      <p class="pager" id="compliance_pager"><span><%= @compliance.total %> of <%= pluralize(totals.hosts, "active host") %>.</span></p>
+    <% end %>
+  <% end %>
+<% end %>
