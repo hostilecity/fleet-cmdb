@@ -15,6 +15,7 @@ pub struct Carried {
     pub state_dir: Option<String>,
     pub heartbeat: Option<Interval>,
     pub inventory: Option<Interval>,
+    pub config_report: Option<Interval>,
     /// `update_confirm_seconds` when it is not the default (P1-AGENT-UPDATE).
     pub update_confirm_seconds: Option<u64>,
 }
@@ -29,6 +30,8 @@ impl Carried {
                 .then(|| config.state_dir.to_string_lossy().into_owned()),
             heartbeat: (config.heartbeat != defaults.heartbeat).then_some(config.heartbeat),
             inventory: (config.inventory != defaults.inventory).then_some(config.inventory),
+            config_report: (config.config_report != defaults.config_report)
+                .then_some(config.config_report),
             update_confirm_seconds: (config.update_confirm_seconds
                 != defaults.update_confirm_seconds)
                 .then_some(config.update_confirm_seconds),
@@ -41,6 +44,7 @@ impl Carried {
             state_dir: None,
             heartbeat: None,
             inventory: None,
+            config_report: None,
             update_confirm_seconds: None,
         }
     }
@@ -142,6 +146,12 @@ pub fn render(
         &defaults.inventory,
         &mut out,
     );
+    interval(
+        "config_report",
+        carried.config_report.as_ref(),
+        &defaults.config_report,
+        &mut out,
+    );
     // Never write a config the agent would refuse. The parse error never contains the credential.
     Config::from_toml(&out).map_err(|e| format!("the config to be written is not valid: {e}"))?;
     Ok(out)
@@ -194,6 +204,7 @@ mod tests {
         assert_eq!(new.heartbeat, old.heartbeat);
         assert_eq!(new.heartbeat.start, Duration::from_secs(120));
         assert_eq!(new.inventory, old.inventory);
+        assert_eq!(new.config_report, old.config_report);
         // Review of the VM tests (P1-AGENT-UPDATE): a re-run of the installer used to drop it.
         assert_eq!(new.update_confirm_seconds, 120);
         assert_eq!(

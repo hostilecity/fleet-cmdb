@@ -12,6 +12,11 @@
 //! - `agent_update`: `rollout_id`, `version`, and the manifest, signature, and binary URLs, all required.
 //!   Kept as raw JSON for the updater (P1-AGENT-UPDATE) once its fields are well formed; a directive that
 //!   lacks one, or has one of the wrong kind, is a problem and is not kept. Not acted on in this build.
+//! - `report_request`: `{"types": ["config", ...]}`, at least one type and each once (DEC-13, P2-S03).
+//!   The types this agent sends on request ([`ReportType`]) are kept; a type it does not know is
+//!   ignored and listed, so a type added later is additive. A directive that is not an object, or
+//!   whose `types` is missing, empty, not a list of strings, or repeats a type, is a problem and
+//!   asks for nothing.
 //! - any other name is ignored and listed.
 //!
 //! A missing or `null` `directives` is read as `{}`. Any other shape, including the array that ADR 0008
@@ -21,6 +26,7 @@
 
 use serde_json::Value;
 
+use super::requests::ReportType;
 use crate::logging::sanitize;
 
 /// How many ignored names one response may list; the rest are counted.
@@ -43,6 +49,13 @@ pub struct Envelope {
     pub intervals: ServerIntervals,
     /// The `agent_update` directive, untouched, for P1-AGENT-UPDATE.
     pub agent_update: Option<Value>,
+    /// The report types the `report_request` directive asked for that this agent sends on request.
+    pub report_types: Vec<ReportType>,
+    /// The `report_request` directive was there but could not be read (or the response or its
+    /// `directives` was not an object, so whether it was there is unknown). The request state is then
+    /// left as it is, rather than ending the episode as an absent directive does (Rust practice review
+    /// of #114).
+    pub report_request_unreadable: bool,
     /// Fields and directives present but not understood by this agent, already safe to log.
     pub ignored: Vec<String>,
     /// Values present in a known place but malformed, already safe to log. Each is ignored.
@@ -62,6 +75,7 @@ pub fn parse(body: &Value) -> Envelope {
         envelope
             .problems
             .push(format!("the response is {}, not an object", kind(body)));
+        envelope.report_request_unreadable = true;
         return envelope;
     };
     let mut unknown = Names::default();
@@ -100,16 +114,86 @@ fn directives(value: &Value, envelope: &mut Envelope) {
                             kind(other)
                         )),
                     },
+                    "report_request" => report_request(value, envelope),
                     other => unknown.push(format!("directive `{}`", name(other))),
                 }
             }
         }
         // Includes an array, the shape ADR 0008 first planned (amended by ADR 0020).
-        other => envelope
-            .problems
-            .push(format!("`directives` is {}, not an object", kind(other))),
+        other => {
+            envelope
+                .problems
+                .push(format!("`directives` is {}, not an object", kind(other)));
+            envelope.report_request_unreadable = true;
+        }
     }
     unknown.finish(envelope);
+}
+
+/// Most entries of `report_request.types` that are looked at: there are only a few report types.
+const MAX_REPORT_TYPES: usize = 64;
+
+fn report_request(value: &Value, envelope: &mut Envelope) {
+    let fields = match value {
+        Value::Object(fields) => fields,
+        Value::Null => return,
+        other => {
+            envelope.problems.push(format!(
+                "directive `report_request` is {}, not an object",
+                kind(other)
+            ));
+            envelope.report_request_unreadable = true;
+            return;
+        }
+    };
+    let mut unknown = Names::default();
+    let mut types = None;
+    for (key, value) in fields {
+        match key.as_str() {
+            "types" => types = Some(value),
+            other => unknown.push(format!("directive `report_request.{}`", name(other))),
+        }
+    }
+    unknown.finish(envelope);
+    let problem = |what: &str| format!("directive `report_request.types` {what}");
+    let Some(Value::Array(list)) = types else {
+        envelope.problems.push(problem("is missing or not a list"));
+        envelope.report_request_unreadable = true;
+        return;
+    };
+    if list.is_empty() || list.len() > MAX_REPORT_TYPES {
+        envelope
+            .problems
+            .push(problem("is empty or has far too many entries"));
+        envelope.report_request_unreadable = true;
+        return;
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    let mut known = Vec::new();
+    let mut unknown_types = Names::default();
+    for item in list {
+        let Some(text) = item.as_str() else {
+            envelope
+                .problems
+                .push(problem("has an entry that is not a string"));
+            envelope.report_request_unreadable = true;
+            return;
+        };
+        if seen.contains(&text) {
+            envelope
+                .problems
+                .push(problem("names a type more than once"));
+            envelope.report_request_unreadable = true;
+            return;
+        }
+        seen.push(text);
+        match ReportType::from_name(text) {
+            Some(ty) => known.push(ty),
+            None => unknown_types.push(format!("report type `{}`", name(text))),
+        }
+    }
+    envelope.report_types = known;
+    unknown_types.finish(envelope);
 }
 
 /// The first thing wrong with an `agent_update` directive's fields, or `None`. The text names fields
@@ -311,8 +395,15 @@ mod tests {
             );
             assert!(envelope.server_time.is_some(), "{name}");
             if name.starts_with("report-request") {
-                // A directive this build does not act on yet (P2-S03): ignored by name, like any other.
-                assert_eq!(envelope.ignored, ["directive `report_request`"], "{name}");
+                // Only a report type this build does not send (`packages`) is ignored.
+                assert!(
+                    envelope
+                        .ignored
+                        .iter()
+                        .all(|i| i.starts_with("report type `")),
+                    "{name}: {:?}",
+                    envelope.ignored
+                );
                 continue;
             }
             // Only `unknown-field-*` examples carry names this agent does not know.
@@ -342,6 +433,7 @@ mod tests {
         for (name, body) in contract_examples("invalid") {
             let envelope = parse(&body);
             assert_eq!(envelope.agent_update, None, "{name}");
+            assert!(envelope.report_types.is_empty(), "{name}: acted on");
             // A zero interval is the one value the agent reads as a number; the caller clamps it to
             // the configured minimum, so it cannot stop heartbeats.
             if name != "intervals-zero.json" {
@@ -437,16 +529,69 @@ mod tests {
     }
 
     #[test]
-    fn a_report_request_is_ignored_by_this_agent_and_the_rest_is_still_read() {
-        // P2-S03 added `report_request` to the v1 contract; this build predates acting on it, so it
-        // must ignore it like any unknown directive (DEC-20 rule 4) and keep reading the others.
+    fn a_malformed_report_request_asks_for_nothing() {
+        for (directive, needle) in [
+            (json!("config"), "is a string, not an object"),
+            (json!([]), "is a list, not an object"),
+            (json!({}), "is missing or not a list"),
+            (json!({"types": "config"}), "is missing or not a list"),
+            (json!({"types": []}), "is empty"),
+            (json!({"types": ["config", 7]}), "not a string"),
+            (
+                json!({"types": ["config", "inventory", "config"]}),
+                "more than once",
+            ),
+        ] {
+            let envelope = parse(&json!({"directives": {"report_request": directive}}));
+            assert!(envelope.report_types.is_empty(), "{directive}");
+            assert!(envelope.report_request_unreadable, "{directive}");
+            assert!(
+                envelope.problems.iter().any(|p| p.contains(needle)),
+                "{directive}: {:?}",
+                envelope.problems
+            );
+        }
+        let envelope = parse(&json!({"directives": {"report_request": null}}));
+        assert!(envelope.report_types.is_empty() && envelope.problems.is_empty());
+        assert!(!envelope.report_request_unreadable, "null is absent");
+        assert!(!parse(&json!({"directives": {}})).report_request_unreadable);
+        assert!(parse(&json!({"directives": []})).report_request_unreadable);
+        assert!(parse(&json!([])).report_request_unreadable);
+    }
+
+    #[test]
+    fn unknown_types_and_fields_of_a_report_request_are_listed_and_the_known_types_kept() {
+        let envelope = parse(&json!({"directives": {"report_request": {
+            "types": ["inventory", "firmware\nforged line", "packages"],
+            "priority": "high"
+        }}}));
+        assert_eq!(envelope.report_types, [ReportType::Inventory]);
+        assert_eq!(
+            envelope.ignored,
+            [
+                "directive `report_request.priority`",
+                "report type `firmware forged line`",
+                "report type `packages`"
+            ]
+        );
+        assert!(envelope.problems.is_empty());
+    }
+
+    #[test]
+    fn a_report_request_names_the_types_to_report_and_the_rest_is_still_read() {
+        // P2-S03: `config` and `inventory` are reports this agent sends on request; `packages` is
+        // not one of them yet, so it is ignored and listed (DEC-20 rule 4).
         let (_, body) = contract_examples("valid")
             .into_iter()
             .find(|(name, _)| name == "report-request.json")
             .unwrap();
         assert!(body["directives"]["report_request"]["types"].is_array());
         let envelope = parse(&body);
-        assert_eq!(envelope.ignored, ["directive `report_request`"]);
+        assert_eq!(
+            envelope.report_types,
+            [ReportType::Config, ReportType::Inventory]
+        );
+        assert_eq!(envelope.ignored, ["report type `packages`"]);
         assert!(envelope.problems.is_empty(), "{:?}", envelope.problems);
         assert_eq!(
             envelope.intervals,

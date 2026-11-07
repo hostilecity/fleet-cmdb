@@ -1,0 +1,9 @@
+apparmor.service            enabled enabled
+cron.service                enabled enabled
+e2scrub_reap.service        enabled enabled
+getty@.service              enabled enabled
+ssh.service                 enabled enabled
+systemd-network-generator.service enabled enabled
+systemd-networkd.service    enabled enabled
+systemd-timesyncd.service   enabled enabled
+unattended-upgrades.service enabled enabled

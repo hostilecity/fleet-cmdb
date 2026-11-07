@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use super::envelope::{self, Envelope};
 use super::intervals::Intervals;
+use super::requests::ReportRequests;
 use super::time::{parse_rfc3339, rfc3339};
 use super::{Notes, Transport, jittered};
 use crate::retry::{Backoff, Rng};
@@ -56,6 +57,8 @@ pub struct Heartbeat<'a, R: Rng> {
     ack_dir: Option<std::path::PathBuf>,
     /// Where an `agent_update` directive goes, and who learns of the first acknowledged heartbeat.
     updater: Option<&'a Updater>,
+    /// Where `report_request` directives go, if anywhere ([`ReportRequests`]).
+    requests: Option<&'a ReportRequests>,
     intervals: &'a Intervals,
     backoff: Backoff<R>,
     rng: R,
@@ -71,6 +74,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         Self {
             ack_dir: None,
             updater: None,
+            requests: None,
             intervals,
             backoff,
             rng,
@@ -91,6 +95,14 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
     /// is how a newly installed version confirms itself (P1-AGENT-UPDATE).
     pub fn with_updater(mut self, updater: &'a Updater) -> Self {
         self.updater = Some(updater);
+        self
+    }
+
+    /// Hands `report_request` directives to the report loops (DEC-13, P2-A01). Every accepted
+    /// response is passed on, with or without the directive, so [`ReportRequests`] can tell when a
+    /// request has ended.
+    pub fn with_requests(mut self, requests: &'a ReportRequests) -> Self {
+        self.requests = Some(requests);
         self
     }
 
@@ -146,6 +158,8 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                 return self.intervals.heartbeat();
             }
         };
+        // When the request left: a report request it carries is told from an answered one by this.
+        let sent = Instant::now();
         match transport.post(HEARTBEAT_PATH, &body) {
             Ok(response) => {
                 let failures = self.backoff.failures();
@@ -167,14 +181,14 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                     tracing::debug!(request_id, "heartbeat accepted");
                 }
                 self.accepted_once = true;
-                self.handle(&envelope::parse(&response.body), wall);
+                self.handle(&envelope::parse(&response.body), wall, sent);
                 jittered(self.intervals.heartbeat(), &mut self.rng)
             }
             Err(error) => self.backoff.on_failure(&error),
         }
     }
 
-    fn handle(&mut self, envelope: &Envelope, wall: SystemTime) {
+    fn handle(&mut self, envelope: &Envelope, wall: SystemTime, sent: Instant) {
         for problem in &envelope.problems {
             if self.notes.first(problem) {
                 tracing::warn!(
@@ -192,6 +206,20 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             }
         }
         self.intervals.apply(envelope.intervals);
+        // A `report_request` that was there but unreadable says nothing about the request: ending the
+        // episode would make the next readable heartbeat raise it a second time.
+        if let Some(requests) = self
+            .requests
+            .filter(|_| !envelope.report_request_unreadable)
+        {
+            for ty in requests.observe(&envelope.report_types, sent) {
+                tracing::info!(
+                    report_type = ty.name(),
+                    "the server asked for a {} report; sending one now",
+                    ty.name()
+                );
+            }
+        }
         if let Some(update) = &envelope.agent_update {
             match self.updater {
                 Some(updater) => updater.on_directive(update),
@@ -465,9 +493,11 @@ mod tests {
     }
 
     #[test]
-    fn a_report_request_directive_is_ignored_and_logged_once_and_intervals_still_apply() {
+    fn a_report_request_for_an_unknown_type_is_logged_once_and_intervals_still_apply() {
         // The server sends `report_request` on every heartbeat while an operator's request is
-        // outstanding (P2-S03); this build does not act on it yet, so it must change nothing else.
+        // outstanding (P2-S03). `packages` is a type this build does not send, so it is ignored and
+        // logged once, and the rest of the response still applies. (No sink is attached here, so
+        // `config` is not acted on either.)
         let intervals = intervals();
         let started = Instant::now();
         let mut hb = heartbeat(&intervals, started);
@@ -484,12 +514,100 @@ mod tests {
         });
         assert!(waits.iter().all(|w| *w >= secs(108)), "{waits:?}");
         assert_eq!(
-            logs.matches("ignored=\"directive `report_request`\"")
-                .count(),
+            logs.matches("ignored=\"report type `packages`\"").count(),
             1,
             "{logs}"
         );
         assert_eq!(intervals.heartbeat(), secs(120));
+    }
+
+    #[test]
+    fn a_report_request_is_raised_once_per_episode_however_many_heartbeats_carry_it() {
+        // P2-A01: "a directive causes one extra report and then no more".
+        use crate::report::requests::ReportType;
+        let intervals = intervals();
+        let requests = ReportRequests::new();
+        let started = Instant::now();
+        let mut hb = heartbeat(&intervals, started).with_requests(&requests);
+        let asking = envelope(json!({"report_request": {"types": ["config"]}}));
+        let quiet = envelope(json!({}));
+        let transport = FakeTransport::new(vec![
+            ok(quiet.clone()),
+            ok(asking.clone()),
+            ok(asking.clone()),
+            ok(asking),
+            ok(quiet),
+        ]);
+        let beat = |hb: &mut Heartbeat<'_, SplitMix64>| {
+            hb.beat(&transport, None, started, wall());
+        };
+        beat(&mut hb);
+        assert_eq!(requests.take(ReportType::Config), None);
+        let ((), logs) = logs_of(|| beat(&mut hb));
+        assert!(
+            logs.contains("the server asked for a config report"),
+            "{logs}"
+        );
+        assert!(requests.take(ReportType::Config).is_some());
+        let ((), logs) = logs_of(|| {
+            beat(&mut hb);
+            beat(&mut hb);
+        });
+        assert!(!logs.contains("asked for"), "{logs}");
+        assert_eq!(requests.take(ReportType::Config), None, "still one request");
+        assert_eq!(requests.take(ReportType::Inventory), None);
+    }
+
+    #[test]
+    fn a_failed_heartbeat_does_not_end_a_report_request() {
+        use crate::client::ApiError;
+        use crate::report::requests::ReportType;
+        let intervals = intervals();
+        let requests = ReportRequests::new();
+        let started = Instant::now();
+        let mut hb = heartbeat(&intervals, started).with_requests(&requests);
+        let asking = envelope(json!({"report_request": {"types": ["config"]}}));
+        let transport = FakeTransport::new(vec![
+            ok(asking.clone()),
+            Err(ApiError::Transport("down".into())),
+            ok(asking),
+        ]);
+        for _ in 0..3 {
+            hb.beat(&transport, None, started, wall());
+        }
+        assert!(requests.take(ReportType::Config).is_some());
+        assert_eq!(requests.take(ReportType::Config), None);
+    }
+
+    #[test]
+    fn an_unreadable_report_request_does_not_end_the_request() {
+        // Rust practice review of #114: a malformed directive read as "no types" ended the episode, so
+        // the next readable heartbeat raised the same request a second time.
+        use crate::report::requests::ReportType;
+        let intervals = intervals();
+        let requests = ReportRequests::new();
+        let started = Instant::now();
+        let mut hb = heartbeat(&intervals, started).with_requests(&requests);
+        let asking = envelope(json!({"report_request": {"types": ["config"]}}));
+        let garbled = envelope(json!({"report_request": {"types": "config"}}));
+        let transport = FakeTransport::new(vec![
+            ok(asking.clone()),
+            ok(garbled),
+            ok(json!({"server_time": "2026-01-01T12:00:00Z", "directives": []})),
+            ok(asking.clone()),
+            // Absent still ends it, so a later request is raised.
+            ok(envelope(json!({}))),
+            ok(asking),
+        ]);
+        hb.beat(&transport, None, started, wall());
+        assert!(requests.take(ReportType::Config).is_some());
+        for _ in 0..3 {
+            hb.beat(&transport, None, started, wall());
+        }
+        assert_eq!(requests.take(ReportType::Config), None, "still one request");
+        hb.beat(&transport, None, started, wall());
+        hb.beat(&transport, None, started, wall());
+        assert!(requests.take(ReportType::Config).is_some());
     }
 
     #[test]

@@ -282,6 +282,55 @@ impl Client {
     }
 }
 
+/// The answer to a conditional `GET`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Conditional {
+    /// `304`: what the caller has is current.
+    NotModified,
+    /// `200`: the body, and its `ETag` for the next request.
+    Modified {
+        body: serde_json::Value,
+        etag: Option<String>,
+    },
+}
+
+impl Client {
+    /// GETs the JSON document at `path` (for example `/api/v1/manifest/config`) with the credential,
+    /// asking `If-None-Match: <etag>` when the caller has a copy. A `304` is [`Conditional::NotModified`];
+    /// every other answer is read as [`Client::post_json`] reads one.
+    pub fn get_json_conditional(
+        &self,
+        path: &str,
+        etag: Option<&str>,
+    ) -> Result<Conditional, ApiError> {
+        let mut request = self.agent.get(self.url(path));
+        if let Some(credential) = &self.credential {
+            request = request.header(
+                "Authorization",
+                format!("Bearer {}", credential.expose_secret()),
+            );
+        }
+        if let Some(etag) =
+            etag.filter(|e| !e.is_empty() && e.bytes().all(|b| (0x20..0x7f).contains(&b)))
+        {
+            request = request.header("If-None-Match", etag);
+        }
+        let response = request
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| ApiError::Transport(transport_message(&e)))?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Conditional::NotModified);
+        }
+        let etag = header(&response, "ETag");
+        let response = read_response(response)?;
+        Ok(Conditional::Modified {
+            body: response.body,
+            etag,
+        })
+    }
+}
+
 /// How long one release download may take in all (a binary of up to 64 MiB over a slow link).
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 

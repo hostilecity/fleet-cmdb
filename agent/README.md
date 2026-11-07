@@ -113,6 +113,11 @@ max_seconds = 600
 interval_seconds = 900
 min_seconds = 300
 max_seconds = 21600
+
+[config_report]                                  # optional; seconds; allowed 300..=86400 (see Configuration reports)
+interval_seconds = 21600
+min_seconds = 3600
+max_seconds = 86400
 ```
 
 If only `interval_seconds` is set, the default bounds widen to include it. [`contrib/config.example.toml`](contrib/config.example.toml) documents every option.
@@ -136,6 +141,16 @@ If only `interval_seconds` is set, the default bounds widen to include it. [`con
 - **Logs:** every report line carries its `report_id`, and its outcome (`sent`, `duplicate`, or rejected with the reason). Routine accepted heartbeats are logged at `debug`.
 - **State:** after each accepted report, `inventory.json` in `state_dir` records its stable hash, boot identifier, agent version, and `report_id`, written atomically. The startup report logs whether the stable facts changed and whether the host rebooted since then. A missing or corrupt record is treated as none.
 - **Stopping:** `SIGTERM` or `SIGINT` ends both loops between requests; a request in flight finishes first (at most the 30 s timeout). If either loop fails unexpectedly, the agent stops and exits with status `1`, so systemd restarts it.
+
+## Configuration reports
+
+A third thread sends the configuration report ([FR-2.1](../docs/backlog/specs/p2-agent-facts.md), `POST /api/v1/reports/config`): the value of every fact in the server's manifest, or why there is none. What is read for each fact, and what the three states mean, is in [docs/operations/agent-config-facts.md](../docs/operations/agent-config-facts.md). The module documentation in `src/report/config.rs` and `src/facts/` has the details.
+
+- **Manifest.** `GET /api/v1/manifest/config` with the last `ETag` before each report (`304` keeps the cached copy; if the fetch fails the cached copy is used). The manifest is data: the agent reads only the keys it has a reader for, reports every other key `unsupported`, and runs nothing the manifest names. File paths and unit names from the manifest are validated, secret paths are never opened, at most 512 files and 512 units are read, and limits are clamped to hard caps.
+- **When.** At startup, every `[config_report] interval_seconds` (6 hours) less up to 10% jitter, once per `report_request` directive (`directives.report_request.types` in the heartbeat response; many heartbeats carrying the same request give one report; a later request gives another, whether a heartbeat without the type came between or the first request's report was accepted before the heartbeat that carries it was sent), and at once when the server's answer names a manifest newer than the one used. `inventory` in the same directive gives one extra inventory report. `packages` is ignored and logged until a package collector exists.
+- **Retries.** As for inventory: the same `report_id` and body on retry, replaced by a new report when a request arrives or the report is one interval old, and never retried after `400`, `413`, or `422`.
+- **Bounded and safe.** Every command is an absolute path with fixed arguments, no shell, a cleared environment, a time limit, and an output cap, within a 60 second budget for the whole collection, which filesystem calls share (5 seconds each, none started once it is spent). A value outside the manifest's limits is reported `unreadable`, never cut. The body is kept under 1,000,000 bytes (the server accepts 1 MiB; the agent does not compress) by turning the largest list facts `unreadable`.
+- **Firewall.** The unit's capability set has no `CAP_NET_ADMIN`, so the firewall facts come from systemd unit state, not the live ruleset (see the operations page).
 
 ## Releases
 
@@ -172,7 +187,8 @@ An agent older than the server's minimum version still updates: the update path 
 | `retry` | Backoff with jitter and cap, long waits for `401`/`403`/`426`, `Retry-After`, failure log lines | P1-AGENT-CORE |
 | `shutdown` | Graceful stop on `SIGTERM` and `SIGINT` | P1-AGENT-CORE |
 | `collect` | Read-only system, disk, and network collectors; see [Collected facts](#collected-facts) | P1-AGENT-COLLECT |
-| `report` | Heartbeat loop, server-directed intervals, and inventory reports; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT |
+| `report` | Heartbeat loop, server-directed intervals, inventory reports, config reports, and on-demand report requests; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT, P2-A01 |
+| `facts` | Configuration fact readers behind a `Host` trait (files, `sshd -T`, systemd, apt, passwd), the manifest parser, and bounded, validated collection; see [Configuration reports](#configuration-reports) | P2-A01, P2-A02, P2-A03 |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
 | `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup, `flock` locks | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |

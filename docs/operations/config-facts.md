@@ -19,7 +19,7 @@ A report's value for a fact is checked against these rules by `ConfigManifest::F
 
 1. **Edit `cmdb/config/fact_manifest.yml`.** Raise `manifest_version` by one, if this change is the first since the last release of the manifest, and give the new fact that `since`. For a file or a service, add an entry under `files` or `services` instead of a fact.
 2. **Add its line to `cmdb/spec/fixtures/config_manifest/frozen_facts.yml`**, with the same type, `since`, and limits. Never edit an existing line there.
-3. **Write the agent's reader** ([P2-AGENT-FACTS](../backlog/specs/p2-agent-facts.md)). Until it exists, agents report the fact as `unsupported`, which the server accepts and shows.
+3. **Write the agent's reader** ([P2-AGENT-FACTS](../backlog/specs/p2-agent-facts.md); what the agent reads today is in [agent-config-facts.md](agent-config-facts.md),; the agent's tests fail only if a reader's key leaves the manifest or changes type). Until it exists, agents report the fact as `unsupported`, which the server accepts and shows.
 4. **Add a rule** that uses the fact, if one is wanted ([P2-CIS-RULES](../backlog/specs/p2-cis-rules.md)).
 5. Run `bin/ci` in `cmdb/`. The manifest spec loads the manifest, checks every example against its own fact's rules, checks it against the published schema, and compares it with the frozen list.
 

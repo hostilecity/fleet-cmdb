@@ -765,3 +765,48 @@ fn a_report_waiting_for_its_retry_is_replaced_once_an_interval_old() {
     );
     assert_eq!(transport.sent().last().unwrap().1["uptime_seconds"], 99_999);
 }
+
+#[test]
+fn a_report_request_sends_one_extra_report_even_when_nothing_changed() {
+    // P2-A01, DEC-13: the directive makes one report at the next tick, whatever the stable hash says.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![]);
+    transport.set_accepting(true);
+    let now = h.at(Duration::ZERO);
+    h.tick(&mut reporter, &transport, now);
+    assert_eq!(ids(&transport).len(), 1);
+
+    reporter.request();
+    let later = now + secs(10);
+    h.tick(&mut reporter, &transport, later);
+    let sent = ids(&transport);
+    assert_eq!(sent.len(), 2);
+    assert_ne!(sent[0], sent[1]);
+
+    // Not again until the schedule says so.
+    h.tick(&mut reporter, &transport, later + secs(10));
+    assert_eq!(ids(&transport).len(), 2);
+}
+
+#[test]
+fn a_requested_report_is_sent_at_once_even_while_the_old_one_waits_for_its_retry() {
+    // Review of #114: the requested report inherited the retry deadline of the one it replaced.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![Err(ApiError::Transport("down".into()))]);
+    transport.set_accepting(true);
+    let now = h.at(Duration::ZERO);
+    h.tick(&mut reporter, &transport, now);
+    let first = reporter.pending_report_id().unwrap().to_owned();
+    // The server is back; a request arrives a second later, well inside the backoff.
+    reporter.request();
+    h.tick(&mut reporter, &transport, now + secs(1));
+    let sent = ids(&transport);
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0], first);
+    assert_ne!(sent[1], first);
+    assert!(reporter.pending_report_id().is_none());
+    assert!(reporter.take_answered(), "the request was answered");
+    assert!(!reporter.take_answered());
+}

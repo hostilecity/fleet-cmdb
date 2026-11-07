@@ -1,24 +1,42 @@
-//! Heartbeats and inventory reports (FR-1.2, FR-1.3, P1-AGENT-REPORT).
+//! Heartbeats, inventory reports and configuration reports (FR-1.2, FR-1.3, FR-2.1, P1-AGENT-REPORT,
+//! P2-A01).
 //!
-//! [`run`] drives two loops until shutdown, each on its own thread so a slow collection or a hung
-//! inventory request never delays a heartbeat:
+//! [`run`] drives three loops until shutdown, each on its own thread so a slow collection or a hung
+//! request never delays a heartbeat:
 //!
 //! - the heartbeat loop ([`heartbeat`]): a heartbeat at once, then every heartbeat interval;
-//! - the inventory loop ([`inventory`]): a report at once, then on schedule and on stable-fact change.
+//! - the inventory loop ([`inventory`]): a report at once, then on schedule and on stable-fact change;
+//! - the config loop ([`config`]): the manifest and a report at once, then every 6 hours.
 //!
-//! Both wait with [`Shutdown::wait`], so `SIGTERM` ends them between requests; a request already in
-//! flight finishes first (at most the client's 30 s timeout). The state record is written atomically
+//! The server's `report_request` directive reaches the report loops through [`requests`]: the heartbeat
+//! loop raises one request per episode and the report loops poll for it every [`REQUEST_POLL`].
+//!
+//! All wait with [`Shutdown::wait`], so `SIGTERM` ends them between requests; what is in flight
+//! finishes first. The loops stop in parallel, so stopping takes as long as the slowest of them
+//! (Rust practice review of #114):
+//!
+//! - heartbeat: the request in flight, at most the client's 30 s timeout;
+//! - config: the one request or collection call in flight, at most 30 s for a request, 10 s for a
+//!   command, 5 s for a filesystem call. The reporter checks [`Shutdown`] itself: the collection
+//!   starts nothing new, a report collected meanwhile is dropped, and nothing is fetched or sent
+//!   after the stop request;
+//! - inventory: a collection already started (about 10 s) and its send (30 s), about 40 s.
+//!
+//! So the agent stops within about 40 s, inside systemd's default 90 s stop timeout (the unit sets
+//! no `TimeoutStopSec`). The state record is written atomically
 //! after each accepted report, so stopping at any point loses nothing. If either loop ends unexpectedly
-//! (a bug that panics), the other is stopped too and the agent exits with a failure, so systemd
+//! (a bug that panics), the others are stopped too and the agent exits with a failure, so systemd
 //! restarts it rather than leaving it half working.
 //!
 //! The intervals in force are shared ([`intervals::Intervals`]): the heartbeat loop applies what the
 //! server directs, and the inventory loop reads it.
 
+mod config;
 mod envelope;
 mod heartbeat;
 mod intervals;
 mod inventory;
+mod requests;
 mod time;
 
 use std::collections::HashSet;
@@ -27,9 +45,10 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::client::{ApiError, ApiResponse, Client};
+use crate::client::{ApiError, ApiResponse, Client, Conditional};
 use crate::collect::Collector;
 use crate::config::Config;
+use crate::facts::host::{Host, RealHost};
 use crate::retry::{Backoff, RetryPolicy, Rng, SplitMix64};
 use crate::shutdown::Shutdown;
 use crate::update::Updater;
@@ -37,20 +56,32 @@ use crate::update::Updater;
 pub use heartbeat::{ACK_RECORD, Ack, HEARTBEAT_PATH, Heartbeat, HeartbeatRequest};
 pub use intervals::Intervals;
 pub use inventory::Reporter;
+use requests::{ReportRequests, ReportType};
 pub use time::rfc3339;
+
+/// How often a report loop looks for a `report_request` the heartbeat loop raised.
+pub const REQUEST_POLL: Duration = Duration::from_secs(5);
 
 /// Sends one JSON request. [`Client`] in production; a scripted fake in tests.
 pub trait Transport {
     fn post(&self, path: &str, body: &serde_json::Value) -> Result<ApiResponse, ApiError>;
+
+    /// GETs a JSON document with an optional `If-None-Match` (the config manifest). Required, so a
+    /// transport cannot forget it and fail only at run time.
+    fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError>;
 }
 
 impl Transport for Client {
     fn post(&self, path: &str, body: &serde_json::Value) -> Result<ApiResponse, ApiError> {
         self.post_json(path, body)
     }
+
+    fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError> {
+        self.get_json_conditional(path, etag)
+    }
 }
 
-/// Runs both loops until `shutdown` is requested. Returns `false` if a loop ended unexpectedly.
+/// Runs all loops until `shutdown` is requested. Returns `false` if a loop ended unexpectedly.
 pub fn run(
     config: &Config,
     client: &Client,
@@ -64,21 +95,25 @@ pub fn run(
         shutdown,
         started,
         &Collector::new(),
+        &RealHost::new(),
         updater,
     )
 }
 
-/// [`run`] with the transport and collector given (tests).
+/// [`run`] with the transport, collector and fact reader's host given (tests).
 fn run_with(
     config: &Config,
     transport: &(dyn Transport + Sync),
     shutdown: &Shutdown,
     started: Instant,
     collector: &Collector,
+    host: &dyn Host,
     updater: &Updater,
 ) -> bool {
     let intervals = Intervals::new(config.heartbeat, config.inventory);
     let intervals = &intervals;
+    let requests = ReportRequests::new();
+    let requests = &requests;
     thread::scope(|scope| {
         let heartbeat = thread::Builder::new()
             .name("fleet-agent-heartbeat".into())
@@ -91,16 +126,40 @@ fn run_with(
                     shutdown,
                     started,
                     updater,
+                    requests,
                 );
             });
         let inventory = thread::Builder::new()
             .name("fleet-agent-inventory".into())
             .spawn_scoped(scope, || {
                 let _stop = StopOnExit(shutdown);
-                inventory_loop(intervals, &config.state_dir, collector, transport, shutdown);
+                inventory_loop(
+                    intervals,
+                    &config.state_dir,
+                    collector,
+                    transport,
+                    shutdown,
+                    requests,
+                );
+            });
+        let config_report = thread::Builder::new()
+            .name("fleet-agent-config".into())
+            .spawn_scoped(scope, || {
+                let _stop = StopOnExit(shutdown);
+                config_loop(
+                    config.config_report.start,
+                    host,
+                    transport,
+                    shutdown,
+                    requests,
+                );
             });
         let mut clean = true;
-        for (name, handle) in [("heartbeat", heartbeat), ("inventory", inventory)] {
+        for (name, handle) in [
+            ("heartbeat", heartbeat),
+            ("inventory", inventory),
+            ("config", config_report),
+        ] {
             match handle {
                 Ok(handle) => {
                     if handle.join().is_err() {
@@ -138,6 +197,7 @@ fn heartbeat_loop(
     shutdown: &Shutdown,
     started: Instant,
     updater: &Updater,
+    requests: &ReportRequests,
 ) {
     let mut heartbeat = Heartbeat::new(
         intervals,
@@ -146,7 +206,8 @@ fn heartbeat_loop(
         started,
     )
     .record_first_ack_in(state_dir.to_owned())
-    .with_updater(updater);
+    .with_updater(updater)
+    .with_requests(requests);
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();
         let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());
@@ -165,6 +226,7 @@ fn inventory_loop(
     collector: &Collector,
     transport: &dyn Transport,
     shutdown: &Shutdown,
+    requests: &ReportRequests,
 ) {
     let mut reporter = Reporter::new(
         intervals,
@@ -173,8 +235,48 @@ fn inventory_loop(
         seeded(4),
     );
     while !shutdown.is_requested() {
+        if requests.take(ReportType::Inventory).is_some() {
+            reporter.request();
+        }
         let wake = reporter.tick(Instant::now(), &mut || collector.collect(), transport);
-        if shutdown.wait(wake.saturating_duration_since(Instant::now())) {
+        if reporter.take_answered() {
+            requests.answered(ReportType::Inventory, Instant::now());
+        }
+        let wait = wake
+            .saturating_duration_since(Instant::now())
+            .min(REQUEST_POLL);
+        if shutdown.wait(wait) {
+            break;
+        }
+    }
+}
+
+fn config_loop(
+    interval: Duration,
+    host: &dyn Host,
+    transport: &dyn Transport,
+    shutdown: &Shutdown,
+    requests: &ReportRequests,
+) {
+    let mut reporter = config::Reporter::new(
+        host,
+        interval,
+        Backoff::new(RetryPolicy::default(), seeded(5)),
+        seeded(6),
+    )
+    .stopping_on(shutdown);
+    while !shutdown.is_requested() {
+        if requests.take(ReportType::Config).is_some() {
+            reporter.request();
+        }
+        let wake = reporter.tick(Instant::now(), transport);
+        if reporter.take_answered() {
+            requests.answered(ReportType::Config, Instant::now());
+        }
+        let wait = wake
+            .saturating_duration_since(Instant::now())
+            .min(REQUEST_POLL);
+        if shutdown.wait(wait) {
             break;
         }
     }
@@ -258,6 +360,9 @@ pub(crate) mod tests {
         replies: RefCell<VecDeque<Reply>>,
         accepting: std::cell::Cell<bool>,
         sent: RefCell<Vec<(String, serde_json::Value)>>,
+        gets: RefCell<VecDeque<Result<Conditional, ApiError>>>,
+        /// The `If-None-Match` of every GET, in order.
+        got: RefCell<Vec<Option<String>>>,
     }
 
     impl FakeTransport {
@@ -266,6 +371,8 @@ pub(crate) mod tests {
                 replies: RefCell::default(),
                 accepting: std::cell::Cell::new(false),
                 sent: RefCell::default(),
+                gets: RefCell::default(),
+                got: RefCell::default(),
             };
             for reply in replies {
                 transport.push(reply);
@@ -289,6 +396,15 @@ pub(crate) mod tests {
             self.accepting.set(accepting);
         }
 
+        /// Queues the answer to the next GET.
+        pub fn push_get(&self, reply: Result<Conditional, ApiError>) {
+            self.gets.borrow_mut().push_back(reply);
+        }
+
+        pub fn gets(&self) -> Vec<Option<String>> {
+            self.got.borrow().clone()
+        }
+
         pub fn sent(&self) -> Vec<(String, serde_json::Value)> {
             self.sent.borrow().clone()
         }
@@ -305,10 +421,33 @@ pub(crate) mod tests {
                         ok(
                             serde_json::json!({"server_time": "2026-01-01T12:00:00Z", "directives": {}}),
                         )
+                    } else if path == config::CONFIG_PATH {
+                        ok(serde_json::json!({
+                            "report_id": body["report_id"],
+                            "duplicate": false,
+                            "manifest_version": body["manifest_version"],
+                        }))
                     } else {
                         ok(serde_json::json!({"report_id": body["report_id"], "duplicate": false}))
                     }
                 }
+                None => Err(ApiError::Transport("connection refused".into())),
+            }
+        }
+
+        fn get_conditional(
+            &self,
+            _path: &str,
+            etag: Option<&str>,
+        ) -> Result<Conditional, ApiError> {
+            self.got.borrow_mut().push(etag.map(str::to_owned));
+            match self.gets.borrow_mut().pop_front() {
+                Some(reply) => reply,
+                None if self.accepting.get() && etag.is_some() => Ok(Conditional::NotModified),
+                None if self.accepting.get() => Ok(Conditional::Modified {
+                    body: crate::facts::fake::server_manifest(),
+                    etag: Some("\"m1\"".into()),
+                }),
                 None => Err(ApiError::Transport("connection refused".into())),
             }
         }
@@ -377,6 +516,20 @@ pub(crate) mod tests {
     fn reply_for(request: &str) -> String {
         let body = if request.starts_with("POST /api/v1/heartbeat ") {
             r#"{"server_time":"2026-01-01T12:00:00Z","directives":{}}"#.to_owned()
+        } else if request.starts_with("GET /api/v1/manifest/config ") {
+            return crate::test_support::http_reply(
+                "200 OK",
+                &["X-Request-Id: req-1", "ETag: \"m1\""],
+                &crate::facts::fake::server_manifest().to_string(),
+            );
+        } else if request.starts_with("POST /api/v1/reports/config ") {
+            let id = request
+                .split("\"report_id\":\"")
+                .nth(1)
+                .and_then(|rest| rest.get(..36))
+                .unwrap_or("");
+            let version = crate::facts::fake::server_manifest()["manifest_version"].clone();
+            format!(r#"{{"report_id":"{id}","duplicate":false,"manifest_version":{version}}}"#)
         } else {
             let id = request
                 .split("\"report_id\":\"")
@@ -394,7 +547,7 @@ pub(crate) mod tests {
         // the startup report reach the server within seconds (AC: "first heartbeat within seconds").
         let pki = TestPki::generate();
         let dir = TempDir::new();
-        let server = TlsServer::serve(&pki, 2, reply_for);
+        let server = TlsServer::serve(&pki, 4, reply_for);
         let client = trusting_client(&server, &pki, &dir);
         let state_dir = dir.path("state");
         crate::state::ensure_dir(&state_dir).unwrap();
@@ -412,6 +565,7 @@ pub(crate) mod tests {
                     &shutdown,
                     started,
                     &Collector::new(),
+                    &crate::facts::fake::FakeHost::debian13(),
                     &Updater::inert(&state_dir),
                 )
             });
@@ -430,12 +584,20 @@ pub(crate) mod tests {
             "took {:?}",
             started.elapsed()
         );
-        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert_eq!(requests.len(), 4, "{requests:?}");
+        let mut saw_config = false;
         for request in &requests {
             let (head, body) = request.split_once("\r\n\r\n").unwrap();
+            if head.starts_with("GET /api/v1/manifest/config ") {
+                continue;
+            }
             let body: serde_json::Value = serde_json::from_str(body).unwrap();
             if head.starts_with("POST /api/v1/heartbeat ") {
                 crate::collect::contract::assert_conforms("v1", "heartbeat.request", &body);
+            } else if head.starts_with("POST /api/v1/reports/config ") {
+                // P2-A01: what the agent really sends over TLS conforms to the contract.
+                crate::collect::contract::assert_conforms("v1", "config.request", &body);
+                saw_config = true;
             } else {
                 assert!(
                     head.starts_with("POST /api/v1/reports/inventory "),
@@ -444,6 +606,7 @@ pub(crate) mod tests {
                 crate::collect::contract::assert_conforms("v1", "inventory.request", &body);
             }
         }
+        assert!(saw_config, "{requests:?}");
         let record: inventory::Record =
             serde_json::from_slice(&std::fs::read(state_dir.join(inventory::RECORD_NAME)).unwrap())
                 .unwrap();
@@ -462,6 +625,10 @@ pub(crate) mod tests {
                 }
                 Err(ApiError::Transport("down".into()))
             }
+
+            fn get_conditional(&self, _: &str, _: Option<&str>) -> Result<Conditional, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
         }
         let dir = TempDir::new();
         let config = Config {
@@ -472,8 +639,9 @@ pub(crate) mod tests {
         let collector = Collector::new();
         let started = Instant::now();
         let updater = Updater::inert(&config.state_dir);
+        let host = crate::facts::fake::FakeHost::debian13();
         let clean = run_with(
-            &config, &Panicking, &shutdown, started, &collector, &updater,
+            &config, &Panicking, &shutdown, started, &collector, &host, &updater,
         );
         assert!(!clean);
         assert!(shutdown.is_requested());
