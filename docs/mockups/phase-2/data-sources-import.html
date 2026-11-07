@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Advisory import result · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html" aria-current="page">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="data-sources.html">&larr; Advisory data sources</a></p>
+<div class="page-head"><div><h1>Import result</h1><p>File upload by Example Operator, 2026-11-05 18:21 UTC.</p></div></div>
+<div class="notice" role="status"><strong>312 records read: 310 imported, 2 skipped.</strong><p>A record that is malformed is reported and skipped; the valid records are still imported. No record is ever imported in part.</p></div>
+<dl class="facts" style="margin-bottom:1rem">
+  <dt>File</dt><dd class="mono">advisories-Debian-13.zip</dd>
+  <dt>Type</dt><dd>Partial import (advisories not in the file are left alone)</dd>
+  <dt>New</dt><dd>9</dd>
+  <dt>Changed</dt><dd>41</dd>
+  <dt>Unchanged</dt><dd>260</dd>
+  <dt>Withdrawn</dt><dd>0</dd>
+  <dt>Skipped</dt><dd>2</dd>
+  <dt>Matching</dt><dd>Findings are being matched again for 14 packages on 3 hosts.</dd>
+</dl>
+<h2>Skipped records</h2>
+<div class="table-wrap"><table><caption class="visually-hidden">Skipped records</caption><thead><tr><th scope="col">Where</th><th scope="col">Advisory</th><th scope="col">Why it was skipped</th></tr></thead><tbody>
+<tr><td><code>advisories-Debian-13.zip</code> / <code>DSA-9118-1.json</code></td><td><span class="mono">DSA-9118-1</span></td><td>Reference URL scheme is not http or https (<code>ftp</code>); the record was not imported</td></tr>
+<tr><td><code>advisories-Debian-13.zip</code> / <code>DSA-9119-1.json</code></td><td><span class="mono">DSA-9119-1</span></td><td><code>/affected/0/ranges/0/events/1/fixed</code> is not a valid version</td></tr>
+</tbody></table></div>
+<h2>If the whole file cannot be read</h2>
+<div class="notice error" role="alert"><strong>Nothing was imported.</strong><p><span class="mono">advisories-Debian-13.zip</span> could not be read as an archive (unexpected end of file). A file that cannot be read at all imports nothing. Check the download and upload it again.</p></div>
+<p class="note">Where, which advisory, and why, for each skipped record, as the importer reports them. Text from the file is escaped and shortened. A malformed record never blocks the valid ones; a file that cannot be read at all, or that breaks a size limit, imports nothing.</p>
+</main>
+</body>
+</html>

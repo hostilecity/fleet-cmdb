@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media server: findings for acme-tools · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a><a class="btn quiet" href="../phase-1/dialogs.html#reenroll">Re-enroll</a><a class="btn danger quiet" href="../phase-1/dialogs.html#revoke">Revoke credential</a><a class="btn danger quiet" href="../phase-1/dialogs.html#retire">Retire</a></div>
+</div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">5</span><span class="detail">1 high, 2 medium, 1 low, 1 unknown</span></a>
+  <a href="host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="host-overview.html">Overview</a><a href="host-config.html">Configuration</a><a href="host-packages.html">Packages <span class="count">1,243</span></a><a href="host-vulns.html" aria-current="page">Vulnerabilities <span class="count">5 open</span></a></nav>
+
+<p><a href="host-vulns.html">&larr; Vulnerabilities</a></p>
+<h2 style="margin-top:0">acme-tools</h2>
+<div class="cols-2">
+  <section class="sheet flat" aria-labelledby="pk">
+    <h3 id="pk" style="margin-top:0">Installed package</h3>
+    <dl class="facts tight">
+      <dt>Name</dt><dd class="mono">acme-tools:amd64</dd>
+      <dt>Version</dt><dd class="mono">1:7.8p1-4</dd>
+      <dt>Source package</dt><dd class="mono">acme-suite</dd>
+      <dt>Package manager</dt><dd>dpkg</dd>
+      <dt>Ecosystem</dt><dd class="mono">Debian:13</dd>
+    </dl>
+  </section>
+  <section class="sheet flat" aria-labelledby="sm">
+    <h3 id="sm" style="margin-top:0">Findings for this package</h3>
+    <p style="margin:0"><strong>1 open</strong> (reopened), <strong>2 resolved</strong>.</p>
+    <p class="muted" style="margin:0.25rem 0 0">The installed version is lower than the fixed version of <span class="mono">DSA-9105-1</span>, so updating to <span class="mono">1:7.8p1-5</span> or later resolves it.</p>
+  </section>
+</div>
+<h3>All findings for acme-tools</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Findings for acme-tools</caption><thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">History</th></tr></thead><tbody>
+<tr><td><span class="sev medium">Medium</span></td><td><a href="https://security.example.lan/advisories/DSA-9105-1" rel="noopener noreferrer">DSA-9105-1</a><span class="state-note">Example: path handling flaw in acme-tools.</span></td><td><span class="mono">1:7.8p1-4</span></td><td><span class="mono">1:7.8p1-5</span></td><td><span class="lamp fail">Reopened</span></td><td><ul class="change-list"><li>2026-10-29 06:12 first seen at 1:7.8p1-4</li><li>2026-10-30 06:12 resolved: updated to 1:7.8p1-5</li><li>2026-11-05 18:30 reopened: downgraded to 1:7.8p1-4</li></ul></td></tr>
+<tr><td><span class="sev medium">Medium</span></td><td><a href="https://security.example.lan/advisories/DSA-9061-1" rel="noopener noreferrer">DSA-9061-1</a><span class="state-note">Example: option parsing flaw in acme-tools.</span></td><td><span class="mono">1:7.7p1-2</span></td><td><span class="mono">1:7.8p1-1</span></td><td><span class="lamp online">Resolved</span><span class="state-note">Fixed: package updated</span></td><td><ul class="change-list"><li>2026-10-02 06:08 first seen at 1:7.7p1-2</li><li>2026-10-30 06:12 resolved: updated</li></ul></td></tr>
+<tr><td><span class="sev low">Low</span></td><td><a href="https://security.example.lan/advisories/DSA-9064-1" rel="noopener noreferrer">DSA-9064-1</a><span class="state-note">Example: log injection in acme-tools.</span></td><td><span class="mono">1:7.7p1-2</span></td><td><span class="unavailable">No fix available</span></td><td><span class="lamp online">Resolved</span><span class="state-note">Not affected: the advisory no longer names this package</span></td><td><ul class="change-list"><li>2026-10-02 06:08 first seen at 1:7.7p1-2</li><li>2026-10-20 06:09 resolved: advisory updated, package no longer named</li></ul></td></tr>
+</tbody></table></div><p class="note">The per-package view (P2-D04): every finding for one package, open and resolved, with its history, so an operator can see a finding appear, clear, and come back. Other binary packages built from the same source package (<span class="mono">acme-suite</span>) have their own pages and are linked here when they have findings: <a href="host-vuln-package.html?package=libacmeutil1">libacmeutil1</a> has none.</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edit rule: ssh-max-auth-tries · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rule.html">&larr; ssh-max-auth-tries</a></p>
+<div class="page-head"><div><h1>Edit rule</h1><p>Saving creates version 3. Version 2 stays as it is.</p></div></div>
+<form class="form wide" action="rule.html" method="get">
+  <div class="field"><label for="key">Key</label><input id="key" class="mono" value="ssh-max-auth-tries" readonly aria-describedby="key-h"><p class="hint" id="key-h">The key never changes and is never reused for another rule.</p></div>
+  <div class="field"><label for="title">Title</label><input id="title" maxlength="200" value="SSH limits authentication attempts per connection"><p class="hint">Plain words, at most 200 characters.</p></div>
+  <div class="row">
+    <div class="field"><label for="ref">Reference</label><input id="ref" maxlength="128" value="CIS Debian 13 5.1.18" aria-describedby="ref-h"><p class="hint" id="ref-h">A section number only, never benchmark text.</p></div>
+    <div class="field"><label for="sevr">Severity</label><select id="sevr"><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option></select></div>
+  </div>
+  <fieldset>
+    <legend>Applies to</legend>
+    <div class="row">
+      <div class="field"><label for="dist">Distribution</label><input id="dist" class="mono" value="debian"></div>
+      <div class="field"><label for="vers">Releases</label><input id="vers" class="mono" value="13" aria-describedby="vers-h"><p class="hint" id="vers-h">Comma separated; leave empty for every release.</p></div>
+    </div>
+    <p class="hint" style="margin:0"><a href="rule-edit.html">Add another distribution</a></p>
+  </fieldset>
+  <div class="field"><label for="fact">Fact</label><select id="fact"><option>sshd.maxauthtries (integer)</option><option>sshd.maxsessions (integer)</option><option>sshd.logingracetime (integer)</option></select><p class="hint">From the fact manifest. Changing it checks the condition again.</p></div>
+  <fieldset>
+    <legend>Condition</legend>
+    <div class="row">
+      <div class="field"><label for="op">Passes when the value is</label><select id="op"><option>equal to</option><option>not equal to</option><option>one of</option><option>not one of</option><option>at least</option><option selected>at most</option></select></div>
+      <div class="field"><label for="exp">Expected value</label><input id="exp" type="number" value="4" min="0" max="1000" aria-describedby="exp-h"><p class="hint" id="exp-h">An integer, because the fact is an integer.</p></div>
+    </div>
+  </fieldset>
+  <div class="field"><label for="rem">Remediation</label><textarea id="rem" maxlength="4000">Set MaxAuthTries to 4 or lower in /etc/ssh/sshd_config and reload ssh.</textarea><p class="hint">What an operator does to fix a failure, in your own words.</p></div>
+  <div class="notice info" role="note"><strong>What saving does</strong><p>A new version, 3, replaces version 2 as current. Every host's latest config snapshot is checked again against it, now, and any result that changes is recorded in that host's history. No agent is contacted. The change is audited with you as the actor and the before and after values. Saving without a change makes no new version.</p></div>
+  <div class="actions"><button class="btn" type="submit">Save as version 3</button><a class="btn quiet" href="rule.html">Cancel</a></div>
+</form>
+<p class="note"><span class="review-q">Review Q12.</span> Editing. Drawn: a form for the common case, a rule with a single comparison, with the operator and expected value as two fields (this is what AC-2.2 edits). A rule built from several conditions (all, any, not) shows the condition as a text box holding YAML or JSON instead, checked as you save (<a href="rule-edit-errors.html">example with errors</a>). Not drawn, because the scope does not ask for it: a preview of which hosts would change result before saving. The server could compute it; the import preview is the only place the scope asks for one. Do you want it on edit too?</p>
+</main>
+</body>
+</html>

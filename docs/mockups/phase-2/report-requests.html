@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report request states · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a><a class="btn quiet" href="../phase-1/dialogs.html#reenroll">Re-enroll</a><a class="btn danger quiet" href="../phase-1/dialogs.html#revoke">Revoke credential</a><a class="btn danger quiet" href="../phase-1/dialogs.html#retire">Retire</a></div>
+</div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">5</span><span class="detail">1 high, 2 medium, 1 low, 1 unknown</span></a>
+  <a href="host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="host-overview.html">Overview</a><a href="host-config.html" aria-current="page">Configuration</a><a href="host-packages.html">Packages <span class="count">1,243</span></a><a href="host-vulns.html">Vulnerabilities <span class="count">5 open</span></a></nav>
+
+<h1 style="font-size:1.375rem">Report request states</h1>
+<p class="muted">Every state of the "Request fresh config report" button and the message that follows it. The same states apply to the package report button on the Packages tab and to the Overview form. The wording is the wording the server produces today (P2-S03).</p>
+
+<h2 class="state-title">Ready</h2>
+<div class="request-box">
+  <div><p><strong>Config report received 3 minutes ago.</strong> Facts unchanged since snapshot 2026-11-06 09:14 UTC.</p><p class="hint">Each report type can be requested once every 5 minutes. An unanswered request expires after 60 minutes.</p></div>
+  <button class="btn quiet" type="button">Request fresh config report</button>
+</div>
+<h2 class="state-title">Pending: waiting for the agent's next heartbeat</h2>
+<div class="request-box">
+  <div><p><strong>Requested.</strong> Config report requested. The agent is asked on its next heartbeat.</p><p class="hint">Requested by Example Operator, 12:03:20 UTC. The agent checks in about once a minute. The button is not offered again while a request is pending.</p></div>
+  <a class="btn quiet" role="button" aria-disabled="true" href="report-requests.html">Request pending</a>
+</div><div class="notice info" role="status"><strong>Config report requested. The agent is asked on its next heartbeat.</strong></div>
+<h2 class="state-title">Pending: the agent has been asked</h2>
+<div class="request-box">
+  <div><p><strong>Agent asked 12:04:02 UTC, waiting for the report.</strong></p><p class="hint">Expires 13:03 UTC if no report arrives. A report the agent collected after it was asked answers the request, even if its facts did not change.</p></div>
+  <a class="btn quiet" role="button" aria-disabled="true" href="report-requests.html">Request pending</a>
+</div>
+<h2 class="state-title">Rate limited</h2>
+<div class="request-box">
+  <div><p><strong>Config report requested less than 5 minutes ago.</strong></p><p class="hint"><span id="rl">Try again after 12:08:20 UTC.</span> This limit applies to each report type separately, however the earlier request ended.</p></div>
+  <a class="btn quiet" role="button" aria-disabled="true" href="report-requests.html" aria-describedby="rl">Request fresh config report</a>
+</div><div class="notice" role="alert"><strong>Config report requested less than 5 minutes ago. Try again after 12:08:20 UTC.</strong></div><p class="note"><span class="review-q">Review Q7.</span> Rate limit. Drawn: the button is greyed out with the retry time beside it, so the operator is told before clicking. Today's page leaves the button enabled and shows the rate-limit alert after the click. Either works with the server rule; the greyed button needs the page to know the retry time and to update when it passes.</p>
+<h2 class="state-title">Answered</h2>
+<div class="request-box">
+  <div><p><strong>Received 12:05:44 UTC.</strong> Config report requested by Example Operator, 12:03:20 UTC.</p><p class="hint">The new report showed no change, so no new snapshot was recorded. That still answers the request.</p></div>
+  <button class="btn quiet" type="button">Request fresh config report</button>
+</div>
+<h2 class="state-title">Expired</h2>
+<div class="request-box">
+  <div><p><strong>Expired 13:03:20 UTC: no report arrived within 60 minutes.</strong> Requested by Example Operator, 12:03:20 UTC.</p><p class="hint">The agent may be offline or too old to understand the request. Check the host's status, then request again.</p></div>
+  <button class="btn quiet" type="button">Request fresh config report</button>
+</div><div class="notice" role="status"><strong>The agent never answered.</strong><p>This host was last seen 2 hours ago. A request is delivered only on a heartbeat.</p></div>
+<h2 class="state-title">Host cannot be asked</h2>
+<div class="request-box">
+  <div><p><strong>Only an active host's agent can be asked for a report.</strong></p><p class="hint">Shown for a host that is pending enrollment, revoked, or retired. The button is not drawn.</p></div>
+  
+</div>
+<h2 class="state-title">Request history</h2>
+<div class="table-wrap"><table><caption class="visually-hidden">Report request history</caption><thead><tr><th scope="col">Report</th><th scope="col">Outcome</th><th scope="col">Requested by</th><th scope="col">Requested (UTC)</th></tr></thead><tbody>
+<tr><td>Config report</td><td>Expired 13:03:20: no report arrived within 60 minutes</td><td>example.operator@example.lan</td><td>Yesterday 12:03:20</td></tr>
+<tr><td>Package report</td><td>Received yesterday 12:05:44</td><td>example.operator@example.lan</td><td>Yesterday 12:03:20</td></tr>
+<tr><td>Config report</td><td>Received 2 days ago 08:02:10</td><td>example.reviewer@example.lan</td><td>2 days ago 07:58:41</td></tr>
+</tbody></table></div>
+</main>
+</body>
+</html>

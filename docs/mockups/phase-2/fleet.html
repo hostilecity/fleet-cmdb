@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Fleet</h1><p>7 hosts, 5 active. Retired hosts are not listed or counted.</p></div><div class="actions"><a class="btn" href="../phase-1/agents-install.html">Install an agent</a><a class="btn quiet" href="../phase-1/host-new.html">Pre-register host</a></div></div>
+<p class="freshness" id="advisory_freshness"><span>Advisory data last updated: <span class="mono">Debian:13</span> 3 hours ago.</span> <a href="data-sources.html">Data sources</a></p>
+<div class="strip" aria-label="Fleet status">
+  <a href="fleet.html?status=online"><span class="count">2</span><span class="lamp online">Online</span></a>
+  <a href="fleet.html?status=stale"><span class="count">1</span><span class="lamp stale">Stale</span></a>
+  <a href="fleet.html?status=offline"><span class="count">1</span><span class="lamp offline">Offline</span></a>
+  <a href="fleet.html?status=awaiting"><span class="count">1</span><span class="lamp awaiting">Awaiting first contact</span></a>
+  <span class="divider" aria-hidden="true"></span>
+  <a class="aside" href="fleet.html?status=pending"><span class="count">1</span><span class="lamp pending">Pending enrollment</span></a>
+  <a class="aside" href="fleet.html?status=revoked"><span class="count">1</span><span class="lamp">Revoked</span></a>
+</div>
+<section class="sheet flat" aria-labelledby="comp-h" style="margin-bottom:1.25rem">
+  <div class="group-head" style="margin:0"><h2 id="comp-h" style="margin:0;font-size:1rem">Compliance</h2><a href="compliance.html">View fleet compliance</a></div>
+  <p style="margin:0.25rem 0 0"><strong>11</strong> open CIS-aligned check failures (1 critical, 3 high) on 4 of 5 hosts evaluated. <strong>7</strong> open vulnerability findings (1 critical, 1 high) on 3 of 5 hosts evaluated.</p>
+</section>
+<p class="note"><span class="review-q">Review Q8.</span> How the Phase 1 fleet list links to compliance. Drawn: a two-line summary panel under the status counts, plus two columns in the list (CIS pass rate and open vulnerabilities, each a link to the host's tab). Alternatives: the summary panel only, with the list unchanged and all per-host numbers on the Compliance page; or the two columns only. The columns cost width on a narrow screen, where the table scrolls sideways as it does today.</p>
+<form class="filters" role="search">
+  <label>Search name or hostname<input type="search" placeholder="vm-01 or Media server"></label>
+  <label>Tag<select><option>All tags</option><option>ci</option><option>infra</option><option>lab</option><option>media</option><option>storage</option><option>web</option></select></label>
+  <label>Status<select><option>All statuses</option><option>Online</option><option>Stale</option><option>Offline</option><option>Awaiting first contact</option><option>Pending enrollment</option><option>Credential revoked</option></select></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<div class="table-wrap"><table><caption class="visually-hidden">Hosts, name ascending</caption>
+<thead><tr><th aria-sort="ascending"><a href="#">Name</a></th><th aria-sort="none"><a href="#">Status</a></th><th aria-sort="none"><a href="#">Last seen</a></th><th aria-sort="none"><a href="#">Hostname</a></th><th>Tags</th><th aria-sort="none"><a href="#">Operating system</a></th><th aria-sort="none"><a href="#">CIS pass rate</a></th><th aria-sort="none"><a href="#">Open vulnerabilities</a></th><th aria-sort="none"><a href="#">Agent</a></th></tr></thead>
+<tbody>
+<tr><td><a href="host-overview.html">Media server</a></td><td><span class="lamp online">Online</span></td><td class="muted">28 seconds ago</td><td class="mono">vm-01.example.lan</td><td><span class="tag">media</span></td><td>Debian 13 (trixie)</td><td><a href="host-config.html#results">80.6%</a><span class="rate-detail">5 failing</span></td><td><a href="host-vulns.html">5 open</a><span class="rate-detail">1 high</span></td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="host-overview.html">Web A</a></td><td><span class="lamp online">Online</span></td><td class="muted">41 seconds ago</td><td class="mono">vm-02.example.lan</td><td><span class="tag">web</span><span class="tag">lab</span></td><td>Debian 13 (trixie)</td><td><a href="host-config.html#results">94.3%</a><span class="rate-detail">2 failing</span></td><td><a href="host-vulns.html">2 open</a><span class="rate-detail">1 critical</span></td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="host-overview.html">Build runner</a></td><td><span class="lamp stale">Stale</span></td><td class="muted">7 minutes ago</td><td class="mono">vm-03.example.lan</td><td><span class="tag">ci</span></td><td>Debian 13 (trixie)</td><td><a href="host-config.html#results">83.3%</a><span class="rate-detail">4 failing, 1 critical</span></td><td><span class="not-eval">Not evaluated<span class="visually-hidden">: no package report</span></span></td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="host-overview.html">Backup target</a></td><td><span class="lamp offline">Offline</span></td><td class="muted">2 hours ago</td><td class="mono">vm-04.example.lan</td><td><span class="tag">storage</span></td><td>Debian 13 (trixie)</td><td><a href="host-config.html#results">100%</a><span class="rate-detail"><span class="none-open">None failing</span></span></td><td><span class="none-open">None open</span></td><td class="mono">0.0.9</td></tr>
+<tr><td><a href="host-overview.html">DNS resolver</a></td><td><span class="lamp awaiting">Awaiting first contact</span></td><td class="muted">Never</td><td class="mono">vm-05.example.lan</td><td><span class="tag">infra</span></td><td><span class="unavailable">Not reported</span></td><td><span class="not-eval">Not evaluated<span class="visually-hidden">: no config report</span></span></td><td><span class="not-eval">Not evaluated<span class="visually-hidden">: no inventory</span></span></td><td class="mono">0.1.0</td></tr>
+<tr><td><a href="../phase-1/host-pending.html">Lab sandbox</a></td><td><span class="lamp pending">Pending enrollment</span></td><td class="muted">Never</td><td class="mono">vm-06.example.lan</td><td><span class="tag">lab</span></td><td><span class="unavailable">Not reported</span></td><td><span class="muted">Not tracked</span></td><td><span class="muted">Not tracked</span></td><td class="mono"><span class="unavailable">—</span></td></tr>
+<tr><td><a href="../phase-1/host.html">Old proxy</a></td><td><span class="lamp revoked">Credential revoked</span></td><td class="muted">3 days ago</td><td class="mono">vm-07.example.lan</td><td><span class="tag">web</span></td><td>Debian 13 (trixie)</td><td><span class="muted">Not tracked</span></td><td><span class="muted">Not tracked</span></td><td class="mono">0.1.0</td></tr>
+</tbody></table></div>
+<p class="note">Everything else on this page is the Phase 1 fleet list. Hosts that are not active show "Not tracked" in the two new columns; hosts that are active but cannot be evaluated show "Not evaluated" with a reason for screen readers and in the <a href="compliance.html">Compliance</a> view, and never a zero.</p>
+</main>
+</body>
+</html>

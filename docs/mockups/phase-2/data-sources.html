@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Advisory data sources · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html" aria-current="page">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Advisory data sources</h1><p>Where vulnerability data comes from, how fresh it is, and what the last imports did. Findings are only as current as this data.</p></div></div>
+<p class="freshness" id="advisory_freshness"><span>Advisory data last updated: <span class="mono">Debian:13</span> 3 hours ago.</span></p>
+<section aria-labelledby="eco">
+  <h2 id="eco" style="margin-top:0">Freshness</h2>
+<div class="table-wrap"><table><caption class="visually-hidden">Advisory data freshness by ecosystem</caption><thead><tr><th scope="col">Ecosystem</th><th scope="col">Freshness</th><th scope="col">Last successful full import</th><th scope="col">Advisories</th><th scope="col">Hosts using it</th></tr></thead><tbody>
+<tr><td><span class="mono">Debian:13</span><span class="state-note">Debian 13 (trixie)</span></td><td><span class="lamp online">Fresh</span></td><td>2026-11-06 06:00 UTC <span class="state-note">3 hours ago</span></td><td>38,412 current<span class="state-note">1,204 withdrawn</span></td><td><a href="compliance.html">4 hosts</a></td></tr>
+</tbody></table></div>
+  <p class="muted" style="font-size:.875rem">Data is stale when its last successful full import is older than 48 hours, or when it was never imported. A stale source is flagged here, on the Fleet list, on Compliance, and on every host's Vulnerabilities tab, because stale data looks like "no vulnerabilities".</p>
+</section>
+<div class="cols-2" style="margin-top:1.5rem">
+<section class="sheet" aria-labelledby="feed">
+  <h2 id="feed">Scheduled feed</h2>
+  <dl class="facts tight">
+    <dt>Source</dt><dd class="mono">feeds.example.lan/osv/Debian/all.zip</dd>
+    <dt>Refresh</dt><dd>Every 6 hours, 5 retries with backoff</dd>
+    <dt>Stale after</dt><dd>48 hours</dd>
+    <dt>Access token</dt><dd>Configured, never shown</dd>
+  </dl>
+  <p style="margin-bottom:0"><a class="btn quiet" href="dialogs.html#refresh">Refresh now</a></p>
+  <p class="hint muted" style="font-size:.875rem">Only the feed's host and path are shown. The source is set in the server's configuration, not here.</p>
+</section>
+<section class="sheet" aria-labelledby="up">
+  <h2 id="up">Upload an advisory file</h2>
+  <form action="data-sources-import.html" method="get" enctype="multipart/form-data">
+    <div class="field"><label for="adv">Advisory file</label><input id="adv" type="file" accept=".json,.zip,.gz,.tar" aria-describedby="adv-h"><p class="hint" id="adv-h">OSV JSON, or a zip or tar archive of it. Records for other ecosystems are skipped.</p></div>
+    <div class="field"><label class="choice" style="margin:0;font-weight:400"><input type="checkbox"> <strong>Full import</strong><p>Treat the file as the complete list. Advisories it lacks are marked withdrawn. <a href="dialogs.html#full">What this does</a></p></label></div>
+    <button class="btn" type="submit">Upload and import</button>
+  </form>
+</section>
+</div>
+<section aria-labelledby="imps">
+  <h2 id="imps">Recent imports</h2>
+<div class="table-wrap"><table><caption class="visually-hidden">Recent advisory imports</caption><thead><tr><th scope="col">When (UTC)</th><th scope="col">How</th><th scope="col">Source</th><th scope="col">Result</th><th scope="col">What happened</th><th scope="col">By</th></tr></thead><tbody>
+<tr><td>2026-11-06 06:00</td><td>Feed refresh</td><td>feeds.example.lan/osv/Debian/all.zip</td><td><span class="lamp online">Succeeded</span></td><td>38,412 records read: 6 new, 22 changed, 0 withdrawn</td><td>System</td></tr>
+<tr><td>2026-11-05 18:21</td><td>File upload</td><td>advisories-Debian-13.zip</td><td><span class="lamp online">Succeeded</span></td><td>312 records read: 310 imported, <a href="data-sources-import.html">2 malformed and skipped</a></td><td>Example Operator</td></tr>
+<tr><td>2026-11-05 06:00</td><td>Feed refresh</td><td>feeds.example.lan/osv/Debian/all.zip</td><td><span class="lamp online">Succeeded</span></td><td>Not modified since the last download; nothing imported</td><td>System</td></tr>
+<tr><td>2026-11-04 06:00</td><td>Feed refresh</td><td>feeds.example.lan/osv/Debian/all.zip</td><td><span class="lamp fail">Failed</span></td><td>Download failed after 5 attempts: timed out after 15 minutes</td><td>System</td></tr>
+</tbody></table></div>
+  <p class="pager"><span>Showing the latest 4 imports.</span><span>Older imports are kept for the retention period.</span></p>
+</section>
+<p class="note"><span class="review-q">Review Q14.</span> Manual refresh and upload. Drawn: "Refresh now" and the upload form sit on this page beside the scheduled feed, each with a confirmation where it can resolve findings (<a href="dialogs.html">Confirmations</a>). The refresh button has no rate limit drawn, because the server already makes a refresh conditional (an unchanged feed downloads nothing). Is a cool-down like the report-request one wanted? Also: the feed itself can only be changed in the server configuration, not on this page, since it carries a token; say if you want it editable here.</p>
+<p class="note">Also see <a href="data-sources-stale.html">the stale state of this page</a>, <a href="data-sources-import.html">an upload result with skipped records</a>, and <a href="states-empty.html#freshness">the other freshness indicators</a>.</p>
+</main>
+</body>
+</html>
