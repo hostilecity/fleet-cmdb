@@ -98,8 +98,6 @@ class RuleForm
     OPERATORS.reject { |name, _| INTEGER_OPERATORS.include?(name) && name != operator }
   end
 
-  # Whether the expected value is a number input: an integer fact compared with one number.
-  def number_input? = fact_definition&.type == "integer" && !LIST_OPERATORS.include?(operator)
 
   # The rule as a rule file holds it. A new rule states its enabled flag; an edit leaves it out, so the stored
   # flag is kept (the edit page does not change it).
@@ -194,7 +192,9 @@ class RuleForm
     return local_problem("/condition", "is longer than #{CONDITION_TEXT_MAX / 1.kilobyte} KiB") if condition_text.bytesize > CONDITION_TEXT_MAX
     return local_problem("/condition", "is required") if condition_text.strip.empty?
 
-    YAML.safe_load(condition_text, permitted_classes: [], aliases: false)
+    CisRules::RuleFile.safe_yaml(condition_text)
+  rescue CisRules::RuleFile::DepthLimit::Exceeded
+    local_problem("/condition", "is nested more than #{CisRules::RuleFile::JSON_NESTING} levels deep")
   rescue Psych::Exception => e
     local_problem("/condition", "is not plain YAML or JSON (#{e.message.truncate(200)})")
   end

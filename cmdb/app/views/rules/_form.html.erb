@@ -75,9 +75,8 @@
         <div class="field"><label for="rule_operator">Passes when the value is</label><%= select_tag "rule[operator]", options_for_select(form.operator_choices.invert, form.operator), id: "rule_operator" %></div>
         <div class="<%= problem_field.("condition") %>">
           <label for="rule_condition">Expected value</label>
-          <% limits = form.fact_definition&.constraints || {} %>
-          <%= form.number_input? ? number_field_tag("rule[expected]", form.expected, id: "rule_condition", min: limits["minimum"], max: limits["maximum"], "aria-invalid": (form.invalid?("condition") || nil), "aria-describedby": rule_described_by(form, "condition")) :
-                                   text_field_tag("rule[expected]", form.expected, id: "rule_condition", autocomplete: "off", "aria-invalid": (form.invalid?("condition") || nil), "aria-describedby": rule_described_by(form, "condition")) %>
+          <%# Text, whatever the fact: the operator and fact can change without the page knowing, and "one of" takes a list. The server reads it by the fact's type (review of #130). %>
+          <%= text_field_tag("rule[expected]", form.expected, id: "rule_condition", autocomplete: "off", "aria-invalid": (form.invalid?("condition") || nil), "aria-describedby": rule_described_by(form, "condition")) %>
           <p class="hint" id="rule_condition_hint"><%= expected_value_hint(form) %></p>
           <%= rule_field_errors(form, "condition") %>
         </div>

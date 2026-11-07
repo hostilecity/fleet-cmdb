@@ -240,9 +240,60 @@ RSpec.describe "Rule imports", :signed_in, type: :request do
     expect(section("#import_changed").text.squish).to include("lte: 5 lte: 3").and include("2 → 3")
     expect(preview.reload.rules_digest).to eq(CisRule.state_digest)
 
-    perform_enqueued_jobs { post "/rules/import/#{token}/apply" }
+    perform_enqueued_jobs { post "/rules/import/#{preview.token}/apply" } # the new preview's token
     expect(response).to redirect_to("/rules")
     expect(CisRule.find_by!(key: "ssh-max-auth-tries").current_version).to have_attributes(version: 3, condition: { "lte" => 3 })
+  end
+
+  it "applies nothing when the preview is cancelled while Apply waits for the rules' lock (review of #130)" do
+    upload(mockup_file)
+    token = preview.token
+    waited = false
+    allow(CisRule).to receive(:with_write_lock).and_wrap_original do |original, &block|
+      unless waited # a cancel in another tab lands while this request waits for the lock
+        waited = true
+        RuleImportPreview.where(token:).delete_all
+      end
+      original.call(&block)
+    end
+    post "/rules/import/#{token}/apply"
+    expect(response).to redirect_to("/rules/import")
+    expect(CisRule.where(key: "ssh-ignore-rhosts")).to be_empty
+    expect(CisRule.find_by!(key: "ssh-max-auth-tries").current_version.version).to eq(1)
+  end
+
+  it "previews the file again under a new token when the rules changed, so the earlier preview's form cannot apply it (review of #130)" do
+    upload(mockup_file)
+    first = preview.token
+    perform_enqueued_jobs { CisRule.transaction { CisRule.define!(CisRules::Definition.from_h(max_auth.merge("condition" => { "lte" => 5 })), actor: Audit::SYSTEM) } }
+    post "/rules/import/#{first}/apply" # one tab: refused, previewed again
+    expect(response).to have_http_status(:conflict)
+    second = preview.reload.token
+    expect(second).not_to eq(first)
+    expect(page.at_css("form[action='/rules/import/#{second}/apply']")).to be_present
+
+    post "/rules/import/#{first}/apply" # the other tab, which never saw the new preview
+    expect(response).to redirect_to("/rules/import")
+    expect(CisRule.find_by!(key: "ssh-max-auth-tries").current_version.version).to eq(2)
+  end
+
+  it "lists the problems of a stored file the checks no longer accept, when it is shown or previewed again, and discards it (review of #130)" do
+    refused = CisRules::ImportPlan::Result.new(errors: [ CisRules::RuleFile::Problem.new(pointer: "/rules/0/fact", message: "sshd.ignorerhosts is not in the fact manifest") ], plan: nil)
+    upload(mockup_file)
+    allow(CisRules::ImportPlan).to receive(:call).and_return(refused)
+    get "/rules/import/#{preview.token}"
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(page.css("#import_problems tbody tr td").map(&:text)).to eq([ "/rules/0/fact", "sshd.ignorerhosts is not in the fact manifest" ])
+    expect(RuleImportPreview.count).to eq(0)
+
+    allow(CisRules::ImportPlan).to receive(:call).and_call_original
+    upload(mockup_file)
+    CisRule.transaction { CisRule.find_by!(key: "login-banner-set").disable!(actor: Audit::SYSTEM) }
+    allow(CisRules::ImportPlan).to receive(:call).and_return(refused)
+    post "/rules/import/#{preview.token}/apply"
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(RuleImportPreview.count).to eq(0)
+    expect(CisRule.where(key: "ssh-ignore-rhosts")).to be_empty
   end
 
   it "refuses at apply a file the checks no longer accept, and lists why" do
