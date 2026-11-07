@@ -18,12 +18,13 @@ module Ecosystems
 
   def name(ecosystem) = NAMES[ecosystem]
 
-  # How many hosts in the fleet report each supported ecosystem's distribution, counted in the database:
+  # How many active hosts (the set the Compliance page lists, owner decision on #129) report each supported
+  # ecosystem's distribution, counted in the database:
   # { "Debian:13" => 4 }.
   def host_counts
     os_id = Arel.sql("lower(host_inventories.stable -> 'os' ->> 'id')")
     version = Arel.sql("host_inventories.stable -> 'os' ->> 'version_id'")
-    counts = HostInventory.joins(:host).merge(Host.in_fleet).group(os_id, version).count
+    counts = HostInventory.joins(:host).merge(Host.active).group(os_id, version).count
     supported.index_with { |ecosystem| counts.sum { |(id, version_id), count| TABLE[[ id.to_s, version_id.to_s ]] == ecosystem ? count : 0 } }
   end
 
