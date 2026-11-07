@@ -570,6 +570,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_091500) do
     t.check_constraint "state::text = ANY (ARRAY['running'::character varying, 'halted'::character varying, 'completed'::character varying, 'cancelled'::character varying]::text[])", name: "rollouts_state_valid"
   end
 
+  create_table "rule_import_previews", force: :cascade do |t|
+    t.bigint "operator_id", null: false
+    t.string "token", limit: 64, null: false
+    t.string "filename", limit: 255, null: false
+    t.text "body", null: false
+    t.string "sha256", limit: 64, null: false
+    t.boolean "disable_missing", default: false, null: false
+    t.string "rules_digest", limit: 64, null: false
+    t.datetime "expires_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["expires_at"], name: "index_rule_import_previews_on_expires_at"
+    t.index ["operator_id"], name: "index_rule_import_previews_on_operator_id", unique: true
+    t.index ["token"], name: "index_rule_import_previews_on_token", unique: true
+    t.check_constraint "octet_length(body) <= 1048576", name: "rule_import_previews_body_size"
+  end
+
   create_table "settings", force: :cascade do |t|
     t.string "key", limit: 100, null: false
     t.jsonb "value", null: false
@@ -632,6 +649,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_091500) do
   add_foreign_key "host_packages", "hosts"
   add_foreign_key "host_status_events", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
+  add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
   add_foreign_key "vulnerability_findings", "advisories"
   add_foreign_key "vulnerability_findings", "hosts"
   add_foreign_key "inventory_report_receipts", "hosts"

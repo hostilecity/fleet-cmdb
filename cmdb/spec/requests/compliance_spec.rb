@@ -26,11 +26,11 @@ RSpec.describe "Compliance", :signed_in, type: :request do
     expect(page.at_css("nav[aria-label=Main] a[aria-current=page]").text).to eq("Fleet")
   end
 
-  it "has the mockup's Data sources button, and the navigation lists Data sources after Compliance (P2-D06)" do
+  it "has the mockup's Data sources button, and the navigation lists Rules and Data sources after Compliance (P2-D06)" do
     get "/compliance"
     expect(page.at_css(".page-head #data_sources_link")).to have_attributes(text: "Data sources")
     expect(page.at_css(".page-head #data_sources_link")["href"]).to eq("/data-sources")
-    expect(page.css("nav[aria-label=Main] a").map(&:text).first(3)).to eq([ "Fleet", "Compliance", "Data sources" ])
+    expect(page.css("nav[aria-label=Main] a").map(&:text).first(4)).to eq([ "Fleet", "Compliance", "Rules", "Data sources" ])
   end
 
   it "says there are no active hosts, with the way to add one, and draws no counts" do
@@ -40,6 +40,7 @@ RSpec.describe "Compliance", :signed_in, type: :request do
     expect(page.at_css("#no_active_hosts a")["href"]).to eq("/agents/install")
     expect(page.css(".sevstrip, #compliance_table")).to be_empty
     expect(words(page.at_css(".page-head p"))).to include("for the 0 active hosts")
+    expect(page.css(".page-head .actions a").map { |a| [ a.text, a["href"] ] }).to eq([ [ "Manage rules", "/rules" ], [ "Data sources", "/data-sources" ] ]) # P2-D06
   end
 
   context "with a fleet" do

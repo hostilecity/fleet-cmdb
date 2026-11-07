@@ -10,7 +10,7 @@ namespace :rules do
     rescue SystemCallError => e
       abort "Cannot read #{path}: #{e.message}"
     end
-    result = CisRules::Import.call(text, actor: Audit::SYSTEM, disable_missing: ENV["DISABLE_MISSING"] == "1")
+    result = CisRules::Import.call(text, actor: Audit::SYSTEM, disable_missing: ENV["DISABLE_MISSING"] == "1", source: "rules_import")
     abort "#{path} was not imported; nothing changed. #{result.errors.size} problem(s):\n  #{result.errors.join("\n  ")}" unless result.ok?
 
     %i[created versioned unchanged enabled disabled].each do |name|

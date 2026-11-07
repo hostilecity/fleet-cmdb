@@ -17,9 +17,44 @@ module CisRules
 
     RULE_POINTER = "/rules/0" # where parse_rule puts the rule it is given
 
+    # Counts how deep a YAML document nests, from the parser's events, and stops at the first level past the limit.
+    # Psych builds Ruby objects recursively, so a file of a few hundred KB of "[[[[" would exhaust the stack in
+    # safe_load; this streaming pass needs no recursion and stops early (review of #130).
+    class DepthLimit < Psych::Handler
+      class Exceeded < StandardError; end
+
+      def initialize(max)
+        super()
+        @max = max
+        @depth = 0
+      end
+
+      def start_sequence(*) = deeper
+
+      def start_mapping(*) = deeper
+
+      def end_sequence = @depth -= 1
+
+      def end_mapping = @depth -= 1
+
+      private
+
+      def deeper
+        @depth += 1
+        raise Exceeded if @depth > @max
+      end
+    end
+
     attr_reader :rules, :problems
 
     def self.parse(text, manifest: ConfigManifest.current) = new(manifest, text:).freeze
+
+    # YAML read safely: no objects, no aliases, and nested at most JSON_NESTING deep (checked first, without
+    # recursion). Raises DepthLimit::Exceeded or a Psych::Exception. Shared with the dashboard's condition text.
+    def self.safe_yaml(text)
+      Psych::Parser.new(DepthLimit.new(JSON_NESTING)).parse(text)
+      YAML.safe_load(text, permitted_classes: [], aliases: false)
+    end
 
     # One rule on its own (a Hash, as a file holds it), as the dashboard edits it (P2-S14): the same checks as a
     # file, with each pointer into the rule rather than the file ("/condition/eq", not "/rules/0/condition/eq").
@@ -48,7 +83,9 @@ module CisRules
       return problem("/", "is larger than #{MAX_BYTES / 1.megabyte} MiB") if text.bytesize > MAX_BYTES
       return problem("/", "is not UTF-8 text") unless text.dup.force_encoding(Encoding::UTF_8).valid_encoding?
 
-      plain(YAML.safe_load(text, permitted_classes: [], aliases: false))
+      plain(self.class.safe_yaml(text))
+    rescue DepthLimit::Exceeded
+      problem("/", "is nested more than #{JSON_NESTING} levels deep")
     rescue Psych::Exception => e
       problem("/", "is not a plain YAML or JSON document (#{e.message.truncate(200)})")
     end

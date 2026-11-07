@@ -1,0 +1,77 @@
+<% content_for :title, "Preview: #{@preview.filename}" %>
+<p><%= link_to "← Import rules file", import_rules_path %></p>
+<div class="page-head"><div><h1>Preview: <span class="mono title-key"><%= @preview.filename %></span></h1>
+  <p><%= human_bytes(@preview.body.bytesize) %>, format version <%= CisRules::FORMAT_VERSION %>, <%= pluralize(@plan.rule_count, "rule") %>. Checksum <span class="mono" title="SHA-256"><%= @preview.sha256.first(16).upcase %></span>. Nothing has been written yet.</p></div></div>
+<% if @restarted %>
+  <div class="notice" role="alert" id="rules_changed"><strong>Nothing was applied: the rules changed since you previewed this file.</strong>
+    <p>Someone added, edited, enabled, or disabled a rule in the meantime. This is the same file previewed again against the rules as they are now; check it and apply again if it is still what you want.</p></div>
+<% end %>
+<div class="notice info" role="status" id="import_summary"><strong><%= rule_import_summary(@plan) %></strong>
+  <p><% if @plan.changes? %>After, <%= pluralize(@plan.total_after, "rule") %> in total. Every host's latest config snapshot is checked again against the added, changed, enabled, and disabled rules. No agent is contacted.<% else %>The file matches the rules as they are, so applying it would change nothing.<% end %></p></div>
+
+<div class="verdict-group"><h3>Added <span class="muted count"><%= @plan.added.size %></span></h3></div>
+<% if @plan.added.any? %>
+  <div class="table-wrap"><table id="import_added"><caption class="visually-hidden">Rules that would be added</caption>
+    <thead><tr><th scope="col">Rule</th><th scope="col">Severity</th><th scope="col">Applies to</th><th scope="col">Fact and expected value</th><th scope="col">Enabled</th></tr></thead>
+    <tbody>
+      <% @plan.added.each do |added| %>
+        <% definition = added.definition %>
+        <tr><td><span class="v-added">+ Add</span> <span class="mono"><%= definition.key %></span><span class="ref"><%= definition.title %> · <%= definition.reference %></span></td>
+          <td><%= severity_tag(definition.severity) %></td><td><%= platforms_text(definition.applies_to) %></td>
+          <td><span class="mono"><%= definition.fact %></span><span class="state-note"><%= rule_expected(definition) %></span></td><td><%= added.enabled ? "Yes" : "No" %></td></tr>
+      <% end %>
+    </tbody></table></div>
+<% else %><p class="muted intro">None.</p><% end %>
+
+<div class="verdict-group"><h3>Changed <span class="muted count"><%= @plan.changed.size %><%= ", each becomes a new version" if @plan.changed.any? %></span></h3></div>
+<% if @plan.changed.any? %>
+  <div class="table-wrap"><table id="import_changed"><caption class="visually-hidden">Rules that would change</caption>
+    <thead><tr><th scope="col">Rule</th><th scope="col">What changes</th><th scope="col">Version</th></tr></thead>
+    <tbody>
+      <% @plan.changed.each do |changed| %>
+        <tr><td><span class="v-changed">~ Change</span> <span class="mono"><%= changed.key %></span></td>
+          <td><ul class="change-list"><% changed.changes.each do |name, (before, after)| %><%= rule_change_item(name, before, after) %><% end %></ul></td>
+          <td><%= changed.from_version %> &rarr; <%= changed.to_version %></td></tr>
+      <% end %>
+    </tbody></table></div>
+<% else %><p class="muted intro">None.</p><% end %>
+
+<% flags = @plan.flags + @plan.not_listed.select(&:disable) %>
+<div class="verdict-group"><h3>Enabled or disabled <span class="muted count"><%= flags.size %></span></h3></div>
+<% if flags.any? %>
+  <div class="table-wrap"><table id="import_flags"><caption class="visually-hidden">Rules whose enabled flag would change</caption>
+    <thead><tr><th scope="col">Rule</th><th scope="col">Change</th></tr></thead>
+    <tbody>
+      <% @plan.flags.each do |flag| %>
+        <tr><td><span class="<%= flag.to ? "v-changed" : "v-off" %>"><%= flag.to ? "~ Enable" : "− Disable" %></span> <span class="mono"><%= flag.key %></span></td>
+          <td>Enabled <del><%= flag.from ? "yes" : "no" %></del> <ins><%= flag.to ? "yes" : "no" %></ins> <span class="muted">(the file says <code>enabled: <%= flag.to %></code>).<%= " No new version." unless @plan.changed.any? { |changed| changed.key == flag.key } %></span></td></tr>
+      <% end %>
+      <% @plan.not_listed.select(&:disable).each do |missing| %>
+        <tr><td><span class="v-off">− Disable</span> <span class="mono"><%= missing.key %></span></td>
+          <td>Enabled <del>yes</del> <ins>no</ins> <span class="muted">(not listed in the file, and "Disable rules this file does not list" was on). No new version.</span></td></tr>
+      <% end %>
+    </tbody></table></div>
+<% else %><p class="muted intro">None.</p><% end %>
+
+<div class="verdict-group"><h3>Unchanged <span class="muted count"><%= @plan.unchanged.size %></span></h3></div>
+<% if @plan.unchanged.any? %>
+  <details class="fix" id="import_unchanged"><summary>Show the <%= pluralize(@plan.unchanged.size, "rule") %> the file lists unchanged</summary><p class="mono wrap-anywhere"><%= @plan.unchanged.join(", ") %></p></details>
+<% else %><p class="muted intro">None.</p><% end %>
+
+<% left = @plan.not_listed.reject(&:disable) %>
+<div class="verdict-group"><h3>Not listed in the file <span class="muted count"><%= @plan.not_listed.size %></span></h3></div>
+<% if @plan.not_listed.empty? %>
+  <p class="muted intro" id="import_not_listed">None: the file lists every rule.</p>
+<% elsif @plan.disable_missing %>
+  <p class="muted intro" id="import_not_listed"><%= @plan.not_listed.count(&:disable).positive? ? "The enabled ones are disabled above, because \"Disable rules this file does not list\" was on." : "\"Disable rules this file does not list\" was on." %><% if left.any? %> Already disabled, left as they are: <%= safe_join(left.map { |rule| tag.span(rule.key, class: "mono") }, ", ") %>.<% end %></p>
+<% else %>
+  <p class="muted intro" id="import_not_listed">These <%= pluralize(left.size, "rule") %> are left as they are, because "Disable rules this file does not list" was off: <%= safe_join(left.map { |rule| tag.span(rule.key, class: "mono") }, ", ") %>. <%= link_to "Start again with the option on", import_rules_path %> to disable them.</p>
+<% end %>
+
+<div class="actions preview-actions">
+  <% if @plan.changes? %>
+    <%= form_with url: apply_import_rules_path(@preview.token), method: :post, class: "inline", data: { turbo: false } do %><button class="btn" type="submit">Apply import</button><% end %>
+  <% end %>
+  <%= form_with url: cancel_import_rules_path(@preview.token), method: :delete, class: "inline", data: { turbo: false } do %><button class="btn quiet" type="submit">Cancel</button><% end %>
+</div>
+<p class="muted small-print">Applying records one audit entry for each rule added, changed, enabled, or disabled, with you as the actor. The file is discarded after applying, on Cancel, or after <%= RuleImportPreview::TTL.in_minutes.to_i %> minutes (at <%= utc(@preview.expires_at) %>). If the rules change before you apply, nothing is applied and the file is previewed again.</p>

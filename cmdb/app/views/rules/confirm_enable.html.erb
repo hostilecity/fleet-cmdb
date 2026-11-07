@@ -1,0 +1,13 @@
+<% content_for :title, "Enable #{@rule.key}" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Enable <%= @rule.key %>?</h2>
+  <% if @rule.enabled %>
+    <p>The rule is already enabled.</p>
+    <div class="actions"><%= link_to "Back to the rule", rule_path(@rule), class: "btn quiet" %></div>
+  <% else %>
+    <p>Every host's latest config snapshot is checked against it now. No agent is contacted. Pass rates and failure counts change when the checks finish, within a minute.</p>
+    <%= form_with url: enable_rule_path(@rule), method: :post do %>
+      <div class="actions"><button class="btn" type="submit">Enable rule</button><%= link_to "Cancel", rule_path(@rule), class: "btn quiet" %></div>
+    <% end %>
+  <% end %>
+</div>

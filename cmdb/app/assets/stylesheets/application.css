@@ -392,6 +392,46 @@ th.num { text-align: right; }
 @media (max-width: 52rem) {
   .sevstrip, .sevstrip.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sevstrip a { border-bottom: 1px solid #33443f; }
+/* P2-D06 (#25): rules list, rule detail and versions, add and edit with preview, rules file import (approved mockups
+   docs/mockups/phase-2/rules*.html, rule*.html, dialogs.html; phase2.css "Rules") */
+.badge.old { border-color: var(--rule); color: var(--ink-soft); background: var(--panel); }
+.badge.immutable { border-color: var(--ink-soft); color: var(--ink); background: var(--panel); }
+pre.code { margin: 0; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.55; background: var(--ink); color: #e3ebe7; border-radius: 6px; padding: 0.75rem 1rem; overflow-x: auto; white-space: pre; max-width: 100%; }
+.sheet h2:first-child { margin-top: 0; }
+#fleet_effect { margin-top: 1rem; }
+p.intro { margin-top: 0; }
+p.tail { margin-bottom: 0; }
+.small-print { font-size: 0.875rem; }
+.title-key { font-size: 1.375rem; }
+.verdict-group { margin: 1.5rem 0 0.5rem; }
+.verdict-group h3 { margin: 0 0 0.25rem; }
+.verdict-group .count { font-weight: 400; }
+.v-added { color: #1d5a2b; font-weight: 700; }
+.v-changed { color: #7a5410; font-weight: 700; }
+.v-off { color: #8c1d13; font-weight: 700; }
+.form.wide { max-width: 52rem; }
+.form fieldset { margin-bottom: 1rem; }
+fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+fieldset legend { padding: 0; font-weight: 700; margin-bottom: 0.25rem; }
+fieldset.invalid { border-left: 3px solid var(--lamp-offline); padding-left: 0.75rem; }
+fieldset .error-text { color: var(--lamp-offline); font-size: 0.875rem; margin: 0; }
+.row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 1rem; }
+.field select { max-width: 100%; }
+.field.invalid select { border-color: var(--lamp-offline); box-shadow: 0 0 0 1px var(--lamp-offline); }
+.field input[readonly] { background: var(--panel); color: var(--ink-soft); }
+.problem-list { margin: 0.25rem 0 0; padding-left: 1.25rem; }
+.problem-list li { overflow-wrap: anywhere; }
+.errlist td:first-child { white-space: nowrap; }
+.errlist td { overflow-wrap: anywhere; }
+.choice.plain { margin: 0; font-weight: 400; }
+.preview-actions { margin-top: 1.5rem; }
+details.more { margin-top: 1rem; }
+details.more summary { cursor: pointer; color: var(--petrol); }
+.wrap-anywhere { overflow-wrap: anywhere; }
+#rule_log .change-list del, #rule_log .change-list ins, #import_changed .change-list del, #import_changed .change-list ins { overflow-wrap: anywhere; white-space: pre-wrap; }
+@media (max-width: 52rem) {
+  .row { grid-template-columns: 1fr; }
+  dd pre.code { white-space: pre-wrap; }
 }
 /* P2-D06 (#25): the Advisory data sources page and an import result */
 .stale-word { color: #7a5410; font-weight: 700; }

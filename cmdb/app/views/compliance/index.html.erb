@@ -3,8 +3,7 @@
 <%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
 <% totals = @totals %>
 <div class="page-head"><div><h1>Compliance</h1><p>CIS-aligned check results and open vulnerability findings for the <%= pluralize(totals.hosts, "active host") %>. Retired hosts are not counted.</p></div>
-  <%# The mockup's "Manage rules" button comes with the rules page (P2-D06). %>
-  <div class="actions"><%= link_to "Data sources", data_sources_path, class: "btn quiet", id: "data_sources_link" %></div></div>
+  <div class="actions"><%= link_to "Manage rules", rules_path, class: "btn quiet" %><%= link_to "Data sources", data_sources_path, class: "btn quiet", id: "data_sources_link" %></div></div>
 <%= render "hosts/advisory_freshness", statuses: @advisory_freshness %>
 <% if totals.hosts.zero? %>
   <div class="sheet empty" id="no_active_hosts">

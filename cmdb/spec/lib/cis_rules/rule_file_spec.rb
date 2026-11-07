@@ -63,6 +63,12 @@ RSpec.describe CisRules::RuleFile do
     expect(errors(file(rule(condition: (1..9).reduce({ "eq" => "no" }) { |inner, _| { "not" => inner } }))).first).to include("is nested more than 8 deep")
   end
 
+  it "refuses a deeply nested document before building it, as a problem, not a stack overflow (review of #130)" do
+    expect(errors("#{'[' * 100_000}#{']' * 100_000}")).to eq([ "/: is nested more than 64 levels deep" ])
+    expect(errors("#{(0...200).map { |i| "#{' ' * i}a:" }.join("\n")} 1")).to eq([ "/: is nested more than 64 levels deep" ])
+    expect(errors("#{'[' * 64}#{']' * 64}")).to eq([ "/: is not an object" ]) # 64 levels are read
+  end
+
   it "reports a NUL in any string or key, which the database cannot store, with its pointer (review of #101)" do
     expect(errors(file(rule(title: "bad\0title", condition: { "eq" => "n\0o" }), rule(key: "b").merge("x\0" => 1))))
       .to eq([ "/rules/0/title: contains a NUL character", "/rules/0/condition/eq: contains a NUL character", "/rules/1: has a key containing a NUL character" ])

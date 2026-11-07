@@ -22,6 +22,8 @@ bin/rails rules:import FILE=config/rules/debian-13.yml
 bin/rails rules:list
 ```
 
+Or, in the dashboard, open **Rules**, then **Import rules file**: the file is checked as a whole and previewed (what it would add, change, enable or disable, leave unchanged, and the rules it does not list) before anything is written. The server keeps the uploaded file for 15 minutes so **Apply import** applies exactly what was previewed; if any rule changed in the meantime, nothing is applied and the file is previewed again.
+
 Every rule in the file omits `enabled`, so new rules start enabled and a re-import never re-enables a rule you disabled. Importing re-evaluates every host's latest config snapshot; no agent is contacted (P2-S06).
 
 Some rules depend on what a host is for. A web server runs Apache or nginx, and a file server runs NFS or Samba. On such hosts, disable the rule rather than editing it to pass. (Disabling one rule for some hosts only is not supported yet; disabling is fleet-wide.)
@@ -51,7 +53,7 @@ Two areas have no rule yet, because a rule inspects one fact and these need two:
 
 ## Tuning a rule
 
-Edit the rule in the file and import it again. A changed condition, title, severity, or remediation becomes a new version of the rule: old versions stay readable, results name the version that produced them, and the change is audited with before and after values. Then every host is re-evaluated. Change the fixtures with the rule.
+Edit the rule in the file and import it again, or edit it on its page in the dashboard (**Edit**, then **Preview the effect**, which lists the hosts whose result would change, then **Save**). A rule with one comparison is edited as an operator and an expected value; any other condition is edited as YAML or JSON text, with the same checks as an import. A changed condition, title, severity, or remediation becomes a new version of the rule: old versions stay readable, results name the version that produced them, and the change is audited with before and after values. Then every host is re-evaluated. Change the fixtures with the rule.
 
 To keep your own thresholds without editing the shipped file, keep a copy of the file and import that instead. Keys that the copy no longer lists stay as they are unless you import with `DISABLE_MISSING=1`.
 
