@@ -113,6 +113,57 @@ RSpec.describe AdvisoryUploadImportJob, type: :job do
     expect(AdvisoryUpload.count).to eq(0)
   end
 
+  # Review of #129 (S1): an upload is read with much lower limits than the feed, within a time limit, and breaking
+  # either fails the import with the reason and is not retried.
+  describe "upload limits" do
+    it "reads uploads with the upload profile, not the feed's" do
+      expect(Advisories::Reader::UPLOAD).to have_attributes(record_bytes: 256.kilobytes, entries: 200_000, total_bytes: 512.megabytes)
+      import = queued_upload(zip_bytes("a.json" => osv_record(id: "DSA-9001-1")))
+      expect(Advisories::Reader).to receive(:new).with(anything, name: "upload.zip", limits: Advisories::Reader::UPLOAD).once.and_call_original
+      run(import)
+    end
+
+    {
+      "more documents than allowed" => [ { entries: 1 }, "upload.zip has more than 1 JSON files" ],
+      "more JSON than allowed in all" => [ { total_bytes: 2.megabytes, record_bytes: 1.megabyte }, "upload.zip holds more than 2 MiB of JSON" ]
+    }.each do |what, (limits, reason)|
+      it "fails an archive with #{what}, with the reason and no retry" do
+        stub_const("Advisories::Reader::UPLOAD", Advisories::Reader::UPLOAD.with(**limits))
+        big = "x" * 1.megabyte
+        import = queued_upload(zip_bytes("a.json" => osv_record(id: "DSA-9001-1", details: big), "b.json" => osv_record(id: "DSA-9002-1", details: big),
+                                         "c.json" => osv_record(id: "DSA-9003-1", details: big)))
+        expect(Advisories::Reader).to receive(:new).once.and_call_original
+        run(import)
+        expect(import.reload).to have_attributes(state: "failed", reason:)
+        expect([ Advisory.count, AdvisoryUpload.count ]).to eq([ 0, 0 ])
+      end
+    end
+
+    it "reports a document over the upload's record limit as malformed, far below the feed's" do
+      import = queued_upload(zip_bytes("big.json" => osv_record(id: "DSA-9001-1", details: "x" * 300.kilobytes), "ok.json" => osv_record(id: "DSA-9002-1")))
+      run(import)
+      expect(import.reload.problems.sole).to include("location" => "big.json", "problem" => "is larger than 256 KiB")
+      expect(Advisory.pluck(:advisory_id)).to eq([ "DSA-9002-1" ])
+    end
+
+    it "fails an import that runs past the time limit, with the reason and no retry, writing nothing" do
+      stub_const("AdvisoryUploadImportJob::TIME_LIMIT", 0.seconds)
+      import = queued_upload(zip_bytes("a.json" => osv_record(id: "DSA-9001-1")))
+      expect(Advisories::Reader).to receive(:new).once.and_call_original
+      run(import)
+      expect(import.reload).to have_attributes(state: "failed")
+      expect(import.reason).to eq("upload.zip took longer than 0 minutes to import, so nothing was imported; import it on the server with bin/rails advisories:import")
+      expect(Advisory.count).to eq(0)
+    end
+
+    it "waits a bounded time for the import lock, then retries" do
+      import = queued_upload(zip_bytes("a.json" => osv_record(id: "DSA-9001-1")))
+      expect_any_instance_of(Advisories::Import).to receive(:call).with(anything, time_limit: 600, lock_timeout: 120).and_call_original
+      run(import)
+      expect(import.reload.state).to eq("succeeded")
+    end
+  end
+
   describe AdvisoryUploadPruneJob do
     it "deletes files past their expiry and fails the imports their jobs never finished, keeping a finished one's outcome" do
       now = Time.current

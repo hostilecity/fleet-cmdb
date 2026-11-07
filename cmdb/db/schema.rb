@@ -82,6 +82,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_091500) do
     t.string "filename", limit: 256, null: false
     t.bigint "byte_size", null: false
     t.binary "data", null: false
+    t.jsonb "allowed_withdrawals", default: {}, null: false
     t.datetime "created_at", null: false
     t.datetime "expires_at", null: false
     t.index ["advisory_import_id"], name: "index_advisory_uploads_on_advisory_import_id", unique: true

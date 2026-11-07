@@ -1,4 +1,7 @@
 <% content_for :title, "Advisory data sources" %>
+<%# The refresh-after timer on "Refresh now" refreshes the page by morphing, and the upload form keeps a chosen file and an open
+    confirmation through it (keep-edits, as on the Agents page; review of #129). %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
 <div class="page-head"><div><h1>Advisory data sources</h1><p>Where vulnerability data comes from, how fresh it is, and what the last imports did. Findings are only as current as this data.</p></div></div>
 <%= render "hosts/advisory_freshness", statuses: @statuses, here: true, failed_refreshes: @failed_refreshes %>
 
@@ -59,8 +62,8 @@
     <h2 id="up">Upload an advisory file</h2>
     <% error = @upload_error %>
     <%= form_with url: upload_data_sources_path, method: :post, multipart: true, id: "upload_form",
-                  data: { turbo: false, controller: "confirm-full", action: "submit->confirm-full#check" } do %>
-      <%= hidden_field_tag :confirm_full, "", id: "confirm_full", data: { confirm_full_target: "confirmed" } %>
+                  data: { turbo: false, controller: "confirm-full keep-edits",
+                          action: "submit->confirm-full#check turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
       <% file_error = error&.dig(:advisory_file) %>
       <div class="field<%= " invalid" if file_error %>">
         <label for="advisory_file">Advisory file</label>
@@ -84,7 +87,8 @@
         <h2 id="full_dialog_title">Import as a full import?</h2>
         <p>A full import treats the file as the complete advisory list for its ecosystem. Advisories it does not contain are marked withdrawn, and findings that depended on them resolve as withdrawn. Use it only for a complete download, not for a few records.</p>
         <div class="actions">
-          <button class="btn danger" type="button" data-action="confirm-full#confirm">Import as full</button>
+          <%# The confirmation travels only as this button's own value, so a form restored from the cache cannot carry it (review of #129). %>
+          <button class="btn danger" type="submit" name="confirm_full" value="1" data-confirm-full-target="confirm">Import as full</button>
           <button class="btn quiet" type="button" data-action="confirm-full#partial">Import without withdrawing</button>
         </div>
       </dialog>

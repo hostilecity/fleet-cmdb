@@ -76,6 +76,29 @@ class DataSourcesController < ApplicationController
   # GET /data-sources/imports/:id: what one import did (data-sources-import.html).
   def import
     @import = AdvisoryImport.includes(:operator).find(params[:id])
+    @withdrawals = refused_withdrawals(@import)
+    @upload_kept = @withdrawals.present? && AdvisoryUpload.where(advisory_import_id: @import.id).where("expires_at > ?", Time.current).exists?
+  end
+
+  # POST /data-sources/imports/:id/confirm-withdrawals: the second confirmation of a full import that was refused
+  # for what it would withdraw (review of #129). The form names the counts per ecosystem; they must be the ones the
+  # refusal recorded, and the box saying so must be ticked. The kept file is then queued again as a new import
+  # that may withdraw at most those counts, audited with the counts.
+  def confirm_withdrawals
+    refused = AdvisoryImport.find(params[:id])
+    withdrawals = refused_withdrawals(refused)
+    return redirect_to(advisory_import_path(refused), alert: "This import has no withdrawals to confirm.") if withdrawals.blank?
+
+    named = params.permit(withdrawals: {}).fetch(:withdrawals, {}).to_h
+    unless params[:confirm] == "1" && named == withdrawals.transform_values { |w| w["withdraw"].to_s }
+      return redirect_to(advisory_import_path(refused), alert: "Tick the box that names the withdrawals to confirm them.")
+    end
+
+    import = requeue_confirmed(refused, withdrawals)
+    return redirect_to(advisory_import_path(refused), alert: "The file is no longer stored, so it cannot be imported. Upload it again.") unless import
+
+    AdvisoryUploadImportJob.perform_later(import.id)
+    redirect_to advisory_import_path(import)
   end
 
   private
@@ -101,6 +124,28 @@ class DataSourcesController < ApplicationController
   def upload_name(file)
     name = file.original_filename.to_s.dup.force_encoding(Encoding::UTF_8).scrub("?").tr("\\", "/").split("/").last
     Advisories::Record.clean_text(name, 200) || "upload"
+  end
+
+  # What a refused guarded full import would have withdrawn, per ecosystem, or nil.
+  def refused_withdrawals(import)
+    withdrawals = import.counts["would_withdraw"] if import.state == "failed" && import.origin == "file"
+    withdrawals.presence if withdrawals.is_a?(Hash)
+  end
+
+  # The confirmed import, queued with its file moved to it from the refused one; nil when the file is gone.
+  def requeue_confirmed(refused, withdrawals)
+    AdvisoryImport.transaction do
+      upload = AdvisoryUpload.without_data.lock.where("expires_at > ?", Time.current).find_by(advisory_import_id: refused.id)
+      next nil unless upload
+
+      now = Time.current
+      allowed = withdrawals.transform_values { |w| w["withdraw"].to_i }
+      import = AdvisoryImport.create!(origin: "file", source: refused.source, full: true, operator: current_operator, state: "queued", started_at: now)
+      upload.update!(advisory_import: import, allowed_withdrawals: allowed, expires_at: now + AdvisoryUpload::LIFETIME)
+      Audit.record(actor: current_operator, action: Audit::Actions::ADVISORY_WITHDRAWALS_CONFIRMED, target: import,
+                   changes: { "source" => refused.source, "refused_import_id" => refused.id, "withdrawals" => allowed })
+      import
+    end
   end
 
   # The queued import and its stored file, in one transaction, audited; nil when MAX_PENDING uploads are stored

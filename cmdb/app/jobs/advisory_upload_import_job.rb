@@ -5,8 +5,13 @@
 # - The import is marked importing, the file is written to a private temporary file for Advisories::Reader, and
 #   Advisories::Import finishes the same row as succeeded, audited with the operator who uploaded it. What the
 #   result page says about re-matching is stored on the row.
-# - A file that cannot be read at all is an outcome, not a fault: the import is failed with the reason and the
-#   job ends, with no retry.
+# - The file is read with the upload limits (Advisories::Reader::UPLOAD), and reading and storing it may take
+#   TIME_LIMIT once the import lock is held (review of #129). A file that cannot be read at all, breaks a limit,
+#   or runs past the time limit is an outcome, not a fault: the import is failed with the reason and the job
+#   ends, with no retry. Waiting more than LOCK_WAIT for the lock (a feed refresh importing) is retried.
+# - A full import is guarded (Advisories::Import, guard_withdrawals): one that would withdraw too much of an
+#   ecosystem is failed with the counts and its file kept, so the operator can confirm those counts on the
+#   result page (DataSourcesController#confirm_withdrawals), which queues it again with them allowed.
 # - Any other error is retried with backoff (ApplicationJob's schedule). After the last attempt the import is
 #   failed with a reason, audited, and the error raised again, so the job shows on the failed-jobs page and in
 #   /health like any other.
@@ -14,6 +19,10 @@
 #   upload to AdvisoryUploadPruneJob, which deletes it and fails the import after AdvisoryUpload::LIFETIME.
 class AdvisoryUploadImportJob < ApplicationJob
   queue_as :default
+
+  # Reading and storing an upload within the limits takes well under a minute (about 2,000 records a second).
+  TIME_LIMIT = 10.minutes
+  LOCK_WAIT = 2.minutes
 
   retry_on StandardError, wait: :polynomially_longer, attempts: ATTEMPTS do |job, error|
     job.give_up(error)
@@ -31,13 +40,18 @@ class AdvisoryUploadImportJob < ApplicationJob
     Tempfile.create([ "advisory-upload-", File.extname(upload.filename) ], binmode: true) do |file|
       file.write(upload.read_data)
       file.flush
-      result = Advisories::Import.new(record: import).call(Advisories::Reader.new(file.path, name: upload.filename))
+      reader = Advisories::Reader.new(file.path, name: upload.filename, limits: Advisories::Reader::UPLOAD)
+      result = Advisories::Import.new(record: import, guard_withdrawals: true, allowed_withdrawals: upload.allowed_withdrawals)
+                                 .call(reader, time_limit: TIME_LIMIT.to_i, lock_timeout: LOCK_WAIT.to_i)
       import.update!(matching: matching(result.changed_packages))
     end
     remove_upload(import_id)
   rescue Advisories::Unreadable => e
     Advisories::Import.record_failure(import:, reason: e.message)
     remove_upload(import_id)
+  rescue Advisories::Import::WithdrawalsRefused => e
+    # The file is kept until it expires, for the operator's second confirmation.
+    Advisories::Import.record_failure(import:, reason: e.message, counts: { "would_withdraw" => e.withdrawals })
   rescue Advisories::Import::Abandoned
     remove_upload(import_id) # the prune job failed it meanwhile; nothing was written
   end

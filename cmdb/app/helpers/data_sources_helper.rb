@@ -46,12 +46,22 @@ module DataSourcesHelper
     read = "#{number_with_delimiter(counts['records'].to_i)} #{'record'.pluralize(counts['records'].to_i)} read: "
     malformed = counts["malformed"].to_i
     if malformed.positive?
-      safe_join([ read, "#{number_with_delimiter(counts['records'].to_i - malformed)} imported, ",
+      safe_join([ read, "#{number_with_delimiter(import_imported(import))} imported, ",
                   link_to("#{number_with_delimiter(malformed)} malformed and skipped", advisory_import_path(import, anchor: "skipped")) ])
     else
       read + "#{number_with_delimiter(counts['created'].to_i)} new, #{number_with_delimiter(counts['updated'].to_i)} changed, " \
              "#{number_with_delimiter(import_withdrawn(import))} withdrawn"
     end
+  end
+
+  # Records stored or already current: new, changed, and unchanged. Not records for other ecosystems, older than
+  # the stored version, repeated, or malformed (review of #129).
+  def import_imported(import) = import.counts.values_at("created", "updated", "unchanged").sum(&:to_i)
+
+  # Records of an advisory the file lists more than once: only the newest version of each is counted above.
+  def import_repeated(import)
+    counts = import.counts
+    [ counts["records"].to_i - import_imported(import) - counts.values_at("older", "skipped", "malformed").sum(&:to_i), 0 ].max
   end
 
   def import_withdrawn(import) = import.counts["withdrawn"].to_i + import.counts["absent"].to_i
