@@ -13,7 +13,7 @@ class HostPackagesController < ApplicationController
   include HostTab
 
   SNAPSHOT_LIMIT = 10
-  KINDS = %w[installed removed upgraded downgraded invalid skipped equivalent].freeze
+  KINDS = %w[installed removed upgraded downgraded invalid skipped equivalent completed removed-skipped].freeze
 
   before_action :load_host_tab
 

@@ -6,12 +6,14 @@ module HostPackagesHelper
     installed: [ "+ Installed", "installed", "installed" ], removed: [ "− Removed", "removed", "removed" ],
     upgrade: [ "↑ Upgraded", "up", "upgraded" ], downgrade: [ "↓ Downgraded", "down", "downgraded" ],
     invalid: [ "? Cannot compare", "invalid", "not comparable" ], same: [ "∼ Source changed", "same", "source changed" ], equivalent: [ "≈ Equivalent version", "same", "equivalent version" ],
-    skipped: [ "◌ Skipped / incomplete", "skipped", "skipped or incomplete" ]
+    skipped: [ "◌ Skipped / incomplete", "skipped", "skipped or incomplete" ],
+    completed: [ "+ Install completed", "installed", "install completed" ], removed_skipped: [ "− Removed, was skipped", "removed", "removed while skipped" ]
   }.freeze
   # The comparison's filter chips, by ?kind=.
-  KIND_FILTERS = { "installed" => :installed, "removed" => :removed, "upgraded" => :upgrade, "downgraded" => :downgrade, "invalid" => :invalid, "skipped" => :skipped, "equivalent" => :equivalent }.freeze
+  KIND_FILTERS = { "installed" => :installed, "removed" => :removed, "upgraded" => :upgrade, "downgraded" => :downgrade, "invalid" => :invalid, "skipped" => :skipped, "equivalent" => :equivalent,
+                   "completed" => :completed, "removed-skipped" => :removed_skipped }.freeze
   # Kinds the comparison shows a counter and a chip for only when there is one: the mockup has neither.
-  OPTIONAL_KINDS = %i[skipped equivalent].freeze
+  OPTIONAL_KINDS = %i[skipped equivalent completed removed_skipped].freeze
 
   def change_kind(kind)
     label, css, = KINDS.fetch(kind)
@@ -29,10 +31,13 @@ module HostPackagesHelper
 
   # Each change of a diff as [kind, name, architecture, from package or nil, to package or nil, reason or nil], in the
   # order shown. A skipped package (named in the later report's skipped list, P2-S08) is not a removal: it keeps its
-  # earlier version and carries the agent's reason.
+  # earlier version and carries the agent's reason. A completed installation (skipped by the earlier report, installed
+  # now) carries the earlier reason, and a package removed while it was skipped has no architecture or version known.
   def package_changes(diff)
     diff.installed.map { |p| [ :installed, p.name, p.architecture, nil, p, nil ] } +
+      diff.completed.map { |c| [ :completed, c.name, c.architecture, nil, c.package, c.reason ] } +
       diff.removed.map { |p| [ :removed, p.name, p.architecture, p, nil, nil ] } +
+      diff.removed_skipped.map { |r| [ :removed_skipped, r.name, nil, nil, nil, r.reason ] } +
       diff.skipped.map { |s| [ :skipped, s.name, s.architecture, s.package, nil, s.reason ] } +
       %i[upgrade downgrade invalid same].flat_map do |direction|
         diff.changed.select { |c| c.direction == direction }.map { |c| [ change_kind_of(c), c.name, c.architecture, c.from, c.to, nil ] }

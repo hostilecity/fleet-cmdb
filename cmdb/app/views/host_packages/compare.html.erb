@@ -42,8 +42,14 @@
       <div class="table-wrap"><table id="package_changes"><caption class="visually-hidden">Packages installed, removed, skipped, or changed</caption>
         <thead><tr><th scope="col">Package</th><th scope="col">Change</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Source package</th></tr></thead><tbody>
         <% shown.each do |kind, name, architecture, from, to, reason| %>
-          <tr class="change <%= kind %>"><td><span class="mono"><%= name %>:<%= architecture %></span></td><td><%= change_kind(kind) %></td>
-            <% if kind == :skipped %>
+          <tr class="change <%= kind %>"><td><span class="mono"><%= architecture ? "#{name}:#{architecture}" : name %></span><% unless architecture %> <span class="muted">any architecture</span><% end %></td><td><%= change_kind(kind) %></td>
+            <% if kind == :completed %>
+              <td><span class="unavailable">Skipped</span> <span class="mono"><%= reason %></span></td>
+              <td><%= tag.ins(to.version, class: "mono") %></td>
+            <% elsif kind == :removed_skipped %>
+              <td><span class="unavailable">Version not known: skipped</span> <span class="mono"><%= reason %></span></td>
+              <td><span class="unavailable">Not installed</span></td>
+            <% elsif kind == :skipped %>
               <td><span class="mono"><%= from.version %></span></td>
               <td><span class="unavailable">Not listed as installed</span> <span class="mono"><%= reason %></span></td>
             <% elsif kind == :same || kind == :equivalent %>
@@ -53,12 +59,12 @@
               <td><%= from ? tag.del(from.version, class: "mono") : tag.span("Not installed", class: "unavailable") %></td>
               <td><%= to ? tag.ins(to.version, class: "mono") : tag.span("Not installed", class: "unavailable") %></td>
             <% end %>
-            <td><% source = (to || from).source %><%= source ? tag.span(source, class: "mono") : tag.span("—", class: "muted") %></td></tr>
+            <td><% source = (to || from)&.source %><%= source ? tag.span(source, class: "mono") : tag.span("—", class: "muted") %></td></tr>
         <% end %>
       </tbody></table></div>
     <% end %>
     <p class="muted">"Source changed" is the same version with another source package. "Equivalent version" is a version dpkg treats as equal although it is spelled differently, such as <span class="mono">1.0</span> and <span class="mono">0:1.0</span>; its source package may or may not have changed.</p>
-    <p class="muted">"Skipped / incomplete" is a package that was installed in the earlier snapshot and is not listed in the later one, but the agent named it as one it could not report in full, such as an interrupted installation. It is not shown as removed: its state is not known.</p>
+    <p class="muted">"Skipped / incomplete" is a package that was installed in the earlier snapshot and is not listed in the later one, but the agent named it as one it could not report in full, such as an interrupted installation. It is not shown as removed: its state is not known. A package skipped in the earlier snapshot is counted as there: "Install completed" is one listed as installed in the later snapshot, and "Removed, was skipped" one the later snapshot neither lists nor skips (its version was never known, and a skipped name covers every architecture).</p>
     <p class="muted">Direction comes from dpkg's version order, so <span class="mono">1:7.8p1-5</span> to <span class="mono">1:7.8p1-4</span> is a downgrade although the strings sort the other way. "Cannot compare" means either version is not a valid dpkg version; it is never guessed.</p>
   <% end %>
 <% end %>

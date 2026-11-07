@@ -303,7 +303,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
     end
 
     it "shows no skipped row for a package that is skipped but was never installed, or is still listed" do
-      report([ [ "bash", "5.2.37-1", "bash" ], [ "tzdata", "2025b-1", "tzdata", "all" ] ], at: start + 2.hours, skipped: [ { "name" => "bash", "reason" => "unpacked" } ])
+      report([ [ "bash", "5.2.37-1", "bash" ], [ "tzdata", "2025b-1", "tzdata", "all" ] ], at: start + 2.hours, skipped: skipped + [ { "name" => "bash", "reason" => "unpacked" } ])
       get "/hosts/#{host.id}/packages/compare"
       expect(page.css("#package_changes")).to be_empty
       expect(page.at_css("#no_changes").text).to eq("The two snapshots list the same packages.")
@@ -315,6 +315,51 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(page.css("script:not([nonce])")).to be_empty
       expect(page.css("img[onerror]")).to be_empty
       expect(page.at_css("tr.change.skipped td:nth-child(4) .mono").text).to eq(HOSTILE)
+    end
+  end
+
+  describe "after a skip (P2-S08, review of #121)" do
+    before do
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start, skipped: [ { "name" => "vim", "reason" => "half-configured" }, { "name" => "curl", "reason" => "unpacked" } ])
+      report([ [ "bash", "5.2.37-1", "bash" ], [ "vim", "2:9.1-1", "vim" ] ], at: start + 1.hour)
+    end
+
+    def change_rows = page.css("#package_changes tbody tr").map { |tr| [ tr["class"], tr.css("td").map { |td| words(td) } ] }
+
+    it "shows an installation that finished as Install completed, and a package removed while skipped as Removed, was skipped" do
+      get "/hosts/#{host.id}/packages/compare"
+      expect(page.css("#diff_summary li").map { |li| words(li) }).to include("+ Install completed 1", "− Removed, was skipped 1", "+ Installed 0", "− Removed 0")
+      expect(change_rows).to eq([
+        [ "change completed", [ "vim:amd64", "+ Install completed", "Skipped half-configured", "2:9.1-1", "vim" ] ],
+        [ "change removed_skipped", [ "curl any architecture", "− Removed, was skipped", "Version not known: skipped unpacked", "Not installed", "—" ] ]
+      ])
+      expect(page.at_css("tr.change.removed_skipped del")).to be_nil # no version to strike through
+      get "/hosts/#{host.id}/packages"
+      expect(words(page.at_css("#snapshot_list tbody tr td:nth-child(2)"))).to eq("1 install completed, 1 removed while skipped")
+    end
+
+    it "filters the comparison to each of the two" do
+      from, to = snapshots.map(&:id)
+      get "/hosts/#{host.id}/packages/compare", params: { from:, to:, kind: "completed" }
+      expect(change_rows.map { |_, cells| cells.first }).to eq([ "vim:amd64" ])
+      get "/hosts/#{host.id}/packages/compare", params: { from:, to:, kind: "removed-skipped" }
+      expect(change_rows.map { |_, cells| cells.first }).to eq([ "curl any architecture" ])
+      expect(page.at_css("#kind_filters a[aria-current=true]").text.squish).to eq("Removed, was skipped 1")
+    end
+
+    it "shows neither counter when nothing was skipped before (the page as drawn in the mockup)" do
+      report([ [ "bash", "5.2.38-1", "bash" ], [ "vim", "2:9.1-1", "vim" ] ], at: start + 2.hours)
+      get "/hosts/#{host.id}/packages/compare"
+      expect(page.css("#diff_summary li").map { |li| words(li) }).to eq([ "+ Installed 0", "− Removed 0", "↑ Upgraded 1", "↓ Downgraded 0", "? Cannot compare 0", "∼ Source changed 0" ])
+    end
+
+    it "escapes the earlier reason (NFR-1)" do
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start + 2.hours, skipped: [ { "name" => "zsh", "reason" => HOSTILE } ])
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start + 3.hours)
+      get "/hosts/#{host.id}/packages/compare"
+      expect(page.css("script:not([nonce])")).to be_empty
+      expect(page.css("img[onerror]")).to be_empty
+      expect(page.at_css("tr.change.removed_skipped td:nth-child(3) .mono").text).to eq(HOSTILE)
     end
   end
 
