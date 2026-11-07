@@ -55,8 +55,9 @@ RSpec.describe AgentApiRequestGuard do
     expect(call("/api/v1/enroll", "x" * 11).first.first).to eq(413)
   end
 
-  it "allows uncompressed package reports up to the package endpoint's own limit" do
-    expect(described_class::UNCOMPRESSED_LIMITS).to eq("/api/v1/reports/packages" => Api::V1::PackageReportsController.max_body_bytes)
+  it "allows uncompressed package and config reports up to the endpoint's own limit" do
+    expect(described_class::UNCOMPRESSED_LIMITS).to eq("/api/v1/reports/packages" => Api::V1::PackageReportsController.max_body_bytes,
+                                                       "/api/v1/reports/config" => Api::V1::ConfigReportsController.max_body_bytes)
   end
 
   it "is installed with a 1 MB limit in the application" do

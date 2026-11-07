@@ -64,7 +64,8 @@ module ApiContract
   def example(schema_name, name) = examples_for(schema_name, kind: "valid").find { |e| e.name == name }.data
 
   # Every property path a schema declares, e.g. "disks[].free_bytes". Follows local $refs, items,
-  # and the *Of combinators.
+  # and the *Of combinators. An object keyed by data (additionalProperties with a schema and no properties,
+  # such as a config report's facts) declares "facts.*", and its entries' properties below that.
   def declared_paths(node, root = node, prefix = nil, out = Set.new)
     return out unless node.is_a?(Hash)
 
@@ -79,21 +80,29 @@ module ApiContract
       declared_paths(sub, root, path, out)
     end
     declared_paths(node["items"], root, "#{prefix}[]", out) if node["items"].is_a?(Hash)
+    if node["additionalProperties"].is_a?(Hash) && !node.key?("properties") # extensible objects (heartbeat directives) have both
+      out << "#{prefix}.*"
+      declared_paths(node["additionalProperties"], root, "#{prefix}.*", out)
+    end
     %w[allOf anyOf oneOf].each { |k| Array(node[k]).each { |sub| declared_paths(sub, root, prefix, out) } }
     out
   end
 
-  # Every object key path present in a payload, in the same notation as declared_paths.
-  def present_paths(value, prefix = nil, out = Set.new)
+  # The paths of objects keyed by data, from declared_paths: Set["facts"].
+  def map_paths(schema) = declared_paths(schema).filter_map { |path| path.delete_suffix(".*") if path.end_with?(".*") }.to_set
+
+  # Every object key path present in a payload, in the same notation as declared_paths. The keys of an object
+  # at one of `maps` are data, written "*".
+  def present_paths(value, prefix = nil, out = Set.new, maps: Set.new)
     case value
     when Hash
       value.each do |key, sub|
-        path = [ prefix, key ].compact.join(".")
+        path = [ prefix, maps.include?(prefix) ? "*" : key ].compact.join(".")
         out << path
-        present_paths(sub, path, out)
+        present_paths(sub, path, out, maps:)
       end
     when Array
-      value.each { |sub| present_paths(sub, "#{prefix}[]", out) }
+      value.each { |sub| present_paths(sub, "#{prefix}[]", out, maps:) }
     end
     out
   end
@@ -110,6 +119,10 @@ module ApiContract
 
   # A fact key in the config manifest (`sshd.permitrootlogin`, `file:/etc/shadow`) looks like a dotted hostname.
   FACT_KEY = %r{\A(?:[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+|file:/\S+|service:\S+)\z}
+
+  # A systemd unit name (`ssh.service`) looks like a dotted hostname too. Exempt from that heuristic only, so a
+  # hostname, credential, or address field is checked whatever it holds (review of #108).
+  UNIT_SUFFIX = /\.(?:service|socket|timer|target|mount|path)\z/
 
   def string_problems(string, key, out)
     return if key == "key" && string.match?(FACT_KEY)
@@ -128,6 +141,7 @@ module ApiContract
     end
     string.scan(/[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/).each do |candidate|
       next unless candidate.split(".").last.match?(/\A[A-Za-z]{2,}\z/) # looks like a domain name
+      next if candidate.match?(UNIT_SUFFIX)
 
       out << "hostname #{candidate} is not under an example domain" unless candidate.downcase.match?(FAKE_DOMAIN)
     end

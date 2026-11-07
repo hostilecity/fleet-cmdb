@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config report",
+  "description": "POST /api/v1/reports/config (FR-2.1, P2-S02). The host's configuration facts, keyed by the fact keys of the config fact manifest (GET /api/v1/manifest/config). The body may be sent with `Content-Encoding: gzip`. Every fact the agent knows is sent with a state: `ok` with its value, or `unreadable` or `unsupported` with a reason and a null value. The server checks each value against the manifest; a fact in the manifest that the report leaves out is recorded as missing, and a key the manifest does not have is ignored and logged.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_version",
+    "report_id",
+    "collected_at",
+    "manifest_version",
+    "facts"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Payload schema version. This directory is version 1.",
+      "const": 1
+    },
+    "agent_version": {
+      "description": "Agent release version (semantic version).",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "report_id": {
+      "description": "UUIDv4, generated per report and reused on retry so the server can discard duplicates.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "collected_at": {
+      "description": "When the agent collected the facts (agent clock), RFC 3339 UTC.",
+      "type": "string",
+      "maxLength": 35,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+    },
+    "manifest_version": {
+      "description": "The `manifest_version` of the manifest the agent collected against. A version newer than the server's manifest is refused; an older one is fine, and the facts added since are recorded as missing.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "facts": {
+      "description": "Fact key to its state, in any order. A key is a manifest fact key: `sshd.permitrootlogin`, `file:/etc/shadow`, or `service:ssh.service`.",
+      "type": "object",
+      "maxProperties": 2000,
+      "propertyNames": {
+        "maxLength": 256,
+        "anyOf": [
+          { "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$" },
+          { "pattern": "^file:/[A-Za-z0-9._/+-]{1,200}$" },
+          { "pattern": "^service:[A-Za-z0-9._@+-]{1,100}$" }
+        ]
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "state",
+          "value",
+          "reason"
+        ],
+        "properties": {
+          "state": {
+            "description": "`ok`: read, with its value. `unreadable`: the agent knows the fact but could not read it (for example, permission denied). `unsupported`: the agent cannot read this fact on this host or does not know it.",
+            "type": "string",
+            "enum": [
+              "ok",
+              "unreadable",
+              "unsupported"
+            ]
+          },
+          "value": {
+            "description": "The value, of the type the manifest gives the fact, when `state` is `ok`; `null` otherwise. A file or systemd unit that does not exist is `ok` with a `null` value. The server checks the type and the manifest's limits.",
+            "anyOf": [
+              { "type": "null" },
+              { "type": "boolean" },
+              { "type": "integer" },
+              { "type": "string", "maxLength": 65536 },
+              {
+                "type": "array",
+                "maxItems": 100000,
+                "items": { "type": "string", "maxLength": 65536 }
+              },
+              {
+                "description": "A file's attributes (file_attributes).",
+                "type": "object",
+                "required": [
+                  "mode",
+                  "owner",
+                  "group"
+                ],
+                "properties": {
+                  "mode": {
+                    "description": "Permission bits in octal, including any special bits, for example `0640`.",
+                    "type": "string",
+                    "pattern": "^[0-7]{3,4}$"
+                  },
+                  "owner": {
+                    "description": "Owning user name, or the numeric id when it has no name.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "group": {
+                    "description": "Owning group name, or the numeric id when it has no name.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                }
+              },
+              {
+                "description": "A systemd unit's state (service_state).",
+                "type": "object",
+                "required": [
+                  "active",
+                  "enabled"
+                ],
+                "properties": {
+                  "active": {
+                    "description": "systemd's ActiveState, for example `active` or `inactive`.",
+                    "type": "string",
+                    "pattern": "^[a-z][a-z-]{0,31}$"
+                  },
+                  "enabled": {
+                    "description": "systemd's UnitFileState, for example `enabled`, `disabled`, or `static`.",
+                    "type": "string",
+                    "pattern": "^[a-z][a-z-]{0,31}$"
+                  }
+                }
+              }
+            ]
+          },
+          "reason": {
+            "description": "Why the fact could not be read, for the operator, when `state` is `unreadable` or `unsupported`; `null` when it is `ok`.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "ok"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            "then": {
+              "properties": {
+                "reason": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "value": {
+                  "type": "null"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

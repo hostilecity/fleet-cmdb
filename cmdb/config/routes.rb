@@ -28,6 +28,7 @@ Rails.application.routes.draw do
         post "heartbeat", to: "heartbeats#create"
         post "reports/inventory", to: "inventory_reports#create"
         post "reports/packages", to: "package_reports#create"
+        post "reports/config", to: "config_reports#create"
         get "manifest/config", to: "config_manifests#show"
         # Update outcomes (P1-UPDATES): exempt from the minimum version, like heartbeats and release downloads.
         post "update-results", to: "update_results#create"

@@ -41,11 +41,15 @@ module AgentApi
       case value
       when Hash
         properties = schema["properties"]
-        return out unless properties
+        entries = schema["additionalProperties"] unless properties # an object keyed by data, such as a config report's facts
+        return out unless properties || entries.is_a?(Hash)
 
         value.each do |key, sub|
           child = "#{pointer}/#{key.to_s.gsub('~', '~0').gsub('/', '~1')}"
-          properties.key?(key) ? walk(properties[key], sub, child, out) : out << child
+          if entries then walk(entries, sub, child, out)
+          elsif properties.key?(key) then walk(properties[key], sub, child, out)
+          else out << child
+          end
         end
       when Array
         value.each_with_index { |sub, index| walk(schema["items"], sub, "#{pointer}/#{index}", out) } if schema["items"].is_a?(Hash)

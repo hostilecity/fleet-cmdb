@@ -3,7 +3,7 @@
 # - Bodies over MAX_BODY_BYTES get 413 with the JSON error envelope without being read further or parsed.
 #   Controllers apply tighter per-endpoint limits (Api::V1::BaseController.max_body_bytes).
 # - A path in UNCOMPRESSED_LIMITS takes a larger uncompressed body, up to the controller's own limit, so an
-#   agent need not compress (package reports, P2-S08). A compressed body (any Content-Encoding but identity)
+#   agent need not compress (package reports, P2-S08; config reports, P2-S02). A compressed body (any Content-Encoding but identity)
 #   is still held to MAX_BODY_BYTES on the wire; the controller limits what it expands to.
 # - Rails is told the body has no form parameters, so it never parses agent JSON itself and never writes
 #   agent payloads to the log ("Parameters:"). Api::V1::BaseController reads and validates the raw body.
@@ -13,7 +13,7 @@ class AgentApiRequestGuard
   PATH_PREFIX = "/api/"
   MAX_BODY_BYTES = 1.megabyte
   # Must match the controller's max_body_bytes for the path (spec/requests/api/request_guard_spec.rb checks).
-  UNCOMPRESSED_LIMITS = { "/api/v1/reports/packages" => 4.megabytes }.freeze
+  UNCOMPRESSED_LIMITS = { "/api/v1/reports/packages" => 4.megabytes, "/api/v1/reports/config" => 4.megabytes }.freeze
 
   def initialize(app, max_body_bytes: MAX_BODY_BYTES, uncompressed_limits: UNCOMPRESSED_LIMITS)
     @app = app
