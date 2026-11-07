@@ -368,7 +368,7 @@
   done:
     - "The compliance view loads under 2 s at 50 hosts and never shows \"not evaluated\" the same as \"zero findings\"."
     - "Adding or editing a rule in the UI re-evaluates results, and every rule or source change is audited (AC-2.2)."
-    - "Editing a rule previews the hosts that would change result before saving, and a manual feed refresh shows its cool-down."
+    - "Adding or editing a rule previews the hosts that would change result before saving, and a manual feed refresh shows its cool-down."
   blocked_by: [P2-DASH-HOST, P2-CIS-ENGINE, P2-VULNS, P2-RULE-DRYRUN, P2-REFRESH-LIMIT]
 
 - key: P2-AGENT-FACTS

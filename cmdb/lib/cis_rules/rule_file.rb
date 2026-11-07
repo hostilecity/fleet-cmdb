@@ -10,37 +10,72 @@ module CisRules
     # enabled is nil when the file does not say, so an import leaves an existing rule's flag as it is.
     Rule = Data.define(:definition, :enabled)
 
-    attr_reader :rules, :errors
+    # One problem: a JSON Pointer ("/" for the whole document) and what is wrong there.
+    Problem = Data.define(:pointer, :message) do
+      def to_s = "#{pointer}: #{message}"
+    end
 
-    def self.parse(text, manifest: ConfigManifest.current) = new(text, manifest).freeze
+    RULE_POINTER = "/rules/0" # where parse_rule puts the rule it is given
 
-    def valid? = errors.empty?
+    attr_reader :rules, :problems
+
+    def self.parse(text, manifest: ConfigManifest.current) = new(manifest, text:).freeze
+
+    # One rule on its own (a Hash, as a file holds it), as the dashboard edits it (P2-S14): the same checks as a
+    # file, with each pointer into the rule rather than the file ("/condition/eq", not "/rules/0/condition/eq").
+    def self.parse_rule(rule, manifest: ConfigManifest.current) = new(manifest, rule:).freeze
+
+    # ["<pointer>: <message>"]
+    def errors = problems.map(&:to_s)
+
+    def valid? = problems.empty?
 
     private
 
-    def initialize(text, manifest)
+    def initialize(manifest, text: nil, rule: nil)
       @manifest = manifest
       @rules = []
-      @errors = []
-      data = read(text)
-      nul_problems(data) if @errors.empty?
-      validate(data) if @errors.empty? # a file that could not be read, or holds a NUL, has nothing more to check
-      @rules = [] if @errors.any?
-      @errors = @errors.first(MAX_ERRORS)
+      @problems = []
+      data = text ? read(text) : wrap(rule)
+      nul_problems(data) if @problems.empty?
+      validate(data) if @problems.empty? # a file that could not be read, or holds a NUL, has nothing more to check
+      @rules = [] if @problems.any?
+      @problems = @problems.first(MAX_ERRORS)
+      @problems = @problems.map { |problem| problem.with(pointer: within_rule(problem.pointer)) } unless text
     end
 
     def read(text)
       return problem("/", "is larger than #{MAX_BYTES / 1.megabyte} MiB") if text.bytesize > MAX_BYTES
       return problem("/", "is not UTF-8 text") unless text.dup.force_encoding(Encoding::UTF_8).valid_encoding?
 
-      # Through JSON, so keys are strings and anything JSON cannot hold (such as .nan) is refused here.
-      JSON.parse(JSON.generate(YAML.safe_load(text, permitted_classes: [], aliases: false), max_nesting: JSON_NESTING), max_nesting: JSON_NESTING)
+      plain(YAML.safe_load(text, permitted_classes: [], aliases: false))
     rescue Psych::Exception => e
       problem("/", "is not a plain YAML or JSON document (#{e.message.truncate(200)})")
+    end
+
+    # A rule given as data has no text to measure, so it is limited by its size as JSON. A file keeps the limit on
+    # its own text in read, since escaping can make its JSON larger than the file (review of #126).
+    def wrap(rule)
+      rule = plain(rule, max_bytes: MAX_BYTES)
+      { "format_version" => FORMAT_VERSION, "rules" => [ rule ] } if @problems.empty?
+    end
+
+    # Through JSON, so keys are strings and anything JSON cannot hold (such as .nan) is refused here.
+    def plain(data, max_bytes: nil)
+      json = JSON.generate(data, max_nesting: JSON_NESTING)
+      return problem("/", "is larger than #{MAX_BYTES / 1.megabyte} MiB") if max_bytes && json.bytesize > max_bytes
+
+      JSON.parse(json, max_nesting: JSON_NESTING)
     rescue JSON::NestingError
       problem("/", "is nested more than #{JSON_NESTING} levels deep")
     rescue JSON::GeneratorError
       problem("/", "holds a value JSON cannot represent, such as NaN or infinity")
+    end
+
+    def within_rule(pointer)
+      return pointer unless pointer == RULE_POINTER || pointer.start_with?("#{RULE_POINTER}/")
+
+      pointer.delete_prefix(RULE_POINTER).presence || "/"
     end
 
     # PostgreSQL cannot store U+0000 in text or jsonb, so a NUL anywhere is a problem in the file, not a
@@ -76,13 +111,13 @@ module CisRules
         fact = @manifest.fact(rule["fact"])
         next problem("#{pointer}/fact", "#{rule['fact']} is not in the fact manifest") unless fact
 
-        @errors.concat(Condition.errors(rule["condition"], fact, "#{pointer}/condition"))
+        Condition.problems(rule["condition"], fact, "#{pointer}/condition").each { |at, message| problem(at, message) }
         @rules << Rule.new(definition: Definition.from_h(rule), enabled: rule["enabled"])
       end
     end
 
     def problem(pointer, message)
-      @errors << "#{pointer.presence || '/'}: #{message}"
+      @problems << Problem.new(pointer: pointer.presence || "/", message:)
       nil
     end
   end

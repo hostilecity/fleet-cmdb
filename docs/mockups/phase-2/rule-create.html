@@ -15,8 +15,8 @@
 </header>
 <main>
 <p><a href="rules.html">&larr; Rules</a></p>
-<div class="page-head"><div><h1>Add rule</h1><p>Creates version 1 of a new rule. The same checks as importing a file run when you save.</p></div></div>
-<form class="form wide" action="rule.html" method="get">
+<div class="page-head"><div><h1>Add rule</h1><p>Creates version 1 of a new rule. The same checks as importing a file run when you preview and again when you save.</p></div></div>
+<form class="form wide" action="rule-create-preview.html" method="get">
   <div class="field"><label for="key">Key</label><input id="key" class="mono" maxlength="64" placeholder="ssh-ignore-rhosts" aria-describedby="key-h" required><p class="hint" id="key-h">Lower case letters, digits, and hyphens. It never changes after saving and is never reused for another rule.</p></div>
   <div class="field"><label for="title">Title</label><input id="title" maxlength="200" placeholder="SSH ignores per-user trust files" required><p class="hint">Plain words, at most 200 characters. State the good condition, in your own words.</p></div>
   <div class="row">
@@ -41,10 +41,10 @@
   </fieldset>
   <div class="field"><label for="rem">Remediation</label><textarea id="rem" maxlength="4000" placeholder="Set IgnoreRhosts to yes in /etc/ssh/sshd_config and reload ssh."></textarea><p class="hint">What an operator does to fix a failure, in your own words.</p></div>
   <div class="field"><label><input type="checkbox" checked> Enabled</label><p class="hint">A rule that is off is kept but not evaluated.</p></div>
-  <div class="notice info" role="note"><strong>What saving does</strong><p>Version 1 is created and every host's latest config snapshot is checked against it, now. No agent is contacted. The key must not exist yet. The change is audited with you as the actor. Nothing is written when any field has an error; errors are shown beside the field, as on <a href="rule-edit-errors.html">the edit page</a>.</p></div>
-  <div class="actions"><button class="btn" type="submit">Add rule</button><a class="btn quiet" href="rules.html">Cancel</a></div>
+  <div class="notice info" role="note"><strong>What saving does</strong><p>Press Preview first: it shows how many hosts would pass and fail and writes nothing. Saving then creates version 1 and every host's latest config snapshot is checked against it, now. No agent is contacted. The key must not exist yet. The change is audited with you as the actor. Nothing is written when any field has an error; errors are shown beside the field, as on <a href="rule-edit-errors.html">the edit page</a>.</p></div>
+  <div class="actions"><button class="btn" type="submit">Preview the effect</button><a class="btn quiet" href="rules.html">Cancel</a></div>
 </form>
-<p class="note">Decided in the P2-D01 review (Q11): the dashboard can add one rule. A rule with several conditions (all, any, not) still comes in by importing a file.</p>
+<p class="note">Decided in the P2-D01 review (Q11): the dashboard can add one rule. A rule with several conditions (all, any, not) still comes in by importing a file. Decided on #126: adding a rule previews its results before saving, as editing does (<a href="rule-create-preview.html">the preview</a>).</p>
 </main>
 </body>
 </html>

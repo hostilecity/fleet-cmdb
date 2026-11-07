@@ -75,12 +75,57 @@ RSpec.describe CisRules::RuleFile do
     expect(CisRule.count).to eq(0)
   end
 
+  it "limits a file by its own size, not by its size as JSON, which escaping can double (review of #126)" do
+    # A single-quoted YAML scalar keeps a backslash as one byte; JSON writes it as two.
+    entries = Array.new(1000) do |i|
+      "- { key: r#{i}, reference: x, title: t, severity: low, applies_to: [{ distribution: debian }], fact: sshd.permitrootlogin, " \
+        "condition: { eq: 'no' }, remediation: '#{'\\' * 700}' }"
+    end
+    text = "format_version: 1\nrules:\n#{entries.join("\n")}\n"
+    expect(text.bytesize).to be < described_class::MAX_BYTES
+    expect(JSON.generate(YAML.safe_load(text)).bytesize).to be > described_class::MAX_BYTES
+    expect(errors(text)).to eq([])
+  end
+
   it "lists at most 200 problems" do
     expect(errors(file(*Array.new(250) { |i| rule(key: "r#{i}", severity: "bad") })).size).to eq(200)
   end
 
   it "checks the rule shape before the manifest, and only for rules whose shape is right" do
     expect(errors(file(rule(fact: "nope.fact", condition: { "eq" => "no", "ne" => "yes" })))).to eq([ "/rules/0/condition: does not match exactly one `oneOf` schema" ])
+  end
+
+  it "lists each problem with its pointer and message apart, as well as together" do
+    parsed = described_class.parse(file(rule(fact: "nope.fact")))
+    expect(parsed.problems).to eq([ described_class::Problem.new(pointer: "/rules/0/fact", message: "nope.fact is not in the fact manifest") ])
+    expect(parsed.errors).to eq([ "/rules/0/fact: nope.fact is not in the fact manifest" ])
+  end
+
+  describe ".parse_rule, one rule on its own (P2-S14)" do
+    def problems(data) = described_class.parse_rule(data).errors
+
+    it "parses a valid rule, symbol keys and all" do
+      parsed = described_class.parse_rule(rule(enabled: false).transform_keys(&:to_sym))
+      expect(parsed).to be_valid
+      expect(parsed.rules.sole).to have_attributes(definition: CisRules::Definition.from_h(rule), enabled: false)
+    end
+
+    it "runs the same checks as a file, with pointers into the rule" do
+      expect(problems(rule(severity: "urgent", key: "Bad"))).to contain_exactly("/key: does not match pattern: ^[a-z0-9][a-z0-9-]{0,63}$",
+                                                                               "/severity: is not one of: [\"low\", \"medium\", \"high\", \"critical\"]")
+      expect(problems(rule(fact: "nope.fact"))).to eq([ "/fact: nope.fact is not in the fact manifest" ])
+      expect(problems(rule(condition: { "not" => { "eq" => false } }))).to eq([ "/condition/not: eq needs a string (quote yes, no, on, and off in YAML, or they are read as true and false)" ])
+      expect(problems(rule(title: "a\0b"))).to eq([ "/title: contains a NUL character" ])
+      expect(problems(rule.merge("extra" => 1)).sole).to start_with("/extra:")
+      expect(problems(rule.except("title")).sole).to start_with("/: ")
+      expect(problems([ rule ]).sole).to start_with("/: ")
+    end
+
+    it "refuses what JSON cannot hold, a value nested too deep, and an oversize rule" do
+      expect(problems(rule(condition: { "eq" => Float::NAN }))).to eq([ "/: holds a value JSON cannot represent, such as NaN or infinity" ])
+      expect(problems(rule(condition: (1..70).reduce({ "eq" => "no" }) { |inner, _| { "not" => inner } }))).to eq([ "/: is nested more than 64 levels deep" ])
+      expect(problems(rule(remediation: "x" * (1.megabyte + 1)))).to eq([ "/: is larger than 1 MiB" ])
+    end
   end
 
   it "is checked against the manifest it is given" do
