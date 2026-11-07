@@ -1,0 +1,638 @@
+# Starter CIS-aligned rules for Debian 13 (P2-CIS-RULES, FR-2.2, DEC-01, DEC-10, DEC-12).
+#
+# Written in our own words. A reference names a section of the CIS Debian Linux 13 Benchmark v1.0.0 as a
+# pointer only: no benchmark text (titles, audit steps, rationale, or remediation) is copied here. Where a rule
+# has no single matching section, the reference names the section it belongs to. Passing these rules is
+# "CIS-aligned", never "CIS compliant".
+#
+# Import:  bin/rails rules:import FILE=config/rules/debian-13.yml
+# Guide:   docs/operations/cis-rules.md (adding and tuning rules, and the licensing note)
+# Tests:   spec/rules/debian_13_rules_spec.rb, with a passing and a failing value per rule in
+#          spec/fixtures/cis_rules/debian-13.yml
+#
+# Every rule omits `enabled`, so a new rule is enabled and a re-import never undoes a rule an operator disabled.
+format_version: 1
+rules:
+
+  # SSH server
+
+  - key: ssh-root-login-off
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.21"
+    title: "SSH does not accept logins as root"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.permitrootlogin"
+    condition: { eq: "no" }
+    remediation: "Set PermitRootLogin no in /etc/ssh/sshd_config (or a file in sshd_config.d), then reload ssh. Log in as a named user and use sudo."
+
+  - key: ssh-empty-passwords-off
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.20"
+    title: "SSH refuses accounts with an empty password"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.permitemptypasswords"
+    condition: { eq: false }
+    remediation: "Set PermitEmptyPasswords no for sshd, then reload ssh."
+
+  - key: ssh-password-login-off
+    reference: "CIS Debian Linux 13 v1.0.0 5.1"
+    title: "SSH accepts keys only, not passwords"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.passwordauthentication"
+    condition: { eq: false }
+    remediation: "Install a public key for each user who needs SSH, then set PasswordAuthentication no for sshd and reload ssh."
+
+  - key: ssh-host-based-auth-off
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.10"
+    title: "SSH does not trust other hosts to vouch for users"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.hostbasedauthentication"
+    condition: { eq: false }
+    remediation: "Set HostbasedAuthentication no for sshd, then reload ssh."
+
+  - key: ssh-ignore-rhosts
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.11"
+    title: "SSH ignores .rhosts and .shosts files"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.ignorerhosts"
+    condition: { eq: true }
+    remediation: "Set IgnoreRhosts yes for sshd, then reload ssh."
+
+  - key: ssh-user-environment-off
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.22"
+    title: "SSH does not let users pass environment settings to the server"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.permituserenvironment"
+    condition: { eq: false }
+    remediation: "Set PermitUserEnvironment no for sshd, then reload ssh."
+
+  - key: ssh-uses-pam
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.23"
+    title: "SSH runs logins through PAM"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.usepam"
+    condition: { eq: true }
+    remediation: "Set UsePAM yes for sshd, then reload ssh, so account and password policy apply to SSH logins."
+
+  - key: ssh-max-auth-tries
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.17"
+    title: "SSH allows at most 4 authentication attempts per connection"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.maxauthtries"
+    condition: { lte: 4 }
+    remediation: "Set MaxAuthTries to 4 or fewer for sshd, then reload ssh."
+
+  - key: ssh-max-sessions
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.18"
+    title: "SSH allows at most 10 sessions per connection"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.maxsessions"
+    condition: { lte: 10 }
+    remediation: "Set MaxSessions to 10 or fewer for sshd, then reload ssh."
+
+  - key: ssh-login-grace-time
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.14"
+    title: "SSH drops unauthenticated connections within a minute"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.logingracetime"
+    condition: { all: [{ gte: 1 }, { lte: 60 }] }
+    remediation: "Set LoginGraceTime to between 1 and 60 seconds for sshd, then reload ssh. 0 means no limit."
+
+  - key: ssh-log-level
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.15"
+    title: "SSH logs at INFO or VERBOSE"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.loglevel"
+    condition: { in: ["INFO", "VERBOSE"] }
+    remediation: "Set LogLevel INFO or VERBOSE for sshd, then reload ssh, so logins are recorded."
+
+  - key: ssh-banner
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.5"
+    title: "SSH shows a banner before login"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.banner"
+    condition: { ne: "none" }
+    remediation: "Point Banner at a file such as /etc/issue.net for sshd, then reload ssh."
+
+  - key: ssh-client-alive-interval
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.7"
+    title: "SSH checks idle clients"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.clientaliveinterval"
+    condition: { gte: 1 }
+    remediation: "Set ClientAliveInterval to a number of seconds above 0 (for example 15) for sshd, then reload ssh."
+
+  - key: ssh-client-alive-count
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.7"
+    title: "SSH disconnects clients that stop answering"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.clientalivecountmax"
+    condition: { gte: 1 }
+    remediation: "Set ClientAliveCountMax above 0 (for example 3) for sshd, then reload ssh."
+
+  - key: ssh-ciphers-strong
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.6"
+    title: "SSH offers no weak ciphers"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.ciphers"
+    condition: { not_in: ["3des-cbc", "aes128-cbc", "aes192-cbc", "aes256-cbc", "blowfish-cbc", "cast128-cbc", "arcfour", "arcfour128", "arcfour256", "rijndael-cbc@lysator.liu.se"] }
+    remediation: "Remove CBC-mode, 3DES, Blowfish, CAST, and RC4 ciphers from Ciphers for sshd, then reload ssh. The Debian 13 defaults pass."
+
+  - key: ssh-kex-strong
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.12"
+    title: "SSH offers no weak key exchange methods"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.kexalgorithms"
+    condition: { not_in: ["diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1"] }
+    remediation: "Remove SHA-1 Diffie-Hellman methods from KexAlgorithms for sshd, then reload ssh. The Debian 13 defaults pass."
+
+  - key: ssh-macs-strong
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.16"
+    title: "SSH offers no weak message authentication codes"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.macs"
+    condition: { not_in: ["hmac-md5", "hmac-md5-96", "hmac-ripemd160", "hmac-sha1-96", "umac-64@openssh.com", "hmac-md5-etm@openssh.com", "hmac-md5-96-etm@openssh.com", "hmac-ripemd160-etm@openssh.com", "hmac-sha1-96-etm@openssh.com", "umac-64-etm@openssh.com"] }
+    remediation: "Remove MD5, RIPEMD-160, truncated SHA-1, and 64-bit UMAC algorithms from MACs for sshd, then reload ssh."
+
+  - key: ssh-x11-forwarding-off
+    reference: "CIS Debian Linux 13 v1.0.0 5.1"
+    title: "SSH does not forward X11"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.x11forwarding"
+    condition: { eq: false }
+    remediation: "Set X11Forwarding no (or DisableForwarding yes) for sshd, then reload ssh."
+
+  - key: ssh-tcp-forwarding-off
+    reference: "CIS Debian Linux 13 v1.0.0 5.1"
+    title: "SSH does not forward TCP ports"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "sshd.allowtcpforwarding"
+    condition: { eq: "no" }
+    remediation: "Set AllowTcpForwarding no (or DisableForwarding yes) for sshd, then reload ssh, unless the host is meant to be a jump host."
+
+  - key: sshd-config-access
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.1"
+    title: "Only root can read or change the SSH server configuration"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/ssh/sshd_config"
+    condition: { all: [{ mode_at_most: "0600" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }
+    remediation: "Run chown root:root /etc/ssh/sshd_config and chmod 0600 /etc/ssh/sshd_config."
+
+
+  # Login and password policy
+
+  - key: password-max-age
+    reference: "CIS Debian Linux 13 v1.0.0 5.4.1.1"
+    title: "Passwords expire within a year"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "login_defs.pass_max_days"
+    condition: { all: [{ gte: 1 }, { lte: 365 }] }
+    remediation: "Set PASS_MAX_DAYS to 365 or less in /etc/login.defs. Existing accounts keep their old setting: change them with chage --maxdays."
+
+  - key: password-min-age
+    reference: "CIS Debian Linux 13 v1.0.0 5.4.1.2"
+    title: "Passwords cannot be changed again the same day"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "login_defs.pass_min_days"
+    condition: { gte: 1 }
+    remediation: "Set PASS_MIN_DAYS to 1 or more in /etc/login.defs, and use chage --mindays for existing accounts."
+
+  - key: password-warn-age
+    reference: "CIS Debian Linux 13 v1.0.0 5.4.1.3"
+    title: "Users are warned at least a week before a password expires"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "login_defs.pass_warn_age"
+    condition: { gte: 7 }
+    remediation: "Set PASS_WARN_AGE to 7 or more in /etc/login.defs, and use chage --warndays for existing accounts."
+
+  - key: password-hashing
+    reference: "CIS Debian Linux 13 v1.0.0 5.4.1.4"
+    title: "New passwords are hashed with yescrypt or SHA-512"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "login_defs.encrypt_method"
+    condition: { in: ["YESCRYPT", "SHA512"] }
+    remediation: "Set ENCRYPT_METHOD YESCRYPT (the Debian 13 default) or SHA512 in /etc/login.defs."
+
+  - key: inactive-account-lock
+    reference: "CIS Debian Linux 13 v1.0.0 5.4.1.5"
+    title: "Accounts lock within 45 days of a password expiring"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "useradd.inactive"
+    condition: { all: [{ gte: 0 }, { lte: 45 }] }
+    remediation: "Run useradd -D -f 45 (or less), and chage --inactive for existing accounts. -1 means never."
+
+  - key: default-umask
+    reference: "CIS Debian Linux 13 v1.0.0 5.4.3.3"
+    title: "New files are not writable by the group or readable by others"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "login_defs.umask"
+    condition: { matches: "0?[0-7][2367]7" }
+    remediation: "Set UMASK 027 (or 077) in /etc/login.defs."
+
+  - key: password-min-length
+    reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.2"
+    title: "Passwords have at least 14 characters"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "pwquality.minlen"
+    condition: { gte: 14 }
+    remediation: "Set minlen = 14 or more in /etc/security/pwquality.conf (or a file in pwquality.conf.d)."
+
+  - key: password-complexity
+    reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.3"
+    title: "Passwords use all four kinds of character"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "pwquality.minclass"
+    condition: { gte: 4 }
+    remediation: "Set minclass = 4 in /etc/security/pwquality.conf, or set dcredit, ucredit, lcredit, and ocredit to -1."
+
+  - key: password-repeats
+    reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.4"
+    title: "Passwords repeat a character at most 3 times in a row"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "pwquality.maxrepeat"
+    condition: { all: [{ gte: 1 }, { lte: 3 }] }
+    remediation: "Set maxrepeat = 3 or less (but not 0, which turns the check off) in /etc/security/pwquality.conf."
+
+
+  # Local users
+
+  - key: only-root-uid-0
+    reference: "CIS Debian Linux 13 v1.0.0 5.4.2.1"
+    title: "No account other than root has user id 0"
+    severity: critical
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "users.uid0"
+    condition: { eq: ["root"] }
+    remediation: "Give every other account with UID 0 its own id (usermod -u), or remove it."
+
+
+  # Firewall and automatic updates
+
+  - key: firewall-enabled
+    reference: "CIS Debian Linux 13 v1.0.0 4"
+    title: "A host firewall is enabled"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "firewall.enabled"
+    condition: { eq: true }
+    remediation: "Enable one firewall: ufw enable, or systemctl enable --now nftables with a ruleset in /etc/nftables.conf. Allow SSH first."
+
+  - key: automatic-updates
+    reference: "CIS Debian Linux 13 v1.0.0 1.2.2"
+    title: "Security updates install automatically"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "auto_updates.enabled"
+    condition: { eq: true }
+    remediation: "Install unattended-upgrades and run dpkg-reconfigure -plow unattended-upgrades, or apply updates on a schedule some other way and disable this rule."
+
+
+  # File permissions
+
+  - key: passwd-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.1"
+    title: "/etc/passwd is owned by root and not writable by others"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/passwd"
+    condition: { all: [{ mode_at_most: "0644" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }
+    remediation: "Run chown root:root /etc/passwd and chmod 0644 /etc/passwd."
+
+  - key: passwd-backup-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.2"
+    title: "/etc/passwd- is owned by root and not writable by others"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/passwd-"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0644" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/passwd- and chmod 0644 /etc/passwd-."
+
+  - key: group-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.3"
+    title: "/etc/group is owned by root and not writable by others"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/group"
+    condition: { all: [{ mode_at_most: "0644" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }
+    remediation: "Run chown root:root /etc/group and chmod 0644 /etc/group."
+
+  - key: group-backup-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.4"
+    title: "/etc/group- is owned by root and not writable by others"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/group-"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0644" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/group- and chmod 0644 /etc/group-."
+
+  - key: shadow-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.5"
+    title: "/etc/shadow is readable only by root and the shadow group"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/shadow"
+    condition: { all: [{ mode_at_most: "0640" }, { field: "owner", eq: "root" }, { field: "group", in: ["root", "shadow"] }] }
+    remediation: "Run chown root:shadow /etc/shadow and chmod 0640 /etc/shadow."
+
+  - key: shadow-backup-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.6"
+    title: "/etc/shadow- is readable only by root and the shadow group"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/shadow-"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0640" }, { field: "owner", eq: "root" }, { field: "group", in: ["root", "shadow"] }] }] }
+    remediation: "Run chown root:shadow /etc/shadow- and chmod 0640 /etc/shadow-."
+
+  - key: gshadow-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.7"
+    title: "/etc/gshadow is readable only by root and the shadow group"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/gshadow"
+    condition: { all: [{ mode_at_most: "0640" }, { field: "owner", eq: "root" }, { field: "group", in: ["root", "shadow"] }] }
+    remediation: "Run chown root:shadow /etc/gshadow and chmod 0640 /etc/gshadow."
+
+  - key: gshadow-backup-access
+    reference: "CIS Debian Linux 13 v1.0.0 7.1.8"
+    title: "/etc/gshadow- is readable only by root and the shadow group"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/gshadow-"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0640" }, { field: "owner", eq: "root" }, { field: "group", in: ["root", "shadow"] }] }] }
+    remediation: "Run chown root:shadow /etc/gshadow- and chmod 0640 /etc/gshadow-."
+
+  - key: sudoers-access
+    reference: "CIS Debian Linux 13 v1.0.0 5.2"
+    title: "/etc/sudoers is read-only and owned by root"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/sudoers"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0440" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/sudoers and chmod 0440 /etc/sudoers. Edit it only with visudo."
+
+  - key: grub-config-access
+    reference: "CIS Debian Linux 13 v1.0.0 1.4"
+    title: "Only root can read the boot loader configuration"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/boot/grub/grub.cfg"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0600" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /boot/grub/grub.cfg and chmod 0600 /boot/grub/grub.cfg. update-grub may reset it, so check after kernel updates."
+
+  - key: crontab-access
+    reference: "CIS Debian Linux 13 v1.0.0 2.4.1"
+    title: "Only root can read or change /etc/crontab"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/crontab"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0600" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/crontab and chmod 0600 /etc/crontab."
+
+  - key: cron-hourly-access
+    reference: "CIS Debian Linux 13 v1.0.0 2.4.1"
+    title: "Only root can use /etc/cron.hourly"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/cron.hourly"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0700" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/cron.hourly and chmod 0700 /etc/cron.hourly."
+
+  - key: cron-daily-access
+    reference: "CIS Debian Linux 13 v1.0.0 2.4.1"
+    title: "Only root can use /etc/cron.daily"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/cron.daily"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0700" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/cron.daily and chmod 0700 /etc/cron.daily."
+
+  - key: cron-weekly-access
+    reference: "CIS Debian Linux 13 v1.0.0 2.4.1"
+    title: "Only root can use /etc/cron.weekly"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/cron.weekly"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0700" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/cron.weekly and chmod 0700 /etc/cron.weekly."
+
+  - key: cron-monthly-access
+    reference: "CIS Debian Linux 13 v1.0.0 2.4.1"
+    title: "Only root can use /etc/cron.monthly"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/cron.monthly"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0700" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/cron.monthly and chmod 0700 /etc/cron.monthly."
+
+  - key: cron-d-access
+    reference: "CIS Debian Linux 13 v1.0.0 2.4.1"
+    title: "Only root can use /etc/cron.d"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/cron.d"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0700" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/cron.d and chmod 0700 /etc/cron.d."
+
+  - key: motd-access
+    reference: "CIS Debian Linux 13 v1.0.0 1.6"
+    title: "/etc/motd is owned by root and not writable by others"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/motd"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0644" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/motd and chmod 0644 /etc/motd."
+
+  - key: issue-access
+    reference: "CIS Debian Linux 13 v1.0.0 1.6"
+    title: "/etc/issue is owned by root and not writable by others"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/issue"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0644" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/issue and chmod 0644 /etc/issue."
+
+  - key: issue-net-access
+    reference: "CIS Debian Linux 13 v1.0.0 1.6"
+    title: "/etc/issue.net is owned by root and not writable by others"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "file:/etc/issue.net"
+    condition: { any: [{ absent: true }, { all: [{ mode_at_most: "0644" }, { field: "owner", eq: "root" }, { field: "group", eq: "root" }] }] }
+    remediation: "Run chown root:root /etc/issue.net and chmod 0644 /etc/issue.net."
+
+
+  # Services that should run
+
+  - key: cron-running
+    reference: "CIS Debian Linux 13 v1.0.0 2.4.1.1"
+    title: "The cron daemon is enabled and running"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:cron.service"
+    condition: { all: [{ field: "active", eq: "active" }, { field: "enabled", eq: "enabled" }] }
+    remediation: "Run systemctl enable --now cron."
+
+  - key: auditd-running
+    reference: "CIS Debian Linux 13 v1.0.0 6.2.1.2"
+    title: "The audit daemon is enabled and running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:auditd.service"
+    condition: { all: [{ field: "active", eq: "active" }, { field: "enabled", eq: "enabled" }] }
+    remediation: "Install auditd and run systemctl enable --now auditd."
+
+  - key: apparmor-running
+    reference: "CIS Debian Linux 13 v1.0.0 1.3.1"
+    title: "AppArmor is enabled"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:apparmor.service"
+    condition: { all: [{ field: "active", eq: "active" }, { field: "enabled", eq: "enabled" }] }
+    remediation: "Run systemctl enable --now apparmor, and check that the kernel was not booted with apparmor=0."
+
+  - key: journald-running
+    reference: "CIS Debian Linux 13 v1.0.0 6.1.1.1"
+    title: "The systemd journal is running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:systemd-journald.service"
+    condition: { field: "active", eq: "active" }
+    remediation: "Run systemctl start systemd-journald and find out why it stopped (journalctl -b)."
+
+
+  # Services that should not be in use
+
+  - key: avahi-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1.2"
+    title: "Avahi (mDNS) is not running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:avahi-daemon.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge avahi-daemon, or systemctl disable --now avahi-daemon.service avahi-daemon.socket if something depends on it."
+
+  - key: cups-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1.11"
+    title: "No print server is running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:cups.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge cups, or systemctl disable --now cups.service cups.socket."
+
+  - key: snmp-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1.15"
+    title: "No SNMP agent is running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:snmpd.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge snmpd unless the host is monitored over SNMP; then keep it and disable this rule."
+
+  - key: dhcp-server-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "No DHCP server is running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:isc-dhcp-server.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge isc-dhcp-server unless this host serves DHCP; then disable this rule for it."
+
+  - key: nfs-server-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "No NFS server is running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:nfs-server.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge nfs-kernel-server unless this host exports file systems; then disable this rule for it."
+
+  - key: rpcbind-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "rpcbind is not running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:rpcbind.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge rpcbind, or systemctl disable --now rpcbind.service rpcbind.socket if NFS needs it."
+
+  - key: samba-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "No Samba file server is running"
+    severity: medium
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:smbd.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge samba unless this host shares files with Windows clients; then disable this rule for it."
+
+  - key: ftp-server-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "No FTP server is running"
+    severity: high
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:vsftpd.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge vsftpd and use SFTP over SSH instead."
+
+  - key: apache-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "Apache is not running"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:apache2.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge apache2 unless this host is a web server; then disable this rule for it."
+
+  - key: nginx-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "nginx is not running"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:nginx.service"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Run apt purge nginx unless this host is a web server; then disable this rule for it."
+
+  - key: telnet-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "No telnet server is running"
+    severity: critical
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:telnet.socket"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Remove the telnet server package (for example apt purge inetutils-telnetd telnetd) and use SSH."
+
+  - key: rsh-not-in-use
+    reference: "CIS Debian Linux 13 v1.0.0 2.1"
+    title: "No rsh server is running"
+    severity: critical
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "service:rsh.socket"
+    condition: { any: [{ absent: true }, { all: [{ field: "active", ne: "active" }, { field: "enabled", not_in: ["enabled", "enabled-runtime"] }] }] }
+    remediation: "Remove the rsh server package (for example apt purge rsh-server) and use SSH."

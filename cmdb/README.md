@@ -130,7 +130,7 @@ bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 
 ### CIS-aligned rules
 
-Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the operator controls; the format is in [docs/api/rules](../docs/api/rules/README.md).
+Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the operator controls; the format is in [docs/api/rules](../docs/api/rules/README.md). The starter set for Debian 13 is `config/rules/debian-13.yml` (`bin/rails rules:import FILE=config/rules/debian-13.yml`); its fixtures are `spec/fixtures/cis_rules/debian-13.yml`, and [docs/operations/cis-rules.md](../docs/operations/cis-rules.md) covers adding and tuning rules and the licensing rules (P2-CIS-RULES).
 
 - **Import.** `bin/rails rules:import FILE=rules.yml` checks the whole file (`CisRules::RuleFile`: safe YAML, the JSON Schema, then each rule against the fact manifest) and writes nothing if anything is wrong, listing every problem. `DISABLE_MISSING=1` disables enabled rules the file does not list; otherwise they are left alone. `bin/rails rules:list` shows each rule's key, version, flag, severity, and fact. Imports are serialised and audited with the system actor.
 - **Storage.** `cis_rules`: the stable key, the enabled flag, and the current version. `cis_rule_versions`: one row per definition, never changed (`readonly?`), numbered from 1; an import creates one only when the definition's content hash changes.
