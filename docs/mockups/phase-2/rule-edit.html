@@ -16,7 +16,7 @@
 <main>
 <p><a href="rule.html">&larr; ssh-max-auth-tries</a></p>
 <div class="page-head"><div><h1>Edit rule</h1><p>Saving creates version 3. Version 2 stays as it is.</p></div></div>
-<form class="form wide" action="rule.html" method="get">
+<form class="form wide" action="rule-edit-preview.html" method="get">
   <div class="field"><label for="key">Key</label><input id="key" class="mono" value="ssh-max-auth-tries" readonly aria-describedby="key-h"><p class="hint" id="key-h">The key never changes and is never reused for another rule.</p></div>
   <div class="field"><label for="title">Title</label><input id="title" maxlength="200" value="SSH limits authentication attempts per connection"><p class="hint">Plain words, at most 200 characters.</p></div>
   <div class="row">
@@ -40,10 +40,10 @@
     </div>
   </fieldset>
   <div class="field"><label for="rem">Remediation</label><textarea id="rem" maxlength="4000">Set MaxAuthTries to 4 or lower in /etc/ssh/sshd_config and reload ssh.</textarea><p class="hint">What an operator does to fix a failure, in your own words.</p></div>
-  <div class="notice info" role="note"><strong>What saving does</strong><p>A new version, 3, replaces version 2 as current. Every host's latest config snapshot is checked again against it, now, and any result that changes is recorded in that host's history. No agent is contacted. The change is audited with you as the actor and the before and after values. Saving without a change makes no new version.</p></div>
-  <div class="actions"><button class="btn" type="submit">Save as version 3</button><a class="btn quiet" href="rule.html">Cancel</a></div>
+  <div class="notice info" role="note"><strong>What saving does</strong><p>Press Preview first: it shows which hosts would change result and writes nothing. Saving then makes a new version, 3, which replaces version 2 as current. Every host's latest config snapshot is checked again against it, now, and any result that changes is recorded in that host's history. No agent is contacted. The change is audited with you as the actor and the before and after values. Saving without a change makes no new version.</p></div>
+  <div class="actions"><button class="btn" type="submit" formaction="rule-edit-preview.html">Preview the effect</button><a class="btn quiet" href="rule.html">Cancel</a></div>
 </form>
-<p class="note"><span class="review-q">Review Q12.</span> Editing. Drawn: a form for the common case, a rule with a single comparison, with the operator and expected value as two fields (this is what AC-2.2 edits). A rule built from several conditions (all, any, not) shows the condition as a text box holding YAML or JSON instead, checked as you save (<a href="rule-edit-errors.html">example with errors</a>). Not drawn, because the scope does not ask for it: a preview of which hosts would change result before saving. The server could compute it; the import preview is the only place the scope asks for one. Do you want it on edit too?</p>
+<p class="note">Decided in the P2-D01 review (Q12): editing shows a preview of which hosts would change result before anything is saved. A rule with several conditions is edited as text with the same preview, as on <a href="rule-edit-errors.html">the errors page</a>.</p>
 </main>
 </body>
 </html>
