@@ -6,7 +6,7 @@
   <div class="notice" role="alert" id="rules_changed"><strong>Nothing was applied: the rules changed since you previewed this file.</strong>
     <p>Someone added, edited, enabled, or disabled a rule in the meantime. This is the same file previewed again against the rules as they are now; check it and apply again if it is still what you want.</p></div>
 <% end %>
-<div class="notice info" role="status" id="import_summary"><strong><%= import_summary(@plan) %></strong>
+<div class="notice info" role="status" id="import_summary"><strong><%= rule_import_summary(@plan) %></strong>
   <p><% if @plan.changes? %>After, <%= pluralize(@plan.total_after, "rule") %> in total. Every host's latest config snapshot is checked again against the added, changed, enabled, and disabled rules. No agent is contacted.<% else %>The file matches the rules as they are, so applying it would change nothing.<% end %></p></div>
 
 <div class="verdict-group"><h3>Added <span class="muted count"><%= @plan.added.size %></span></h3></div>

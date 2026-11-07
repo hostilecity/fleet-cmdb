@@ -164,7 +164,7 @@ module RulesHelper
   end
 
   # "The file is valid: 2 to add, 3 to change, 1 to enable, 33 unchanged."
-  def import_summary(plan)
+  def rule_import_summary(plan)
     parts = [ ("#{plan.added.size} to add" if plan.added.any?), ("#{plan.changed.size} to change" if plan.changed.any?),
               ("#{plan.enabling.size} to enable" if plan.enabling.any?), ("#{plan.disabling.size} to disable" if plan.disabling.any?),
               "#{plan.unchanged.size} unchanged" ].compact
