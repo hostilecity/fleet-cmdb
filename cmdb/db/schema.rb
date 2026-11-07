@@ -471,6 +471,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
     t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying]::text[])", name: "package_snapshots_manager_valid"
   end
 
+  create_table "report_requests", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "report_type", limit: 16, null: false
+    t.string "state", limit: 16, default: "pending", null: false
+    t.bigint "requested_by_id", null: false
+    t.datetime "requested_at", null: false
+    t.datetime "expires_at", null: false
+    t.datetime "sent_at"
+    t.datetime "delivered_agent_time"
+    t.datetime "satisfied_at"
+    t.uuid "satisfied_by_report_id"
+    t.datetime "expired_at"
+    t.index ["expires_at"], name: "index_report_requests_pending_expiry", where: "((state)::text = 'pending'::text)"
+    t.index ["host_id", "report_type"], name: "index_report_requests_one_pending", unique: true, where: "((state)::text = 'pending'::text)"
+    t.index ["host_id", "requested_at"], name: "index_report_requests_on_host_id_and_requested_at"
+    t.index ["requested_at"], name: "index_report_requests_on_requested_at"
+    t.check_constraint "(sent_at IS NULL) = (delivered_agent_time IS NULL)", name: "report_requests_delivery_complete"
+    t.check_constraint "(state::text = 'expired'::text) = (expired_at IS NOT NULL)", name: "report_requests_expired_matches_state"
+    t.check_constraint "(state::text = 'satisfied'::text) = (satisfied_at IS NOT NULL AND satisfied_by_report_id IS NOT NULL)", name: "report_requests_satisfied_matches_state"
+    t.check_constraint "expires_at > requested_at", name: "report_requests_expire_after_request"
+    t.check_constraint "report_type::text = ANY (ARRAY['config'::character varying, 'inventory'::character varying, 'packages'::character varying]::text[])", name: "report_requests_type_valid"
+    t.check_constraint "state::text <> 'satisfied'::text OR sent_at IS NOT NULL", name: "report_requests_satisfied_after_delivery"
+    t.check_constraint "state::text = ANY (ARRAY['pending'::character varying, 'satisfied'::character varying, 'expired'::character varying]::text[])", name: "report_requests_state_valid"
+  end
+
   create_table "rollout_hosts", force: :cascade do |t|
     t.bigint "rollout_id", null: false
     t.bigint "host_id", null: false
@@ -584,6 +609,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
   add_foreign_key "operator_sessions", "operators"
   add_foreign_key "package_report_receipts", "hosts"
   add_foreign_key "package_snapshots", "hosts"
+  add_foreign_key "report_requests", "hosts"
+  add_foreign_key "report_requests", "operators", column: "requested_by_id"
   add_foreign_key "rollout_hosts", "hosts"
   add_foreign_key "rollout_hosts", "rollouts"
   add_foreign_key "rollouts", "agent_releases", on_delete: :restrict

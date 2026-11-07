@@ -310,6 +310,11 @@ mod tests {
                 envelope.problems
             );
             assert!(envelope.server_time.is_some(), "{name}");
+            if name.starts_with("report-request") {
+                // A directive this build does not act on yet (P2-S03): ignored by name, like any other.
+                assert_eq!(envelope.ignored, ["directive `report_request`"], "{name}");
+                continue;
+            }
             // Only `unknown-field-*` examples carry names this agent does not know.
             assert_eq!(
                 envelope.ignored.is_empty(),
@@ -429,6 +434,28 @@ mod tests {
         );
         assert_eq!(envelope.agent_update, Some(update()));
         assert!(envelope.ignored.is_empty() && envelope.problems.is_empty());
+    }
+
+    #[test]
+    fn a_report_request_is_ignored_by_this_agent_and_the_rest_is_still_read() {
+        // P2-S03 added `report_request` to the v1 contract; this build predates acting on it, so it
+        // must ignore it like any unknown directive (DEC-20 rule 4) and keep reading the others.
+        let (_, body) = contract_examples("valid")
+            .into_iter()
+            .find(|(name, _)| name == "report-request.json")
+            .unwrap();
+        assert!(body["directives"]["report_request"]["types"].is_array());
+        let envelope = parse(&body);
+        assert_eq!(envelope.ignored, ["directive `report_request`"]);
+        assert!(envelope.problems.is_empty(), "{:?}", envelope.problems);
+        assert_eq!(
+            envelope.intervals,
+            ServerIntervals {
+                heartbeat_seconds: Some(120),
+                inventory_seconds: Some(1800)
+            }
+        );
+        assert_eq!(envelope.agent_update, None);
     }
 
     #[test]

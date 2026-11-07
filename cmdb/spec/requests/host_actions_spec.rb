@@ -138,12 +138,97 @@ RSpec.describe "Host actions", :signed_in, type: :request do
     end
   end
 
+  describe "requesting fresh reports (P2-S03, the P2-D02 button)" do
+    let!(:enrolled) { enrolled_host(name: "Media server") }
+    let(:host) { enrolled.first }
+
+    def request_reports(*types) = post("/hosts/#{host.id}/request_reports", params: { report_types: types })
+
+    def flash_text = page.at_css(".flash").text.squish
+
+    it "offers every report type, checked, on an active host's page" do
+      get "/hosts/#{host.id}"
+      form = page.at_css("#report_request_form")
+      expect(form["action"]).to eq("/hosts/#{host.id}/request_reports")
+      expect(form.css("input[name='report_types[]']").map { |box| [ box["value"], box["checked"].present? ] })
+        .to eq([ [ "config", true ], [ "inventory", true ], [ "packages", true ] ])
+      expect(form.at_css("button").text).to eq("Request fresh reports")
+    end
+
+    it "records the request, audited with the operator, and shows it as waiting until the agent is asked and answers" do
+      freeze_time do
+        request_reports("config", "packages")
+        expect(response).to redirect_to("/hosts/#{host.id}#report_requests")
+        follow_redirect!
+        expect(flash_text).to eq("Config and package reports requested. The agent is asked on its next heartbeat.")
+        expect(host.report_requests.pluck(:report_type, :requested_by_id)).to contain_exactly([ "config", operator.id ], [ "packages", operator.id ])
+        entry = AuditEntry.for_target(host).where(action: Audit::Actions::HOST_REPORT_REQUESTED).sole
+        expect([ entry.actor_type, entry.actor_id, entry.changeset["report_types"] ]).to eq([ "operator", operator.id, [ nil, %w[config packages] ] ])
+        expect(page.css("#report_requests tr").map { |row| row.text.squish }).to all(include("Waiting for the agent's next heartbeat", "operator@example.com"))
+        expect(page.at_css("#audit_heading").parent.text).to include("Fresh reports requested")
+      end
+
+      record_heartbeat(host)
+      ReportRequests.directive_for(host_id: host.id, agent_time: Time.current)
+      ReportRequests.satisfy!(host: host.reload, report_type: "config", report: AgentApi::ConfigReport.new(ApiContract.example("config.request", "typical")
+        .merge("report_id" => SecureRandom.uuid, "collected_at" => 1.minute.from_now.utc.iso8601)))
+      get "/hosts/#{host.id}"
+      rows = page.css("#report_requests tr").to_h { |row| [ row.text.squish.split.first, row.text.squish ] }
+      expect(rows["Config"]).to include("Received")
+      expect(rows["Package"]).to include("Agent asked", "waiting for the report")
+      travel_to(2.hours.from_now) { ReportRequests.expire! }
+      get "/hosts/#{host.id}"
+      expect(page.at_css("#report_requests tr.expired").text.squish).to include("Package report", "Expired", "no report arrived within 60 minutes")
+    end
+
+    it "rate limits a rapid repeat, saying when to try again, and requests only the types not limited" do
+      freeze_time do
+        request_reports("config")
+        expect { request_reports("config") }.not_to change(ReportRequest, :count)
+        follow_redirect!
+        expect(page.at_css(".flash.error")).to be_present
+        expect(flash_text).to eq("Config report requested less than 5 minutes ago. Try again after #{5.minutes.from_now.utc.strftime('%H:%M:%S')} UTC.")
+
+        request_reports("config", "inventory")
+        follow_redirect!
+        expect(page.at_css(".flash.info")).to be_present
+        expect(flash_text).to eq("Inventory report requested. The agent is asked on its next heartbeat. Config report requested less than 5 minutes ago. " \
+                                 "Try again after #{5.minutes.from_now.utc.strftime('%H:%M:%S')} UTC.")
+      end
+      travel_to(10.minutes.from_now) do
+        request_reports("inventory")
+        follow_redirect!
+        expect(flash_text).to eq("Inventory report already requested, waiting for the agent.")
+      end
+    end
+
+    it "asks for at least one type" do
+      expect { request_reports }.not_to change(ReportRequest, :count)
+      follow_redirect!
+      expect(flash_text).to eq("Choose at least one report to request.")
+    end
+
+    it "is not offered for, and refuses, a host whose agent cannot be asked" do
+      host.revoke!(actor: Audit::SYSTEM)
+      get "/hosts/#{host.id}"
+      expect(page.at_css("#report_request_form")).to be_nil
+      expect(page.at_css("#report_requests").text).to include("Only an active host's agent can be asked for a report.")
+      request_reports("config")
+      expect(response).to redirect_to("/hosts/#{host.id}")
+      follow_redirect!
+      expect(flash_text).to eq("Only an active host's agent can be asked for a report.")
+      expect(ReportRequest.count).to eq(0)
+    end
+  end
+
   it "refuses every action without the CSRF token (FR-S.4)" do
     host = enrolled_host.first
     ActionController::Base.allow_forgery_protection = true
     post "/hosts/#{host.id}/revoke"
     post "/hosts/#{host.id}/retire", params: { confirm_hostname: host.hostname }
+    post "/hosts/#{host.id}/request_reports", params: { report_types: %w[config] }
     expect(host.reload.enrollment_state).to eq("active")
+    expect(host.report_requests).to be_empty
   ensure
     ActionController::Base.allow_forgery_protection = false
   end

@@ -6,6 +6,8 @@
 # - When the content hash differs from the current facts', a snapshot is written. Otherwise only the report
 #   details (times, manifest version, ignored keys) are updated.
 #
+# A new report, changed or not, satisfies the host's pending config report request (ReportRequests, P2-S03).
+#
 # Rule evaluation (P2-S06) runs after a new snapshot, for that host, once the transaction commits.
 module ConfigRecorder
   Result = Data.define(:report_id, :duplicate, :snapshot)
@@ -13,12 +15,13 @@ module ConfigRecorder
   module_function
 
   def record!(host_id:, credential_id:, report:)
-    AgentHostLock.lock!(host_id:, credential_id:)
+    host = AgentHostLock.lock!(host_id:, credential_id:)
     now = Time.current
     inserted = ConfigReportReceipt.insert_all([ { host_id:, report_id: report.report_id, received_at: now } ],
                                               unique_by: %i[host_id report_id], returning: :id)
     return Result.new(report_id: report.report_id, duplicate: true, snapshot: false) if inserted.rows.empty?
 
+    ReportRequests.satisfy!(host:, report_type: "config", report:, now:) # an operator's request (P2-S03)
     current = HostConfig.find_or_initialize_by(host_id:)
     hash = report.content_hash
     snapshot = current.content_hash != hash

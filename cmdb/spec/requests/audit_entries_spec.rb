@@ -136,6 +136,15 @@ RSpec.describe "Audit log", :signed_in, type: :request do
       expect(cells(row(AuditEntry.find_by!(action: Audit::Actions::RULE_DISABLED)))[2..]).to eq([ "Rule disabled", "Rule ssh-max-auth-tries", "Enabled yes no" ])
     end
 
+    it "shows a report request by the operator on the host, with the report types labelled (P2-S03)" do
+      host = enrolled_host(name: "Media server").first
+      ReportRequests.request!(host:, types: %w[config packages], actor: operator, now: base)
+      get "/audit", params: { action: Audit::Actions::HOST_REPORT_REQUESTED }
+      requested = AuditEntry.find_by!(action: Audit::Actions::HOST_REPORT_REQUESTED)
+      expect(cells(row(requested))[1..3]).to eq([ "operator@example.com Operator", "Fresh reports requested", "Media server" ])
+      expect(row(requested).css(".change-list li").map { |li| li.text.squish }).to eq([ "Report types config, packages" ])
+    end
+
     it "names an interval setting by its recorded key after clearing it deleted the row (review of #81)" do
       Setting.update_agent_intervals!(heartbeat_seconds: 120, actor: operator)
       Setting.update_agent_intervals!(heartbeat_seconds: nil, actor: operator)
