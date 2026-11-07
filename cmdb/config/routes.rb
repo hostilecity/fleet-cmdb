@@ -57,6 +57,8 @@ Rails.application.routes.draw do
         post :retire, to: "host_actions#retire"
         get :reenroll, to: "host_actions#confirm_reenroll"
         post :reenroll, to: "host_actions#reenroll"
+        # Not destructive, so no confirmation page; still a CSRF-protected POST (P2-S03).
+        post :request_reports, to: "host_actions#request_reports"
       end
     end
     # Onboarding approval (P1-D07, DEC-17): the installer's verification URI is /onboard/<user code>.

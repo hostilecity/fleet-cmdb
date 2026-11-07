@@ -254,6 +254,10 @@ th.when { width: 11rem; }
 .canary-list .check { display: block; padding: 0.25rem 0; overflow-wrap: anywhere; }
 .canary-list .check input { margin-right: 0.5rem; }
 @media (max-width: 52rem) { .stages { grid-template-columns: 1fr; } }
+/* Fresh report requests on the host page (P2-S03). */
+.report-types { border: 0; margin: 0 0 0.75rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+.report-types legend { padding: 0; margin-bottom: 0.25rem; color: var(--ink-soft); }
+.report-types .check input { margin-right: 0.5rem; }
 /* The start form while a rollout is open: visibly unavailable, not just inert. */
 .btn:disabled, .btn:disabled:hover { background: var(--rule); border-color: var(--rule); color: var(--ink-soft); cursor: not-allowed; }
 :is(input, select, textarea):disabled { background: var(--panel); color: var(--ink-soft); cursor: not-allowed; }

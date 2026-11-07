@@ -21,6 +21,10 @@ development:
   onboarding_pruning:
     class: OnboardingPruneJob
     schedule: every hour at minute 7
+  # P2-S03: report requests no report satisfied within an hour become expired (kept, not deleted).
+  report_request_expiry:
+    class: ReportRequestExpiryJob
+    schedule: every minute
   # NFR-2, DEC-07: snapshots, report ids, and status events past the retention window; never audit entries.
   retention_pruning:
     class: RetentionPruneJob
@@ -41,6 +45,10 @@ production:
   onboarding_pruning:
     class: OnboardingPruneJob
     schedule: every hour at minute 7
+  # P2-S03: report requests no report satisfied within an hour become expired (kept, not deleted).
+  report_request_expiry:
+    class: ReportRequestExpiryJob
+    schedule: every minute
   # NFR-2, DEC-07: snapshots, report ids, and status events past the retention window; never audit entries.
   retention_pruning:
     class: RetentionPruneJob

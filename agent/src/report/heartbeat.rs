@@ -465,6 +465,34 @@ mod tests {
     }
 
     #[test]
+    fn a_report_request_directive_is_ignored_and_logged_once_and_intervals_still_apply() {
+        // The server sends `report_request` on every heartbeat while an operator's request is
+        // outstanding (P2-S03); this build does not act on it yet, so it must change nothing else.
+        let intervals = intervals();
+        let started = Instant::now();
+        let mut hb = heartbeat(&intervals, started);
+        let body = envelope(json!({
+            "report_request": {"types": ["config", "packages"]},
+            "intervals": {"heartbeat_seconds": 120}
+        }));
+        let transport = FakeTransport::new(vec![ok(body.clone()), ok(body)]);
+        let (waits, logs) = logs_of(|| {
+            [
+                hb.beat(&transport, None, started, wall()),
+                hb.beat(&transport, None, started, wall()),
+            ]
+        });
+        assert!(waits.iter().all(|w| *w >= secs(108)), "{waits:?}");
+        assert_eq!(
+            logs.matches("ignored=\"directive `report_request`\"")
+                .count(),
+            1,
+            "{logs}"
+        );
+        assert_eq!(intervals.heartbeat(), secs(120));
+    }
+
+    #[test]
     fn a_malformed_envelope_still_counts_as_accepted() {
         let intervals = intervals();
         let started = Instant::now();

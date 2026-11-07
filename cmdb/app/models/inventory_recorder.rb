@@ -7,6 +7,7 @@
 #   hash changes (layer 2), which includes boot id changes, so reboots are visible.
 # - A machine id different from the one the credential was enrolled with sets a visible warning on the host
 #   and is audited once; the first inventory is audited too. Ordinary reports write no audit entries.
+# - A new report, changed or not, satisfies the host's pending inventory report request (ReportRequests, P2-S03).
 module InventoryRecorder
   Result = Data.define(:report_id, :duplicate, :snapshot)
 
@@ -19,6 +20,7 @@ module InventoryRecorder
                                                  unique_by: %i[host_id report_id], returning: :id)
     return Result.new(report_id: report.report_id, duplicate: true, snapshot: false) if inserted.rows.empty?
 
+    ReportRequests.satisfy!(host:, report_type: "inventory", report:, now:) # an operator's request (P2-S03)
     inventory = HostInventory.find_or_initialize_by(host_id:)
     first = inventory.new_record?
     os_before = inventory.stable&.dig("os")

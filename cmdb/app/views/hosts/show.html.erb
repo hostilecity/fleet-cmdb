@@ -152,6 +152,7 @@
       <dt>Notes</dt><dd class="notes"><%= @host.notes.presence ? simple_format(h(@host.notes), {}, wrapper_tag: "span", sanitize: false) : tag.span("None", class: "muted") %></dd>
     </dl>
   </section>
+  <%= render "hosts/report_requests", host: @host, requests: @report_requests %>
   <section aria-labelledby="status_heading">
     <h2 id="status_heading">Status history</h2>
     <% if @status_events.empty? %>

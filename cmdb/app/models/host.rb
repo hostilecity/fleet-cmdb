@@ -37,6 +37,7 @@ class Host < ApplicationRecord
   has_many :enrollment_tokens, dependent: :restrict_with_exception
   has_many :rollout_hosts, dependent: :restrict_with_exception
   has_many :agent_updates, dependent: :restrict_with_exception
+  has_many :report_requests, dependent: :restrict_with_exception
 
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
   validates :hostname, presence: true, length: { maximum: 253 }, format: { with: HOSTNAME_FORMAT, allow_blank: true }

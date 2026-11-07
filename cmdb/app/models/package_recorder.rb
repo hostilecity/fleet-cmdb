@@ -6,6 +6,7 @@
 # - When the content hash differs from the current set's, a snapshot of the whole set is written and the
 #   host's HostPackage rows are replaced. Otherwise only the report details (time, warnings) are updated.
 # - An unsupported package manager is stored as such, with its reason and no packages: never as an empty set.
+# - A new report, changed or not, satisfies the host's pending packages report request (ReportRequests, P2-S03).
 #
 # Vulnerability matching (P2-S11) runs after a new snapshot, for that host, once the transaction commits.
 module PackageRecorder
@@ -16,12 +17,13 @@ module PackageRecorder
   module_function
 
   def record!(host_id:, credential_id:, report:)
-    AgentHostLock.lock!(host_id:, credential_id:)
+    host = AgentHostLock.lock!(host_id:, credential_id:)
     now = Time.current
     inserted = PackageReportReceipt.insert_all([ { host_id:, report_id: report.report_id, received_at: now } ],
                                                unique_by: %i[host_id report_id], returning: :id)
     return Result.new(report_id: report.report_id, duplicate: true, snapshot: false) if inserted.rows.empty?
 
+    ReportRequests.satisfy!(host:, report_type: "packages", report:, now:) # an operator's request (P2-S03)
     set = HostPackageSet.find_or_initialize_by(host_id:)
     hash = report.content_hash
     snapshot = set.content_hash != hash

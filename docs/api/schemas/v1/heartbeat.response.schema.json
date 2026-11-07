@@ -88,6 +88,30 @@
               "pattern": "^https://[^\\s]+$"
             }
           }
+        },
+        "report_request": {
+          "description": "Report types an operator asked this host for (DEC-13, P2-S03). Sent on every heartbeat while a request is outstanding: until a report of that type, collected after the request, is accepted, or the request expires (after an hour). The agent sends one report of each listed type, by that type's report endpoint, as soon as it can; the server then stops listing the type. An agent that ignores this directive keeps reporting on its own schedule, and its next report of a type satisfies the request all the same. Agents ignore a type they do not know, so a new type is additive.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "types"
+          ],
+          "properties": {
+            "types": {
+              "description": "The report types requested, each at most once: config (POST /api/v1/reports/config), inventory (POST /api/v1/reports/inventory), and packages (POST /api/v1/reports/packages).",
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "maxLength": 32,
+                "pattern": "^[a-z][a-z_]*$"
+              }
+            }
+          }
         }
       },
       "additionalProperties": {

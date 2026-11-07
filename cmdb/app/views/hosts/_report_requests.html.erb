@@ -1,0 +1,26 @@
+<%# Request fresh reports (P2-S03). The full configuration tab with this button is P2-D02. %>
+<section aria-labelledby="report_requests_heading" id="report_requests">
+  <h2 id="report_requests_heading">Fresh reports</h2>
+  <% if host.enrollment_state == "active" %>
+    <%= form_with url: request_reports_host_path(host), method: :post, id: "report_request_form" do %>
+      <fieldset class="report-types">
+        <legend>Ask the agent, on its next heartbeat, for a new</legend>
+        <% ReportRequest::TYPES.each do |type| %>
+          <label class="check"><%= check_box_tag "report_types[]", type, true, id: "report_type_#{type}" %><%= report_names([ type ]) %></label>
+        <% end %>
+      </fieldset>
+      <button class="btn quiet" type="submit">Request fresh reports</button>
+    <% end %>
+    <p class="hint">Each report type can be requested once every <%= ReportRequests::COOLDOWN.in_minutes.to_i %> minutes. A request no report answers expires after <%= ReportRequests::TTL.in_minutes.to_i %> minutes.</p>
+  <% else %>
+    <p class="muted">Only an active host's agent can be asked for a report.</p>
+  <% end %>
+  <% if requests.any? %>
+    <div class="table-wrap"><table><tbody>
+      <% requests.each do |request| %>
+        <tr id="<%= dom_id(request) %>" class="report-request <%= request.display_state %>"><td><%= report_names([ request.report_type ]).upcase_first %><br>
+          <span class="muted"><%= report_request_status(request) %>. Requested by <%= request.requested_by.email %>, <%= utc(request.requested_at) %></span></td></tr>
+      <% end %>
+    </tbody></table></div>
+  <% end %>
+</section>

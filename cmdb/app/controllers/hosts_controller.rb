@@ -1,5 +1,5 @@
 # The fleet list and host detail pages (FR-1.5, P1-D02, P1-D03), pre-registration and editing (P1-D04).
-# Revoke, retire, and re-enroll are in HostActionsController.
+# Revoke, retire, re-enroll, and requesting fresh reports (P2-S03) are in HostActionsController.
 class HostsController < ApplicationController
   include ShowsEnrollmentToken
 
@@ -8,6 +8,7 @@ class HostsController < ApplicationController
   STATUS_HISTORY_LIMIT = 20
   AUDIT_LIMIT = 20
   UPDATE_HISTORY_LIMIT = 20
+  REPORT_REQUEST_LIMIT = 10
 
   def index
     @fleet = FleetList.new(params.permit(:q, :tag, :status, :sort, :dir))
@@ -27,6 +28,7 @@ class HostsController < ApplicationController
     @status_events = @host.status_events.order(occurred_at: :desc, id: :desc).limit(STATUS_HISTORY_LIMIT)
     @audit_entries = AuditEntry.for_target(@host).order(occurred_at: :desc, id: :desc).limit(AUDIT_LIMIT).to_a
     @actors = audit_actors(@audit_entries)
+    @report_requests = @host.report_requests.includes(:requested_by).order(requested_at: :desc, id: :desc).limit(REPORT_REQUEST_LIMIT)
     load_update_history
   end
 

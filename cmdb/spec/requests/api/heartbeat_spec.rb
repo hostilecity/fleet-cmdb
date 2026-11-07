@@ -78,8 +78,9 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     expect(writes.size).to eq(1), writes.inspect
     expect(writes.first).to match(/UPDATE "hosts"/)
     # credential + host (authentication), host FOR UPDATE and credential re-check (under the lock), UPDATE,
-    # then the intervals setting and the host's rollout membership (P1-UPDATES): two indexed SELECTs
-    expect(queries.size).to be <= 7, queries.inspect
+    # then the intervals setting and the host's rollout membership (P1-UPDATES), and its outstanding report
+    # requests (P2-S03): three indexed SELECTs
+    expect(queries.size).to be <= 8, queries.inspect
     expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events/)
   end
 

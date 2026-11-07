@@ -169,6 +169,16 @@ Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the opera
   - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows, written only when the content hash changes. Retention keeps the newest per host.
 - **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). With an unsupported manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
 
+### Report requests
+
+An operator can ask a host's agent for fresh config, inventory, and package reports (FR-2.1, DEC-13, P2-S03) with "Request fresh reports" on the host page (`POST /hosts/:id/request_reports`, CSRF-protected, no confirmation page since it changes nothing on the VM). `ReportRequests` is the only code that changes `report_requests`:
+
+- **Request.** One `report_requests` row per type, pending, with the operator and the server time, audited as `host.report_requested`. Only an active host can be asked. A partial unique index allows one pending request per host and type.
+- **Rate limit.** One request per host and type every 5 minutes (`ReportRequests::COOLDOWN`), whatever happened to the previous one; a type still pending from an older request is left as it is. The page says when to try again.
+- **Directive.** Every heartbeat carries the outstanding types as `"report_request": {"types": [...]}` (DEC-20) until each request ends; `sent_at` records the first heartbeat that carried it. A host with nothing outstanding costs one indexed SELECT. An agent that ignores the directive is unaffected.
+- **Satisfied.** `InventoryRecorder`, `PackageRecorder`, and `ConfigRecorder` call `ReportRequests.satisfy!` for every new report, changed or not: a report collected after the request clears it, recording the report id. The agent's `collected_at` is first moved onto the server clock with the offset its last heartbeat measured (`agent_reported_at` minus `last_seen_at`), so a skewed agent clock neither keeps a request open nor lets an older report clear it. A retried (duplicate) report clears nothing.
+- **Expired.** A request no report answers within an hour (`ReportRequests::TTL`) stops being sent, and `ReportRequestExpiryJob` (every minute, `config/recurring.yml`) marks it `expired` with `expired_at`. Ended requests are kept for the host page and pruned by Retention after the retention window.
+
 ### Advisory data
 
 Vulnerability advisories (FR-2.4, DEC-11, P2-S10, P2-S13) are OSV records for the fleet profile's ecosystems: `Ecosystems` (`app/models/ecosystems.rb`) maps an inventory's os id and version to one, and only `debian` `13` → `Debian:13` is listed (DEC-01). Records for other ecosystems are skipped.
