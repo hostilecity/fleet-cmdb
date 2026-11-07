@@ -14,7 +14,13 @@ module AgentApi
 
     WARNING_FIELDS = %w[field message].freeze
 
-    attr_reader :report_id, :schema_version, :collected_at, :manager, :unsupported_reason, :packages, :warnings
+    # A package the agent saw but did not list as installed (an interrupted installation, or an entry it could not
+    # carry whole): its name and why. The name covers every architecture.
+    Skipped = Data.define(:name, :reason) do
+      def to_h = { "name" => name, "reason" => reason }
+    end
+
+    attr_reader :report_id, :schema_version, :collected_at, :manager, :unsupported_reason, :packages, :skipped, :warnings
 
     def initialize(payload)
       problems = duplicates(payload["packages"])
@@ -26,15 +32,24 @@ module AgentApi
       @manager = payload["manager"]
       @unsupported_reason = payload["unsupported_reason"]&.gsub(InventoryReport::CONTROL_CHARACTERS, "")
       @packages = payload["packages"].map { |p| Package.new(*p.values_at("name", "architecture", "version", "source")) }.sort_by(&:key)
+      @skipped = Array(payload["skipped"]).map { |s| Skipped.new(s["name"], s["reason"].gsub(InventoryReport::CONTROL_CHARACTERS, "")) }
+                                          .sort_by { |s| [ s.name, s.reason ] }.uniq
       @warnings = payload["warnings"].map { |w| w.slice(*WARNING_FIELDS).transform_values { |v| v.gsub(InventoryReport::CONTROL_CHARACTERS, "") } }
                                      .sort_by { |w| [ w["field"], w["message"] ] }
     end
 
     def unsupported? = manager == "unsupported"
+    # dpkg is there but its packages could not be listed: the set is unknown, and the previous one is kept.
+    def unreadable? = manager == "unreadable"
 
-    # SHA-256 of the manager, its reason, and the sorted packages: the same set hashes the same whatever order
-    # the agent listed it in, and a change of manager or reason is a change too.
-    def content_hash = OpenSSL::Digest::SHA256.hexdigest(JSON.generate([ manager, unsupported_reason, packages.map(&:to_a) ]))
+    # SHA-256 of the manager, its reason, the sorted packages, and the skipped names (only when there are any, so
+    # a report without skipped packages hashes as it always did): the same set hashes the same whatever order the
+    # agent listed it in, and a change of manager, reason, or skipped package is a change too.
+    def content_hash
+      parts = [ manager, unsupported_reason, packages.map(&:to_a) ]
+      parts << skipped.map(&:to_h) if skipped.any?
+      OpenSSL::Digest::SHA256.hexdigest(JSON.generate(parts))
+    end
 
     private
 

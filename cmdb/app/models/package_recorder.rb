@@ -6,6 +6,11 @@
 # - When the content hash differs from the current set's, a snapshot of the whole set is written and the
 #   host's HostPackage rows are replaced. Otherwise only the report details (time, warnings) are updated.
 # - An unsupported package manager is stored as such, with its reason and no packages: never as an empty set.
+# - An unreadable one (dpkg is there, its database could not be listed) is stored with its reason too, but the
+#   host's previous packages and count are kept, since nothing says they changed; vulnerability matching does not
+#   evaluate the host meanwhile (HostContext), so its findings stay as they were.
+# - Skipped packages (named by the agent, not listed as installed) are stored with the set and its snapshot; they
+#   are not in HostPackage, so findings for them resolve as removed at the next matching (P2-S08 owner question).
 # - A new report, changed or not, satisfies the host's pending packages report request (ReportRequests, P2-S03).
 #
 # Vulnerability matching (P2-S11) runs after a new snapshot, for that host, once the transaction commits.
@@ -30,12 +35,12 @@ module PackageRecorder
     if snapshot
       PackageSnapshot.create!(host_id:, manager: report.manager, unsupported_reason: report.unsupported_reason,
                               package_count: report.packages.size, content_hash: hash, packages: report.packages.map(&:to_a),
-                              warnings: report.warnings, report_id: report.report_id, collected_at: report.collected_at, received_at: now)
-      replace_packages(host_id, report.packages)
+                              skipped: report.skipped.map(&:to_h), warnings: report.warnings, report_id: report.report_id, collected_at: report.collected_at, received_at: now)
+      replace_packages(host_id, report.packages) unless report.unreadable?
       VulnerabilityMatchJob.after_snapshot(host_id)
     end
-    set.update!(manager: report.manager, unsupported_reason: report.unsupported_reason, package_count: report.packages.size,
-                content_hash: hash, warnings: report.warnings, report_id: report.report_id, schema_version: report.schema_version,
+    set.update!(manager: report.manager, unsupported_reason: report.unsupported_reason, package_count: report.unreadable? ? set.package_count.to_i : report.packages.size,
+                content_hash: hash, skipped: report.skipped.map(&:to_h), warnings: report.warnings, report_id: report.report_id, schema_version: report.schema_version,
                 collected_at: report.collected_at, received_at: now)
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end

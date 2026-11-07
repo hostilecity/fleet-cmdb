@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Package report",
-  "description": "POST /api/v1/reports/packages (FR-2.3, P2-S08). Every installed package from the host's package manager. The body may be sent with `Content-Encoding: gzip`. A host whose package manager is not supported says so with `manager: unsupported` and a reason, and sends no packages, so it is never mistaken for a host with none installed.",
+  "description": "POST /api/v1/reports/packages (FR-2.3, P2-S08). Every installed package from the host's package manager. The body may be sent with `Content-Encoding: gzip`. A host whose package manager is not supported says so with `manager: unsupported` and a reason, and a host whose dpkg database could not be listed says so with `manager: unreadable` and a reason; neither sends packages, so neither is ever mistaken for a host with none installed. Packages that exist but are not installed in full (an interrupted installation) are not listed in `packages`; their names are in `skipped`.",
   "type": "object",
   "required": [
     "schema_version",
@@ -36,15 +36,16 @@
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
     },
     "manager": {
-      "description": "The package manager the agent found. `dpkg` is the only supported one (DEC-01); `unsupported` when the host has another or none.",
+      "description": "The package manager the agent found. `dpkg` is the only supported one (DEC-01); `unsupported` when the host has another or none; `unreadable` when the host has dpkg but its packages could not be listed.",
       "type": "string",
       "enum": [
         "dpkg",
-        "unsupported"
+        "unsupported",
+        "unreadable"
       ]
     },
     "unsupported_reason": {
-      "description": "Why the packages could not be listed, for the operator, when `manager` is `unsupported`; `null` otherwise.",
+      "description": "Why the packages could not be listed, for the operator, when `manager` is `unsupported` or `unreadable` (required then); `null` when `manager` is `dpkg`. The name is kept from the first version of this contract.",
       "type": [
         "string",
         "null"
@@ -93,6 +94,31 @@
         }
       }
     },
+    "skipped": {
+      "description": "Packages the agent could read the name of but did not list as installed: an interrupted installation (dpkg states `unpacked`, `half-installed`, `half-configured`, `triggers-awaited`, `triggers-pending`), or an entry it could not carry in full. Optional; absent means none. A skipped package is not in the installed set, but the server does not show it as removed (P2-S08). Only names the agent could read are listed; an entry without a readable name is a `warnings` entry.",
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "reason"
+        ],
+        "properties": {
+          "name": {
+            "description": "Binary package name, with the limits of a package name. No architecture is given: a name covers every architecture of it.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+          },
+          "reason": {
+            "description": "Why it was not listed, short, for the operator, for example `half-configured`.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
     "warnings": {
       "description": "Problems reading the package list, for the operator. The packages that were read are still sent.",
       "type": "array",
@@ -126,7 +152,10 @@
       "if": {
         "properties": {
           "manager": {
-            "const": "unsupported"
+            "enum": [
+              "unsupported",
+              "unreadable"
+            ]
           }
         },
         "required": [
@@ -139,6 +168,9 @@
             "type": "string"
           },
           "packages": {
+            "maxItems": 0
+          },
+          "skipped": {
             "maxItems": 0
           }
         }

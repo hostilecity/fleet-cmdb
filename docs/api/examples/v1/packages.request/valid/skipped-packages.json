@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.2.0",
+  "report_id": "00000000-0000-4000-8000-000000000001",
+  "collected_at": "2026-01-01T12:00:00Z",
+  "manager": "dpkg",
+  "unsupported_reason": null,
+  "packages": [
+    {
+      "name": "base-files",
+      "version": "13.8",
+      "architecture": "amd64",
+      "source": "base-files"
+    }
+  ],
+  "skipped": [
+    {
+      "name": "libssl3t64",
+      "reason": "half-configured"
+    },
+    {
+      "name": "vim",
+      "reason": "unpacked"
+    }
+  ],
+  "warnings": []
+}
