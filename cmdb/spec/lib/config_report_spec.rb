@@ -65,6 +65,12 @@ RSpec.describe AgentApi::ConfigReport do
     expect(facts["service:ssh.service"]["value"].to_a).to eq([ %w[active active], %w[enabled enabled] ])
   end
 
+  it "lists the fields it drops from a file or unit as JSON Pointers, for the log (review of #108)" do
+    parsed = report({ "file:/etc/shadow" => ok({ "mode" => "0640", "owner" => "root", "group" => "shadow", "acl" => "x", "a/b" => 1 }),
+                      "service:ssh.service" => ok({ "active" => "active", "enabled" => "enabled" }) })
+    expect(parsed.ignored_fields).to eq([ "/facts/file:~1etc~1shadow/value/acl", "/facts/file:~1etc~1shadow/value/a~1b" ])
+  end
+
   it "stores a missing file or unit as ok with a null value, not as missing" do
     expect(report({ "file:/etc/shadow" => ok(nil) }).facts["file:/etc/shadow"]).to eq(ok(nil))
   end

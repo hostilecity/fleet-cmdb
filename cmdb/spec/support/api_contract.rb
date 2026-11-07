@@ -120,12 +120,12 @@ module ApiContract
   # A fact key in the config manifest (`sshd.permitrootlogin`, `file:/etc/shadow`) looks like a dotted hostname.
   FACT_KEY = %r{\A(?:[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+|file:/\S+|service:\S+)\z}
 
-  # A systemd unit name (`ssh.service`) looks like a hostname too.
-  UNIT_NAME = /\A[A-Za-z0-9_@-]+(?:\.[A-Za-z0-9_@-]+)*\.(?:service|socket|timer|target|mount|path)\z/
+  # A systemd unit name (`ssh.service`) looks like a dotted hostname too. Exempt from that heuristic only, so a
+  # hostname, credential, or address field is checked whatever it holds (review of #108).
+  UNIT_SUFFIX = /\.(?:service|socket|timer|target|mount|path)\z/
 
   def string_problems(string, key, out)
     return if key == "key" && string.match?(FACT_KEY)
-    return if string.match?(UNIT_NAME)
 
     if SECRET_KEYS.include?(key) && !string.include?("EXAMPLE")
       out << "#{key} value #{string.inspect} does not contain EXAMPLE"
@@ -141,6 +141,7 @@ module ApiContract
     end
     string.scan(/[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/).each do |candidate|
       next unless candidate.split(".").last.match?(/\A[A-Za-z]{2,}\z/) # looks like a domain name
+      next if candidate.match?(UNIT_SUFFIX)
 
       out << "hostname #{candidate} is not under an example domain" unless candidate.downcase.match?(FAKE_DOMAIN)
     end

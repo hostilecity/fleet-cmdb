@@ -20,7 +20,7 @@ module AgentApi
     OBJECT_FIELDS = { "file_attributes" => %w[mode owner group], "service_state" => %w[active enabled] }.freeze
     MAX_IGNORED = 100
 
-    attr_reader :report_id, :schema_version, :collected_at, :manifest_version, :facts, :ignored_keys
+    attr_reader :report_id, :schema_version, :collected_at, :manifest_version, :facts, :ignored_keys, :ignored_fields
 
     def initialize(payload, manifest: ConfigManifest.current)
       @report_id = payload["report_id"]
@@ -34,6 +34,7 @@ module AgentApi
       end
 
       reported = payload["facts"]
+      @ignored_fields = []
       @ignored_keys = reported.keys.reject { |key| manifest.key?(key) }.sort
       @facts = manifest.facts.to_h { |fact| [ fact.key, entry(fact, reported[fact.key], problems) ] }
       raise ValidationFailed.new(details: problems.first(64)) if problems.any?
@@ -60,7 +61,7 @@ module AgentApi
         return { "state" => state, "value" => nil, "reason" => reason }
       end
 
-      value = shape(fact, sent["value"])
+      value = shape(fact, sent["value"], "#{pointer}/value")
       errors = fact.value_errors(value)
       errors << "contains a NUL character" if errors.empty? && nul?(value)
       problems.concat(errors.map { |error| { "pointer" => "#{pointer}/value", "problem" => "#{error} (#{fact.key} is #{fact.type})" } })
@@ -76,10 +77,15 @@ module AgentApi
       { "state" => "missing", "value" => nil, "reason" => reason }
     end
 
-    # A file's or unit's fields in a fixed order, without any field the schema does not declare (DEC-08).
-    def shape(fact, value)
+    # A file's or unit's fields in a fixed order, without any field the schema does not declare. The fields
+    # dropped are listed in ignored_fields as JSON Pointers, for the log (DEC-08, review of #108): the schema
+    # declares them inside anyOf, where AgentApi::Schema.undeclared_pointers does not look.
+    def shape(fact, value, pointer)
       fields = OBJECT_FIELDS[fact.type]
-      fields && value.is_a?(Hash) ? fields.to_h { |field| [ field, value[field] ] } : value
+      return value unless fields && value.is_a?(Hash)
+
+      (value.keys - fields).each { |field| @ignored_fields << "#{pointer}/#{field.gsub('~', '~0').gsub('/', '~1')}" }
+      fields.to_h { |field| [ field, value[field] ] }
     end
 
     def nul?(value)

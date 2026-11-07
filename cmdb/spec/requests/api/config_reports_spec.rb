@@ -104,6 +104,15 @@ RSpec.describe "POST /api/v1/reports/config", type: :request do
       expect(log).to include("ignored unknown fields /facts/sshd.permitrootlogin/source")
     end
 
+    it "ignores and logs an unknown field inside a file's value, by name and never by value (review of #108)" do
+      shadow = ok({ "mode" => "0640", "owner" => "root", "group" => "shadow", "acl" => "EXAMPLE-acl" })
+      log = captured_log { send_report(report(facts: { "file:/etc/shadow" => shadow })) }
+      expect(response).to have_http_status(:ok)
+      expect(log).to include("ignored unknown fields /facts/file:~1etc~1shadow/value/acl")
+      expect(log).not_to include("EXAMPLE-acl")
+      expect(HostConfig.find_by!(host:).facts["file:/etc/shadow"]["value"]).to eq("mode" => "0640", "owner" => "root", "group" => "shadow")
+    end
+
     it "refuses a manifest version newer than the server's, and writes nothing" do
       send_report(report(manifest_version: manifest.version + 1))
       expect_error(:bad_request, "validation_failed")

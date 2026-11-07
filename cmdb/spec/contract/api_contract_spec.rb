@@ -107,6 +107,12 @@ RSpec.describe "Agent API contract (docs/api)" do
       expect(ApiContract.real_data_problems({ "value" => [ "ssh.servicehost.com" ] })).to include(/servicehost\.com/)
     end
 
+    it "still checks hostname, credential, and address fields that hold a unit name (review of #108)" do
+      expect(ApiContract.real_data_problems({ "hostname" => "ssh.service" })).to include(/hostname "ssh\.service"/)
+      expect(ApiContract.real_data_problems({ "credential" => "ssh.service" })).to include(/credential value/)
+      expect(ApiContract.real_data_problems({ "value" => "10.0.0.5 ssh.service" })).to include(/10\.0\.0\.5/)
+    end
+
     it "flags single-label hostnames under a hostname key" do
       expect(ApiContract.real_data_problems({ "hostname" => "nas" })).to include(/hostname "nas"/)
       expect(ApiContract.real_data_problems({ "hostname" => "vm-01.example.lan" })).to eq([])

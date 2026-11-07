@@ -19,6 +19,8 @@ module Api
         report = AgentApi::ConfigReport.new(payload)
         # Keys are limited to fact-key characters by the schema; control characters are removed anyway.
         logger.info("[agent_api] ignored unknown facts #{report.ignored_keys.join(' ').gsub(/[[:cntrl:]]/, '').truncate(1_000)}") if report.ignored_keys.any?
+        # Fields inside a file's or unit's value, which the schema walk cannot see (they are declared in anyOf).
+        logger.info("[agent_api] ignored unknown fields #{report.ignored_fields.join(' ').gsub(/[[:cntrl:]]/, '').truncate(1_000)}") if report.ignored_fields.any?
         result = ConfigRecorder.record!(host_id: current_host.id, credential_id: current_credential.id, report:)
         render json: { report_id: result.report_id, duplicate: result.duplicate, manifest_version: ConfigManifest.current.version }
       end
