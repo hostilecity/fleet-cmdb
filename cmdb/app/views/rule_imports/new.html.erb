@@ -1,0 +1,4 @@
+<% content_for :title, "Import rules file" %>
+<p><%= link_to "← Rules", rules_path %></p>
+<div class="page-head"><div><h1>Import rules file</h1><p>Check a YAML or JSON rules file and see what it would change. Nothing is written until you apply it.</p></div></div>
+<%= render "rule_imports/upload_form", full: true, error: @error %>

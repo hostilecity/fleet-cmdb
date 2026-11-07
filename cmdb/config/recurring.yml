@@ -25,6 +25,10 @@ development:
   report_request_expiry:
     class: ReportRequestExpiryJob
     schedule: every minute
+  # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
+  rule_import_preview_pruning:
+    class: RuleImportPreviewPruneJob
+    schedule: every 5 minutes
   # NFR-2, DEC-07: snapshots, report ids, and status events past the retention window; never audit entries.
   retention_pruning:
     class: RetentionPruneJob
@@ -49,6 +53,10 @@ production:
   report_request_expiry:
     class: ReportRequestExpiryJob
     schedule: every minute
+  # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
+  rule_import_preview_pruning:
+    class: RuleImportPreviewPruneJob
+    schedule: every 5 minutes
   # NFR-2, DEC-07: snapshots, report ids, and status events past the retention window; never audit entries.
   retention_pruning:
     class: RetentionPruneJob

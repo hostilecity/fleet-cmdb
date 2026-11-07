@@ -1,0 +1,43 @@
+<% content_for :title, "Preview: #{@preview.key}" %>
+<% rule = @form.rule_hash %>
+<% by_result = @preview.changes.group_by(&:to) %>
+<% failing = @preview.changes.select { |change| change.to.in?(%w[fail not_readable]) } %>
+<% passing = Array(by_result["pass"]) %>
+<% counts = @preview.counts %>
+<p><%= link_to "← Add rule", new_rule_path %></p>
+<div class="page-head"><div><h1>Preview: <span class="mono title-key"><%= @preview.key %></span></h1><p>A new rule; version 1 would be created. Nothing has been saved yet.</p></div></div>
+<% if !@preview.enabled %>
+  <div class="notice info" role="status" id="preview_summary"><strong>The rule would be added disabled, so no host is checked against it.</strong><p>Its result is not evaluated on every host until you enable it. No agent is contacted.</p></div>
+<% else %>
+  <div class="notice info" role="status" id="preview_summary">
+    <strong><% if counts.changed.zero? %>No host would be checked: none has a config report the rule applies to.<% else %>On <%= counts.changed %> of <%= hosts_count(counts.hosts) %>: <%= passing.size %> would pass, <%= Array(by_result["fail"]).size %> would fail, <%= Array(by_result["not_readable"]).size %> not readable.<% end %></strong>
+    <% reasons = [ ("#{counts.no_report == 1 ? '1 host has' : "#{counts.no_report} hosts have"} no config report" if counts.no_report.positive?),
+                   ("#{not_applicable_words(counts.not_applicable, rule['applies_to'])}, so the rule does not apply to #{counts.not_applicable == 1 ? 'it' : 'them'}" if counts.not_applicable.positive?) ].compact %>
+    <p>Calculated now from each host's latest config snapshot<%= "; #{reasons.join(' and ')}" if reasons.any? %>. No agent is contacted.</p>
+  </div>
+  <div class="verdict-group"><h3>Would fail or not be readable <span class="muted count"><%= failing.size %></span></h3></div>
+  <% if failing.empty? %>
+    <p class="muted">None.</p>
+  <% else %>
+    <div class="table-wrap"><table id="preview_changes">
+      <caption class="visually-hidden">Hosts that would fail or not be readable under the new rule</caption>
+      <thead><tr><th scope="col">Host</th><th scope="col">Observed</th><th scope="col">Result (version 1, <%= expected_words(rule["condition"], ConfigManifest.current.fact(rule["fact"])&.type) %>)</th></tr></thead>
+      <tbody>
+        <% failing.each do |change| %>
+          <tr><td><%= link_to change.host_name, config_host_path(change.host_id) %></td>
+            <td><%= change.to == "fail" ? observed_value(change.observed, rule["fact"]) : tag.span(change.reason, class: "muted") %></td>
+            <td><%= result_lamp(change.to) %></td></tr>
+        <% end %>
+      </tbody>
+    </table></div>
+  <% end %>
+  <% if passing.any? %>
+    <details class="more" id="would_pass"><summary>Would pass <span class="muted"><%= passing.size %></span></summary>
+      <p class="muted"><%= passing.first(10).map(&:host_name).join(", ") %><%= ", and #{passing.size - 10} more" if passing.size > 10 %>.</p></details>
+  <% end %>
+<% end %>
+<div class="actions preview-actions">
+  <%= form_with url: rules_path, method: :post, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><button class="btn" type="submit">Add rule</button><% end %>
+  <%= form_with url: preview_new_rules_path, method: :post, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :back, "1", id: nil %><button class="btn quiet" type="submit">Back to editing</button><% end %>
+</div>
+<p class="muted small-print">Saving checks again against each host's snapshot as it is then, so the results may differ from what is shown if a snapshot changed since this preview. The key must still be unused. Saving records one audit entry with you as the actor.</p>

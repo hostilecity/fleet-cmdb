@@ -10,6 +10,23 @@ class CisRule < ApplicationRecord
 
   scope :enabled, -> { where(enabled: true) }
 
+  # Every change to the rules (an import, or the dashboard's add, edit, enable, and disable) runs in one
+  # transaction holding this lock, so they are serialised and an import preview can tell whether the rules
+  # changed since it was made (P2-D06).
+  WRITE_LOCK = "cis_rules:import"
+
+  def self.with_write_lock
+    transaction do
+      connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{connection.quote(WRITE_LOCK)}))")
+      yield
+    end
+  end
+
+  # A digest of every rule's key, enabled flag, and current version: it changes whenever any rule is created,
+  # edited, enabled, or disabled (versions are never changed in place), so an import preview made against one
+  # state is never applied to another (P2-D06).
+  def self.state_digest = Digest::SHA256.hexdigest(JSON.generate(order(:id).pluck(:id, :enabled, :current_version_id)))
+
   # Creates the rule, or a new version of it when the definition differs from its current one. Returns
   # :created, :versioned, or :unchanged. Must run inside a transaction.
   def self.define!(definition, actor:, enabled: true)

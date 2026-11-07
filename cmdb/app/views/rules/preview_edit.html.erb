@@ -1,0 +1,46 @@
+<% content_for :title, "Preview: #{@rule.key}" %>
+<% rule = @form.rule_hash %>
+<% counts = @preview.counts %>
+<% current = @rule.current_version %>
+<% fact_type = ConfigManifest.current.fact(rule["fact"])&.type %>
+<p><%= link_to "← #{@rule.key}", rule_path(@rule) %></p>
+<div class="page-head"><div><h1>Preview: <span class="mono title-key"><%= @rule.key %></span></h1>
+  <p><%= @preview.next_version ? "Version #{@preview.next_version} would replace version #{@preview.current_version}." : "The definition is the same as version #{@preview.current_version}." %> Nothing has been saved yet.</p></div></div>
+<% if @preview.saves_nothing? %>
+  <div class="notice info" role="status" id="preview_summary"><strong>No change: saving makes no new version.</strong><p>The edited rule is identical to version <%= @preview.current_version %>, so no host's result would change.</p></div>
+<% else %>
+  <div class="notice info" role="status" id="preview_summary">
+    <% kinds = [ ("#{counts.pass_to_fail} pass → fail" if counts.pass_to_fail.positive?), ("#{counts.fail_to_pass} fail → pass" if counts.fail_to_pass.positive?),
+                 ("#{counts.to_not_applicable} → not applicable" if counts.to_not_applicable.positive?), ("#{counts.other_changes} other" if counts.other_changes.positive?) ].compact %>
+    <strong><% if counts.changed.zero? %>No host would change result.<% else %><%= counts.changed %> of <%= hosts_count(counts.hosts) %> would change result: <%= kinds.join(", ") %>.<% end %></strong>
+    <% reasons = [ ("#{counts.no_report == 1 ? '1 host has' : "#{counts.no_report} hosts have"} no config report" if counts.no_report.positive?),
+                   ("#{not_applicable_words(counts.not_applicable, rule['applies_to'])}, so the rule does not apply to #{counts.not_applicable == 1 ? 'it' : 'them'}" if counts.not_applicable.positive?) ].compact %>
+    <p>Calculated now from each host's latest config snapshot<%= "; #{reasons.join(' and ')}" if reasons.any? %>. No agent is contacted.<%= " The rule is disabled, so it stays not evaluated on every host until you enable it." unless @preview.enabled %></p>
+  </div>
+  <% if counts.changed.positive? %>
+    <div class="verdict-group"><h3>Would change <span class="muted count"><%= counts.changed %></span></h3></div>
+    <div class="table-wrap"><table id="preview_changes">
+      <caption class="visually-hidden">Hosts whose result would change</caption>
+      <thead><tr><th scope="col">Host</th><th scope="col">Observed</th><th scope="col">Now (version <%= current.version %>, <%= rule_expected(current) %>)</th>
+        <th scope="col">After (version <%= @preview.next_version || current.version %>, <%= expected_words(rule["condition"], fact_type) %>)</th></tr></thead>
+      <tbody>
+        <% @preview.changes.each do |change| %>
+          <tr><td><%= link_to change.host_name, config_host_path(change.host_id) %></td>
+            <td><% if change.to.in?(%w[pass fail]) %><%= observed_value(change.observed, rule["fact"]) %><% elsif change.current_observed && change.from.in?(%w[pass fail]) %><%= observed_value(change.current_observed, current.fact) %><% else %><span class="muted"><%= change.reason %></span><% end %></td>
+            <td><%= change.from ? result_lamp(change.from) : result_lamp("not_evaluated") %></td>
+            <td><%= result_lamp(change.to) %></td></tr>
+        <% end %>
+      </tbody>
+    </table></div>
+    <% same = @preview.changes.select { |change| change.kind.in?(%i[pass_to_fail fail_to_pass]) && change.observed == change.current_observed } %>
+    <% if same.any? %><p class="muted">The change on <%= same.map(&:host_name).to_sentence %> is only because the condition changed; the observed value is the same.</p><% end %>
+  <% end %>
+  <p class="muted">The other <%= hosts_count(counts.hosts - counts.changed) %> keep their result<%= " (#{counts.unlisted_changes} of them, with no config report or that the rule does not apply to, would have their stored result updated too, and are not listed)" if counts.unlisted_changes.positive? %>. A host that passes, fails, or is not readable now and that the edited rule would no longer apply to is listed above as <span class="lamp na">Not applicable</span>, so you see which hosts the rule would stop checking.</p>
+<% end %>
+<div class="actions preview-actions">
+  <% unless @preview.saves_nothing? %>
+    <%= form_with url: rule_path(@rule), method: :patch, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :base_version_id, @base_version.id, id: nil %><button class="btn" type="submit">Save as version <%= @preview.next_version %></button><% end %>
+  <% end %>
+  <%= form_with url: preview_edit_rule_path(@rule), method: :post, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :base_version_id, @base_version.id, id: nil %><%= hidden_field_tag :back, "1", id: nil %><button class="btn quiet" type="submit">Back to editing</button><% end %>
+</div>
+<p class="muted small-print">Saving checks again against the rule as it is then. If the rule or a host's snapshot changed since this preview, the results may differ from what is shown. Saving records one audit entry with you as the actor and the before and after values.</p>
