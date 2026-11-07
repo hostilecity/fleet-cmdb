@@ -89,7 +89,7 @@
             <% if row[:diff] %>
               <%= package_change_summary(row[:diff]) %>
             <% elsif row[:first] %>
-              First package report, <%= package_snapshot_contents(snapshot) %>
+              Oldest package snapshot kept, <%= package_snapshot_contents(snapshot) %>
             <% else %>
               <span class="muted">Older snapshots are not listed</span>
             <% end %>
@@ -99,7 +99,7 @@
               <%= link_to "With the one before", compare_packages_host_path(@host, from: row[:previous].id, to: snapshot.id) %>
               <% if snapshot != latest %><br><%= link_to "With the latest", compare_packages_host_path(@host, from: snapshot.id, to: latest.id) %><% end %>
             <% else %>
-              <span class="muted">Nothing before it</span>
+              <span class="muted">No earlier snapshot kept</span>
             <% end %>
           </td>
         </tr>

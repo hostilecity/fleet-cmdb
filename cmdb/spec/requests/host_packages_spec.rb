@@ -90,7 +90,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       get "/hosts/#{host.id}/packages"
       expect(page.css("#snapshot_list tbody tr").map { |row| row.css("td").map { |td| words(td) } }).to eq([
         [ "2026-11-06 10:00 UTC Latest", "1 installed, 1 removed", "With the one before" ],
-        [ "2026-11-06 09:01 UTC", "First package report, 7 packages", "Nothing before it" ]
+        [ "2026-11-06 09:01 UTC", "Oldest package snapshot kept, 7 packages", "No earlier snapshot kept" ]
       ])
       first, latest = snapshots
       expect(page.at_css("#snapshot_list a")["href"]).to eq("/hosts/#{host.id}/packages/compare?from=#{first.id}&to=#{latest.id}")
@@ -211,7 +211,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(page.at_css("#package_list")).to be_nil
       expect(page.css("nav.tabs a").map { |a| words(a) }.last).to eq("Packages Unsupported")
       expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known Unsupported package manager")
-      expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "No diff: one side is from an unsupported package manager", "First package report, 1 package" ])
+      expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "No diff: one side is from an unsupported package manager", "Oldest package snapshot kept, 1 package" ])
     end
 
     it "has no diff for a pair with an unsupported side" do
@@ -227,6 +227,48 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(page.css("script:not([nonce])")).to be_empty
       expect(page.css("img[onerror]")).to be_empty
       expect(page.at_css("#unsupported_manager .mono").text).to eq(HOSTILE)
+    end
+  end
+
+  describe "review of #119" do
+    it "calls a version dpkg treats as equal an equivalent version, and keeps Source changed for a changed source (comment 4502877664)" do
+      report([ [ "tzdata", "1.0", "tzdata" ], [ "acme", "2.0", "acme-old" ] ], at: start)
+      report([ [ "tzdata", "0:1.0", "tzdata" ], [ "acme", "2.0", "acme-new" ] ], at: start + 1.hour)
+      get "/hosts/#{host.id}/packages/compare"
+      expect(page.css("#diff_summary li").map { |li| words(li) }).to include("∼ Source changed 1", "≈ Equivalent version 1")
+      rows = page.css("#package_changes tbody tr").map { |tr| tr.css("td").map { |td| words(td) } }
+      expect(rows).to eq([ [ "acme:amd64", "∼ Source changed", "2.0 from acme-old", "2.0 from acme-new", "acme-new" ],
+                           [ "tzdata:amd64", "≈ Equivalent version", "1.0 from tzdata", "0:1.0 from tzdata", "tzdata" ] ])
+      get "/hosts/#{host.id}/packages"
+      expect(words(page.at_css("#snapshot_list tbody tr td:nth-child(2)"))).to eq("1 source changed, 1 equivalent version")
+      get "/hosts/#{host.id}/packages/compare", params: { from: snapshots.first.id, to: snapshots.last.id, kind: "equivalent" }
+      expect(page.css("#package_changes tbody tr td:first-child").map(&:text)).to eq([ "tzdata:amd64" ])
+    end
+
+    it "shows no Equivalent version counter when nothing is respelled (the page as drawn in the mockup)" do
+      report([ [ "tzdata", "1.0", "tzdata" ] ], at: start)
+      report([ [ "tzdata", "1.1", "tzdata" ] ], at: start + 1.hour)
+      get "/hosts/#{host.id}/packages/compare"
+      expect(page.css("#diff_summary li").map { |li| words(li) }).to eq([ "+ Installed 0", "− Removed 0", "↑ Upgraded 1", "↓ Downgraded 0", "? Cannot compare 0", "∼ Source changed 0" ])
+    end
+
+    it "explains Upgraded and Downgraded by the From and To direction after Swap (comment 4502877692)" do
+      report([ [ "tzdata", "2.0", "tzdata" ] ], at: start)
+      report([ [ "tzdata", "1.0", "tzdata" ] ], at: start + 1.hour)
+      first, last = snapshots.map(&:id)
+      get "/hosts/#{host.id}/packages/compare", params: { from: last, to: first }
+      expect(page.at_css("#package_changes tbody tr").css("td").map { |td| words(td) }.first(4)).to eq([ "tzdata:amd64", "↑ Upgraded", "1.0", "2.0" ])
+      expect(words(page.at_css("#reversed_note"))).to eq("Compared newer to older. Changes read from the From snapshot to the To snapshot, " \
+                                                         "so an upgrade here is a package whose version is higher in the earlier snapshot (To), and a downgrade one whose version is lower there.")
+    end
+
+    it "calls the oldest snapshot still kept that, not the host's first report, once older ones are pruned (comment 4502877714)" do
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start)
+      report([ [ "bash", "5.2.37-1", "bash" ], [ "vim", "2:9.1-1", "vim" ] ], at: start + 1.hour)
+      snapshots.first.destroy # what Retention does to snapshots past the window
+      get "/hosts/#{host.id}/packages"
+      expect(page.css("#snapshot_list tbody tr").map { |tr| tr.css("td").map { |td| words(td) } }).to eq([ [ "2026-11-06 10:00 UTC Latest", "Oldest package snapshot kept, 2 packages", "No earlier snapshot kept" ] ])
+      expect(page.text).not_to include("First package report", "Nothing before it")
     end
   end
 
@@ -289,7 +331,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(names).to eq(%w[bash vim])
       expect(page.css("nav.tabs a").map { |a| words(a) }).to include("Packages 2")
       expect(words(page.at_css("#glance_packages"))).to eq("Packages 2 Last report could not be read, list is from the last one that could")
-      expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "No diff: one side is a report whose package database could not be read", "First package report, 2 packages" ])
+      expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "No diff: one side is a report whose package database could not be read", "Oldest package snapshot kept, 2 packages" ])
     end
 
     it "compares the snapshot after it with the one before it, and has no diff for the unreadable one" do
@@ -311,7 +353,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(page.at_css("dl.facts dd .lamp").text).to eq("Unreadable")
       expect(page.css("nav.tabs a").map { |a| words(a) }).to include("Packages Unreadable")
       expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known Package database could not be read")
-      expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "First package report, a package database that could not be read" ])
+      expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "Oldest package snapshot kept, a package database that could not be read" ])
     end
 
     it "escapes the agent's reason (NFR-1)" do

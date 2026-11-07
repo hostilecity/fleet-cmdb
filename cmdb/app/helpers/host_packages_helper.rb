@@ -5,15 +5,26 @@ module HostPackagesHelper
   KINDS = {
     installed: [ "+ Installed", "installed", "installed" ], removed: [ "− Removed", "removed", "removed" ],
     upgrade: [ "↑ Upgraded", "up", "upgraded" ], downgrade: [ "↓ Downgraded", "down", "downgraded" ],
-    invalid: [ "? Cannot compare", "invalid", "not comparable" ], same: [ "∼ Source changed", "same", "source changed" ],
+    invalid: [ "? Cannot compare", "invalid", "not comparable" ], same: [ "∼ Source changed", "same", "source changed" ], equivalent: [ "≈ Equivalent version", "same", "equivalent version" ],
     skipped: [ "◌ Skipped / incomplete", "skipped", "skipped or incomplete" ]
   }.freeze
   # The comparison's filter chips, by ?kind=.
-  KIND_FILTERS = { "installed" => :installed, "removed" => :removed, "upgraded" => :upgrade, "downgraded" => :downgrade, "invalid" => :invalid, "skipped" => :skipped }.freeze
+  KIND_FILTERS = { "installed" => :installed, "removed" => :removed, "upgraded" => :upgrade, "downgraded" => :downgrade, "invalid" => :invalid, "skipped" => :skipped, "equivalent" => :equivalent }.freeze
+  # Kinds the comparison shows a counter and a chip for only when there is one: the mockup has neither.
+  OPTIONAL_KINDS = %i[skipped equivalent].freeze
 
   def change_kind(kind)
     label, css, = KINDS.fetch(kind)
     tag.span(label, class: [ "kind", css ])
+  end
+
+  # :same is dpkg treating two versions as equal. When the strings are the same too, only the source package changed;
+  # when they differ (`1.0` and `0:1.0`), the version is only spelled differently, whatever happened to the source
+  # (review of #119).
+  def change_kind_of(change)
+    return change.direction unless change.direction == :same
+
+    change.from.version == change.to.version ? :same : :equivalent
   end
 
   # Each change of a diff as [kind, name, architecture, from package or nil, to package or nil, reason or nil], in the
@@ -23,7 +34,9 @@ module HostPackagesHelper
     diff.installed.map { |p| [ :installed, p.name, p.architecture, nil, p, nil ] } +
       diff.removed.map { |p| [ :removed, p.name, p.architecture, p, nil, nil ] } +
       diff.skipped.map { |s| [ :skipped, s.name, s.architecture, s.package, nil, s.reason ] } +
-      %i[upgrade downgrade invalid same].flat_map { |kind| diff.changed.select { |c| c.direction == kind }.map { |c| [ kind, c.name, c.architecture, c.from, c.to, nil ] } }
+      %i[upgrade downgrade invalid same].flat_map do |direction|
+        diff.changed.select { |c| c.direction == direction }.map { |c| [ change_kind_of(c), c.name, c.architecture, c.from, c.to, nil ] }
+      end
   end
 
   # { kind => count } for every kind with at least one change.
