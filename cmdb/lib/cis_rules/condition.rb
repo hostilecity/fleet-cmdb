@@ -41,23 +41,26 @@ module CisRules
     end
 
     # ["<pointer>: <problem>"] for a condition the JSON Schema accepted; empty when it fits the fact.
-    def errors(condition, fact, pointer)
+    def errors(condition, fact, pointer) = problems(condition, fact, pointer).map { |at, problem| "#{at}: #{problem}" }
+
+    # [[pointer, problem]], as errors, with the pointer kept apart (P2-S14 shows each problem beside its field).
+    def problems(condition, fact, pointer)
       state = { nodes: 0, out: [] }
       check(condition, fact, pointer, 1, state)
-      state[:out] << "#{pointer}: has more than #{MAX_NODES} conditions" if state[:nodes] > MAX_NODES
+      state[:out] << [ pointer, "has more than #{MAX_NODES} conditions" ] if state[:nodes] > MAX_NODES
       state[:out]
     end
 
     def check(node, fact, pointer, depth, state)
       state[:nodes] += 1
-      return state[:out] << "#{pointer}: is nested more than #{MAX_DEPTH} deep" if depth > MAX_DEPTH
+      return state[:out] << [ pointer, "is nested more than #{MAX_DEPTH} deep" ] if depth > MAX_DEPTH
 
       if (name = combinator(node))
         children = name == "not" ? [ [ node["not"], "#{pointer}/not" ] ] : node[name].each_with_index.map { |child, i| [ child, "#{pointer}/#{name}/#{i}" ] }
         children.each { |child, child_pointer| check(child, fact, child_pointer, depth + 1, state) }
       else
         problem = operator_problem(operator(node), node, fact)
-        state[:out] << "#{pointer}: #{problem}" if problem
+        state[:out] << [ pointer, problem ] if problem
       end
     end
 

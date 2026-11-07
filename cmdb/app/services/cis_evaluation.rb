@@ -18,6 +18,8 @@ module CisEvaluation
 
   DISABLED = "The rule is disabled."
   NO_REPORT = "The host has not sent a config report."
+  LATEST_SNAPSHOT = { received_at: :desc, id: :desc }.freeze # a host's latest config snapshot comes first
+  OS = Arel.sql("stable -> 'os'") # the os-release id and version_id applies_to is matched against, from HostInventory
   COLUMNS = %i[host_id cis_rule_id cis_rule_version_id config_snapshot_id result observed reason evaluated_at changed_at].freeze
 
   module_function
@@ -48,15 +50,15 @@ module CisEvaluation
 
   # Returns how many results changed.
   def evaluate_host(host_id, rules, now)
-    snapshot = ConfigSnapshot.where(host_id:).order(received_at: :desc, id: :desc).first
-    os = HostInventory.where(host_id:).pick(Arel.sql("stable -> 'os'"))
+    snapshot = ConfigSnapshot.where(host_id:).order(LATEST_SNAPSHOT).first
+    os = HostInventory.where(host_id:).pick(OS)
     existing = CisResult.where(host_id:, cis_rule_id: rules.map(&:id)).index_by(&:cis_rule_id)
     rows = []
     changes = []
     rules.each do |rule|
       outcome = result_for(rule, snapshot, os)
       before = existing[rule.id]
-      changed = before.nil? || before.result != outcome.result
+      changed = change?(before&.result, outcome.result)
       version_id = outcome.result == "not_evaluated" ? nil : rule.current_version_id
       snapshot_id = outcome.result == "not_evaluated" ? nil : snapshot&.id
       rows << { host_id:, cis_rule_id: rule.id, cis_rule_version_id: version_id, config_snapshot_id: snapshot_id, result: outcome.result,
@@ -71,12 +73,19 @@ module CisEvaluation
     changes.size
   end
 
-  def result_for(rule, snapshot, os)
-    return CisRules::Evaluator::Outcome.new(result: "not_evaluated", observed: nil, reason: DISABLED) unless rule.enabled
-    return CisRules::Evaluator::Outcome.new(result: "not_evaluated", observed: nil, reason: NO_REPORT) unless snapshot
+  def result_for(rule, snapshot, os) = outcome(rule.current_version, enabled: rule.enabled, facts: snapshot&.facts, os:)
 
-    CisRules::Evaluator.call(rule.current_version, snapshot.facts, os)
+  # The result a rule definition has on a host, as stored: not_evaluated when the rule is disabled or the host
+  # has sent no config report (facts nil), otherwise the evaluator's. Shared with the dry run (CisDryRun, P2-S14).
+  def outcome(definition, enabled:, facts:, os:, manifest: ConfigManifest.current)
+    return CisRules::Evaluator::Outcome.new(result: "not_evaluated", observed: nil, reason: DISABLED) unless enabled
+    return CisRules::Evaluator::Outcome.new(result: "not_evaluated", observed: nil, reason: NO_REPORT) unless facts
+
+    CisRules::Evaluator.call(definition, facts, os, manifest:)
   end
+
+  # Whether going from the stored result (nil when there is none) to this one is a change, which is recorded.
+  def change?(before, after) = before != after
 
   private_class_method :evaluate_host, :result_for
 end
