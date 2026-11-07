@@ -5,9 +5,8 @@ require "rails_helper"
 RSpec.describe Advisories::Import do
   # Another session holding the import lock, as a feed refresh importing would.
   def with_lock_held_elsewhere
-    config = ActiveRecord::Base.connection_db_config.configuration_hash
-    other = PG.connect(host: config[:host], port: config[:port], user: config[:username], password: config[:password],
-                       dbname: ActiveRecord::Base.connection.current_database)
+    # The same server, database, and credentials as the test's own connection, however they were configured.
+    other = PG.connect(ActiveRecord::Base.connection.raw_connection.conninfo_hash.compact.reject { |_, value| value == "" })
     other.exec("SELECT pg_advisory_lock(hashtext(#{other.escape_literal(described_class::LOCK_KEY)}))")
     yield
   ensure
