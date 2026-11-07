@@ -18,7 +18,7 @@
     <div class="strip-title"><h2 id="cis_totals_h">Open CIS-aligned check failures</h2>
       <span class="muted"><%= totals.cis_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.<%= " Not evaluated hosts are not counted." if totals.cis_evaluated < totals.hosts %></span></div>
     <% if totals.cis_evaluated.zero? %>
-      <p class="sheet flat"><span class="not-eval">Not evaluated</span> No active host has a CIS-aligned check result yet, so there is nothing to count. This is not zero failures.</p>
+      <p class="sheet flat"><span class="not-eval">Not evaluated</span> No active host has a pass, fail, or not readable result, so there is no failure to count. This is not zero failures.</p>
     <% else %>
       <div class="sevstrip four" role="group" aria-label="Open CIS-aligned check failures by severity">
         <% FleetCompliance::CIS_SEVERITIES.each do |severity| %>
@@ -32,7 +32,7 @@
     <div class="strip-title"><h2 id="vuln_totals_h">Open vulnerability findings</h2>
       <span class="muted"><%= totals.vulns_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.<% if totals.vulns_not_evaluated.positive? %> <%= pluralize(totals.vulns_not_evaluated, "host is", plural: "hosts are") %> not evaluated: <%= link_to "see which and why", compliance_path(status: "not_evaluated") %>.<% end %></span></div>
     <% if totals.vulns_evaluated.zero? && totals.vulns_open.zero? %>
-      <p class="sheet flat"><span class="not-eval">Not evaluated</span> No active host has been matched against advisory data yet, so there is nothing to count. This is not zero findings.</p>
+      <p class="sheet flat"><span class="not-eval">Not evaluated</span> No active host is evaluated for vulnerabilities now; each host's reason is in the table. This is not zero findings.</p>
     <% else %>
       <div class="sevstrip" role="group" aria-label="Open vulnerability findings by severity">
         <% FleetCompliance::VULN_SEVERITIES.each do |severity| %>
@@ -59,7 +59,7 @@
   <% end %>
   <% if @compliance.cis || @compliance.vuln %>
     <p class="applied" id="severity_filter">
-      <span>Showing hosts with open <%= @compliance.cis ? "#{@compliance.cis} CIS-aligned check failures" : "#{@compliance.vuln} vulnerability findings" %>.</span>
+      <span>Showing hosts with <%= [ ("open #{@compliance.cis} CIS-aligned check failures" if @compliance.cis), ("open #{@compliance.vuln} vulnerability findings" if @compliance.vuln) ].compact.join(" and ") %>.</span>
       <%= link_to "Show every host", compliance_path(@compliance.params_with(cis: nil, vuln: nil)) %>
     </p>
   <% end %>

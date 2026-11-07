@@ -93,7 +93,8 @@ class FleetCompliance
   ORDERS = {
     "worst" => [ Arel.sql(NOTHING_EVALUATED).asc, *VULN_SEVERITIES.map { |s| Arel.sql(BOTH.(s)).desc }, Arel.sql(PASS_RATE).asc.nulls_last ],
     "pass_rate" => [ Arel.sql(PASS_RATE).asc.nulls_last ],
-    "vulns" => [ Arel.sql(VULN_SHOWN).desc, Arel.sql(VULN_OPEN).desc, *VULN_SEVERITIES.map { |s| Arel.sql("hosts.vuln_#{s}").desc } ],
+    # Ties go by name, as every sort's do; ordering by severity is worst first's (review of #128).
+    "vulns" => [ Arel.sql(VULN_SHOWN).desc, Arel.sql(VULN_OPEN).desc ],
     "name" => []
   }.transform_values { |order| (order + NAME_ORDER).freeze }.freeze
 

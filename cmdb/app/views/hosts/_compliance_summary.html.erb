@@ -5,12 +5,12 @@
     <% if !rules_defined %>
       CIS-aligned checks are not evaluated: no rules are defined.
     <% elsif totals.cis_evaluated.zero? %>
-      CIS-aligned checks are not evaluated on any of the <%= pluralize(totals.hosts, "active host") %> yet.
+      CIS-aligned checks are not evaluated on any of the <%= pluralize(totals.hosts, "active host") %>: none has a pass, fail, or not readable result.
     <% else %>
       <strong><%= totals.cis_failed %></strong> open CIS-aligned check <%= "failure".pluralize(totals.cis_failed) %> (<%= critical_and_high(totals.cis) %>) on <%= totals.cis_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.
     <% end %>
     <% if totals.vulns_evaluated.zero? && totals.vulns_open.zero? %>
-      Vulnerabilities are not evaluated on any of the <%= pluralize(totals.hosts, "active host") %> yet.
+      Vulnerabilities are not evaluated on any of the <%= pluralize(totals.hosts, "active host") %> now.
     <% else %>
       <strong><%= totals.vulns_open %></strong> open vulnerability <%= "finding".pluralize(totals.vulns_open) %> (<%= critical_and_high(totals.vulns) %>) on <%= totals.vulns_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.
     <% end %>

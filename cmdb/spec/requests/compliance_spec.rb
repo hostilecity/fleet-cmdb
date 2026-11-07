@@ -167,6 +167,14 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       expect(page.at_css("input[name=cis]")["value"]).to eq("high")
       expect(words(page.at_css("#severity_filter"))).to start_with("Showing hosts with open high CIS-aligned check failures.")
 
+      get "/compliance", params: { cis: "high", vuln: "critical" } # both apply, and both are said (review of #128)
+      expect(row_names).to eq([])
+      get "/compliance", params: { cis: "medium", vuln: "critical" }
+      expect(row_names).to eq([ "Web A" ])
+      expect(words(page.at_css("#severity_filter"))).to eq(
+        "Showing hosts with open medium CIS-aligned check failures and open critical vulnerability findings. Show every host"
+      )
+
       get "/compliance", params: { status: "not_evaluated", sort: "name" }
       expect(row_names).to eq([ "Build runner", "DNS resolver" ])
       expect(words(page.at_css("#compliance_pager"))).to eq("2 of 4 active hosts.")
@@ -234,10 +242,24 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       get "/compliance"
       expect(cell_words(page.at_css("#no_rules"))).to eq("No rules are defined. CIS pass rates and failure counts are blank until rules are imported. Open vulnerability findings are not affected.")
       expect(page.css(".sevstrip")).to be_empty
-      expect(cell_words(page.at_css("#cis_totals p.sheet"))).to eq("Not evaluated No active host has a CIS-aligned check result yet, so there is nothing to count. This is not zero failures.")
-      expect(cell_words(page.at_css("#vuln_totals p.sheet"))).to start_with("Not evaluated No active host has been matched")
+      expect(cell_words(page.at_css("#cis_totals p.sheet"))).to start_with("Not evaluated No active host has a pass, fail, or not readable result")
+      expect(cell_words(page.at_css("#vuln_totals p.sheet"))).to start_with("Not evaluated No active host is evaluated for vulnerabilities now")
       expect(row_cells(host)).to eq([ "Not evaluated No rules are defined", "Not evaluated No inventory yet, so the distribution is not known", "Never" ])
       expect(words(page.at_css("#cis_totals .muted"))).to eq("0 of 1 host evaluated. Not evaluated hosts are not counted.")
+    end
+
+    it "says what is missing when every check is not applicable and every host's last matching could not evaluate it (review of #128)" do
+      rules = compliance_rules(1).values.flatten
+      cis_results!(host, rules.to_h { |r| [ r, "not_applicable" ] })
+      host_config!(host)
+      vulns_evaluated!(host, state: "not_evaluated", reason: "unreadable_packages")
+      get "/compliance"
+      expect(cell_words(page.at_css("#cis_totals p.sheet"))).to eq(
+        "Not evaluated No active host has a pass, fail, or not readable result, so there is no failure to count. This is not zero failures."
+      )
+      expect(cell_words(page.at_css("#vuln_totals p.sheet"))).to eq(
+        "Not evaluated No active host is evaluated for vulnerabilities now; each host's reason is in the table. This is not zero findings."
+      )
     end
 
     it "says when matching has not run yet" do

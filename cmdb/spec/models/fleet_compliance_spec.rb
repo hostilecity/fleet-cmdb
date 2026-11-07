@@ -121,6 +121,14 @@ RSpec.describe FleetCompliance do
     expect(names(sort: "bogus")).to eq(names)
   end
 
+  it "breaks a tie in open vulnerabilities by name, not by severity, which is worst first's job (review of #128)" do
+    zulu, alpha = [ "Tie Zulu", "Tie Alpha" ].map { |name| enrolled_host(name:).first.tap { |h| vulns_evaluated!(h) } }
+    findings!(zulu, "critical", "critical")
+    findings!(alpha, "low", "low")
+    expect(names(sort: "vulns", q: "Tie ")).to eq([ "Tie Alpha", "Tie Zulu" ])
+    expect(names(q: "Tie ")).to eq([ "Tie Zulu", "Tie Alpha" ])
+  end
+
   it "filters by status, severity, tag, and search, and composes them" do
     expect(names(status: "attention", sort: "name")).to eq([ "Build runner", "Media server", "Old findings", "Web A" ])
     expect(names(status: "critical_high", sort: "name")).to eq([ "Build runner", "Media server", "Old findings", "Web A" ])

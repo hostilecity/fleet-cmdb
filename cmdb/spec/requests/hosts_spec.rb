@@ -132,7 +132,8 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         VulnerabilityFinding.delete_all
         get "/"
         expect(page.at_css("#compliance_summary p").text.squish).to eq(
-          "CIS-aligned checks are not evaluated on any of the 4 active hosts yet. Vulnerabilities are not evaluated on any of the 4 active hosts yet."
+          "CIS-aligned checks are not evaluated on any of the 4 active hosts: none has a pass, fail, or not readable result. " \
+          "Vulnerabilities are not evaluated on any of the 4 active hosts now."
         )
       end
     end
