@@ -23,7 +23,7 @@ module DataSourcesHelper
 
   def import_by(import) = import.operator&.display_name || "System"
 
-  IMPORT_LAMPS = { "queued" => [ "Queued", "pending" ], "importing" => [ "Importing", "awaiting" ], "succeeded" => [ "Succeeded", "online" ],
+  IMPORT_LAMPS = { "queued" => [ "Queued", "pending" ], "importing" => [ "Importing", "awaiting" ], "succeeded" => [ "Succeeded", "online" ], "held_back" => [ "Held back", "stale" ],
                    "failed" => [ "Failed", "fail" ] }.freeze
 
   def import_result_lamp(import)
@@ -40,7 +40,7 @@ module DataSourcesHelper
     counts = import.counts
     return link_to("Waiting to be imported", advisory_import_path(import)) if import.state == "queued"
     return link_to("Importing now", advisory_import_path(import)) if import.state == "importing"
-    if import.state == "failed" && import.counts["would_withdraw"].is_a?(Hash)
+    if import.state == "held_back"
       withdraw = import.counts["would_withdraw"].values.sum { |w| w["withdraw"].to_i }
       return link_to("Held back: would withdraw #{number_with_delimiter(withdraw)} #{'advisory'.pluralize(withdraw)}; nothing imported", advisory_import_path(import))
     end

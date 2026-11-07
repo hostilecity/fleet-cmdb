@@ -6,7 +6,9 @@
 # queued when the upload is stored, importing while AdvisoryUploadImportJob reads it, then succeeded or failed.
 # finished_at is empty exactly while it is queued or importing.
 class AdvisoryImport < ApplicationRecord
-  STATES = %w[queued importing succeeded failed].freeze
+  # held_back: a full import the withdrawal guard refused (review of #131). Nothing was stored, as for failed, but
+  # it is not a failure: it is not retried, counted as a failed refresh, or shown as a failed job.
+  STATES = %w[queued importing succeeded failed held_back].freeze
   IN_PROGRESS = %w[queued importing].freeze
   ORIGINS = %w[feed file].freeze
 

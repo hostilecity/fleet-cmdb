@@ -51,7 +51,7 @@ class AdvisoryUploadImportJob < ApplicationJob
     remove_upload(import_id)
   rescue Advisories::Import::WithdrawalsRefused => e
     # The file is kept until it expires, for the operator's second confirmation.
-    Advisories::Import.record_failure(import:, reason: e.message, counts: { "would_withdraw" => e.withdrawals })
+    Advisories::Import.record_held_back(e, import:)
   rescue Advisories::Import::Abandoned
     remove_upload(import_id) # the prune job failed it meanwhile; nothing was written
   end

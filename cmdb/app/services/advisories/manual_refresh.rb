@@ -71,7 +71,7 @@ module Advisories
         lock!
         refused.lock!
         withdrawals = refused.counts["would_withdraw"]
-        next nil unless refused.origin == "feed" && refused.state == "failed" && withdrawals.is_a?(Hash) && withdrawals.any? && !refused.counts["confirmed_at"]
+        next nil unless refused.origin == "feed" && refused.state == "held_back" && withdrawals.is_a?(Hash) && withdrawals.any? && !refused.counts["confirmed_at"]
 
         allowed = withdrawals.transform_values { |w| w["withdraw"].to_i }
         refused.update!(counts: refused.counts.merge("confirmed_at" => now.utc.iso8601, "confirmed_by" => actor.id))

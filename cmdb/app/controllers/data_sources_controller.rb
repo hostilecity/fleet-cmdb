@@ -131,7 +131,7 @@ class DataSourcesController < ApplicationController
 
   # What a refused guarded full import would have withdrawn, per ecosystem, or nil.
   def refused_withdrawals(import)
-    withdrawals = import.counts["would_withdraw"] if import.state == "failed"
+    withdrawals = import.counts["would_withdraw"] if import.state == "held_back"
     withdrawals.presence if withdrawals.is_a?(Hash)
   end
 

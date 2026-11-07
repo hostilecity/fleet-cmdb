@@ -30,7 +30,7 @@ module Advisories
     # the freshness notice says so on every page that shows it.
     def held_refresh
       last_success = AdvisoryImport.succeeded.where(origin: "feed").maximum(:finished_at)
-      refused = AdvisoryImport.where(origin: "feed", state: "failed").where("counts ? 'would_withdraw'").where.not("counts ? 'confirmed_at'")
+      refused = AdvisoryImport.where(origin: "feed", state: "held_back").where.not("counts ? 'confirmed_at'")
       refused = refused.where(AdvisoryImport.arel_table[:finished_at].gt(last_success)) if last_success
       refused.order(finished_at: :desc, id: :desc).first
     end

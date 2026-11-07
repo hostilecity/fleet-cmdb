@@ -72,4 +72,48 @@ RSpec.describe Advisories::Import do
       expect(Advisories.config).to have_attributes(withdraw_share: 0.10, withdraw_min_records: 1000)
     end
   end
+
+  # Review of #131.
+  describe "the withdrawal guard's share and allowance" do
+    def records(ids) = Advisories::Reader.new(osv_directory(*ids.map { |id| osv_record(id:) }))
+
+    def full_import(ids, **options) = described_class.new(origin: "feed", source: "x.zip", full: true, **options).call(records(ids))
+
+    before { import_advisories(*(1..10).map { |i| osv_record(id: "DSA-#{i}-1") }, full: true, origin: "feed") }
+
+    it "takes the share of the ecosystem's advisories before the import, so advisories it adds cannot dilute it",
+       withdrawal_guard: { share: 0.1, min_records: 0 } do
+      kept_and_added = (1..8).map { |i| "DSA-#{i}-1" } + (11..20).map { |i| "DSA-#{i}-1" } # withdraws 2 of 10 (20%), not 2 of 20
+      expect { full_import(kept_and_added) }.to raise_error(described_class::WithdrawalsRefused) { |error|
+        expect(error.withdrawals).to eq("Debian:13" => { "withdraw" => 2, "current" => 10, "records" => 18 })
+      }
+      expect(Advisory.current.count).to eq(10)
+    end
+
+    it "treats an allowance as a ceiling, whatever the thresholds would allow", withdrawal_guard: { share: 0.9, min_records: 0 } do
+      expect { full_import((1..8).map { |i| "DSA-#{i}-1" }, allowed_withdrawals: { "Debian:13" => 1 }) }.to raise_error(described_class::WithdrawalsRefused)
+      expect(Advisory.current.count).to eq(10)
+      expect(full_import((1..8).map { |i| "DSA-#{i}-1" }, allowed_withdrawals: { "Debian:13" => 2 }).import.counts["absent"]).to eq(2)
+    end
+
+    it "allows no withdrawals for an ecosystem an allowance does not name", withdrawal_guard: { share: 0.9, min_records: 0 } do
+      expect { full_import((1..9).map { |i| "DSA-#{i}-1" }, allowed_withdrawals: { "Other:1" => 5 }) }.to raise_error(described_class::WithdrawalsRefused)
+    end
+
+    it "holds a confirmed re-download to the count even when it crosses the record floor", withdrawal_guard: { share: 0.5, min_records: 9 } do
+      # The first download had 8 records (under the floor) and withdrew 2; the operator confirmed 2. The re-download
+      # has 9 records, over the floor, and would withdraw 3 (30%, under the share): the confirmed 2 still caps it.
+      import_advisories(osv_record(id: "DSA-11-1"), full: false)
+      expect { full_import((1..8).map { |i| "DSA-#{i}-1" } + [ "DSA-12-1" ], allowed_withdrawals: { "Debian:13" => 2 }) }
+        .to raise_error(described_class::WithdrawalsRefused) { |error| expect(error.withdrawals.dig("Debian:13", "withdraw")).to eq(3) }
+    end
+  end
+
+  it "records a held-back import with its own state and audit action, not as a failure" do
+    refusal = described_class::WithdrawalsRefused.new("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
+    import = described_class.record_held_back(refusal, origin: "feed", source: "x.zip", full: true)
+    expect(import).to have_attributes(state: "held_back", reason: refusal.message, counts: { "would_withdraw" => refusal.withdrawals })
+    expect(AuditEntry.sole).to have_attributes(action: "advisory.import_held_back", actor_type: "system")
+    expect(AuditEntry.sole.changeset["would_withdraw"]).to eq(refusal.withdrawals)
+  end
 end

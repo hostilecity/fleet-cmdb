@@ -16,7 +16,7 @@ namespace :advisories do
       Advisories::Import.record_failure(origin: "file", source:, full:, reason: e.message)
       abort "Nothing imported: #{e.message}"
     rescue Advisories::Import::WithdrawalsRefused => e
-      Advisories::Import.record_failure(origin: "file", source:, full:, reason: e.message, counts: { "would_withdraw" => e.withdrawals })
+      Advisories::Import.record_held_back(e, origin: "file", source:, full:)
       abort AdvisoriesTask.refusal(e.withdrawals, "bin/rails advisories:import FILE=#{path} FULL=1")
     end
     AdvisoriesTask.print(result.import)

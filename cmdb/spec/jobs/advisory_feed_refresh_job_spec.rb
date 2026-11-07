@@ -262,14 +262,14 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
       SolidQueue::ReadyExecution.claim("*", 10, nil).each(&:perform)
 
       refused = AdvisoryImport.order(:id).last
-      expect(refused).to have_attributes(origin: "feed", state: "failed", full: true)
+      expect(refused).to have_attributes(origin: "feed", state: "held_back", full: true)
       expect(refused.counts).to eq("would_withdraw" => { "Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 } })
       expect(refused.reason).to start_with("this full import would mark 4 of 5 current Debian:13 advisories")
       expect(Advisory.current.count).to eq(5)
       expect(SolidQueue::FailedExecution.count).to eq(0)
       expect(SolidQueue::ScheduledExecution.count).to eq(0) # no retry scheduled
       expect(JobHealth).not_to be_failing
-      audit = AuditEntry.where(action: "advisory.import_failed").sole
+      audit = AuditEntry.where(action: "advisory.import_held_back").sole
       expect(audit).to have_attributes(actor_type: "system")
       expect(audit.changeset["would_withdraw"]).to eq("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
       expect(Advisories::Freshness.held_refresh).to eq(refused)

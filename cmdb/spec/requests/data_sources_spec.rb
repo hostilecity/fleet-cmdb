@@ -357,14 +357,14 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       upload(zip, full: "1", confirm: "1")
       run_import_jobs
       refused = AdvisoryImport.order(:id).last
-      expect(refused).to have_attributes(state: "failed", full: true)
+      expect(refused).to have_attributes(state: "held_back", full: true)
       expect(refused.reason).to eq("this full import would mark 4 of 5 current Debian:13 advisories (the import has 1 record for it) withdrawn, " \
                                    "which resolves the findings they produced; nothing was imported")
       expect(refused.counts).to eq("would_withdraw" => { "Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 } })
       expect(Advisory.current.count).to eq(5)
       expect(Advisory.find_by(advisory_id: "DSA-9001-1").modified_at).to eq(Time.utc(2026, 10, 20, 8))
       expect(AdvisoryUpload.without_data.sole.advisory_import_id).to eq(refused.id) # kept for the second confirmation
-      failed = AuditEntry.where(action: "advisory.import_failed").sole
+      failed = AuditEntry.where(action: "advisory.import_held_back").sole
       expect(failed).to have_attributes(actor_type: "operator", actor_id: operator.id)
       expect(failed.changeset["would_withdraw"]).to eq("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
 
@@ -412,7 +412,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       import_advisories(osv_record(id: "DSA-9006-1"), full: false) # a new advisory meanwhile: now 5 would be withdrawn
       run_import_jobs
       again.reload
-      expect(again).to have_attributes(state: "failed")
+      expect(again).to have_attributes(state: "held_back")
       expect(again.counts.dig("would_withdraw", "Debian:13", "withdraw")).to eq(5)
       expect(Advisory.current.count).to eq(6)
     end
@@ -544,9 +544,8 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
   describe "a refused feed refresh" do
     let!(:refused) do
       import_advisories(*(1..5).map { |i| osv_record(id: "DSA-900#{i}-1") }, full: true, origin: "feed", source: "feeds.example.lan/osv/Debian/all.zip")
-      Advisories::Import.record_failure(origin: "feed", source: "feeds.example.lan/osv/Debian/all.zip", full: true,
-                                        reason: "this full import would mark 4 of 5 current Debian:13 advisories (the import has 1 record for it) withdrawn",
-                                        counts: { "would_withdraw" => { "Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 } } })
+      refusal = Advisories::Import::WithdrawalsRefused.new("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
+      Advisories::Import.record_held_back(refusal, origin: "feed", source: "feeds.example.lan/osv/Debian/all.zip", full: true)
     end
 
     it "warns on the data sources page and wherever freshness is shown, without a failed job" do
@@ -587,6 +586,25 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       get "/data-sources/imports/#{refused.id}"
       expect(page.at_css("form#confirm_withdrawals")).to be_nil
       expect(page.at_css("#withdrawals_expired").text).to start_with("These withdrawals were confirmed")
+    end
+
+    # Review of #131: held back is not failed, in the failure count, the stale notice, Recent imports, and the audit log.
+    it "is told apart from a failed refresh everywhere" do
+      AdvisoryImport.where(id: refused.id).update_all(finished_at: 1.hour.ago)
+      AdvisoryImport.succeeded.update_all(finished_at: 3.days.ago) # the data is stale too
+      expect(AdvisoryDataSources.new.failed_refreshes).to eq(0)
+
+      get "/data-sources"
+      stale = page.at_css("#advisory_freshness")
+      expect(stale.text.squish).to include("Vulnerability data is out of date.")
+      expect(stale.text).not_to include("failed")
+      expect(stale.at_css("a[href='/jobs/failed']")).to be_nil
+      expect(page.at_css("#advisory_held")).to be_present
+      expect(page.at_css("##{ActionView::RecordIdentifier.dom_id(refused)} .lamp").text).to eq("Held back")
+
+      get "/audit"
+      expect(page.text).to include("Advisory import held back (would withdraw too many)")
+      expect(AuditEntry.where(action: "advisory.import_failed")).to be_empty
     end
 
     it "cannot be confirmed with no feed configured" do

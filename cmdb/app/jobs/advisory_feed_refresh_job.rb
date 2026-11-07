@@ -58,8 +58,7 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     result
   rescue Advisories::Import::WithdrawalsRefused => e
     logger.warn("[advisories] feed refresh from #{@source} refused, nothing imported: #{e.message}")
-    import = Advisories::Import.record_failure(origin: "feed", source: @source, reason: e.message, full: true, operator: @operator,
-                                               counts: { "would_withdraw" => e.withdrawals })
+    import = Advisories::Import.record_held_back(e, origin: "feed", source: @source, full: true, operator: @operator)
     Advisories::Import::Result.new(import:, changed_packages: {})
   rescue Advisories::Feed::Unavailable, Advisories::Unreadable => e
     logger.warn("[advisories] feed refresh failed (attempt #{executions} of #{ATTEMPTS}): #{e.message}")

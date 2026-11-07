@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_091500) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -53,7 +53,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_091500) do
     t.index ["operator_id"], name: "index_advisory_imports_on_operator_id"
     t.check_constraint "(finished_at IS NULL) = (state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying]::text[]))", name: "advisory_imports_finished_iff_done"
     t.check_constraint "origin::text = ANY (ARRAY['feed'::character varying, 'file'::character varying]::text[])", name: "advisory_imports_origin_valid"
-    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying, 'succeeded'::character varying, 'failed'::character varying]::text[])", name: "advisory_imports_state_valid"
+    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'held_back'::character varying]::text[])", name: "advisory_imports_state_valid"
   end
 
   create_table "advisory_packages", force: :cascade do |t|

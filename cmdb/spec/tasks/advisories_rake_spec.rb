@@ -53,9 +53,9 @@ RSpec.describe "advisories rake tasks" do
         %r{Nothing imported: this full import would mark advisories withdrawn.*\n  Debian:13: 4 of 5 current advisories \(1 records in the import\)\nIf that is right, run it again with ALLOW_WITHDRAWALS=Debian:13:4 bin/rails advisories:import FILE=#{Regexp.escape(zip.to_s)} FULL=1}
       ).to_stderr }.to raise_error(SystemExit)
       refused = AdvisoryImport.order(:id).last
-      expect(refused).to have_attributes(state: "failed", full: true)
+      expect(refused).to have_attributes(state: "held_back", full: true)
       expect(refused.counts["would_withdraw"]).to eq("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
-      expect(AuditEntry.where(action: "advisory.import_failed").sole.changeset["would_withdraw"]).to be_present
+      expect(AuditEntry.where(action: "advisory.import_held_back").sole.changeset["would_withdraw"]).to be_present
       expect(Advisory.current.count).to eq(5)
     end
 
