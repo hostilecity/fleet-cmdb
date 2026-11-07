@@ -56,9 +56,9 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(Rack::Utils.parse_query(URI(name_link).query)).to eq("q" => "server", "tag" => "media", "status" => "online", "sort" => "name", "dir" => "asc")
       end
 
-      it "explains when nothing matches, with a way back" do
-        get "/", params: { q: "vm-99", tag: "media" }
-        expect(page.at_css(".empty strong").text).to eq(%(No hosts match "vm-99" with tag "media".))
+      it "explains when nothing matches, with a way back" do # not "vm-99": factory hostnames are vm-N, so that matched once the sequence passed 99
+        get "/", params: { q: "no-such-host", tag: "media" }
+        expect(page.at_css(".empty strong").text).to eq(%(No hosts match "no-such-host" with tag "media".))
         expect(page.at_css(".empty a")["href"]).to eq("/")
       end
 
