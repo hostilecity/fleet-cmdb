@@ -21,12 +21,13 @@
         </td>
         <td><% if status.never? %><span class="muted">Never</span><% else %><%= utc(status.updated_at) %> <span class="state-note"><%= seen_ago(status.updated_at) %></span><% end %></td>
         <td><%= number_with_delimiter(row.current) %> current<span class="state-note"><%= number_with_delimiter(row.withdrawn) %> withdrawn</span></td>
-        <td><%= pluralize(row.hosts, "host") %></td>
+        <%# Active hosts on this release, linked to the same set on Compliance (owner decision on #129). %>
+        <td><%= link_to pluralize(row.hosts, "host"), compliance_path(ecosystem: status.ecosystem) %></td>
       </tr>
     <% end %>
     </tbody>
   </table></div>
-  <p class="muted small">Data is stale when its last successful full import is older than <%= pluralize((Advisories.config.max_age / 1.hour).round, "hour") %>, or when it was never imported. A stale source is flagged here, on the Fleet list, and on every host's Vulnerabilities tab, because stale data looks like "no vulnerabilities".</p>
+  <p class="muted small">Data is stale when its last successful full import is older than <%= pluralize((Advisories.config.max_age / 1.hour).round, "hour") %>, or when it was never imported. A stale source is flagged here, on the Fleet list, on Compliance, and on every host's Vulnerabilities tab, because stale data looks like "no vulnerabilities".</p>
 </section>
 
 <div class="cols-2 spaced">

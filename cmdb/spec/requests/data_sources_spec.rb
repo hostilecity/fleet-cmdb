@@ -57,6 +57,13 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       expect(row[1]).to eq("Fresh")
       expect(page.at_css("#ecosystems tbody td:nth-child(4)").children.map { |node| node.text.strip }).to eq([ "2 current", "1 withdrawn" ])
       expect(row[4]).to eq("2 hosts")
+      # Linked to the same active hosts on Compliance, filtered to the distribution (owner decision on #129).
+      link = page.at_css("#ecosystems tbody td:nth-child(5) a")
+      expect(link["href"]).to eq("/compliance?ecosystem=Debian%3A13")
+      get link["href"]
+      expect(response).to have_http_status(:ok)
+      expect(page.at_css("#ecosystem_filter").text.squish).to start_with("Showing hosts running Debian:13.")
+      expect(page.css("#compliance_table tbody tr[id^='compliance_host_']").size).to eq(2)
       expect(page.at_css("#advisory_freshness").text.squish).to start_with("Advisory data last updated: Debian:13")
     end
 
