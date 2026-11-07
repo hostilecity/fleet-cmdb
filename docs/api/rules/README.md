@@ -3,6 +3,7 @@
 Rules are data, never code ([DEC-12](../../decisions/0012-rule-condition-format.md)). The operator keeps them in a YAML (or JSON) file and imports it; the server checks the whole file and stores nothing unless every rule is right. Rules are worded in our own words with CIS section numbers as pointers only ([DEC-10](../../decisions/0010-cis-rules.md)), and the product says "CIS-aligned", never "CIS compliant".
 
 - Schema: [`v1/cis-rules.schema.json`](v1/cis-rules.schema.json) (format 1). Examples the tests check: [`v1/examples/`](v1/examples/).
+- Starter set: [`cmdb/config/rules/debian-13.yml`](../../cmdb/config/rules/debian-13.yml), 71 rules for Debian 13. Adding and tuning rules, and the licensing rules for them: [docs/operations/cis-rules.md](../../operations/cis-rules.md).
 - Import: `bin/rails rules:import FILE=rules.yml` (add `DISABLE_MISSING=1` to disable rules the file no longer lists); `bin/rails rules:list`. See `cmdb/README.md`, "CIS-aligned rules".
 - These files are not part of the agent API: agents never see rules, so a rule change needs no agent update (FR-2.2).
 
@@ -12,7 +13,7 @@ Rules are data, never code ([DEC-12](../../decisions/0012-rule-condition-format.
 format_version: 1
 rules:
   - key: ssh-root-login-off            # stable; never reused for another rule
-    reference: "CIS Debian 13 5.1.20"  # a pointer only, no benchmark text
+    reference: "CIS Debian Linux 13 v1.0.0 5.1.21"  # a pointer only, no benchmark text
     title: SSH does not let root log in
     severity: high                     # low, medium, high, or critical
     applies_to:
