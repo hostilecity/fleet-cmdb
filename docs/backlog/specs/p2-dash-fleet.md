@@ -21,8 +21,8 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- Rules: list with filters, rule detail with version history, add one rule from a form (a single comparison; a rule with several conditions comes in by importing a file), edit the condition and metadata with validation in place, a preview of which hosts would change result before an edit is saved (uses the dry run in [P2-S06](p2-cis-engine.md)), enable and disable (with confirmation), upload a rules file with a preview of what would change before applying.
-- Advisory data: show sources, last import, counts per ecosystem, upload an advisory file, trigger a manual feed refresh if [P2-S13](p2-vulns.md) exists, with a 5-minute cool-down (the button is disabled and shows when it is available again).
+- Rules: list with filters, rule detail with version history, add one rule from a form (a single comparison; a rule with several conditions comes in by importing a file), edit the condition and metadata with validation in place, a preview of which hosts would change result before an edit is saved (uses the dry run in [P2-S14](p2-rule-dryrun.md)), enable and disable (with confirmation), upload a rules file with a preview of what would change before applying.
+- Advisory data: show sources, last import, counts per ecosystem, upload an advisory file, trigger a manual feed refresh if [P2-S13](p2-vulns.md) exists, with the cool-down of [P2-S15](p2-refresh-limit.md) (the button is disabled and shows when it is available again).
 - Every change audited with the operator as actor; edits show before and after.
 
 ### Acceptance criteria
