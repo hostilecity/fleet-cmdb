@@ -16,7 +16,7 @@
     <button class="btn" type="submit">Compare</button>
     <%= link_to "Swap", compare_packages_host_path(@host, from: @to.id, to: @from.id), class: "btn quiet" %>
   <% end %>
-  <% if @reversed %><p class="notice info" role="status" id="reversed_note"><strong>Compared newer to older.</strong> An upgrade here is a package that is older in the earlier snapshot.</p><% end %>
+  <% if @reversed %><p class="notice info" role="status" id="reversed_note"><strong>Compared newer to older.</strong> Changes read from the From snapshot to the To snapshot, so an upgrade here is a package whose version is higher in the earlier snapshot (To), and a downgrade one whose version is lower there.</p><% end %>
   <% if !@diff.available? %>
     <div class="notice" role="status" id="no_diff"><strong>No diff is available for this pair.</strong><p><%= @diff.unavailable_reason == PackageDiff::UNREADABLE ? "One of the two snapshots is a report whose package database could not be read, so its package set is unknown." : "One of the two snapshots comes from an unsupported package manager, so its package set is unknown." %> Showing every package as installed or removed would be wrong.</p></div>
   <% else %>
@@ -24,14 +24,14 @@
     <% counts = package_change_counts(@diff) %>
     <ul class="diffsum" aria-label="Summary of the comparison" id="diff_summary">
       <% HostPackagesHelper::KINDS.each_key do |kind| %>
-        <% next if kind == :skipped && counts.fetch(:skipped, 0).zero? # as drawn in the mockup unless something was skipped %>
+        <% next if HostPackagesHelper::OPTIONAL_KINDS.include?(kind) && counts.fetch(kind, 0).zero? # as drawn in the mockup unless there is one %>
         <li><%= change_kind(kind) %> <strong><%= counts.fetch(kind, 0) %></strong></li>
       <% end %>
     </ul>
     <ul class="chips" aria-label="Show changes of one kind" id="kind_filters">
       <li><%= link_to compare_packages_host_path(@host, from: @from.id, to: @to.id), "aria-current": (@kind.nil? ? "true" : nil) do %>All changes <span class="n"><%= changes.size %></span><% end %></li>
       <% HostPackagesHelper::KIND_FILTERS.each do |param, kind| %>
-        <% next if kind == :skipped && counts.fetch(:skipped, 0).zero? && @kind != param %>
+        <% next if HostPackagesHelper::OPTIONAL_KINDS.include?(kind) && counts.fetch(kind, 0).zero? && @kind != param %>
         <li><%= link_to compare_packages_host_path(@host, from: @from.id, to: @to.id, kind: param), "aria-current": (@kind == param ? "true" : nil) do %><%= HostPackagesHelper::KINDS.fetch(kind).first.split(" ", 2).last %> <span class="n"><%= counts.fetch(kind, 0) %></span><% end %></li>
       <% end %>
     </ul>
@@ -46,7 +46,7 @@
             <% if kind == :skipped %>
               <td><span class="mono"><%= from.version %></span></td>
               <td><span class="unavailable">Not listed as installed</span> <span class="mono"><%= reason %></span></td>
-            <% elsif kind == :same %>
+            <% elsif kind == :same || kind == :equivalent %>
               <td><span class="mono"><%= from.version %></span> from <span class="mono"><%= from.source || "no source" %></span></td>
               <td><span class="mono"><%= to.version %></span> from <span class="mono"><%= to.source || "no source" %></span></td>
             <% else %>
@@ -57,6 +57,7 @@
         <% end %>
       </tbody></table></div>
     <% end %>
+    <p class="muted">"Source changed" is the same version with another source package. "Equivalent version" is a version dpkg treats as equal although it is spelled differently, such as <span class="mono">1.0</span> and <span class="mono">0:1.0</span>; its source package may or may not have changed.</p>
     <p class="muted">"Skipped / incomplete" is a package that was installed in the earlier snapshot and is not listed in the later one, but the agent named it as one it could not report in full, such as an interrupted installation. It is not shown as removed: its state is not known.</p>
     <p class="muted">Direction comes from dpkg's version order, so <span class="mono">1:7.8p1-5</span> to <span class="mono">1:7.8p1-4</span> is a downgrade although the strings sort the other way. "Cannot compare" means either version is not a valid dpkg version; it is never guessed.</p>
   <% end %>
