@@ -176,6 +176,21 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
       expect(Advisories::ManualRefresh.next_allowed_at).to be_within(1.second).of(AdvisoryRefreshAttempt.maximum(:started_at) + 5.minutes)
     end
 
+    it "records its start on a retry when recording failed on the first execution (review of #125)" do
+      stub_feed
+      calls = 0
+      allow(Advisories::ManualRefresh).to receive(:record_start!).and_wrap_original do |original, **args|
+        calls += 1
+        raise ActiveRecord::ConnectionFailed, "the database went away" if calls == 1
+
+        original.call(**args)
+      end
+      refresh
+      expect(calls).to eq(2)
+      expect(AdvisoryRefreshAttempt.pluck(:kind)).to eq(%w[scheduled])
+      expect(AdvisoryImport.sole).to have_attributes(state: "succeeded")
+    end
+
     it "attributes the import from a manual refresh, and its audit entry, to the operator who asked" do
       stub_feed
       Advisories::ManualRefresh.request!(actor: operator)

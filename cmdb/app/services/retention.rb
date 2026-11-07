@@ -4,6 +4,9 @@
 #
 # - The newest row per host survives for the tables registered with `keep_newest_per_host`, whatever its age,
 #   so a host that stopped reporting still shows its last snapshot and last status change.
+# - The newest row of the whole table survives for the tables registered with `keep_newest`, whatever its age:
+#   the last advisory refresh attempt holds the cool-down (P2-S15), which can be longer than the window (review
+#   of #125).
 # - Audit entries are never pruned (FR-S.3). They are not registered here, and the database blocks deleting
 #   them anyway.
 # - Deletes run in batches of `batch_size` rows, each its own short statement, so a large table never holds a
@@ -11,7 +14,7 @@
 # - `dry_run` counts what would be deleted and changes nothing.
 # - A later phase registers its own snapshot type with Retention.register (for example P2-S12).
 module Retention
-  Target = Data.define(:model, :time_column, :keep_newest_per_host)
+  Target = Data.define(:model, :time_column, :keep_newest_per_host, :keep_newest)
 
   DEFAULT_BATCH_SIZE = 1_000
 
@@ -21,10 +24,10 @@ module Retention
     attr_reader :targets
 
     # Adds a table to prune. `time_column` is the row's age (received_at, occurred_at); `keep_newest_per_host`
-    # needs a host_id column and an index on (host_id, time_column).
-    def register(model, time_column:, keep_newest_per_host: false)
+    # needs a host_id column and an index on (host_id, time_column); `keep_newest` keeps the table's newest row.
+    def register(model, time_column:, keep_newest_per_host: false, keep_newest: false)
       @targets.reject! { |target| target.model == model }
-      @targets << Target.new(model:, time_column:, keep_newest_per_host:)
+      @targets << Target.new(model:, time_column:, keep_newest_per_host:, keep_newest:)
     end
 
     # Deletes (or, in a dry run, counts) the expired rows of every target. Returns { "inventory_snapshots" => 12 }.
@@ -55,6 +58,9 @@ module Retention
       table = target.model.quoted_table_name
       column = target.model.connection.quote_column_name(target.time_column)
       scope = target.model.where("#{table}.#{column} < ?", cutoff)
+      if target.keep_newest
+        scope = scope.where("EXISTS (SELECT 1 FROM #{table} newer WHERE (newer.#{column}, newer.id) > (#{table}.#{column}, #{table}.id))")
+      end
       return scope unless target.keep_newest_per_host
 
       # Not the newest row of its host: a row with the same host and a later time (or the same time and a
@@ -78,6 +84,7 @@ module Retention
   # On-demand report requests (P2-S03), by when they were made: a request ends within an hour, and the audit
   # log keeps who asked.
   register ReportRequest, time_column: :requested_at
-  # When each advisory feed refresh started (P2-S15): only the newest few minutes matter, for the cool-down.
-  register AdvisoryRefreshAttempt, time_column: :started_at
+  # When each advisory feed refresh started (P2-S15): only the newest matters, for the cool-down, and it is kept
+  # however old, since the cool-down has no upper bound (review of #125).
+  register AdvisoryRefreshAttempt, time_column: :started_at, keep_newest: true
 end

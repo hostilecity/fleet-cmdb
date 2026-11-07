@@ -52,6 +52,14 @@ RSpec.describe Retention do
   end
 
   describe ".prune!" do
+    it "keeps the newest advisory refresh attempt however old, since it holds the cool-down (review of #125)" do
+      older = refresh_attempt(200)
+      newest = refresh_attempt(120)
+      expect(described_class.prune!(now:)["advisory_refresh_attempts"]).to eq(1)
+      expect(AdvisoryRefreshAttempt.pluck(:id)).to eq([ newest.id ])
+      expect(AdvisoryRefreshAttempt.exists?(older.id)).to be(false)
+    end
+
     it "removes rows older than the window and keeps newer ones, by default 90 days" do
       old = [ snapshot(host, 120), snapshot(host, 100), status_event(host, 95, to: "stale"), receipt(host, 91),
               package_snapshot(host, 120), package_receipt(host, 91), config_snapshot(host, 120), config_receipt(host, 91),

@@ -9,8 +9,9 @@
 # keeps it as a failed job and it shows on the dashboard banner and in /health (NFR-2, P1-O02).
 #
 # Each refresh records when it started (Advisories::ManualRefresh, P2-S15), which starts the cool-down on the
-# dashboard's "Refresh now". A scheduled run records itself as "scheduled" on its first execution (not on
-# retries, which are the same refresh) and the rake task as "task"; neither is ever refused. A manual refresh
+# dashboard's "Refresh now". A scheduled run records itself as "scheduled" once (not again on retries, which are
+# the same refresh; if recording fails, a retry records it instead, review of #125) and the rake task as "task";
+# neither is ever refused. A manual refresh
 # was recorded when the operator asked, and passes that attempt's id: its import and any failure are then
 # attributed to that operator.
 class AdvisoryFeedRefreshJob < ApplicationJob
@@ -32,8 +33,9 @@ class AdvisoryFeedRefreshJob < ApplicationJob
 
     if attempt_id
       @operator = AdvisoryRefreshAttempt.find_by(id: attempt_id)&.operator
-    elsif executions <= 1
+    elsif !@start_recorded
       Advisories::ManualRefresh.record_start!(kind:)
+      @start_recorded = true
     end
     @source = feed.source
     last = AdvisoryImport.succeeded.where(origin: "feed", source: @source).order(finished_at: :desc, id: :desc).first
@@ -50,6 +52,14 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     raise
   ensure
     download&.close!
+  end
+
+  # Whether this refresh's start is recorded travels with the job through its retries, as executions does.
+  def serialize = super.merge("start_recorded" => @start_recorded == true)
+
+  def deserialize(job_data)
+    super
+    @start_recorded = job_data["start_recorded"] == true
   end
 
   # Called by retry_on once the retries are used up, and by bin/rails advisories:refresh on its one attempt.

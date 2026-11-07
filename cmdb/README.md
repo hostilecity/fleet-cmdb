@@ -197,7 +197,7 @@ Vulnerability advisories (FR-2.4, DEC-11, P2-S10, P2-S13) are OSV records for th
   - A failure of any kind is retried with backoff. After the last attempt it is recorded and audited, and the job fails, so it shows on the failed-jobs banner and in `/health`.
   - Errors and logs name only the feed's host, never its path, query, or token.
 - **Manual refresh cool-down** (P2-S15). `Advisories::ManualRefresh.request!(actor:)` is the dashboard's "Refresh now": it enqueues the same `AdvisoryFeedRefreshJob` as the schedule, unless the last refresh of any kind (manual, scheduled, or `bin/rails advisories:refresh`) started less than `FLEET_ADVISORY_REFRESH_COOLDOWN` seconds ago. Then it is refused with the time a refresh is next allowed, and starts nothing.
-  - Each refresh records when it started in `advisory_refresh_attempts`. The check and the record run under one PostgreSQL advisory lock, so two operators clicking together start one refresh.
+  - Each refresh records when it started in `advisory_refresh_attempts`. The check and the record run under one PostgreSQL advisory lock, so two operators clicking together start one refresh. Retention keeps the newest attempt however old, since it holds the cool-down.
   - The schedule and the rake task are never refused, but they count: the next manual refresh waits for the cool-down after them.
   - Both outcomes are audited with the operator as actor (`advisory.refresh_requested`, `advisory.refresh_refused`) and the time a refresh is next allowed. The import a manual refresh leads to is attributed to that operator.
   - `Advisories::ManualRefresh.next_allowed_at` is when the button can next be used (nil: now), for the disabled button and its "available again" text.
