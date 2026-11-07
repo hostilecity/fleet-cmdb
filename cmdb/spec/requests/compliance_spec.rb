@@ -40,6 +40,7 @@ RSpec.describe "Compliance", :signed_in, type: :request do
     expect(page.at_css("#no_active_hosts a")["href"]).to eq("/agents/install")
     expect(page.css(".sevstrip, #compliance_table")).to be_empty
     expect(words(page.at_css(".page-head p"))).to include("for the 0 active hosts")
+    expect(page.css(".page-head .actions a").map { |a| [ a.text, a["href"] ] }).to eq([ [ "Manage rules", "/rules" ], [ "Data sources", "/data-sources" ] ]) # P2-D06
   end
 
   context "with a fleet" do
