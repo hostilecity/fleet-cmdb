@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_060000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -293,9 +293,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
     t.datetime "received_at", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.jsonb "skipped", default: [], null: false
     t.index ["host_id"], name: "index_host_package_sets_on_host_id", unique: true
-    t.check_constraint "(manager::text = 'unsupported'::text) = (unsupported_reason IS NOT NULL)", name: "host_package_sets_reason_iff_unsupported"
-    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying]::text[])", name: "host_package_sets_manager_valid"
+    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "host_package_sets_manager_valid"
+    t.check_constraint "(manager::text = 'dpkg'::text) = (unsupported_reason IS NULL)", name: "host_package_sets_reason_iff_not_dpkg"
   end
 
   create_table "host_packages", force: :cascade do |t|
@@ -466,9 +467,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
     t.uuid "report_id", null: false
     t.datetime "collected_at", null: false
     t.datetime "received_at", null: false
+    t.jsonb "skipped", default: [], null: false
     t.index ["host_id", "received_at"], name: "index_package_snapshots_on_host_id_and_received_at"
     t.index ["received_at"], name: "index_package_snapshots_on_received_at"
-    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying]::text[])", name: "package_snapshots_manager_valid"
+    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "package_snapshots_manager_valid"
   end
 
   create_table "report_requests", force: :cascade do |t|

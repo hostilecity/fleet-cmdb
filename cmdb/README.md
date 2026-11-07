@@ -161,13 +161,13 @@ Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the opera
 
 `POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`): at most 4 MiB of JSON, sent plain or once decompressed, and 1 MiB compressed. `AgentApiRequestGuard` lets this path's plain bodies past its general 1 MiB limit (`UNCOMPRESSED_LIMITS`).
 
-- **Validation.** The body is validated against `docs/api`; `lib/agent_api/package_report.rb` then refuses a package listed twice for one architecture. `manager: unsupported` carries a reason and no packages. A version dpkg would refuse is stored as reported; matching treats it as not evaluated.
+- **Validation.** The body is validated against `docs/api`; `lib/agent_api/package_report.rb` then refuses a package listed twice for one architecture. `manager: unsupported` and `manager: unreadable` (dpkg is there, its database could not be listed) carry a reason and no packages; `skipped` names packages not listed as installed (an interrupted installation), stored sorted and without duplicates. A version dpkg would refuse is stored as reported; matching treats it as not evaluated.
 - **Storage.** `PackageRecorder` stores a valid report under the host row lock:
   - `package_report_receipts`: report ids already processed. A retried report is answered `duplicate: true` and changes nothing.
-  - `host_package_sets`: the manager (or that it is unsupported, and why), the package count, the content hash, and warnings, updated on every report.
+  - `host_package_sets`: the manager (or that it is unsupported or unreadable, and why), the package count, the content hash, the skipped names, and warnings, updated on every report. After an unreadable report the count and the `host_packages` rows are those of the last readable one.
   - `host_packages`: one row per installed package, replaced when the set changes; indexed by source package for matching.
-  - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows, written only when the content hash changes. Retention keeps the newest per host.
-- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). With an unsupported manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
+  - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows plus the skipped names, written only when the content hash changes (an unreadable report is a snapshot with no packages). Retention keeps the newest per host.
+- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). A package in the older set and not the newer one is `removed`, or `skipped` (with the reason) when the newer report names it in `skipped`. A skipped name counts as present: installed after being skipped is `completed`, and skipped then neither listed nor skipped is `removed_skipped` (no version known). The class comment in `app/models/package_diff.rb` lists each kind's shape. With an unsupported or unreadable manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
 
 ### Report requests
 
@@ -223,7 +223,7 @@ bin/rails advisories:status                               # freshness per ecosys
   - **States:** `open`, `resolved` with a resolution (`fixed`, `removed`, `withdrawn`, or `not_affected`), and `reopened` when the condition returns, for example after a downgrade or a reinstall.
   - **Timestamps:** `first_seen_at`, `resolved_at`, and `reopened_at`.
 - **Not evaluated.** `host_vulnerability_evaluations` records each host's last run.
-  - **A whole host** is "not evaluated", with the reason, when it has no inventory, is on a distribution outside the fleet profile, has no package report, has an unsupported package manager, or has no advisory data for its ecosystem. Its findings are left as they were.
+  - **A whole host** is "not evaluated", with the reason, when it has no inventory, is on a distribution outside the fleet profile, has no package report, has an unsupported package manager, has a package database that could not be read, or has no advisory data for its ecosystem. Its findings are left as they were.
   - **One package** whose version, or whose advisory's version, dpkg cannot parse is listed as not evaluated, and its finding is left as it was.
 - **When it runs.** `VulnerabilityMatchJob` runs after each commit that adds a package snapshot (for that host) and after each import (for the packages it changed, plus hosts not yet evaluated). Agents are not involved.
   - **Idempotent:** running it again changes nothing.

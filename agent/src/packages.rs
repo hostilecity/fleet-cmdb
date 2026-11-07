@@ -2,8 +2,10 @@
 //!
 //! [`collect`] detects the package manager and lists every installed package with its name, full
 //! version (with any epoch), architecture, and source package. Only dpkg is supported
-//! ([DEC-01](../../docs/decisions/0001-fleet-profile.md)); anything else is [`Collected::Unsupported`]
-//! with a reason, never an empty list, so the server cannot mistake it for a host with no packages.
+//! ([DEC-01](../../docs/decisions/0001-fleet-profile.md)). A host the agent cannot list is never an empty
+//! list, so the server cannot mistake it for a host with no packages: [`Collected::Unsupported`] (no
+//! dpkg, or another manager) and [`Collected::Unreadable`] (dpkg is there but cannot be listed) both
+//! carry a reason.
 //!
 //! # Detection
 //!
@@ -21,28 +23,37 @@
 //!
 //! # Which packages count as installed
 //!
-//! A package is reported when dpkg has a version of it on disk, which is what apt calls installed:
-//! every status but `not-installed` (which `--show` already leaves out) and `config-files` (removed,
-//! only its configuration files left). So `installed` and the trigger states (`triggers-awaited`,
-//! `triggers-pending`) are reported, and so are the states of an interrupted installation
-//! (`unpacked`, `half-configured`, `half-installed`), whose files are on disk too; those are counted in
-//! [`Listing::not_configured`] and logged. The selection state (`hold`, `deinstall`) does not matter: a
-//! held package is installed. The reference listing for AC-2.3 is therefore
-//! `dpkg-query --show` without the `config-files` lines.
+//! A package whose status is `installed`, `triggers-awaited`, or `triggers-pending` is reported as
+//! installed: in the two trigger states it is unpacked and configured, only a trigger it awaits or owns
+//! has not run yet, and apt and `dpkg -l` count it as installed (review of #121). A package in an
+//! interrupted installation (`unpacked`, `half-installed`, `half-configured`, owner decision, P2-S08)
+//! is not: its name and the status go in [`Listing::skipped`]
+//! (and the count in [`Listing::not_configured`]), so the server shows it as skipped, not as installed
+//! and not as removed. `config-files` (removed, only its configuration files left) is left out, as
+//! `not-installed` already is by `--show`. The selection state (`hold`, `deinstall`) is not part of
+//! `${db:Status-Status}`: a held package is `installed` and is reported. The reference listing for
+//! AC-2.3 is therefore the lines of `dpkg-query --show` whose status is `installed` or a trigger
+//! state, and the interrupted ones are the `skipped` names.
 //!
 //! # What does not fit the contract
 //!
 //! The server refuses a whole report for one value outside `packages.request`, so each line is checked
 //! here ([`parse`]), never cut to fit:
 //!
-//! - a line that is not five fields, is not UTF-8, has a status dpkg does not define, or whose name,
-//!   version, or architecture the contract does not allow, is skipped with a warning;
+//! - a line that is not five fields, is not UTF-8, or whose name the contract does not allow, is left
+//!   out with a warning (no name can be given);
+//! - a line whose name is readable but whose status dpkg does not define, or whose version or
+//!   architecture the contract does not allow, is left out with a warning **and** named in
+//!   [`Listing::skipped`] with the reason (owner decision);
 //! - a source package name the contract does not allow is reported as `null` with a warning;
 //! - a name and architecture listed twice keeps the first, with a warning.
 //!
-//! At most [`MAX_WARNINGS`] warnings are kept, the last one counting the rest. A listing over
-//! [`MAX_PACKAGES`] packages, or over the output cap, is not sent in part: the report says
-//! `unsupported` with the reason (an unknown set, not a smaller one).
+//! At most [`MAX_WARNINGS`] warnings are kept, the last one counting the rest, and at most
+//! [`MAX_SKIPPED`] names (each name once, whatever its architectures); the skipped names beyond that are
+//! counted in one more warning. A host with dpkg whose listing cannot be had at all (the command fails,
+//! times out, or prints more than the cap; the database cannot be read) or is over [`MAX_PACKAGES`]
+//! packages is not sent in part: the report says `unreadable` with the reason (an unknown set, not a
+//! smaller one).
 //!
 //! # Memory
 //!
@@ -51,6 +62,7 @@
 //! straight into the gzip encoder ([`crate::report`]), so the JSON is never held whole. Measured peak
 //! for 3,000 packages: see `docs/operations/agent-packages.md`.
 
+use std::collections::HashSet;
 use std::io;
 use std::time::Duration;
 
@@ -78,6 +90,8 @@ pub const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 pub const MAX_PACKAGES: usize = 20_000;
 /// The contract's limit on `warnings`.
 pub const MAX_WARNINGS: usize = 64;
+/// The contract's limit on `skipped`.
+pub const MAX_SKIPPED: usize = 64;
 
 /// Other package managers, named in the reason when there is no dpkg database.
 const OTHER_MANAGERS: &[(&str, &str)] = &[
@@ -96,6 +110,14 @@ pub struct Package {
     pub source: Option<String>,
 }
 
+/// A package the agent read the name of but did not list as installed, as the contract's `skipped` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Skipped {
+    pub name: String,
+    /// Short, at most 128 characters: the dpkg status, or what the contract could not carry.
+    pub reason: String,
+}
+
 /// The dpkg listing, checked against the contract.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Listing {
@@ -103,7 +125,11 @@ pub struct Listing {
     pub packages: Vec<Package>,
     /// For the report's `warnings` (field `packages`): at most [`MAX_WARNINGS`].
     pub warnings: Vec<String>,
-    /// Packages in an interrupted installation (`unpacked`, `half-configured`, `half-installed`).
+    /// For the report's `skipped`: sorted by name, each name once, at most [`MAX_SKIPPED`].
+    pub skipped: Vec<Skipped>,
+    /// Skipped names beyond [`MAX_SKIPPED`], counted in a warning instead.
+    pub skipped_not_named: usize,
+    /// Lines in an interrupted installation (`unpacked`, `half-installed`, `half-configured`).
     pub not_configured: usize,
     /// Lines left out because the package is removed (`config-files`).
     pub removed: usize,
@@ -113,8 +139,11 @@ pub struct Listing {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Collected {
     Dpkg(Listing),
-    /// No supported manager, or the packages could not be listed: why, for the operator.
+    /// No supported manager (no dpkg database, or another manager): why, for the operator.
     Unsupported(String),
+    /// dpkg is there but its packages could not be listed (the database cannot be read, the command
+    /// failed, timed out, or printed too much, or the list is too large to send whole): why.
+    Unreadable(String),
     /// The agent is stopping, so the listing was not run (or not finished); nothing is to be sent.
     Stopping,
 }
@@ -141,7 +170,7 @@ fn collect_with(ctx: &Ctx, stop: Option<&Shutdown>) -> Collected {
         {
             return Collected::Unsupported(no_dpkg_reason(ctx));
         }
-        Err(e) => return Collected::Unsupported(crate::facts::io_reason(DPKG_STATUS, &e)),
+        Err(e) => return Collected::Unreadable(crate::facts::io_reason(DPKG_STATUS, &e)),
     }
     let mut command = Command::new(DPKG_QUERY, LIST);
     command.timeout = TIMEOUT;
@@ -150,12 +179,12 @@ fn collect_with(ctx: &Ctx, stop: Option<&Shutdown>) -> Collected {
         Ok(output) => output,
         Err(RunError::Stopping) => return Collected::Stopping,
         Err(_) if stopping() => return Collected::Stopping,
-        Err(e) => return Collected::Unsupported(e.reason("dpkg-query --show")),
+        Err(e) => return Collected::Unreadable(e.reason("dpkg-query --show")),
     };
     let listing = parse(&output);
     drop(output);
     if listing.packages.len() > MAX_PACKAGES {
-        return Collected::Unsupported(too_many(listing.packages.len()));
+        return Collected::Unreadable(too_many(listing.packages.len()));
     }
     Collected::Dpkg(listing)
 }
@@ -195,6 +224,7 @@ pub fn parse(output: &[u8]) -> Listing {
         ..Listing::default()
     };
     let mut problems = Problems::default();
+    let mut skips = Skips::default();
     for (index, line) in output.split(|b| *b == b'\n').enumerate() {
         if line.is_empty() {
             continue;
@@ -216,8 +246,18 @@ pub fn parse(output: &[u8]) -> Listing {
             continue;
         };
         match status {
+            // A pending or awaited trigger does not make a configured package less installed.
             "installed" | "triggers-awaited" | "triggers-pending" => {}
-            "unpacked" | "half-configured" | "half-installed" => listing.not_configured += 1,
+            "unpacked" | "half-configured" | "half-installed" => {
+                // Not installed in full: named, not listed (the line is not checked further).
+                listing.not_configured += 1;
+                if valid_name(name) {
+                    skips.add(name, status);
+                } else {
+                    problems.push(bad_name(name));
+                }
+                continue;
+            }
             "config-files" => {
                 listing.removed += 1;
                 continue;
@@ -229,17 +269,18 @@ pub fn parse(output: &[u8]) -> Listing {
                     quote(name),
                     quote(other)
                 ));
+                if valid_name(name) {
+                    skips.add(name, "dpkg status not known to this agent");
+                }
                 continue;
             }
         }
         if !valid_name(name) {
-            problems.push(format!(
-                "package name {} is not one a package report can carry; skipped",
-                quote(name)
-            ));
+            problems.push(bad_name(name));
             continue;
         }
         if !valid_architecture(architecture) {
+            skips.add(name, "architecture is not one a package report can carry");
             problems.push(format!(
                 "package {name} has the architecture {}, which a package report cannot carry; skipped",
                 quote(architecture)
@@ -247,6 +288,7 @@ pub fn parse(output: &[u8]) -> Listing {
             continue;
         }
         if !valid_version(version) {
+            skips.add(name, "version is not one a package report can carry");
             problems.push(format!(
                 "package {name}:{architecture} has the version {}, which a package report cannot carry; skipped",
                 quote(version)
@@ -286,7 +328,10 @@ pub fn parse(output: &[u8]) -> Listing {
     });
     // What skipped lines left unused is not carried through the report's encoding.
     listing.packages.shrink_to_fit();
-    listing.warnings = problems.finish();
+    listing.skipped = skips.named;
+    listing.skipped.sort_by(|a, b| a.name.cmp(&b.name));
+    listing.skipped_not_named = skips.over.len();
+    listing.warnings = problems.finish(skips.over.len());
     listing
 }
 
@@ -306,17 +351,57 @@ impl Problems {
         }
     }
 
-    fn finish(mut self) -> Vec<String> {
-        if self.more > 0 {
-            // The last kept message makes room for the count, which includes it.
-            self.kept.pop();
-            self.kept.push(format!(
+    /// `not_named` skipped packages have no entry in `skipped`; one final warning says so, and keeps its
+    /// place whatever else is over the limit.
+    fn finish(self, not_named: usize) -> Vec<String> {
+        let (mut kept, more) = (self.kept, self.more);
+        let room = MAX_WARNINGS - usize::from(not_named > 0);
+        let total = kept.len() + more;
+        if total > room {
+            // The count takes the last free place, so one message fewer is kept; it counts that one too.
+            kept.truncate(room - 1);
+            kept.push(format!(
                 "{} more problems with the dpkg-query output are not listed",
-                self.more + 1
+                total - (room - 1)
             ));
         }
-        self.kept
+        if not_named > 0 {
+            kept.push(format!(
+                "{not_named} more packages were skipped; their names are not listed (at most {MAX_SKIPPED} are)"
+            ));
+        }
+        kept
     }
+}
+
+/// Packages named in `skipped`: the first [`MAX_SKIPPED`] names, each once; the rest are only counted.
+#[derive(Default)]
+struct Skips {
+    named: Vec<Skipped>,
+    over: HashSet<String>,
+}
+
+impl Skips {
+    fn add(&mut self, name: &str, reason: &str) {
+        if self.named.iter().any(|s| s.name == name) || self.over.contains(name) {
+            return;
+        }
+        if self.named.len() < MAX_SKIPPED {
+            self.named.push(Skipped {
+                name: name.to_owned(),
+                reason: reason.chars().take(128).collect(),
+            });
+        } else {
+            self.over.insert(name.to_owned());
+        }
+    }
+}
+
+fn bad_name(name: &str) -> String {
+    format!(
+        "package name {} is not one a package report can carry; skipped",
+        quote(name)
+    )
 }
 
 /// A value from the output for a warning: control characters removed, at most 100 characters.

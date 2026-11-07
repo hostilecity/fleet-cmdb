@@ -18,6 +18,13 @@ fn find<'a>(listing: &'a Listing, name: &str, architecture: &str) -> &'a Package
         .unwrap_or_else(|| panic!("{name}:{architecture} not listed"))
 }
 
+fn skipped(name: &str, reason: &str) -> Skipped {
+    Skipped {
+        name: name.into(),
+        reason: reason.into(),
+    }
+}
+
 fn package(name: &str, version: &str, architecture: &str, source: &str) -> Package {
     Package {
         name: name.into(),
@@ -31,10 +38,20 @@ fn package(name: &str, version: &str, architecture: &str, source: &str) -> Packa
 fn the_debian13_listing_is_parsed_in_full() {
     let listing = parse(&package_fixture("dpkg-query-show"));
     assert_eq!(listing.warnings, Vec::<String>::new());
-    // 31 lines: one removed package (config-files) is left out; `nano` (purged) is not listed by dpkg.
-    assert_eq!(listing.packages.len(), 30);
+    // 32 lines: one removed package (config-files) is left out, and two interrupted installations
+    // are named, not listed; `systemd`, with a trigger pending, is installed; `nano` (purged) is not
+    // listed by dpkg.
+    assert_eq!(listing.packages.len(), 29);
     assert_eq!(listing.removed, 1);
-    assert_eq!(listing.not_configured, 1, "qemu-guest-agent is unpacked");
+    assert_eq!(listing.not_configured, 2);
+    assert_eq!(
+        listing.skipped,
+        [
+            skipped("man-db", "half-configured"),
+            skipped("qemu-guest-agent", "unpacked"),
+        ]
+    );
+    assert_eq!(listing.skipped_not_named, 0);
     for (name, architecture, version, source) in [
         // Epochs.
         ("vim", "amd64", "2:9.1.1230-2", "vim"),
@@ -58,21 +75,21 @@ fn the_debian13_listing_is_parsed_in_full() {
             "linux-signed-amd64",
         ),
         ("cloud-init", "all", "25.1.4-1~deb13u1", "cloud-init"),
-        ("systemd", "amd64", "257.8-1~deb13u2", "systemd"),
         // Multi-arch: the same package for two architectures, and `all`.
         ("libc6", "amd64", "2.41-12", "glibc"),
         ("libc6", "i386", "2.41-12", "glibc"),
         ("tzdata", "all", "2025b-4+deb13u1", "tzdata"),
         // No Source field: the package's own name.
         ("local-tool", "amd64", "0.1", "local-tool"),
-        // Held (`hi`) is installed; unpacked is on disk.
+        // A trigger pending (`it`) is installed and configured (review of #121).
+        ("systemd", "amd64", "257.8-1~deb13u2", "systemd"),
+        // Held (`hi`) is installed.
         (
             "linux-image-cloud-amd64",
             "amd64",
             "6.12.48-1",
             "linux-signed-amd64",
         ),
-        ("qemu-guest-agent", "amd64", "1:10.0.2+ds-2", "qemu"),
     ] {
         assert_eq!(
             find(&listing, name, architecture),
@@ -86,6 +103,13 @@ fn the_debian13_listing_is_parsed_in_full() {
             .any(|p| p.name.starts_with("linux-image-6.12.33")),
         "a removed package (config-files) is not installed"
     );
+    // An interrupted installation is not installed (owner decision): not in the list, whatever its state.
+    for name in ["man-db", "qemu-guest-agent"] {
+        assert!(
+            !listing.packages.iter().any(|p| p.name == name),
+            "{name} is not installed in full"
+        );
+    }
     // Sorted by name, then architecture, each pair once.
     let keys: Vec<(&str, &str)> = listing
         .packages
@@ -121,8 +145,10 @@ fn the_fixture_is_what_the_real_dpkg_query_prints_for_its_status_file() {
 }
 
 /// The reference listing for AC-2.3, read independently of [`LIST`]: `name:arch version` for every
-/// package `dpkg-query --show` lists whose status abbreviation is not `rc`-like (config-files).
-fn reference_listing(admindir: Option<&Path>) -> BTreeSet<String> {
+/// package `dpkg-query --show` lists whose status is installed or a trigger state (the second letter of the
+/// abbreviation is `i`, triggers-a`W`aited, or `t`riggers-pending), and the names of the interrupted
+/// installations (`H`alf-installed, `U`npacked, half-`F`igured).
+fn reference_listing(admindir: Option<&Path>) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut args = vec![
         "--show".to_owned(),
         "--showformat=${db:Status-Abbrev}|${binary:Package}|${Architecture}|${Version}\\n"
@@ -138,19 +164,26 @@ fn reference_listing(admindir: Option<&Path>) -> BTreeSet<String> {
         max_output: MAX_OUTPUT,
     };
     let output = String::from_utf8(RealHost::new().run(&command).unwrap()).unwrap();
-    output
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split('|').collect();
-            // The second letter of the abbreviation is the status: `c` is config-files.
-            if fields[0].as_bytes().get(1) == Some(&b'c') {
-                return None;
+    let (mut installed, mut interrupted) = (BTreeSet::new(), BTreeSet::new());
+    for line in output.lines() {
+        let fields: Vec<&str> = line.split('|').collect();
+        // `${binary:Package}` qualifies only Multi-Arch: same packages; qualify them all.
+        let name = fields[1].split(':').next().unwrap();
+        match fields[0].as_bytes().get(1) {
+            Some(b'i' | b'W' | b't') => {
+                installed.insert(format!("{name}:{} {}", fields[2], fields[3]));
             }
-            // `${binary:Package}` qualifies only Multi-Arch: same packages; qualify them all.
-            let name = fields[1].split(':').next().unwrap();
-            Some(format!("{name}:{} {}", fields[2], fields[3]))
-        })
-        .collect()
+            Some(b'H' | b'U' | b'F') => {
+                interrupted.insert(name.to_owned());
+            }
+            _ => {} // `c`, config-files
+        }
+    }
+    (installed, interrupted)
+}
+
+fn skipped_names(listing: &Listing) -> BTreeSet<String> {
+    listing.skipped.iter().map(|s| s.name.clone()).collect()
 }
 
 fn reported(listing: &Listing) -> BTreeSet<String> {
@@ -172,7 +205,18 @@ fn the_fixture_listing_matches_dpkgs_own_listing() {
     std::fs::create_dir_all(admin.path("info")).unwrap();
     std::fs::write(admin.path("status"), package_fixture("status")).unwrap();
     let listing = parse(&package_fixture("dpkg-query-show"));
-    assert_eq!(reported(&listing), reference_listing(Some(admin.root())));
+    let (installed, interrupted) = reference_listing(Some(admin.root()));
+    assert_eq!(reported(&listing), installed);
+    assert_eq!(skipped_names(&listing), interrupted);
+    assert_eq!(
+        interrupted.len(),
+        2,
+        "the fixture has two interrupted installations"
+    );
+    assert!(
+        installed.iter().any(|p| p.starts_with("systemd:amd64 ")),
+        "dpkg counts the package with a trigger pending as installed"
+    );
 }
 
 #[test]
@@ -187,7 +231,9 @@ fn on_this_machine_the_report_matches_dpkgs_own_listing() {
     };
     assert!(listing.warnings.is_empty(), "{:?}", listing.warnings);
     assert!(!listing.packages.is_empty());
-    assert_eq!(reported(&listing), reference_listing(None));
+    let (installed, interrupted) = reference_listing(None);
+    assert_eq!(reported(&listing), installed);
+    assert_eq!(skipped_names(&listing), interrupted);
 }
 
 #[test]
@@ -196,7 +242,7 @@ fn the_listing_runs_one_fixed_command() {
     let Collected::Dpkg(listing) = collect(&host, None) else {
         panic!("not detected");
     };
-    assert_eq!(listing.packages.len(), 30);
+    assert_eq!(listing.packages.len(), 29);
     assert_eq!(
         host.log(),
         [
@@ -238,7 +284,7 @@ fn a_host_without_dpkg_is_unsupported_and_says_what_it_has() {
 }
 
 #[test]
-fn a_listing_that_cannot_be_read_is_unsupported_with_the_reason() {
+fn a_dpkg_that_cannot_be_listed_is_unreadable_with_the_reason_not_unsupported() {
     let cases: [(FakeHost, &str); 5] = [
         (
             FakeHost::debian13().without_output("dpkg-query --show"),
@@ -272,7 +318,7 @@ fn a_listing_that_cannot_be_read_is_unsupported_with_the_reason() {
         ),
     ];
     for (host, reason) in cases {
-        assert_eq!(collect(&host, None), Collected::Unsupported(reason.into()));
+        assert_eq!(collect(&host, None), Collected::Unreadable(reason.into()));
     }
 }
 
@@ -286,14 +332,14 @@ fn a_stopping_agent_runs_nothing() {
 }
 
 #[test]
-fn more_packages_than_a_report_may_list_is_unsupported_not_cut() {
+fn more_packages_than_a_report_may_list_is_unreadable_not_cut() {
     let output = synthetic_output(MAX_PACKAGES + 1);
     let host = FakeHost::default()
         .with_stat(DPKG_STATUS, 0o644, 0, 0)
         .with_output("dpkg-query --show", Ok(output));
     assert_eq!(
         collect(&host, None),
-        Collected::Unsupported(too_many(MAX_PACKAGES + 1))
+        Collected::Unreadable(too_many(MAX_PACKAGES + 1))
     );
     let exactly = FakeHost::default()
         .with_stat(DPKG_STATUS, 0o644, 0, 0)
@@ -352,6 +398,24 @@ fn lines_the_contract_cannot_carry_are_skipped_with_a_warning_never_cut() {
     ] {
         assert!(warnings.contains(expected), "{expected}\n---\n{warnings}");
     }
+    // A line whose name is readable is also named in `skipped` with a short reason (owner decision); one
+    // without a readable name (a bad name, the wrong number of fields, not UTF-8) is a warning only.
+    assert_eq!(
+        listing.skipped,
+        [
+            skipped("long", "version is not one a package report can carry"),
+            skipped(
+                "no-arch",
+                "architecture is not one a package report can carry"
+            ),
+            skipped("spaced", "version is not one a package report can carry"),
+            skipped("strange", "dpkg status not known to this agent"),
+            skipped(
+                "weird-arch",
+                "architecture is not one a package report can carry"
+            ),
+        ]
+    );
     // A control character from the output never reaches a warning.
     assert!(!warnings.contains('\x1b'), "{warnings}");
     assert_eq!(listing.warnings.len(), 13, "{warnings}");
@@ -389,13 +453,15 @@ fn warnings_are_capped_with_a_count_of_the_rest() {
 
 #[test]
 fn every_status_dpkg_defines_is_handled() {
+    // `installed` and the two trigger states (configured, a trigger not run yet) are reported as
+    // installed (review of #121); the interrupted states are skipped, named.
     let statuses = [
         ("installed", true),
         ("triggers-awaited", true),
         ("triggers-pending", true),
-        ("half-configured", true),
-        ("unpacked", true),
-        ("half-installed", true),
+        ("half-configured", false),
+        ("unpacked", false),
+        ("half-installed", false),
         ("config-files", false),
         ("not-installed", false),
     ];
@@ -415,6 +481,97 @@ fn every_status_dpkg_defines_is_handled() {
     }
     assert_eq!(listing.not_configured, 3);
     assert_eq!(listing.removed, 1);
+    assert_eq!(
+        listing.skipped,
+        [
+            skipped("p-half-configured", "half-configured"),
+            skipped("p-half-installed", "half-installed"),
+            skipped("p-unpacked", "unpacked"),
+        ]
+    );
+}
+
+#[test]
+fn a_held_package_is_installed_and_reported() {
+    // dpkg prints `installed` for a package on hold: the hold is its selection, not its status.
+    let listing = parse(b"installed\theld\tamd64\t1.0-1\theld\n");
+    assert_eq!(
+        listing.packages,
+        [package("held", "1.0-1", "amd64", "held")]
+    );
+    assert!(listing.skipped.is_empty());
+}
+
+#[test]
+fn an_interrupted_package_is_named_once_for_all_its_architectures() {
+    let output = "half-configured\tlibc6\tamd64\t2.41-12\tglibc\n\
+                  half-configured\tlibc6\ti386\t2.41-12\tglibc\n\
+                  unpacked\tBad-Name\tamd64\t1\tx\n";
+    let listing = parse(output.as_bytes());
+    assert!(listing.packages.is_empty());
+    assert_eq!(listing.skipped, [skipped("libc6", "half-configured")]);
+    assert_eq!(listing.not_configured, 3);
+    // An unreadable name is a warning only.
+    assert_eq!(listing.warnings.len(), 1, "{:?}", listing.warnings);
+    assert!(listing.warnings[0].contains("`Bad-Name`"));
+}
+
+#[test]
+fn an_interrupted_package_is_skipped_whatever_else_is_wrong_with_its_line() {
+    // Its version is not one a report can carry, but it is not installed anyway: the state is the reason.
+    let listing = parse(b"unpacked\tfoo\tamd64\t1 2\tfoo\n");
+    assert_eq!(listing.skipped, [skipped("foo", "unpacked")]);
+    assert!(listing.warnings.is_empty(), "{:?}", listing.warnings);
+}
+
+#[test]
+fn skipped_names_are_capped_and_the_rest_counted_in_a_warning() {
+    let mut output = String::new();
+    for i in 0..100 {
+        output.push_str(&format!("unpacked\tstuck-{i:03}\tamd64\t1.0\tstuck\n"));
+    }
+    output.push_str("installed\tfine\tall\t1\tfine\n");
+    let listing = parse(output.as_bytes());
+    assert_eq!(listing.packages.len(), 1);
+    assert_eq!(listing.not_configured, 100);
+    assert_eq!(listing.skipped.len(), MAX_SKIPPED);
+    assert_eq!(listing.skipped[0], skipped("stuck-000", "unpacked"));
+    assert_eq!(listing.skipped[63], skipped("stuck-063", "unpacked"));
+    assert_eq!(listing.skipped_not_named, 36);
+    assert_eq!(
+        listing.warnings,
+        ["36 more packages were skipped; their names are not listed (at most 64 are)"]
+    );
+    // Exactly the limit: every name listed, nothing counted.
+    let exactly: String = (0..64)
+        .map(|i| format!("unpacked\tstuck-{i:03}\tamd64\t1.0\tstuck\n"))
+        .collect();
+    let listing = parse(exactly.as_bytes());
+    assert_eq!(listing.skipped.len(), 64);
+    assert!(listing.warnings.is_empty(), "{:?}", listing.warnings);
+}
+
+#[test]
+fn the_skipped_count_keeps_its_warning_when_the_warnings_are_full_too() {
+    let mut output = String::new();
+    for i in 0..100 {
+        // A name that is readable (so skipped) with a version that is not (so a warning each).
+        output.push_str(&format!("installed\tbadver-{i:03}\tamd64\t1 2\tx\n"));
+    }
+    let listing = parse(output.as_bytes());
+    assert_eq!(listing.skipped.len(), MAX_SKIPPED);
+    assert_eq!(listing.skipped_not_named, 36);
+    assert_eq!(listing.warnings.len(), MAX_WARNINGS);
+    // 100 problems, 62 kept, the count takes the 63rd place: 38 not listed; then the skipped count.
+    assert!(listing.warnings[61].contains("`1 2`"));
+    assert_eq!(
+        listing.warnings[62],
+        "38 more problems with the dpkg-query output are not listed"
+    );
+    assert_eq!(
+        listing.warnings[63],
+        "36 more packages were skipped; their names are not listed (at most 64 are)"
+    );
 }
 
 #[test]

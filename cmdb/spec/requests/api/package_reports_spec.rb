@@ -104,6 +104,171 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
     end
   end
 
+  describe "an unreadable package database (P2-S08, FR-2.3)" do
+    let(:unreadable) { ApiContract.example("packages.request", "unreadable-manager").merge("report_id" => SecureRandom.uuid) }
+
+    it "is recorded as unreadable with its reason, keeping the packages and count reported before" do
+      send_report(report)
+      kept = stored_packages
+      send_report(unreadable)
+      expect(response).to have_http_status(:ok)
+      expect(HostPackageSet.find_by!(host:)).to have_attributes(manager: "unreadable", unreadable?: true, unsupported?: false, package_count: 8,
+                                                                unsupported_reason: unreadable["unsupported_reason"])
+      expect(stored_packages).to eq(kept)
+      expect(PackageSnapshot.where(host:).chronological.last).to have_attributes(unreadable?: true, packages: [], package_count: 0)
+    end
+
+    it "is recorded on a host that had never reported, with no packages" do
+      send_report(unreadable)
+      expect(HostPackageSet.find_by!(host:)).to have_attributes(manager: "unreadable", package_count: 0)
+      expect(HostPackage.where(host:)).to be_empty
+    end
+
+    it "snapshots a change of reason, and not the same unreadable report again" do
+      send_report(report)
+      send_report(unreadable)
+      expect { send_report(unreadable.merge("report_id" => SecureRandom.uuid)) }.not_to change(PackageSnapshot, :count)
+      expect { send_report(unreadable.merge("report_id" => SecureRandom.uuid, "unsupported_reason" => "dpkg-query was killed")) }.to change(PackageSnapshot, :count).by(1)
+    end
+
+    it "makes the diff of an unreadable snapshot unavailable, and compares what follows with the set before it" do
+      send_report(report)
+      send_report(unreadable)
+      later = example["packages"].reject { |p| p["name"] == "vim" }
+      send_report(report(packages: later))
+      first, unreadable_snapshot, back = PackageSnapshot.where(host:).chronological.to_a
+      expect(PackageDiff.for(unreadable_snapshot)).to have_attributes(available?: false, unavailable_reason: PackageDiff::UNREADABLE, installed: [], removed: [])
+      expect(PackageDiff.between(first, unreadable_snapshot).unavailable_reason).to eq(PackageDiff::UNREADABLE)
+      expect(unreadable_snapshot.previous).to eq(first)
+      expect(back.previous).to eq(unreadable_snapshot)
+      expect(back.previous_known).to eq(first)
+      expect(PackageDiff.for(back)).to have_attributes(available?: true, removed: [ have_attributes(name: "vim") ])
+    end
+
+    it "is refused with packages or skipped names, or without a reason" do
+      send_report(unreadable.merge("packages" => example["packages"]))
+      expect_error(:bad_request, "validation_failed")
+      send_report(unreadable.merge("unsupported_reason" => nil))
+      expect_error(:bad_request, "validation_failed")
+      send_report(unreadable.merge("skipped" => [ { "name" => "vim", "reason" => "unpacked" } ]))
+      expect_error(:bad_request, "validation_failed")
+      expect(HostPackageSet.count).to eq(0)
+    end
+
+    it "refuses a dpkg report that carries a reason" do
+      send_report(report("unsupported_reason" => "dpkg-query failed"))
+      expect_error(:bad_request, "validation_failed")
+    end
+  end
+
+  describe "review of #121" do
+    def snapshots = PackageSnapshot.where(host:).chronological.to_a
+    def vim = example["packages"].find { |p| p["name"] == "vim" }
+    def without_vim = example["packages"].reject { |p| p["name"] == "vim" }
+    def vim_skipped = [ { "name" => "vim", "reason" => "half-configured" } ]
+
+    it "shows a package removed while it was skipped as removed, with the earlier reason and no version (comment 4503060857)" do
+      send_report(report)
+      send_report(report(packages: without_vim, "skipped" => vim_skipped))
+      send_report(report(packages: without_vim))
+      _, was_skipped, gone = snapshots
+      expect(PackageDiff.for(was_skipped).skipped.map(&:name)).to eq([ "vim" ])
+      diff = PackageDiff.for(gone)
+      expect(diff.removed_skipped).to eq([ PackageDiff::SkippedRemoval.new(name: "vim", reason: "half-configured") ])
+      expect(diff).to have_attributes(removed: [], installed: [], completed: [], skipped: [], empty?: false)
+    end
+
+    it "shows a package installed after it was skipped as a completed installation, not a plain install (comment 4503060857)" do
+      send_report(report(packages: without_vim))
+      send_report(report(packages: without_vim, "skipped" => vim_skipped))
+      send_report(report)
+      diff = PackageDiff.for(snapshots.last)
+      expect(diff.installed).to eq([])
+      expect(diff.completed.map { |c| [ c.name, c.architecture, c.package.version, c.reason ] }).to eq([ [ "vim", vim["architecture"], vim["version"], "half-configured" ] ])
+      expect(diff.removed_skipped).to eq([])
+    end
+
+    it "shows nothing for a name skipped by both reports" do
+      send_report(report(packages: without_vim, "skipped" => vim_skipped))
+      send_report(report(packages: without_vim, "skipped" => [ { "name" => "vim", "reason" => "unpacked" } ]))
+      expect(PackageDiff.for(snapshots.last)).to have_attributes(available?: true, empty?: true)
+    end
+
+    it "has no diff when every earlier snapshot kept is unreadable, and everything installed for the host's first (comment 4502986292)" do
+      send_report(ApiContract.example("packages.request", "unreadable-manager").merge("report_id" => SecureRandom.uuid))
+      send_report(report)
+      first, readable = snapshots
+      expect(readable.previous).to eq(first)
+      expect(readable.previous_known).to be_nil
+      expect(PackageDiff.for(readable)).to have_attributes(available?: false, unavailable_reason: PackageDiff::NO_KNOWN_BASELINE, installed: [])
+      first.destroy # Retention pruning the unreadable one leaves the readable snapshot as the host's first kept
+      expect(PackageDiff.for(readable.reload)).to have_attributes(available?: true, installed: have_attributes(size: 8))
+    end
+  end
+
+  describe "skipped packages (P2-S08, FR-2.3)" do
+    let(:skipped_example) { ApiContract.example("packages.request", "skipped-packages").merge("report_id" => SecureRandom.uuid) }
+
+    it "stores them, sorted, with the set and its snapshot, and keeps them out of the installed packages" do
+      skipped = [ { "name" => "vim", "reason" => "unpacked" }, { "name" => "libssl3t64", "reason" => "half-configured" }, { "name" => "vim", "reason" => "unpacked" } ]
+      send_report(skipped_example.merge("skipped" => skipped))
+      expect(response).to have_http_status(:ok)
+      expected = [ { "name" => "libssl3t64", "reason" => "half-configured" }, { "name" => "vim", "reason" => "unpacked" } ]
+      expect(HostPackageSet.find_by!(host:)).to have_attributes(skipped: expected, package_count: 1)
+      expect(PackageSnapshot.find_by!(host:).skipped).to eq(expected)
+      expect(PackageSnapshot.find_by!(host:).skipped_list.map(&:to_h)).to eq(expected)
+      expect(HostPackageSet.find_by!(host:).skipped_list.map(&:name)).to eq(%w[libssl3t64 vim])
+      expect(stored_packages.map { |p| p["name"] }).to eq([ "base-files" ])
+    end
+
+    it "removes control characters from a reason, and keeps markup as text for the views to escape" do
+      send_report(skipped_example.merge("skipped" => [ { "name" => "vim", "reason" => "<script>alert(1)</script>\u0007" } ]))
+      expect(response).to have_http_status(:ok)
+      expect(HostPackageSet.find_by!(host:).skipped.first["reason"]).to eq("<script>alert(1)</script>")
+    end
+
+    it "treats a report without skipped packages as it always did: the same hash, and no new snapshot" do
+      payload = report
+      send_report(payload)
+      expect(HostPackageSet.find_by!(host:).skipped).to eq([])
+      expect(HostPackageSet.find_by!(host:).content_hash).to eq(OpenSSL::Digest::SHA256.hexdigest(JSON.generate([ "dpkg", nil, AgentApi::PackageReport.new(payload).packages.map(&:to_a) ])))
+      expect { send_report(report.merge("skipped" => [])) }.not_to change(PackageSnapshot, :count)
+    end
+
+    it "snapshots a change of the skipped names alone, and clears them when the next report has none" do
+      send_report(report)
+      expect { send_report(report("skipped" => [ { "name" => "vim", "reason" => "unpacked" } ])) }.to change(PackageSnapshot, :count).by(1)
+      expect(HostPackageSet.find_by!(host:).skipped).to eq([ { "name" => "vim", "reason" => "unpacked" } ])
+      expect { send_report(report) }.to change(PackageSnapshot, :count).by(1)
+      expect(HostPackageSet.find_by!(host:).skipped).to eq([])
+    end
+
+    it "shows a package that is absent and named as skipped as skipped, not removed, and a still absent one as removed (AC-2.3)" do
+      send_report(report)
+      packages = example["packages"].reject { |p| %w[vim openssl].include?(p["name"]) }
+      send_report(report(packages:, "skipped" => [ { "name" => "vim", "reason" => "half-configured" }, { "name" => "never-installed", "reason" => "unpacked" } ]))
+      diff = PackageDiff.for(PackageSnapshot.where(host:).chronological.last)
+      expect(diff.skipped.map { |s| [ s.name, s.architecture, s.reason, s.package.version ] }).to eq([ [ "vim", "amd64", "half-configured", example["packages"].find { |p| p["name"] == "vim" }["version"] ] ])
+      expect(diff.removed.map(&:name)).to eq([ "openssl" ])
+      expect(diff.installed).to eq([])
+      expect(diff).to have_attributes(available?: true, empty?: false)
+    end
+
+    it "is refused with more than 64 names, an unreadable name, or no reason" do
+      names = Array.new(65) { |i| { "name" => "pkg#{i}", "reason" => "unpacked" } }
+      send_report(report("skipped" => names))
+      expect_error(:bad_request, "validation_failed")
+      send_report(report("skipped" => names.first(64)))
+      expect(response).to have_http_status(:ok)
+      send_report(report("skipped" => [ { "name" => "Vim", "reason" => "unpacked" } ]))
+      expect_error(:bad_request, "validation_failed")
+      send_report(report("skipped" => [ { "name" => "vim" } ]))
+      expect_error(:bad_request, "validation_failed")
+      send_report(report("skipped" => [ { "name" => "vim", "reason" => "x" * 129 } ]))
+      expect_error(:bad_request, "validation_failed")
+    end
+  end
+
   it "refuses a package listed twice for the same architecture, and writes nothing" do
     packages = example["packages"] + [ example["packages"].first.merge("version" => "0.1") ]
     send_report(report(packages:))

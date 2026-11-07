@@ -7,6 +7,7 @@ class HostContext
     "unmapped_distribution" => "%s is not in the fleet profile (DEC-01), so no advisory data applies to it.",
     "no_package_report" => "The host has not reported its packages.",
     "unsupported_package_manager" => "The host's package manager is not supported: %s",
+    "unreadable_packages" => "The host's package database could not be read, so its packages are not matched: %s",
     "no_advisory_data" => "No advisory data has been imported for %s."
   }.freeze
 
@@ -33,6 +34,7 @@ class HostContext
       elsif @ecosystem.nil? then [ "unmapped_distribution", os_name(os) ]
       elsif package_set.nil? then [ "no_package_report" ]
       elsif manager == "unsupported" then [ "unsupported_package_manager", unsupported_reason ]
+      elsif manager == "unreadable" then [ "unreadable_packages", unsupported_reason ]
       elsif !with_data.include?(@ecosystem) then [ "no_advisory_data", @ecosystem ]
       end
     @detail = @reason && format(REASONS.fetch(@reason), argument).truncate(512)

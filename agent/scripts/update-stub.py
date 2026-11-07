@@ -142,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
         if self.path == "/api/v1/reports/packages":
             log(kind="packages", agent_version=agent, status=200, encoding=encoding or "identity",
-                manager=body.get("manager"), count=len(body.get("packages") or []))
+                manager=body.get("manager"), count=len(body.get("packages") or []), skipped=len(body.get("skipped") or []))
             save("packages.json", body)
             return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
         if self.path == "/api/v1/update-results":

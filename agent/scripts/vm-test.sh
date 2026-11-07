@@ -453,9 +453,10 @@ crash_loop_and_reboot() {
         || fail "the failure hook did not run after the reboot"
 }
 
-# AC-2.3: the package report equals `dpkg-query --show` on the VM without the removed (config-files)
-# packages: no package missing or invented, the same versions, and each source package, read here from
-# the raw Source field (its version cut off, the package's own name when there is none).
+# AC-2.3: the package report equals the installed packages of `dpkg-query --show` on the VM (status
+# installed; removed config-files packages are left out, and interrupted installations are named in
+# `skipped`, not listed): no package missing or invented, the same versions, and each source package,
+# read here from the raw Source field (its version cut off, the package's own name when there is none).
 package_report_matches_dpkg() {
     reset
     # Nothing installs or removes a package between the report and the listing it is compared with.
@@ -467,11 +468,16 @@ package_report_matches_dpkg() {
         || fail "the report is not a clean dpkg listing: $(jq -c '{manager, unsupported_reason, warnings}' "$stub/packages.json")"
     event_exists '[.[] | select(.kind == "packages" and .encoding == "gzip")] | length > 0' \
         || fail "the package report was not sent gzip-compressed"
-    local format reference reported count
+    local format reference reported count interrupted skipped
     # shellcheck disable=SC2016 # dpkg-query's own field syntax, expanded by dpkg-query in the guest
     format='${db:Status-Abbrev}|${Package}:${Architecture} ${Version}|${Package}|${Source}\n'
     reference=$(vm "dpkg-query --show --showformat='$format'" \
-        | awk -F'|' 'substr($1, 2, 1) != "c" { s = $4; sub(/ .*/, "", s); if (s == "") s = $3; print $2 " " s }' | sort)
+        | awk -F'|' 'substr($1, 2, 1) ~ /[iWt]/ { s = $4; sub(/ .*/, "", s); if (s == "") s = $3; print $2 " " s }' | sort)
+    # The second letter of the abbreviation: i installed, W triggers-awaited, t triggers-pending (all
+    # installed and configured); H half-installed, U unpacked, F half-configured (interrupted, skipped).
+    interrupted=$(vm "dpkg-query --show --showformat='$format'" \
+        | awk -F'|' 'substr($1, 2, 1) ~ /[HUF]/ { print $3 }' | sort -u)
+    skipped=$(jq -r '(.skipped // [])[].name' "$stub/packages.json" | sort -u)
     reported=$(jq -r '.packages[] | "\(.name):\(.architecture) \(.version) \(.source)"' "$stub/packages.json" | sort)
     count=$(printf '%s\n' "$reported" | grep -c .)
     [ "$count" -gt 100 ] || fail "only $count packages reported"
@@ -479,7 +485,11 @@ package_report_matches_dpkg() {
         diff <(printf '%s\n' "$reference") <(printf '%s\n' "$reported") | head -n 20 >&2 || true
         fail "the package report differs from dpkg-query on the VM (< dpkg-query, > report)"
     fi
-    echo "the package report lists the same $count packages as dpkg-query, with their source packages"
+    if [ "$interrupted" != "$skipped" ]; then
+        diff <(printf '%s\n' "$interrupted") <(printf '%s\n' "$skipped") | head -n 20 >&2 || true
+        fail "the skipped packages differ from the interrupted installations on the VM (< dpkg-query, > report)"
+    fi
+    echo "the package report lists the same $count packages as dpkg-query, with their source packages ($(printf '%s\n' "$skipped" | grep -c .) skipped)"
     printf '%s' "$count packages, equal to dpkg-query" > "$tmp/last-result"
 }
 

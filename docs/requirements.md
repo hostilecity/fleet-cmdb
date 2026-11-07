@@ -236,8 +236,8 @@ Phase 2 starts only after Phase 1 is accepted.
 ### FR-2.3 Package reporting
 
 - On the same reporting cadence as FR-2.1, the agent reports every installed package as structured data: package name, installed version (including any epoch), architecture, the package manager it came from, and the name of the source package where the package manager records one.
-- Support the package managers present in the fleet; detect the manager rather than assuming one. A VM whose manager is unsupported reports that state explicitly.
-- The server stores the latest package set per host plus dated snapshots (new snapshot only on change), and can diff package sets to show installs, removals, and version changes.
+- Support the package managers present in the fleet; detect the manager rather than assuming one. A VM whose manager is unsupported reports that state explicitly, and so does one whose package database exists but cannot be listed (unreadable): neither is shown as having no packages, and an unreadable report does not discard the last known set. A package that is not installed in full (an interrupted installation) is reported as skipped, not as installed.
+- The server stores the latest package set per host plus dated snapshots (new snapshot only on change), and can diff package sets to show installs, removals, and version changes; a package that was installed and is reported as skipped is shown as skipped or incomplete, never as removed.
 
 ### FR-2.4 Vulnerability matching — server side
 

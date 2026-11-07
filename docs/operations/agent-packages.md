@@ -1,6 +1,6 @@
 # Agent package reports: what the agent lists and how to check it
 
-The agent sends a package report ([FR-2.3](../backlog/specs/p2-agent-packages.md), `POST /api/v1/reports/packages`, [P2-S08](../backlog/specs/p2-packages.md)) to the server: every installed package with its name, full version (with any epoch), architecture, and source package. This page says where the list comes from, which packages count as installed, what `unsupported` means, and how to check a report against the host (AC-2.3).
+The agent sends a package report ([FR-2.3](../backlog/specs/p2-agent-packages.md), `POST /api/v1/reports/packages`, [P2-S08](../backlog/specs/p2-packages.md)) to the server: every installed package with its name, full version (with any epoch), architecture, and source package, and the names of packages it did not list as installed (`skipped`). This page says where the list comes from, which packages count as installed, what `skipped`, `unsupported`, and `unreadable` mean, and how to check a report against the host (AC-2.3).
 
 ## When it reports
 
@@ -22,53 +22,63 @@ One command, with fixed arguments, no shell, a cleared environment, a 20 second 
 
 ## Which packages count as installed
 
-A package is reported when dpkg has a version of it on disk, as apt counts installed packages:
+A package whose status is `installed`, `triggers-awaited`, or `triggers-pending` is reported as installed; an interrupted installation is not (owner decision, P2-S08):
 
 | dpkg status (`dpkg -l` second letter) | Reported |
 |---|---|
-| `installed` (`i`), `triggers-awaited` (`W`), `triggers-pending` (`t`) | yes |
-| `unpacked` (`U`), `half-configured` (`F`), `half-installed` (`H`): an installation that was interrupted | yes, and counted as `not_configured` in the journal line |
+| `installed` (`i`) | yes, in `packages` |
+| `triggers-awaited` (`W`), `triggers-pending` (`t`): installed and configured, a trigger has not run yet | yes, in `packages` (apt and `dpkg -l` count it as installed) |
+| `unpacked` (`U`), `half-installed` (`H`), `half-configured` (`F`): an installation that was interrupted | no: in `skipped`, with the status as the reason (counted as `not_configured` in the journal line) |
 | `config-files` (`c`): removed, only its configuration files left | no |
 | `not-installed` (`n`): purged | no (dpkg does not list it) |
 
-The selection state does not matter: a package on hold (`hi`) is installed and reported.
+The selection state does not matter: a package on hold (`hi`) is installed and reported. An interrupted installation is neither installed nor removed: the server keeps it apart as "Skipped / incomplete" (a package that was installed before and is now skipped is not shown as removed). A skipped package is named once for all its architectures. At most 64 are named; with more, the rest are counted in one warning.
 
-## `unsupported`
+## `unsupported` and `unreadable`
 
-The report says `manager: unsupported` with a reason, and lists no packages, whenever the agent cannot give the whole list. The server then treats the set as unknown (no diff, no vulnerability matching), never as "no packages":
+Both reports list no packages and give a reason (in the `unsupported_reason` field, whose name the contract kept). The server treats the set as unknown, never as "no packages", and keeps what it knew before an `unreadable` report.
 
-- there is no dpkg database (the reason names `rpm` or `apk` if one is found);
+`manager: unsupported` is a host the agent has no reader for:
+
+- there is no dpkg database (the reason names `rpm` or `apk` if one is found).
+
+`manager: unreadable` is a host with dpkg whose packages could not be listed (owner decision):
+
 - `dpkg-query` is missing, fails, times out, or prints more than 8 MiB (the reason quotes the first line of its error);
-- `/var/lib/dpkg/status` cannot be read;
+- `/var/lib/dpkg/status` exists but cannot be read;
 - the list is larger than a report may carry: more than 20,000 packages, more than 4,000,000 bytes of JSON, or more than 1,000,000 bytes compressed (the server's limits are 20,000, 4 MiB, and 1 MiB). It is not sent in part, because a shorter list would read as removed packages.
 
 ## Warnings
 
-A line the contract cannot carry is skipped with a warning (`field: packages`), and the rest is still reported: a name, version, or architecture outside the contract's patterns, a status dpkg does not define, a line that is not five fields or not UTF-8, or the same name and architecture listed twice (the first is kept). A source name outside the contract's pattern is reported as `null` with a warning. Values are never cut to fit. At most 64 warnings are sent; the last then counts the rest. On a normal Debian host there are none.
+A line the contract cannot carry is left out with a warning (`field: packages`), and the rest is still reported: a name, version, or architecture outside the contract's patterns, a status dpkg does not define, a line that is not five fields or not UTF-8, or the same name and architecture listed twice (the first is kept). A source name outside the contract's pattern is reported as `null` with a warning. Values are never cut to fit. At most 64 warnings are sent; the last then counts the rest. On a normal Debian host there are none.
 
-Note that the server stores the reported set as the host's whole set, so a skipped package shows in the next diff as removed, with the warning beside it.
+When the package name of such a line is readable (the version, the architecture, or the status is the problem), the package is also named in `skipped` with a short reason, so the server shows it as skipped and not as removed. A line without a readable name (a bad name, the wrong number of fields, not UTF-8) is a warning only. The server stores the reported set as the host's whole set, so a package that is neither listed nor named would show as removed.
+
+One thing the server does not do yet (P2-S11): a skipped package is not in the stored set, so its vulnerability findings are resolved as removed and reopen when the package is listed again.
 
 ## Seeing what was reported
 
 `journalctl -u fleet-agent` shows one line per report (for example):
 
 ```
-listed the installed packages reason=startup manager=dpkg packages=412 not_configured=0 removed=3 warnings=0 json_bytes=50211 gzip_bytes=6874
+listed the installed packages reason=startup manager=dpkg packages=412 skipped=0 skipped_not_named=0 not_configured=0 removed=3 warnings=0 json_bytes=50211 gzip_bytes=6874
 package report sent reason=startup attempt=1 request_id=... duplicate=false
 ```
 
-An `unsupported` report logs a warning with `unsupported_reason`, and each warning is logged too.
+An `unsupported` or `unreadable` report logs a warning with `unsupported_reason`, each warning is logged too, and so is each skipped package (`package skipped: not reported as installed`, with the package and its reason).
 
 ## Checking a report against the host (AC-2.3)
 
-The reported set must equal the host's own listing, with no package missing or invented. On the VM:
+The reported set must equal the host's own listing of installed packages, with no package missing or invented, and the skipped names must be the interrupted installations. On the VM:
 
 ```sh
 dpkg-query --show --showformat='${db:Status-Abbrev}|${Package}:${Architecture} ${Version}\n' \
-  | awk -F'|' 'substr($1, 2, 1) != "c" { print $2 }' | sort > dpkg.txt
+  | awk -F'|' 'substr($1, 2, 1) == "i" { print $2 }' | sort > dpkg.txt
+dpkg-query --show --showformat='${db:Status-Abbrev}|${Package}\n' \
+  | awk -F'|' 'substr($1, 2, 1) ~ /[HUF]/ { print $2 }' | sort -u > interrupted.txt
 ```
 
-and compare it with the host's package list on the dashboard, or with the report (`jq -r '.packages[] | "\(.name):\(.architecture) \(.version)"' | sort`). The VM test ([`agent/scripts/vm-test.sh`](../../agent/scripts/vm-test.sh), scenario "Package report matches dpkg-query") does exactly this on Debian's Debian 13 genericcloud image, under the real unit, on every agent change, sources included; the agent's tests do it against the dpkg database of the machine running them.
+and compare them with the host's package list on the dashboard, or with the report (`jq -r '.packages[] | "\(.name):\(.architecture) \(.version)"' | sort`, and `jq -r '(.skipped // [])[].name' | sort -u`). The VM test ([`agent/scripts/vm-test.sh`](../../agent/scripts/vm-test.sh), scenario "Package report matches dpkg-query") does exactly this on Debian's Debian 13 genericcloud image, under the real unit, on every agent change, sources included; the agent's tests do it against the dpkg database of the machine running them.
 
 ## Memory
 
@@ -76,4 +86,4 @@ Measured with the test suite's counting allocator (`peak_memory_for_3000_package
 
 ## Fixtures
 
-`agent/tests/fixtures/packages/debian13/status` is a dpkg database modelled on a Debian 13 cloud VM (epochs, `+` and `~` in versions, `+` in names, `libc6` and `libgcc-s1` for `amd64` and `i386`, `all` packages, source packages that differ from the binary, a held package, an unpacked one, a removed one, a purged one); it was not captured from a running host. `dpkg-query-show` next to it is what the real `dpkg-query` prints for it with the agent's arguments, and a test checks that wherever `dpkg-query` exists. A run on a real Debian 13 VM is the AC-2.3 check (the VM test above).
+`agent/tests/fixtures/packages/debian13/status` is a dpkg database modelled on a Debian 13 cloud VM (epochs, `+` and `~` in versions, `+` in names, `libc6` and `libgcc-s1` for `amd64` and `i386`, `all` packages, source packages that differ from the binary, a held package, two interrupted installations (`unpacked`, `half-configured`), a package with a trigger pending (`triggers-pending`, installed), a removed one, a purged one); it was not captured from a running host. `dpkg-query-show` next to it is what the real `dpkg-query` prints for it with the agent's arguments, and a test checks that wherever `dpkg-query` exists. A run on a real Debian 13 VM is the AC-2.3 check (the VM test above).
