@@ -270,7 +270,11 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
       check.silence!(clock.now)
       polls = []
       me = Thread.current # notifications reach every thread's subscribers; count only this one's queries
-      watch = ->(*, payload) { polls << [ payload[:cached], payload[:sql] ] if Thread.current == me && payload[:sql].include?("host_status_events") }
+      # Schema queries are left out: the first use of HostStatusEvent in a process reads its columns, which
+      # depends on which specs ran before this one.
+      watch = lambda do |*, payload|
+        polls << [ payload[:cached], payload[:sql] ] if Thread.current == me && payload[:name] != "SCHEMA" && payload[:sql].include?("host_status_events")
+      end
       ActiveSupport::Notifications.subscribed(watch, "sql.active_record") do
         ActiveRecord::Base.cache { 3.times { check.poll(clock.now) } }
       end
