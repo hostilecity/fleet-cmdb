@@ -152,6 +152,17 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                                      fixed_version: fit(256), state: "reopened", first_seen_at: 2.hours.ago, resolved_at: 1.hour.ago, reopened_at: Time.current)
       end
 
+      # Advisory imports whose file name, failure reason, and malformed records' locations, ids, and reasons are hostile, by a hostile
+      # operator (P2-D06): an upload names its file, and the records come from the file.
+      let!(:advisory_imports) do
+        now = Time.current
+        problems = [ { "location" => text.first(256), "id" => text.first(128), "problem" => text }, { "location" => nil, "id" => nil, "problem" => text } ]
+        partial = AdvisoryImport.create!(origin: "file", source: fit(256), operator: hostile_operator, state: "succeeded", ecosystems: [ "Debian:13" ],
+                                         counts: { "records" => 3, "created" => 1, "malformed" => 2 }, problems:, started_at: now, finished_at: now)
+        failed = AdvisoryImport.create!(origin: "file", source: fit(256), operator: hostile_operator, state: "failed", reason: fit(512), started_at: now, finished_at: now)
+        [ partial, failed ]
+      end
+
       # [path, whether a value from above is shown on the page as text]
       def pages
         [
@@ -176,6 +187,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
           [ "/agents/rollouts/#{rollout.id}/advance", false ], [ "/agents/rollouts/#{rollout.id}/cancel", false ],
           [ "/agents/rollouts/new?release=#{CGI.escape(text.first(80))}&canary_tag=#{CGI.escape(text.first(32))}&stages=#{CGI.escape(text.first(100))}", false ],
           [ "/onboard", true ], [ "/onboard/#{onboarding.user_code}", true ], [ "/onboard/#{CGI.escape(text.first(30))}", false ],
+          [ "/data-sources", true ], [ "/data-sources/refresh", false ],
+          *advisory_imports.map { |import| [ "/data-sources/imports/#{import.id}", true ] },
           [ "/jobs/failed", true ], [ "/settings", false ], [ "/sign_in?return_to=#{CGI.escape(text.first(100))}", false ]
         ]
       end
@@ -248,7 +261,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                host_vulnerabilities#show host_vulnerabilities#package
                host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
-               rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel]
+               rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel
+               data_sources#show data_sources#confirm_refresh data_sources#import]
     views = Rails.application.routes.routes.filter_map do |route|
       controller, action = route.defaults.values_at(:controller, :action)
       next unless route.verb == "GET" && controller && !controller.start_with?("api/", "rails/") && controller != "health"

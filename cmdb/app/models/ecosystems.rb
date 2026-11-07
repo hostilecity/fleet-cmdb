@@ -9,9 +9,23 @@ module Ecosystems
   # The package manager whose version order each ecosystem's ranges use (PackageVersions).
   MANAGERS = { "Debian:13" => "dpkg" }.freeze
 
+  # What the dashboard calls each ecosystem beside its OSV name (P2-D06).
+  NAMES = { "Debian:13" => "Debian 13 (trixie)" }.freeze
+
   module_function
 
   def supported = TABLE.values
+
+  def name(ecosystem) = NAMES[ecosystem]
+
+  # How many hosts in the fleet report each supported ecosystem's distribution, counted in the database:
+  # { "Debian:13" => 4 }.
+  def host_counts
+    os_id = Arel.sql("lower(host_inventories.stable -> 'os' ->> 'id')")
+    version = Arel.sql("host_inventories.stable -> 'os' ->> 'version_id'")
+    counts = HostInventory.joins(:host).merge(Host.in_fleet).group(os_id, version).count
+    supported.index_with { |ecosystem| counts.sum { |(id, version_id), count| TABLE[[ id.to_s, version_id.to_s ]] == ecosystem ? count : 0 } }
+  end
 
   def supported?(ecosystem) = TABLE.value?(ecosystem)
 

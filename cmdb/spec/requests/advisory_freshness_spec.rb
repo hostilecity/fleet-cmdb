@@ -14,7 +14,9 @@ RSpec.describe "Advisory data freshness", :signed_in, type: :request do
     get "/"
     expect(indicator["class"]).to eq("notice")
     expect(indicator.text.squish).to include("Vulnerability data has never been refreshed.", "Debian:13 advisory data has never been updated from the feed or a full import")
-    expect(indicator.at_css("a")["href"]).to eq("/jobs/failed")
+    # states-empty.html#freshness: the warning links to the fix, the data sources page (P2-D06).
+    expect(indicator.at_css("a").text).to eq("Refresh it or upload a file")
+    expect(indicator.at_css("a")["href"]).to eq("/data-sources")
   end
 
   it "warns when the data is older than the threshold, with when it was last updated" do
@@ -22,6 +24,20 @@ RSpec.describe "Advisory data freshness", :signed_in, type: :request do
     refreshed(at:)
     get "/"
     expect(indicator.text.squish).to include("Vulnerability data is out of date.", "Debian:13 advisory data was last updated 2 days ago (#{at.utc.strftime('%Y-%m-%d %H:%M UTC')})")
+    expect(indicator.at_css("a").text).to eq("See the data sources")
+  end
+
+  it "says automatic refresh is off, rather than warning, when no feed is configured (states-empty.html#freshness)" do
+    saved = Advisories.config.feed_url
+    Advisories.config.feed_url = nil
+    refreshed(at: 5.days.ago)
+    get "/"
+    expect(indicator["class"]).to eq("notice info")
+    expect(indicator.text.squish).to eq("Automatic advisory refresh is off. No feed is configured on the server, so advisory data changes only when you upload a file. " \
+                                        "Debian:13 was last updated 5 days ago, which is older than 48 hours. Upload a file.")
+    expect(indicator.at_css("a")["href"]).to eq("/data-sources#up")
+  ensure
+    Advisories.config.feed_url = saved
   end
 
   it "says when the data was last updated, without a warning, while it is fresh" do
