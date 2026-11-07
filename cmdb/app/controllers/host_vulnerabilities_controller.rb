@@ -43,7 +43,13 @@ class HostVulnerabilitiesController < ApplicationController
     @findings = sorted(VulnerabilityFinding.where(host_id: @host.id, package: @package).includes(:advisory).to_a)
     raise ActiveRecord::RecordNotFound, "the host has no such package and no finding for it" if @installed.empty? && @findings.empty?
 
-    @set = HostPackageSet.find_by(host_id: @host.id)
+    load_evaluation
+    @set = @package_set
+    @evaluated = @evaluation.present? && !@evaluation.not_evaluated?
+    # The package and advisory pairs the matcher could not compare for this package, and whether the list it keeps was cut
+    # short, so that this package may be among the ones it no longer shows (review of #120).
+    @unchecked = @evaluated ? @evaluation.not_evaluated.select { |entry| entry["package"] == @package } : []
+    @unchecked_cut_short = @evaluated && @evaluation.not_evaluated_count > @evaluation.not_evaluated.size
     @ecosystem = @findings.first&.ecosystem || HostVulnerabilityEvaluation.where(host_id: @host.id).pick(:ecosystem)
     sources = (@installed.map(&:source) + @findings.map(&:source)).compact.uniq
     @siblings = VulnerabilityFinding.where(host_id: @host.id, source: sources).where.not(package: @package).distinct.order(:package).pluck(:package)

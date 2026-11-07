@@ -1,0 +1,13 @@
+<%# Why a host's vulnerabilities are not known (P2-D04): the matcher's reason, or that matching has not run yet. Locals: host, evaluation, context, open_count (open findings from an earlier evaluation). %>
+<% reason, detail = evaluation ? [ evaluation.reason, evaluation.detail ] : [ context.reason, context.detail ] %>
+<div class="notice" role="status" id="not_evaluated">
+  <% if reason %>
+    <strong><%= open_count.positive? ? "Not evaluated now. The open findings below are from an earlier evaluation." : "Not evaluated: this host's vulnerabilities are unknown, not zero." %></strong>
+    <p><%= detail %></p>
+    <p class="muted">Reason <span class="mono"><%= reason %></span>. <%= not_evaluated_next_step(host, reason) %></p>
+    <% if open_count.positive? %><p>They may be out of date: findings could be missing, and some may no longer apply.</p><% end %>
+  <% else %>
+    <strong>Not evaluated yet: this host's vulnerabilities are unknown, not zero.</strong>
+    <p>Its packages have not been matched against advisories yet. Matching runs after each new package report and each advisory import.</p>
+  <% end %>
+</div>
