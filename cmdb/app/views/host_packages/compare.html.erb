@@ -21,7 +21,7 @@
     <div class="notice" role="status" id="no_diff"><strong>No diff is available for this pair.</strong><p><%= @diff.unavailable_reason == PackageDiff::UNREADABLE ? "One of the two snapshots is a report whose package database could not be read, so its package set is unknown." : "One of the two snapshots comes from an unsupported package manager, so its package set is unknown." %> Showing every package as installed or removed would be wrong.</p></div>
   <% else %>
     <% changes = package_changes(@diff) %>
-    <% counts = package_change_counts(@diff) %>
+    <% counts = @diff.counts %>
     <ul class="diffsum" aria-label="Summary of the comparison" id="diff_summary">
       <% HostPackagesHelper::KINDS.each_key do |kind| %>
         <% next if HostPackagesHelper::OPTIONAL_KINDS.include?(kind) && counts.fetch(kind, 0).zero? # as drawn in the mockup unless there is one %>
@@ -35,13 +35,14 @@
         <li><%= link_to compare_packages_host_path(@host, from: @from.id, to: @to.id, kind: param), "aria-current": (@kind == param ? "true" : nil) do %><%= HostPackagesHelper::KINDS.fetch(kind).first.split(" ", 2).last %> <span class="n"><%= counts.fetch(kind, 0) %></span><% end %></li>
       <% end %>
     </ul>
-    <% shown = @kind ? changes.select { |change| change.first == HostPackagesHelper::KIND_FILTERS.fetch(@kind) } : changes %>
+    <% shown = @kind ? changes.select { |change| change.kind == HostPackagesHelper::KIND_FILTERS.fetch(@kind) } : changes %>
     <% if shown.empty? %>
       <p class="muted" id="no_changes"><%= changes.empty? ? "The two snapshots list the same packages." : "No changes of this kind." %></p>
     <% else %>
       <div class="table-wrap"><table id="package_changes"><caption class="visually-hidden">Packages installed, removed, skipped, or changed</caption>
         <thead><tr><th scope="col">Package</th><th scope="col">Change</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Source package</th></tr></thead><tbody>
-        <% shown.each do |kind, name, architecture, from, to, reason| %>
+        <% shown.each do |change| %>
+          <% kind, name, architecture, from, to, reason = change.kind, change.name, change.architecture, change.from, change.to, change.reason %>
           <tr class="change <%= kind %>"><td><span class="mono"><%= architecture ? "#{name}:#{architecture}" : name %></span><% unless architecture %> <span class="muted">any architecture</span><% end %></td><td><%= change_kind(kind) %></td>
             <% if kind == :completed %>
               <td><span class="unavailable">Skipped</span> <span class="mono"><%= reason %></span></td>

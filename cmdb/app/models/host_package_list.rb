@@ -13,10 +13,6 @@ class HostPackageList
     expression = Arel.sql(sql)
     { "asc" => expression.asc.nulls_last, "desc" => expression.desc.nulls_last }.freeze
   end.freeze
-  OPEN_FINDING = <<~SQL.squish.freeze
-    EXISTS (SELECT 1 FROM vulnerability_findings f WHERE f.host_id = host_packages.host_id AND f.package = host_packages.name
-            AND f.architecture = host_packages.architecture AND f.state IN ('open', 'reopened'))
-  SQL
 
   # Open findings for one package on the page: how many, and whether any was reopened.
   Findings = Data.define(:open, :reopened)
@@ -38,7 +34,7 @@ class HostPackageList
     scope = HostPackage.where(host_id:)
     scope = scope.where("host_packages.name ILIKE :p OR host_packages.source ILIKE :p", p: "%#{HostPackage.sanitize_sql_like(q)}%") if q
     scope = scope.where(architecture: arch) if arch
-    scope = scope.where(OPEN_FINDING) if findings
+    scope = scope.where(open_finding) if findings
     scope
   end
 
@@ -77,5 +73,13 @@ class HostPackageList
     return "none" unless sort == column
 
     direction == "asc" ? "ascending" : "descending"
+  end
+
+  private
+
+  # EXISTS an open or reopened finding (VulnerabilityFinding.active, so the two cannot disagree) for the package row.
+  def open_finding
+    VulnerabilityFinding.active.where("vulnerability_findings.host_id = host_packages.host_id AND vulnerability_findings.package = host_packages.name " \
+                                      "AND vulnerability_findings.architecture = host_packages.architecture").arel.exists
   end
 end

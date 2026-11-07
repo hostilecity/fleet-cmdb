@@ -31,6 +31,10 @@ class HostVulnerabilitiesController < ApplicationController
     @state = STATES.include?(params[:state]) ? params[:state] : "open"
     @severity = Advisory::SEVERITIES.include?(params[:severity]) ? params[:severity] : nil
     @query = params[:q].to_s.strip.first(QUERY_MAX)
+    # Every matching finding is loaded and grouped in Ruby, without a limit (review of #124): a host has one finding per
+    # installed binary package and advisory that affects it, a few hundred at most on a 3,000-package host with
+    # current updates, and the groups need every finding of a package to show its worst severity. Page the groups,
+    # as HostPackageList pages packages, if hosts with thousands of findings appear.
     shown = filtered(findings).to_a
     @open_groups = groups(shown.select { |f| f.state != "resolved" })
     @resolved_groups = groups(shown.select { |f| f.state == "resolved" })

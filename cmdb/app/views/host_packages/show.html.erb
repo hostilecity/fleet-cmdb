@@ -1,17 +1,6 @@
 <%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :packages %>
-<% cooldown = ReportRequests::COOLDOWN.in_minutes.to_i %>
-<% ready = if @set
-     safe_join([ tag.strong("Package report received #{seen_ago(@set.received_at).downcase_first}."),
-                 " Collected #{utc(@set.collected_at)}#{" by agent #{@host.agent_version}" if @host.agent_version}.",
-                 (" Package set unchanged since snapshot #{utc(@latest_snapshot.received_at)}." if @latest_snapshot) ].compact)
-   else
-     tag.strong("No package report yet.")
-   end %>
-<% answered = @availability.latest&.satisfied_by_report_id
-   answered_new = answered && PackageSnapshot.exists?(host_id: @host.id, report_id: answered) %>
-<%= render "hosts/request_box", host: @host, availability: @availability, return_to: "packages", ready:,
-           ready_hint: "Package reports arrive every 6 hours, or when you ask. Each report type can be requested once every #{cooldown} minutes.",
-           answered_hint: (answered_new ? "The package set changed, so a new snapshot was recorded." : "The package set had not changed, so no new snapshot was recorded. That still answers the request.") %>
+<%= render "hosts/request_box", host: @host, availability: @availability, return_to: "packages",
+           **package_request_texts(@host, @set, @timeline.latest, answered_new_snapshot: @answered_new_snapshot) %>
 
 <section aria-labelledby="current" id="current_section">
   <h2 id="current">Installed packages</h2>
@@ -75,28 +64,28 @@
 <section aria-labelledby="snapshots" id="snapshots_section">
   <h2 id="snapshots">Package snapshots</h2>
   <p class="muted">A snapshot is kept only when the package set changes. <%= link_to "Compare any two", compare_packages_host_path(@host) %>, or use the links in the table.</p>
-  <% if @snapshots.empty? %>
+  <% if @timeline.latest.nil? %>
     <p class="muted">No snapshots yet.</p>
   <% else %>
     <div class="table-wrap"><table id="snapshot_list"><caption class="visually-hidden">Package snapshots</caption>
       <thead><tr><th scope="col" class="when">Recorded (UTC)</th><th scope="col">What changed</th><th scope="col">Compare</th></tr></thead><tbody>
-      <% latest = @snapshots.first[:snapshot] %>
-      <% @snapshots.each do |row| %>
-        <% snapshot = row[:snapshot] %>
+      <% latest = @timeline.latest %>
+      <% @timeline.entries.each do |row| %>
+        <% snapshot = row.snapshot %>
         <tr id="<%= dom_id(snapshot) %>">
           <td><%= utc(snapshot.received_at) %><% if snapshot == latest %> <span class="badge">Latest</span><% end %></td>
           <td>
-            <% if row[:diff] %>
-              <%= package_change_summary(row[:diff]) %>
-            <% elsif row[:first] %>
+            <% if row.summary %>
+              <%= package_change_summary(row.summary) %>
+            <% elsif row.first %>
               Oldest package snapshot kept, <%= package_snapshot_contents(snapshot) %>
             <% else %>
               <span class="muted">Older snapshots are not listed</span>
             <% end %>
           </td>
           <td>
-            <% if row[:previous] %>
-              <%= link_to "With the one before", compare_packages_host_path(@host, from: row[:previous].id, to: snapshot.id) %>
+            <% if row.previous %>
+              <%= link_to "With the one before", compare_packages_host_path(@host, from: row.previous.id, to: snapshot.id) %>
               <% if snapshot != latest %><br><%= link_to "With the latest", compare_packages_host_path(@host, from: snapshot.id, to: latest.id) %><% end %>
             <% else %>
               <span class="muted">No earlier snapshot kept</span>
@@ -105,6 +94,6 @@
         </tr>
       <% end %>
     </tbody></table></div>
-    <% if @more_snapshots %><p class="pager"><span>Showing the latest <%= HostPackagesController::SNAPSHOT_LIMIT %> snapshots. Older ones can be picked on the comparison page.</span></p><% end %>
+    <% if @timeline.more? %><p class="pager"><span>Showing the latest <%= PackageSnapshotTimeline::LIMIT %> snapshots. Older ones can be picked on the comparison page.</span></p><% end %>
   <% end %>
 </section>

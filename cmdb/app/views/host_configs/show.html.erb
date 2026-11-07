@@ -1,17 +1,7 @@
 <%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :config %>
 <% cis = @summary.cis %>
-<% cooldown = ReportRequests::COOLDOWN.in_minutes.to_i %>
-<% ttl = ReportRequests::TTL.in_minutes.to_i %>
-<% ready = if @config
-     safe_join([ tag.strong("Config report received #{seen_ago(@config.received_at).downcase_first}."),
-                 " Collected #{utc(@config.collected_at)}#{" by agent #{@host.agent_version}" if @host.agent_version}, manifest version #{@config.manifest_version}.",
-                 (" Facts unchanged since snapshot #{utc(@latest_snapshot.received_at)}." if @latest_snapshot) ].compact)
-   else
-     tag.strong("No config report yet.")
-   end %>
-<%= render "hosts/request_box", host: @host, availability: @availability, return_to: "config", ready:,
-           ready_hint: "Config reports arrive every 6 hours, or when you ask. Each report type can be requested once every #{cooldown} minutes; an unanswered request expires after #{ttl} minutes.",
-           answered_hint: ((answered = @availability.latest&.satisfied_by_report_id) && ConfigSnapshot.exists?(host_id: @host.id, report_id: answered) ? "The new report changed some facts, so a new snapshot was recorded." : "The new report showed no change, so no new snapshot was recorded. That still answers the request.") %>
+<%= render "hosts/request_box", host: @host, availability: @availability, return_to: "config",
+           **config_request_texts(@host, @config, @latest_snapshot, answered_new_snapshot: @answered_new_snapshot) %>
 
 <section aria-labelledby="results" id="results_section">
   <h2 id="results">CIS-aligned checks</h2>
@@ -116,7 +106,7 @@
         <% snapshot = row[:snapshot] %>
         <tr id="<%= dom_id(snapshot) %>">
           <td><%= utc(snapshot.received_at) %><% if snapshot == latest %> <span class="badge">Latest</span><% end %></td>
-          <td><% if row[:diff] %><%= pluralize(row[:diff].changed.size + row[:diff].added.size + row[:diff].removed.size, "fact") %> changed<% elsif row[:first] %>First config report<% else %><span class="muted">Older snapshots are not listed</span><% end %></td>
+          <td><% if row[:diff] %><%= pluralize(row[:diff].changed.size + row[:diff].added.size + row[:diff].removed.size, "fact") %> changed<% elsif row[:first] %>Oldest config snapshot kept<% else %><span class="muted">Older snapshots are not listed</span><% end %></td>
           <td>
             <% if row[:first] %>
               First results recorded
@@ -133,7 +123,7 @@
               <%= link_to "With the one before", compare_config_host_path(@host, from: row[:previous].id, to: snapshot.id) %>
               <% if snapshot != latest %><br><%= link_to "With the latest", compare_config_host_path(@host, from: snapshot.id, to: latest.id) %><% end %>
             <% else %>
-              <span class="muted">Nothing before it</span>
+              <span class="muted">No earlier snapshot kept</span>
             <% end %>
           </td>
         </tr>

@@ -177,12 +177,20 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
 
     def snapshots = ConfigSnapshot.where(host:).order(:received_at).to_a
 
+    it "calls the oldest snapshot still kept that, not the first config report, once older ones are pruned (review of #124)" do
+      ConfigSnapshot.where(id: snapshots.first.id).delete_all # what Retention does to snapshots past the window
+      get "/hosts/#{host.id}/config"
+      cells = page.css("#snapshot_list tbody tr").map { |row| row.css("td").map { |td| words(td) } }
+      expect(cells.map { |row| [ row[1], row[3] ] }).to eq([ [ "Oldest config snapshot kept", "No earlier snapshot kept" ] ])
+      expect(page.at_css("#snapshot_list").text).not_to include("First config report", "Nothing before it")
+    end
+
     it "lists each snapshot with what changed, the results it flipped, and comparison links" do
       get "/hosts/#{host.id}/config"
       rows = page.css("#snapshot_list tbody tr")
       expect(rows.map { |row| row.css("td").map { |td| words(td) } }).to eq([
         [ "2026-11-06 10:00 UTC Latest", "2 facts changed", "Fail → Pass: ssh-root-login-off Pass → Not readable: password-min-length", "With the one before" ],
-        [ "2026-11-06 09:01 UTC", "First config report", "First results recorded", "Nothing before it" ]
+        [ "2026-11-06 09:01 UTC", "Oldest config snapshot kept", "First results recorded", "No earlier snapshot kept" ]
       ])
       first, latest = snapshots
       expect(rows.first.at_css("a")["href"]).to eq("/hosts/#{host.id}/config/compare?from=#{first.id}&to=#{latest.id}")

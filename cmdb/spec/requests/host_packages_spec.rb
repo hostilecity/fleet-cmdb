@@ -272,6 +272,51 @@ RSpec.describe "Host packages", :signed_in, type: :request do
     end
   end
 
+  describe "Rails practice review of #124" do
+    it "builds no PackageDiff and reads no package list on a second render of the tab (comment 4503165269)" do
+      allow(Rails).to receive(:cache).and_return(ActiveSupport::Cache::MemoryStore.new)
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start)
+      report([ [ "bash", "5.2.38-1", "bash" ] ], at: start + 1.hour)
+      report([ [ "bash", "5.2.38-1", "bash" ], [ "vim", "2:9.1-1", "vim" ] ], at: start + 2.hours)
+      diffs = 0
+      allow(PackageDiff).to receive(:new).and_wrap_original { |original, *args, **options| diffs += 1; original.call(*args, **options) }
+      get "/hosts/#{host.id}/packages"
+      expect(diffs).to eq(2)
+      first_render = page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }
+      diffs = 0
+      full_rows = []
+      reader = ->(*, payload) { full_rows << payload[:sql] if payload[:sql].match?(/SELECT "package_snapshots"\.\*/) }
+      ActiveSupport::Notifications.subscribed(reader, "sql.active_record") { get "/hosts/#{host.id}/packages" }
+      expect(diffs).to eq(0)
+      expect(full_rows).to eq([])
+      expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq(first_render)
+      expect(first_render).to eq([ "1 installed", "1 upgraded", "Oldest package snapshot kept, 1 package" ])
+    end
+
+    it "compares the oldest snapshot kept, named alone as to, with the one after it instead of answering 404 (comment 4503165272)" do
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start)
+      report([ [ "bash", "5.2.38-1", "bash" ] ], at: start + 1.hour)
+      oldest, newer = snapshots
+      get "/hosts/#{host.id}/packages/compare", params: { to: oldest.id }
+      expect(response).to have_http_status(:ok)
+      expect(page.at_css("#snapshot_picker select[name=from] option[selected]")["value"]).to eq(oldest.id.to_s)
+      expect(page.at_css("#snapshot_picker select[name=to] option[selected]")["value"]).to eq(newer.id.to_s)
+      expect(words(page.at_css("#package_changes tbody tr"))).to include("↑ Upgraded")
+      get "/hosts/#{host.id}/packages/compare", params: { to: oldest.id + 1000 }
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it "does not say the package set is unchanged since a snapshot while the database is unreadable (comment 4503165278)" do
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start)
+      report([], at: start + 1.hour, manager: "unreadable", unsupported_reason: "dpkg-query exited with status 2")
+      get "/hosts/#{host.id}/packages"
+      expect(page.at_css("#request").text).not_to include("unchanged since")
+      report([ [ "bash", "5.2.37-1", "bash" ] ], at: start + 2.hours)
+      get "/hosts/#{host.id}/packages"
+      expect(page.at_css("#request").text.squish).to include("Package set unchanged since snapshot 2026-11-06 11:00 UTC.")
+    end
+  end
+
   describe "skipped packages (P2-S08)" do
     let(:skipped) { [ { "name" => "vim", "reason" => "half-configured" }, { "name" => "never-seen", "reason" => "unpacked" } ] }
 
