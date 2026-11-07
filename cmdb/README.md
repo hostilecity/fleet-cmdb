@@ -138,6 +138,19 @@ Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the opera
 - **Evaluation.** `CisRules::Evaluator.call(rule, facts, os)` (P2-S05) is a pure function returning `pass`, `fail`, `not_applicable`, or `not_readable`, with the observed value or the reason. It never runs rule data as code (a spec checks the rule code's tokens); patterns are anchored and time-limited. Storing results and running evaluation after each snapshot or rule change is P2-S06.
 - **Image.** The schema is read at runtime from `FLEET_RULES_SCHEMA_DIR` (default `../docs/api/rules`); the Docker image copies `docs/api/rules` from the `api` build context.
 
+### Config reports
+
+`POST /api/v1/reports/config` (FR-2.1, DEC-07, DEC-08, P2-S02) takes the host's configuration facts keyed by the fact keys of the config fact manifest, as JSON or gzip, with the same limits as package reports (4 MiB of JSON, 1 MiB compressed). The response carries the server's `manifest_version`, so an agent with an older copy fetches the manifest again.
+
+- **Validation.** The body is validated against `docs/api`; `lib/agent_api/config_report.rb` then checks each `ok` value against its fact in the manifest (type, length, range, list size) and refuses a NUL anywhere in a value. Any problem refuses the whole report, with a pointer per fact, and nothing is written. A manifest version newer than the server's is refused; a fact key the manifest does not have is ignored and logged, and kept in `ignored_keys`.
+- **Missing facts.** Every manifest fact the report leaves out is stored as `missing`, with a reason: "not included", or, for a fact added after the report's manifest version, which version added it. Unordered lists are stored sorted, so a reordering is no change.
+- **Storage.** `ConfigRecorder` stores a valid report under the host row lock:
+  - `config_report_receipts`: report ids already processed. A retried report is answered `duplicate: true` and changes nothing.
+  - `host_configs`: the current facts (`{key => {state, value, reason}}`, the form `CisRules::Evaluator` reads), counts per state, the content hash, the report's manifest version, and the ignored keys, updated on every report.
+  - `config_snapshots`: the facts as they were, written only when the content hash changes. Retention keeps the newest per host.
+- **Diff.** `ConfigDiff.between(older, newer)` (or `ConfigDiff.for(snapshot)`) lists facts added, removed, and changed, where a change of state or reason alone (ok to unreadable) counts.
+- **Evaluation** of rules after a new snapshot is P2-S06.
+
 ### Package reports
 
 `POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`): at most 4 MiB of JSON, sent plain or once decompressed, and 1 MiB compressed. `AgentApiRequestGuard` lets this path's plain bodies past its general 1 MiB limit (`UNCOMPRESSED_LIMITS`).

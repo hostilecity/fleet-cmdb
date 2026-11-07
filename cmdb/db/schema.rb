@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_030000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -182,6 +182,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_020000) do
     t.index ["key"], name: "index_cis_rules_on_key", unique: true
   end
 
+  create_table "config_report_receipts", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.uuid "report_id", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "report_id"], name: "index_config_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["received_at"], name: "index_config_report_receipts_on_received_at"
+  end
+
+  create_table "config_snapshots", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.jsonb "facts", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "state_counts", default: {}, null: false
+    t.integer "manifest_version", null: false
+    t.uuid "report_id", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "received_at"], name: "index_config_snapshots_on_host_id_and_received_at"
+    t.index ["received_at"], name: "index_config_snapshots_on_received_at"
+  end
+
   create_table "enrollment_tokens", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.string "token_digest", limit: 64, null: false
@@ -191,6 +212,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_020000) do
     t.datetime "updated_at", null: false
     t.index ["host_id"], name: "index_enrollment_tokens_on_host_id"
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
+  end
+
+  create_table "host_configs", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.jsonb "facts", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "state_counts", default: {}, null: false
+    t.integer "manifest_version", null: false
+    t.jsonb "ignored_keys", default: [], null: false
+    t.uuid "report_id", null: false
+    t.integer "schema_version", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_host_configs_on_host_id", unique: true
   end
 
   create_table "host_inventories", force: :cascade do |t|
@@ -486,7 +523,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_020000) do
   add_foreign_key "agent_updates", "rollouts"
   add_foreign_key "cis_rule_versions", "cis_rules"
   add_foreign_key "cis_rules", "cis_rule_versions", column: "current_version_id"
+  add_foreign_key "config_report_receipts", "hosts"
+  add_foreign_key "config_snapshots", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
+  add_foreign_key "host_configs", "hosts"
   add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_package_sets", "hosts"
   add_foreign_key "host_packages", "hosts"

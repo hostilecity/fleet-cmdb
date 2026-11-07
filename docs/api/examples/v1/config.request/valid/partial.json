@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.3.0",
+  "report_id": "00000000-0000-4000-8000-000000000002",
+  "collected_at": "2026-01-01T12:00:00Z",
+  "manifest_version": 1,
+  "facts": {
+    "sshd.permitrootlogin": {
+      "state": "ok",
+      "value": "no",
+      "reason": null
+    },
+    "sshd.passwordauthentication": {
+      "state": "ok",
+      "value": false,
+      "reason": null
+    },
+    "sshd.maxauthtries": {
+      "state": "ok",
+      "value": 4,
+      "reason": null
+    }
+  }
+}

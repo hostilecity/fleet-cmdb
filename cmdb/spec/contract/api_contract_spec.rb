@@ -27,7 +27,7 @@ RSpec.describe "Agent API contract (docs/api)" do
         end
 
         it "has every declared property in at least one valid example" do
-          present = valid.map { |e| ApiContract.present_paths(e.data) }.reduce(Set.new, :|)
+          present = valid.map { |e| ApiContract.present_paths(e.data, maps: ApiContract.map_paths(schema)) }.reduce(Set.new, :|)
           missing = ApiContract.declared_paths(schema) - present
           expect(missing.to_a.sort).to eq([]), "add a valid example in docs/api/examples/#{version}/#{name}/valid/ " \
                                                "that uses: #{missing.to_a.sort.join(', ')}"
@@ -36,7 +36,7 @@ RSpec.describe "Agent API contract (docs/api)" do
         it "declares every property used by its valid examples" do
           declared = ApiContract.declared_paths(schema)
           valid.reject { |e| e.name.start_with?("unknown-field-") }.each do |example|
-            undeclared = ApiContract.present_paths(example.data) - declared
+            undeclared = ApiContract.present_paths(example.data, maps: ApiContract.map_paths(schema)) - declared
             expect(undeclared.to_a.sort).to eq([]), "#{example} uses keys the schema does not declare"
           end
         end
@@ -78,6 +78,15 @@ RSpec.describe "Agent API contract (docs/api)" do
       expect(ApiContract.declared_paths(schema)).to eq(Set["disks", "disks[].mount", "os", "os.id"])
     end
 
+    it "writes the keys of an object keyed by data as *" do
+      schema = { "properties" => { "facts" => { "additionalProperties" => { "properties" => { "state" => {} } } } } }
+      expect(ApiContract.declared_paths(schema)).to eq(Set["facts", "facts.*", "facts.*.state"])
+      expect(ApiContract.map_paths(schema)).to eq(Set["facts"])
+      data = { "facts" => { "sshd.permitrootlogin" => { "state" => "ok" }, "file:/etc/shadow" => { "state" => "ok" } } }
+      expect(ApiContract.present_paths(data, maps: Set["facts"])).to eq(Set["facts", "facts.*", "facts.*.state"])
+      expect(ApiContract.present_paths(data)).to include("facts.sshd.permitrootlogin")
+    end
+
     it "flags real-looking data and accepts example data" do
       expect(ApiContract.real_data_problems({ "hostname" => "vm-01.example.lan", "addresses" => [ "192.0.2.1/24", "2001:db8::1/64" ],
                                               "token" => "EXAMPLE-token", "time" => "2026-01-01T12:00:00Z" })).to eq([])
@@ -91,6 +100,11 @@ RSpec.describe "Agent API contract (docs/api)" do
       expect(ApiContract.real_data_problems({ "key" => "file:/etc/shadow" })).to eq([])
       expect(ApiContract.real_data_problems({ "description" => "sshd.permitrootlogin" })).to include(/sshd\.permitrootlogin/)
       expect(ApiContract.real_data_problems({ "key" => "Nas.Home.Arpa" })).to include(/Nas\.Home\.Arpa/)
+    end
+
+    it "accepts systemd unit names, which look like hostnames" do
+      expect(ApiContract.real_data_problems({ "value" => [ "ssh.service", "telnet.socket", "getty@tty1.service" ] })).to eq([])
+      expect(ApiContract.real_data_problems({ "value" => [ "ssh.servicehost.com" ] })).to include(/servicehost\.com/)
     end
 
     it "flags single-label hostnames under a hostname key" do

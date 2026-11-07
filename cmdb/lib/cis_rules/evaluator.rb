@@ -39,7 +39,8 @@ module CisRules
 
       fact = manifest.fact(rule.fact)
       reported = facts[rule.fact]
-      return not_readable("The host's report does not include this fact.") if reported.nil? || reported["state"] == "missing"
+      return not_readable("The host's report does not include this fact.") if reported.nil?
+      return not_readable(reported["reason"].presence || "The host's report does not include this fact.") if reported["state"] == "missing"
       return not_readable(reported["reason"].presence || "The agent reported this fact as #{reported['state']}.") unless reported["state"] == "ok"
 
       value = reported["value"]

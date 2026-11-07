@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config report response",
+  "description": "200 response to POST /api/v1/reports/config. A retried report (same report_id) is answered with duplicate: true and changes nothing.",
+  "type": "object",
+  "required": [
+    "report_id",
+    "duplicate",
+    "manifest_version"
+  ],
+  "properties": {
+    "report_id": {
+      "description": "The report_id that was received.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "duplicate": {
+      "description": "True when this report_id was already processed.",
+      "type": "boolean"
+    },
+    "manifest_version": {
+      "description": "The server's current manifest version. When it is higher than the report's, the agent should fetch GET /api/v1/manifest/config again before its next report.",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

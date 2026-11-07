@@ -117,6 +117,11 @@ RSpec.describe CisRules::Evaluator do
       end
     end
 
+    it "carries the reason a config report recorded for a missing fact (P2-S02)" do
+      reason = "Added in manifest version 2; the agent reported against version 1."
+      expect(outcome("sshd.permitrootlogin" => { "state" => "missing", "value" => nil, "reason" => reason })).to have_attributes(result: "not_readable", reason:)
+    end
+
     it "covers a value that does not fit the manifest, such as an oversize one, rather than evaluating it" do
       expect(outcome("sshd.permitrootlogin" => ok("x" * 10_000)))
         .to have_attributes(result: "not_readable", reason: "The reported value does not fit the fact manifest: it is longer than 32 characters.")
