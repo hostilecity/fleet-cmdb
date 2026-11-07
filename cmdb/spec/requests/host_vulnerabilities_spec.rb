@@ -106,7 +106,8 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
           "2026-11-06 09:00 UTC first seen 2026-11-06 11:00 UTC resolved: withdrawn: the advisory was withdrawn by its source" ]
       ])
       expect(page.at_css("#package_summary").text.squish).to start_with("Findings for this package 1 open (1 reopened), 1 resolved.")
-      expect(page.at_css("#package_summary").text.squish).to include("updating to 2.0-1 or later resolves it")
+      expect(page.at_css("#package_summary").text.squish).to include("the affected range the installed version is in is fixed in 2.0-1. Check the advisory for any other affected range before relying on a later version.")
+      expect(page.at_css("#package_summary").text).not_to include("or later resolves it")
       expect(page.at_css("#package_summary a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities/package?package=libacme1")
       expect(page.at_css("title").text).to eq("Media server: findings for acme-daemon · Fleet CMDB")
     end
@@ -243,5 +244,103 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     expect(page.at_css("#not_evaluated").text).to include(HOSTILE.downcase, "is not in the fleet profile")
     expect(page.css("script:not([nonce])")).to be_empty
     expect(page.css("img[onerror]")).to be_empty
+  end
+
+  describe "review of #120" do
+    def package_page(host, name) = get("/hosts/#{host.id}/vulnerabilities/package?package=#{name}")
+
+    it "does not show a green No findings before matching ran, with no advisory data, or when not evaluated (comment 4502879079)" do
+      host = debian_host(name: "Media server", packages: [ [ "bash", "5.2.37-1", "bash" ] ])
+      import_advisories(advisory("DSA-9100-1", "acme"), full: true)
+      package_page(host, "bash") # before matching has run
+      expect(page.at_css("#package_summary .none-open")).to be_nil
+      expect(words(page.at_css("#findings_unknown"))).to start_with("Not known.")
+      expect(words(page.at_css("#not_evaluated"))).to start_with("Not evaluated yet:")
+      AdvisoryImport.delete_all
+      match(host) # no advisory data has been imported
+      package_page(host, "bash")
+      expect(page.at_css("#package_summary .none-open")).to be_nil
+      expect(page.at_css("#not_evaluated").text).to include("No advisory data has been imported for Debian:13.", "Reason no_advisory_data")
+      import_advisories(advisory("DSA-9100-1", "acme"), full: true)
+      match(host)
+      package_page(host, "bash")
+      expect(page.at_css("#not_evaluated")).to be_nil
+      expect(words(page.at_css("#package_summary .none-open"))).to eq("No findings.")
+    end
+
+    it "says a package whose advisories could not be compared was not fully checked, and so for one the cut-short list may hold" do
+      host = debian_host(name: "Media server", packages: [ [ "weird", "1:", "weird" ], [ "bash", "5.2.37-1", "bash" ] ])
+      import_advisories(advisory("DSA-9100-1", "weird"), full: true)
+      match(host)
+      package_page(host, "weird")
+      expect(page.at_css("#package_summary .none-open")).to be_nil
+      expect(words(page.at_css("#findings_unchecked"))).to eq("No findings recorded, but not everything was checked. 1 advisory could not be compared for this package, listed below.")
+      expect(page.css("#unchecked_for_package li").map { |li| words(li) }.first).to start_with("DSA-9100-1 at 1:")
+      package_page(host, "bash")
+      expect(words(page.at_css("#package_summary .none-open"))).to eq("No findings.")
+      HostVulnerabilityEvaluation.update_all(not_evaluated_count: 150) # the matcher keeps the first 100
+      package_page(host, "bash")
+      expect(page.at_css("#package_summary .none-open")).to be_nil
+      expect(words(page.at_css("#findings_unchecked"))).to include("keeps only the first 1")
+    end
+
+    it "describes the fix of the recorded range, without promising that every later version is safe (comment 4502879109)" do
+      host = debian_host(name: "Media server", packages: [ [ "acme", "1.1-1", "acme" ] ])
+      ranges = [ { "type" => "ECOSYSTEM", "events" => [ { "introduced" => "1.0-1" }, { "fixed" => "1.2-1" } ] },
+                 { "type" => "ECOSYSTEM", "events" => [ { "introduced" => "1.4-1" } ] } ]
+      import_advisories(advisory("DSA-9100-1", "acme").tap { |r| r["affected"][0]["ranges"] = ranges }, full: true)
+      match(host)
+      package_page(host, "acme")
+      text = page.at_css("#package_summary").text.squish
+      expect(text).to include("For DSA-9100-1, the affected range the installed version is in is fixed in 1.2-1. Check the advisory for any other affected range")
+      expect(text).not_to include("or later resolves it")
+    end
+
+    it "does not say the package was updated when an advisory's ranges changed and the installed version is unchanged (comment 4502879140)" do
+      host = debian_host(name: "Media server", packages: [ [ "acme", "1.0-1", "acme" ] ])
+      import_advisories(advisory("DSA-9100-1", "acme"), full: true)
+      match(host)
+      travel_to(start + 1.hour) { import_advisories(advisory("DSA-9100-1", "acme", modified: "2026-11-01T00:00:00Z", introduced: "1.5-1", fixed: "2.0-1")) }
+      match(host, at: start + 1.hour)
+      package_page(host, "acme")
+      row = page.css("#package_findings tbody tr").map { |tr| tr.css("td").map { |td| words(td) } }.first
+      expect(row[5]).to eq("Resolved Fixed: the installed version is outside the affected ranges")
+      expect(row[6]).to include("resolved: fixed: the installed version is outside the affected ranges")
+      expect(page.text).not_to include("package updated")
+    end
+
+    it "shows the advisory data freshness on the package page (comment 4502879171)" do
+      host = debian_host(name: "Media server", packages: [ [ "acme", "1.0-1", "acme" ] ])
+      import_advisories(advisory("DSA-9100-1", "acme"), full: true)
+      match(host)
+      package_page(host, "acme")
+      expect(page.at_css("#advisory_freshness").text.squish).to start_with("Advisory data last updated:")
+      AdvisoryImport.delete_all
+      package_page(host, "acme")
+      expect(page.at_css("#advisory_freshness[role=alert]").text.squish).to start_with("Vulnerability data has never been refreshed.")
+    end
+
+    it "says whether a package is installed is not known when the package manager is unsupported, not that it is not installed (comment 4502879203)" do
+      host = debian_host(name: "Media server", packages: [ [ "acme", "1.0-1", "acme" ] ])
+      import_advisories(advisory("DSA-9100-1", "acme"), full: true)
+      match(host)
+      report_packages(host, [], manager: "unsupported", unsupported_reason: "apk is not supported by this agent version")
+      match(host)
+      package_page(host, "acme")
+      expect(response).to have_http_status(:ok)
+      expect(words(page.at_css("#installation_unknown"))).to start_with("Whether it is installed is not known: the host's package manager is not supported")
+      expect(page.at_css("#installed_package").text).not_to include("Not installed now")
+      expect(page.at_css("#not_evaluated")).to be_present
+    end
+
+    it "says an unreadable package database leaves the installed package as the last readable report had it" do
+      host = debian_host(name: "Media server", packages: [ [ "acme", "1.0-1", "acme" ] ])
+      import_advisories(advisory("DSA-9100-1", "acme"), full: true)
+      match(host)
+      report_packages(host, [], manager: "unreadable", unsupported_reason: "dpkg-query exited with status 2")
+      package_page(host, "acme")
+      expect(page.at_css("#installation_last_readable").text).to include("From the last package report that could be read")
+      expect(page.at_css("#installed_package").text).to include("Version 1.0-1".squish.sub("Version ", ""))
+    end
   end
 end

@@ -4,7 +4,7 @@
 # URL with a host, and always opens with rel="noopener noreferrer".
 module HostVulnerabilitiesHelper
   RESOLUTIONS = {
-    "fixed" => "Fixed: package updated", "removed" => "Removed: package no longer installed",
+    "fixed" => "Fixed: the installed version is outside the affected ranges", "removed" => "Removed: package no longer installed",
     "withdrawn" => "Withdrawn: the advisory was withdrawn by its source", "not_affected" => "Not affected: the advisory no longer names this package"
   }.freeze
   # What each reason for not evaluating means for the operator, after the server's own sentence (HostContext).
