@@ -1,0 +1,8 @@
+<% content_for :title, "Refresh advisory data" %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title" id="refresh_dialog">
+  <h2 id="dialog_title">Refresh advisory data now?</h2>
+  <p>Downloads the configured feed (<span class="mono"><%= @source %></span>) and imports it. This can take several minutes. Findings are matched again afterwards for the packages that changed. It is also the scheduled job, so running it now does not skip the next one.</p>
+  <%= form_with url: refresh_data_sources_path, method: :post do %>
+    <div class="actions"><button class="btn" type="submit">Refresh now</button><%= link_to "Cancel", data_sources_path, class: "btn quiet" %></div>
+  <% end %>
+</div>

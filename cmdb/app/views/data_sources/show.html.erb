@@ -1,0 +1,122 @@
+<% content_for :title, "Advisory data sources" %>
+<%# The refresh-after timer on "Refresh now" refreshes the page by morphing, and the upload form keeps a chosen file and an open
+    confirmation through it (keep-edits, as on the Agents page; review of #129). %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<div class="page-head"><div><h1>Advisory data sources</h1><p>Where vulnerability data comes from, how fresh it is, and what the last imports did. Findings are only as current as this data.</p></div></div>
+<%= render "hosts/advisory_freshness", statuses: @statuses, here: true, failed_refreshes: @failed_refreshes %>
+
+<section aria-labelledby="eco">
+  <h2 id="eco" class="page-title">Freshness</h2>
+  <div class="table-wrap"><table id="ecosystems"><caption class="visually-hidden">Advisory data freshness by ecosystem</caption>
+    <thead><tr><th scope="col">Ecosystem</th><th scope="col">Freshness</th><th scope="col">Last successful full import</th><th scope="col">Advisories</th><th scope="col">Hosts using it</th></tr></thead>
+    <tbody>
+    <% @ecosystems.each do |row| %>
+      <% status = row.status %>
+      <tr>
+        <td><span class="mono"><%= status.ecosystem %></span><% if row.name %><span class="state-note"><%= row.name %></span><% end %></td>
+        <td>
+          <% if status.never? %><span class="stale-word">Never imported</span>
+          <% elsif status.stale %><span class="stale-word">Stale: older than <%= pluralize((Advisories.config.max_age / 1.hour).round, "hour") %></span>
+          <% else %><span class="lamp online">Fresh</span><% end %>
+        </td>
+        <td><% if status.never? %><span class="muted">Never</span><% else %><%= utc(status.updated_at) %> <span class="state-note"><%= seen_ago(status.updated_at) %></span><% end %></td>
+        <td><%= number_with_delimiter(row.current) %> current<span class="state-note"><%= number_with_delimiter(row.withdrawn) %> withdrawn</span></td>
+        <td><%= pluralize(row.hosts, "host") %></td>
+      </tr>
+    <% end %>
+    </tbody>
+  </table></div>
+  <p class="muted small">Data is stale when its last successful full import is older than <%= pluralize((Advisories.config.max_age / 1.hour).round, "hour") %>, or when it was never imported. A stale source is flagged here, on the Fleet list, and on every host's Vulnerabilities tab, because stale data looks like "no vulnerabilities".</p>
+</section>
+
+<div class="cols-2 spaced">
+  <section class="sheet" aria-labelledby="feed" id="feed_sheet">
+    <h2 id="feed">Scheduled feed</h2>
+    <% if @feed.source %>
+      <dl class="facts tight">
+        <dt>Source</dt><dd class="mono"><%= @feed.source %></dd>
+        <dt>Refresh</dt><dd><%= feed_schedule_text(@feed) %></dd>
+        <dt>Stale after</dt><dd><%= pluralize((@feed.max_age / 1.hour).round, "hour") %></dd>
+        <dt>Access token</dt><dd><%= @feed.token ? "Configured, never shown" : "None" %></dd>
+      </dl>
+      <% if @refresh_at %>
+        <%= tag.p class: "flush", id: "refresh", data: { controller: "refresh-after", refresh_after_seconds_value: (@refresh_at - Time.current).ceil } do %>
+          <button class="btn quiet" type="button" disabled aria-describedby="cool">Refresh now</button>
+          <span class="muted" id="cool"><%= refresh_available_text(@refresh_at, @last_attempt) %></span>
+        <% end %>
+      <% else %>
+        <p class="flush" id="refresh"><%= link_to "Refresh now", refresh_data_sources_path, class: "btn quiet" %></p>
+      <% end %>
+      <p class="hint muted small">Only the feed's host and path are shown. The source is set in the server's configuration, not here.</p>
+    <% else %>
+      <div class="notice info" role="status" id="feed_off"><strong>Automatic advisory refresh is off.</strong>
+        <p>No feed is configured on the server (<span class="mono">FLEET_ADVISORY_FEED_URL</span> is empty), so advisory data changes only when you upload a file.</p></div>
+      <dl class="facts tight">
+        <dt>Stale after</dt><dd><%= pluralize((@feed.max_age / 1.hour).round, "hour") %></dd>
+      </dl>
+      <p class="hint muted small">The source is set in the server's configuration, not here.</p>
+    <% end %>
+  </section>
+
+  <section class="sheet" aria-labelledby="up">
+    <h2 id="up">Upload an advisory file</h2>
+    <% error = @upload_error %>
+    <%= form_with url: upload_data_sources_path, method: :post, multipart: true, id: "upload_form",
+                  data: { turbo: false, controller: "confirm-full keep-edits",
+                          action: "submit->confirm-full#check turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+      <% file_error = error&.dig(:advisory_file) %>
+      <div class="field<%= " invalid" if file_error %>">
+        <label for="advisory_file">Advisory file</label>
+        <%= file_field_tag :advisory_file, id: "advisory_file", accept: DataSourcesController::EXTENSIONS.join(","), required: true,
+              "aria-invalid": (file_error ? "true" : nil), "aria-describedby": [ ("advisory_file_error" if file_error), "advisory_file_hint" ].compact.join(" ") %>
+        <% if file_error %><p class="error-text" id="advisory_file_error" role="alert"><%= file_error %></p><% end %>
+        <p class="hint" id="advisory_file_hint">OSV JSON, or a zip archive of it, up to <%= DataSourcesController::MAX_UPLOAD_BYTES / 1.megabyte %> MiB. Records for other ecosystems are skipped. The file is imported in the background, and its result page updates by itself.</p>
+      </div>
+      <% full_error = error&.dig(:full) %>
+      <div class="field<%= " invalid" if full_error %>">
+        <label class="choice flush">
+          <%= check_box_tag :full, "1", @full, id: "full", data: { confirm_full_target: "full" }, "aria-describedby": (full_error ? "full_error" : nil) %>
+          <strong>Full import</strong>
+          <p>Treat the file as the complete list. Advisories it lacks are marked withdrawn.</p>
+        </label>
+        <% if full_error %><p class="error-text" id="full_error" role="alert"><%= full_error %></p><% end %>
+      </div>
+      <button class="btn" type="submit">Upload and import</button>
+
+      <dialog class="dialog" id="full_dialog" aria-labelledby="full_dialog_title" data-confirm-full-target="dialog">
+        <h2 id="full_dialog_title">Import as a full import?</h2>
+        <p>A full import treats the file as the complete advisory list for its ecosystem. Advisories it does not contain are marked withdrawn, and findings that depended on them resolve as withdrawn. Use it only for a complete download, not for a few records.</p>
+        <div class="actions">
+          <%# The confirmation travels only as this button's own value, so a form restored from the cache cannot carry it (review of #129). %>
+          <button class="btn danger" type="submit" name="confirm_full" value="1" data-confirm-full-target="confirm">Import as full</button>
+          <button class="btn quiet" type="button" data-action="confirm-full#partial">Import without withdrawing</button>
+        </div>
+      </dialog>
+    <% end %>
+  </section>
+</div>
+
+<section aria-labelledby="imps">
+  <h2 id="imps">Recent imports</h2>
+  <% if @imports.empty? %>
+    <div class="sheet empty" id="no_imports"><p><strong>No advisory data has been imported yet.</strong></p>
+      <p><%= @feed.source ? "Refresh now, or upload an advisory file." : "Upload an advisory file." %> Until then no host's vulnerabilities can be evaluated.</p></div>
+  <% else %>
+    <div class="table-wrap"><table id="imports"><caption class="visually-hidden">Recent advisory imports</caption>
+      <thead><tr><th scope="col">When (UTC)</th><th scope="col">How</th><th scope="col">Source</th><th scope="col">Result</th><th scope="col">What happened</th><th scope="col">By</th></tr></thead>
+      <tbody>
+      <% @imports.each do |import| %>
+        <tr id="<%= dom_id(import) %>">
+          <td><%= import_time(import).utc.strftime("%Y-%m-%d %H:%M") %></td>
+          <td><%= import_how(import) %></td>
+          <td class="mono"><%= import.source %></td>
+          <td><%= import_result_lamp(import) %></td>
+          <td><%= import_summary(import) %></td>
+          <td><%= import_by(import) %></td>
+        </tr>
+      <% end %>
+      </tbody>
+    </table></div>
+    <p class="pager"><span>Showing the latest <%= pluralize(@imports.size, "import") %>.</span><span>Older imports are kept, and every import is in the <%= link_to "audit log", audit_path %>.</span></p>
+  <% end %>
+</section>

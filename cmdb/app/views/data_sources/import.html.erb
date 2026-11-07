@@ -1,0 +1,113 @@
+<% content_for :title, "Import result" %>
+<% counts = @import.counts %>
+<p><%= link_to "← Advisory data sources", data_sources_path %></p>
+<div class="page-head"><div><h1>Import result</h1>
+  <p><%= import_how(@import) %> by <%= import_by(@import) %>, <%= utc(import_time(@import)) %>.</p></div></div>
+
+<% if @import.in_progress? %>
+  <%# Refreshes itself until the import is done (refresh-after, as rate-limited buttons do), then shows the result below. %>
+  <%= tag.div class: "notice info", role: "status", id: "import_outcome",
+              data: { controller: "refresh-after", refresh_after_seconds_value: DataSourcesController::PROGRESS_REFRESH_SECONDS } do %>
+    <% if @import.state == "queued" %>
+      <strong>Queued: waiting for the import job.</strong>
+      <p>The file is stored on the server and imports in the background. This page updates by itself when the import starts and when it ends.</p>
+    <% else %>
+      <strong>Importing now.</strong>
+      <p>Each record is checked and stored in one transaction, so nothing shows until the whole file is done. This page updates by itself when it ends.</p>
+    <% end %>
+  <% end %>
+  <dl class="facts">
+    <dt>File</dt><dd class="mono"><%= @import.source %></dd>
+    <dt>Type</dt><dd><%= import_type_text(@import) %></dd>
+    <dt>Uploaded</dt><dd><%= utc(@import.started_at) %></dd>
+  </dl>
+<% elsif @withdrawals %>
+  <%# A guarded full import refused for what it would withdraw (review of #129): the counts, and the second confirmation that names them. %>
+  <div class="notice error" role="alert" id="import_outcome"><strong>Nothing was imported: this full import would withdraw too many advisories.</strong>
+    <p>The file is treated as the complete list for each ecosystem it has records for, so every advisory it lacks would be marked withdrawn and the findings it produced would resolve. That is more than <%= number_to_percentage(Advisories::Import::WITHDRAW_SHARE * 100, precision: 0) %> of an ecosystem's advisories, or the file has fewer than <%= number_with_delimiter(Advisories::Import::SMALL_FILE_RECORDS) %> records for it. A partial import adds the file's advisories without withdrawing any.</p></div>
+  <div class="table-wrap"><table id="withdrawals"><caption class="visually-hidden">What the full import would withdraw</caption>
+    <thead><tr><th scope="col">Ecosystem</th><th scope="col">Would be withdrawn</th><th scope="col">Current advisories</th><th scope="col">Records in the file</th></tr></thead>
+    <tbody>
+    <% @withdrawals.each do |ecosystem, w| %>
+      <tr><td class="mono"><%= ecosystem %></td><td><%= number_with_delimiter(w["withdraw"].to_i) %></td><td><%= number_with_delimiter(w["current"].to_i) %></td><td><%= number_with_delimiter(w["records"].to_i) %></td></tr>
+    <% end %>
+    </tbody>
+  </table></div>
+  <% if @upload_kept %>
+    <%= form_with url: confirm_withdrawals_advisory_import_path(@import), method: :post, id: "confirm_withdrawals", class: "form", data: { turbo: false } do %>
+      <% @withdrawals.each do |ecosystem, w| %><%= hidden_field_tag "withdrawals[#{ecosystem}]", w["withdraw"].to_i, id: nil %><% end %>
+      <div class="field">
+        <label class="choice flush"><%= check_box_tag :confirm, "1", false, id: "confirm_withdrawals_box", required: true %>
+          <strong>Withdraw <%= safe_join(@withdrawals.map { |ecosystem, w| safe_join([ number_with_delimiter(w["withdraw"].to_i), " ", tag.span(ecosystem, class: "mono") ]) }, " and ") %> <%= "advisory".pluralize(@withdrawals.values.sum { |w| w["withdraw"].to_i }) %></strong>
+          <p>Only if this file really is the complete advisory list. The import runs again and stops if it would withdraw more than this.</p></label>
+      </div>
+      <div class="actions"><button class="btn danger" type="submit">Withdraw and import</button><%= link_to "Cancel", data_sources_path, class: "btn quiet" %></div>
+    <% end %>
+  <% else %>
+    <p class="muted" id="withdrawals_expired">The file is no longer stored. Upload it again to import it.</p>
+  <% end %>
+  <dl class="facts">
+    <dt>File</dt><dd class="mono"><%= @import.source %></dd>
+    <dt>Type</dt><dd><%= import_type_text(@import) %></dd>
+  </dl>
+<% elsif @import.state == "failed" %>
+  <div class="notice error" role="alert" id="import_outcome"><strong>Nothing was imported.</strong>
+    <p><%= @import.reason %>.
+      <% if @import.origin == "file" %>A file that cannot be read at all, or that breaks a size limit, imports nothing. Check the download and upload it again.
+      <% else %>The refresh is retried on its schedule; see the <%= link_to "failed jobs page", failed_jobs_path %>.<% end %></p></div>
+  <dl class="facts">
+    <dt><%= @import.origin == "file" ? "File" : "Source" %></dt><dd class="mono"><%= @import.source %></dd>
+    <dt>Type</dt><dd><%= import_type_text(@import) %></dd>
+  </dl>
+<% elsif counts["not_modified"] %>
+  <div class="notice info" role="status" id="import_outcome"><strong>Not modified since the last download; nothing imported.</strong>
+    <p>The feed said the archive has not changed, so the data stays as fresh as this check.</p></div>
+  <dl class="facts"><dt>Source</dt><dd class="mono"><%= @import.source %></dd></dl>
+<% else %>
+  <% records = counts["records"].to_i %>
+  <% malformed = counts["malformed"].to_i %>
+  <% imported = import_imported(@import) %>
+  <% repeated = import_repeated(@import) %>
+  <div class="notice<%= " info" if malformed.zero? %>" role="status" id="import_outcome">
+    <strong><%= number_with_delimiter(records) %> <%= "record".pluralize(records) %> read: <%= number_with_delimiter(imported) %> imported<%= ", #{number_with_delimiter(records - imported)} skipped" if records > imported %>.</strong>
+    <p>A record that is malformed is reported and skipped; the valid records are still imported. No record is ever imported in part.</p></div>
+  <dl class="facts spaced-below">
+    <dt><%= @import.origin == "file" ? "File" : "Source" %></dt><dd class="mono"><%= @import.source %></dd>
+    <dt>Type</dt><dd><%= import_type_text(@import) %></dd>
+    <% if @import.ecosystems.any? %><dt>Ecosystems</dt><dd class="mono"><%= @import.ecosystems.join(", ") %></dd><% end %>
+    <dt>New</dt><dd><%= number_with_delimiter(counts["created"].to_i) %></dd>
+    <dt>Changed</dt><dd><%= number_with_delimiter(counts["updated"].to_i) %></dd>
+    <dt>Unchanged</dt><dd><%= number_with_delimiter(counts["unchanged"].to_i) %></dd>
+    <% if counts["older"].to_i.positive? %><dt>Older than stored</dt><dd><%= number_with_delimiter(counts["older"].to_i) %> (the stored version is newer, so these changed nothing)</dd><% end %>
+    <% if counts["skipped"].to_i.positive? %><dt>Other ecosystems</dt><dd><%= number_with_delimiter(counts["skipped"].to_i) %> (nothing for the fleet's ecosystems)</dd><% end %>
+    <dt>Withdrawn</dt><dd><%= number_with_delimiter(import_withdrawn(@import)) %><% if counts["absent"].to_i.positive? %> (<%= number_with_delimiter(counts["absent"].to_i) %> because the full import did not contain them)<% end %></dd>
+    <% if repeated.positive? %><dt>Repeated in the file</dt><dd><%= number_with_delimiter(repeated) %> (an advisory listed more than once; its newest version was used)</dd><% end %>
+    <dt>Malformed</dt><dd><%= number_with_delimiter(malformed) %></dd>
+    <% if (matching = @import.matching).is_a?(Hash) %>
+      <dt>Matching</dt><dd><%= matching["packages"].to_i.zero? ? "No package's advisories changed." : "Findings are matched again for the #{pluralize(matching['packages'].to_i, 'changed package')}, installed on #{pluralize(matching['hosts'].to_i, 'host')} in the fleet when the import finished." %>
+        Hosts not yet evaluated against advisory data are evaluated in full.</dd>
+    <% end %>
+  </dl>
+  <% if counts["rejected_urls"].to_i.positive? %>
+    <p class="muted"><%= pluralize(counts["rejected_urls"].to_i, "reference URL") %> that <%= counts["rejected_urls"].to_i == 1 ? "was" : "were" %> not http or https <%= counts["rejected_urls"].to_i == 1 ? "was" : "were" %> dropped; the records were imported without them.</p>
+  <% end %>
+
+  <% if malformed.positive? %>
+    <h2 id="skipped">Skipped records</h2>
+    <div class="table-wrap"><table id="skipped_records"><caption class="visually-hidden">Skipped records</caption>
+      <thead><tr><th scope="col">Where</th><th scope="col">Advisory</th><th scope="col">Why it was skipped</th></tr></thead>
+      <tbody>
+      <% @import.problems.each do |problem| %>
+        <tr>
+          <td><code><%= @import.source %></code><% if problem["location"].present? && problem["location"] != @import.source %> / <code><%= problem["location"] %></code><% end %></td>
+          <td><% if problem["id"].present? %><span class="mono"><%= problem["id"] %></span><% else %><span class="muted">No valid id</span><% end %></td>
+          <td><%= problem["problem"].to_s.upcase_first %></td>
+        </tr>
+      <% end %>
+      </tbody>
+    </table></div>
+    <% if malformed > @import.problems.size %>
+      <p class="muted">Only the first <%= @import.problems.size %> of <%= number_with_delimiter(malformed) %> are listed.</p>
+    <% end %>
+  <% end %>
+<% end %>

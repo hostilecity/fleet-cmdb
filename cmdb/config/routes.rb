@@ -95,6 +95,15 @@ Rails.application.routes.draw do
         end
       end
     end
+    # Advisory data sources (P2-D06): refreshing is a confirmation page (GET) and a CSRF-protected POST, limited
+    # by the cool-down (P2-S15); an upload is a CSRF-protected POST whose result has its own page.
+    get "data-sources", to: "data_sources#show", as: :data_sources
+    get "data-sources/refresh", to: "data_sources#confirm_refresh", as: :refresh_data_sources
+    post "data-sources/refresh", to: "data_sources#refresh"
+    post "data-sources/upload", to: "data_sources#upload", as: :upload_data_sources
+    get "data-sources/imports/:id", to: "data_sources#import", as: :advisory_import, constraints: { id: /\d+/ }
+    # A full import refused for what it would withdraw: the second confirmation, naming the counts (review of #129).
+    post "data-sources/imports/:id/confirm-withdrawals", to: "data_sources#confirm_withdrawals", as: :confirm_withdrawals_advisory_import, constraints: { id: /\d+/ }
     patch "settings", to: "settings#update"
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
     mount ActionCable.server => "/cable"
