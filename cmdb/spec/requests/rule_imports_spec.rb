@@ -94,6 +94,7 @@ RSpec.describe "Rule imports", :signed_in, type: :request do
     expect(CisRule.find_by!(key: "login-banner-set").enabled).to be(true) # not listed, option off: left as it is
     entries = AuditEntry.where(action: Audit::Actions.constants.map { |c| Audit::Actions.const_get(c) }.grep(/\Arule\./), actor_type: "operator")
     expect(entries.pluck(:action, :actor_id)).to contain_exactly([ "rule.created", operator.id ], [ "rule.edited", operator.id ], [ "rule.enabled", operator.id ])
+    expect(entries.map { |entry| entry.changeset["source"] }.uniq).to eq([ "file_upload" ])
     expect(CisResult.joins(:cis_rule).find_by!(host:, cis_rules: { key: "ssh-max-auth-tries" }).result).to eq("fail") # 4 > 3, from the stored snapshot
     expect(ReportRequest.count).to eq(0)
 

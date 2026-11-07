@@ -142,6 +142,8 @@ RSpec.describe "Rules", :signed_in, type: :request do
   describe "a rule (rule.html, rule-version.html)" do
     let!(:rule) { travel_to(Time.utc(2026, 11, 1, 9, 0)) { define(max_auth).first } }
 
+    # These changes are made without a source, as audit entries were recorded before sources were (P2-D06), so the
+    # change log uses the plain wording ("Created, version 1").
     it "shows the definition, results on every host, versions, change log, the fact, and the fleet effect" do
       perform_enqueued_jobs { CisRule.transaction { CisRule.define!(CisRules::Definition.from_h(max_auth.merge("condition" => { "lte" => 3 }, "severity" => "high")), actor: operator) } }
       CisRule.transaction { rule.reload.disable!(actor: operator) }
@@ -166,6 +168,30 @@ RSpec.describe "Rules", :signed_in, type: :request do
       expect(page.at_css("#rule_log del.mono").text).to eq("lte: 4")
       expect(words(page.at_css("#fleet_effect"))).to include("Fails on 1 of 2 hosts evaluated. 1 host has no config report yet.").and include("No agent is contacted.")
       expect(page.css(".actions a").map(&:text)).to eq([ "Edit", "Disable", "Audit log" ])
+    end
+
+    it "says in the change log where each change was made: the dashboard, a rules file import, or rules:import" do
+      perform_enqueued_jobs { patch "/rules/#{rule.id}", params: form_params(rule, expected: "3") }
+      post "/rules/#{rule.id}/disable"
+      post "/rules/#{rule.id}/enable"
+      file = JSON.generate({ "format_version" => 1, "rules" => [ max_auth.merge("condition" => { "lte" => 2 }) ] })
+      perform_enqueued_jobs { CisRule.transaction { CisRules::Import.call(file, actor: Audit::SYSTEM, source: "rules_import") } }
+      perform_enqueued_jobs { post "/rules", params: new_rule_params }
+      upload = Rack::Test::UploadedFile.new(StringIO.new(JSON.generate({ "format_version" => 1, "rules" => [ root_login ] })), "application/json", original_filename: "r.json")
+      post "/rules/import", params: { file: upload }
+      perform_enqueued_jobs { post "/rules/import/#{RuleImportPreview.sole.token}/apply" }
+
+      get "/rules/#{rule.id}"
+      expect(page.css("#rule_log tbody tr td:nth-child(3)").map(&:text))
+        .to eq([ "Edited by rules:import, version 2 → 3", "Enabled in the dashboard", "Disabled in the dashboard", "Edited in the dashboard, version 1 → 2", "Created, version 1" ])
+      expect(page.at_css("#rule_log tbody tr td:nth-child(4)").text.squish).to eq("Condition lte: 3 lte: 2") # the source is not listed as a changed field
+      get "/rules/#{CisRule.find_by!(key: 'ssh-ignore-rhosts').id}"
+      expect(page.css("#rule_log tbody tr td:nth-child(3)").map(&:text)).to eq([ "Created in the dashboard, version 1" ])
+      get "/rules/#{CisRule.find_by!(key: 'ssh-root-login-off').id}"
+      expect(page.css("#rule_log tbody tr td:nth-child(3)").map(&:text)).to eq([ "Created from a rules file import, version 1" ])
+      expect(AuditEntry.where(target_type: "CisRule").map { |entry| entry.changeset["source"] }.tally)
+        .to eq(nil => 1, "dashboard" => 4, "rules_import" => 1, "file_upload" => 1)
+      expect { CisRule.transaction { rule.reload.disable!(actor: Audit::SYSTEM, source: "elsewhere") } }.to raise_error(ArgumentError, /unknown rule change source/)
     end
 
     it "says a disabled rule is not evaluated and offers Enable" do
@@ -280,7 +306,7 @@ RSpec.describe "Rules", :signed_in, type: :request do
       expect(ReportRequest.count).to eq(0) # no agent was asked for anything
       entry = AuditEntry.where(action: Audit::Actions::RULE_EDITED).sole
       expect(entry).to have_attributes(actor_type: "operator", actor_id: operator.id, target_type: "CisRule", target_id: rule.id)
-      expect(entry.changeset).to eq("condition" => [ { "lte" => 4 }, { "lte" => 5 } ], "version" => [ 1, 2 ])
+      expect(entry.changeset).to eq("condition" => [ { "lte" => 4 }, { "lte" => 5 } ], "version" => [ 1, 2 ], "source" => "dashboard")
     end
 
     it "makes no new version when nothing changed" do
@@ -520,7 +546,7 @@ RSpec.describe "Rules", :signed_in, type: :request do
       expect(flash[:notice]).to eq("Disabled ssh-max-auth-tries. Its results become not evaluated; its history and versions are kept.")
       expect(rule.reload.enabled).to be(false)
       expect(result(web, "ssh-max-auth-tries")).to eq("not_evaluated")
-      expect(AuditEntry.where(action: Audit::Actions::RULE_DISABLED).sole).to have_attributes(actor_type: "operator", actor_id: operator.id, changeset: { "enabled" => [ true, false ] })
+      expect(AuditEntry.where(action: Audit::Actions::RULE_DISABLED).sole).to have_attributes(actor_type: "operator", actor_id: operator.id, changeset: { "enabled" => [ true, false ], "source" => "dashboard" })
 
       get "/rules/#{rule.id}/disable"
       expect(page.at_css(".dialog").text).to include("already disabled")

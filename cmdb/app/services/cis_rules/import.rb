@@ -17,18 +17,20 @@ module CisRules
     # expected_state: a CisRule.state_digest taken when the file was previewed (the dashboard's import, P2-D06).
     # When given, the import writes nothing and raises Stale unless the rules are still in that state once the
     # lock is held, so what is applied is exactly what was previewed.
-    def self.call(text, actor:, disable_missing: false, manifest: ConfigManifest.current, expected_state: nil)
+    # source: where the import was started (CisRule::SOURCES), recorded in each audit entry.
+    def self.call(text, actor:, disable_missing: false, manifest: ConfigManifest.current, expected_state: nil, source: nil)
       file = RuleFile.parse(text, manifest:)
       return Result.new(errors: file.errors, created: [], versioned: [], unchanged: [], enabled: [], disabled: []) unless file.valid?
 
-      new(file, actor:, disable_missing:, expected_state:).call
+      new(file, actor:, disable_missing:, expected_state:, source:).call
     end
 
-    def initialize(file, actor:, disable_missing:, expected_state: nil)
+    def initialize(file, actor:, disable_missing:, expected_state: nil, source: nil)
       @file = file
       @actor = actor
       @disable_missing = disable_missing
       @expected_state = expected_state
+      @source = source
       @outcomes = Hash.new { |hash, key| hash[key] = [] }
     end
 
@@ -46,13 +48,13 @@ module CisRules
 
     def apply(rule)
       key = rule.definition.key
-      @outcomes[CisRule.define!(rule.definition, actor: @actor, enabled: rule.enabled != false)] << key
+      @outcomes[CisRule.define!(rule.definition, actor: @actor, enabled: rule.enabled != false, source: @source)] << key
       return if rule.enabled.nil?
 
       stored = CisRule.find_by!(key:)
       if rule.enabled
-        @outcomes[:enabled] << key if stored.enable!(actor: @actor)
-      elsif stored.disable!(actor: @actor)
+        @outcomes[:enabled] << key if stored.enable!(actor: @actor, source: @source)
+      elsif stored.disable!(actor: @actor, source: @source)
         @outcomes[:disabled] << key
       end
     end
@@ -60,7 +62,7 @@ module CisRules
     def disable_missing
       listed = @file.rules.map { |rule| rule.definition.key }
       CisRule.enabled.where.not(key: listed).order(:key).lock.each do |rule|
-        @outcomes[:disabled] << rule.key if rule.disable!(actor: @actor)
+        @outcomes[:disabled] << rule.key if rule.disable!(actor: @actor, source: @source)
       end
     end
   end

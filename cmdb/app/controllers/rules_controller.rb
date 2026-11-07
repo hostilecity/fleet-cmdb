@@ -50,7 +50,7 @@ class RulesController < ApplicationController
     created = CisRule.with_write_lock do
       next false if CisRule.exists?(key: definition.key)
 
-      CisRule.define!(definition, actor: current_operator, enabled: @form.enabled?)
+      CisRule.define!(definition, actor: current_operator, enabled: @form.enabled?, source: "dashboard")
     end
     unless created
       @form.add_problem("key", "#{definition.key} was added by someone else since your preview; a key is never reused, so choose another")
@@ -85,7 +85,7 @@ class RulesController < ApplicationController
       @rule.reload
       next :conflict unless @rule.current_version_id == @base_version.id
 
-      CisRule.define!(CisRules::Definition.from_h(@form.rule_hash), actor: current_operator)
+      CisRule.define!(CisRules::Definition.from_h(@form.rule_hash), actor: current_operator, source: "dashboard")
     end
     case outcome
     when :conflict then changed_meanwhile
@@ -137,7 +137,7 @@ class RulesController < ApplicationController
   end
 
   def set_enabled(value)
-    changed = CisRule.with_write_lock { @rule.lock!.public_send(value ? :enable! : :disable!, actor: current_operator) }
+    changed = CisRule.with_write_lock { @rule.lock!.public_send(value ? :enable! : :disable!, actor: current_operator, source: "dashboard") }
     word = value ? "enabled" : "disabled"
     message = if !changed then "#{@rule.key} was already #{word}."
     elsif value then "Enabled #{@rule.key}. Every host's latest config snapshot is checked against it now; no agent is contacted."

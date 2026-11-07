@@ -79,20 +79,25 @@ module RulesHelper
     end
   end
 
-  # The change log's description of one audit entry for a rule.
+  # Where a rule change was made, as the change log says it (CisRule::SOURCES).
+  SOURCE_WORDS = { "file_upload" => "from a rules file import", "dashboard" => "in the dashboard", "rules_import" => "by rules:import" }.freeze
+
+  # The change log's description of one audit entry for a rule: "Created from a rules file import, version 1",
+  # "Edited in the dashboard, version 1 → 2". An entry recorded before sources were has no source words.
   def rule_change_summary(entry)
     version = entry.changeset["version"]
+    verb = { Audit::Actions::RULE_CREATED => "Created", Audit::Actions::RULE_EDITED => "Edited", Audit::Actions::RULE_ENABLED => "Enabled" }.fetch(entry.action, "Disabled")
+    words = [ verb, SOURCE_WORDS[entry.changeset["source"]] ].compact.join(" ")
     case entry.action
-    when Audit::Actions::RULE_CREATED then "Created, version #{Array(version).last}"
-    when Audit::Actions::RULE_EDITED then "Edited, version #{Array(version).first} → #{Array(version).last}"
-    when Audit::Actions::RULE_ENABLED then "Enabled"
-    else "Disabled"
+    when Audit::Actions::RULE_CREATED then "#{words}, version #{Array(version).last}"
+    when Audit::Actions::RULE_EDITED then "#{words}, version #{Array(version).first} → #{Array(version).last}"
+    else words
     end
   end
 
   # The before and after values of one rule audit entry.
   def rule_change_details(entry)
-    changes = entry.changeset.except("version")
+    changes = entry.changeset.except("version", "source")
     if entry.action == Audit::Actions::RULE_CREATED
       return tag.span("All fields set, #{changes.dig('enabled', 1) == false ? 'disabled' : 'enabled'}", class: "muted")
     end
