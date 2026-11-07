@@ -1,19 +1,34 @@
 # The host tab bar and summary tiles (P2-D02 to P2-D04, approved mockups, owner decision Q1): real links, so the
 # current tab is aria-current, never a script-driven tab widget.
 module HostTabsHelper
-  TABS = { overview: "Overview", config: "Configuration" }.freeze
+  TABS = { overview: "Overview", config: "Configuration", packages: "Packages" }.freeze
 
   def host_tab_path(host, tab, **params)
     case tab
     when :overview then host_path(host, **params)
     when :config then config_host_path(host, **params)
+    when :packages then packages_host_path(host, **params)
     end
   end
 
-  def host_tabs(host, _summary, current:)
+  def host_tabs(host, summary, current:)
     tag.nav(class: "tabs", "aria-label": "Host sections") do
-      safe_join(TABS.map { |tab, label| link_to(label, host_tab_path(host, tab), "aria-current": (tab == current ? "page" : nil)) })
+      safe_join(TABS.map do |tab, label|
+        count = tab_count(summary, tab)
+        link_to(safe_join([ label, (tag.span(count, class: "count") if count) ].compact, " "), host_tab_path(host, tab), "aria-current": (tab == current ? "page" : nil))
+      end)
     end
+  end
+
+  # The count beside a tab's name: packages installed ("Unsupported" when unknown).
+  def tab_count(summary, tab)
+    set = summary.package_set
+    return nil unless tab == :packages && set
+
+    return "Unsupported" if set.unsupported?
+    return "Unreadable" unless set.known?
+
+    number_with_delimiter(set.package_count)
   end
 
   # "80.6%", from a pass rate between 0 and 1.
@@ -33,6 +48,8 @@ module HostTabsHelper
     set = summary.package_set
     return "No package report yet" if set.nil?
     return "Unsupported package manager" if set.unsupported?
+    return "Package database could not be read" unless set.known?
+    return "Last report could not be read, list is from the last one that could" if set.unreadable?
 
     [ set.manager, (" set last changed #{seen_ago(summary.packages_changed_at)}" if summary.packages_changed_at) ].compact.join(",")
   end

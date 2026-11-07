@@ -1,0 +1,110 @@
+<%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :packages %>
+<% cooldown = ReportRequests::COOLDOWN.in_minutes.to_i %>
+<% ready = if @set
+     safe_join([ tag.strong("Package report received #{seen_ago(@set.received_at).downcase_first}."),
+                 " Collected #{utc(@set.collected_at)}#{" by agent #{@host.agent_version}" if @host.agent_version}.",
+                 (" Package set unchanged since snapshot #{utc(@latest_snapshot.received_at)}." if @latest_snapshot) ].compact)
+   else
+     tag.strong("No package report yet.")
+   end %>
+<% answered = @availability.latest&.satisfied_by_report_id
+   answered_new = answered && PackageSnapshot.exists?(host_id: @host.id, report_id: answered) %>
+<%= render "hosts/request_box", host: @host, availability: @availability, return_to: "packages", ready:,
+           ready_hint: "Package reports arrive every 6 hours, or when you ask. Each report type can be requested once every #{cooldown} minutes.",
+           answered_hint: (answered_new ? "The package set changed, so a new snapshot was recorded." : "The package set had not changed, so no new snapshot was recorded. That still answers the request.") %>
+
+<section aria-labelledby="current" id="current_section">
+  <h2 id="current">Installed packages</h2>
+  <% if @set&.unreadable? %>
+    <div class="notice" role="status" id="unreadable_packages"><strong>The agent could not read this host's package database<%= @set.known? ? ", so the list below may be out of date" : ", so its packages are unknown" %>.</strong>
+      <p>The agent reported: <span class="mono"><%= @set.unsupported_reason %></span>.
+        <% if @last_readable %>The list is from the report of <%= utc(@last_readable.received_at) %>, the last one that could be read.<% else %>No earlier report could be read either.<% end %> This is not an empty package list.</p></div>
+  <% end %>
+  <% if @set.nil? %>
+    <div class="sheet empty" id="no_packages"><p><strong>No package report yet.</strong></p><p>The package list appears after the agent sends its first package report, within 6 hours of enrolling, or when you ask for one with the button above.</p></div>
+  <% elsif @set.unsupported? %>
+    <div class="notice" role="status" id="unsupported_manager"><strong>This host's package manager is not supported, so its packages are unknown.</strong>
+      <p>The agent reported: <span class="mono"><%= @set.unsupported_reason %></span>. Supported package managers: <%= (HostPackageSet::MANAGERS - %w[unsupported unreadable]).to_sentence %>. This is not an empty package list.</p></div>
+    <dl class="facts"><dt>Package manager</dt><dd><span class="lamp unsup">Unsupported</span></dd><dt>Packages</dt><dd class="unavailable">Unknown</dd>
+      <dt>Last report</dt><dd>Received <%= seen_ago(@set.received_at).downcase_first %>, collected <%= utc(@set.collected_at) %></dd></dl>
+  <% elsif !@set.known? %>
+    <dl class="facts"><dt>Package manager</dt><dd><span class="lamp unsup">Unreadable</span></dd><dt>Packages</dt><dd class="unavailable">Unknown</dd>
+      <dt>Last report</dt><dd>Received <%= seen_ago(@set.received_at).downcase_first %>, collected <%= utc(@set.collected_at) %></dd></dl>
+  <% else %>
+    <p class="muted"><%= pluralize(number_with_delimiter(@set.package_count), "package") %> from <strong><%= @set.manager %></strong>. The list is the package manager's own, with no packages added or left out. Source package is shown where the manager records one.</p>
+    <%= form_with url: packages_host_path(@host), method: :get, class: "filters", role: "search", id: "package_filters", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+      <% if @list.sort != "name" %><%= hidden_field_tag :sort, @list.sort, id: nil %><% end %>
+      <% if @list.direction != "asc" %><%= hidden_field_tag :dir, @list.direction, id: nil %><% end %>
+      <label>Search name or source package<%= search_field_tag :q, @list.q, placeholder: "curl or util-linux", maxlength: HostPackageList::QUERY_MAX %></label>
+      <label>Architecture<%= select_tag :arch, options_for_select([ [ "All architectures", "" ] ] + @list.architectures, @list.arch) %></label>
+      <label>With findings<%= select_tag :findings, options_for_select([ [ "Any package", "" ], [ "Open findings only", "open" ] ], @list.findings) %></label>
+      <button class="btn quiet" type="submit">Apply</button>
+    <% end %>
+    <% if @list.packages.empty? %>
+      <div class="sheet empty" id="no_matches"><p><strong>No packages match<%= %( "#{@list.q}") if @list.q %><%= %( on architecture "#{@list.arch}") if @list.arch %><%= " with open findings" if @list.findings %>.</strong></p>
+        <p><%= link_to "Clear the search and filters", packages_host_path(@host) %></p></div>
+    <% else %>
+      <div class="table-wrap"><table id="package_list"><caption class="visually-hidden">Installed packages, sorted by <%= @list.sort %></caption>
+        <thead><tr>
+          <% { "name" => "Package", "version" => "Version" }.each do |column, label| %>
+            <th scope="col" aria-sort="<%= @list.aria_sort(column) %>"><%= link_to label, packages_host_path(@host, @list.sort_params(column)) %></th>
+          <% end %>
+          <th scope="col">Architecture</th>
+          <th scope="col" aria-sort="<%= @list.aria_sort("source") %>"><%= link_to "Source package", packages_host_path(@host, @list.sort_params("source")) %></th>
+          <th scope="col">Manager</th><th scope="col">Open findings</th>
+        </tr></thead><tbody>
+        <% @list.packages.each do |package| %>
+          <% findings = @list.open_findings[[ package.name, package.architecture ]] %>
+          <tr><td><span class="mono"><%= package.name %></span></td><td><span class="mono"><%= package.version %></span></td><td><span class="mono"><%= package.architecture %></span></td>
+            <td><%= package.source ? tag.span(package.source, class: "mono") : tag.span("—", class: "muted") %></td><td><%= @set.manager %></td>
+            <td><% if findings %><%= "#{findings.open} open#{' (reopened)' if findings.reopened}" %><% else %><span class="muted">—</span><% end %></td></tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+    <nav class="pager" aria-label="Package pages" id="package_pager">
+      <span>Packages <%= number_with_delimiter(@list.first_row) %>&ndash;<%= number_with_delimiter(@list.last_row) %> of <%= number_with_delimiter(@list.total) %><%= " matching" if @list.filtered? %></span>
+      <span>
+        <% if @list.page > 1 %><%= link_to "Previous", packages_host_path(@host, @list.params_with(page: (@list.page - 1 if @list.page > 2))), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+        &middot; Page <%= @list.page %> of <%= @list.pages %> &middot;
+        <% if @list.page < @list.pages %><%= link_to "Next", packages_host_path(@host, @list.params_with(page: @list.page + 1)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+      </span>
+    </nav>
+  <% end %>
+</section>
+
+<section aria-labelledby="snapshots" id="snapshots_section">
+  <h2 id="snapshots">Package snapshots</h2>
+  <p class="muted">A snapshot is kept only when the package set changes. <%= link_to "Compare any two", compare_packages_host_path(@host) %>, or use the links in the table.</p>
+  <% if @snapshots.empty? %>
+    <p class="muted">No snapshots yet.</p>
+  <% else %>
+    <div class="table-wrap"><table id="snapshot_list"><caption class="visually-hidden">Package snapshots</caption>
+      <thead><tr><th scope="col" class="when">Recorded (UTC)</th><th scope="col">What changed</th><th scope="col">Compare</th></tr></thead><tbody>
+      <% latest = @snapshots.first[:snapshot] %>
+      <% @snapshots.each do |row| %>
+        <% snapshot = row[:snapshot] %>
+        <tr id="<%= dom_id(snapshot) %>">
+          <td><%= utc(snapshot.received_at) %><% if snapshot == latest %> <span class="badge">Latest</span><% end %></td>
+          <td>
+            <% if row[:diff] %>
+              <%= package_change_summary(row[:diff]) %>
+            <% elsif row[:first] %>
+              Oldest package snapshot kept, <%= package_snapshot_contents(snapshot) %>
+            <% else %>
+              <span class="muted">Older snapshots are not listed</span>
+            <% end %>
+          </td>
+          <td>
+            <% if row[:previous] %>
+              <%= link_to "With the one before", compare_packages_host_path(@host, from: row[:previous].id, to: snapshot.id) %>
+              <% if snapshot != latest %><br><%= link_to "With the latest", compare_packages_host_path(@host, from: snapshot.id, to: latest.id) %><% end %>
+            <% else %>
+              <span class="muted">No earlier snapshot kept</span>
+            <% end %>
+          </td>
+        </tr>
+      <% end %>
+    </tbody></table></div>
+    <% if @more_snapshots %><p class="pager"><span>Showing the latest <%= HostPackagesController::SNAPSHOT_LIMIT %> snapshots. Older ones can be picked on the comparison page.</span></p><% end %>
+  <% end %>
+</section>
