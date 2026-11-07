@@ -1,5 +1,5 @@
 # Prunes history older than the retention window (NFR-2, DEC-07, P1-S10): inventory, package, and config snapshots,
-# recent report ids, CIS result changes, host status events, and report requests, 90 days by default
+# recent report ids, CIS result changes, host status events, report requests, and advisory refresh attempts, 90 days by default
 # (Setting "retention.days"). Current results (CisResult) are not history and are never pruned.
 #
 # - The newest row per host survives for the tables registered with `keep_newest_per_host`, whatever its age,
@@ -78,4 +78,6 @@ module Retention
   # On-demand report requests (P2-S03), by when they were made: a request ends within an hour, and the audit
   # log keeps who asked.
   register ReportRequest, time_column: :requested_at
+  # When each advisory feed refresh started (P2-S15): only the newest few minutes matter, for the cool-down.
+  register AdvisoryRefreshAttempt, time_column: :started_at
 end

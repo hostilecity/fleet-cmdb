@@ -18,6 +18,17 @@ Rails.application.configure do
   # Data older than this shows a warning on the dashboard (P2-S13).
   advisories.max_age ||= Float(ENV.fetch("FLEET_ADVISORY_MAX_AGE_HOURS", "48")).hours
 
+  # The cool-down on the dashboard's "Refresh now" (P2-S15), in seconds: a manual refresh is refused while the
+  # last refresh of any kind started less than this long ago. A whole number, at least 1; anything else stops
+  # the server from starting, rather than silently allowing refreshes back to back.
+  advisories.refresh_cooldown ||= begin
+    value = ENV["FLEET_ADVISORY_REFRESH_COOLDOWN"].presence || "300"
+    seconds = Integer(value, 10, exception: false)
+    raise "FLEET_ADVISORY_REFRESH_COOLDOWN must be a whole number of seconds, at least 1 (got #{value.inspect})" unless seconds&.positive?
+
+    seconds.seconds
+  end
+
   config.after_initialize do
     url = Rails.configuration.x.advisories.feed_url
     raise "FLEET_ADVISORY_FEED_URL must be an https:// URL" if url && !URI.parse(url).is_a?(URI::HTTPS)

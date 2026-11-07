@@ -196,6 +196,11 @@ Vulnerability advisories (FR-2.4, DEC-11, P2-S10, P2-S13) are OSV records for th
   - It downloads `FLEET_ADVISORY_FEED_URL` over HTTPS with the certificate verified, within 15 minutes for the whole exchange, and imports it as a full data set. The request is conditional (`If-None-Match`, `If-Modified-Since`) unless the last download had malformed records.
   - A failure of any kind is retried with backoff. After the last attempt it is recorded and audited, and the job fails, so it shows on the failed-jobs banner and in `/health`.
   - Errors and logs name only the feed's host, never its path, query, or token.
+- **Manual refresh cool-down** (P2-S15). `Advisories::ManualRefresh.request!(actor:)` is the dashboard's "Refresh now": it enqueues the same `AdvisoryFeedRefreshJob` as the schedule, unless the last refresh of any kind (manual, scheduled, or `bin/rails advisories:refresh`) started less than `FLEET_ADVISORY_REFRESH_COOLDOWN` seconds ago. Then it is refused with the time a refresh is next allowed, and starts nothing.
+  - Each refresh records when it started in `advisory_refresh_attempts`. The check and the record run under one PostgreSQL advisory lock, so two operators clicking together start one refresh.
+  - The schedule and the rake task are never refused, but they count: the next manual refresh waits for the cool-down after them.
+  - Both outcomes are audited with the operator as actor (`advisory.refresh_requested`, `advisory.refresh_refused`) and the time a refresh is next allowed. The import a manual refresh leads to is attributed to that operator.
+  - `Advisories::ManualRefresh.next_allowed_at` is when the button can next be used (nil: now), for the disabled button and its "available again" text.
 - **Freshness.** Data is as fresh as the last successful full import with records for the ecosystem. The fleet page shows when each ecosystem's data was last updated, and a warning when it is older than `FLEET_ADVISORY_MAX_AGE_HOURS` or was never refreshed. A partial import adds data but does not count.
 
 ```sh
@@ -211,6 +216,7 @@ bin/rails advisories:status                               # freshness per ecosys
 | `FLEET_ADVISORY_FEED_TOKEN` | none | Sent as a bearer token, for a mirror that needs one; also read from credentials (`advisories.feed_token`). Never logged or shown |
 | `FLEET_ADVISORY_MAX_DOWNLOAD_MB` | `512` | The largest archive downloaded or imported |
 | `FLEET_ADVISORY_MAX_AGE_HOURS` | `48` | Older data shows a warning on the dashboard |
+| `FLEET_ADVISORY_REFRESH_COOLDOWN` | `300` | Seconds after a refresh starts before the dashboard's "Refresh now" may start another. A whole number, at least 1: any other value stops the server at boot with an error naming the setting |
 
 ### Vulnerability findings
 
