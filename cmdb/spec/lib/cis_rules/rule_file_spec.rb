@@ -75,6 +75,18 @@ RSpec.describe CisRules::RuleFile do
     expect(CisRule.count).to eq(0)
   end
 
+  it "limits a file by its own size, not by its size as JSON, which escaping can double (review of #126)" do
+    # A single-quoted YAML scalar keeps a backslash as one byte; JSON writes it as two.
+    entries = Array.new(1000) do |i|
+      "- { key: r#{i}, reference: x, title: t, severity: low, applies_to: [{ distribution: debian }], fact: sshd.permitrootlogin, " \
+        "condition: { eq: 'no' }, remediation: '#{'\\' * 700}' }"
+    end
+    text = "format_version: 1\nrules:\n#{entries.join("\n")}\n"
+    expect(text.bytesize).to be < described_class::MAX_BYTES
+    expect(JSON.generate(YAML.safe_load(text)).bytesize).to be > described_class::MAX_BYTES
+    expect(errors(text)).to eq([])
+  end
+
   it "lists at most 200 problems" do
     expect(errors(file(*Array.new(250) { |i| rule(key: "r#{i}", severity: "bad") })).size).to eq(200)
   end

@@ -53,15 +53,17 @@ module CisRules
       problem("/", "is not a plain YAML or JSON document (#{e.message.truncate(200)})")
     end
 
+    # A rule given as data has no text to measure, so it is limited by its size as JSON. A file keeps the limit on
+    # its own text in read, since escaping can make its JSON larger than the file (review of #126).
     def wrap(rule)
-      rule = plain(rule)
+      rule = plain(rule, max_bytes: MAX_BYTES)
       { "format_version" => FORMAT_VERSION, "rules" => [ rule ] } if @problems.empty?
     end
 
     # Through JSON, so keys are strings and anything JSON cannot hold (such as .nan) is refused here.
-    def plain(data)
+    def plain(data, max_bytes: nil)
       json = JSON.generate(data, max_nesting: JSON_NESTING)
-      return problem("/", "is larger than #{MAX_BYTES / 1.megabyte} MiB") if json.bytesize > MAX_BYTES
+      return problem("/", "is larger than #{MAX_BYTES / 1.megabyte} MiB") if max_bytes && json.bytesize > max_bytes
 
       JSON.parse(json, max_nesting: JSON_NESTING)
     rescue JSON::NestingError
