@@ -37,7 +37,7 @@ namespace :advisories do
       puts "#{status.ecosystem}: #{updated}#{' (older than ' + (max_age / 1.hour).round.to_s + ' hours)' if status.stale}, " \
            "#{AdvisoryPackage.where(ecosystem: status.ecosystem).distinct.count(:advisory_id)} advisories"
     end
-    last = AdvisoryImport.order(finished_at: :desc, id: :desc).first
+    last = AdvisoryImport.finished.order(finished_at: :desc, id: :desc).first
     puts "Last import: #{last.state} #{last.finished_at.utc.iso8601} from #{last.source}#{": #{last.reason}" if last.reason}" if last
   end
 end

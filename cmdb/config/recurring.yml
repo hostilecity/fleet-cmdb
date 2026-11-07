@@ -29,6 +29,10 @@ development:
   retention_pruning:
     class: RetentionPruneJob
     schedule: every day at 3:17am
+  # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
+  advisory_upload_pruning:
+    class: AdvisoryUploadPruneJob
+    schedule: every 10 minutes
   clear_solid_queue_finished_jobs:
     command: "SolidQueue::Job.clear_finished_in_batches(sleep_between_batches: 0.3)"
     schedule: every hour at minute 12
@@ -58,6 +62,10 @@ production:
   advisory_feed_refresh:
     class: AdvisoryFeedRefreshJob
     schedule: "41 */6 * * *"
+  # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
+  advisory_upload_pruning:
+    class: AdvisoryUploadPruneJob
+    schedule: every 10 minutes
   clear_solid_queue_finished_jobs:
     command: "SolidQueue::Job.clear_finished_in_batches(sleep_between_batches: 0.3)"
     schedule: every hour at minute 12

@@ -40,7 +40,8 @@ class AdvisoryDataSources
 
   def last_attempt = Advisories::ManualRefresh.last_attempt
 
-  def imports = AdvisoryImport.includes(:operator).order(finished_at: :desc, id: :desc).limit(RECENT_IMPORTS).to_a
+  # Imports in progress first (no finished_at yet), then the newest.
+  def imports = AdvisoryImport.includes(:operator).order(Arel.sql("finished_at DESC NULLS FIRST"), id: :desc).limit(RECENT_IMPORTS).to_a
 
   # How many feed refreshes in a row have failed since the last one that succeeded, for the stale notice.
   def failed_refreshes

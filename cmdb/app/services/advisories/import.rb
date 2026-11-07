@@ -26,24 +26,38 @@ module Advisories
     COUNTS = %w[records created updated unchanged older withdrawn absent skipped malformed rejected_urls].freeze
     LOCK_KEY = "advisories.import".freeze
 
-    # Records a failed import (nothing was stored), audited, in its own transaction.
-    def self.record_failure(origin:, source:, reason:, operator: nil, full: false, started_at: Time.current)
+    # The queued or importing row this import was to finish has been finished meanwhile (AdvisoryUploadPruneJob
+    # failed it): nothing is written.
+    class Abandoned < StandardError; end
+
+    # Records a failed import (nothing was stored), audited, in its own transaction. import: a queued or
+    # importing row to finish as failed (an upload imported in the background, P2-D06) instead of a new one.
+    def self.record_failure(reason:, origin: nil, source: nil, operator: nil, full: false, started_at: Time.current, import: nil)
       AdvisoryImport.transaction do
-        import = AdvisoryImport.create!(origin:, source:, full:, operator:, state: "failed", reason: reason.truncate(512),
-                                        started_at:, finished_at: Time.current)
-        Audit.record(actor: operator || Audit::SYSTEM, action: Audit::Actions::ADVISORY_IMPORT_FAILED, target: import,
-                     changes: { "origin" => origin, "source" => source, "reason" => import.reason })
+        failed = { state: "failed", reason: reason.truncate(512), finished_at: Time.current }
+        if import
+          # Locked and checked again: an import finished meanwhile keeps its outcome.
+          return import unless import.lock!.in_progress?
+
+          import.update!(failed)
+        else
+          import = AdvisoryImport.create!(origin:, source:, full:, operator:, started_at:, **failed)
+        end
+        Audit.record(actor: import.operator || Audit::SYSTEM, action: Audit::Actions::ADVISORY_IMPORT_FAILED, target: import,
+                     changes: { "origin" => import.origin, "source" => import.source, "reason" => import.reason })
         import
       end
     end
 
     # origin: "feed" or "file". source: the name to show and store (the feed's host and path, or the file
-    # name), never a credential.
-    def initialize(origin:, source:, full: false, operator: nil, etag: nil, last_modified: nil)
-      @origin = origin
-      @source = Record.clean_text(source, 256) || "unknown"
-      @full = full
-      @operator = operator
+    # name), never a credential. record: a queued or importing AdvisoryImport to finish with the result (an
+    # upload imported in the background, P2-D06); its origin, source, full, and operator are used.
+    def initialize(origin: nil, source: nil, full: false, operator: nil, etag: nil, last_modified: nil, record: nil)
+      @record = record
+      @origin = record&.origin || origin
+      @source = record&.source || Record.clean_text(source, 256) || "unknown"
+      @full = record ? record.full : full
+      @operator = record ? record.operator : operator
       @validators = { etag:, last_modified: }
     end
 
@@ -59,9 +73,10 @@ module Advisories
         AdvisoryImport.connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{AdvisoryImport.connection.quote(LOCK_KEY)}))")
         reader.each_slice(BATCH) { |entries| store(entries.filter_map { |entry| parse(entry) }) }
         sweep_absent if @full && @counts["malformed"].zero?
-        import = AdvisoryImport.create!(origin: @origin, source: @source, full: @full, operator: @operator, state: "succeeded",
-                                        ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators,
-                                        started_at:, finished_at: Time.current)
+        outcome = { state: "succeeded", ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators, finished_at: Time.current }
+        raise Abandoned, "advisory import #{@record.id} was finished meanwhile" if @record && !@record.lock!.in_progress?
+
+        import = @record ? @record.tap { |r| r.update!(outcome) } : AdvisoryImport.create!(origin: @origin, source: @source, full: @full, operator: @operator, started_at:, **outcome)
         Audit.record(actor: @operator || Audit::SYSTEM, action: Audit::Actions::ADVISORY_IMPORTED, target: import,
                      changes: { "origin" => @origin, "source" => @source, "full" => @full, "ecosystems" => import.ecosystems.join(", "), "counts" => @counts })
         changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }

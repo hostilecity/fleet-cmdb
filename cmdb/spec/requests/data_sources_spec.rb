@@ -210,35 +210,67 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
   describe "uploading an advisory file" do
     let(:valid) { osv_record(id: "DSA-9118-1", package: "openssl") }
 
-    it "imports it, audited with the operator, and shows the result with the malformed records listed: where, which, and why" do
+    def import_jobs = enqueued_jobs.select { |job| job["job_class"] == "AdvisoryUploadImportJob" }
+
+    # Runs the queued import job, as the worker would.
+    def run_import_jobs = perform_enqueued_jobs(only: AdvisoryUploadImportJob)
+
+    it "stores the file, queues its import, and shows its progress, refreshing itself until the import is done" do
+      upload(osv_zip("DSA-9118-1.json" => valid))
+      import = AdvisoryImport.sole
+      expect(response).to redirect_to("/data-sources/imports/#{import.id}")
+      expect(import).to have_attributes(origin: "file", source: "all.zip", full: false, operator:, state: "queued", finished_at: nil)
+      expect(AdvisoryUpload.without_data.sole).to have_attributes(advisory_import_id: import.id, operator_id: operator.id, filename: "all.zip")
+      expect(AdvisoryUploadImportJob).to have_been_enqueued.once.with(import.id)
+      expect(Advisory.count).to eq(0)
+      uploaded = AuditEntry.where(action: "advisory.uploaded").sole
+      expect(uploaded).to have_attributes(actor_type: "operator", actor_id: operator.id, target_type: "AdvisoryImport", target_id: import.id)
+
+      follow_redirect!
+      outcome = page.at_css("#import_outcome")
+      expect(outcome.at_css("strong").text).to eq("Queued: waiting for the import job.")
+      expect(outcome["data-controller"]).to eq("refresh-after")
+      expect(outcome["data-refresh-after-seconds-value"]).to eq(DataSourcesController::PROGRESS_REFRESH_SECONDS.to_s)
+      get "/data-sources"
+      expect(page.at_css("#imports tbody tr").css("td").map { |cell| cell.text.squish }[1..]).to eq([ "File upload", "all.zip", "Queued", "Waiting to be imported", "Example Operator" ])
+
+      import.update!(state: "importing")
+      get "/data-sources/imports/#{import.id}"
+      expect(page.at_css("#import_outcome strong").text).to eq("Importing now.")
+      expect(page.at_css("#import_outcome")["data-controller"]).to eq("refresh-after")
+
+      run_import_jobs
+      get "/data-sources/imports/#{import.id}"
+      expect(page.at_css("#import_outcome")["data-controller"]).to be_nil
+      expect(page.at_css("#import_outcome strong").text).to eq("1 record read: 1 imported.")
+      expect(AdvisoryUpload.count).to eq(0)
+    end
+
+    it "imports it in the background, audited with the operator, and shows the result with the malformed records listed: where, which, and why" do
       debian_host(packages: [ [ "libssl3", "3.5.0-1", "openssl" ] ])
       zip = osv_zip("advisories/DSA-9118-1.json" => valid, "advisories/DSA-9119-1.json" => osv_record(id: "DSA-9119-1").merge("affected" => "nope"),
                     "advisories/broken.json" => '{"id": "DSA-9120-1", ')
       upload(zip)
+      run_import_jobs
       import = AdvisoryImport.sole
-      expect(response).to redirect_to("/data-sources/imports/#{import.id}")
-      expect(import).to have_attributes(origin: "file", source: "all.zip", full: false, operator:, state: "succeeded")
+      expect(import).to have_attributes(origin: "file", source: "all.zip", full: false, operator:, state: "succeeded", matching: { "packages" => 1, "hosts" => 1 })
       expect(Advisory.pluck(:advisory_id)).to eq([ "DSA-9118-1" ])
       entry = AuditEntry.where(action: "advisory.imported").sole
       expect(entry).to have_attributes(actor_type: "operator", actor_id: operator.id, target_type: "AdvisoryImport", target_id: import.id)
 
-      follow_redirect!
+      get "/data-sources/imports/#{import.id}"
       expect(page.at_css("h1").text).to eq("Import result")
       expect(page.at_css(".page-head p").text).to eq("File upload by Example Operator, #{import.finished_at.utc.strftime('%Y-%m-%d %H:%M UTC')}.")
       expect(page.at_css("#import_outcome strong").text).to eq("3 records read: 1 imported, 2 skipped.")
       expect(facts(page.at_css("dl.facts"))).to include("File" => "all.zip", "Type" => "Partial import (advisories not in the file are left alone)", "New" => "1",
-                               "Changed" => "0", "Unchanged" => "0", "Withdrawn" => "0", "Skipped" => "2",
-                               "Matching" => "Findings are being matched again for 1 package on 1 host.")
+                                                        "Changed" => "0", "Unchanged" => "0", "Withdrawn" => "0", "Skipped" => "2",
+                                                        "Matching" => "Findings are matched again for 1 package on 1 host after the import.")
       rows = page.css("#skipped_records tbody tr").map { |row| row.css("td").map { |cell| cell.text.squish } }
       expect(rows.size).to eq(2)
       expect(rows.map(&:first)).to contain_exactly("all.zip / advisories/DSA-9119-1.json", "all.zip / advisories/broken.json")
       expect(rows.find { |row| row.first.end_with?("DSA-9119-1.json") }[1]).to eq("DSA-9119-1")
       expect(rows.find { |row| row.first.end_with?("broken.json") }[1]).to eq("No valid id")
       expect(rows.map(&:last)).to all(be_present)
-
-      # The matching line is for the page right after the upload; the import does not store it.
-      get "/data-sources/imports/#{import.id}"
-      expect(page.css("dl.facts dt").map(&:text)).not_to include("Matching")
 
       get "/data-sources"
       expect(page.at_css("#imports tbody tr").text.squish).to include("File upload", "all.zip", "3 records read: 1 imported, 2 malformed and skipped", "Example Operator")
@@ -250,6 +282,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
 
     it "imports a single .json record" do
       upload(AdvisoryHelpers::OSV_FIXTURES.join("DSA-9001-1.json"), type: "application/json")
+      run_import_jobs
       expect(AdvisoryImport.sole).to have_attributes(source: "DSA-9001-1.json", state: "succeeded")
       follow_redirect!
       expect(page.at_css("#import_outcome strong").text).to eq("1 record read: 1 imported.")
@@ -260,9 +293,11 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       @osv_dirs = [ *@osv_dirs, bad.dirname ]
       bad.binwrite("PK\x03\x04 this is not really a zip archive")
       upload(bad)
+      run_import_jobs
       import = AdvisoryImport.sole
       expect(import).to have_attributes(state: "failed", operator:, source: "advisories-Debian-13.zip", reason: "advisories-Debian-13.zip is not a readable zip archive")
       expect(Advisory.count).to eq(0)
+      expect(AdvisoryUpload.count).to eq(0)
       expect(AuditEntry.where(action: "advisory.import_failed").sole).to have_attributes(actor_type: "operator", actor_id: operator.id)
       follow_redirect!
       outcome = page.at_css("#import_outcome")
@@ -286,17 +321,20 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       expect(page.at_css("#full_error").text).to eq("Confirm the full import, or clear Full import to import without withdrawing.")
       expect(page.at_css("#full")["checked"]).to eq("checked")
       expect(AdvisoryImport.count).to eq(1)
+      expect(AdvisoryUpload.count).to eq(0)
+      expect(import_jobs).to be_empty
 
       upload(zip, full: "1", confirm: "1")
+      run_import_jobs
       import = AdvisoryImport.order(:id).last
-      expect(import).to have_attributes(full: true, operator:)
+      expect(import).to have_attributes(full: true, operator:, state: "succeeded")
       expect(Advisory.find_by(advisory_id: "DSA-9002-1").withdrawn_reason).to eq("absent")
       follow_redirect!
       expect(page.css("dl.facts dd").map { |dd| dd.text.squish }).to include("Full import (advisories of its ecosystems that are not in the file are marked withdrawn)",
                                                                              "1 (1 because the full import did not contain them)")
     end
 
-    it "refuses no file, another kind of file, and a body over the limit, importing nothing" do
+    it "refuses no file, another kind of file, and a body over the limit, storing nothing" do
       post "/data-sources/upload", params: {}
       expect(response).to have_http_status(:unprocessable_content)
       expect(page.at_css("#advisory_file_error").text).to eq("Choose an advisory file to upload.")
@@ -312,6 +350,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       post "/data-sources/upload", headers: { "CONTENT_LENGTH" => (DataSourcesController::MAX_BODY_BYTES + 1).to_s }
       expect(response).to have_http_status(:content_too_large)
       expect(AdvisoryImport.count).to eq(0)
+      expect(AdvisoryUpload.count).to eq(0)
     end
 
     it "refuses a file over the limit with the way to import a larger one" do
@@ -320,6 +359,20 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       expect(response).to have_http_status(:unprocessable_content)
       expect(page.at_css("#advisory_file_error").text).to include("bin/rails advisories:import")
       expect(AdvisoryImport.count).to eq(0)
+    end
+
+    it "stores at most #{AdvisoryUpload::MAX_PENDING} uploads at once, so storage stays bounded" do
+      AdvisoryUpload::MAX_PENDING.times { upload(AdvisoryHelpers::OSV_FIXTURES.join("DSA-9001-1.json"), type: "application/json") }
+      expect(AdvisoryUpload.count).to eq(AdvisoryUpload::MAX_PENDING)
+      upload(AdvisoryHelpers::OSV_FIXTURES.join("DSA-9001-1.json"), type: "application/json")
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(page.at_css("#advisory_file_error").text).to eq("#{AdvisoryUpload::MAX_PENDING} uploads are already waiting to be imported. Wait for one to finish, then upload again.")
+      expect(AdvisoryUpload.count).to eq(AdvisoryUpload::MAX_PENDING)
+
+      run_import_jobs
+      expect(AdvisoryUpload.count).to eq(0)
+      upload(AdvisoryHelpers::OSV_FIXTURES.join("DSA-9001-1.json"), type: "application/json")
+      expect(response).to have_http_status(:redirect)
     end
 
     it "keeps only the file's own name, never a client's path" do
@@ -333,8 +386,17 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       upload(AdvisoryHelpers::OSV_FIXTURES.join("DSA-9001-1.json"), type: "application/json")
       expect(response).to have_http_status(:unprocessable_content)
       expect(AdvisoryImport.count).to eq(0)
+      expect(AdvisoryUpload.count).to eq(0)
     ensure
       ActionController::Base.allow_forgery_protection = false
+    end
+
+    it "shows the progress and result pages to signed-in operators only" do
+      upload(AdvisoryHelpers::OSV_FIXTURES.join("DSA-9001-1.json"), type: "application/json")
+      import = AdvisoryImport.sole
+      delete "/sign_out"
+      get "/data-sources/imports/#{import.id}"
+      expect(response).to redirect_to("/sign_in")
     end
   end
 

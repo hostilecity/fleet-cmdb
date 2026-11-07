@@ -160,7 +160,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         partial = AdvisoryImport.create!(origin: "file", source: fit(256), operator: hostile_operator, state: "succeeded", ecosystems: [ "Debian:13" ],
                                          counts: { "records" => 3, "created" => 1, "malformed" => 2 }, problems:, started_at: now, finished_at: now)
         failed = AdvisoryImport.create!(origin: "file", source: fit(256), operator: hostile_operator, state: "failed", reason: fit(512), started_at: now, finished_at: now)
-        [ partial, failed ]
+        queued = AdvisoryImport.create!(origin: "file", source: fit(256), operator: hostile_operator, state: "queued", started_at: now)
+        [ partial, failed, queued ]
       end
 
       # [path, whether a value from above is shown on the page as text]

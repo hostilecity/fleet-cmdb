@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_070000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_091500) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -47,11 +47,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_070000) do
     t.string "etag", limit: 256
     t.string "last_modified", limit: 64
     t.datetime "started_at", null: false
-    t.datetime "finished_at", null: false
+    t.datetime "finished_at"
+    t.jsonb "matching"
     t.index ["finished_at"], name: "index_advisory_imports_on_finished_at"
     t.index ["operator_id"], name: "index_advisory_imports_on_operator_id"
+    t.check_constraint "(finished_at IS NULL) = (state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying]::text[]))", name: "advisory_imports_finished_iff_done"
     t.check_constraint "origin::text = ANY (ARRAY['feed'::character varying, 'file'::character varying]::text[])", name: "advisory_imports_origin_valid"
-    t.check_constraint "state::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying]::text[])", name: "advisory_imports_state_valid"
+    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying, 'succeeded'::character varying, 'failed'::character varying]::text[])", name: "advisory_imports_state_valid"
   end
 
   create_table "advisory_packages", force: :cascade do |t|
@@ -72,6 +74,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_070000) do
     t.index ["started_at"], name: "index_advisory_refresh_attempts_on_started_at"
     t.check_constraint "(kind::text = 'manual'::text) = (operator_id IS NOT NULL)", name: "advisory_refresh_attempts_operator_iff_manual"
     t.check_constraint "kind::text = ANY (ARRAY['manual'::character varying, 'scheduled'::character varying, 'task'::character varying]::text[])", name: "advisory_refresh_attempts_kind_valid"
+  end
+
+  create_table "advisory_uploads", force: :cascade do |t|
+    t.bigint "advisory_import_id", null: false
+    t.bigint "operator_id", null: false
+    t.string "filename", limit: 256, null: false
+    t.bigint "byte_size", null: false
+    t.binary "data", null: false
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.index ["advisory_import_id"], name: "index_advisory_uploads_on_advisory_import_id", unique: true
+    t.index ["expires_at"], name: "index_advisory_uploads_on_expires_at"
+    t.index ["operator_id"], name: "index_advisory_uploads_on_operator_id"
+    t.check_constraint "byte_size = octet_length(data) AND byte_size <= 67108864", name: "advisory_uploads_size_bounded"
   end
 
   create_table "agent_credentials", force: :cascade do |t|
@@ -588,6 +604,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_070000) do
   add_foreign_key "advisory_imports", "operators"
   add_foreign_key "advisory_packages", "advisories", on_delete: :cascade
   add_foreign_key "advisory_refresh_attempts", "operators"
+  add_foreign_key "advisory_uploads", "advisory_imports", on_delete: :cascade
+  add_foreign_key "advisory_uploads", "operators"
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "agent_release_imports", "agent_releases"
   add_foreign_key "agent_release_imports", "operators"
