@@ -2,7 +2,8 @@ module CisRules
   # Imports a rule file (P2-S04): validated as a whole first, then written in one transaction, so an invalid file
   # writes nothing. An unchanged rule gets no new version; a changed one does. A rule the file does not list is
   # left as it is unless disable_missing is set. A rule's enabled flag changes only when the file states it.
-  # Concurrent imports are serialised. Re-evaluating hosts after a change is added with P2-S06.
+  # Concurrent imports are serialised. Every changed rule is re-evaluated on every host once the import
+  # commits (CisRule, P2-S06).
   class Import
     Result = Data.define(:errors, :created, :versioned, :unchanged, :enabled, :disabled) do
       def ok? = errors.empty?

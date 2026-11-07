@@ -1,6 +1,7 @@
 # A CIS-aligned rule (P2-S04, FR-2.2, DEC-12): its stable key, whether it is evaluated, and its current
 # definition. Every change is audited with before and after values (FR-S.3). Imports (CisRules::Import) and
-# the dashboard (P2-D06) both change rules through define!, enable!, and disable!.
+# the dashboard (P2-D06) both change rules through define!, enable!, and disable!, and every change
+# re-evaluates the rule on every host once it commits (CisEvaluationJob, P2-S06).
 class CisRule < ApplicationRecord
   has_many :versions, -> { order(:version) }, class_name: "CisRuleVersion", inverse_of: :cis_rule, dependent: :restrict_with_exception
   belongs_to :current_version, class_name: "CisRuleVersion", optional: true
@@ -19,6 +20,7 @@ class CisRule < ApplicationRecord
     rule.update!(current_version: rule.versions.create!(version: 1, **version_attributes(definition)))
     Audit.record(actor:, action: Audit::Actions::RULE_CREATED, target: rule,
                  changes: definition.fields.transform_values { |value| [ nil, value ] }.merge("version" => [ nil, 1 ], "enabled" => [ nil, enabled ]))
+    CisEvaluationJob.after_rule_change(rule.id)
     :created
   end
 
@@ -32,6 +34,7 @@ class CisRule < ApplicationRecord
     update!(current_version: after)
     changes = definition.fields.filter_map { |name, value| [ name, [ before.public_send(name), value ] ] unless before.public_send(name) == value }.to_h
     Audit.record(actor:, action: Audit::Actions::RULE_EDITED, target: self, changes: changes.merge("version" => [ before.version, after.version ]))
+    CisEvaluationJob.after_rule_change(id)
     :versioned
   end
 
@@ -47,6 +50,7 @@ class CisRule < ApplicationRecord
 
     update!(enabled: value)
     Audit.record(actor:, action: value ? Audit::Actions::RULE_ENABLED : Audit::Actions::RULE_DISABLED, target: self, changes: { "enabled" => [ !value, value ] })
+    CisEvaluationJob.after_rule_change(id)
     true
   end
 end

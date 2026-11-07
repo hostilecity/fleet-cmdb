@@ -6,7 +6,7 @@
 # - When the content hash differs from the current facts', a snapshot is written. Otherwise only the report
 #   details (times, manifest version, ignored keys) are updated.
 #
-# Rule evaluation (P2-S06) runs after a new snapshot; it is added with that section.
+# Rule evaluation (P2-S06) runs after a new snapshot, for that host, once the transaction commits.
 module ConfigRecorder
   Result = Data.define(:report_id, :duplicate, :snapshot)
 
@@ -24,7 +24,10 @@ module ConfigRecorder
     snapshot = current.content_hash != hash
     details = { facts: report.facts, content_hash: hash, state_counts: report.counts, manifest_version: report.manifest_version,
                 report_id: report.report_id, collected_at: report.collected_at, received_at: now }
-    ConfigSnapshot.create!(host_id:, **details) if snapshot
+    if snapshot
+      ConfigSnapshot.create!(host_id:, **details)
+      CisEvaluationJob.after_snapshot(host_id)
+    end
     current.update!(**details, ignored_keys: report.ignored_keys.first(AgentApi::ConfigReport::MAX_IGNORED), schema_version: report.schema_version)
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end

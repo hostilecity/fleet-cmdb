@@ -135,7 +135,13 @@ Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the opera
 - **Import.** `bin/rails rules:import FILE=rules.yml` checks the whole file (`CisRules::RuleFile`: safe YAML, the JSON Schema, then each rule against the fact manifest) and writes nothing if anything is wrong, listing every problem. `DISABLE_MISSING=1` disables enabled rules the file does not list; otherwise they are left alone. `bin/rails rules:list` shows each rule's key, version, flag, severity, and fact. Imports are serialised and audited with the system actor.
 - **Storage.** `cis_rules`: the stable key, the enabled flag, and the current version. `cis_rule_versions`: one row per definition, never changed (`readonly?`), numbered from 1; an import creates one only when the definition's content hash changes.
 - **Audit.** `rule.created`, `rule.edited` (each changed field before and after, and the version), `rule.enabled`, `rule.disabled`; the audit page names the rule by its key.
-- **Evaluation.** `CisRules::Evaluator.call(rule, facts, os)` (P2-S05) is a pure function returning `pass`, `fail`, `not_applicable`, or `not_readable`, with the observed value or the reason. It never runs rule data as code (a spec checks the rule code's tokens); patterns are anchored and time-limited. Storing results and running evaluation after each snapshot or rule change is P2-S06.
+- **Evaluation.** `CisRules::Evaluator.call(rule, facts, os)` (P2-S05) is a pure function returning `pass`, `fail`, `not_applicable`, or `not_readable`, with the observed value or the reason. It never runs rule data as code (a spec checks the rule code's tokens); patterns are anchored and time-limited.
+- **Results** (P2-S06). `CisEvaluation.evaluate!(host_ids, rule_ids: nil)` evaluates each host's latest config snapshot, with the os from its inventory, and stores:
+  - `cis_results`: one row per host and rule with the result (`pass`, `fail`, `not_applicable`, `not_readable`, or `not_evaluated`), the observed value, the reason, and the rule version and snapshot used. A disabled rule, and every rule on a host with no config report, is `not_evaluated`.
+  - `cis_result_changes`: a row only when a result changes (from, to, when, version, snapshot), so running evaluation again writes nothing new. Pruned by `Retention`; current results never are.
+  - Each host is evaluated in its own transaction under its row lock, the lock agent writes take, so it never sees half of a config report.
+- **When it runs.** `CisEvaluationJob` runs for a host after a new config snapshot and when its operating system changes, and for a rule on every host after it is created, edited, enabled, or disabled. All enqueued once the transaction commits, so a rule import re-evaluates without agents.
+- **Compliance.** `CisCompliance.for_host(id)` and `for_hosts(ids)` count passed, failed, not applicable, not readable, and not evaluated (a rule without a result yet counts as not evaluated, so the counts add up to the number of rules).
 - **Image.** The schema is read at runtime from `FLEET_RULES_SCHEMA_DIR` (default `../docs/api/rules`); the Docker image copies `docs/api/rules` from the `api` build context.
 
 ### Config reports
@@ -149,7 +155,7 @@ Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the opera
   - `host_configs`: the current facts (`{key => {state, value, reason}}`, the form `CisRules::Evaluator` reads), counts per state, the content hash, the report's manifest version, and the ignored keys, updated on every report.
   - `config_snapshots`: the facts as they were, written only when the content hash changes. Retention keeps the newest per host.
 - **Diff.** `ConfigDiff.between(older, newer)` (or `ConfigDiff.for(snapshot)`) lists facts added, removed, and changed, where a change of state or reason alone (ok to unreadable) counts.
-- **Evaluation** of rules after a new snapshot is P2-S06.
+- **Evaluation.** A new snapshot enqueues `CisEvaluationJob` for the host (P2-S06).
 
 ### Package reports
 

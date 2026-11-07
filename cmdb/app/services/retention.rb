@@ -1,5 +1,6 @@
 # Prunes history older than the retention window (NFR-2, DEC-07, P1-S10): inventory, package, and config snapshots,
-# recent report ids, and host status events, 90 days by default (Setting "retention.days").
+# recent report ids, CIS result changes, and host status events, 90 days by default (Setting "retention.days").
+# Current results (CisResult) are not history and are never pruned.
 #
 # - The newest row per host survives for the tables registered with `keep_newest_per_host`, whatever its age,
 #   so a host that stopped reporting still shows its last snapshot and last status change.
@@ -72,5 +73,6 @@ module Retention
   register PackageReportReceipt, time_column: :received_at
   register ConfigSnapshot, time_column: :received_at, keep_newest_per_host: true
   register ConfigReportReceipt, time_column: :received_at
+  register CisResultChange, time_column: :occurred_at
   register HostStatusEvent, time_column: :occurred_at, keep_newest_per_host: true
 end
