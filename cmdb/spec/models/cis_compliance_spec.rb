@@ -21,6 +21,20 @@ RSpec.describe CisCompliance do
     expect(summary).to have_attributes(passed: 1, failed: 1, not_readable: 1, not_applicable: 1, not_evaluated: 1, total: 5)
   end
 
+  describe "the pass rate (P2-D02, Q3)" do
+    def summary(**counts) = CisCompliance::Summary.new(passed: 0, failed: 0, not_applicable: 0, not_readable: 0, not_evaluated: 0, **counts)
+
+    it "is passed over passed, failed, and not readable: an unreadable check counts against the host" do
+      rate = summary(passed: 29, failed: 5, not_readable: 2, not_applicable: 2, not_evaluated: 2)
+      expect(rate).to have_attributes(counted: 36, attention: 7, total: 40)
+      expect(rate.pass_rate).to be_within(0.0001).of(29.0 / 36)
+    end
+
+    it "is nil when no check counts, never 0% or 100%" do
+      expect(summary(not_applicable: 3, not_evaluated: 4).pass_rate).to be_nil
+    end
+  end
+
   it "counts only the rules it read first, whatever is evaluated meanwhile (review of #110)" do
     define_cis_rules(cis_rule_hash)
     record_inventory(host)

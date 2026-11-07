@@ -2,8 +2,15 @@
 # not apply, could not be read, and were not evaluated. A rule with no result for the host yet (created before
 # its evaluation ran) counts as not evaluated, so the five always add up to the number of rules.
 module CisCompliance
+  #
+  # The pass rate (P2-D02, owner decision on the P2-D01 review, Q3) is passed / (passed + failed + not readable):
+  # a check that could not be read counts against the host, because "we could not look" is not a pass. Not
+  # applicable and not evaluated checks are left out. nil when no check counts.
   Summary = Data.define(:passed, :failed, :not_applicable, :not_readable, :not_evaluated) do
     def total = passed + failed + not_applicable + not_readable + not_evaluated
+    def counted = passed + failed + not_readable
+    def attention = failed + not_readable
+    def pass_rate = counted.zero? ? nil : passed.fdiv(counted)
   end
 
   COLUMNS = { "pass" => :passed, "fail" => :failed, "not_applicable" => :not_applicable, "not_readable" => :not_readable, "not_evaluated" => :not_evaluated }.freeze
