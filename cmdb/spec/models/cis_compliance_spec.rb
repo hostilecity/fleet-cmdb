@@ -21,6 +21,23 @@ RSpec.describe CisCompliance do
     expect(summary).to have_attributes(passed: 1, failed: 1, not_readable: 1, not_applicable: 1, not_evaluated: 1, total: 5)
   end
 
+  it "counts only the rules it read first, whatever is evaluated meanwhile (review of #110)" do
+    define_cis_rules(cis_rule_hash)
+    record_inventory(host)
+    record_config(host)
+    CisEvaluation.evaluate!([ host.id ])
+    added = false
+    allow(CisResult).to receive(:where).and_wrap_original do |original, *args, **kwargs|
+      unless added # a rule imported and evaluated between the summary's two queries
+        added = true
+        define_cis_rules(cis_rule_hash(key: "later"))
+        CisEvaluation.evaluate!([ host.id ])
+      end
+      original.call(*args, **kwargs)
+    end
+    expect(described_class.for_host(host.id)).to have_attributes(passed: 1, not_evaluated: 0, total: 1)
+  end
+
   it "summarises many hosts at once, a host with no results as all not evaluated" do
     define_cis_rules(cis_rule_hash)
     other = enrolled_host.first

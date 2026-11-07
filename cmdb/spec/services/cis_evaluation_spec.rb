@@ -91,6 +91,50 @@ RSpec.describe CisEvaluation do
     expect([ CisResult.sole.config_snapshot_id, CisResultChange.sole.config_snapshot_id ]).to eq([ nil, nil ])
   end
 
+  describe "reading everything once the host is locked (review of #110)" do
+    # Runs `change` the first time a host row is locked, as if it happened while the run waited for the lock.
+    def when_locked(&change)
+      done = false
+      allow(Host).to receive(:lock).and_wrap_original do |original, *args|
+        change.call unless done
+        done = true
+        original.call(*args)
+      end
+    end
+
+    it "evaluates the rule as it is when the host is locked, not as it was when the run started, even with the query cache on" do
+      rule, = define_cis_rules(cis_rule_hash)
+      record_config(host)
+      when_locked { define_cis_rules(cis_rule_hash(condition: { "eq" => "yes" })) }
+      ActiveRecord::Base.cache { evaluate(rule_ids: [ rule.id ]) }
+      expect(CisResult.sole).to have_attributes(result: "fail", cis_rule_version: rule.reload.current_version)
+      expect(CisResult.sole.cis_rule_version.version).to eq(2)
+    end
+
+    it "sees a rule disabled while it waited" do
+      rule, = define_cis_rules(cis_rule_hash)
+      record_config(host)
+      when_locked { CisRule.transaction { rule.disable!(actor: Audit::SYSTEM) } }
+      evaluate
+      expect(CisResult.sole).to have_attributes(result: "not_evaluated", reason: CisEvaluation::DISABLED)
+    end
+
+    it "dates each host's results when its lock is taken, unless a time is given" do
+      define_cis_rules(cis_rule_hash)
+      other = enrolled_host.first
+      [ host, other ].each { |h| record_inventory(h) && record_config(h) }
+      start = Time.current.change(usec: 0)
+      travel_to(start)
+      allow(Host).to receive(:lock).and_wrap_original do |original, *args|
+        travel(1.minute) # each host waits a minute for its lock
+        original.call(*args)
+      end
+      described_class.evaluate!([ host.id, other.id ])
+      expect(CisResult.order(:host_id).pluck(:evaluated_at)).to eq([ start + 1.minute, start + 2.minutes ])
+      expect(CisResultChange.order(:host_id).pluck(:occurred_at)).to eq([ start + 1.minute, start + 2.minutes ])
+    end
+  end
+
   it "refuses a history row that is not a change (the database checks it)" do
     rule, = define_cis_rules(cis_rule_hash)
     expect { CisResultChange.create!(host:, cis_rule: rule, from_result: "pass", to_result: "pass", occurred_at: now) }.to raise_error(ActiveRecord::StatementInvalid, /is_a_change/)

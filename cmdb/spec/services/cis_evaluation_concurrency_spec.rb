@@ -31,7 +31,7 @@ RSpec.describe CisEvaluation do
     described_class.evaluate!([ @host.id ])
 
     locked = Concurrent::CountDownLatch.new(1)
-    committed_at = nil
+    held_until = nil # sampled while the lock is still held: the evaluation can only end after it (review of #110)
     report = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
         Host.transaction do
@@ -39,8 +39,8 @@ RSpec.describe CisEvaluation do
           locked.count_down
           sleep 0.3
           record_config(@host, "sshd.permitrootlogin" => ok_fact("yes"))
+          held_until = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         end
-        committed_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
     end
     locked.wait
@@ -48,7 +48,7 @@ RSpec.describe CisEvaluation do
     evaluated_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     report.join
 
-    expect(evaluated_at).to be > committed_at
+    expect(evaluated_at).to be > held_until
     expect(CisResult.find_by!(host_id: @host.id).result).to eq("fail")
     expect(changes).to eq([ [ nil, "pass" ], %w[pass fail] ])
   end

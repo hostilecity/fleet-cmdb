@@ -12,13 +12,14 @@ module CisCompliance
 
   def for_host(host_id) = for_hosts([ host_id ]).fetch(host_id)
 
-  # { host_id => Summary } for each id, in two queries whatever the number of hosts.
+  # { host_id => Summary } for each id, in two queries whatever the number of hosts. Results are counted only
+  # for the rules read first, so a rule created between the two queries is in neither (review of #110).
   def for_hosts(host_ids)
-    rules = CisRule.count
-    counts = CisResult.where(host_id: host_ids).group(:host_id, :result).count
+    rule_ids = CisRule.ids
+    counts = CisResult.where(host_id: host_ids, cis_rule_id: rule_ids).group(:host_id, :result).count
     host_ids.index_with do |host_id|
       values = COLUMNS.to_h { |result, name| [ name, counts.fetch([ host_id, result ], 0) ] }
-      values[:not_evaluated] += rules - values.values.sum
+      values[:not_evaluated] += rule_ids.size - values.values.sum
       Summary.new(**values)
     end
   end

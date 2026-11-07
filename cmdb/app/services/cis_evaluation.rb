@@ -10,6 +10,9 @@
 # - Each host is evaluated in its own short transaction holding its row lock (FOR UPDATE, as AgentHostLock
 #   takes for every agent write), so a config report in progress is waited for, never half seen, and two runs
 #   for one host are serialised. Idempotent: a retried or duplicated run changes nothing more.
+# - The rules, the snapshot, and the time are all read once the host is locked, bypassing the query cache, so
+#   a run that waited for the lock never writes an older rule's result over a newer one or dates a change
+#   before the one it follows (review of #110).
 module CisEvaluation
   Outcome = Data.define(:hosts, :results, :changes)
 
@@ -20,19 +23,24 @@ module CisEvaluation
   module_function
 
   # host_ids: the hosts to evaluate (retired hosts are skipped); rule_ids: the rules, or nil for every rule.
-  def evaluate!(host_ids, rule_ids: nil, now: Time.current)
-    rules = (rule_ids ? CisRule.where(id: rule_ids) : CisRule.all).includes(:current_version).order(:id).to_a
+  # now: the evaluation time, by default the time each host's lock is taken.
+  def evaluate!(host_ids, rule_ids: nil, now: nil)
     outcome = Hash.new(0)
-    return Outcome.new(hosts: 0, results: 0, changes: 0) if rules.empty?
+    return Outcome.new(hosts: 0, results: 0, changes: 0) if rule_ids&.empty?
 
     Host.in_fleet.where(id: host_ids).order(:id).pluck(:id).each do |host_id|
       CisResult.transaction do
-        next unless Host.lock.in_fleet.find_by(id: host_id) # FOR UPDATE: waits for a config report in progress
+        CisResult.uncached do
+          next unless Host.lock.in_fleet.find_by(id: host_id) # FOR UPDATE: waits for a config report in progress
 
-        changes = evaluate_host(host_id, rules, now)
-        outcome[:hosts] += 1
-        outcome[:results] += rules.size
-        outcome[:changes] += changes
+          rules = (rule_ids ? CisRule.where(id: rule_ids) : CisRule.all).includes(:current_version).order(:id).to_a
+          next if rules.empty?
+
+          changes = evaluate_host(host_id, rules, now || Time.current)
+          outcome[:hosts] += 1
+          outcome[:results] += rules.size
+          outcome[:changes] += changes
+        end
       end
     end
     Outcome.new(hosts: outcome[:hosts], results: outcome[:results], changes: outcome[:changes])
