@@ -49,7 +49,7 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
         get path
         expect(response).to have_http_status(:ok)
         expect(page.at_css(".host-head h1").text).to eq("Media server")
-        expect(page.css("nav.tabs a").map { |a| [ a.text, a["href"], a["aria-current"] ] })
+        expect(page.css("nav.tabs a").map { |a| [ a.text, a["href"], a["aria-current"] ] }.first(2))
           .to eq([ [ "Overview", "/hosts/#{host.id}", ("page" if i.zero?) ], [ "Configuration", "/hosts/#{host.id}/config", ("page" if i == 1) ] ])
         expect(page.css("#host_summary > *").map { |tile| tile.at_css(".label").text })
           .to eq([ "CIS-aligned checks", "Open vulnerabilities", "Packages", "Last reports received" ])

@@ -36,10 +36,10 @@ module AdvisoryHelpers
 
   # Stores a dpkg package report for an enrolled host through PackageRecorder, as the endpoint does. packages:
   # [[name, version, source], ...] (amd64), or full Hashes.
-  def report_packages(host, packages, manager: "dpkg", unsupported_reason: nil)
+  def report_packages(host, packages, manager: "dpkg", unsupported_reason: nil, skipped: nil)
     list = packages.map { |p| p.is_a?(Hash) ? p : { "name" => p[0], "version" => p[1], "architecture" => p[3] || "amd64", "source" => p[2] } }
     payload = { "report_id" => SecureRandom.uuid, "schema_version" => 1, "collected_at" => Time.current.utc.iso8601, "manager" => manager,
-                "unsupported_reason" => unsupported_reason, "packages" => list, "warnings" => [] }.compact
+                "unsupported_reason" => unsupported_reason, "packages" => list, "skipped" => skipped, "warnings" => [] }.compact
     Host.transaction do
       PackageRecorder.record!(host_id: host.id, credential_id: host.agent_credentials.active.pick(:id), report: AgentApi::PackageReport.new(payload))
     end

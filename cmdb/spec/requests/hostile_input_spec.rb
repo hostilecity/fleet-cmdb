@@ -129,6 +129,18 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                           evaluated_at: Time.current, changed_at: Time.current)
       end
 
+      # A package set, two package snapshots, and the host's packages, with hostile names, versions, and sources (P2-D03).
+      let!(:packages) do
+        rows = ->(suffix) { [ [ fit(128), fit(200) + suffix, fit(128) ], [ "#{fit(100)}-2", "1.0", nil ] ].map { |name, version, source| [ name, fit(32), version, source ] } }
+        [ "", "+1" ].each_with_index do |suffix, index|
+          PackageSnapshot.create!(host:, manager: "dpkg", package_count: 2, content_hash: SecureRandom.hex(32), packages: rows.(suffix), report_id: SecureRandom.uuid,
+                                  warnings: [ { "field" => text, "message" => text } ], collected_at: (2 - index).hours.ago, received_at: (2 - index).hours.ago)
+        end
+        HostPackageSet.create!(host:, manager: "dpkg", package_count: 2, content_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid, schema_version: 1,
+                               collected_at: 1.hour.ago, received_at: 1.hour.ago)
+        HostPackage.insert_all(rows.("+1").map { |name, architecture, version, source| { host_id: host.id, name:, architecture:, version:, source: } })
+      end
+
       # [path, whether a value from above is shown on the page as text]
       def pages
         [
@@ -137,6 +149,9 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
           [ "/hosts/#{host.id}/config?result=all&facts=all&history=all", true ], [ "/hosts/#{host.id}/config/compare", true ],
           [ "/hosts/#{host.id}/config?q=#{CGI.escape(text.first(100))}&severity=#{CGI.escape(text.first(30))}&result=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}/config/compare?from=#{CGI.escape(text.first(30))}&to=#{CGI.escape(text.first(30))}", false ],
+          [ "/hosts/#{host.id}/packages", true ], [ "/hosts/#{host.id}/packages/compare", true ],
+          [ "/hosts/#{host.id}/packages?q=#{CGI.escape(text.first(100))}&arch=#{CGI.escape(text.first(30))}&sort=#{CGI.escape(text.first(30))}&page=#{CGI.escape(text.first(30))}", false ],
+          [ "/hosts/#{host.id}/packages/compare?kind=#{CGI.escape(text.first(30))}", true ],
           [ "/hosts/#{host.id}/revoke", true ], [ "/hosts/#{host.id}/retire", true ], [ "/hosts/#{host.id}/reenroll", true ],
           [ "/audit", true ], [ "/audit?actor=#{CGI.escape(text.first(100))}&target=#{CGI.escape(text.first(100))}&action=#{CGI.escape(text.first(30))}", false ],
           [ "/audit?host_id=#{host.id}", true ],
@@ -213,7 +228,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
   end
 
   it "names the same views the dashboard has, so a new one cannot be forgotten here" do
-    shown = %w[hosts#index hosts#show hosts#edit hosts#new host_configs#show host_configs#compare host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
+    shown = %w[hosts#index hosts#show hosts#edit hosts#new host_configs#show host_configs#compare host_packages#show host_packages#compare
+               host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
                rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel]
     views = Rails.application.routes.routes.filter_map do |route|

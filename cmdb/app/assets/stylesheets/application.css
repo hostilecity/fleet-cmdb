@@ -339,3 +339,11 @@ h2.page-title { margin-top: 0; }
   .arrow { display: none; }
 }
 @media (max-width: 34rem) { .glance { grid-template-columns: 1fr; } }
+
+/* P2-D03 (#24): the Packages tab and package snapshot comparison */
+.kind.installed, .kind.up { color: #1d5a2b; }
+.kind.removed, .kind.down { color: #8c1d13; }
+.kind.invalid, .kind.skipped { color: #7a5410; }
+.kind.same { color: var(--ink-soft); }
+#package_filters input[type="search"] { min-width: 14rem; }
+@media (max-width: 52rem) { #package_filters input[type="search"] { min-width: 0; } }

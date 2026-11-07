@@ -56,6 +56,7 @@ class HostActionsController < ApplicationController
   def report_requests_return_path
     case params[:return_to]
     when "config" then config_host_path(@host, anchor: "request")
+    when "packages" then packages_host_path(@host, anchor: "request")
     else host_path(@host, anchor: "report_requests")
     end
   end
