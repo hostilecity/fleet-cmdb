@@ -474,6 +474,20 @@ Description: compression library - runtime
  zlib is a library implementing the deflate compression method found
  in gzip and PKZIP.
 
+Package: man-db
+Status: install ok half-configured
+Priority: standard
+Section: doc
+Installed-Size: 2338
+Maintainer: Colin Watson <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Version: 2.13.1-1
+Depends: bsdextrautils, groff-base (>= 1.18.1.1-15), libc6 (>= 2.38), libpipeline1 (>= 1.5.0)
+Description: tools for reading manual pages
+ This package provides the man command, the primary way to examine the
+ manual pages on a Unix system.
+
 Package: nano
 Status: purge ok not-installed
 Priority: optional

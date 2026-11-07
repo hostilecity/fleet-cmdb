@@ -157,6 +157,9 @@ if baseline["manager"] != "dpkg":
 missing = sorted(set(map(key, baseline["packages"])) - set(map(key, sandboxed["packages"])))
 extra = sorted(set(map(key, sandboxed["packages"])) - set(map(key, baseline["packages"])))
 new = [w for w in sandboxed["warnings"] if w not in baseline["warnings"]]
+names = lambda report: sorted(s["name"] for s in report.get("skipped") or [])
+if names(sandboxed) != names(baseline):
+    problems.append(f"skipped packages {names(sandboxed)}, unsandboxed {names(baseline)}")
 for name, value in (("packages missing in the sandbox", missing[:10]), ("packages only in the sandbox", extra[:10]),
                     ("package warnings only in the sandbox", new)):
     if value:
