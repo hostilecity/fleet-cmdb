@@ -109,7 +109,7 @@
           <td><% if row[:diff] %><%= pluralize(row[:diff].changed.size + row[:diff].added.size + row[:diff].removed.size, "fact") %> changed<% elsif row[:first] %>Oldest config snapshot kept<% else %><span class="muted">Older snapshots are not listed</span><% end %></td>
           <td>
             <% if row[:first] %>
-              First results recorded
+              <span class="muted">No earlier results kept</span>
             <% elsif row[:flips].empty? %>
               <span class="muted">None</span>
             <% else %>
