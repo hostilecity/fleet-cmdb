@@ -6,8 +6,11 @@
 #
 # - At most one pending request per host and type (a partial unique index), so the directive and the clearing
 #   are simple and concurrent requests cannot both create one.
-# - sent_at is when a heartbeat first carried the request, so the host page can tell "waiting for the agent"
-#   from "the agent has been asked".
+# - sent_at is when a heartbeat first carried the request (server clock), so the host page can tell "waiting
+#   for the agent" from "the agent has been asked". delivered_agent_time is that heartbeat's agent_time (the
+#   agent's clock): a report satisfies the request only when the agent collected it after that time, so both
+#   sides of the comparison are on the agent's clock (ReportRequests, "Clock skew"). A request is satisfied
+#   only after a heartbeat delivered it.
 class CreateReportRequests < ActiveRecord::Migration[8.1]
   def change
     create_table :report_requests do |t|
@@ -18,6 +21,7 @@ class CreateReportRequests < ActiveRecord::Migration[8.1]
       t.datetime :requested_at, null: false # server clock, like every time here
       t.datetime :expires_at, null: false
       t.datetime :sent_at
+      t.datetime :delivered_agent_time # agent clock: compared only with a report's collected_at
       t.datetime :satisfied_at
       t.uuid :satisfied_by_report_id
       t.datetime :expired_at
@@ -32,5 +36,7 @@ class CreateReportRequests < ActiveRecord::Migration[8.1]
                          name: "report_requests_satisfied_matches_state"
     add_check_constraint :report_requests, "(state = 'expired') = (expired_at IS NOT NULL)", name: "report_requests_expired_matches_state"
     add_check_constraint :report_requests, "expires_at > requested_at", name: "report_requests_expire_after_request"
+    add_check_constraint :report_requests, "(sent_at IS NULL) = (delivered_agent_time IS NULL)", name: "report_requests_delivery_complete"
+    add_check_constraint :report_requests, "state <> 'satisfied' OR sent_at IS NOT NULL", name: "report_requests_satisfied_after_delivery"
   end
 end

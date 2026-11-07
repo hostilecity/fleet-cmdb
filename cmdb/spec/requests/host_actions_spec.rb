@@ -169,7 +169,7 @@ RSpec.describe "Host actions", :signed_in, type: :request do
       end
 
       record_heartbeat(host)
-      ReportRequests.directive_for(host_id: host.id)
+      ReportRequests.directive_for(host_id: host.id, agent_time: Time.current)
       ReportRequests.satisfy!(host: host.reload, report_type: "config", report: AgentApi::ConfigReport.new(ApiContract.example("config.request", "typical")
         .merge("report_id" => SecureRandom.uuid, "collected_at" => 1.minute.from_now.utc.iso8601)))
       get "/hosts/#{host.id}"

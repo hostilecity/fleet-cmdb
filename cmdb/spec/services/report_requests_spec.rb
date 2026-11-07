@@ -1,7 +1,8 @@
 require "rails_helper"
 
 # On-demand report requests (P2-S03, FR-2.1, DEC-13): recording, rate limiting, the heartbeat directive,
-# clearing by a report collected after the request (with the agent's clock skew), and expiry.
+# clearing by a report the agent collected after a heartbeat delivered the request (on the agent's clock, so
+# clock skew and latency cannot clear it early), and expiry.
 RSpec.describe ReportRequests do
   let(:operator) { create(:operator) }
   let!(:enrolled) { enrolled_host }
@@ -10,7 +11,8 @@ RSpec.describe ReportRequests do
 
   def request(types = ReportRequest::TYPES, at: now, as: operator) = described_class.request!(host:, types:, actor: as, now: at)
 
-  def directive(at: now) = Host.transaction { described_class.directive_for(host_id: host.id, now: at) }
+  # A heartbeat recorded by the server at `at`, which the agent stamped `agent_time` (its clock).
+  def directive(at: now, agent_time: at) = Host.transaction { described_class.directive_for(host_id: host.id, agent_time:, now: at) }
 
   # A report as the recorders see it: only its id and the agent's collection time matter here.
   def report(collected_at) = Struct.new(:report_id, :collected_at).new(SecureRandom.uuid, collected_at)
@@ -30,7 +32,8 @@ RSpec.describe ReportRequests do
 
     it "rate limits a repeat request for a type within five minutes, whatever happened to the first, and writes nothing" do
       request(%w[config])
-      satisfy("config", now + 1.second, at: now + 2.seconds)
+      directive(at: now + 1.second)
+      satisfy("config", now + 2.seconds, at: now + 3.seconds)
       expect do
         result = request(%w[config], at: now + 4.minutes)
         expect(result).to have_attributes(requested: [], rate_limited: %w[config], retry_at: now + 5.minutes)
@@ -76,8 +79,9 @@ RSpec.describe ReportRequests do
       expect do
         refused.call { ReportRequest.insert!({ host_id: host.id, report_type: "config", requested_by_id: operator.id, requested_at: now, expires_at: now + 1.hour }) }
       end.to raise_error(ActiveRecord::RecordNotUnique)
-      expect { refused.call { ReportRequest.where(host:).update_all(state: "satisfied") } }
+      expect { refused.call { ReportRequest.where(host:).update_all(state: "satisfied", sent_at: now, delivered_agent_time: now) } }
         .to raise_error(ActiveRecord::StatementInvalid, /report_requests_satisfied_matches_state/)
+      expect { refused.call { ReportRequest.where(host:).update_all(sent_at: now) } }.to raise_error(ActiveRecord::StatementInvalid, /report_requests_delivery_complete/)
       expect { refused.call { ReportRequest.where(host:).update_all(report_type: "logs") } }.to raise_error(ActiveRecord::StatementInvalid, /report_requests_type_valid/)
     end
   end
@@ -89,16 +93,17 @@ RSpec.describe ReportRequests do
       expect(directive).to eq(types: %w[inventory packages])
     end
 
-    it "records when a heartbeat first carried each request, and keeps sending it until it ends" do
+    it "records when a heartbeat first carried each request, on both clocks, and keeps sending it until it ends" do
       request(%w[config])
-      directive(at: now + 1.minute)
-      directive(at: now + 2.minutes)
-      expect(host.report_requests.sole.sent_at).to eq(now + 1.minute)
+      directive(at: now + 1.minute, agent_time: now - 3.hours)
+      directive(at: now + 2.minutes, agent_time: now - 2.hours)
+      expect(host.report_requests.sole).to have_attributes(sent_at: now + 1.minute, delivered_agent_time: now - 3.hours)
       expect(directive(at: now + 3.minutes)).to eq(types: %w[config])
     end
 
     it "stops sending a request once it is satisfied or past its expiry, even before the expiry job marks it" do
       request(%w[config inventory])
+      directive(at: now + 10.seconds)
       satisfy("config", now + 30.seconds)
       expect(directive(at: now + 1.minute)).to eq(types: %w[inventory])
       expect(directive(at: now + 1.hour)).to be_nil
@@ -115,7 +120,8 @@ RSpec.describe ReportRequests do
   describe ".satisfy!" do
     before { request(%w[config packages]) }
 
-    it "clears the pending request of the report's type with a report collected after it, recording the report" do
+    it "clears the pending request of the report's type with a report collected after delivery, recording the report" do
+      directive(at: now + 30.seconds)
       collected = report(now + 1.minute)
       expect(described_class.satisfy!(host:, report_type: "config", report: collected, now: now + 2.minutes)).to eq(1)
       config = host.report_requests.find_by!(report_type: "config")
@@ -123,41 +129,64 @@ RSpec.describe ReportRequests do
       expect(host.report_requests.find_by!(report_type: "packages").state).to eq("pending")
     end
 
-    it "does not clear a request with a report collected before it, or at the same instant" do
-      expect(satisfy("config", now - 1.second)).to eq(0)
-      expect(satisfy("config", now)).to eq(0)
+    it "leaves a request no heartbeat has delivered pending, however fresh the report looks" do
+      expect(satisfy("config", now + 10.minutes, at: now + 10.minutes)).to eq(0)
       expect(host.report_requests.pending.count).to eq(2)
     end
 
-    it "moves the agent's collection time onto the server clock with the offset the last heartbeat measured" do
-      # The agent's clock is ten minutes behind: compared directly, a fresh report would look older than the request.
-      host.update_columns(last_seen_at: now - 1.minute, agent_reported_at: now - 11.minutes)
-      expect(satisfy("config", now - 9.minutes)).to eq(1) # collected one minute after the request, on the server clock
-      # Ten minutes ahead: compared directly, a report collected before the request would clear it.
-      host.update_columns(last_seen_at: now - 1.minute, agent_reported_at: now + 9.minutes)
-      expect(satisfy("packages", now + 9.minutes)).to eq(0) # collected one minute before the request
-      expect(satisfy("packages", now + 10.minutes + 1.second)).to eq(1)
+    it "leaves the request pending with a report collected before delivery or at the same instant" do
+      directive(at: now + 1.minute)
+      expect(satisfy("config", now + 30.seconds, at: now + 2.minutes)).to eq(0) # retried after delivery, collected before it
+      expect(satisfy("config", now + 1.minute, at: now + 2.minutes)).to eq(0)
+      expect(host.report_requests.pending.count).to eq(2)
     end
 
-    it "compares the times directly for a host that has not sent a heartbeat" do
-      host.update_columns(last_seen_at: nil, agent_reported_at: nil)
-      expect(satisfy("config", now + 1.second)).to eq(1)
+    it "does not let a delayed heartbeat make a report collected before the request clear it (review of #111)" do
+      # Synchronised clocks. A heartbeat stamped 12:00:00 is recorded at 12:00:05 (network or lock delay),
+      # carrying nothing; the request is made at 12:00:06; a report collected at 12:00:03 is accepted on retry.
+      host.update_columns(last_seen_at: now + 5.seconds, agent_reported_at: now)
+      ReportRequest.where(host:).update_all(requested_at: now + 6.seconds)
+      expect(satisfy("config", now + 3.seconds, at: now + 7.seconds)).to eq(0)
+      # The next heartbeat delivers it; the old report retried again still does not count.
+      directive(at: now + 65.seconds, agent_time: now + 60.seconds)
+      expect(satisfy("config", now + 3.seconds, at: now + 66.seconds)).to eq(0)
+      expect(satisfy("config", now + 61.seconds, at: now + 67.seconds)).to eq(1)
+    end
+
+    it "compares on the agent's own clock, so an agent clock far ahead or far behind the server's does not matter" do
+      ahead = now + 3.hours
+      directive(at: now + 1.minute, agent_time: ahead + 1.minute)
+      expect(satisfy("config", ahead + 30.seconds, at: now + 2.minutes)).to eq(0) # before delivery on the agent's clock
+      expect(satisfy("config", ahead + 2.minutes, at: now + 2.minutes)).to eq(1)
+      behind = Time.utc(2001, 1, 1)
+      ReportRequest.where(host:, report_type: "packages").update_all(delivered_agent_time: behind + 1.minute)
+      expect(satisfy("packages", behind + 30.seconds)).to eq(0)
+      expect(satisfy("packages", behind + 2.minutes)).to eq(1)
     end
 
     it "still clears a request past its expiry that the expiry job has not marked yet" do
+      directive(at: now + 1.minute)
       expect(satisfy("config", now + 70.minutes, at: now + 70.minutes)).to eq(1)
     end
 
     it "leaves an expired request expired" do
+      directive(at: now + 1.minute)
       described_class.expire!(now: now + 2.hours)
-      expect(satisfy("config", now + 1.minute)).to eq(0)
+      expect(satisfy("config", now + 90.minutes)).to eq(0)
       expect(host.report_requests.pluck(:state)).to all(eq("expired"))
+    end
+
+    it "is refused by the database for a request no heartbeat delivered" do
+      expect do
+        ReportRequest.where(host:).update_all(state: "satisfied", satisfied_at: now, satisfied_by_report_id: SecureRandom.uuid)
+      end.to raise_error(ActiveRecord::StatementInvalid, /report_requests_satisfied_after_delivery/)
     end
   end
 
   describe ".expire!" do
     it "marks pending requests past their expiry as expired with the time, keeping them, and leaves the rest" do
       request(%w[config inventory])
+      directive(at: now + 10.seconds)
       satisfy("inventory", now + 1.minute)
       other, = enrolled_host
       described_class.request!(host: other, types: %w[config], actor: operator, now: now + 30.minutes)

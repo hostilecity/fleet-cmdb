@@ -479,6 +479,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
     t.datetime "requested_at", null: false
     t.datetime "expires_at", null: false
     t.datetime "sent_at"
+    t.datetime "delivered_agent_time"
     t.datetime "satisfied_at"
     t.uuid "satisfied_by_report_id"
     t.datetime "expired_at"
@@ -486,10 +487,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
     t.index ["host_id", "report_type"], name: "index_report_requests_one_pending", unique: true, where: "((state)::text = 'pending'::text)"
     t.index ["host_id", "requested_at"], name: "index_report_requests_on_host_id_and_requested_at"
     t.index ["requested_at"], name: "index_report_requests_on_requested_at"
+    t.check_constraint "(sent_at IS NULL) = (delivered_agent_time IS NULL)", name: "report_requests_delivery_complete"
     t.check_constraint "(state::text = 'expired'::text) = (expired_at IS NOT NULL)", name: "report_requests_expired_matches_state"
     t.check_constraint "(state::text = 'satisfied'::text) = (satisfied_at IS NOT NULL AND satisfied_by_report_id IS NOT NULL)", name: "report_requests_satisfied_matches_state"
     t.check_constraint "expires_at > requested_at", name: "report_requests_expire_after_request"
     t.check_constraint "report_type::text = ANY (ARRAY['config'::character varying, 'inventory'::character varying, 'packages'::character varying]::text[])", name: "report_requests_type_valid"
+    t.check_constraint "state::text <> 'satisfied'::text OR sent_at IS NOT NULL", name: "report_requests_satisfied_after_delivery"
     t.check_constraint "state::text = ANY (ARRAY['pending'::character varying, 'satisfied'::character varying, 'expired'::character varying]::text[])", name: "report_requests_state_valid"
   end
 

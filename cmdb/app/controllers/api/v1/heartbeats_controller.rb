@@ -22,19 +22,20 @@ module Api
       atomic :create
 
       def create
+        agent_time = Time.iso8601(payload["agent_time"])
         recorded_at = Liveness.record_heartbeat!(host_id: current_host.id, credential_id: current_credential.id,
                                                  agent_version: payload["agent_version"], agent_schema_version: payload["schema_version"],
-                                                 agent_time: Time.iso8601(payload["agent_time"]))
-        render json: { server_time: recorded_at.utc.iso8601, directives: directives(recorded_at) }
+                                                 agent_time:)
+        render json: { server_time: recorded_at.utc.iso8601, directives: directives(recorded_at, agent_time) }
       end
 
       private
 
       # Named entries in an object (DEC-20); a directive with nothing to say is left out.
-      def directives(now)
+      def directives(now, agent_time)
         intervals = Setting.agent_intervals
         update = Rollouts.directive_for(host_id: current_host.id, agent_version: payload["agent_version"], now:)
-        report_request = ReportRequests.directive_for(host_id: current_host.id, now:)
+        report_request = ReportRequests.directive_for(host_id: current_host.id, agent_time:, now:)
         { intervals: intervals.presence, agent_update: update, report_request: }.compact
       end
     end

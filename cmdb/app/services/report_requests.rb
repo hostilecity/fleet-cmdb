@@ -7,9 +7,9 @@
 #   response or an agent restart cannot drop a request. An agent that predates the directive ignores the name
 #   (DEC-20 rule 4) and keeps reporting on its own schedule; such a report satisfies the request all the same.
 # - satisfy! is called by InventoryRecorder, PackageRecorder, and ConfigRecorder, under the host row lock, for
-#   every new (not duplicate) report: it clears the host's pending request of that type when the report was
-#   collected after the request. A report whose content did not change still counts: the operator asked for a
-#   fresh report, not for a change.
+#   every new (not duplicate) report: it clears the host's pending request of that type when the agent collected
+#   the report after a heartbeat delivered the request (see "Clock skew"). A report whose content did not change
+#   still counts: the operator asked for a fresh report, not for a change.
 # - expire! (run every minute by ReportRequestExpiryJob) marks requests never satisfied within TTL as
 #   expired, with expired_at. They are kept, not deleted, so the host page can say the agent never answered.
 #
@@ -20,16 +20,19 @@
 # type, so concurrent requests cannot both create one.
 #
 # Clock skew. requested_at is the server clock; a report's collected_at is the agent's clock (DEC-07: the agent
-# clock is never trusted for liveness). Comparing them directly would break both ways: an agent clock behind
-# the server's would make every fresh report look older than the request, so the request would never clear and
-# the agent would be asked again on every heartbeat until it expired; a clock ahead would let a report collected
-# before the request clear it. So collected_at is first moved onto the server clock with the offset the host's
-# last heartbeat measured (agent_reported_at minus last_seen_at, both stored by Liveness on every heartbeat). That
-# offset also includes the heartbeat's one-way latency and the agent's timestamps being whole seconds, so a
-# report collected up to about a second before the request can count as after it, which is harmless: the
-# directive reaches the agent only after the request, so a report it causes is always later. A host with no
-# heartbeat yet uses no offset. Received time (server clock) alone is not used: a report collected before the request but delivered
-# after it (a retry after a network failure) is not the fresh report the operator asked for.
+# clock is never trusted for liveness). Comparing them, even corrected by an offset a heartbeat measured, is
+# unsafe: that offset is skew minus the heartbeat's latency, so it moves every report later by that latency and
+# a retried report collected before the request could clear it (review of #111). So the comparison stays on the
+# agent's clock: the first heartbeat that carries a request records its own agent_time as delivered_agent_time,
+# and a report satisfies the request only when its collected_at is later. Skew cancels out, and latency only
+# makes the check stricter, with one exception: a report collected while the delivering heartbeat was in
+# flight (after the agent stamped it, before the server recorded it) can count, a window of one heartbeat's
+# latency. A report that arrives before any heartbeat delivered the request, or that was collected before
+# delivery (a retry after a network failure), leaves it pending: an ambiguous report never clears a request,
+# and the agent's next report or the expiry ends it. Received time (server clock) alone is not used either: a
+# report collected before the request but delivered after it is not the fresh report the operator asked for.
+# An agent clock stepped backwards after delivery (NTP) can make a fresh report look older; the request then
+# stays pending until a later report or the expiry, which is the safe direction.
 module ReportRequests
   TTL = 1.hour
   COOLDOWN = 5.minutes
@@ -67,23 +70,24 @@ module ReportRequests
   end
 
   # The report_request directive for a heartbeat, or nil when nothing is outstanding. Marks the requests a
-  # heartbeat carries for the first time as sent. Runs in the heartbeat's transaction, under the host row lock.
-  # A host with nothing outstanding costs one indexed SELECT and no write.
-  def directive_for(host_id:, now: Time.current)
+  # heartbeat carries for the first time as sent, at now (server clock) and agent_time (the heartbeat's own
+  # agent_time, the agent's clock). Runs in the heartbeat's transaction, under the host row lock. A host with
+  # nothing outstanding costs one indexed SELECT and no write.
+  def directive_for(host_id:, agent_time:, now: Time.current)
     rows = ReportRequest.outstanding(now).where(host_id:).pluck(:id, :report_type, :sent_at)
     return nil if rows.empty?
 
     unsent = rows.filter_map { |id, _type, sent_at| id if sent_at.nil? }
-    ReportRequest.where(id: unsent).update_all(sent_at: now) if unsent.any?
+    ReportRequest.where(id: unsent).update_all(sent_at: now, delivered_agent_time: agent_time) if unsent.any?
     { types: ReportRequest::TYPES & rows.map(&:second) }
   end
 
-  # Clears the host's pending request of report_type if report was collected after it (see "Clock skew"
-  # above). host is the row AgentHostLock locked. A late report still satisfies a request that expired by time
-  # but that ReportRequestExpiryJob has not marked yet. Returns the number of requests cleared (0 or 1).
+  # Clears the host's pending request of report_type if a heartbeat delivered it and the agent collected report
+  # after that heartbeat, both on the agent's clock (see "Clock skew" above). host is the row AgentHostLock
+  # locked. A late report still satisfies a request that expired by time but that ReportRequestExpiryJob has not
+  # marked yet. Returns the number of requests cleared (0 or 1).
   def satisfy!(host:, report_type:, report:, now: Time.current)
-    collected = report.collected_at - clock_offset(host)
-    ReportRequest.pending.where(host_id: host.id, report_type:).where(requested_at: ...collected)
+    ReportRequest.pending.where(host_id: host.id, report_type:).where(delivered_agent_time: ...report.collected_at)
                  .update_all(state: "satisfied", satisfied_at: now, satisfied_by_report_id: report.report_id)
   end
 
@@ -94,13 +98,6 @@ module ReportRequests
     scope.update_all(state: "expired", expired_at: now)
   end
 
-  # How far the agent's clock is ahead of the server's (negative when behind), as the last heartbeat saw it.
-  def clock_offset(host)
-    return 0 unless host.agent_reported_at && host.last_seen_at
-
-    host.agent_reported_at - host.last_seen_at
-  end
-
   def record!(host, types, actor, now)
     expires_at = now + TTL
     ReportRequest.insert_all!(types.map do |report_type|
@@ -108,5 +105,5 @@ module ReportRequests
     end)
     Audit.record(actor:, action: Audit::Actions::HOST_REPORT_REQUESTED, target: host, changes: { "report_types" => [ nil, types ] })
   end
-  private_class_method :clock_offset, :record!
+  private_class_method :record!
 end

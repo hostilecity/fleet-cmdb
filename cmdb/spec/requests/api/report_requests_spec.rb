@@ -1,8 +1,8 @@
 require "rails_helper"
 
 # The report_request heartbeat directive end to end (P2-S03, FR-2.1, DEC-13, DEC-20): an operator's request is
-# on the next heartbeat, and gone once a report of that type, collected after the request, arrives through the
-# report endpoint (InventoryRecorder, PackageRecorder, ConfigRecorder).
+# on the next heartbeat, and gone once a report of that type, collected after that heartbeat on the agent's
+# clock, arrives through the report endpoint (InventoryRecorder, PackageRecorder, ConfigRecorder).
 RSpec.describe "Report requests in the agent API", type: :request do
   let(:operator) { create(:operator) }
   let!(:enrolled) { enrolled_host }
@@ -45,7 +45,7 @@ RSpec.describe "Report requests in the agent API", type: :request do
     request_reports(%w[config packages])
     expect(heartbeat).to eq("report_request" => { "types" => %w[config packages] })
     expect(heartbeat).to eq("report_request" => { "types" => %w[config packages] }) # a lost response loses nothing
-    travel 1.second
+    travel 1.second # agent times are whole seconds; a report must be collected after the delivering heartbeat
     send_report("config", collected_at: Time.current)
     expect(heartbeat).to eq("report_request" => { "types" => %w[packages] })
     send_report("packages", collected_at: Time.current)
@@ -54,14 +54,17 @@ RSpec.describe "Report requests in the agent API", type: :request do
   end
 
   ReportRequest::TYPES.each do |type|
-    it "clears a #{type} request with a #{type} report collected after it, and not with a retried older one" do
+    it "clears a #{type} request with a #{type} report collected after delivery, and not with an older or undelivered one" do
       old_report = SecureRandom.uuid
       send_report(type, collected_at: 1.minute.ago, report_id: old_report)
       request_reports([ type ])
       travel 1.second
-      send_report(type, collected_at: 2.minutes.ago) # collected before the request, delivered after it
-      send_report(type, collected_at: Time.current, report_id: old_report) # a duplicate changes nothing
+      send_report(type, collected_at: Time.current) # before any heartbeat delivered the request: ambiguous, stays pending
       expect(heartbeat).to eq("report_request" => { "types" => [ type ] })
+      send_report(type, collected_at: 2.minutes.ago) # collected before delivery, retried after it
+      travel 1.second
+      send_report(type, collected_at: Time.current, report_id: old_report) # a duplicate changes nothing
+      expect(host.report_requests.sole.state).to eq("pending")
       report_id = SecureRandom.uuid
       send_report(type, collected_at: Time.current, report_id:)
       expect(host.report_requests.sole).to have_attributes(state: "satisfied", satisfied_by_report_id: report_id)
@@ -69,13 +72,15 @@ RSpec.describe "Report requests in the agent API", type: :request do
     end
   end
 
-  it "clears a request with a fresh report from an agent whose clock is far behind the server's" do
-    agent_clock = Time.utc(2026, 1, 1, 12, 0, 0) # the contract examples' time, months before the server's
-    heartbeat(agent_time: agent_clock)
-    request_reports(%w[inventory])
-    travel 5.seconds
-    send_report("inventory", collected_at: agent_clock + 5.seconds)
-    expect(host.report_requests.sole.state).to eq("satisfied")
+  it "clears a request with a fresh report from an agent whose clock is far behind or far ahead of the server's" do
+    { "inventory" => Time.utc(2026, 1, 1, 12, 0, 0), "config" => 3.years.from_now }.each do |type, agent_clock|
+      request_reports([ type ])
+      expect(heartbeat(agent_time: agent_clock)).to eq("report_request" => { "types" => [ type ] })
+      send_report(type, collected_at: agent_clock - 1.second) # just before delivery, on the agent's clock
+      expect(host.report_requests.find_by!(report_type: type).state).to eq("pending")
+      send_report(type, collected_at: agent_clock + 5.seconds)
+      expect(host.report_requests.find_by!(report_type: type).state).to eq("satisfied")
+    end
   end
 
   it "leaves an agent that ignores the directive unaffected: its heartbeats succeed, and the request expires visibly" do
@@ -93,7 +98,7 @@ RSpec.describe "Report requests in the agent API", type: :request do
     heartbeat
     expect(report_request_writes { heartbeat }).to eq(0)
     request_reports(%w[config])
-    expect(report_request_writes { heartbeat }).to eq(1) # sent_at
+    expect(report_request_writes { heartbeat }).to eq(1) # sent_at and delivered_agent_time
     expect(report_request_writes { heartbeat }).to eq(0)
   end
 end

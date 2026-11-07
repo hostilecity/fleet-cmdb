@@ -90,7 +90,7 @@
           }
         },
         "report_request": {
-          "description": "Report types an operator asked this host for (DEC-13, P2-S03). Sent on every heartbeat while a request is outstanding: until a report of that type, collected after the request, is accepted, or the request expires (after an hour). The agent sends one report of each listed type, by that type's report endpoint, as soon as it can; the server then stops listing the type. An agent that ignores this directive keeps reporting on its own schedule, and its next report of a type satisfies the request all the same. Agents ignore a type they do not know, so a new type is additive.",
+          "description": "Report types an operator asked this host for (DEC-13, P2-S03). Sent on every heartbeat while a request is outstanding: until a report of that type is accepted whose collected_at is later than the agent_time of the first heartbeat that carried the request (both the agent's clock), or the request expires (after an hour). The agent sends one report of each listed type, collected after it received this directive, by that type's report endpoint, as soon as it can; the server then stops listing the type. An agent that ignores this directive keeps reporting on its own schedule, and its next report of a type satisfies the request all the same. Agents ignore a type they do not know, so a new type is additive.",
           "type": [
             "object",
             "null"
