@@ -114,8 +114,8 @@ module HostConfigsHelper
 
   # "2026-11-06 09:14 UTC (latest, 3 facts changed)" for a snapshot picker.
   def snapshot_option_label(snapshot, changed, latest, first)
-    notes = [ ("latest" if latest), (first ? "oldest kept" : "#{pluralize(changed, 'fact')} changed") ].compact
-    "#{utc(snapshot.received_at)} (#{notes.join(', ')})"
+    notes = [ ("latest" if latest), (first ? "oldest kept" : ("#{pluralize(changed, 'fact')} changed" if changed)) ].compact
+    notes.empty? ? utc(snapshot.received_at) : "#{utc(snapshot.received_at)} (#{notes.join(', ')})"
   end
 
   # "Fail → Pass" as two lamps.

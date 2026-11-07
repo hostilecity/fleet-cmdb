@@ -11,7 +11,7 @@
    end %>
 <%= render "hosts/request_box", host: @host, availability: @availability, return_to: "config", ready:,
            ready_hint: "Config reports arrive every 6 hours, or when you ask. Each report type can be requested once every #{cooldown} minutes; an unanswered request expires after #{ttl} minutes.",
-           answered_hint: (@availability.latest&.satisfied_by_report_id && @availability.latest.satisfied_by_report_id == @latest_snapshot&.report_id ? "The new report changed some facts, so a new snapshot was recorded." : "The new report showed no change, so no new snapshot was recorded. That still answers the request.") %>
+           answered_hint: ((answered = @availability.latest&.satisfied_by_report_id) && ConfigSnapshot.exists?(host_id: @host.id, report_id: answered) ? "The new report changed some facts, so a new snapshot was recorded." : "The new report showed no change, so no new snapshot was recorded. That still answers the request.") %>
 
 <section aria-labelledby="results" id="results_section">
   <h2 id="results">CIS-aligned checks</h2>

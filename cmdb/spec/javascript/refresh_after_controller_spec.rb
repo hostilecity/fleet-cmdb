@@ -27,7 +27,16 @@ RSpec.describe "refresh-after controller" do
     }
 
     const delays = [run(180), run(-5), run(60, { disconnect: true })]
-    console.log(JSON.stringify({ delays, visits }))
+
+    // A morph keeps the controller and gives it the next deadline: the old timer goes, a new one is set.
+    const kept = new RefreshAfter()
+    kept.secondsValue = 30
+    kept.connect()
+    const before = timers.length
+    kept.secondsValue = 240
+    kept.secondsValueChanged?.()
+    const rescheduled = { oldCleared: timers[before - 1].cleared, newTimer: timers.length > before ? timers[timers.length - 1].ms : null }
+    console.log(JSON.stringify({ delays, visits, rescheduled }))
   JS
 
   before { skip "node is not installed" unless system("node", "--version", out: File::NULL, err: File::NULL) }
@@ -36,6 +45,13 @@ RSpec.describe "refresh-after controller" do
     out, err, status = Open3.capture3("node", "--input-type=module", "-e", HARNESS, Rails.root.join("app/javascript/controllers/refresh_after_controller.js").read)
     raise "node failed: #{err}" unless status.success?
 
-    expect(JSON.parse(out)).to eq("delays" => [ 180_500, 500, 60_500 ], "visits" => [ [ "/hosts/1/config", "replace" ], [ "/hosts/1/config", "replace" ] ])
+    expect(JSON.parse(out)).to include("delays" => [ 180_500, 500, 60_500 ], "visits" => [ [ "/hosts/1/config", "replace" ], [ "/hosts/1/config", "replace" ] ])
+  end
+
+  it "sets the timer again when a morph gives it the next deadline (review of #118)" do
+    out, err, status = Open3.capture3("node", "--input-type=module", "-e", HARNESS, Rails.root.join("app/javascript/controllers/refresh_after_controller.js").read)
+    raise "node failed: #{err}" unless status.success?
+
+    expect(JSON.parse(out)["rescheduled"]).to eq("oldCleared" => true, "newTimer" => 240_500)
   end
 end

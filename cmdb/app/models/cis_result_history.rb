@@ -43,7 +43,8 @@ class CisResultHistory
     window = "OVER (PARTITION BY cis_rule_id ORDER BY occurred_at, id)"
     inner = CisResultChange.where(host_id: @host_id)
                            .select("cis_result_changes.*", "lag(config_snapshot_id) #{window} AS prev_snapshot_id",
-                                   "lag(cis_rule_version_id) #{window} AS prev_version_id", "lag(occurred_at) #{window} AS prev_occurred_at")
+                                   "lag(cis_rule_version_id) #{window} AS prev_version_id", "lag(occurred_at) #{window} AS prev_occurred_at",
+                                   "lag(reason) #{window} AS prev_reason")
     CisResultChange.from(inner, :cis_result_changes)
   end
 
@@ -74,6 +75,11 @@ class CisResultHistory
 
     prev_at = change[:prev_occurred_at]
     if change.from_result == "not_evaluated" # enabled again, or the host's first report after none
+      # The reason it was not evaluated says which; a report that arrived while the rule was disabled does not make
+      # the enable a report's doing (review of #118). Times decide only when the change before was pruned.
+      return :rule_enabled if change[:prev_reason] == CisEvaluation::DISABLED
+      return :report if change[:prev_reason] == CisEvaluation::NO_REPORT
+
       return prev_at.nil? || snapshot[:received_at] > prev_at ? :report : :rule_enabled
     end
 

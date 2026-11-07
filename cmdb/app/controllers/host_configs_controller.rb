@@ -41,6 +41,9 @@ class HostConfigsController < ApplicationController
   def compare
     snapshots = ConfigSnapshot.where(host_id: @host.id).order(received_at: :desc, id: :desc).select(:id, :received_at).to_a
     @snapshot_count = snapshots.size
+    # A named snapshot must be this host's, even when there is nothing to compare (review of #118).
+    named = params.values_at(:from, :to).select(&:present?)
+    raise ActiveRecord::RecordNotFound, "no such config snapshot for this host" unless named.all? { |id| snapshots.any? { |s| s.id.to_s == id } }
     return if snapshots.size < 2
 
     @to = params[:to].present? ? snapshots.find { |s| s.id.to_s == params[:to] } : snapshots.first
@@ -102,11 +105,12 @@ class HostConfigsController < ApplicationController
     end
   end
 
-  # The snapshots the pickers offer: the newest SNAPSHOT_LIMIT, plus the two compared if they are older.
+  # The snapshots the pickers offer: every snapshot kept, so older history can be chosen without knowing its id
+  # (review of #118). Only the newest SNAPSHOT_LIMIT and the compared pair are labelled with how many facts
+  # changed, so the facts loaded stay bounded.
   def picker_snapshots(snapshots)
-    chosen = snapshots.first(SNAPSHOT_LIMIT) | [ @from, @to ]
-    labels = snapshot_change_counts(chosen)
-    chosen.sort_by { |s| [ -s.received_at.to_f, -s.id ] }.map { |s| [ s, labels[s.id], s == snapshots.first, s == snapshots.last ] }
+    labels = snapshot_change_counts(snapshots.first(SNAPSHOT_LIMIT) | [ @from, @to ])
+    snapshots.map { |s| [ s, labels[s.id], s == snapshots.first, s == snapshots.last ] }
   end
 
   # { snapshot id => facts changed since the one before it } for the given snapshots.
@@ -124,17 +128,25 @@ class HostConfigsController < ApplicationController
     @diff = ConfigDiff.between(facts[@from.id], facts[@to.id])
     range_ids = snapshots.select { |s| ([ s.received_at, s.id ] <=> [ older.received_at, older.id ]).positive? && ([ s.received_at, s.id ] <=> [ newer.received_at, newer.id ]) <= 0 }.map(&:id)
     history = CisResultHistory.new(@host.id)
-    @effects = net_effects(history.for_snapshots(range_ids).select { |entry| entry.cause == :report })
+    reports = history.for_snapshots(range_ids).select { |entry| entry.cause == :report }
     @rule_changes = history.during(older.received_at..newer.received_at).reject { |entry| entry.cause.in?(%i[report first]) }
+    changed_facts = @diff.changed.map(&:key) + @diff.added.keys + @diff.removed.keys
+    @effects = net_effects(reports, @rule_changes).slice(*changed_facts)
   end
 
-  # { fact key => [[rule key, from, to], ...] }: each rule's result before the first and after the last change in
-  # the range, in the direction compared; rules that ended where they started are left out.
-  def net_effects(entries)
-    entries.group_by(&:rule_key).filter_map do |key, changes|
-      from, to = changes.first.from, changes.last.to
-      from, to = to, from if @reversed
-      [ changes.last.fact, key, from, to ] unless from == to
+  # { fact key => [[rule key, from, to], ...] }: the results each changed fact's reports flipped, in the direction
+  # compared. A rule's report changes are joined only while no rule edit, enable, or disable comes between them, so
+  # a result a rule change explains is never shown as a report's effect (review of #118); a stretch that ended
+  # where it started is left out.
+  def net_effects(reports, rule_changes)
+    (reports + rule_changes).sort_by { |entry| [ entry.occurred_at, entry.change.id ] }.group_by(&:rule_key).flat_map do |key, changes|
+      stretches = changes.slice_when { |a, b| a.cause != b.cause }.select { |run| run.first.cause == :report }
+      stretches = stretches.reverse if @reversed
+      stretches.filter_map do |run|
+        from, to = run.first.from, run.last.to
+        from, to = to, from if @reversed
+        [ run.last.fact, key, from, to ] unless from == to
+      end
     end.group_by(&:first).transform_values { |rows| rows.map { |row| row.drop(1) } }
   end
 end

@@ -7,7 +7,8 @@
     <p class="muted">A snapshot is kept only when a fact changes, so there is nothing to compare until the facts change once.</p>
   </div>
 <% else %>
-  <%= form_with url: compare_config_host_path(@host), method: :get, class: "picker", "aria-label": "Choose two config snapshots", id: "snapshot_picker" do %>
+  <%= form_with url: compare_config_host_path(@host), method: :get, class: "picker", "aria-label": "Choose two config snapshots", id: "snapshot_picker",
+                data: { controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
     <% options = ->(selected) { options_for_select(@pickable.map { |row| [ snapshot_option_label(*row), row.first.id ] }, selected.id) } %>
     <label>From snapshot<%= select_tag :from, options.call(@from) %></label>
     <span class="arrow" aria-hidden="true">&rarr;</span>
@@ -16,15 +17,16 @@
     <%= link_to "Swap", compare_config_host_path(@host, from: @to.id, to: @from.id), class: "btn quiet" %>
   <% end %>
   <% if @reversed %><p class="notice info" role="status" id="reversed_note"><strong>Compared newer to older.</strong> Values read from the newer snapshot on the left to the older one on the right.</p><% end %>
-  <% value_changes = @diff.changed.reject(&:state_changed?) %>
-  <% state_changes = @diff.changed.select(&:state_changed?) %>
+  <% value_changes = @diff.changed.select { |c| !c.state_changed? && c.value_changed? } %>
+  <%# A change of state, or of the reason alone (unreadable for another reason), shows both sides' state and reason (review of #118). %>
+  <% state_changes = @diff.changed - value_changes %>
   <% flips = @effects.values.flatten(1) %>
   <ul class="diffsum" aria-label="Summary of the comparison" id="diff_summary">
     <li><strong><%= value_changes.size %></strong> <%= value_changes.size == 1 ? "fact" : "facts" %> changed value</li>
-    <li><strong><%= state_changes.size %></strong> <%= state_changes.size == 1 ? "fact" : "facts" %> changed state</li>
+    <li><strong><%= state_changes.size %></strong> <%= state_changes.size == 1 ? "fact" : "facts" %> changed state or reason</li>
     <li><strong><%= @diff.added.size %></strong> <%= @diff.added.size == 1 ? "fact" : "facts" %> added</li>
     <li><strong><%= @diff.removed.size %></strong> <%= @diff.removed.size == 1 ? "fact" : "facts" %> removed</li>
-    <li><strong><%= flips.size %></strong> <%= flips.size == 1 ? "check" : "checks" %> changed result<% if flips.any? %>: <%= flips.group_by(&:last).map { |to, rows| "#{rows.size} to #{HostConfigsHelper::RESULTS.dig(to, 0)}" }.join(", ") %><% end %></li>
+    <li><strong><%= flips.size %></strong> <%= flips.size == 1 ? "check" : "checks" %> changed result<% if flips.any? %>: <%= flips.group_by(&:last).sort_by { |to, _| HostConfigsHelper::RESULTS.keys.index(to) }.map { |to, rows| "#{rows.size} to #{HostConfigsHelper::RESULTS.dig(to, 0)}" }.join(", ") %><% end %></li>
   </ul>
   <% effects = lambda do |key|
        rows = @effects[key]
@@ -50,14 +52,14 @@
       <% end %>
     </tbody></table></div>
   <% end %>
-  <h3>State changes</h3>
+  <h3>State and reason changes</h3>
   <% if state_changes.empty? %>
     <p class="muted">None.</p>
   <% else %>
-    <div class="table-wrap"><table id="state_changes"><caption class="visually-hidden">Facts whose state changed</caption>
+    <div class="table-wrap"><table id="state_changes"><caption class="visually-hidden">Facts whose state or reason changed</caption>
       <thead><tr><th scope="col">Fact</th><th scope="col">Change</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Effect on checks</th></tr></thead><tbody>
       <% state_changes.each do |change| %>
-        <tr id="change_<%= change.key.parameterize %>"><td><span class="mono"><%= change.key %></span></td><td><span class="kind">State changed</span></td>
+        <tr id="change_<%= change.key.parameterize %>"><td><span class="mono"><%= change.key %></span></td><td><span class="kind"><%= change.state_changed? ? "State changed" : "Reason changed" %></span></td>
           <td><%= fact_cell.call(change.key, change.from) %></td><td><%= fact_cell.call(change.key, change.to) %></td><td><%= effects.call(change.key) %></td></tr>
       <% end %>
     </tbody></table></div>
@@ -69,8 +71,8 @@
       <p class="muted">None. <%= why %></p>
     <% else %>
       <div class="table-wrap"><table><caption class="visually-hidden"><%= title %></caption>
-        <thead><tr><th scope="col">Fact</th><th scope="col">State and value</th></tr></thead><tbody>
-        <% facts.each do |key, fact| %><tr><td><span class="mono"><%= key %></span></td><td><%= fact_cell.call(key, fact) %></td></tr><% end %>
+        <thead><tr><th scope="col">Fact</th><th scope="col">State and value</th><th scope="col">Effect on checks</th></tr></thead><tbody>
+        <% facts.each do |key, fact| %><tr id="change_<%= key.parameterize %>"><td><span class="mono"><%= key %></span></td><td><%= fact_cell.call(key, fact) %></td><td><%= effects.call(key) %></td></tr><% end %>
       </tbody></table></div>
     <% end %>
   <% end %>

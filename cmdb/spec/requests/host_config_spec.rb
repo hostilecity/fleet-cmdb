@@ -210,7 +210,7 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
       expect(page.at_css("#snapshot_picker select[name=from] option[selected]")["value"]).to eq(first.id.to_s)
       expect(page.at_css("#snapshot_picker select[name=to] option[selected]").text).to eq("2026-11-06 10:00 UTC (latest, 2 facts changed)")
       expect(page.css("#snapshot_picker select[name=from] option").map(&:text)).to eq([ "2026-11-06 10:00 UTC (latest, 2 facts changed)", "2026-11-06 09:01 UTC (oldest kept)" ])
-      expect(words(page.at_css("#diff_summary"))).to eq("1 fact changed value 1 fact changed state 0 facts added 0 facts removed 2 checks changed result: 1 to Pass, 1 to Not readable")
+      expect(words(page.at_css("#diff_summary"))).to eq("1 fact changed value 1 fact changed state or reason 0 facts added 0 facts removed 2 checks changed result: 1 to Pass, 1 to Not readable")
       expect(page.at_css("#change_sshd-permitrootlogin").css("td").map { |td| words(td) }).to eq([ "sshd.permitrootlogin", "Changed", %("yes"), %("no"), "ssh-root-login-off Fail → Pass" ])
       expect(page.at_css("#change_sshd-permitrootlogin del")).to be_present
       expect(page.at_css("#change_pwquality-minlen").css("td").map { |td| words(td) })
@@ -223,7 +223,7 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
       report({ "sshd.permitrootlogin" => ok_fact("yes") }, at: start + 4.hours)
       first, _, last = snapshots
       get "/hosts/#{host.id}/config/compare", params: { from: first.id, to: last.id }
-      expect(words(page.at_css("#diff_summary"))).to start_with("0 facts changed value 0 facts changed state")
+      expect(words(page.at_css("#diff_summary"))).to start_with("0 facts changed value 0 facts changed state or reason")
       expect(words(page.at_css("#diff_summary"))).to end_with("0 checks changed result") # the same facts: the rule edit is listed apart
       expect(words(page.at_css("#rule_changes"))).to eq("ssh-max-auth-tries went from Pass to Fail on 2026-11-06 11:00 UTC: Rule edited to version 2 by Example Editor; no new report.")
       get page.at_css("#snapshot_picker a.btn")["href"]
@@ -233,7 +233,7 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
       get "/hosts/#{host.id}/config/compare", params: { from: snapshots[1].id, to: last.id }
       expect(words(page.at_css("#change_sshd-permitrootlogin td:last-child"))).to eq("ssh-root-login-off Pass → Fail")
       expect(words(page.at_css("#change_pwquality-minlen td:last-child"))).to eq("password-min-length Not readable → Pass")
-      expect(words(page.at_css("#diff_summary"))).to end_with("2 checks changed result: 1 to Fail, 1 to Pass")
+      expect(words(page.at_css("#diff_summary"))).to end_with("2 checks changed result: 1 to Pass, 1 to Fail")
     end
 
     it "refuses a snapshot of another host" do
@@ -396,6 +396,85 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
       expect(page.at_css("#report_type_packages_note").text).to eq("(requested less than 5 minutes ago. Try again after 11:05:00 UTC.)")
       expect(page.at_css("#report_request_form button")["disabled"]).to eq("disabled")
       expect(page.at_css("#report_requests")["data-refresh-after-seconds-value"]).to eq("240")
+    end
+  end
+
+  describe "review of #118" do
+    def flips = words(page.at_css("#diff_summary")).sub(/.*removed /, "")
+
+    it "refuses another host's snapshot even when this host has nothing to compare" do
+      other = enrolled_host.first
+      travel_to(start) { record_config(other) }
+      foreign = ConfigSnapshot.find_by!(host: other).id
+      get "/hosts/#{host.id}/config/compare", params: { from: foreign }
+      expect(response).to have_http_status(:not_found)
+      travel_to(start) { record_config(host) }
+      get "/hosts/#{host.id}/config/compare", params: { to: foreign }
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it "offers every snapshot kept in the pickers, labelling only the newest with their changes" do
+      27.times { |i| travel_to(start + i.minutes) { record_config(host, "sshd.maxauthtries" => ok_fact(i)) } }
+      get "/hosts/#{host.id}/config/compare"
+      options = page.css("#snapshot_picker select[name=from] option").map(&:text)
+      expect(options.size).to eq(27)
+      expect(options.first).to eq("2026-11-06 09:26 UTC (latest, 1 fact changed)")
+      expect(options[25]).to eq("2026-11-06 09:01 UTC")
+      expect(options.last).to eq("2026-11-06 09:00 UTC (oldest kept)")
+      expect(page.at_css("#snapshot_picker")["data-controller"]).to eq("keep-edits") # a live refresh keeps an unsubmitted choice
+    end
+
+    it "does not join report changes across a rule edit into a report effect" do
+      define_cis_rules(root_login)
+      report({}, at: start + 1.minute)                                              # "no": pass
+      report({ "sshd.permitrootlogin" => ok_fact("yes") }, at: start + 1.hour)      # fail
+      travel_to(start + 2.hours) do                                                  # the rule now wants "yes": pass
+        CisRule.transaction { CisRule.define!(CisRules::Definition.from_h(root_login.merge("condition" => { "eq" => "yes" })), actor: Audit::SYSTEM) }
+        evaluate
+      end
+      report({}, at: start + 3.hours)                                                # "no" again: fail
+      first, second, _, last = ConfigSnapshot.where(host:).order(:received_at).to_a.then { |s| [ s[0], s[1], s[1], s[2] ] }
+      get "/hosts/#{host.id}/config/compare", params: { from: first.id, to: last.id }
+      expect(flips).to eq("0 checks changed result") # the same facts; the rule edit is listed apart
+      expect(page.at_css("#rule_changes").text).to include("Rule edited")
+      get "/hosts/#{host.id}/config/compare", params: { from: second.id, to: last.id }
+      expect(words(page.at_css("#change_sshd-permitrootlogin td:last-child"))).to eq("ssh-root-login-off Pass → Fail")
+      expect(flips).to eq("1 check changed result: 1 to Fail")
+    end
+
+    it "names a rule enabled after a report arrived while it was disabled as enabled, not as the report" do
+      define_cis_rules(root_login)
+      report({}, at: start + 1.minute)
+      rule = CisRule.find_by!(key: "ssh-root-login-off")
+      travel_to(start + 1.hour) { CisRule.transaction { rule.disable!(actor: Audit::SYSTEM) } && evaluate }
+      report({ "sshd.maxauthtries" => ok_fact(5) }, at: start + 2.hours)
+      travel_to(start + 3.hours) { CisRule.transaction { rule.enable!(actor: Audit::SYSTEM) } && evaluate }
+      get "/hosts/#{host.id}/config"
+      expect(page.css("#result_changes tbody tr").first.css("td").map { |td| td.text.squish }.values_at(2, 3)).to eq([ "Not evaluated → Pass", "Rule enabled; no new report" ])
+    end
+
+    it "shows a change of reason alone with both reasons, and the effect of a fact added to the manifest" do
+      define_cis_rules(cis_rule_hash(key: "ssh-banner", fact: "sshd.banner", condition: { "eq" => "/etc/issue.net" }))
+      report({ "pwquality.minlen" => unreadable("busy") }, at: start + 1.minute)
+      first = ConfigSnapshot.find_by!(host:)
+      first.update_columns(facts: first.facts.except("sshd.banner")) # taken before the manifest had the fact
+      evaluate(start + 2.minutes)
+      report({ "pwquality.minlen" => unreadable("permission denied"), "sshd.banner" => ok_fact("/etc/issue.net") }, at: start + 1.hour)
+      get "/hosts/#{host.id}/config/compare"
+      expect(page.at_css("#change_pwquality-minlen").css("td").map { |td| words(td) }.first(4)).to eq([ "pwquality.minlen", "Reason changed", "Unreadable busy", "Unreadable permission denied" ])
+      expect(page.at_css("#value_changes")).to be_nil
+      expect(words(page.at_css("#change_sshd-banner"))).to eq(%(sshd.banner OK "/etc/issue.net" ssh-banner Not readable → Pass))
+      expect(flips).to eq("1 check changed result: 1 to Pass")
+    end
+
+    it "says an answered request recorded a snapshot when a later report has come since" do
+      travel_to(start) { record_config(host) }
+      ReportRequests.request!(host:, types: %w[config], actor: operator)
+      Host.transaction { ReportRequests.directive_for(host_id: host.id, agent_time: Time.current) }
+      travel_to(start + 1.minute) { record_config(host, { "sshd.maxauthtries" => ok_fact(5) }, Time.current) }
+      travel_to(start + 2.minutes) { record_config(host, { "sshd.maxauthtries" => ok_fact(6) }, Time.current) }
+      travel_to(start + 10.minutes) { get "/hosts/#{host.id}/config" }
+      expect(page.at_css("#request .hint").text).to eq("The new report changed some facts, so a new snapshot was recorded.")
     end
   end
 end
