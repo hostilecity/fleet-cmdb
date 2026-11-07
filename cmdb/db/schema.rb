@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_030000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_050000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -152,6 +152,41 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_030000) do
     t.index ["target_type", "target_id", "occurred_at"], name: "index_audit_entries_on_target"
     t.check_constraint "(actor_type::text = 'system'::text) = (actor_id IS NULL)", name: "audit_entries_actor_id_matches_type"
     t.check_constraint "actor_type::text = ANY (ARRAY['operator'::character varying::text, 'host'::character varying::text, 'system'::character varying::text])", name: "audit_entries_actor_type_valid"
+  end
+
+  create_table "cis_result_changes", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "cis_rule_id", null: false
+    t.bigint "cis_rule_version_id"
+    t.bigint "config_snapshot_id"
+    t.string "from_result", limit: 16
+    t.string "to_result", limit: 16, null: false
+    t.jsonb "observed"
+    t.string "reason", limit: 512
+    t.datetime "occurred_at", null: false
+    t.index ["cis_rule_id", "occurred_at"], name: "index_cis_result_changes_on_cis_rule_id_and_occurred_at"
+    t.index ["config_snapshot_id"], name: "index_cis_result_changes_on_config_snapshot_id"
+    t.index ["host_id", "occurred_at"], name: "index_cis_result_changes_on_host_id_and_occurred_at"
+    t.index ["occurred_at"], name: "index_cis_result_changes_on_occurred_at"
+    t.check_constraint "from_result IS NULL OR (from_result::text = ANY (ARRAY['pass'::character varying, 'fail'::character varying, 'not_applicable'::character varying, 'not_readable'::character varying, 'not_evaluated'::character varying]::text[]))", name: "cis_result_changes_from_valid"
+    t.check_constraint "from_result::text IS DISTINCT FROM to_result::text", name: "cis_result_changes_is_a_change"
+    t.check_constraint "to_result::text = ANY (ARRAY['pass'::character varying, 'fail'::character varying, 'not_applicable'::character varying, 'not_readable'::character varying, 'not_evaluated'::character varying]::text[])", name: "cis_result_changes_to_valid"
+  end
+
+  create_table "cis_results", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "cis_rule_id", null: false
+    t.bigint "cis_rule_version_id"
+    t.bigint "config_snapshot_id"
+    t.string "result", limit: 16, null: false
+    t.jsonb "observed"
+    t.string "reason", limit: 512
+    t.datetime "evaluated_at", null: false
+    t.datetime "changed_at", null: false
+    t.index ["cis_rule_id"], name: "index_cis_results_on_cis_rule_id"
+    t.index ["config_snapshot_id"], name: "index_cis_results_on_config_snapshot_id"
+    t.index ["host_id", "cis_rule_id"], name: "index_cis_results_on_host_id_and_cis_rule_id", unique: true
+    t.check_constraint "result::text = ANY (ARRAY['pass'::character varying, 'fail'::character varying, 'not_applicable'::character varying, 'not_readable'::character varying, 'not_evaluated'::character varying]::text[])", name: "cis_results_result_valid"
   end
 
   create_table "cis_rule_versions", force: :cascade do |t|
@@ -521,6 +556,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_030000) do
   add_foreign_key "agent_releases", "operators", column: "imported_by_id"
   add_foreign_key "agent_updates", "hosts"
   add_foreign_key "agent_updates", "rollouts"
+  add_foreign_key "cis_result_changes", "cis_rule_versions"
+  add_foreign_key "cis_result_changes", "cis_rules"
+  add_foreign_key "cis_result_changes", "config_snapshots", on_delete: :nullify
+  add_foreign_key "cis_result_changes", "hosts"
+  add_foreign_key "cis_results", "cis_rule_versions"
+  add_foreign_key "cis_results", "cis_rules"
+  add_foreign_key "cis_results", "config_snapshots", on_delete: :nullify
+  add_foreign_key "cis_results", "hosts"
   add_foreign_key "cis_rule_versions", "cis_rules"
   add_foreign_key "cis_rules", "cis_rule_versions", column: "current_version_id"
   add_foreign_key "config_report_receipts", "hosts"

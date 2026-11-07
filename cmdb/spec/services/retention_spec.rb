@@ -54,7 +54,7 @@ RSpec.describe Retention do
 
       expect(counts).to eq("inventory_snapshots" => 2, "inventory_report_receipts" => 1, "package_snapshots" => 1,
                            "package_report_receipts" => 1, "config_snapshots" => 1, "config_report_receipts" => 1,
-                           "host_status_events" => 1)
+                           "cis_result_changes" => 0, "host_status_events" => 1)
       expect(old.map { |row| row.class.exists?(row.id) }).to all(be(false))
       expect(kept.map { |row| row.class.exists?(row.id) }).to all(be(true))
     end
@@ -67,6 +67,17 @@ RSpec.describe Retention do
       described_class.prune!(now:)
 
       expect([ old, newest, only ].map { |row| PackageSnapshot.exists?(row.id) }).to eq([ false, true, true ])
+    end
+
+    it "prunes old CIS result changes but never the current results (P2-S06)" do
+      allow(CisEvaluationJob).to receive(:perform_later)
+      rule, = define_cis_rules(cis_rule_hash)
+      change = ->(age_days) { CisResultChange.create!(host:, cis_rule: rule, to_result: "pass", occurred_at: now - age_days.days) }
+      old, kept = change.(100), change.(10)
+      current = CisResult.create!(host:, cis_rule: rule, result: "pass", evaluated_at: now - 200.days, changed_at: now - 200.days)
+
+      expect(described_class.prune!(now:)["cis_result_changes"]).to eq(1)
+      expect([ old, kept, current ].map { |row| row.class.exists?(row.id) }).to eq([ false, true, true ])
     end
 
     it "always keeps the newest config snapshot of each host, whatever its age (P2-S02)" do
@@ -160,7 +171,7 @@ RSpec.describe Retention do
 
       described_class.prune!(now:)
 
-      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 package_snapshots=0 package_report_receipts=0 config_snapshots=0 config_report_receipts=0 host_status_events=0 older than 2026-08-03T12:00:00Z/)
+      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 package_snapshots=0 package_report_receipts=0 config_snapshots=0 config_report_receipts=0 cis_result_changes=0 host_status_events=0 older than 2026-08-03T12:00:00Z/)
     end
   end
 
