@@ -36,12 +36,12 @@ rules:
 
   - key: ssh-password-login-off
     reference: "CIS Debian Linux 13 v1.0.0 5.1"
-    title: "SSH accepts keys only, not passwords"
+    title: "SSH password authentication is off"
     severity: medium
     applies_to: [{ distribution: debian, versions: ["13"] }]
     fact: "sshd.passwordauthentication"
     condition: { eq: false }
-    remediation: "Install a public key for each user who needs SSH, then set PasswordAuthentication no for sshd and reload ssh."
+    remediation: "Install a public key for each user who needs SSH, then set PasswordAuthentication no for sshd and reload ssh. This checks PasswordAuthentication only: also set KbdInteractiveAuthentication no, or PAM can still ask for a password."
 
   - key: ssh-host-based-auth-off
     reference: "CIS Debian Linux 13 v1.0.0 5.1.10"
@@ -228,12 +228,12 @@ rules:
 
   - key: password-hashing
     reference: "CIS Debian Linux 13 v1.0.0 5.4.1.4"
-    title: "New passwords are hashed with yescrypt or SHA-512"
+    title: "login.defs names yescrypt or SHA-512 as the hashing method"
     severity: medium
     applies_to: [{ distribution: debian, versions: ["13"] }]
     fact: "login_defs.encrypt_method"
     condition: { in: ["YESCRYPT", "SHA512"] }
-    remediation: "Set ENCRYPT_METHOD YESCRYPT (the Debian 13 default) or SHA512 in /etc/login.defs."
+    remediation: "Set ENCRYPT_METHOD YESCRYPT (the Debian 13 default) or SHA512 in /etc/login.defs. This setting is what chpasswd and newusers use; passwords changed with passwd are hashed by PAM, so also check that the pam_unix line in /etc/pam.d/common-password says yescrypt or sha512, which this rule does not read."
 
   - key: inactive-account-lock
     reference: "CIS Debian Linux 13 v1.0.0 5.4.1.5"
@@ -255,21 +255,57 @@ rules:
 
   - key: password-min-length
     reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.2"
-    title: "Passwords have at least 14 characters"
+    title: "pwquality's minimum length (minlen) is 14 or more"
     severity: medium
     applies_to: [{ distribution: debian, versions: ["13"] }]
     fact: "pwquality.minlen"
     condition: { gte: 14 }
-    remediation: "Set minlen = 14 or more in /etc/security/pwquality.conf (or a file in pwquality.conf.d)."
+    remediation: "Set minlen = 14 or more in /etc/security/pwquality.conf (or a file in pwquality.conf.d). A positive dcredit, ucredit, lcredit, or ocredit lets a password with those characters be shorter than minlen: the password-*-credit rules check that none is positive."
+
+  - key: password-digit-credit
+    reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.3"
+    title: "Digits do not shorten the minimum password length"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "pwquality.dcredit"
+    condition: { lte: 0 }
+    remediation: "Set dcredit = 0 (or a negative number, to require digits) in /etc/security/pwquality.conf."
+
+  - key: password-upper-credit
+    reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.3"
+    title: "Upper-case letters do not shorten the minimum password length"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "pwquality.ucredit"
+    condition: { lte: 0 }
+    remediation: "Set ucredit = 0 (or a negative number, to require upper-case letters) in /etc/security/pwquality.conf."
+
+  - key: password-lower-credit
+    reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.3"
+    title: "Lower-case letters do not shorten the minimum password length"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "pwquality.lcredit"
+    condition: { lte: 0 }
+    remediation: "Set lcredit = 0 (or a negative number, to require lower-case letters) in /etc/security/pwquality.conf."
+
+  - key: password-other-credit
+    reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.3"
+    title: "Other characters do not shorten the minimum password length"
+    severity: low
+    applies_to: [{ distribution: debian, versions: ["13"] }]
+    fact: "pwquality.ocredit"
+    condition: { lte: 0 }
+    remediation: "Set ocredit = 0 (or a negative number, to require other characters) in /etc/security/pwquality.conf."
 
   - key: password-complexity
     reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.3"
-    title: "Passwords use all four kinds of character"
+    title: "pwquality requires all four kinds of character (minclass 4)"
     severity: low
     applies_to: [{ distribution: debian, versions: ["13"] }]
     fact: "pwquality.minclass"
     condition: { gte: 4 }
-    remediation: "Set minclass = 4 in /etc/security/pwquality.conf, or set dcredit, ucredit, lcredit, and ocredit to -1."
+    remediation: "Set minclass = 4 in /etc/security/pwquality.conf. Requiring each kind with negative credits instead is not read by this rule, which checks minclass only; disable it if you use credits."
 
   - key: password-repeats
     reference: "CIS Debian Linux 13 v1.0.0 5.3.3.2.4"

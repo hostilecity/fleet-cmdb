@@ -152,9 +152,25 @@ default-umask:
 password-min-length:
   pass: 14
   fail: 8
+password-digit-credit:
+  pass: 0
+  fail: 1
+  also_pass:
+  - -1
+password-upper-credit:
+  pass: -1
+  fail: 2
+password-lower-credit:
+  pass: 0
+  fail: 1
+password-other-credit:
+  pass: -2
+  fail: 1
 password-complexity:
   pass: 4
   fail: 2
+  also_fail:
+  - 0
 password-repeats:
   pass: 3
   fail: 0

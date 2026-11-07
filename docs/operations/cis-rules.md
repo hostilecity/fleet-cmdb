@@ -6,10 +6,10 @@ Passing the rules makes a host **CIS-aligned**. The product never says "CIS comp
 
 ## The starter set
 
-`cmdb/config/rules/debian-13.yml` holds 67 rules for Debian 13 (DEC-01). They cover the fact areas in the fact manifest:
+`cmdb/config/rules/debian-13.yml` holds 71 rules for Debian 13 (DEC-01). They cover the fact areas in the fact manifest:
 
 - **SSH server**: root login, empty and password logins, host-based trust, `.rhosts`, user environment, PAM, attempt and session limits, login grace time, log level, banner, keep-alives, weak ciphers, key exchange methods, and MACs, forwarding, and access to `sshd_config`.
-- **Login and password policy**: password age limits and warning, hashing method, locking inactive accounts, default umask, and `pwquality` length, character classes, and repeats.
+- **Login and password policy**: password age limits and warning, the hashing method in `login.defs`, locking inactive accounts, default umask, and `pwquality` length, credits, character classes, and repeats.
 - **Local users**: only root has user id 0.
 - **Firewall and automatic updates**: a host firewall is enabled, and security updates install automatically.
 - **File permissions**: `passwd`, `group`, `shadow`, and `gshadow` and their backups, `sudoers`, `grub.cfg`, `crontab` and the cron directories, and the login banners.
@@ -39,6 +39,8 @@ Two areas have no rule yet, because a rule inspects one fact and these need two:
 2. **Give it a key** that is lower case with hyphens, such as `ssh-max-auth-tries`. Never reuse a key for another rule, because results and history are kept by key.
 3. **Write the condition** with the operators in [docs/api/rules](../api/rules/README.md#a-rule). Quote `yes`, `no`, `on`, and `off`, because YAML reads them as booleans. For a file or unit that may not exist, wrap the condition in `any: [{ absent: true }, ...]` if a missing file is fine.
 4. **Write the title and remediation in your own words** (see "Licensing" below). The title is a short statement of the good state ("SSH does not accept logins as root"), not an instruction. The remediation says what to change and how to apply it.
+   - A rule inspects one fact, so the title claims only what that fact shows. For example, "SSH password authentication is off", not "SSH accepts keys only", which also depends on keyboard-interactive and public key settings.
+   - When the setting is only part of the story, the remediation says what else to check. For example, `ENCRYPT_METHOD` in `login.defs` is not what PAM uses for passwords changed with `passwd`.
 5. **Set `reference`** to the benchmark section as a pointer only: `CIS Debian Linux 13 v1.0.0 5.1.21`. If no single section matches, name the section the rule belongs to, such as `CIS Debian Linux 13 v1.0.0 2.1`.
 6. **Add fixtures**: give the rule a passing and a failing value in `cmdb/spec/fixtures/cis_rules/debian-13.yml`, plus edge cases under `also_pass` and `also_fail`. Choose the values by hand, as a host would report them, so a wrong condition fails its own test.
 7. **Run the specs**: `bundle exec rspec spec/rules`. The spec checks four things:
