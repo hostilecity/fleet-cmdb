@@ -141,6 +141,7 @@ module AuditEntriesHelper
                   (tag.span(safe_join([ "Host ", link_to(host.name, host_path(host)) ]), class: "kind") if host) ].compact, " ")
     when "Operator" then records.operators[id]&.email || "Operator #{id}"
     when "AgentRelease" then link_to("Agent release #{Array(entry.changeset['version']).compact.last || id}", agents_path)
+    when "AdvisoryImport" then link_to("Advisory import #{id}", advisory_import_path(id))
     when "CisRule" then safe_join([ "Rule", tag.span(records.rules[id] || id.to_s, class: "kind mono") ], " ")
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"

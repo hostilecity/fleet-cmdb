@@ -361,3 +361,13 @@ h2 .muted { font-weight: 400; }
 dl.facts.tight { gap: 0.25rem 1.25rem; }
 dl.facts.tight + dl.facts.tight { margin-top: 0.75rem; }
 @media (max-width: 52rem) { .cols-2 { grid-template-columns: minmax(0, 1fr); } }
+
+/* P2-D06 (#25): the Advisory data sources page and an import result */
+.stale-word { color: #7a5410; font-weight: 700; }
+.small { font-size: 0.875rem; }
+.flush { margin-bottom: 0; }
+label.choice.flush { margin: 0; font-weight: 400; }
+.cols-2.spaced { margin-top: 1.5rem; }
+dl.facts.spaced-below { margin-bottom: 1rem; }
+dialog.dialog { margin: auto; color: var(--ink); }
+dialog.dialog::backdrop { background: rgb(29 42 46 / 0.45); }
