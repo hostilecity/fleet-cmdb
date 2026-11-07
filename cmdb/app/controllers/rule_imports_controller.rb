@@ -39,26 +39,33 @@ class RuleImportsController < ApplicationController
   end
 
   def show
-    @plan = plan_for(@preview)
+    plan_or_refuse { render :show }
   end
 
+  # The preview is found again, locked, once the rules' write lock is held, and consumed in the same transaction as the
+  # import, so a cancel, a later upload, or expiry while this waited for the lock is never applied (review of #130).
   def apply
-    result = CisRules::Import.call(@preview.body, actor: current_operator, disable_missing: @preview.disable_missing,
-                                   expected_state: @preview.rules_digest, source: "file_upload")
-    unless result.ok? # the checks changed under the file (a new fact manifest), so it is refused as a new upload would be
-      @filename = @preview.filename
-      @problems = result.errors.map { |text| CisRules::RuleFile::Problem.new(pointer: text.split(": ", 2).first, message: text.split(": ", 2).last) }
-      @preview.destroy!
-      return render(:errors, status: :unprocessable_content)
-    end
+    result = CisRule.with_write_lock do
+      preview = RuleImportPreview.lock.live.find_by(id: @preview.id, token: @preview.token)
+      next :gone unless preview
 
-    @preview.destroy!
+      imported = CisRules::Import.call(preview.body, actor: current_operator, disable_missing: preview.disable_missing,
+                                       expected_state: preview.rules_digest, source: "file_upload")
+      preview.destroy!
+      imported
+    end
+    return gone if result == :gone
+    return refuse_file(result.errors.map { |text| CisRules::RuleFile::Problem.new(pointer: text.split(": ", 2).first, message: text.split(": ", 2).last) }) unless result.ok?
+
     redirect_to rules_path, notice: applied_notice(result)
   rescue CisRules::Import::Stale
-    @plan = plan_for(@preview)
-    @preview.restart!(rules_digest: @plan.state_digest)
-    @restarted = true
-    render :show, status: :conflict
+    # Nothing was written. The same file is previewed again against the rules as they are, under a new token, so a
+    # form from the earlier preview (another tab) cannot apply it without its new preview being shown.
+    plan_or_refuse do
+      @preview.restart!(rules_digest: @plan.state_digest)
+      @restarted = true
+      render :show, status: :conflict
+    end
   end
 
   def destroy
@@ -70,13 +77,29 @@ class RuleImportsController < ApplicationController
 
   def load_preview
     @preview = RuleImportPreview.for_operator(current_operator, params[:token])
-    return if @preview
+    gone unless @preview
+  end
 
+  def gone
     redirect_to import_rules_path, alert: "That preview has expired, was already applied or cancelled, or was replaced by a later upload. Nothing was imported. Upload the file again."
   end
 
-  # The plan for a stored file, which passed every check when it was stored.
-  def plan_for(preview) = CisRules::ImportPlan.call(preview.body, disable_missing: preview.disable_missing).plan
+  # Plans the stored file and yields; a file the checks no longer accept (a new fact manifest since it was stored) is
+  # listed as a new upload would be, and discarded (review of #130).
+  def plan_or_refuse
+    result = CisRules::ImportPlan.call(@preview.body, disable_missing: @preview.disable_missing)
+    return refuse_file(result.errors) unless result.ok?
+
+    @plan = result.plan
+    yield
+  end
+
+  def refuse_file(problems)
+    @filename = @preview.filename
+    @problems = problems
+    RuleImportPreview.where(id: @preview.id).delete_all
+    render :errors, status: :unprocessable_content
+  end
 
   # Puma refuses a body over http_content_length_limit before Rails sees it; behind any other server, a body without
   # a length, or one too large to be a rules file, is refused here rather than parsed (as agent release uploads).

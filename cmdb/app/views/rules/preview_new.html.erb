@@ -6,6 +6,10 @@
 <% counts = @preview.counts %>
 <p><%= link_to "← Add rule", new_rule_path %></p>
 <div class="page-head"><div><h1>Preview: <span class="mono title-key"><%= @preview.key %></span></h1><p>A new rule; version 1 would be created. Nothing has been saved yet.</p></div></div>
+<% if @unconfirmed %>
+  <div class="notice" role="alert" id="unconfirmed"><strong>Nothing was saved: this rule is not the one that was previewed, or its preview expired.</strong>
+    <p>A preview is good for <%= RulePreviewSignature::TTL.in_minutes.to_i %> minutes and only for the rule it showed. This is the preview of the rule as it was submitted; save it again if it is what you want.</p></div>
+<% end %>
 <% if !@preview.enabled %>
   <div class="notice info" role="status" id="preview_summary"><strong>The rule would be added disabled, so no host is checked against it.</strong><p>Its result is not evaluated on every host until you enable it. No agent is contacted.</p></div>
 <% else %>
@@ -37,7 +41,7 @@
   <% end %>
 <% end %>
 <div class="actions preview-actions">
-  <%= form_with url: rules_path, method: :post, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><button class="btn" type="submit">Add rule</button><% end %>
+  <%= form_with url: rules_path, method: :post, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :preview_signature, @signature, id: nil %><button class="btn" type="submit">Add rule</button><% end %>
   <%= form_with url: preview_new_rules_path, method: :post, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :back, "1", id: nil %><button class="btn quiet" type="submit">Back to editing</button><% end %>
 </div>
 <p class="muted small-print">Saving checks again against each host's snapshot as it is then, so the results may differ from what is shown if a snapshot changed since this preview. The key must still be unused. Saving records one audit entry with you as the actor.</p>

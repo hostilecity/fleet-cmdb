@@ -6,6 +6,10 @@
 <p><%= link_to "← #{@rule.key}", rule_path(@rule) %></p>
 <div class="page-head"><div><h1>Preview: <span class="mono title-key"><%= @rule.key %></span></h1>
   <p><%= @preview.next_version ? "Version #{@preview.next_version} would replace version #{@preview.current_version}." : "The definition is the same as version #{@preview.current_version}." %> Nothing has been saved yet.</p></div></div>
+<% if @unconfirmed %>
+  <div class="notice" role="alert" id="unconfirmed"><strong>Nothing was saved: this rule is not the one that was previewed, or its preview expired.</strong>
+    <p>A preview is good for <%= RulePreviewSignature::TTL.in_minutes.to_i %> minutes and only for the rule it showed. This is the preview of the rule as it was submitted; save it again if it is what you want.</p></div>
+<% end %>
 <% if @preview.saves_nothing? %>
   <div class="notice info" role="status" id="preview_summary"><strong>No change: saving makes no new version.</strong><p>The edited rule is identical to version <%= @preview.current_version %>, so no host's result would change.</p></div>
 <% else %>
@@ -39,7 +43,7 @@
 <% end %>
 <div class="actions preview-actions">
   <% unless @preview.saves_nothing? %>
-    <%= form_with url: rule_path(@rule), method: :patch, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :base_version_id, @base_version.id, id: nil %><button class="btn" type="submit">Save as version <%= @preview.next_version %></button><% end %>
+    <%= form_with url: rule_path(@rule), method: :patch, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :base_version_id, @base_version.id, id: nil %><%= hidden_field_tag :preview_signature, @signature, id: nil %><button class="btn" type="submit">Save as version <%= @preview.next_version %></button><% end %>
   <% end %>
   <%= form_with url: preview_edit_rule_path(@rule), method: :post, class: "inline", data: { turbo: false } do %><%= rule_hidden_fields(@form) %><%= hidden_field_tag :base_version_id, @base_version.id, id: nil %><%= hidden_field_tag :back, "1", id: nil %><button class="btn quiet" type="submit">Back to editing</button><% end %>
 </div>

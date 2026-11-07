@@ -38,13 +38,13 @@ class RulesController < ApplicationController
     return render(:new) if editing_again?
     return render(:new, status: :unprocessable_content) unless @form.valid?
 
-    @preview = CisDryRun.call(@form.rule_hash).preview
-    render :preview_new
+    show_preview(:preview_new)
   end
 
   def create
     @form = RuleForm.new(attributes: rule_params)
     return render(:new, status: :unprocessable_content) unless @form.valid?
+    return show_preview(:preview_new, unconfirmed: true) unless previewed?(nil)
 
     definition = CisRules::Definition.from_h(@form.rule_hash)
     created = CisRule.with_write_lock do
@@ -72,14 +72,18 @@ class RulesController < ApplicationController
     return render(:edit, status: :unprocessable_content) unless @form.valid?
     return changed_meanwhile unless @base_version.id == @rule.current_version_id
 
-    @preview = CisDryRun.call(@form.rule_hash).preview
-    render :preview_edit
+    show_preview(:preview_edit)
   end
 
   def update
     @form = RuleForm.new(attributes: rule_params, rule: @rule)
     @base_version = base_version
     return render(:edit, status: :unprocessable_content) unless @form.valid?
+    unless previewed?(@base_version.id)
+      return changed_meanwhile unless @base_version.id == @rule.current_version_id
+
+      return show_preview(:preview_edit, unconfirmed: true)
+    end
 
     outcome = CisRule.with_write_lock do
       @rule.reload
@@ -117,6 +121,18 @@ class RulesController < ApplicationController
   def rule_params
     params.fetch(:rule, {}).permit(*RuleForm::TEXT_FIELDS, :operator, :expected, :condition_text, :enabled, platforms: %i[distribution versions]).to_h
   end
+
+  # The dry run's preview of the checked rule, signed so Save can prove it saves this rule (RulePreviewSignature).
+  # unconfirmed: Save was pressed for a rule that was not previewed as it stands (a changed field, another preview's
+  # form, or an expired one), so nothing is saved and the rule is previewed now instead (review S1 of #130).
+  def show_preview(view, unconfirmed: false)
+    @preview = CisDryRun.call(@form.rule_hash).preview
+    @signature = RulePreviewSignature.generate(@form.rule_hash, base_version_id: @base_version&.id, operator: current_operator)
+    @unconfirmed = unconfirmed
+    render view, status: (unconfirmed ? :conflict : :ok)
+  end
+
+  def previewed?(base_version_id) = RulePreviewSignature.valid?(params[:preview_signature], @form.rule_hash, base_version_id:, operator: current_operator)
 
   # "Back to editing" on a preview: show the form again as typed, checking nothing.
   def editing_again? = params[:back].present?

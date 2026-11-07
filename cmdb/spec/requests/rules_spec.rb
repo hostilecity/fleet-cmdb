@@ -34,15 +34,27 @@ RSpec.describe "Rules", :signed_in, type: :request do
 
   def words(node) = node.xpath(".//text()").map(&:text).join(" ").squish
 
+  # The edit form's fields, with the signature a preview of exactly that rule would carry (RulePreviewSignature).
   def form_params(rule = CisRule.find_by!(key: "ssh-max-auth-tries"), **overrides)
-    { rule: RuleForm.for_rule(rule).to_params.merge(overrides.transform_keys(&:to_s)), base_version_id: rule.current_version_id }
+    fields = RuleForm.for_rule(rule).to_params.merge(overrides.transform_keys(&:to_s))
+    { rule: fields, base_version_id: rule.current_version_id, preview_signature: signature(fields, rule:, base_version_id: rule.current_version_id) }
   end
 
   def new_rule_params(**overrides)
-    { rule: { "key" => "ssh-ignore-rhosts", "title" => "SSH ignores per-user trust files", "reference" => "CIS Debian 13 5.1.9", "severity" => "medium",
-              "platforms" => { "0" => { "distribution" => "debian", "versions" => "13" } }, "fact" => "sshd.permitrootlogin", "operator" => "eq", "expected" => "no",
-              "remediation" => "Set it.", "enabled" => "1" }.merge(overrides.transform_keys(&:to_s)) }
+    fields = { "key" => "ssh-ignore-rhosts", "title" => "SSH ignores per-user trust files", "reference" => "CIS Debian 13 5.1.9", "severity" => "medium",
+               "platforms" => { "0" => { "distribution" => "debian", "versions" => "13" } }, "fact" => "sshd.permitrootlogin", "operator" => "eq", "expected" => "no",
+               "remediation" => "Set it.", "enabled" => "1" }.merge(overrides.transform_keys(&:to_s))
+    { rule: fields, preview_signature: signature(fields) }
   end
+
+  def signature(fields, rule: nil, base_version_id: nil)
+    form = RuleForm.new(attributes: fields, rule:)
+    form.valid?
+    RulePreviewSignature.generate(form.rule_hash, base_version_id:, operator:)
+  end
+
+  # The fields of the form whose action is path, as the browser would send them.
+  def form_fields(path) = page.at_css("form[action='#{path}']").css("input").reject { |input| input["name"].nil? }.map { |input| [ input["name"], input["value"].to_s ] }
 
   # Every row count and enqueued job, to show a preview writes nothing.
   def table_counts = [ CisRule, CisRuleVersion, CisResult, CisResultChange, AuditEntry, ReportRequest ].to_h { |model| [ model.name, model.count ] }
@@ -238,7 +250,7 @@ RSpec.describe "Rules", :signed_in, type: :request do
       expect(page.at_css("#rule_key")["readonly"]).to eq("readonly")
       expect(page.at_css("#rule_operator option[selected]").text).to eq("at most")
       expect(page.at_css("#rule_condition")).to have_attributes(name: "input")
-      expect(page.at_css("#rule_condition")["type"]).to eq("number")
+      expect(page.at_css("#rule_condition")["type"]).to eq("text") # so "one of" can take "3, 4" (review of #130)
       expect(page.at_css("#rule_condition")["value"]).to eq("4")
       expect(page.at_css("#rule_fact option[selected]").text).to eq("sshd.maxauthtries (integer)")
       expect(page.css("#rule_fact option").map(&:text)).not_to include(a_string_starting_with("file:"))
@@ -309,6 +321,31 @@ RSpec.describe "Rules", :signed_in, type: :request do
       expect(entry.changeset).to eq("condition" => [ { "lte" => 4 }, { "lte" => 5 } ], "version" => [ 1, 2 ], "source" => "dashboard")
     end
 
+    it "refuses to save an edit that is not the one previewed, and previews it instead (review S1 of #130)" do
+      before = table_counts
+      patch "/rules/#{rule.id}", params: form_params(expected: "5").merge(preview_signature: form_params(expected: "6")[:preview_signature])
+      expect(response).to have_http_status(:conflict)
+      expect(page.at_css("#unconfirmed")).to be_present
+      expect(page.at_css("#preview_changes thead th:last-child").text).to eq("After (version 2, at most 5)")
+      expect(table_counts).to eq(before)
+
+      other = enrolled_host(name: "Other").first
+      record_inventory(other)
+      perform_enqueued_jobs { CisRule.transaction { CisRule.define!(CisRules::Definition.from_h(max_auth.merge("condition" => { "lte" => 2 })), actor: Audit::SYSTEM) } }
+      patch "/rules/#{rule.id}", params: form_params(rule, expected: "5").merge(base_version_id: rule.versions.first.id)
+      expect(response).to have_http_status(:conflict)
+      expect(page.at_css("#rule_problems").text).to include("version 2 was saved meanwhile")
+      expect(rule.reload.current_version.condition).to eq({ "lte" => 2 })
+    end
+
+    it "saves the edit the preview page's form carries" do
+      post "/rules/#{rule.id}/preview", params: form_params(expected: "5").except(:preview_signature)
+      fields = form_fields("/rules/#{rule.id}")
+      perform_enqueued_jobs { post "/rules/#{rule.id}", params: URI.encode_www_form(fields), headers: { "CONTENT_TYPE" => "application/x-www-form-urlencoded" } }
+      expect(response).to redirect_to("/rules/#{rule.id}")
+      expect(rule.reload.current_version.condition).to eq({ "lte" => 5 })
+    end
+
     it "makes no new version when nothing changed" do
       patch "/rules/#{rule.id}", params: form_params
       expect(response).to redirect_to("/rules/#{rule.id}")
@@ -360,6 +397,8 @@ RSpec.describe "Rules", :signed_in, type: :request do
       expect(page.at_css("#rule_condition_error").text).to eq("is required")
       post "/rules/#{shadow_rule.id}/preview", params: form_params(shadow_rule, condition_text: "a" * (RuleForm::CONDITION_TEXT_MAX + 1))
       expect(page.at_css("#rule_condition_error").text).to eq("is longer than 64 KiB")
+      post "/rules/#{shadow_rule.id}/preview", params: form_params(shadow_rule, condition_text: "#{'[' * 30_000}#{']' * 30_000}") # review S2 of #130
+      expect(page.at_css("#rule_condition_error").text).to eq("is nested more than 64 levels deep")
 
       post "/rules/#{shadow_rule.id}/preview", params: form_params(shadow_rule, condition_text: "all:\n  - mode_at_most: '0600'\n")
       expect(response).to have_http_status(:ok)
@@ -515,12 +554,40 @@ RSpec.describe "Rules", :signed_in, type: :request do
     end
 
     it "refuses a key someone else added between the check and the save" do
+      params = new_rule_params
       allow(CisRule).to receive(:exists?).and_call_original
       allow(CisRule).to receive(:exists?).with(key: "ssh-ignore-rhosts").and_return(false, true)
-      post "/rules", params: new_rule_params
+      post "/rules", params: params
       expect(response).to have_http_status(:unprocessable_content)
       expect(page.at_css("#rule_key_error").text).to include("was added by someone else since your preview")
       expect(CisRule.where(key: "ssh-ignore-rhosts")).to be_empty
+    end
+
+    it "saves the rule the preview page's form carries, signed by the preview" do
+      post "/rules/preview", params: new_rule_params.except(:preview_signature)
+      fields = form_fields("/rules")
+      expect(fields.map(&:first)).to include("preview_signature", "rule[key]", "rule[expected]")
+      perform_enqueued_jobs { post "/rules", params: URI.encode_www_form(fields), headers: { "CONTENT_TYPE" => "application/x-www-form-urlencoded" } }
+      expect(response).to redirect_to("/rules/#{CisRule.find_by!(key: 'ssh-ignore-rhosts').id}")
+    end
+
+    it "refuses to save a rule that is not the one previewed, or whose preview expired, and previews it instead (review S1 of #130)" do
+      before = table_counts
+      post "/rules", params: new_rule_params.merge(preview_signature: new_rule_params(expected: "yes")[:preview_signature]) # an edited hidden field
+      expect(response).to have_http_status(:conflict)
+      expect(page.at_css("#unconfirmed strong").text).to eq("Nothing was saved: this rule is not the one that was previewed, or its preview expired.")
+      expect(page.at_css("form[action='/rules'] input[name='rule[expected]']")["value"]).to eq("no")
+      expect(table_counts).to eq(before)
+
+      post "/rules", params: new_rule_params.except(:preview_signature)
+      expect(response).to have_http_status(:conflict)
+      params = new_rule_params
+      travel(RulePreviewSignature::TTL + 1.second) { post "/rules", params: }
+      expect(response).to have_http_status(:conflict)
+      expect(table_counts).to eq(before)
+
+      post "/rules", params: { rule: params[:rule], preview_signature: page.at_css("form[action='/rules'] input[name='preview_signature']")["value"] }
+      expect(response).to have_http_status(:redirect) # the new preview's signature saves it
     end
 
     it "goes back to editing with what was typed" do

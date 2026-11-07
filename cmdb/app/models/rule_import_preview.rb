@@ -23,6 +23,9 @@ class RuleImportPreview < ApplicationRecord
   # Stores a checked file for the operator, replacing any earlier preview of theirs.
   def self.store!(operator:, filename:, body:, disable_missing:, rules_digest:, now: Time.current)
     transaction do
+      # The operator's row, so two uploads at once are serialised even when there is no preview row yet to lock
+      # (review of #130): the second waits, then replaces the first.
+      Operator.lock.find(operator.id)
       where(operator:).delete_all
       create!(operator:, token: SecureRandom.urlsafe_base64(32), filename: display_filename(filename), body:, sha256: Digest::SHA256.hexdigest(body),
               disable_missing:, rules_digest:, expires_at: now + TTL)
@@ -38,6 +41,7 @@ class RuleImportPreview < ApplicationRecord
 
   def self.prune!(now = Time.current) = where(expires_at: ..now).delete_all
 
-  # A new preview of the same file against the rules as they are now (after the rules changed in between).
-  def restart!(rules_digest:, now: Time.current) = update!(rules_digest:, expires_at: now + TTL)
+  # A new preview of the same file against the rules as they are now (after the rules changed in between), under a
+  # new token, so a form from the earlier preview can no longer apply it (review of #130).
+  def restart!(rules_digest:, now: Time.current) = update!(rules_digest:, expires_at: now + TTL, token: SecureRandom.urlsafe_base64(32))
 end
