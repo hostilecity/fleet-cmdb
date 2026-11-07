@@ -393,3 +393,12 @@ th.num { text-align: right; }
   .sevstrip, .sevstrip.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sevstrip a { border-bottom: 1px solid #33443f; }
 }
+/* P2-D06 (#25): the Advisory data sources page and an import result */
+.stale-word { color: #7a5410; font-weight: 700; }
+.small { font-size: 0.875rem; }
+.flush { margin-bottom: 0; }
+label.choice.flush { margin: 0; font-weight: 400; }
+.cols-2.spaced { margin-top: 1.5rem; }
+dl.facts.spaced-below { margin-bottom: 1rem; }
+dialog.dialog { margin: auto; color: var(--ink); }
+dialog.dialog::backdrop { background: rgb(29 42 46 / 0.45); }

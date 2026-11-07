@@ -15,7 +15,7 @@ RSpec.describe "Security hardening", type: :request do
     request_record = start_onboarding(client_ip: "192.0.2.10").record
     [ "/", "/hosts/new", "/hosts/#{host.id}", "/hosts/#{host.id}/edit", "/hosts/#{host.id}/revoke", "/hosts/#{host.id}/retire",
       "/hosts/#{host.id}/reenroll", "/settings", "/audit", "/agents", "/agents/install", "/onboard", "/onboard/#{request_record.user_code}",
-      "/jobs/failed" ]
+      "/jobs/failed", "/data-sources" ]
   end
 
   describe "Content Security Policy" do

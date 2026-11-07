@@ -26,6 +26,13 @@ RSpec.describe "Compliance", :signed_in, type: :request do
     expect(page.at_css("nav[aria-label=Main] a[aria-current=page]").text).to eq("Fleet")
   end
 
+  it "has the mockup's Data sources button, and the navigation lists Data sources after Compliance (P2-D06)" do
+    get "/compliance"
+    expect(page.at_css(".page-head #data_sources_link")).to have_attributes(text: "Data sources")
+    expect(page.at_css(".page-head #data_sources_link")["href"]).to eq("/data-sources")
+    expect(page.css("nav[aria-label=Main] a").map(&:text).first(3)).to eq([ "Fleet", "Compliance", "Data sources" ])
+  end
+
   it "says there are no active hosts, with the way to add one, and draws no counts" do
     create(:host, name: "Lab sandbox")
     get "/compliance"
