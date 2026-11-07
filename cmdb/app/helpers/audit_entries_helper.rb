@@ -38,7 +38,9 @@ module AuditEntriesHelper
     Audit::Actions::RULE_ENABLED => "Rule enabled",
     Audit::Actions::RULE_DISABLED => "Rule disabled",
     Audit::Actions::ADVISORY_IMPORTED => "Advisories imported",
-    Audit::Actions::ADVISORY_IMPORT_FAILED => "Advisory import failed"
+    Audit::Actions::ADVISORY_IMPORT_FAILED => "Advisory import failed",
+    Audit::Actions::ADVISORY_REFRESH_REQUESTED => "Advisory refresh started",
+    Audit::Actions::ADVISORY_REFRESH_REFUSED => "Advisory refresh refused (cool-down)"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
@@ -84,9 +86,13 @@ module AuditEntriesHelper
     "full" => [ "Full data set", false ],
     "ecosystems" => [ "Ecosystems", true ],
     "counts" => [ "Counts", true ],
+    "next_allowed_at" => [ "Next refresh allowed", true ],
     **SETTING_NAMES.keys.index_with { [ "Minutes", true ] },
     **INTERVAL_SETTING_NAMES.keys.index_with { [ "Seconds", true ] }
   }.freeze
+
+  # Recorded as ISO 8601 and shown like every other time on the page.
+  TIME_FIELDS = %w[expires_at next_allowed_at].freeze
 
   # /audit with these query parameters. Built by hand because url_for treats an :action key as the route's
   # action, and the filter is called action.
@@ -223,7 +229,7 @@ module AuditEntriesHelper
     when false then "no"
     when Array then value.map { |item| audit_text(key, item) }.join(", ")
     when Hash then value.to_json
-    else key == "expires_at" ? audit_recorded_time(value.to_s) : value.to_s
+    else TIME_FIELDS.include?(key) ? audit_recorded_time(value.to_s) : value.to_s
     end
   end
 

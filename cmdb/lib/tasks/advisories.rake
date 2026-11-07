@@ -21,7 +21,7 @@ namespace :advisories do
   task refresh: :environment do
     job = AdvisoryFeedRefreshJob.new
     begin
-      result = job.perform
+      result = job.perform(kind: "task") # not limited by the manual refresh cool-down, but starts it (P2-S15)
     rescue StandardError => e
       import = job.give_up(e)
       abort "Refresh failed: #{import.reason}"

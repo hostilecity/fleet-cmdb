@@ -159,6 +159,64 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
     log = captured_log { expect(described_class.perform_now).to be_nil }
     expect(log).to include("no feed configured")
     expect(AdvisoryImport.count).to eq(0)
+    expect(AdvisoryRefreshAttempt.count).to eq(0)
+  end
+
+  describe "the manual refresh cool-down (P2-S15)" do
+    let(:operator) { create(:operator) }
+
+    it "runs on schedule within the cool-down of a manual refresh, and records its start once, not on each retry" do
+      expect(Advisories::ManualRefresh.request!(actor: operator)).to be_accepted
+      clear_enqueued_jobs
+      stub_feed.to_timeout.then.to_return(status: 200, body: archive)
+      refresh
+      expect(AdvisoryRefreshAttempt.order(:id).pluck(:kind)).to eq(%w[manual scheduled])
+      expect(AdvisoryImport.sole).to have_attributes(state: "succeeded", operator: nil)
+      # the scheduled run started the cool-down again
+      expect(Advisories::ManualRefresh.next_allowed_at).to be_within(1.second).of(AdvisoryRefreshAttempt.maximum(:started_at) + 5.minutes)
+    end
+
+    it "records its start on a retry when recording failed on the first execution (review of #125)" do
+      stub_feed
+      calls = 0
+      allow(Advisories::ManualRefresh).to receive(:record_start!).and_wrap_original do |original, **args|
+        calls += 1
+        raise ActiveRecord::ConnectionFailed, "the database went away" if calls == 1
+
+        original.call(**args)
+      end
+      refresh
+      expect(calls).to eq(2)
+      expect(AdvisoryRefreshAttempt.pluck(:kind)).to eq(%w[scheduled])
+      expect(AdvisoryImport.sole).to have_attributes(state: "succeeded")
+    end
+
+    it "attributes the import from a manual refresh, and its audit entry, to the operator who asked" do
+      stub_feed
+      Advisories::ManualRefresh.request!(actor: operator)
+      perform_enqueued_jobs
+      expect(AdvisoryRefreshAttempt.sole.kind).to eq("manual") # the job did not record a second attempt
+      expect(AdvisoryImport.sole).to have_attributes(state: "succeeded", operator:)
+      expect(AuditEntry.order(:id).pluck(:action, :actor_type, :actor_id))
+        .to eq([ [ "advisory.refresh_requested", "operator", operator.id ], [ "advisory.imported", "operator", operator.id ] ])
+    end
+
+    it "attributes a manual refresh's failure and a not-modified answer to the operator too" do
+      stub_feed
+      refresh
+      travel 10.minutes
+      stub_request(:get, url).with(headers: { "If-None-Match" => '"v1"' }).to_return(status: 304)
+      perform_enqueued_jobs { Advisories::ManualRefresh.request!(actor: operator) }
+      expect(AdvisoryImport.order(:id).last).to have_attributes(counts: { "not_modified" => true }, operator:)
+
+      travel 10.minutes
+      stub_request(:get, url).to_return(status: 500)
+      expect { perform_enqueued_jobs { Advisories::ManualRefresh.request!(actor: operator) } }.to raise_error(Minitest::UnexpectedError)
+      expect(AdvisoryImport.order(:id).last).to have_attributes(state: "failed", operator:)
+      expect(AuditEntry.order(:id).last).to have_attributes(action: "advisory.import_failed", actor_type: "operator", actor_id: operator.id)
+    ensure
+      travel_back
+    end
   end
 
   it "fails as a job an operator sees on the failed-jobs page and in /health, without the secrets" do

@@ -66,6 +66,17 @@ RSpec.describe "advisories rake tasks" do
       Advisories.config.feed_url = nil
       expect(run("advisories:refresh")).to include("No feed is configured")
     end
+
+    it "is not held back by a manual refresh's cool-down, and starts one itself (P2-S15)" do
+      stub_request(:get, "https://advisories.example.org/all.zip").to_return(status: 200, body: osv_zip("a.json" => osv_record(id: "DSA-1-1")).binread)
+      operator = create(:operator)
+      expect(Advisories::ManualRefresh.request!(actor: operator)).to be_accepted
+      expect(run("advisories:refresh")).to include("1 records, 1 added")
+      expect(AdvisoryRefreshAttempt.order(:id).pluck(:kind)).to eq(%w[manual task])
+      task_started = AdvisoryRefreshAttempt.order(:id).last.started_at
+      expect(Advisories::ManualRefresh.request!(actor: operator, now: task_started + 4.minutes))
+        .to have_attributes(accepted?: false, next_allowed_at: task_started + 5.minutes)
+    end
   end
 
   it "shows each ecosystem's freshness and the last import" do

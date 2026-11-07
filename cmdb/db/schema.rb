@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_060000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_070000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -62,6 +62,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_060000) do
     t.string "fixed_version", limit: 256
     t.index ["advisory_id", "ecosystem", "package"], name: "index_advisory_packages_unique", unique: true
     t.index ["ecosystem", "package"], name: "index_advisory_packages_on_ecosystem_and_package"
+  end
+
+  create_table "advisory_refresh_attempts", force: :cascade do |t|
+    t.string "kind", limit: 16, null: false
+    t.bigint "operator_id"
+    t.datetime "started_at", null: false
+    t.index ["operator_id"], name: "index_advisory_refresh_attempts_on_operator_id"
+    t.index ["started_at"], name: "index_advisory_refresh_attempts_on_started_at"
+    t.check_constraint "(kind::text = 'manual'::text) = (operator_id IS NOT NULL)", name: "advisory_refresh_attempts_operator_iff_manual"
+    t.check_constraint "kind::text = ANY (ARRAY['manual'::character varying, 'scheduled'::character varying, 'task'::character varying]::text[])", name: "advisory_refresh_attempts_kind_valid"
   end
 
   create_table "agent_credentials", force: :cascade do |t|
@@ -577,6 +587,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_060000) do
 
   add_foreign_key "advisory_imports", "operators"
   add_foreign_key "advisory_packages", "advisories", on_delete: :cascade
+  add_foreign_key "advisory_refresh_attempts", "operators"
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "agent_release_imports", "agent_releases"
   add_foreign_key "agent_release_imports", "operators"

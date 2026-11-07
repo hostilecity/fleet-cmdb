@@ -7,6 +7,13 @@
 # any kind (the feed unreachable or timing out, an HTTP error, an archive that cannot be read) is retried with
 # backoff; after the last attempt it is recorded as a failed import, audited, and raised again, so Solid Queue
 # keeps it as a failed job and it shows on the dashboard banner and in /health (NFR-2, P1-O02).
+#
+# Each refresh records when it started (Advisories::ManualRefresh, P2-S15), which starts the cool-down on the
+# dashboard's "Refresh now". A scheduled run records itself as "scheduled" once (not again on retries, which are
+# the same refresh; if recording fails, a retry records it instead, review of #125) and the rake task as "task";
+# neither is ever refused. A manual refresh
+# was recorded when the operator asked, and passes that attempt's id: its import and any failure are then
+# attributed to that operator.
 class AdvisoryFeedRefreshJob < ApplicationJob
   queue_as :default
 
@@ -15,13 +22,21 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     raise error
   end
 
-  def perform
+  # attempt_id: the manual attempt Advisories::ManualRefresh.request! recorded. kind: what to record a run
+  # without one as ("scheduled", or "task" from bin/rails advisories:refresh).
+  def perform(attempt_id: nil, kind: "scheduled")
     feed = Advisories::Feed.new
     if feed.url.nil?
       logger.info("[advisories] no feed configured (FLEET_ADVISORY_FEED_URL); refresh skipped")
       return nil
     end
 
+    if attempt_id
+      @operator = AdvisoryRefreshAttempt.find_by(id: attempt_id)&.operator
+    elsif !@start_recorded
+      Advisories::ManualRefresh.record_start!(kind:)
+      @start_recorded = true
+    end
     @source = feed.source
     last = AdvisoryImport.succeeded.where(origin: "feed", source: @source).order(finished_at: :desc, id: :desc).first
     # Ask conditionally only when the last download imported cleanly: after malformed records, the same archive
@@ -39,6 +54,14 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     download&.close!
   end
 
+  # Whether this refresh's start is recorded travels with the job through its retries, as executions does.
+  def serialize = super.merge("start_recorded" => @start_recorded == true)
+
+  def deserialize(job_data)
+    super
+    @start_recorded = job_data["start_recorded"] == true
+  end
+
   # Called by retry_on once the retries are used up, and by bin/rails advisories:refresh on its one attempt.
   # Returns the failed AdvisoryImport.
   def give_up(error)
@@ -48,20 +71,20 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     end
     attempts = [ executions, 1 ].max
     logger.error("[advisories] feed refresh failed after #{attempts} #{'attempt'.pluralize(attempts)}: #{reason}")
-    Advisories::Import.record_failure(origin: "feed", source: @source || Advisories::Feed.new.source, reason:, full: true)
+    Advisories::Import.record_failure(origin: "feed", source: @source || Advisories::Feed.new.source, reason:, full: true, operator: @operator)
   end
 
   private
 
   def import(download)
-    Advisories::Import.new(origin: "feed", source: @source, full: true, etag: download.etag, last_modified: download.last_modified)
+    Advisories::Import.new(origin: "feed", source: @source, full: true, operator: @operator, etag: download.etag, last_modified: download.last_modified)
                       .call(Advisories::Reader.new(download.file.path, name: File.basename(@source)))
   end
 
   # The archive has not changed since the last successful download: the data stays current.
   def not_modified(last)
     now = Time.current
-    import = AdvisoryImport.create!(origin: "feed", source: @source, full: true, state: "succeeded", ecosystems: last.ecosystems,
+    import = AdvisoryImport.create!(origin: "feed", source: @source, full: true, operator: @operator, state: "succeeded", ecosystems: last.ecosystems,
                                     counts: { "not_modified" => true }, etag: last.etag, last_modified: last.last_modified,
                                     started_at: now, finished_at: now)
     Advisories::Import::Result.new(import:, changed_packages: {})
