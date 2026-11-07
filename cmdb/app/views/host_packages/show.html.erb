@@ -57,7 +57,7 @@
           <% findings = @list.open_findings[[ package.name, package.architecture ]] %>
           <tr><td><span class="mono"><%= package.name %></span></td><td><span class="mono"><%= package.version %></span></td><td><span class="mono"><%= package.architecture %></span></td>
             <td><%= package.source ? tag.span(package.source, class: "mono") : tag.span("—", class: "muted") %></td><td><%= @set.manager %></td>
-            <td><% if findings %><%= "#{findings.open} open#{' (reopened)' if findings.reopened}" %><% else %><span class="muted">—</span><% end %></td></tr>
+            <td><% if findings %><%= link_to "#{findings.open} open#{' (reopened)' if findings.reopened}", package_vulnerabilities_host_path(@host, package: package.name) %><% else %><span class="muted">—</span><% end %></td></tr>
         <% end %>
       </tbody></table></div>
     <% end %>

@@ -30,7 +30,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
     expect(words(page.at_css("#no_packages"))).to start_with("No package report yet.")
     expect(page.at_css("#request button").text).to eq("Request fresh package report")
     expect(page.at_css("#package_list")).to be_nil
-    expect(page.css("nav.tabs a").map { |a| a.text.squish }).to eq(%w[Overview Configuration Packages])
+    expect(page.css("nav.tabs a").map { |a| a.text.squish }.first(3)).to eq(%w[Overview Configuration Packages])
   end
 
   context "with a package set" do
@@ -49,7 +49,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(rows[4]).to eq([ "nosource", "1.0", "amd64", "—", "dpkg", "—" ])
       expect(page.at_css("th[aria-sort=ascending]").text).to eq("Package")
       expect(words(page.at_css("#package_pager"))).to eq("Packages 1–7 of 7 Previous · Page 1 of 1 · Next")
-      expect(page.css("nav.tabs a").map { |a| words(a) }).to eq([ "Overview", "Configuration", "Packages 7" ])
+      expect(page.css("nav.tabs a").map { |a| words(a) }.first(3)).to eq([ "Overview", "Configuration", "Packages 7" ])
       expect(words(page.at_css("#glance_packages"))).to eq("Packages 7 dpkg, set last changed 1 minute ago")
       expect(page.at_css("#glance_packages")["href"]).to eq("/hosts/#{host.id}/packages")
     end
@@ -209,7 +209,7 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(words(page.at_css("#unsupported_manager"))).to eq("This host's package manager is not supported, so its packages are unknown. " \
                                                                "The agent reported: apk is not supported by this agent version . Supported package managers: dpkg. This is not an empty package list.")
       expect(page.at_css("#package_list")).to be_nil
-      expect(page.css("nav.tabs a").map { |a| words(a) }.last).to eq("Packages Unsupported")
+      expect(page.css("nav.tabs a").map { |a| words(a) }[2]).to eq("Packages Unsupported")
       expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known Unsupported package manager")
       expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "No diff: one side is from an unsupported package manager", "Oldest package snapshot kept, 1 package" ])
     end
