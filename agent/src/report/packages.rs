@@ -1,7 +1,9 @@
 //! The package reporter (FR-2.3, P2-AGENT-PACKAGES, DEC-07).
 //!
 //! A `packages` report (`POST /api/v1/reports/packages`) lists every installed package
-//! ([`crate::packages`]), or says `unsupported` with the reason. It follows the config report's cadence
+//! ([`crate::packages`]) and names the ones left out (`skipped`: an interrupted installation, or a line
+//! the contract cannot carry whose name is readable); or it says `unsupported` (no dpkg, or another
+//! manager) or `unreadable` (dpkg is there but cannot be listed) with the reason and no packages. It follows the config report's cadence
 //! and handling ([`super::config`]), as FR-2.3 asks:
 //!
 //! - **on startup**;
@@ -19,7 +21,7 @@
 //! straight into the encoder, so the JSON is never held whole, and only the compressed bytes are kept for
 //! a retry (about 30 KiB for 3,000 packages). The server takes at most 4 MiB of JSON and 1 MiB
 //! compressed; a list that does not fit within [`MAX_JSON_BYTES`] and [`MAX_GZIP_BYTES`] is not sent in
-//! part: the report says `unsupported` with the reason, so the server keeps an unknown set rather than
+//! part: the report says `unreadable` with the reason, so the server keeps an unknown set rather than
 //! a smaller one.
 //!
 //! **Stopping.** With [`Reporter::stopping_on`], a stop request ends a tick after what is in flight: the
@@ -40,7 +42,7 @@ use super::time::rfc3339;
 use super::{Transport, new_report_id};
 use crate::client::ApiError;
 use crate::facts::host::Host;
-use crate::packages::{self, Collected, Listing, Package};
+use crate::packages::{self, Collected, Listing, Package, Skipped};
 use crate::retry::{Backoff, Rng};
 use crate::shutdown::Shutdown;
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
@@ -230,6 +232,8 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 reason = reason.as_str(),
                 manager = "dpkg",
                 packages = listing.packages.len(),
+                skipped = listing.skipped.len(),
+                skipped_not_named = listing.skipped_not_named,
                 not_configured = listing.not_configured,
                 removed = listing.removed,
                 warnings = listing.warnings.len(),
@@ -238,7 +242,14 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 replaced,
                 "listed the installed packages"
             ),
-            (Collected::Dpkg(_), Some(why)) | (Collected::Unsupported(why), _) => tracing::warn!(
+            (Collected::Dpkg(_), Some(why)) | (Collected::Unreadable(why), _) => tracing::warn!(
+                reason = reason.as_str(),
+                manager = "unreadable",
+                unsupported_reason = why.as_str(),
+                replaced,
+                "dpkg is here but its packages cannot be reported; the report says why"
+            ),
+            (Collected::Unsupported(why), _) => tracing::warn!(
                 reason = reason.as_str(),
                 manager = "unsupported",
                 unsupported_reason = why.as_str(),
@@ -250,6 +261,13 @@ impl<'a, R: Rng> Reporter<'a, R> {
         if let Collected::Dpkg(listing) = &collected {
             for warning in &listing.warnings {
                 tracing::warn!(warning = warning.as_str(), "package list");
+            }
+            for skipped in &listing.skipped {
+                tracing::warn!(
+                    package = skipped.name.as_str(),
+                    reason = skipped.reason.as_str(),
+                    "package skipped: not reported as installed"
+                );
             }
         }
         self.pending = Some(Pending {
@@ -331,7 +349,7 @@ pub struct Encoded {
     pub body: Vec<u8>,
     /// Bytes of JSON before compression.
     pub json_bytes: usize,
-    /// Why a dpkg listing was sent as `unsupported` instead: it did not fit.
+    /// Why a dpkg listing was sent as `unreadable` instead: it did not fit.
     pub refused: Option<String>,
 }
 
@@ -344,6 +362,9 @@ struct Body<'a> {
     manager: &'static str,
     unsupported_reason: Option<&'a str>,
     packages: &'a [Package],
+    /// Left out when empty: absent means none (the contract), and a server that predates it is unchanged.
+    #[serde(skip_serializing_if = "<[Skipped]>::is_empty")]
+    skipped: &'a [Skipped],
     warnings: Vec<Warning<'a>>,
 }
 
@@ -354,12 +375,12 @@ struct Warning<'a> {
 }
 
 /// The gzip-compressed `packages.request` body. A dpkg listing too large for the server's limits
-/// becomes an `unsupported` report saying so ([`Encoded::refused`]).
+/// becomes an `unreadable` report saying so ([`Encoded::refused`]).
 pub fn encode(report_id: &str, collected_at: &str, collected: &Collected) -> Encoded {
     let empty = Listing::default();
-    let unsupported = |reason: &str| {
+    let without_packages = |manager: &'static str, reason: &str| {
         let reason = crate::facts::clip_reason(reason);
-        let body = Body::new(report_id, collected_at, Some(&reason), &empty);
+        let body = Body::new(report_id, collected_at, Some((manager, &reason)), &empty);
         // An empty report is a few hundred bytes, far inside both limits.
         compress(&body).unwrap_or_default()
     };
@@ -368,7 +389,7 @@ pub fn encode(report_id: &str, collected_at: &str, collected: &Collected) -> Enc
             match compress(&Body::new(report_id, collected_at, None, listing)) {
                 Ok(done) => done,
                 Err(why) => {
-                    let (body, json_bytes) = unsupported(&why);
+                    let (body, json_bytes) = without_packages("unreadable", &why);
                     return Encoded {
                         body,
                         json_bytes,
@@ -377,8 +398,9 @@ pub fn encode(report_id: &str, collected_at: &str, collected: &Collected) -> Enc
                 }
             }
         }
-        Collected::Unsupported(reason) => unsupported(reason),
-        Collected::Stopping => unsupported("the agent is stopping"),
+        Collected::Unsupported(reason) => without_packages("unsupported", reason),
+        Collected::Unreadable(reason) => without_packages("unreadable", reason),
+        Collected::Stopping => without_packages("unsupported", "the agent is stopping"),
     };
     Encoded {
         body,
@@ -388,21 +410,24 @@ pub fn encode(report_id: &str, collected_at: &str, collected: &Collected) -> Enc
 }
 
 impl<'a> Body<'a> {
+    /// `without` is the manager and the reason of a report with no packages (`unsupported` or
+    /// `unreadable`); `None` is a dpkg listing, whose packages, skipped names, and warnings are sent.
     fn new(
         report_id: &'a str,
         collected_at: &'a str,
-        unsupported_reason: Option<&'a str>,
+        without: Option<(&'static str, &'a str)>,
         listing: &'a Listing,
     ) -> Self {
-        let dpkg = unsupported_reason.is_none();
+        let dpkg = without.is_none();
         Self {
             schema_version: AGENT_SCHEMA_VERSION,
             agent_version: AGENT_VERSION,
             report_id,
             collected_at,
-            manager: if dpkg { "dpkg" } else { "unsupported" },
-            unsupported_reason,
+            manager: without.map_or("dpkg", |(manager, _)| manager),
+            unsupported_reason: without.map(|(_, reason)| reason),
             packages: if dpkg { &listing.packages } else { &[] },
+            skipped: if dpkg { &listing.skipped } else { &[] },
             warnings: if dpkg {
                 listing
                     .warnings

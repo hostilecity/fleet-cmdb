@@ -76,6 +76,15 @@ fn the_startup_report_is_gzip_and_conforms_to_the_contract_with_every_package() 
     assert_eq!(body["manager"], "dpkg");
     assert_eq!(body["unsupported_reason"], Value::Null);
     assert_eq!(body["warnings"], json!([]));
+    // The interrupted installations of the fixture are named, with their state, and are not packages.
+    assert_eq!(
+        body["skipped"],
+        json!([
+            {"name": "man-db", "reason": "half-configured"},
+            {"name": "qemu-guest-agent", "reason": "unpacked"},
+            {"name": "systemd", "reason": "triggers-pending"},
+        ])
+    );
     assert_eq!(body["agent_version"], AGENT_VERSION);
     // Every package of the listing, as parsed.
     let listed = packages::parse(&package_fixture("dpkg-query-show")).packages;
@@ -108,6 +117,96 @@ fn an_unsupported_host_says_so_and_why_with_no_packages() {
 }
 
 #[test]
+fn a_host_with_nothing_skipped_sends_no_skipped_array() {
+    // Absent means none: the body is what a server that predates `skipped` already takes.
+    let output = b"installed\tfine\tall\t1\tfine\n".to_vec();
+    let host = FakeHost::debian13().with_output("dpkg-query --show", Ok(output));
+    let transport = transport();
+    reporter(&host).tick(Instant::now(), &transport);
+    let body = &posts(&transport)[0];
+    assert_conforms("v1", "packages.request", body);
+    assert_eq!(body["manager"], "dpkg");
+    assert!(body.get("skipped").is_none(), "{body}");
+}
+
+#[test]
+fn lines_with_a_readable_name_are_skipped_and_named_in_the_report() {
+    let mut output = package_fixture("dpkg-query-show");
+    output.extend_from_slice(b"installed\tbadver\tamd64\t1 2\tbadver\n");
+    output.extend_from_slice(b"installed\tOdd\tamd64\t1.0\todd\n");
+    let host = FakeHost::debian13().with_output("dpkg-query --show", Ok(output));
+    let transport = transport();
+    reporter(&host).tick(Instant::now(), &transport);
+    let body = &posts(&transport)[0];
+    assert_conforms("v1", "packages.request", body);
+    let skipped = body["skipped"].as_array().unwrap();
+    assert!(
+        skipped.contains(
+            &json!({"name": "badver", "reason": "version is not one a package report can carry"})
+        ),
+        "{skipped:?}"
+    );
+    // `Odd` has no readable name: a warning only.
+    assert!(!skipped.iter().any(|s| s["name"] == "Odd"));
+    assert_eq!(body["warnings"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn more_skipped_than_the_contract_allows_are_counted_in_a_warning() {
+    let output: String = (0..100)
+        .map(|i| format!("unpacked\tstuck-{i:03}\tamd64\t1.0\tstuck\n"))
+        .collect();
+    let host = FakeHost::debian13().with_output("dpkg-query --show", Ok(output.into_bytes()));
+    let transport = transport();
+    reporter(&host).tick(Instant::now(), &transport);
+    let body = &posts(&transport)[0];
+    assert_conforms("v1", "packages.request", body);
+    assert_eq!(body["manager"], "dpkg");
+    assert_eq!(body["skipped"].as_array().unwrap().len(), 64);
+    assert_eq!(
+        body["warnings"],
+        json!([{"field": "packages", "message": "36 more packages were skipped; their names are not listed (at most 64 are)"}])
+    );
+}
+
+#[test]
+fn a_dpkg_that_cannot_be_listed_is_reported_unreadable_with_the_reason() {
+    let cases = [
+        (
+            FakeHost::debian13().with_output(
+                "dpkg-query --show",
+                Err(RunError::Failed {
+                    status: "exit status 2".into(),
+                    stderr: "dpkg-query: error: parsing file".into(),
+                }),
+            ),
+            "dpkg-query --show failed (exit status 2): dpkg-query: error: parsing file",
+        ),
+        (
+            FakeHost::debian13().with_output(
+                "dpkg-query --show",
+                Err(RunError::TimedOut(crate::packages::TIMEOUT)),
+            ),
+            "dpkg-query --show did not finish within 20 seconds",
+        ),
+        (
+            FakeHost::debian13().denying(DPKG_STATUS),
+            "permission denied reading /var/lib/dpkg/status",
+        ),
+    ];
+    for (host, reason) in cases {
+        let transport = transport();
+        reporter(&host).tick(Instant::now(), &transport);
+        let body = &posts(&transport)[0];
+        assert_conforms("v1", "packages.request", body);
+        assert_eq!(body["manager"], "unreadable");
+        assert_eq!(body["unsupported_reason"], reason);
+        assert_eq!(body["packages"], json!([]));
+        assert!(body.get("skipped").is_none(), "{body}");
+    }
+}
+
+#[test]
 fn warnings_reach_the_report() {
     let mut output = package_fixture("dpkg-query-show");
     output.extend_from_slice(b"installed\tOdd\tamd64\t1.0\todd\n");
@@ -116,7 +215,7 @@ fn warnings_reach_the_report() {
     reporter(&host).tick(Instant::now(), &transport);
     let body = &posts(&transport)[0];
     assert_conforms("v1", "packages.request", body);
-    assert_eq!(body["packages"].as_array().unwrap().len(), 30);
+    assert_eq!(body["packages"].as_array().unwrap().len(), 28);
     assert_eq!(
         body["warnings"],
         json!([{"field": "packages", "message": "package name `Odd` is not one a package report can carry; skipped"}])
@@ -352,7 +451,7 @@ fn incompressible(count: usize) -> Listing {
 }
 
 #[test]
-fn a_listing_over_the_json_limit_is_reported_unsupported_not_cut() {
+fn a_listing_over_the_json_limit_is_reported_unreadable_not_cut() {
     let listing = incompressible(MAX_PACKAGES);
     let encoded = encode(
         "00000000-0000-4000-8000-000000000001",
@@ -366,13 +465,13 @@ fn a_listing_over_the_json_limit_is_reported_unsupported_not_cut() {
     );
     let body = gunzip(&encoded.body);
     assert_conforms("v1", "packages.request", &body);
-    assert_eq!(body["manager"], "unsupported");
+    assert_eq!(body["manager"], "unreadable");
     assert_eq!(body["unsupported_reason"], json!(refused));
     assert_eq!(body["packages"], json!([]));
 }
 
 #[test]
-fn a_listing_over_the_compressed_limit_is_reported_unsupported_not_cut() {
+fn a_listing_over_the_compressed_limit_is_reported_unreadable_not_cut() {
     // About 3.3 MB of JSON, within the JSON limit, that compresses to well over 1 MB.
     let listing = incompressible(13_000);
     let encoded = encode(
@@ -387,7 +486,7 @@ fn a_listing_over_the_compressed_limit_is_reported_unsupported_not_cut() {
     );
     let body = gunzip(&encoded.body);
     assert_conforms("v1", "packages.request", &body);
-    assert_eq!(body["manager"], "unsupported");
+    assert_eq!(body["manager"], "unreadable");
 }
 
 #[test]
