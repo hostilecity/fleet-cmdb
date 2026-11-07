@@ -156,6 +156,9 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
       def pages
         [
           [ "/", true ], [ "/?q=#{CGI.escape(text.first(200))}", false ], [ "/?tag=#{CGI.escape(text.first(30))}&status=#{CGI.escape(text.first(30))}", false ],
+          [ "/compliance", true ], [ "/compliance?tag=#{CGI.escape(text.first(32))}", false ],
+          [ "/compliance?q=#{CGI.escape(text.first(200))}&tag=#{CGI.escape(text.first(30))}&ecosystem=#{CGI.escape(text.first(30))}&status=#{CGI.escape(text.first(30))}&cis=#{CGI.escape(text.first(30))}" \
+            "&vuln=#{CGI.escape(text.first(30))}&sort=#{CGI.escape(text.first(30))}&page=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}", true ], [ "/hosts/#{host.id}/edit", true ],
           [ "/hosts/#{host.id}/config?result=all&facts=all&history=all", true ], [ "/hosts/#{host.id}/config/compare", true ],
           [ "/hosts/#{host.id}/config?q=#{CGI.escape(text.first(100))}&severity=#{CGI.escape(text.first(30))}&result=#{CGI.escape(text.first(30))}", false ],
@@ -241,7 +244,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
   end
 
   it "names the same views the dashboard has, so a new one cannot be forgotten here" do
-    shown = %w[hosts#index hosts#show hosts#edit hosts#new host_configs#show host_configs#compare host_packages#show host_packages#compare
+    shown = %w[hosts#index hosts#show hosts#edit hosts#new compliance#index host_configs#show host_configs#compare host_packages#show host_packages#compare
                host_vulnerabilities#show host_vulnerabilities#package
                host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new

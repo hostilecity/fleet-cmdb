@@ -1,0 +1,23 @@
+<% host = row.host %>
+<tr id="<%= dom_id(host, :compliance) %>" class="<%= "not-evaluated" if row.nothing_evaluated? %>">
+  <th scope="row"><%= link_to host.name, host_path(host) %><span class="state-note"><%= status_lamp(host) %></span><% if host.tags.any? %><span class="state-note"><% host.tags.each do |t| %><%= link_to t, compliance_path(tag: t), class: "tag" %><% end %></span><% end %>
+    <% if !row.vulns_evaluated? && row.vulns_shown? %><span class="reason-line">Vulnerabilities not evaluated now (<%= vuln_reason_line(row).downcase_first %>); the open findings are from an earlier evaluation</span><% end %></th>
+  <% if row.cis_evaluated? %>
+    <%= pass_rate_cell(row) %>
+    <% if row.cis_failed.zero? %>
+      <%= none_open_cell(FleetCompliance::CIS_SEVERITIES.size) %>
+    <% else %>
+      <% FleetCompliance::CIS_SEVERITIES.each do |severity| %><%= sevcount_cell(row.cis[severity], severity) %><% end %>
+    <% end %>
+  <% else %>
+    <%= not_evaluated_cell(cis_reason_line(row, rules_defined), FleetCompliance::CIS_SEVERITIES.size + 1) %>
+  <% end %>
+  <% if !row.vulns_shown? %>
+    <%= not_evaluated_cell(vuln_reason_line(row), FleetCompliance::VULN_SEVERITIES.size) %>
+  <% elsif row.vulns_open.zero? %>
+    <%= none_open_cell(FleetCompliance::VULN_SEVERITIES.size) %>
+  <% else %>
+    <% FleetCompliance::VULN_SEVERITIES.each do |severity| %><%= sevcount_cell(row.vulns[severity], severity) %><% end %>
+  <% end %>
+  <td class="muted"><%= last_reports(row) %></td>
+</tr>

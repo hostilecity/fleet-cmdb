@@ -10,6 +10,7 @@
 <% end %>
 <%= render "hosts/advisory_freshness", statuses: @advisory_freshness %>
 <%= render "hosts/counts", counts: @counts %>
+<%= render "hosts/compliance_summary", totals: @compliance_totals, rules_defined: @rules_defined if @compliance_totals.hosts.positive? %>
 <%= form_with url: root_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
   <label>Search name or hostname<%= search_field_tag :q, @fleet.q, placeholder: "vm-01 or Media server", maxlength: 100 %></label>
   <label>Tag<%= select_tag :tag, options_for_select(@tags, @fleet.tag), include_blank: "All tags" %></label>
@@ -30,14 +31,14 @@
   </div>
 <% else %>
   <div class="table-wrap"><table>
-    <caption class="visually-hidden">Hosts, <%= @fleet.sort == "last_seen" ? "last seen" : @fleet.sort %> <%= @fleet.aria_sort(@fleet.sort) %></caption>
+    <caption class="visually-hidden">Hosts, <%= { "last_seen" => "last seen", "cis" => "CIS pass rate", "vulns" => "open vulnerabilities" }.fetch(@fleet.sort, @fleet.sort) %> <%= @fleet.aria_sort(@fleet.sort) %></caption>
     <thead><tr>
-      <% [ %w[name Name], %w[status Status], [ "last_seen", "Last seen" ], %w[hostname Hostname], %w[tags Tags], [ "os", "Operating system" ], %w[agent Agent] ].each do |column, label| %>
+      <% [ %w[name Name], %w[status Status], [ "last_seen", "Last seen" ], %w[hostname Hostname], %w[tags Tags], [ "os", "Operating system" ], [ "cis", "CIS pass rate" ], [ "vulns", "Open vulnerabilities" ], %w[agent Agent] ].each do |column, label| %>
         <th aria-sort="<%= @fleet.aria_sort(column) %>"><%= link_to label, root_path(@fleet.sort_params(column)) %></th>
       <% end %>
     </tr></thead>
     <tbody>
-      <%= render partial: "hosts/row", collection: @hosts, as: :host %>
+      <%= render partial: "hosts/row", collection: @hosts, as: :host, locals: { compliance: @compliance, rules_defined: @rules_defined } %>
     </tbody>
   </table></div>
 <% end %>

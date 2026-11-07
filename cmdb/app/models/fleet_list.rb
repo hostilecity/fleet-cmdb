@@ -1,6 +1,7 @@
 # The fleet list and its counts (FR-1.5, P1-D02). Built from query parameters so every view is linkable:
 # q (name or hostname), tag, status, sort, and dir. Retired hosts are never listed or counted. Each list is
-# two queries whatever the fleet size: one for the rows (with the OS name joined in) and one for the counts.
+# two queries whatever the fleet size: one for the rows (with the OS name and FleetCompliance's per-host counts joined
+# in) and one for the counts.
 class FleetList
   # Display statuses: liveness for active hosts, enrollment state otherwise (FR-1.1, FR-1.4).
   STATUSES = {
@@ -23,6 +24,8 @@ class FleetList
     END
   SQL
 
+  OPEN_FINDINGS = "(#{FleetCompliance::VULN_SEVERITIES.map { |s| "vulns.vuln_#{s}" }.join(' + ')})".freeze
+
   SORTS = {
     "name" => "lower(hosts.name)",
     "status" => STATUS_RANK,
@@ -33,7 +36,11 @@ class FleetList
     # int: SemVer components are unbounded, and a valid 2147483648.0.0 must not break the page (review of #53).
     "agent" => "string_to_array(regexp_replace(hosts.agent_version, '[-+].*$', ''), '.')::numeric[]",
     # By the tag list as displayed (in entry order); hosts without tags sort last in either direction.
-    "tags" => "NULLIF(array_to_string(hosts.tags, ','), '')"
+    "tags" => "NULLIF(array_to_string(hosts.tags, ','), '')",
+    # The two compliance columns (P2-D05, owner decision Q8). Hosts that are not active or not evaluated sort last in
+    # either direction, so they are never taken for 0% or for no findings.
+    "cis" => "CASE WHEN hosts.enrollment_state = 'active' THEN cis.cis_passed::numeric / NULLIF(cis.cis_passed + cis.cis_failed + cis.cis_not_readable, 0) END",
+    "vulns" => "CASE WHEN hosts.enrollment_state = 'active' AND (hve.state = 'evaluated' OR #{OPEN_FINDINGS} > 0) THEN #{OPEN_FINDINGS} END"
   }.freeze
 
   # Every ORDER BY clause the list can use, built from the constants above only.
@@ -56,7 +63,8 @@ class FleetList
   def self.rows(ids) = base_scope.where(id: ids).to_a
 
   def self.base_scope
-    Host.in_fleet.left_joins(:inventory).select("hosts.*", "host_inventories.stable #>> '{os,pretty_name}' AS os_name")
+    Host.in_fleet.left_joins(:inventory).joins(FleetCompliance::JOINS)
+        .select("hosts.*", "host_inventories.stable #>> '{os,pretty_name}' AS os_name", *FleetCompliance::COLUMNS)
   end
 
   def hosts

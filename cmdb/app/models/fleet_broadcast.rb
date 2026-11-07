@@ -14,7 +14,9 @@ module FleetBroadcast
   end
 
   # Something every open dashboard page may show changed without a host changing: an onboarding request
-  # arrived or was decided (P1-D07), so the "waiting for approval" notice and list refresh.
+  # arrived or was decided (P1-D07), so the "waiting for approval" notice and list refresh; or an advisory import may
+  # have changed severities the compliance counts are grouped by (P2-D05). CIS evaluation and vulnerability matching
+  # call hosts_changed once per run, with the hosts whose shown compliance changed, so a fleet-wide run is one refresh.
   def refresh
     ActiveRecord.after_all_transactions_commit { FleetBroadcastJob.perform_later([]) }
   end
