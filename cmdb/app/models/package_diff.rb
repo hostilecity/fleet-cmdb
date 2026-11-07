@@ -26,13 +26,28 @@
 # kept are unreadable, the set before is unknown and the diff is not available (review of #121). The host's first
 # snapshot (none before it) has everything installed.
 class PackageDiff
-  Change = Data.define(:name, :architecture, :from, :to, :direction)
+  Change = Data.define(:name, :architecture, :from, :to, :direction) do
+    # The direction, except :equivalent for versions dpkg treats as equal that are spelled differently (`1.0` and
+    # `0:1.0`), so that :same means only the source package changed (review of #119).
+    def kind = direction == :same && from.version != to.version ? :equivalent : direction
+  end
   # A package that was installed and is not now, but is named in the newer report's skipped list.
   Skip = Data.define(:name, :architecture, :package, :reason)
   # A package installed now whose name the older report skipped (package is the newer one).
   Completed = Data.define(:name, :architecture, :package, :reason)
   # A name the older report skipped that the newer report neither lists nor skips. No architecture or version.
   SkippedRemoval = Data.define(:name, :reason)
+
+  # The kinds, in the order changes are listed: what counts and summaries follow.
+  KINDS = %i[installed completed removed removed_skipped skipped upgrade downgrade invalid same equivalent].freeze
+  # How many changes of each kind (none of zero), and why there is no diff, if there is none: all the snapshot list
+  # shows, small enough to cache for a pair of snapshots, which never change (review of #124).
+  Summary = Data.define(:unavailable_reason, :counts) do
+    def self.from_h(hash) = new(unavailable_reason: hash["unavailable_reason"], counts: hash["counts"].transform_keys(&:to_sym))
+    def to_h = { "unavailable_reason" => unavailable_reason, "counts" => counts.transform_keys(&:to_s) }
+    def available? = unavailable_reason.nil?
+    def empty? = counts.empty?
+  end
 
   DIRECTIONS = { -1 => :upgrade, 0 => :same, 1 => :downgrade, invalid: :invalid }.freeze
   UNAVAILABLE = "the package manager was unsupported, so the package set is unknown"
@@ -91,6 +106,14 @@ class PackageDiff
 
   def available? = unavailable_reason.nil?
   def empty? = [ installed, completed, removed, skipped, removed_skipped, changed ].all?(&:empty?)
+  # { kind => count } in KINDS order, for every kind with at least one change.
+  def counts
+    lists = { installed:, completed:, removed:, removed_skipped:, skipped: }.transform_values(&:size)
+    all = lists.merge(changed.map(&:kind).tally)
+    KINDS.filter_map { |kind| [ kind, all[kind] ] if all[kind].to_i.positive? }.to_h
+  end
+
+  def summary = Summary.new(unavailable_reason:, counts:)
   def upgraded = changed.select { |c| c.direction == :upgrade }
   def downgraded = changed.select { |c| c.direction == :downgrade }
 

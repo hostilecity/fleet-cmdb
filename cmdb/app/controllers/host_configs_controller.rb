@@ -31,6 +31,7 @@ class HostConfigsController < ApplicationController
   def show
     @config = HostConfig.find_by(host_id: @host.id)
     @availability = ReportRequests.availability(host: @host).fetch("config")
+    @answered_new_snapshot = answered_with_snapshot?(@availability, ConfigSnapshot)
     @latest_snapshot = ConfigSnapshot.where(host_id: @host.id).order(received_at: :desc, id: :desc).first
     load_checks
     load_facts

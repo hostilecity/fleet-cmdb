@@ -1,0 +1,71 @@
+<%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :packages, title: "#{@host.name}: compare package snapshots" %>
+<p><%= link_to "← Packages", packages_host_path(@host, anchor: "snapshots") %></p>
+<h2 class="page-title">Compare package snapshots</h2>
+<% if @snapshot_count < 2 %>
+  <div class="sheet empty" id="nothing_to_compare">
+    <p><strong><%= @snapshot_count.zero? ? "No package report yet." : "Only one package snapshot so far." %></strong></p>
+    <p class="muted">There is nothing to compare it with yet. A new snapshot is kept when the package set changes.</p>
+  </div>
+<% else %>
+  <%= form_with url: compare_packages_host_path(@host), method: :get, class: "picker", "aria-label": "Choose two package snapshots", id: "snapshot_picker",
+                data: { controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+    <% options = ->(selected) { options_for_select(@pickable.map { |row| [ package_snapshot_label(*row), row.first.id ] }, selected.id) } %>
+    <label>From snapshot<%= select_tag :from, options.call(@from) %></label>
+    <span class="arrow" aria-hidden="true">&rarr;</span>
+    <label>To snapshot<%= select_tag :to, options.call(@to) %></label>
+    <button class="btn" type="submit">Compare</button>
+    <%= link_to "Swap", compare_packages_host_path(@host, from: @to.id, to: @from.id), class: "btn quiet" %>
+  <% end %>
+  <% if @reversed %><p class="notice info" role="status" id="reversed_note"><strong>Compared newer to older.</strong> Changes read from the From snapshot to the To snapshot, so an upgrade here is a package whose version is higher in the earlier snapshot (To), and a downgrade one whose version is lower there.</p><% end %>
+  <% if !@diff.available? %>
+    <div class="notice" role="status" id="no_diff"><strong>No diff is available for this pair.</strong><p><%= @diff.unavailable_reason == PackageDiff::UNREADABLE ? "One of the two snapshots is a report whose package database could not be read, so its package set is unknown." : "One of the two snapshots comes from an unsupported package manager, so its package set is unknown." %> Showing every package as installed or removed would be wrong.</p></div>
+  <% else %>
+    <% changes = package_changes(@diff) %>
+    <% counts = @diff.counts %>
+    <ul class="diffsum" aria-label="Summary of the comparison" id="diff_summary">
+      <% HostPackagesHelper::KINDS.each_key do |kind| %>
+        <% next if HostPackagesHelper::OPTIONAL_KINDS.include?(kind) && counts.fetch(kind, 0).zero? # as drawn in the mockup unless there is one %>
+        <li><%= change_kind(kind) %> <strong><%= counts.fetch(kind, 0) %></strong></li>
+      <% end %>
+    </ul>
+    <ul class="chips" aria-label="Show changes of one kind" id="kind_filters">
+      <li><%= link_to compare_packages_host_path(@host, from: @from.id, to: @to.id), "aria-current": (@kind.nil? ? "true" : nil) do %>All changes <span class="n"><%= changes.size %></span><% end %></li>
+      <% HostPackagesHelper::KIND_FILTERS.each do |param, kind| %>
+        <% next if HostPackagesHelper::OPTIONAL_KINDS.include?(kind) && counts.fetch(kind, 0).zero? && @kind != param %>
+        <li><%= link_to compare_packages_host_path(@host, from: @from.id, to: @to.id, kind: param), "aria-current": (@kind == param ? "true" : nil) do %><%= HostPackagesHelper::KINDS.fetch(kind).first.split(" ", 2).last %> <span class="n"><%= counts.fetch(kind, 0) %></span><% end %></li>
+      <% end %>
+    </ul>
+    <% shown = @kind ? changes.select { |change| change.kind == HostPackagesHelper::KIND_FILTERS.fetch(@kind) } : changes %>
+    <% if shown.empty? %>
+      <p class="muted" id="no_changes"><%= changes.empty? ? "The two snapshots list the same packages." : "No changes of this kind." %></p>
+    <% else %>
+      <div class="table-wrap"><table id="package_changes"><caption class="visually-hidden">Packages installed, removed, skipped, or changed</caption>
+        <thead><tr><th scope="col">Package</th><th scope="col">Change</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Source package</th></tr></thead><tbody>
+        <% shown.each do |change| %>
+          <% kind, name, architecture, from, to, reason = change.kind, change.name, change.architecture, change.from, change.to, change.reason %>
+          <tr class="change <%= kind %>"><td><span class="mono"><%= architecture ? "#{name}:#{architecture}" : name %></span><% unless architecture %> <span class="muted">any architecture</span><% end %></td><td><%= change_kind(kind) %></td>
+            <% if kind == :completed %>
+              <td><span class="unavailable">Skipped</span> <span class="mono"><%= reason %></span></td>
+              <td><%= tag.ins(to.version, class: "mono") %></td>
+            <% elsif kind == :removed_skipped %>
+              <td><span class="unavailable">Version not known: skipped</span> <span class="mono"><%= reason %></span></td>
+              <td><span class="unavailable">Not installed</span></td>
+            <% elsif kind == :skipped %>
+              <td><span class="mono"><%= from.version %></span></td>
+              <td><span class="unavailable">Not listed as installed</span> <span class="mono"><%= reason %></span></td>
+            <% elsif kind == :same || kind == :equivalent %>
+              <td><span class="mono"><%= from.version %></span> from <span class="mono"><%= from.source || "no source" %></span></td>
+              <td><span class="mono"><%= to.version %></span> from <span class="mono"><%= to.source || "no source" %></span></td>
+            <% else %>
+              <td><%= from ? tag.del(from.version, class: "mono") : tag.span("Not installed", class: "unavailable") %></td>
+              <td><%= to ? tag.ins(to.version, class: "mono") : tag.span("Not installed", class: "unavailable") %></td>
+            <% end %>
+            <td><% source = (to || from)&.source %><%= source ? tag.span(source, class: "mono") : tag.span("—", class: "muted") %></td></tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+    <p class="muted">"Source changed" is the same version with another source package. "Equivalent version" is a version dpkg treats as equal although it is spelled differently, such as <span class="mono">1.0</span> and <span class="mono">0:1.0</span>; its source package may or may not have changed.</p>
+    <p class="muted">"Skipped / incomplete" is a package that was installed in the earlier snapshot and is not listed in the later one, but the agent named it as one it could not report in full, such as an interrupted installation. It is not shown as removed: its state is not known. A package skipped in the earlier snapshot is counted as there: "Install completed" is one listed as installed in the later snapshot, and "Removed, was skipped" one the later snapshot neither lists nor skips (its version was never known, and a skipped name covers every architecture).</p>
+    <p class="muted">Direction comes from dpkg's version order, so <span class="mono">1:7.8p1-5</span> to <span class="mono">1:7.8p1-4</span> is a downgrade although the strings sort the other way. "Cannot compare" means either version is not a valid dpkg version; it is never guessed.</p>
+  <% end %>
+<% end %>

@@ -12,6 +12,10 @@ class HostPackageSet < ApplicationRecord
   def unsupported? = manager == "unsupported"
   def unreadable? = manager == "unreadable"
 
+  # Whether there is a package list to show: not for an unsupported manager, nor for a host that has only ever
+  # reported an unreadable database (after one that was read, the list is the last readable one).
+  def known? = !unsupported? && !(unreadable? && package_count.zero?)
+
   # The packages the last report named but did not list as installed (P2-S08).
   def skipped_list = skipped.map { |row| AgentApi::PackageReport::Skipped.new(row["name"], row["reason"]) }
 end

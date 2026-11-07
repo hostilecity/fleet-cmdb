@@ -145,4 +145,20 @@ module HostConfigsHelper
     end
     safe_join([ "New config report: ", tag.code(entry.fact), detail ])
   end
+
+  # The request box's texts for the Configuration tab (P2-D02, Q6, Q7): the last report, what the button does, and
+  # what an answered request did. Built here rather than in the view, as for the Packages tab (review of #124).
+  def config_request_texts(host, config, latest_snapshot, answered_new_snapshot:)
+    ready = if config
+      safe_join([ tag.strong("Config report received #{seen_ago(config.received_at).downcase_first}."),
+                  " Collected #{utc(config.collected_at)}#{" by agent #{host.agent_version}" if host.agent_version}, manifest version #{config.manifest_version}.",
+                  (" Facts unchanged since snapshot #{utc(latest_snapshot.received_at)}." if latest_snapshot) ].compact)
+    else
+      tag.strong("No config report yet.")
+    end
+    { ready:,
+      ready_hint: "Config reports arrive every 6 hours, or when you ask. Each report type can be requested once every #{ReportRequests::COOLDOWN.in_minutes.to_i} minutes; " \
+                  "an unanswered request expires after #{ReportRequests::TTL.in_minutes.to_i} minutes.",
+      answered_hint: answered_new_snapshot ? "The new report changed some facts, so a new snapshot was recorded." : "The new report showed no change, so no new snapshot was recorded. That still answers the request." }
+  end
 end

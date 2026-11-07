@@ -62,6 +62,11 @@ Rails.application.routes.draw do
         # Host tabs (P2-D02 to P2-D04): read-only pages; filters, sort, and the compared snapshots are in the URL.
         get :config, to: "host_configs#show"
         get "config/compare", to: "host_configs#compare", as: :compare_config
+        get :packages, to: "host_packages#show"
+        get "packages/compare", to: "host_packages#compare", as: :compare_packages
+        get :vulnerabilities, to: "host_vulnerabilities#show"
+        # The package name is a query parameter (?package=), as in the mockup, so no stored name can break a path.
+        get "vulnerabilities/package", to: "host_vulnerabilities#package", as: :package_vulnerabilities
       end
     end
     # Onboarding approval (P1-D07, DEC-17): the installer's verification URI is /onboard/<user code>.

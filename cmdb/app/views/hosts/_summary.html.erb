@@ -10,13 +10,13 @@
   <% end %>
   <% if summary.vulnerabilities_evaluated? %>
     <%= glance_tile("Open vulnerabilities", summary.open_findings.zero? ? tag.span("None open", class: "none-open") : number_with_delimiter(summary.open_findings),
-                    summary.open_findings.zero? ? "Evaluated #{seen_ago(summary.vulnerability_evaluation.evaluated_at).downcase_first}" : severity_counts(summary.open_severities), id: "glance_vulns") %>
+                    summary.open_findings.zero? ? "Evaluated #{seen_ago(summary.vulnerability_evaluation.evaluated_at).downcase_first}" : severity_counts(summary.open_severities), href: vulnerabilities_host_path(host), id: "glance_vulns") %>
   <% else %>
     <%= glance_tile("Open vulnerabilities", tag.span("Not evaluated", class: "not-eval"),
-                    summary.vulnerability_evaluation&.detail || "Packages have not been matched against advisories yet", id: "glance_vulns") %>
+                    summary.vulnerability_evaluation&.detail || "Packages have not been matched against advisories yet", href: vulnerabilities_host_path(host), id: "glance_vulns") %>
   <% end %>
-  <%= glance_tile("Packages", summary.package_set && !summary.package_set.unsupported? ? number_with_delimiter(summary.package_set.package_count) : tag.span("Not known", class: "not-eval"),
-                  package_tile_detail(summary), id: "glance_packages") %>
+  <%= glance_tile("Packages", summary.package_set&.known? ? number_with_delimiter(summary.package_set.package_count) : tag.span("Not known", class: "not-eval"),
+                  package_tile_detail(summary), href: packages_host_path(host), id: "glance_packages") %>
   <% if (last = summary.last_received_at) %>
     <%= glance_tile("Last reports received", seen_ago(last),
                     [ summary.received_types.to_sentence.upcase_first,
