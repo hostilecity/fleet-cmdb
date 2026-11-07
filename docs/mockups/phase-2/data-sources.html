@@ -32,7 +32,7 @@
     <dt>Stale after</dt><dd>48 hours</dd>
     <dt>Access token</dt><dd>Configured, never shown</dd>
   </dl>
-  <p style="margin-bottom:0"><a class="btn quiet" href="dialogs.html#refresh">Refresh now</a></p>
+  <p style="margin-bottom:0"><button class="btn quiet" type="button" disabled aria-describedby="cool">Refresh now</button> <span class="muted" id="cool">Available again in 4 minutes (last refresh 2026-11-07 08:01). <a href="dialogs.html#refresh">Ready state</a></span></p>
   <p class="hint muted" style="font-size:.875rem">Only the feed's host and path are shown. The source is set in the server's configuration, not here.</p>
 </section>
 <section class="sheet" aria-labelledby="up">
@@ -54,7 +54,7 @@
 </tbody></table></div>
   <p class="pager"><span>Showing the latest 4 imports.</span><span>Older imports are kept for the retention period.</span></p>
 </section>
-<p class="note"><span class="review-q">Review Q14.</span> Manual refresh and upload. Drawn: "Refresh now" and the upload form sit on this page beside the scheduled feed, each with a confirmation where it can resolve findings (<a href="dialogs.html">Confirmations</a>). The refresh button has no rate limit drawn, because the server already makes a refresh conditional (an unchanged feed downloads nothing). Is a cool-down like the report-request one wanted? Also: the feed itself can only be changed in the server configuration, not on this page, since it carries a token; say if you want it editable here.</p>
+<p class="note">Decided in the P2-D01 review (Q14): manual refresh has a cool-down of 5 minutes, like report requests. The button is greyed out with the time left, so no alert is needed after a click. "Refresh now" and the upload form sit beside the scheduled feed, each with a confirmation where it can resolve findings (<a href="dialogs.html">Confirmations</a>). The feed itself can only be changed in the server configuration, since it carries a token.</p>
 <p class="note">Also see <a href="data-sources-stale.html">the stale state of this page</a>, <a href="data-sources-import.html">an upload result with skipped records</a>, and <a href="states-empty.html#freshness">the other freshness indicators</a>.</p>
 </main>
 </body>

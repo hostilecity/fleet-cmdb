@@ -55,7 +55,7 @@ Static HTML mockups in `docs/mockups/phase-2/`:
 
 ### Scope
 
-- Open and resolved findings per host, filterable by severity and state, with installed version, fixed version, advisory id, and a link to the source advisory (only `http` and `https` links, opened with `rel="noopener noreferrer"`).
+- Open and resolved findings per host, grouped by package with the advisories nested under it (the package row shows the worst severity and the number of findings), filterable by severity and state, with installed version, fixed version, advisory id, and a link to the source advisory (only `http` and `https` links, opened with `rel="noopener noreferrer"`).
 - A per-package view of the findings for one package.
 - Clear "not evaluated" states with reasons (unmapped distribution, no advisory data imported, unsupported package manager) instead of an empty list.
 - Advisory data freshness shown when [P2-S13](p2-vulns.md) is in use.

@@ -22,13 +22,14 @@ Implementation details for the GitHub issue with this key. The issue states only
 ### Scope
 
 - Rules: list with filters, rule detail with version history, add one rule from a form (a single comparison; a rule with several conditions comes in by importing a file), edit the condition and metadata with validation in place, a preview of which hosts would change result before an edit is saved (uses the dry run in [P2-S06](p2-cis-engine.md)), enable and disable (with confirmation), upload a rules file with a preview of what would change before applying.
-- Advisory data: show sources, last import, counts per ecosystem, upload an advisory file, trigger a manual feed refresh if [P2-S13](p2-vulns.md) exists.
+- Advisory data: show sources, last import, counts per ecosystem, upload an advisory file, trigger a manual feed refresh if [P2-S13](p2-vulns.md) exists, with a 5-minute cool-down (the button is disabled and shows when it is available again).
 - Every change audited with the operator as actor; edits show before and after.
 
 ### Acceptance criteria
 
 - [ ] AC-2.2: editing a rule's expected value in the UI re-evaluates and changes results with no agent contact
 - [ ] Invalid edits are rejected with errors in place
+- [ ] A second manual feed refresh within 5 minutes is refused by the server, and the button shows the time left
 - [ ] Adding a rule creates version 1 through the same checks as import, re-evaluates every host, and is audited
 - [ ] The edit preview lists the hosts whose result would change, with before and after, and writes nothing
 - [ ] The import preview lists adds, changes, and unchanged rules before anything is written
