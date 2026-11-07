@@ -107,6 +107,9 @@ pub struct Reporter<'a, R: Rng> {
     /// Once requested, nothing new starts: no collection call, no send ([`Reporter::stopping_on`]).
     stop: Option<&'a Shutdown>,
     new_id: fn() -> std::io::Result<String>,
+    /// The real time the current tick began, so a delay after a failure counts from the failure, not
+    /// from the tick's (simulated) `now` ([`super::failed_at`], review of #117).
+    tick_started: Instant,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -126,6 +129,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             answered: false,
             stop: None,
             new_id: new_report_id,
+            tick_started: Instant::now(),
         }
     }
 
@@ -160,6 +164,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
 
     /// Does whatever is due at `now` and returns when to call again.
     pub fn tick(&mut self, now: Instant, transport: &dyn Transport) -> Instant {
+        self.tick_started = Instant::now();
         // A request waits out a hold (after a failed manifest fetch) rather than retrying every poll.
         let held = self.hold_until.is_some_and(|hold| now < hold);
         if self.wanted.is_some() && !held {
@@ -249,7 +254,8 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 retry_in_seconds = wait.as_secs(),
                 "cannot fetch the config manifest ({e:?}); the config report waits"
             );
-            self.hold_until = Some(now + wait);
+            // The failed fetch took real time (up to the request timeout): wait from its end.
+            self.hold_until = Some(super::failed_at(now, self.tick_started) + wait);
             // A request is not forgotten because the manifest was unreachable.
             if reason == Reason::Requested || reason == Reason::NewManifest {
                 self.wanted = Some(reason);
@@ -371,7 +377,9 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 self.finished(now);
             }
             Err(error) => {
-                self.retry_at = Some(now + self.backoff.on_failure(&error));
+                // The collection and the request took real time: the backoff starts now, not at `now`.
+                let failed = super::failed_at(now, self.tick_started);
+                self.retry_at = Some(failed + self.backoff.on_failure(&error));
             }
         }
     }
@@ -454,7 +462,7 @@ fn build_body(
 }
 
 /// `400`, `413`, and `422` say the body itself is unacceptable; sending it again cannot help.
-fn rejected_for_content(error: &ApiError) -> bool {
+pub(super) fn rejected_for_content(error: &ApiError) -> bool {
     matches!(
         error,
         ApiError::PayloadTooLarge { .. }

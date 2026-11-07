@@ -169,6 +169,9 @@ pub struct Reporter<'a, R: Rng> {
     requested: bool,
     /// A report built for a request was accepted ([`Reporter::take_answered`]).
     answered: bool,
+    /// The real time the current tick began, so a delay after a failure counts from the failure, not
+    /// from the tick's (simulated) `now` ([`super::failed_at`], review of #117).
+    tick_started: Instant,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -193,6 +196,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             new_id: new_report_id,
             requested: false,
             answered: false,
+            tick_started: Instant::now(),
         }
     }
 
@@ -221,6 +225,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
         collect: &mut dyn FnMut() -> Inventory,
         transport: &dyn Transport,
     ) -> Instant {
+        self.tick_started = Instant::now();
         let interval = self.intervals.inventory();
         if std::mem::take(&mut self.requested) {
             let inventory = collect();
@@ -407,7 +412,9 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 self.finished(now);
             }
             Err(error) => {
-                self.retry_at = Some(now + self.backoff.on_failure(&error));
+                // The collection and the request took real time: the backoff starts now, not at `now`.
+                let failed = super::failed_at(now, self.tick_started);
+                self.retry_at = Some(failed + self.backoff.on_failure(&error));
             }
         }
     }

@@ -904,6 +904,14 @@ impl Transport for BelowMinimum {
         }
     }
 
+    fn post_gzip(&self, path: &str, _: &[u8]) -> Result<ApiResponse, ApiError> {
+        self.paths.lock().unwrap().push(path.to_owned());
+        Err(ApiError::AgentVersionUnsupported {
+            message: "minimum agent version is 99.0.0".into(),
+            request_id: None,
+        })
+    }
+
     fn get_conditional(
         &self,
         _: &str,

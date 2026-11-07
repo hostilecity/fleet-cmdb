@@ -15,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+pub mod memory;
+
 /// A directory under the system temp dir, removed on drop.
 pub struct TempDir(PathBuf);
 
@@ -249,6 +251,18 @@ fn read_request(stream: &mut impl Read) -> Option<String> {
         .unwrap_or(0);
     let mut body = vec![0; length];
     reader.read_exact(&mut body).ok()?;
+    // A gzip body (the package report) is recorded decompressed, so tests read its JSON; the
+    // `Content-Encoding` header stays in the head.
+    let gzip = head
+        .lines()
+        .any(|l| l.eq_ignore_ascii_case("content-encoding: gzip"));
+    if gzip {
+        let mut plain = Vec::new();
+        flate2::read::GzDecoder::new(&body[..])
+            .read_to_end(&mut plain)
+            .ok()?;
+        body = plain;
+    }
     head.push_str(&String::from_utf8_lossy(&body));
     Some(head)
 }

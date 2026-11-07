@@ -395,7 +395,7 @@ mod tests {
             );
             assert!(envelope.server_time.is_some(), "{name}");
             if name.starts_with("report-request") {
-                // Only a report type this build does not send (`packages`) is ignored.
+                // Only a report type this build does not send would be ignored.
                 assert!(
                     envelope
                         .ignored
@@ -565,13 +565,15 @@ mod tests {
             "types": ["inventory", "firmware\nforged line", "packages"],
             "priority": "high"
         }}}));
-        assert_eq!(envelope.report_types, [ReportType::Inventory]);
+        assert_eq!(
+            envelope.report_types,
+            [ReportType::Inventory, ReportType::Packages]
+        );
         assert_eq!(
             envelope.ignored,
             [
                 "directive `report_request.priority`",
                 "report type `firmware forged line`",
-                "report type `packages`"
             ]
         );
         assert!(envelope.problems.is_empty());
@@ -579,8 +581,8 @@ mod tests {
 
     #[test]
     fn a_report_request_names_the_types_to_report_and_the_rest_is_still_read() {
-        // P2-S03: `config` and `inventory` are reports this agent sends on request; `packages` is
-        // not one of them yet, so it is ignored and listed (DEC-20 rule 4).
+        // P2-S03: `config`, `inventory`, and (P2-AGENT-PACKAGES) `packages` are reports this agent
+        // sends on request.
         let (_, body) = contract_examples("valid")
             .into_iter()
             .find(|(name, _)| name == "report-request.json")
@@ -589,9 +591,13 @@ mod tests {
         let envelope = parse(&body);
         assert_eq!(
             envelope.report_types,
-            [ReportType::Config, ReportType::Inventory]
+            [
+                ReportType::Config,
+                ReportType::Inventory,
+                ReportType::Packages
+            ]
         );
-        assert_eq!(envelope.ignored, ["report type `packages`"]);
+        assert!(envelope.ignored.is_empty(), "{:?}", envelope.ignored);
         assert!(envelope.problems.is_empty(), "{:?}", envelope.problems);
         assert_eq!(
             envelope.intervals,

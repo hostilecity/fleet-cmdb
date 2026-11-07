@@ -177,6 +177,10 @@ impl Transport for StopAfterManifest<'_> {
         self.inner.post(path, body)
     }
 
+    fn post_gzip(&self, path: &str, gzipped: &[u8]) -> Result<ApiResponse, ApiError> {
+        self.inner.post_gzip(path, gzipped)
+    }
+
     fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError> {
         let reply = self.inner.get_conditional(path, etag);
         self.stop.request();
@@ -369,4 +373,65 @@ fn a_normal_report_is_far_below_the_size_limit() {
     reporter(&host).tick(Instant::now(), &transport);
     let bytes = serde_json::to_vec(&posts(&transport)[0]).unwrap().len();
     assert!(bytes < 100_000, "{bytes}");
+}
+
+/// Review of #117: a delay after a failure counts from the failure, not from the tick's `now`. Same
+/// seeds, so the same backoff; the slow failure's wake is later by the time it took (less a margin for
+/// the rest of the tick's real milliseconds).
+fn assert_later_by(fast: Duration, late: Duration, slow: Duration) {
+    assert!(fast < INTERVAL, "a retry is due: {fast:?}");
+    assert!(
+        late >= fast + slow - Duration::from_millis(50),
+        "fast {fast:?}, slow {late:?}"
+    );
+}
+
+#[test]
+fn the_backoff_starts_when_the_failed_send_ends() {
+    let slow = Duration::from_millis(300);
+    let wake_after = |delay: Duration| {
+        let host = FakeHost::debian13();
+        let transport = transport();
+        transport.push_with(move |_| {
+            std::thread::sleep(delay);
+            down()
+        });
+        let t0 = Instant::now();
+        let wake = reporter(&host).tick(t0, &transport);
+        assert_eq!(posts(&transport).len(), 1);
+        wake - t0
+    };
+    assert_later_by(wake_after(Duration::ZERO), wake_after(slow), slow);
+}
+
+/// A server whose manifest endpoint fails after `delay`.
+struct SlowManifest {
+    delay: Duration,
+}
+
+impl Transport for SlowManifest {
+    fn post(&self, _: &str, _: &Value) -> Result<ApiResponse, ApiError> {
+        down()
+    }
+
+    fn post_gzip(&self, _: &str, _: &[u8]) -> Result<ApiResponse, ApiError> {
+        down()
+    }
+
+    fn get_conditional(&self, _: &str, _: Option<&str>) -> Result<Conditional, ApiError> {
+        std::thread::sleep(self.delay);
+        Err(ApiError::Transport("timed out".into()))
+    }
+}
+
+#[test]
+fn the_wait_after_a_failed_manifest_fetch_starts_when_it_ends() {
+    let slow = Duration::from_millis(300);
+    let wake_after = |delay: Duration| {
+        let host = FakeHost::debian13();
+        let t0 = Instant::now();
+        let wake = reporter(&host).tick(t0, &SlowManifest { delay });
+        wake - t0
+    };
+    assert_later_by(wake_after(Duration::ZERO), wake_after(slow), slow);
 }

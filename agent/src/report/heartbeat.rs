@@ -495,14 +495,14 @@ mod tests {
     #[test]
     fn a_report_request_for_an_unknown_type_is_logged_once_and_intervals_still_apply() {
         // The server sends `report_request` on every heartbeat while an operator's request is
-        // outstanding (P2-S03). `packages` is a type this build does not send, so it is ignored and
+        // outstanding (P2-S03). `firmware` is a type this build does not send, so it is ignored and
         // logged once, and the rest of the response still applies. (No sink is attached here, so
         // `config` is not acted on either.)
         let intervals = intervals();
         let started = Instant::now();
         let mut hb = heartbeat(&intervals, started);
         let body = envelope(json!({
-            "report_request": {"types": ["config", "packages"]},
+            "report_request": {"types": ["config", "firmware"]},
             "intervals": {"heartbeat_seconds": 120}
         }));
         let transport = FakeTransport::new(vec![ok(body.clone()), ok(body)]);
@@ -514,7 +514,7 @@ mod tests {
         });
         assert!(waits.iter().all(|w| *w >= secs(108)), "{waits:?}");
         assert_eq!(
-            logs.matches("ignored=\"report type `packages`\"").count(),
+            logs.matches("ignored=\"report type `firmware`\"").count(),
             1,
             "{logs}"
         );

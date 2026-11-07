@@ -23,6 +23,15 @@ pub fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!("{FIXTURES}{name}")).unwrap_or_else(|e| panic!("fixture {name}: {e}"))
 }
 
+/// A file of `tests/fixtures/packages/debian13/` (P2-AGENT-PACKAGES).
+pub fn package_fixture(name: &str) -> Vec<u8> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/packages/debian13/"
+    );
+    std::fs::read(format!("{path}{name}")).unwrap_or_else(|e| panic!("fixture {name}: {e}"))
+}
+
 /// What a fake unit looks like to `systemctl show`: load state, active state, unit file state.
 type Unit = (String, String, String);
 
@@ -41,7 +50,8 @@ pub struct FakeHost {
 
 impl FakeHost {
     /// A Debian 13 host with `unattended-upgrades` installed and switched on, `sshd` with its stock
-    /// configuration, no firewall, and the file permissions Debian ships.
+    /// configuration, no firewall, the file permissions Debian ships, and the dpkg listing of
+    /// `tests/fixtures/packages/debian13/` (30 installed packages).
     pub fn debian13() -> Self {
         let mut host = Self::default();
         host.files
@@ -85,6 +95,7 @@ impl FakeHost {
             ("/etc/issue.net", 0o644, 0),
             ("/etc/motd", 0o644, 0),
             ("/usr/bin/unattended-upgrade", 0o755, 0),
+            ("/var/lib/dpkg/status", 0o644, 0),
         ] {
             host.stats.insert(
                 path.into(),
@@ -122,6 +133,10 @@ impl FakeHost {
         host.outputs.insert(
             "systemctl list-unit-files".into(),
             Ok(fixture("systemctl-enabled")),
+        );
+        host.outputs.insert(
+            "dpkg-query --show".into(),
+            Ok(package_fixture("dpkg-query-show")),
         );
         host
     }

@@ -18,12 +18,13 @@ DIR holds everything the test shares with the stub:
     plan.json                       what the stub does now; re-read on every request, written by the test
     events.jsonl                    what the stub saw, one JSON object per line (written by the stub)
     heartbeat.json, inventory.json  the last accepted heartbeat and inventory report (written by the stub)
+    packages.json                   the last accepted package report, decompressed (P2-AGENT-PACKAGES)
     releases/NAME/manifest.json     a release: its manifest, the minisign signature of the manifest,
     releases/NAME/manifest.json.minisig   and the binary (the test builds and signs them with throwaway keys)
     releases/NAME/fleet-agent
 
-plan.json (every key optional; without one, every heartbeat and inventory report is accepted with
-empty directives):
+plan.json (every key optional; without one, every heartbeat, inventory report, and package report is
+accepted with empty directives; package reports may be gzip, as the server allows):
 
     "directive":  {"rollout_id": 1, "version": "1.0.1", "release": "NAME"}
                   Sent in every heartbeat response until a result for that rollout_id is accepted
@@ -39,6 +40,7 @@ Without STUB_CREDENTIAL it checks no credential: the smoke tests are about the u
 authentication.
 """
 import datetime
+import gzip
 import hashlib
 import json
 import os
@@ -107,10 +109,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 (http.server naming)
         length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        encoding = self.headers.get("Content-Encoding", "").strip().lower()
         try:
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            return self.error(400, "invalid_json", "Not JSON.")
+            if encoding == "gzip":
+                raw = gzip.decompress(raw)
+            body = json.loads(raw or b"{}")
+        except (OSError, EOFError, ValueError):
+            return self.error(400, "invalid_json", "Not JSON (or not gzip of JSON).")
         agent = str(body.get("agent_version", ""))
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         current = plan()
@@ -133,6 +139,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(426, "agent_version_unsupported", f"Agent {agent} is older than the minimum {minimum}.")
             log(kind="inventory", agent_version=agent, status=200)
             save("inventory.json", body)
+            return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
+        if self.path == "/api/v1/reports/packages":
+            log(kind="packages", agent_version=agent, status=200, encoding=encoding or "identity",
+                manager=body.get("manager"), count=len(body.get("packages") or []))
+            save("packages.json", body)
             return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
         if self.path == "/api/v1/update-results":
             return self.update_result(current, agent, body)

@@ -49,8 +49,9 @@ max_seconds = 21600
 
 # Configuration report interval in seconds (FR-2.1, P2-A01): the agent reports the facts the server's
 # manifest asks for (sshd settings, password policy, file modes, service states) this often, and
-# also when the server asks for a report. Each value within 300..=86400. The server does not direct
-# this interval yet, so min and max only bound a future directive.
+# also when the server asks for a report. The package report (FR-2.3) follows the same interval.
+# Each value within 300..=86400. The server does not direct this interval yet, so min and max only
+# bound a future directive.
 [config_report]
 interval_seconds = 21600
 min_seconds = 3600

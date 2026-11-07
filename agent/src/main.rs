@@ -23,6 +23,7 @@ mod fsx;
 mod install;
 mod logging;
 mod owner;
+mod packages;
 mod release;
 mod report;
 mod retry;
