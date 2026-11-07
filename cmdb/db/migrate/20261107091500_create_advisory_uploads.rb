@@ -4,7 +4,8 @@
 #   finished_at is empty exactly while an import is in one of them. matching keeps what the result page says
 #   about re-matching (how many changed source packages, on how many hosts), since the page is no longer drawn
 #   in the request that imported the file.
-# - advisory_uploads holds an uploaded file until its import job has read it: at most 64 MiB each (the request
+# - advisory_uploads holds an uploaded file until its import ends (or, for a full import refused for what it
+#   would withdraw, until the operator confirms it or it expires): at most 64 MiB each (the request
 #   body limit), tied to the operator who uploaded it and to its import, deleted by the job when the import ends
 #   and, failing that, after expires_at by AdvisoryUploadPruneJob. In the database rather than on disk, so the
 #   job can read it whichever process or container runs it, and it is written in the same transaction as its
@@ -23,6 +24,9 @@ class CreateAdvisoryUploads < ActiveRecord::Migration[8.1]
       t.string :filename, null: false, limit: 256
       t.bigint :byte_size, null: false
       t.binary :data, null: false
+      # A full import refused for what it would withdraw keeps its file, and the operator's second confirmation
+      # records here, per ecosystem, how many withdrawals it accepted (review of #129).
+      t.jsonb :allowed_withdrawals, null: false, default: {}
       t.datetime :created_at, null: false
       t.datetime :expires_at, null: false
     end

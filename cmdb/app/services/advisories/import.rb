@@ -15,6 +15,13 @@ module Advisories
   #   for one of them that the import does not contain is marked withdrawn as "absent", because OSV moves
   #   withdrawn records out of the ecosystem's archive. That sweep is skipped when any record was malformed,
   #   since the missing advisory may be the one that could not be read.
+  # - With guard_withdrawals (a full import uploaded on the dashboard, P2-D06, review of #129), the sweep is
+  #   counted per ecosystem before anything is written. If it would withdraw more than WITHDRAW_SHARE of an
+  #   ecosystem's current advisories, or any of them when the file has fewer than SMALL_FILE_RECORDS records for
+  #   it, the import raises WithdrawalsRefused with the counts and the transaction rolls back, unless
+  #   allowed_withdrawals (the operator's second confirmation) names at least that many for the ecosystem.
+  # - time_limit bounds how long reading and storing may take once the lock is held, and lock_timeout how long
+  #   to wait for the lock; past the time limit the import is Unreadable and rolls back.
   #
   # The result's changed_packages, { "Debian:13" => ["openssl"] }, names every package an added, changed,
   # or withdrawn advisory affects or affected; VulnerabilityMatchJob re-matches them once the import commits (P2-S11).
@@ -26,15 +33,36 @@ module Advisories
     COUNTS = %w[records created updated unchanged older withdrawn absent skipped malformed rejected_urls].freeze
     LOCK_KEY = "advisories.import".freeze
 
+    # A guarded full import would withdraw more than WITHDRAW_SHARE of an ecosystem's advisories.
+    WITHDRAW_SHARE = 0.10
+    # A guarded full import with fewer records than this for an ecosystem may withdraw none of it unconfirmed.
+    SMALL_FILE_RECORDS = 1_000
+
     # The queued or importing row this import was to finish has been finished meanwhile (AdvisoryUploadPruneJob
     # failed it): nothing is written.
     class Abandoned < StandardError; end
 
+    # A guarded full import would withdraw too many advisories; nothing is written. withdrawals:
+    # { "Debian:13" => { "withdraw" => 38_000, "current" => 38_412, "records" => 1 } } for every ecosystem it
+    # would withdraw advisories of.
+    class WithdrawalsRefused < StandardError
+      attr_reader :withdrawals
+
+      def initialize(withdrawals)
+        @withdrawals = withdrawals
+        parts = withdrawals.map do |ecosystem, w|
+          "#{w['withdraw']} of #{w['current']} current #{ecosystem} advisories (the file has #{w['records']} #{w['records'] == 1 ? 'record' : 'records'} for it)"
+        end
+        super("this full import would mark #{parts.to_sentence} withdrawn, which resolves the findings they produced; nothing was imported")
+      end
+    end
+
     # Records a failed import (nothing was stored), audited, in its own transaction. import: a queued or
     # importing row to finish as failed (an upload imported in the background, P2-D06) instead of a new one.
-    def self.record_failure(reason:, origin: nil, source: nil, operator: nil, full: false, started_at: Time.current, import: nil)
+    # counts: what to keep on the failed row (the withdrawals a guarded full import refused).
+    def self.record_failure(reason:, origin: nil, source: nil, operator: nil, full: false, started_at: Time.current, import: nil, counts: {})
       AdvisoryImport.transaction do
-        failed = { state: "failed", reason: reason.truncate(512), finished_at: Time.current }
+        failed = { state: "failed", reason: reason.truncate(512), finished_at: Time.current, counts: }
         if import
           # Locked and checked again: an import finished meanwhile keeps its outcome.
           return import unless import.lock!.in_progress?
@@ -44,7 +72,7 @@ module Advisories
           import = AdvisoryImport.create!(origin:, source:, full:, operator:, started_at:, **failed)
         end
         Audit.record(actor: import.operator || Audit::SYSTEM, action: Audit::Actions::ADVISORY_IMPORT_FAILED, target: import,
-                     changes: { "origin" => import.origin, "source" => import.source, "reason" => import.reason })
+                     changes: { "origin" => import.origin, "source" => import.source, "reason" => import.reason, **counts })
         import
       end
     end
@@ -52,7 +80,10 @@ module Advisories
     # origin: "feed" or "file". source: the name to show and store (the feed's host and path, or the file
     # name), never a credential. record: a queued or importing AdvisoryImport to finish with the result (an
     # upload imported in the background, P2-D06); its origin, source, full, and operator are used.
-    def initialize(origin: nil, source: nil, full: false, operator: nil, etag: nil, last_modified: nil, record: nil)
+    def initialize(origin: nil, source: nil, full: false, operator: nil, etag: nil, last_modified: nil, record: nil,
+                   guard_withdrawals: false, allowed_withdrawals: {})
+      @guard_withdrawals = guard_withdrawals
+      @allowed_withdrawals = allowed_withdrawals.to_h
       @record = record
       @origin = record&.origin || origin
       @source = record&.source || Record.clean_text(source, 256) || "unknown"
@@ -61,17 +92,28 @@ module Advisories
       @validators = { etag:, last_modified: }
     end
 
-    def call(reader)
+    # time_limit and lock_timeout: seconds, or nil for none (the feed and the rake task).
+    def call(reader, time_limit: nil, lock_timeout: nil)
       started_at = Time.current
       @counts = COUNTS.index_with(0)
       @problems = []
       @changed = Hash.new { |hash, key| hash[key] = Set.new }
       @seen = Set.new
       @ecosystems = Set.new
+      @ecosystem_records = Hash.new(0)
 
       AdvisoryImport.transaction do
-        AdvisoryImport.connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{AdvisoryImport.connection.quote(LOCK_KEY)}))")
-        reader.each_slice(BATCH) { |entries| store(entries.filter_map { |entry| parse(entry) }) }
+        connection = AdvisoryImport.connection
+        # set_config(..., true) is SET LOCAL: it ends with this transaction.
+        connection.execute("SELECT set_config('lock_timeout', #{connection.quote("#{Integer(lock_timeout)}s")}, true)") if lock_timeout
+        connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{connection.quote(LOCK_KEY)}))")
+        @deadline = time_limit && Process.clock_gettime(Process::CLOCK_MONOTONIC) + time_limit
+        @time_limit = time_limit
+        reader.each_slice(BATCH) do |entries|
+          check_deadline!
+          store(entries.filter_map { |entry| parse(entry) })
+        end
+        check_deadline!
         sweep_absent if @full && @counts["malformed"].zero?
         outcome = { state: "succeeded", ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators, finished_at: Time.current }
         raise Abandoned, "advisory import #{@record.id} was finished meanwhile" if @record && !@record.lock!.in_progress?
@@ -87,6 +129,12 @@ module Advisories
     end
 
     private
+
+    def check_deadline!
+      return unless @deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) > @deadline
+
+      raise Unreadable, "#{@source} took longer than #{@time_limit / 60} minutes to import, so nothing was imported; import it on the server with bin/rails advisories:import"
+    end
 
     def parse(entry)
       @counts["records"] += 1
@@ -120,7 +168,10 @@ module Advisories
       existing = Advisory.where(advisory_id: records.map(&:advisory_id)).index_by(&:advisory_id)
       changes = records.select do |record|
         @seen << record.advisory_id
-        record.package_keys.each { |ecosystem, _| @ecosystems << ecosystem }
+        record.package_keys.map(&:first).uniq.each do |ecosystem|
+          @ecosystems << ecosystem
+          @ecosystem_records[ecosystem] += 1
+        end
         @newest = [ @newest, record.modified_at ].compact.max
         classify(record, existing[record.advisory_id])
       end
@@ -173,11 +224,29 @@ module Advisories
       absent = stored.reject { |_, advisory_id| @seen.include?(advisory_id) }.map(&:first)
       return if absent.empty?
 
+      check_withdrawals!(absent) if @guard_withdrawals
+
       absent.each_slice(BATCH) do |ids|
         AdvisoryPackage.where(advisory_id: ids).pluck(:ecosystem, :package).each { |ecosystem, package| @changed[ecosystem] << package }
         Advisory.where(id: ids).update_all(withdrawn_at: Time.current, withdrawn_reason: "absent", updated_at: Time.current)
       end
       @counts["absent"] = absent.size
+    end
+
+    # Refuses a guarded full import that would withdraw too much of an ecosystem (see the class comment), before
+    # the sweep writes: raising rolls back the records stored so far too.
+    def check_withdrawals!(absent)
+      withdraw = AdvisoryPackage.where(advisory_id: absent, ecosystem: @ecosystems.to_a).group(:ecosystem).distinct.count(:advisory_id)
+      current = Advisory.current.joins(:packages).where(advisory_packages: { ecosystem: withdraw.keys }).group("advisory_packages.ecosystem").distinct.count(:id)
+      withdrawals = withdraw.sort.to_h do |ecosystem, count|
+        [ ecosystem, { "withdraw" => count, "current" => current.fetch(ecosystem, 0), "records" => @ecosystem_records[ecosystem] } ]
+      end
+      too_many = withdrawals.any? do |ecosystem, w|
+        next false if w["withdraw"] <= @allowed_withdrawals[ecosystem].to_i
+
+        w["withdraw"] > w["current"] * WITHDRAW_SHARE || w["records"] < SMALL_FILE_RECORDS
+      end
+      raise WithdrawalsRefused, withdrawals if too_many
     end
   end
 end

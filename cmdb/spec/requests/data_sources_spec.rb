@@ -88,7 +88,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       refreshed(at: 2.days.ago, counts: { "not_modified" => true })
       refreshed(at: 1.day.ago, operator:, counts: { "records" => 38_412, "created" => 6, "updated" => 22, "withdrawn" => 0, "absent" => 1, "malformed" => 0 })
       upload_import = refreshed(at: 1.hour.ago, origin: "file", full: false, operator:, source: "advisories-Debian-13.zip",
-                                counts: { "records" => 312, "created" => 9, "updated" => 41, "malformed" => 2 })
+                                counts: { "records" => 312, "created" => 9, "updated" => 41, "unchanged" => 260, "malformed" => 2 })
       get "/data-sources"
       rows = page.css("#imports tbody tr").map { |row| row.css("td").map { |cell| cell.text.squish } }
       expect(rows.map { |row| row[1..] }).to eq([
@@ -267,8 +267,9 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       expect(page.at_css(".page-head p").text).to eq("File upload by Example Operator, #{import.finished_at.utc.strftime('%Y-%m-%d %H:%M UTC')}.")
       expect(page.at_css("#import_outcome strong").text).to eq("3 records read: 1 imported, 2 skipped.")
       expect(facts(page.at_css("dl.facts"))).to include("File" => "all.zip", "Type" => "Partial import (advisories not in the file are left alone)", "New" => "1",
-                                                        "Changed" => "0", "Unchanged" => "0", "Withdrawn" => "0", "Skipped" => "2",
-                                                        "Matching" => "Findings are matched again for 1 package on 1 host after the import.")
+                                                        "Changed" => "0", "Unchanged" => "0", "Withdrawn" => "0", "Malformed" => "2",
+                                                        "Matching" => "Findings are matched again for the 1 changed package, installed on 1 host in the fleet when the import finished. " \
+                                                                    "Hosts not yet evaluated against advisory data are evaluated in full.")
       rows = page.css("#skipped_records tbody tr").map { |row| row.css("td").map { |cell| cell.text.squish } }
       expect(rows.size).to eq(2)
       expect(rows.map(&:first)).to contain_exactly("all.zip / advisories/DSA-9119-1.json", "all.zip / advisories/broken.json")
@@ -313,10 +314,13 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
     it "asks for confirmation before a full import, which the server requires, and then withdraws what the file lacks" do
       import_advisories(osv_record(id: "DSA-9001-1"), osv_record(id: "DSA-9002-1"), full: true)
       zip = osv_zip("DSA-9001-1.json" => osv_record(id: "DSA-9001-1", modified: "2026-10-22T08:00:00Z"))
+      # Within the withdrawal guard's thresholds, so no second confirmation is needed (that is the next example).
+      stub_const("Advisories::Import::WITHDRAW_SHARE", 0.6)
+      stub_const("Advisories::Import::SMALL_FILE_RECORDS", 1)
 
       get "/data-sources"
       form = page.at_css("#upload_form")
-      expect(form["data-controller"]).to eq("confirm-full")
+      expect(form["data-controller"]).to eq("confirm-full keep-edits")
       expect(form.at_css("dialog#full_dialog h2").text).to eq("Import as a full import?")
       expect(form.css("dialog button").map(&:text)).to eq([ "Import as full", "Import without withdrawing" ])
 
@@ -336,6 +340,83 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       follow_redirect!
       expect(page.css("dl.facts dd").map { |dd| dd.text.squish }).to include("Full import (advisories of its ecosystems that are not in the file are marked withdrawn)",
                                                                              "1 (1 because the full import did not contain them)")
+    end
+
+    # Review of #129 (S2): a full import of a small or wrong file would withdraw an ecosystem's advisories and resolve its findings.
+    it "refuses a full import that would withdraw too many advisories, with the counts, until a second confirmation names them" do
+      import_advisories(*(1..5).map { |i| osv_record(id: "DSA-900#{i}-1") }, full: true)
+      zip = osv_zip("DSA-9001-1.json" => osv_record(id: "DSA-9001-1", modified: "2026-10-22T08:00:00Z"))
+      upload(zip, full: "1", confirm: "1")
+      run_import_jobs
+      refused = AdvisoryImport.order(:id).last
+      expect(refused).to have_attributes(state: "failed", full: true)
+      expect(refused.reason).to eq("this full import would mark 4 of 5 current Debian:13 advisories (the file has 1 record for it) withdrawn, " \
+                                   "which resolves the findings they produced; nothing was imported")
+      expect(refused.counts).to eq("would_withdraw" => { "Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 } })
+      expect(Advisory.current.count).to eq(5)
+      expect(Advisory.find_by(advisory_id: "DSA-9001-1").modified_at).to eq(Time.utc(2026, 10, 20, 8))
+      expect(AdvisoryUpload.without_data.sole.advisory_import_id).to eq(refused.id) # kept for the second confirmation
+      failed = AuditEntry.where(action: "advisory.import_failed").sole
+      expect(failed).to have_attributes(actor_type: "operator", actor_id: operator.id)
+      expect(failed.changeset["would_withdraw"]).to eq("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
+
+      get "/data-sources/imports/#{refused.id}"
+      expect(page.at_css("#import_outcome strong").text).to eq("Nothing was imported: this full import would withdraw too many advisories.")
+      expect(page.css("#withdrawals tbody td").map(&:text)).to eq([ "Debian:13", "4", "5", "1" ])
+      form = page.at_css("form#confirm_withdrawals")
+      expect(form.at_css("label").text.squish).to start_with("Withdraw 4 Debian:13 advisories")
+      expect(form.at_css('input[name="withdrawals[Debian:13]"]')["value"]).to eq("4")
+
+      # Without the box, or with other counts, nothing happens.
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { withdrawals: { "Debian:13" => "4" } }
+      expect(flash[:alert]).to eq("Tick the box that names the withdrawals to confirm them.")
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { confirm: "1", withdrawals: { "Debian:13" => "400" } }
+      expect(flash[:alert]).to eq("Tick the box that names the withdrawals to confirm them.")
+      expect(AdvisoryImport.count).to eq(2)
+
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { confirm: "1", withdrawals: { "Debian:13" => "4" } }
+      confirmed = AdvisoryImport.order(:id).last
+      expect(response).to redirect_to("/data-sources/imports/#{confirmed.id}")
+      expect(confirmed).to have_attributes(state: "queued", full: true, operator:, source: "all.zip")
+      expect(AdvisoryUpload.without_data.sole).to have_attributes(advisory_import_id: confirmed.id, allowed_withdrawals: { "Debian:13" => 4 })
+      expect(AuditEntry.where(action: "advisory.withdrawals_confirmed").sole)
+        .to have_attributes(actor_id: operator.id, target_id: confirmed.id, changeset: { "source" => "all.zip", "refused_import_id" => refused.id, "withdrawals" => { "Debian:13" => 4 } })
+      run_import_jobs
+      expect(confirmed.reload).to have_attributes(state: "succeeded")
+      expect(confirmed.counts["absent"]).to eq(4)
+      expect(Advisory.current.pluck(:advisory_id)).to eq([ "DSA-9001-1" ])
+      expect(AdvisoryUpload.count).to eq(0)
+
+      # The refused import's file has moved on: it cannot be confirmed twice.
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { confirm: "1", withdrawals: { "Debian:13" => "4" } }
+      expect(flash[:alert]).to eq("The file is no longer stored, so it cannot be imported. Upload it again.")
+      get "/data-sources/imports/#{refused.id}"
+      expect(page.at_css("#withdrawals_expired")).to be_present
+    end
+
+    it "refuses the confirmed import again if it would withdraw more than was confirmed" do
+      import_advisories(*(1..5).map { |i| osv_record(id: "DSA-900#{i}-1") }, full: true)
+      upload(osv_zip("DSA-9001-1.json" => osv_record(id: "DSA-9001-1")), full: "1", confirm: "1")
+      run_import_jobs
+      refused = AdvisoryImport.order(:id).last
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { confirm: "1", withdrawals: { "Debian:13" => "4" } }
+      again = AdvisoryImport.order(:id).last
+      import_advisories(osv_record(id: "DSA-9006-1"), full: false) # a new advisory meanwhile: now 5 would be withdrawn
+      run_import_jobs
+      again.reload
+      expect(again).to have_attributes(state: "failed")
+      expect(again.counts.dig("would_withdraw", "Debian:13", "withdraw")).to eq(5)
+      expect(Advisory.current.count).to eq(6)
+    end
+
+    it "never refuses a partial import for what it lacks, nor confirms withdrawals for an import that had none" do
+      import_advisories(*(1..5).map { |i| osv_record(id: "DSA-900#{i}-1") }, full: true)
+      upload(osv_zip("DSA-9001-1.json" => osv_record(id: "DSA-9001-1")))
+      run_import_jobs
+      partial = AdvisoryImport.order(:id).last
+      expect(partial.state).to eq("succeeded")
+      post "/data-sources/imports/#{partial.id}/confirm-withdrawals", params: { confirm: "1" }
+      expect(flash[:alert]).to eq("This import has no withdrawals to confirm.")
     end
 
     it "refuses no file, another kind of file, and a body over the limit, storing nothing" do
@@ -401,6 +482,52 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       delete "/sign_out"
       get "/data-sources/imports/#{import.id}"
       expect(response).to redirect_to("/sign_in")
+    end
+  end
+
+  describe "review of #129" do
+    def run_import_jobs = perform_enqueued_jobs(only: AdvisoryUploadImportJob)
+
+    it "sends the full import confirmation only as the dialog button's own value, never as a field a cached form keeps" do
+      get "/data-sources"
+      form = page.at_css("#upload_form")
+      expect(form.css('input[name="confirm_full"]')).to be_empty
+      button = form.at_css('dialog button[name="confirm_full"]')
+      expect(button.attributes.transform_values(&:value)).to include("type" => "submit", "value" => "1", "data-confirm-full-target" => "confirm")
+    end
+
+    it "keeps a chosen file and an open confirmation when the cool-down timer refreshes the page, by morphing and keep-edits" do
+      freeze_time do
+        post "/data-sources/refresh"
+        get "/data-sources"
+        expect(page.at_css("#refresh")["data-controller"]).to eq("refresh-after")
+        expect(page.at_css('meta[name="turbo-refresh-method"]')["content"]).to eq("morph")
+        form = page.at_css("#upload_form")
+        expect(form["data-controller"].split).to include("keep-edits")
+        expect(form["data-action"]).to include("turbo:before-morph-element->keep-edits#protect")
+      end
+    end
+
+    it "counts only new, changed, and unchanged records as imported, and names the rest" do
+      zip = osv_zip("a.json" => osv_record(id: "DSA-9001-1"), "b.json" => osv_record(id: "DSA-9002-1", ecosystem: "Debian:12"),
+                    "c.json" => osv_record(id: "DSA-9001-1", modified: "2026-10-19T08:00:00Z"), "d.json" => "{")
+      upload(zip)
+      run_import_jobs
+      import = AdvisoryImport.sole
+      get "/data-sources/imports/#{import.id}"
+      expect(page.at_css("#import_outcome strong").text).to eq("4 records read: 1 imported, 3 skipped.")
+      expect(facts(page.at_css("dl.facts"))).to include("New" => "1", "Other ecosystems" => "1 (nothing for the fleet's ecosystems)",
+                                                        "Repeated in the file" => "1 (an advisory listed more than once; its newest version was used)", "Malformed" => "1")
+      get "/data-sources"
+      expect(page.at_css("#imports tbody tr td:nth-child(5)").text.squish).to eq("4 records read: 1 imported, 1 malformed and skipped")
+    end
+
+    it "does not promise that no findings change when no package's advisories changed" do
+      import_advisories(osv_record(id: "DSA-9001-1"))
+      upload(osv_zip("a.json" => osv_record(id: "DSA-9001-1")))
+      run_import_jobs
+      get "/data-sources/imports/#{AdvisoryImport.order(:id).last.id}"
+      expect(facts(page.at_css("dl.facts"))["Matching"]).to eq("No package's advisories changed. Hosts not yet evaluated against advisory data are evaluated in full.")
     end
   end
 
