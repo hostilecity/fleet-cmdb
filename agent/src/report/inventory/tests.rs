@@ -765,3 +765,26 @@ fn a_report_waiting_for_its_retry_is_replaced_once_an_interval_old() {
     );
     assert_eq!(transport.sent().last().unwrap().1["uptime_seconds"], 99_999);
 }
+
+#[test]
+fn a_report_request_sends_one_extra_report_even_when_nothing_changed() {
+    // P2-A01, DEC-13: the directive makes one report at the next tick, whatever the stable hash says.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![]);
+    transport.set_accepting(true);
+    let now = h.at(Duration::ZERO);
+    h.tick(&mut reporter, &transport, now);
+    assert_eq!(ids(&transport).len(), 1);
+
+    reporter.request();
+    let later = now + secs(10);
+    h.tick(&mut reporter, &transport, later);
+    let sent = ids(&transport);
+    assert_eq!(sent.len(), 2);
+    assert_ne!(sent[0], sent[1]);
+
+    // Not again until the schedule says so.
+    h.tick(&mut reporter, &transport, later + secs(10));
+    assert_eq!(ids(&transport).len(), 2);
+}

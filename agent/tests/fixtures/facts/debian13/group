@@ -1,0 +1,15 @@
+root:x:0:
+daemon:x:1:
+bin:x:2:
+sys:x:3:
+adm:x:4:admin
+tty:x:5:
+disk:x:6:
+mail:x:8:
+news:x:9:
+shadow:x:42:
+staff:x:50:
+users:x:100:
+nogroup:x:65534:
+messagebus:x:107:
+admin:x:1000:

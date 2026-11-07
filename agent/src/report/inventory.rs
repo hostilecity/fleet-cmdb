@@ -9,6 +9,10 @@
 //!   part ([`StableHash`]) is compared with that of the last report. A difference sends a report at
 //!   once; a volatile-only difference (free memory, free disk space, uptime) does not.
 //!
+//! - **on request**: when the server's `report_request` directive names `inventory`
+//!   ([`Reporter::request`], [`super::requests`], DEC-13): one extra report, built at the next tick
+//!   from fresh facts, whatever the stable hash says.
+//!
 //! Each report gets a new `report_id` (UUIDv4). A failed send is retried by the retry policy
 //! ([`crate::retry`]) with the **same** report id and body, so the server can discard a duplicate. No
 //! report is queued or replayed: while a report waits for its retry, a newer report replaces it when the
@@ -114,6 +118,7 @@ pub enum Reason {
     Startup,
     Scheduled,
     Changed,
+    Requested,
 }
 
 impl Reason {
@@ -122,6 +127,7 @@ impl Reason {
             Self::Startup => "startup",
             Self::Scheduled => "scheduled",
             Self::Changed => "stable_change",
+            Self::Requested => "requested",
         }
     }
 }
@@ -159,6 +165,8 @@ pub struct Reporter<'a, R: Rng> {
     hold_until: Option<Instant>,
     /// Generates report ids; replaceable in tests.
     new_id: fn() -> std::io::Result<String>,
+    /// The server asked for a report; the next tick builds one.
+    requested: bool,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -181,7 +189,14 @@ impl<'a, R: Rng> Reporter<'a, R> {
             next_check: Instant::now(),
             hold_until: None,
             new_id: new_report_id,
+            requested: false,
         }
+    }
+
+    /// Asks for one extra report at the next [`Reporter::tick`], built from facts collected then, which
+    /// replaces any report still waiting for its retry (that one was collected before the request).
+    pub fn request(&mut self) {
+        self.requested = true;
     }
 
     /// The report id waiting to be sent, if any.
@@ -199,7 +214,11 @@ impl<'a, R: Rng> Reporter<'a, R> {
         transport: &dyn Transport,
     ) -> Instant {
         let interval = self.intervals.inventory();
-        if now >= self.build_due_at(now, interval) {
+        if std::mem::take(&mut self.requested) {
+            let inventory = collect();
+            self.build(Reason::Requested, inventory, now);
+            self.next_check = now + CHANGE_CHECK_INTERVAL;
+        } else if now >= self.build_due_at(now, interval) {
             let reason = match &self.pending {
                 // A report still waiting for its retry is too old to send: replace it with current
                 // state, keeping its reason.
@@ -300,6 +319,8 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 warnings = inventory.warnings.len(),
                 "sending the startup inventory report"
             );
+        } else if reason == Reason::Requested {
+            tracing::info!("the server asked for an inventory report; sending one");
         } else if reason == Reason::Changed {
             tracing::info!(
                 warnings = inventory.warnings.len(),

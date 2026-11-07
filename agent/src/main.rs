@@ -18,6 +18,7 @@ mod cli;
 mod client;
 mod collect;
 mod config;
+mod facts;
 mod fsx;
 mod install;
 mod logging;
