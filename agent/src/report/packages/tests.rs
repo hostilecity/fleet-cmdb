@@ -161,6 +161,33 @@ fn a_failed_send_is_retried_with_the_same_report_id_and_body() {
 }
 
 #[test]
+fn the_backoff_starts_when_the_failed_request_ends() {
+    // Review of #117: the retry time was `now` (before the listing and the request) plus the backoff,
+    // so a request that took its 30 s timeout had used up a 2.5 to 5 s backoff and was retried at once.
+    let slow = Duration::from_millis(300);
+    let wake_after = |delay: Duration| {
+        let host = FakeHost::debian13();
+        let transport = FakeTransport::new(vec![]);
+        transport.push_with(move |_| {
+            std::thread::sleep(delay);
+            down()
+        });
+        let t0 = Instant::now();
+        let wake = reporter(&host).tick(t0, &transport);
+        wake - t0
+    };
+    let fast = wake_after(Duration::ZERO);
+    let late = wake_after(slow);
+    assert!(fast < INTERVAL, "a retry is due: {fast:?}");
+    // Same seed, same backoff: the slow failure's retry is later by the time the request took (less
+    // a margin for the few real milliseconds of the rest of the tick).
+    assert!(
+        late >= fast + slow - Duration::from_millis(50),
+        "fast {fast:?}, slow {late:?}"
+    );
+}
+
+#[test]
 fn a_request_replaces_a_report_waiting_for_its_retry() {
     let host = FakeHost::debian13();
     let transport = FakeTransport::new(vec![down()]);

@@ -810,3 +810,32 @@ fn a_requested_report_is_sent_at_once_even_while_the_old_one_waits_for_its_retry
     assert!(reporter.take_answered(), "the request was answered");
     assert!(!reporter.take_answered());
 }
+
+#[test]
+fn the_backoff_starts_when_the_failed_send_ends() {
+    // Review of #117: the retry time was the tick's `now` plus the backoff, so a request that took its
+    // 30 s timeout (after a collection of up to 10 s) had used up the backoff and was retried at once.
+    let slow = Duration::from_millis(300);
+    let wake_after = |delay: Duration| {
+        let h = Harness::new();
+        let mut reporter = h.reporter();
+        let transport = FakeTransport::new(vec![]);
+        transport.push_with(move |_| {
+            std::thread::sleep(delay);
+            Err(ApiError::Transport("timed out".into()))
+        });
+        let now = h.at(Duration::ZERO);
+        let wake = h.tick(&mut reporter, &transport, now);
+        assert_eq!(transport.sent().len(), 1);
+        wake - now
+    };
+    let fast = wake_after(Duration::ZERO);
+    let late = wake_after(slow);
+    // The retry (a few seconds) comes before the next change check (60 s).
+    assert!(fast < CHANGE_CHECK_INTERVAL, "{fast:?}");
+    // Same seed, same backoff: later by the time the request took, less the tick's own milliseconds.
+    assert!(
+        late >= fast + slow - Duration::from_millis(50),
+        "fast {fast:?}, slow {late:?}"
+    );
+}

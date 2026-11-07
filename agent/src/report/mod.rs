@@ -127,65 +127,64 @@ fn run_with(
     let requests = ReportRequests::new();
     let requests = &requests;
     thread::scope(|scope| {
-        let heartbeat = thread::Builder::new()
-            .name("fleet-agent-heartbeat".into())
-            .spawn_scoped(scope, || {
-                let _stop = StopOnExit(shutdown);
-                heartbeat_loop(
-                    intervals,
-                    &config.state_dir,
-                    transport,
-                    shutdown,
-                    started,
-                    updater,
-                    requests,
-                );
-            });
-        let inventory = thread::Builder::new()
-            .name("fleet-agent-inventory".into())
-            .spawn_scoped(scope, || {
-                let _stop = StopOnExit(shutdown);
-                inventory_loop(
-                    intervals,
-                    &config.state_dir,
-                    collector,
-                    transport,
-                    shutdown,
-                    requests,
-                );
-            });
-        let config_report = thread::Builder::new()
-            .name("fleet-agent-config".into())
-            .spawn_scoped(scope, || {
-                let _stop = StopOnExit(shutdown);
-                config_loop(
-                    config.config_report.start,
-                    host,
-                    transport,
-                    shutdown,
-                    requests,
-                );
-            });
+        let heartbeat = spawn_loop(scope, "heartbeat", || {
+            let _stop = StopOnExit(shutdown);
+            heartbeat_loop(
+                intervals,
+                &config.state_dir,
+                transport,
+                shutdown,
+                started,
+                updater,
+                requests,
+            );
+        });
+        let inventory = spawn_loop(scope, "inventory", || {
+            let _stop = StopOnExit(shutdown);
+            inventory_loop(
+                intervals,
+                &config.state_dir,
+                collector,
+                transport,
+                shutdown,
+                requests,
+            );
+        });
+        let config_report = spawn_loop(scope, "config", || {
+            let _stop = StopOnExit(shutdown);
+            config_loop(
+                config.config_report.start,
+                host,
+                transport,
+                shutdown,
+                requests,
+            );
+        });
         // FR-2.3: packages on the same cadence as the configuration report.
-        let packages_report = thread::Builder::new()
-            .name("fleet-agent-packages".into())
-            .spawn_scoped(scope, || {
-                let _stop = StopOnExit(shutdown);
-                packages_loop(
-                    config.config_report.start,
-                    host,
-                    transport,
-                    shutdown,
-                    requests,
-                );
-            });
-        let mut clean = true;
-        for (name, handle) in [
+        let packages_report = spawn_loop(scope, "packages", || {
+            let _stop = StopOnExit(shutdown);
+            packages_loop(
+                config.config_report.start,
+                host,
+                transport,
+                shutdown,
+                requests,
+            );
+        });
+        let handles = [
             ("heartbeat", heartbeat),
             ("inventory", inventory),
             ("config", config_report),
             ("packages", packages_report),
-        ] {
+        ];
+        // A loop that could not start never runs its StopOnExit, and the others (the heartbeat loop
+        // above all) run until shutdown: stop them now, before waiting on any of them, so the agent
+        // exits with a failure for systemd to restart instead of running half working (review of #117).
+        if handles.iter().any(|(_, handle)| handle.is_err()) {
+            shutdown.request();
+        }
+        let mut clean = true;
+        for (name, handle) in handles {
             match handle {
                 Ok(handle) => {
                     if handle.join().is_err() {
@@ -205,6 +204,21 @@ fn run_with(
         }
         clean
     })
+}
+
+/// Starts the thread of one loop, `fleet-agent-<name>`.
+fn spawn_loop<'scope, 'env>(
+    scope: &'scope thread::Scope<'scope, 'env>,
+    name: &'static str,
+    f: impl FnOnce() + Send + 'scope,
+) -> io::Result<thread::ScopedJoinHandle<'scope, ()>> {
+    #[cfg(test)]
+    if tests::FAIL_SPAWN.with(|fail| fail.get() == Some(name)) {
+        return Err(io::Error::other("simulated: no thread could be started"));
+    }
+    thread::Builder::new()
+        .name(format!("fleet-agent-{name}"))
+        .spawn_scoped(scope, f)
 }
 
 /// Requests shutdown when dropped, including when a loop panics, so the other loop stops too.
@@ -337,6 +351,15 @@ fn packages_loop(
             break;
         }
     }
+}
+
+/// When a failure in a tick that began at the (simulated) `now` happened: `now` moved on by the real
+/// time since `tick_started`. A backoff or `Retry-After` delay is a wait *after* the failure, so it is
+/// counted from here; counted from `now`, a request that took its whole 30 s timeout would have used
+/// up a 5 s backoff and been retried at once (review of #117). Tests drive `now` by hand and lose only
+/// the few real milliseconds a tick takes.
+fn failed_at(now: Instant, tick_started: Instant) -> Instant {
+    now + tick_started.elapsed()
 }
 
 /// A jitter source per use, so the streams differ.
@@ -739,5 +762,66 @@ pub(crate) mod tests {
         assert!(!clean);
         assert!(shutdown.is_requested());
         assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    thread_local! {
+        /// Makes [`spawn_loop`] fail for the loop of this name, on this thread, as a thread limit would.
+        pub(super) static FAIL_SPAWN: std::cell::Cell<Option<&'static str>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    #[test]
+    fn a_loop_that_cannot_start_stops_the_agent_at_once() {
+        // Review of #117: a failed spawn was only seen after joining the loops before it, and the
+        // heartbeat loop runs until shutdown, so the agent kept running without that loop. Every loop
+        // is tried, the heartbeat's included.
+        struct Down;
+        impl Transport for Down {
+            fn post(&self, _: &str, _: &serde_json::Value) -> Result<ApiResponse, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
+            fn post_gzip(&self, _: &str, _: &[u8]) -> Result<ApiResponse, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
+            fn get_conditional(&self, _: &str, _: Option<&str>) -> Result<Conditional, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
+        }
+        for name in ["heartbeat", "inventory", "config", "packages"] {
+            let dir = TempDir::new();
+            let config = Config {
+                state_dir: dir.path("state"),
+                ..Config::from_toml(&cfg::minimal()).unwrap()
+            };
+            let shutdown = Shutdown::default();
+            let (done, finished) = std::sync::mpsc::channel();
+            let outcome = thread::scope(|scope| {
+                scope.spawn(|| {
+                    FAIL_SPAWN.with(|fail| fail.set(Some(name)));
+                    let collector = Collector::new();
+                    let updater = Updater::inert(&config.state_dir);
+                    let host = crate::facts::fake::FakeHost::debian13();
+                    let clean = run_with(
+                        &config,
+                        &Down,
+                        &shutdown,
+                        Instant::now(),
+                        &collector,
+                        &host,
+                        &updater,
+                    );
+                    let _ = done.send(clean);
+                });
+                let outcome = finished.recv_timeout(Duration::from_secs(20));
+                // Unblock the run if it is still going (the old behaviour), so the test fails, not hangs.
+                shutdown.request();
+                outcome
+            });
+            assert_eq!(
+                outcome,
+                Ok(false),
+                "the {name} loop could not start, but the agent kept running"
+            );
+        }
     }
 }

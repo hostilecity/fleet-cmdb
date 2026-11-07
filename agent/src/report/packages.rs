@@ -97,6 +97,9 @@ pub struct Reporter<'a, R: Rng> {
     /// Once requested, nothing new starts: no listing, no send ([`Reporter::stopping_on`]).
     stop: Option<&'a Shutdown>,
     new_id: fn() -> io::Result<String>,
+    /// The real time the current tick began, so a delay after a failure counts from the failure, not
+    /// from the tick's (simulated) `now` ([`super::failed_at`], review of #117).
+    tick_started: Instant,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -115,6 +118,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             answered: false,
             stop: None,
             new_id: new_report_id,
+            tick_started: Instant::now(),
         }
     }
 
@@ -147,6 +151,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
 
     /// Does whatever is due at `now` and returns when to call again.
     pub fn tick(&mut self, now: Instant, transport: &dyn Transport) -> Instant {
+        self.tick_started = Instant::now();
         let held = self.hold_until.is_some_and(|hold| now < hold);
         if self.wanted.is_some() && !held {
             let reason = self.wanted.take().unwrap_or(Reason::Requested);
@@ -305,7 +310,9 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 self.finished(now);
             }
             Err(error) => {
-                self.retry_at = Some(now + self.backoff.on_failure(&error));
+                // The listing and the request took real time: the backoff starts now, not at `now`.
+                let failed = super::failed_at(now, self.tick_started);
+                self.retry_at = Some(failed + self.backoff.on_failure(&error));
             }
         }
     }

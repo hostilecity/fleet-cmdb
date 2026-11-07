@@ -418,6 +418,37 @@ fn every_status_dpkg_defines_is_handled() {
 }
 
 #[test]
+fn lines_that_are_not_reported_do_not_size_the_list() {
+    // Review of #117: the list was reserved for every output line, so many removed packages (or
+    // skipped lines) held megabytes of unused capacity through the report's encoding.
+    let mut output = String::new();
+    for i in 0..(MAX_PACKAGES + 10_000) {
+        output.push_str(&format!("config-files\told-{i}\tamd64\t1.0-1\told-{i}\n"));
+    }
+    output.push_str("installed\tkept\tamd64\t1.0\tkept\n");
+    let listing = parse(output.as_bytes());
+    assert_eq!(listing.packages, [package("kept", "1.0", "amd64", "kept")]);
+    assert_eq!(listing.removed, MAX_PACKAGES + 10_000);
+    // Nothing unused is carried on into the report's encoding.
+    assert_eq!(listing.packages.capacity(), 1);
+}
+
+#[test]
+fn the_reservation_is_capped_at_what_a_report_may_carry() {
+    let peak = |output: &[u8]| crate::test_support::memory::on_this_thread(|| parse(output)).1;
+    let removed: String = (0..(MAX_PACKAGES * 3))
+        .map(|i| format!("config-files\told-{i}\tamd64\t1.0-1\told-{i}\n"))
+        .collect();
+    // 60,000 removed lines reserve no more than the 20,001 slots a report could use.
+    let slots = std::mem::size_of::<Package>() * (MAX_PACKAGES + 1);
+    let used = peak(removed.as_bytes());
+    assert!(
+        used <= slots + 64 * 1024,
+        "{used} bytes for no package (cap {slots})"
+    );
+}
+
+#[test]
 fn empty_output_and_a_missing_final_newline_are_read() {
     assert_eq!(parse(b""), Listing::default());
     let listing = parse(b"installed\tx\tall\t1\tx");

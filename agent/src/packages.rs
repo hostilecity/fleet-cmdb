@@ -186,10 +186,12 @@ pub fn too_many(count: usize) -> String {
 
 /// Parses the output of [`LIST`]: a pure function, so it is tested on fixtures.
 pub fn parse(output: &[u8]) -> Listing {
-    // One package per line at most, so the list is allocated once, not doubled as it grows.
+    // One package per line at most, so the list is allocated once, not doubled as it grows; but no more
+    // than a report may carry (and one over, which makes it too many), since removed packages and
+    // skipped lines must not size it (review of #117).
     let lines = output.iter().filter(|b| **b == b'\n').count() + 1;
     let mut listing = Listing {
-        packages: Vec::with_capacity(lines),
+        packages: Vec::with_capacity(lines.min(MAX_PACKAGES + 1)),
         ..Listing::default()
     };
     let mut problems = Problems::default();
@@ -282,6 +284,8 @@ pub fn parse(output: &[u8]) -> Listing {
         }
         repeated
     });
+    // What skipped lines left unused is not carried through the report's encoding.
+    listing.packages.shrink_to_fit();
     listing.warnings = problems.finish();
     listing
 }
