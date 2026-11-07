@@ -35,11 +35,13 @@ module AuditEntriesHelper
     Audit::Actions::RULE_CREATED => "Rule created",
     Audit::Actions::RULE_EDITED => "Rule edited",
     Audit::Actions::RULE_ENABLED => "Rule enabled",
-    Audit::Actions::RULE_DISABLED => "Rule disabled"
+    Audit::Actions::RULE_DISABLED => "Rule disabled",
+    Audit::Actions::ADVISORY_IMPORTED => "Advisories imported",
+    Audit::Actions::ADVISORY_IMPORT_FAILED => "Advisory import failed"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
   INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze
@@ -76,6 +78,10 @@ module AuditEntriesHelper
     "condition" => [ "Condition", true ],
     "remediation" => [ "Remediation", false ],
     "enabled" => [ "Enabled", true ],
+    "origin" => [ "Origin", true ],
+    "full" => [ "Full data set", false ],
+    "ecosystems" => [ "Ecosystems", true ],
+    "counts" => [ "Counts", true ],
     **SETTING_NAMES.keys.index_with { [ "Minutes", true ] },
     **INTERVAL_SETTING_NAMES.keys.index_with { [ "Seconds", true ] }
   }.freeze

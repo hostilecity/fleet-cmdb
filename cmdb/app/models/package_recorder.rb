@@ -7,7 +7,7 @@
 #   host's HostPackage rows are replaced. Otherwise only the report details (time, warnings) are updated.
 # - An unsupported package manager is stored as such, with its reason and no packages: never as an empty set.
 #
-# Vulnerability matching (P2-S11) runs after a new snapshot; it is added with that section.
+# Vulnerability matching (P2-S11) runs after a new snapshot, for that host, once the transaction commits.
 module PackageRecorder
   Result = Data.define(:report_id, :duplicate, :snapshot)
 
@@ -30,6 +30,7 @@ module PackageRecorder
                               package_count: report.packages.size, content_hash: hash, packages: report.packages.map(&:to_a),
                               warnings: report.warnings, report_id: report.report_id, collected_at: report.collected_at, received_at: now)
       replace_packages(host_id, report.packages)
+      VulnerabilityMatchJob.after_snapshot(host_id)
     end
     set.update!(manager: report.manager, unsupported_reason: report.unsupported_reason, package_count: report.packages.size,
                 content_hash: hash, warnings: report.warnings, report_id: report.report_id, schema_version: report.schema_version,

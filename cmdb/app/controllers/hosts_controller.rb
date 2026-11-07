@@ -15,6 +15,7 @@ class HostsController < ApplicationController
     @counts = FleetList.counts
     @tags = FleetList.tags
     @awaiting_approval = OnboardingRequest.awaiting.count
+    @advisory_freshness = Advisories::Freshness.statuses
   end
 
   def show

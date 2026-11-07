@@ -10,10 +10,59 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_06_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
+
+  create_table "advisories", force: :cascade do |t|
+    t.string "advisory_id", limit: 128, null: false
+    t.string "source", limit: 256, null: false
+    t.string "summary", limit: 512
+    t.string "aliases", default: [], null: false, array: true
+    t.string "severity", limit: 16, null: false
+    t.string "severity_raw", limit: 512
+    t.string "reference_url", limit: 2048
+    t.datetime "published_at"
+    t.datetime "modified_at", null: false
+    t.datetime "withdrawn_at"
+    t.string "withdrawn_reason", limit: 16
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["advisory_id"], name: "index_advisories_on_advisory_id", unique: true
+    t.check_constraint "(withdrawn_at IS NULL) = (withdrawn_reason IS NULL) AND (withdrawn_reason::text = ANY (ARRAY['withdrawn'::character varying, 'absent'::character varying]::text[]))", name: "advisories_withdrawn_reason_valid"
+    t.check_constraint "severity::text = ANY (ARRAY['critical'::character varying, 'high'::character varying, 'medium'::character varying, 'low'::character varying, 'unknown'::character varying]::text[])", name: "advisories_severity_valid"
+  end
+
+  create_table "advisory_imports", force: :cascade do |t|
+    t.bigint "operator_id"
+    t.string "origin", limit: 8, null: false
+    t.string "source", limit: 256, null: false
+    t.boolean "full", default: false, null: false
+    t.string "state", limit: 16, null: false
+    t.string "ecosystems", default: [], null: false, array: true
+    t.jsonb "counts", default: {}, null: false
+    t.jsonb "problems", default: [], null: false
+    t.string "reason", limit: 512
+    t.string "etag", limit: 256
+    t.string "last_modified", limit: 64
+    t.datetime "started_at", null: false
+    t.datetime "finished_at", null: false
+    t.index ["finished_at"], name: "index_advisory_imports_on_finished_at"
+    t.index ["operator_id"], name: "index_advisory_imports_on_operator_id"
+    t.check_constraint "origin::text = ANY (ARRAY['feed'::character varying, 'file'::character varying]::text[])", name: "advisory_imports_origin_valid"
+    t.check_constraint "state::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying]::text[])", name: "advisory_imports_state_valid"
+  end
+
+  create_table "advisory_packages", force: :cascade do |t|
+    t.bigint "advisory_id", null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.string "package", limit: 128, null: false
+    t.jsonb "ranges", null: false
+    t.string "fixed_version", limit: 256
+    t.index ["advisory_id", "ecosystem", "package"], name: "index_advisory_packages_unique", unique: true
+    t.index ["ecosystem", "package"], name: "index_advisory_packages_on_ecosystem_and_package"
+  end
 
   create_table "agent_credentials", force: :cascade do |t|
     t.bigint "host_id", null: false
@@ -199,6 +248,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_06_020000) do
     t.check_constraint "from_status::text IS DISTINCT FROM to_status::text", name: "host_status_events_is_a_change"
     t.check_constraint "reason::text = ANY (ARRAY['heartbeat'::character varying::text, 'evaluation'::character varying::text])", name: "host_status_events_reason_valid"
     t.check_constraint "to_status::text = ANY (ARRAY['online'::character varying::text, 'stale'::character varying::text, 'offline'::character varying::text])", name: "host_status_events_to_status_valid"
+  end
+
+  create_table "host_vulnerability_evaluations", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "ecosystem", limit: 64
+    t.string "state", limit: 16, null: false
+    t.string "reason", limit: 32
+    t.string "detail", limit: 512
+    t.jsonb "not_evaluated", default: [], null: false
+    t.integer "not_evaluated_count", default: 0, null: false
+    t.datetime "evaluated_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_host_vulnerability_evaluations_on_host_id", unique: true
+    t.check_constraint "(state::text = 'not_evaluated'::text) = (reason IS NOT NULL)", name: "host_vulnerability_evaluations_reason_iff_not_evaluated"
+    t.check_constraint "state::text = ANY (ARRAY['evaluated'::character varying, 'not_evaluated'::character varying]::text[])", name: "host_vulnerability_evaluations_state_valid"
   end
 
   create_table "hosts", force: :cascade do |t|
@@ -387,6 +452,32 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_06_020000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "vulnerability_findings", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "advisory_id", null: false
+    t.string "package", limit: 128, null: false
+    t.string "architecture", limit: 32, null: false
+    t.string "source", limit: 128, null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.string "installed_version", limit: 256, null: false
+    t.string "fixed_version", limit: 256
+    t.string "state", limit: 16, null: false
+    t.string "resolution", limit: 16
+    t.datetime "first_seen_at", null: false
+    t.datetime "resolved_at"
+    t.datetime "reopened_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
+    t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
+    t.index ["host_id", "source"], name: "index_vulnerability_findings_on_host_id_and_source"
+    t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
+    t.check_constraint "(state::text = 'resolved'::text) = (resolution IS NOT NULL) AND (resolution::text = ANY (ARRAY['fixed'::character varying, 'removed'::character varying, 'withdrawn'::character varying, 'not_affected'::character varying]::text[]))", name: "vulnerability_findings_resolution_valid"
+    t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'reopened'::character varying]::text[])", name: "vulnerability_findings_state_valid"
+  end
+
+  add_foreign_key "advisory_imports", "operators"
+  add_foreign_key "advisory_packages", "advisories", on_delete: :cascade
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "agent_release_imports", "agent_releases"
   add_foreign_key "agent_release_imports", "operators"
@@ -400,6 +491,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_06_020000) do
   add_foreign_key "host_package_sets", "hosts"
   add_foreign_key "host_packages", "hosts"
   add_foreign_key "host_status_events", "hosts"
+  add_foreign_key "host_vulnerability_evaluations", "hosts"
+  add_foreign_key "vulnerability_findings", "advisories"
+  add_foreign_key "vulnerability_findings", "hosts"
   add_foreign_key "inventory_report_receipts", "hosts"
   add_foreign_key "inventory_snapshots", "hosts"
   add_foreign_key "onboarding_requests", "hosts"

@@ -8,6 +8,7 @@
     <p>Their installers are waiting. <%= link_to "Review them", onboard_path %> before they expire.</p>
   </div>
 <% end %>
+<%= render "hosts/advisory_freshness", statuses: @advisory_freshness %>
 <%= render "hosts/counts", counts: @counts %>
 <%= form_with url: root_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
   <label>Search name or hostname<%= search_field_tag :q, @fleet.q, placeholder: "vm-01 or Media server", maxlength: 100 %></label>

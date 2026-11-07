@@ -1,0 +1,12 @@
+<%# Advisory data freshness (P2-S13): a warning when any ecosystem's data is older than FLEET_ADVISORY_MAX_AGE_HOURS or was never refreshed, since stale data would otherwise look like no vulnerabilities. %>
+<% stale = statuses.select(&:stale) %>
+<% if stale.any? %>
+  <div class="notice" role="alert" id="advisory_freshness">
+    <strong><%= stale.all?(&:never?) ? "Vulnerability data has never been refreshed." : "Vulnerability data is out of date." %></strong>
+    <% stale.each do |status| %>
+      <p><span class="mono"><%= status.ecosystem %></span> advisory data <%= status.never? ? "has never been updated from the feed or a full import" : "was last updated #{seen_ago(status.updated_at)} (#{utc(status.updated_at)})" %>, so findings may be missing. <%= link_to "Check the failed jobs", failed_jobs_path %>, or see <span class="mono">bin/rails advisories:status</span>.</p>
+    <% end %>
+  </div>
+<% else %>
+  <p class="muted" id="advisory_freshness">Advisory data last updated: <%= safe_join(statuses.map { |status| safe_join([ tag.span(status.ecosystem, class: "mono"), " #{seen_ago(status.updated_at)}" ]) }, ", ") %>.</p>
+<% end %>

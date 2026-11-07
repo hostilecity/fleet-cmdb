@@ -10,6 +10,9 @@ gem "pg", "~> 1.1"
 # Validates agent API requests against the JSON Schemas in docs/api at runtime (P1-API-AUTH)
 gem "json_schemer"
 
+# Reads OSV advisory archives (all.zip) for import, entry by entry with size limits (P2-VULNS, DEC-11)
+gem "rubyzip", "~> 3.2", require: "zip"
+
 # Operator sign-in with Google OAuth, POST-only request phase with CSRF protection (P1-ACCESS, DEC-06)
 gem "omniauth", "~> 2.1"
 gem "omniauth-google-oauth2", "~> 1.2"
