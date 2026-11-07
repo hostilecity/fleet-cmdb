@@ -24,9 +24,10 @@
 <tr><td><a href="host-config.html">db-01</a></td><td><span class="val">6</span></td><td><span class="lamp fail">Fail</span></td><td><span class="lamp online">Pass</span></td></tr>
 </tbody></table></div>
 <p class="muted">The change from fail to pass on db-01 is only because the condition changed; its observed value, 6, is the same. The other 38 hosts keep their result.</p>
+<p class="muted">An edit to <em>Applies to</em> that drops a host which passes, fails, or is not readable now is listed here too, with <span class="lamp na">Not applicable</span> after, so you see which hosts the rule would stop checking. Saving an unchanged rule shows &ldquo;No change: saving makes no new version.&rdquo; instead of this table.</p>
 <form class="actions" action="rule.html" method="get" style="margin-top:1.5rem"><button class="btn" type="submit">Save as version 3</button><a class="btn quiet" href="rule-edit.html">Back to editing</a></form>
 <p class="muted" style="font-size:.875rem">Saving checks again against the rule as it is then. If the rule or a host's snapshot changed since this preview, the results may differ from what is shown. Saving records one audit entry with you as the actor and the before and after values.</p>
-<p class="note">Review note: the preview needs a server-side dry run, which evaluates the edited rule on each host's latest snapshot and writes nothing. It is a small addition to P2-S06 and is in the spec.</p>
+<p class="note">Review note: the preview needs a server-side dry run, which evaluates the edited rule on each host's latest snapshot and writes nothing. It is a small addition to P2-S06 and is in the spec (P2-S14). Decided on #126: hosts that drop out to not applicable are listed; an unchanged rule previews as no change.</p>
 </main>
 </body>
 </html>

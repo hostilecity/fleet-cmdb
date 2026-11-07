@@ -93,13 +93,25 @@ RSpec.describe CisDryRun do
       expect(expect_same_as_saving(edited).counts.changed).to eq(3)
     end
 
-    it "for applies_to narrowed so that hosts that pass now would no longer be evaluated" do
+    it "for applies_to narrowed, listing the hosts that drop out from a real result" do
       narrowed = rule.merge("applies_to" => [ { "distribution" => "debian", "versions" => [ "12" ] } ])
       preview = expect_same_as_saving(narrowed)
-      # Every Debian 13 host would be not applicable, listed nowhere but counted in unlisted_changes; bare-01 has no
-      # os, so it stays not_readable.
-      expect(preview.counts).to have_attributes(changed: 0, unchanged: 1, not_applicable: 6, no_report: 1, unlisted_changes: 5)
-      expect(listed(preview)).to eq({})
+      # Every Debian 13 host with a real result drops out and is listed (owner decision on #126); ubuntu-01 was
+      # already not applicable, so it is only counted; bare-01 has no os, so it stays not_readable.
+      expect(preview.counts).to have_attributes(changed: 5, to_not_applicable: 5, pass_to_fail: 0, other_changes: 0, unchanged: 1,
+                                                not_applicable: 1, no_report: 1, unlisted_changes: 0)
+      expect(listed(preview)).to eq("app-01" => %w[pass not_applicable], "db-01" => %w[fail not_applicable], "db-02" => %w[not_readable not_applicable],
+                                    "web-01" => %w[pass not_applicable], "web-02" => %w[pass not_applicable])
+      expect(preview.changes.map(&:kind).uniq).to eq([ :to_not_applicable ])
+      expect(preview.changes.find { |change| change.host_name == "web-01" })
+        .to have_attributes(observed: nil, current_observed: 4, reason: "Applies to debian 12; this host runs debian 13.")
+    end
+
+    it "for a disabled rule enabled with applies_to narrowed, where hosts with no real result yet are only counted" do
+      save(rule.merge("enabled" => false))
+      preview = expect_same_as_saving(rule.merge("enabled" => true, "applies_to" => [ { "distribution" => "debian", "versions" => [ "12" ] } ]))
+      expect(preview.counts).to have_attributes(changed: 1, to_not_applicable: 0, other_changes: 1, not_applicable: 6, unlisted_changes: 6)
+      expect(listed(preview)).to eq("bare-01" => %w[not_evaluated not_readable])
     end
 
     it "for a new rule, whose current result is none on every host" do

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preview: ssh-ignore-rhosts · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rule-create.html">&larr; Add rule</a></p>
+<div class="page-head"><div><h1>Preview: <span class="mono" style="font-size:1.375rem">ssh-ignore-rhosts</span></h1><p>A new rule; version 1 would be created. Nothing has been saved yet.</p></div></div>
+<div class="notice info" role="status"><strong>On 38 of 41 hosts: 36 would pass, 1 would fail, 1 not readable.</strong><p>Calculated now from each host's latest config snapshot; 1 host has no config report and 2 hosts are not Debian 13, so the rule does not apply to them. No agent is contacted.</p></div>
+<div class="verdict-group"><h3>Would fail or not be readable <span class="muted" style="font-weight:400">2</span></h3></div>
+<div class="table-wrap"><table><caption class="visually-hidden">Hosts that would fail or not be readable under the new rule</caption><thead><tr><th scope="col">Host</th><th scope="col">Observed</th><th scope="col">Result (version 1, equal to yes)</th></tr></thead><tbody>
+<tr><td><a href="host-config.html">legacy-01</a></td><td><span class="val">no</span></td><td><span class="lamp fail">Fail</span></td></tr>
+<tr><td><a href="host-config.html">db-02</a></td><td><span class="muted">Permission denied reading /etc/ssh/sshd_config.</span></td><td><span class="lamp stale">Not readable</span></td></tr>
+</tbody></table></div>
+<details style="margin-top:1rem"><summary>Would pass <span class="muted">36</span></summary><p class="muted">web-01, web-02, db-01, and 33 more, each observing <span class="val">yes</span>.</p></details>
+<form class="actions" action="rule.html" method="get" style="margin-top:1.5rem"><button class="btn" type="submit">Add rule</button><a class="btn quiet" href="rule-create.html">Back to editing</a></form>
+<p class="muted" style="font-size:.875rem">Saving checks again against each host's snapshot as it is then, so the results may differ from what is shown if a snapshot changed since this preview. The key must still be unused. Saving records one audit entry with you as the actor.</p>
+<p class="note">Decided on #126: adding a rule previews its results before saving, as editing does, from the same server-side dry run (P2-S14). A new rule has no result on any host yet, so the preview counts pass, fail, and not readable, and lists the hosts that would fail or not be readable.</p>
+</main>
+</body>
+</html>

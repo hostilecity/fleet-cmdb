@@ -1,5 +1,5 @@
 # Dry run of an unsaved CIS-aligned rule definition (P2-S14, FR-2.2, AC-2.2): which hosts would change result if
-# the definition were saved, for the rule edit preview (P2-D06). It writes nothing (no result, change, version,
+# the definition were saved, for the rule edit and add-rule previews (P2-D06). It writes nothing (no result, change, version,
 # audit entry, or job) and contacts no agent.
 #
 #   result = CisDryRun.call(rule)   # rule: a Hash as a rule file holds one rule, or a CisRules::Definition
@@ -14,10 +14,13 @@
 #   retired), from its latest config snapshot and the os of its inventory, with CisEvaluation.outcome, so the
 #   evaluator, applicability, not-readable, and not-evaluated rules are the same. A host's current result is its
 #   stored CisResult for the rule; a new rule (its key not defined yet) has none on any host.
-# - A host with no config report, and a host the rule would not apply to, is counted and not listed, even when
-#   its stored result would change (counted again in unlisted_changes, so the counts still add up to what saving
-#   records). Saving a definition identical to the current version with the same flag writes nothing, so the
-#   preview then has no changes.
+# - A host that would drop out, going from a real result (pass, fail, or not_readable) to not_applicable, is
+#   listed (kind :to_not_applicable), so the operator sees which hosts the rule would stop checking. Any other
+#   host the rule would not apply to (already not applicable, or with no result yet, as on a new rule), and a
+#   host with no config report, is counted and not listed, even when its stored result would change; those are
+#   counted again in unlisted_changes, so listed plus unlisted changes are exactly what saving records. Saving a
+#   definition identical to the current version with the same flag writes nothing, so the preview then has no
+#   changes ("no change").
 # - Reads only: six queries whatever the size of the fleet (the rule and its current version, the hosts, their
 #   latest snapshots reading just the rule's fact, their inventories, the rule's results), none locking anything, so an agent
 #   report is never waited for or blocked. Outside a transaction they run in one REPEATABLE READ, READ ONLY
@@ -44,16 +47,21 @@ module CisDryRun
     def kind
       if from == "pass" && to == "fail" then :pass_to_fail
       elsif from == "fail" && to == "pass" then :fail_to_pass
+      elsif to == "not_applicable" then :to_not_applicable
       else :other
       end
     end
   end
 
-  # hosts           every host in the fleet; each is counted once in changed, unchanged, not_applicable, or no_report
-  # changed         listed changes (pass_to_fail + fail_to_pass + other_changes)
-  # unlisted_changes hosts counted in not_applicable or no_report whose stored result would also change
-  Counts = Data.define(:hosts, :changed, :pass_to_fail, :fail_to_pass, :other_changes, :unchanged, :not_applicable, :no_report,
-                       :unlisted_changes)
+  # The real results a host can drop out from: a listed change when the rule would no longer apply.
+  REAL_RESULTS = %w[pass fail not_readable].freeze
+
+  # hosts             every host in the fleet; each is counted once in changed, unchanged, not_applicable, or no_report
+  # changed           listed changes (pass_to_fail + fail_to_pass + to_not_applicable + other_changes)
+  # not_applicable    hosts the rule would not apply to, other than those listed as to_not_applicable
+  # unlisted_changes  hosts counted in not_applicable or no_report whose stored result would also change
+  Counts = Data.define(:hosts, :changed, :pass_to_fail, :fail_to_pass, :to_not_applicable, :other_changes, :unchanged, :not_applicable,
+                       :no_report, :unlisted_changes)
 
   module_function
 
@@ -89,7 +97,7 @@ module CisDryRun
       outcome = CisEvaluation.outcome(definition, enabled:, facts: facts[host_id], os: os[host_id], manifest:)
       changing = saves && CisEvaluation.change?(from, outcome.result)
       bucket = if !facts.key?(host_id) then :no_report
-      elsif outcome.result == "not_applicable" then :not_applicable
+      elsif outcome.result == "not_applicable" && !(changing && REAL_RESULTS.include?(from)) then :not_applicable
       end
       if bucket
         tally[bucket] += 1
@@ -103,7 +111,8 @@ module CisDryRun
       end
     end
 
-    counts = Counts.new(hosts: hosts.size, changed: changes.size, pass_to_fail: tally[:pass_to_fail], fail_to_pass: tally[:fail_to_pass], other_changes: tally[:other],
+    counts = Counts.new(hosts: hosts.size, changed: changes.size, pass_to_fail: tally[:pass_to_fail], fail_to_pass: tally[:fail_to_pass], to_not_applicable: tally[:to_not_applicable],
+                        other_changes: tally[:other],
                         unchanged: tally[:unchanged], not_applicable: tally[:not_applicable], no_report: tally[:no_report],
                         unlisted_changes: tally[:unlisted_changes])
     Preview.new(key: definition.key, rule_id: stored&.id, current_version: current&.version, next_version:, currently_enabled: stored&.enabled, enabled:,
