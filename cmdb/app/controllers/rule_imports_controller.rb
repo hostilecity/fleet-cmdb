@@ -43,7 +43,8 @@ class RuleImportsController < ApplicationController
   end
 
   def apply
-    result = CisRules::Import.call(@preview.body, actor: current_operator, disable_missing: @preview.disable_missing, expected_state: @preview.rules_digest)
+    result = CisRules::Import.call(@preview.body, actor: current_operator, disable_missing: @preview.disable_missing,
+                                   expected_state: @preview.rules_digest, source: "file_upload")
     unless result.ok? # the checks changed under the file (a new fact manifest), so it is refused as a new upload would be
       @filename = @preview.filename
       @problems = result.errors.map { |text| CisRules::RuleFile::Problem.new(pointer: text.split(": ", 2).first, message: text.split(": ", 2).last) }
