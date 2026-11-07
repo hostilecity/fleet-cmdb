@@ -10,7 +10,8 @@
 #   host's previous packages and count are kept, since nothing says they changed; vulnerability matching does not
 #   evaluate the host meanwhile (HostContext), so its findings stay as they were.
 # - Skipped packages (named by the agent, not listed as installed) are stored with the set and its snapshot; they
-#   are not in HostPackage, so findings for them resolve as removed at the next matching (P2-S08 owner question).
+#   are not in HostPackage, so findings for them resolve as removed at the next matching, and reopen when the
+#   package is listed again (P2-S08, P2-S11 owner decision).
 # - A new report, changed or not, satisfies the host's pending packages report request (ReportRequests, P2-S03).
 #
 # Vulnerability matching (P2-S11) runs after a new snapshot, for that host, once the transaction commits.

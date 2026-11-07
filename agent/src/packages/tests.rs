@@ -38,17 +38,17 @@ fn package(name: &str, version: &str, architecture: &str, source: &str) -> Packa
 fn the_debian13_listing_is_parsed_in_full() {
     let listing = parse(&package_fixture("dpkg-query-show"));
     assert_eq!(listing.warnings, Vec::<String>::new());
-    // 32 lines: one removed package (config-files) is left out, and three interrupted installations
-    // are named, not listed; `nano` (purged) is not listed by dpkg.
-    assert_eq!(listing.packages.len(), 28);
+    // 32 lines: one removed package (config-files) is left out, and two interrupted installations
+    // are named, not listed; `systemd`, with a trigger pending, is installed; `nano` (purged) is not
+    // listed by dpkg.
+    assert_eq!(listing.packages.len(), 29);
     assert_eq!(listing.removed, 1);
-    assert_eq!(listing.not_configured, 3);
+    assert_eq!(listing.not_configured, 2);
     assert_eq!(
         listing.skipped,
         [
             skipped("man-db", "half-configured"),
             skipped("qemu-guest-agent", "unpacked"),
-            skipped("systemd", "triggers-pending"),
         ]
     );
     assert_eq!(listing.skipped_not_named, 0);
@@ -81,6 +81,8 @@ fn the_debian13_listing_is_parsed_in_full() {
         ("tzdata", "all", "2025b-4+deb13u1", "tzdata"),
         // No Source field: the package's own name.
         ("local-tool", "amd64", "0.1", "local-tool"),
+        // A trigger pending (`it`) is installed and configured (review of #121).
+        ("systemd", "amd64", "257.8-1~deb13u2", "systemd"),
         // Held (`hi`) is installed.
         (
             "linux-image-cloud-amd64",
@@ -102,7 +104,7 @@ fn the_debian13_listing_is_parsed_in_full() {
         "a removed package (config-files) is not installed"
     );
     // An interrupted installation is not installed (owner decision): not in the list, whatever its state.
-    for name in ["man-db", "qemu-guest-agent", "systemd"] {
+    for name in ["man-db", "qemu-guest-agent"] {
         assert!(
             !listing.packages.iter().any(|p| p.name == name),
             "{name} is not installed in full"
@@ -143,9 +145,9 @@ fn the_fixture_is_what_the_real_dpkg_query_prints_for_its_status_file() {
 }
 
 /// The reference listing for AC-2.3, read independently of [`LIST`]: `name:arch version` for every
-/// package `dpkg-query --show` lists whose status is installed (the second letter of the abbreviation is
-/// `i`), and the names of the interrupted installations (`H`alf-installed, `U`npacked, half-`F`igured,
-/// triggers-a`W`aited, `t`riggers-pending).
+/// package `dpkg-query --show` lists whose status is installed or a trigger state (the second letter of the
+/// abbreviation is `i`, triggers-a`W`aited, or `t`riggers-pending), and the names of the interrupted
+/// installations (`H`alf-installed, `U`npacked, half-`F`igured).
 fn reference_listing(admindir: Option<&Path>) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut args = vec![
         "--show".to_owned(),
@@ -168,10 +170,10 @@ fn reference_listing(admindir: Option<&Path>) -> (BTreeSet<String>, BTreeSet<Str
         // `${binary:Package}` qualifies only Multi-Arch: same packages; qualify them all.
         let name = fields[1].split(':').next().unwrap();
         match fields[0].as_bytes().get(1) {
-            Some(b'i') => {
+            Some(b'i' | b'W' | b't') => {
                 installed.insert(format!("{name}:{} {}", fields[2], fields[3]));
             }
-            Some(b'H' | b'U' | b'F' | b'W' | b't') => {
+            Some(b'H' | b'U' | b'F') => {
                 interrupted.insert(name.to_owned());
             }
             _ => {} // `c`, config-files
@@ -208,8 +210,12 @@ fn the_fixture_listing_matches_dpkgs_own_listing() {
     assert_eq!(skipped_names(&listing), interrupted);
     assert_eq!(
         interrupted.len(),
-        3,
-        "the fixture has three interrupted installations"
+        2,
+        "the fixture has two interrupted installations"
+    );
+    assert!(
+        installed.iter().any(|p| p.starts_with("systemd:amd64 ")),
+        "dpkg counts the package with a trigger pending as installed"
     );
 }
 
@@ -236,7 +242,7 @@ fn the_listing_runs_one_fixed_command() {
     let Collected::Dpkg(listing) = collect(&host, None) else {
         panic!("not detected");
     };
-    assert_eq!(listing.packages.len(), 28);
+    assert_eq!(listing.packages.len(), 29);
     assert_eq!(
         host.log(),
         [
@@ -447,11 +453,12 @@ fn warnings_are_capped_with_a_count_of_the_rest() {
 
 #[test]
 fn every_status_dpkg_defines_is_handled() {
-    // Only `installed` is reported as installed; the interrupted states are skipped, named.
+    // `installed` and the two trigger states (configured, a trigger not run yet) are reported as
+    // installed (review of #121); the interrupted states are skipped, named.
     let statuses = [
         ("installed", true),
-        ("triggers-awaited", false),
-        ("triggers-pending", false),
+        ("triggers-awaited", true),
+        ("triggers-pending", true),
         ("half-configured", false),
         ("unpacked", false),
         ("half-installed", false),
@@ -472,15 +479,13 @@ fn every_status_dpkg_defines_is_handled() {
             "{status}"
         );
     }
-    assert_eq!(listing.not_configured, 5);
+    assert_eq!(listing.not_configured, 3);
     assert_eq!(listing.removed, 1);
     assert_eq!(
         listing.skipped,
         [
             skipped("p-half-configured", "half-configured"),
             skipped("p-half-installed", "half-installed"),
-            skipped("p-triggers-awaited", "triggers-awaited"),
-            skipped("p-triggers-pending", "triggers-pending"),
             skipped("p-unpacked", "unpacked"),
         ]
     );

@@ -472,11 +472,11 @@ package_report_matches_dpkg() {
     # shellcheck disable=SC2016 # dpkg-query's own field syntax, expanded by dpkg-query in the guest
     format='${db:Status-Abbrev}|${Package}:${Architecture} ${Version}|${Package}|${Source}\n'
     reference=$(vm "dpkg-query --show --showformat='$format'" \
-        | awk -F'|' 'substr($1, 2, 1) == "i" { s = $4; sub(/ .*/, "", s); if (s == "") s = $3; print $2 " " s }' | sort)
-    # The second letter of the abbreviation: H half-installed, U unpacked, F half-configured,
-    # W triggers-awaited, t triggers-pending (dpkg-query --show lists no package that is not installed).
+        | awk -F'|' 'substr($1, 2, 1) ~ /[iWt]/ { s = $4; sub(/ .*/, "", s); if (s == "") s = $3; print $2 " " s }' | sort)
+    # The second letter of the abbreviation: i installed, W triggers-awaited, t triggers-pending (all
+    # installed and configured); H half-installed, U unpacked, F half-configured (interrupted, skipped).
     interrupted=$(vm "dpkg-query --show --showformat='$format'" \
-        | awk -F'|' 'substr($1, 2, 1) ~ /[HUFWt]/ { print $3 }' | sort -u)
+        | awk -F'|' 'substr($1, 2, 1) ~ /[HUF]/ { print $3 }' | sort -u)
     skipped=$(jq -r '(.skipped // [])[].name' "$stub/packages.json" | sort -u)
     reported=$(jq -r '.packages[] | "\(.name):\(.architecture) \(.version) \(.source)"' "$stub/packages.json" | sort)
     count=$(printf '%s\n' "$reported" | grep -c .)

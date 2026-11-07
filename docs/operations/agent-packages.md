@@ -22,12 +22,13 @@ One command, with fixed arguments, no shell, a cleared environment, a 20 second 
 
 ## Which packages count as installed
 
-Only a package whose status is `installed` is reported as installed (owner decision, P2-S08):
+A package whose status is `installed`, `triggers-awaited`, or `triggers-pending` is reported as installed; an interrupted installation is not (owner decision, P2-S08):
 
 | dpkg status (`dpkg -l` second letter) | Reported |
 |---|---|
 | `installed` (`i`) | yes, in `packages` |
-| `unpacked` (`U`), `half-installed` (`H`), `half-configured` (`F`), `triggers-awaited` (`W`), `triggers-pending` (`t`): an installation that was interrupted | no: in `skipped`, with the status as the reason (counted as `not_configured` in the journal line) |
+| `triggers-awaited` (`W`), `triggers-pending` (`t`): installed and configured, a trigger has not run yet | yes, in `packages` (apt and `dpkg -l` count it as installed) |
+| `unpacked` (`U`), `half-installed` (`H`), `half-configured` (`F`): an installation that was interrupted | no: in `skipped`, with the status as the reason (counted as `not_configured` in the journal line) |
 | `config-files` (`c`): removed, only its configuration files left | no |
 | `not-installed` (`n`): purged | no (dpkg does not list it) |
 
@@ -74,7 +75,7 @@ The reported set must equal the host's own listing of installed packages, with n
 dpkg-query --show --showformat='${db:Status-Abbrev}|${Package}:${Architecture} ${Version}\n' \
   | awk -F'|' 'substr($1, 2, 1) == "i" { print $2 }' | sort > dpkg.txt
 dpkg-query --show --showformat='${db:Status-Abbrev}|${Package}\n' \
-  | awk -F'|' 'substr($1, 2, 1) ~ /[HUFWt]/ { print $2 }' | sort -u > interrupted.txt
+  | awk -F'|' 'substr($1, 2, 1) ~ /[HUF]/ { print $2 }' | sort -u > interrupted.txt
 ```
 
 and compare them with the host's package list on the dashboard, or with the report (`jq -r '.packages[] | "\(.name):\(.architecture) \(.version)"' | sort`, and `jq -r '(.skipped // [])[].name' | sort -u`). The VM test ([`agent/scripts/vm-test.sh`](../../agent/scripts/vm-test.sh), scenario "Package report matches dpkg-query") does exactly this on Debian's Debian 13 genericcloud image, under the real unit, on every agent change, sources included; the agent's tests do it against the dpkg database of the machine running them.
@@ -85,4 +86,4 @@ Measured with the test suite's counting allocator (`peak_memory_for_3000_package
 
 ## Fixtures
 
-`agent/tests/fixtures/packages/debian13/status` is a dpkg database modelled on a Debian 13 cloud VM (epochs, `+` and `~` in versions, `+` in names, `libc6` and `libgcc-s1` for `amd64` and `i386`, `all` packages, source packages that differ from the binary, a held package, three interrupted installations (`unpacked`, `half-configured`, `triggers-pending`), a removed one, a purged one); it was not captured from a running host. `dpkg-query-show` next to it is what the real `dpkg-query` prints for it with the agent's arguments, and a test checks that wherever `dpkg-query` exists. A run on a real Debian 13 VM is the AC-2.3 check (the VM test above).
+`agent/tests/fixtures/packages/debian13/status` is a dpkg database modelled on a Debian 13 cloud VM (epochs, `+` and `~` in versions, `+` in names, `libc6` and `libgcc-s1` for `amd64` and `i386`, `all` packages, source packages that differ from the binary, a held package, two interrupted installations (`unpacked`, `half-configured`), a package with a trigger pending (`triggers-pending`, installed), a removed one, a purged one); it was not captured from a running host. `dpkg-query-show` next to it is what the real `dpkg-query` prints for it with the agent's arguments, and a test checks that wherever `dpkg-query` exists. A run on a real Debian 13 VM is the AC-2.3 check (the VM test above).

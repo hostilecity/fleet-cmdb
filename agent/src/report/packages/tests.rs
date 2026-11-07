@@ -82,7 +82,6 @@ fn the_startup_report_is_gzip_and_conforms_to_the_contract_with_every_package() 
         json!([
             {"name": "man-db", "reason": "half-configured"},
             {"name": "qemu-guest-agent", "reason": "unpacked"},
-            {"name": "systemd", "reason": "triggers-pending"},
         ])
     );
     assert_eq!(body["agent_version"], AGENT_VERSION);
@@ -215,7 +214,7 @@ fn warnings_reach_the_report() {
     reporter(&host).tick(Instant::now(), &transport);
     let body = &posts(&transport)[0];
     assert_conforms("v1", "packages.request", body);
-    assert_eq!(body["packages"].as_array().unwrap().len(), 28);
+    assert_eq!(body["packages"].as_array().unwrap().len(), 29);
     assert_eq!(
         body["warnings"],
         json!([{"field": "packages", "message": "package name `Odd` is not one a package report can carry; skipped"}])

@@ -708,7 +708,7 @@ pub(crate) mod tests {
                 );
                 crate::collect::contract::assert_conforms("v1", "packages.request", &body);
                 assert_eq!(body["manager"], "dpkg");
-                assert_eq!(body["packages"].as_array().unwrap().len(), 28);
+                assert_eq!(body["packages"].as_array().unwrap().len(), 29);
                 saw_packages = true;
             } else {
                 assert!(

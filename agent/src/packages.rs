@@ -23,15 +23,17 @@
 //!
 //! # Which packages count as installed
 //!
-//! Only a package whose status is `installed` is reported as installed (owner decision, P2-S08). A
-//! package in an interrupted installation (`unpacked`, `half-installed`, `half-configured`,
-//! `triggers-awaited`, `triggers-pending`) is not: its name and the status go in [`Listing::skipped`]
+//! A package whose status is `installed`, `triggers-awaited`, or `triggers-pending` is reported as
+//! installed: in the two trigger states it is unpacked and configured, only a trigger it awaits or owns
+//! has not run yet, and apt and `dpkg -l` count it as installed (review of #121). A package in an
+//! interrupted installation (`unpacked`, `half-installed`, `half-configured`, owner decision, P2-S08)
+//! is not: its name and the status go in [`Listing::skipped`]
 //! (and the count in [`Listing::not_configured`]), so the server shows it as skipped, not as installed
 //! and not as removed. `config-files` (removed, only its configuration files left) is left out, as
 //! `not-installed` already is by `--show`. The selection state (`hold`, `deinstall`) is not part of
 //! `${db:Status-Status}`: a held package is `installed` and is reported. The reference listing for
-//! AC-2.3 is therefore the lines of `dpkg-query --show` whose status is `installed`, and the
-//! interrupted ones are the `skipped` names.
+//! AC-2.3 is therefore the lines of `dpkg-query --show` whose status is `installed` or a trigger
+//! state, and the interrupted ones are the `skipped` names.
 //!
 //! # What does not fit the contract
 //!
@@ -127,8 +129,7 @@ pub struct Listing {
     pub skipped: Vec<Skipped>,
     /// Skipped names beyond [`MAX_SKIPPED`], counted in a warning instead.
     pub skipped_not_named: usize,
-    /// Lines in an interrupted installation (`unpacked`, `half-installed`, `half-configured`,
-    /// `triggers-awaited`, `triggers-pending`).
+    /// Lines in an interrupted installation (`unpacked`, `half-installed`, `half-configured`).
     pub not_configured: usize,
     /// Lines left out because the package is removed (`config-files`).
     pub removed: usize,
@@ -245,9 +246,9 @@ pub fn parse(output: &[u8]) -> Listing {
             continue;
         };
         match status {
-            "installed" => {}
-            "unpacked" | "half-configured" | "half-installed" | "triggers-awaited"
-            | "triggers-pending" => {
+            // A pending or awaited trigger does not make a configured package less installed.
+            "installed" | "triggers-awaited" | "triggers-pending" => {}
+            "unpacked" | "half-configured" | "half-installed" => {
                 // Not installed in full: named, not listed (the line is not checked further).
                 listing.not_configured += 1;
                 if valid_name(name) {

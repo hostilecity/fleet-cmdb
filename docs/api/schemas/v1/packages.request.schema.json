@@ -95,7 +95,7 @@
       }
     },
     "skipped": {
-      "description": "Packages the agent could read the name of but did not list as installed: an interrupted installation (dpkg states `unpacked`, `half-installed`, `half-configured`, `triggers-awaited`, `triggers-pending`), or an entry it could not carry in full. Optional; absent means none. A skipped package is not in the installed set, but the server does not show it as removed (P2-S08). Only names the agent could read are listed; an entry without a readable name is a `warnings` entry.",
+      "description": "Packages the agent could read the name of but did not list as installed: an interrupted installation (dpkg states `unpacked`, `half-installed`, `half-configured`; a package in `triggers-awaited` or `triggers-pending` is configured and is listed in `packages`), or an entry it could not carry in full. Optional; absent means none. A skipped package is not in the installed set, but the server does not show it as removed (P2-S08). Only names the agent could read are listed; an entry without a readable name is a `warnings` entry.",
       "type": "array",
       "maxItems": 64,
       "items": {

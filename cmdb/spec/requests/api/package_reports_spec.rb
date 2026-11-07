@@ -161,6 +161,51 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
     end
   end
 
+  describe "review of #121" do
+    def snapshots = PackageSnapshot.where(host:).chronological.to_a
+    def vim = example["packages"].find { |p| p["name"] == "vim" }
+    def without_vim = example["packages"].reject { |p| p["name"] == "vim" }
+    def vim_skipped = [ { "name" => "vim", "reason" => "half-configured" } ]
+
+    it "shows a package removed while it was skipped as removed, with the earlier reason and no version (comment 4503060857)" do
+      send_report(report)
+      send_report(report(packages: without_vim, "skipped" => vim_skipped))
+      send_report(report(packages: without_vim))
+      _, was_skipped, gone = snapshots
+      expect(PackageDiff.for(was_skipped).skipped.map(&:name)).to eq([ "vim" ])
+      diff = PackageDiff.for(gone)
+      expect(diff.removed_skipped).to eq([ PackageDiff::SkippedRemoval.new(name: "vim", reason: "half-configured") ])
+      expect(diff).to have_attributes(removed: [], installed: [], completed: [], skipped: [], empty?: false)
+    end
+
+    it "shows a package installed after it was skipped as a completed installation, not a plain install (comment 4503060857)" do
+      send_report(report(packages: without_vim))
+      send_report(report(packages: without_vim, "skipped" => vim_skipped))
+      send_report(report)
+      diff = PackageDiff.for(snapshots.last)
+      expect(diff.installed).to eq([])
+      expect(diff.completed.map { |c| [ c.name, c.architecture, c.package.version, c.reason ] }).to eq([ [ "vim", vim["architecture"], vim["version"], "half-configured" ] ])
+      expect(diff.removed_skipped).to eq([])
+    end
+
+    it "shows nothing for a name skipped by both reports" do
+      send_report(report(packages: without_vim, "skipped" => vim_skipped))
+      send_report(report(packages: without_vim, "skipped" => [ { "name" => "vim", "reason" => "unpacked" } ]))
+      expect(PackageDiff.for(snapshots.last)).to have_attributes(available?: true, empty?: true)
+    end
+
+    it "has no diff when every earlier snapshot kept is unreadable, and everything installed for the host's first (comment 4502986292)" do
+      send_report(ApiContract.example("packages.request", "unreadable-manager").merge("report_id" => SecureRandom.uuid))
+      send_report(report)
+      first, readable = snapshots
+      expect(readable.previous).to eq(first)
+      expect(readable.previous_known).to be_nil
+      expect(PackageDiff.for(readable)).to have_attributes(available?: false, unavailable_reason: PackageDiff::NO_KNOWN_BASELINE, installed: [])
+      first.destroy # Retention pruning the unreadable one leaves the readable snapshot as the host's first kept
+      expect(PackageDiff.for(readable.reload)).to have_attributes(available?: true, installed: have_attributes(size: 8))
+    end
+  end
+
   describe "skipped packages (P2-S08, FR-2.3)" do
     let(:skipped_example) { ApiContract.example("packages.request", "skipped-packages").merge("report_id" => SecureRandom.uuid) }
 
