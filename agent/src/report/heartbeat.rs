@@ -206,7 +206,12 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             }
         }
         self.intervals.apply(envelope.intervals);
-        if let Some(requests) = self.requests {
+        // A `report_request` that was there but unreadable says nothing about the request: ending the
+        // episode would make the next readable heartbeat raise it a second time.
+        if let Some(requests) = self
+            .requests
+            .filter(|_| !envelope.report_request_unreadable)
+        {
             for ty in requests.observe(&envelope.report_types, sent) {
                 tracing::info!(
                     report_type = ty.name(),
@@ -572,6 +577,37 @@ mod tests {
         }
         assert!(requests.take(ReportType::Config).is_some());
         assert_eq!(requests.take(ReportType::Config), None);
+    }
+
+    #[test]
+    fn an_unreadable_report_request_does_not_end_the_request() {
+        // Rust practice review of #114: a malformed directive read as "no types" ended the episode, so
+        // the next readable heartbeat raised the same request a second time.
+        use crate::report::requests::ReportType;
+        let intervals = intervals();
+        let requests = ReportRequests::new();
+        let started = Instant::now();
+        let mut hb = heartbeat(&intervals, started).with_requests(&requests);
+        let asking = envelope(json!({"report_request": {"types": ["config"]}}));
+        let garbled = envelope(json!({"report_request": {"types": "config"}}));
+        let transport = FakeTransport::new(vec![
+            ok(asking.clone()),
+            ok(garbled),
+            ok(json!({"server_time": "2026-01-01T12:00:00Z", "directives": []})),
+            ok(asking.clone()),
+            // Absent still ends it, so a later request is raised.
+            ok(envelope(json!({}))),
+            ok(asking),
+        ]);
+        hb.beat(&transport, None, started, wall());
+        assert!(requests.take(ReportType::Config).is_some());
+        for _ in 0..3 {
+            hb.beat(&transport, None, started, wall());
+        }
+        assert_eq!(requests.take(ReportType::Config), None, "still one request");
+        hb.beat(&transport, None, started, wall());
+        hb.beat(&transport, None, started, wall());
+        assert!(requests.take(ReportType::Config).is_some());
     }
 
     #[test]

@@ -166,6 +166,55 @@ fn one_request_gives_exactly_one_extra_report() {
     assert_eq!(posts(&transport).len(), 2);
 }
 
+/// A server that answers the manifest and then the agent is told to stop (SIGTERM mid-tick).
+struct StopAfterManifest<'a> {
+    inner: &'a FakeTransport,
+    stop: &'a crate::shutdown::Shutdown,
+}
+
+impl Transport for StopAfterManifest<'_> {
+    fn post(&self, path: &str, body: &Value) -> Result<ApiResponse, ApiError> {
+        self.inner.post(path, body)
+    }
+
+    fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError> {
+        let reply = self.inner.get_conditional(path, etag);
+        self.stop.request();
+        reply
+    }
+}
+
+#[test]
+fn a_stop_request_mid_tick_starts_no_collection_and_sends_nothing() {
+    // Rust practice review of #114: a tick could run a manifest GET, a 65 s collection, and a POST
+    // after SIGTERM, past systemd's 90 s stop timeout.
+    let host = FakeHost::debian13();
+    let inner = transport();
+    let stop = crate::shutdown::Shutdown::default();
+    let transport = StopAfterManifest {
+        inner: &inner,
+        stop: &stop,
+    };
+    let mut reporter = reporter(&host).stopping_on(&stop);
+    let t0 = Instant::now();
+    reporter.tick(t0, &transport);
+    assert_eq!(inner.gets().len(), 1, "the GET in flight finished");
+    assert!(
+        host.log().is_empty(),
+        "collection started: {:?}",
+        host.log()
+    );
+    assert!(posts(&inner).is_empty(), "a report was sent while stopping");
+    assert!(
+        reporter.pending_report_id().is_none(),
+        "nothing kept to send"
+    );
+    // Nothing more happens on later ticks either.
+    reporter.tick(t0 + INTERVAL * 2, &transport);
+    assert_eq!(inner.gets().len(), 1);
+    assert!(posts(&inner).is_empty());
+}
+
 #[test]
 fn only_an_accepted_requested_report_answers_the_request() {
     // Review of #114: the request loop learns that the request is over, so a later one is seen.
@@ -298,11 +347,7 @@ fn a_garbled_manifest_is_not_used() {
 
 #[test]
 fn the_body_is_kept_under_the_size_limit_by_turning_the_largest_lists_unreadable() {
-    let big = |n: usize| Fact {
-        state: State::Ok,
-        value: json!(vec!["x".repeat(1000); n]),
-        reason: None,
-    };
+    let big = |n: usize| Fact::Ok(json!(vec!["x".repeat(1000); n]));
     let mut facts: BTreeMap<String, Fact> = BTreeMap::new();
     facts.insert("a.huge".into(), big(900));
     facts.insert("b.large".into(), big(200));

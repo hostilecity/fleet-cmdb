@@ -51,8 +51,8 @@
 //!
 //! # Secrets
 //!
-//! No reader opens a file that holds secrets: [`host::read_file`] refuses them, and the readers do
-//! not ask. `/etc/shadow` and `/etc/gshadow` are only `stat`ed; `/etc/passwd` is read for names, ids,
+//! No reader opens a file that holds secrets: [`host::read_file`] refuses them, the real host also
+//! refuses a path that resolves to one through a symlink, and the readers do not ask. `/etc/shadow` and `/etc/gshadow` are only `stat`ed; `/etc/passwd` is read for names, ids,
 //! homes, and shells; `sshd -T` output is reduced to the listed keywords.
 
 #[cfg(test)]
@@ -69,6 +69,7 @@ pub mod users;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -76,6 +77,8 @@ use serde_json::Value;
 
 pub use host::Host;
 use host::{Command, RunError, Stat};
+
+use crate::shutdown::Shutdown;
 use manifest::{FactType, Manifest, ManifestFact};
 
 /// Longest a collection may spend running commands in all. Each command also has its own limit.
@@ -104,37 +107,64 @@ pub enum State {
     Unsupported,
 }
 
-/// One entry of a report's `facts`: `{state, value, reason}`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Fact {
-    pub state: State,
-    pub value: Value,
-    pub reason: Option<String>,
+/// One entry of a report's `facts`, after [`finalize`]: a value that fits the manifest, or a reason.
+/// An enum, so a value with a reason, or a non-`ok` state with a value, cannot be built (Rust
+/// practice review of #114). It serializes as the contract's `{state, value, reason}`: `value` is
+/// `null` and `reason` set unless the state is `ok`, where it is the other way round.
+///
+/// [`Outcome`] has the same shape but is what a reader found, not yet checked against the manifest's
+/// limits; build a `Fact` with [`Fact::unreadable`] or [`Fact::unsupported`] (which make the reason
+/// safe and short) or from [`finalize`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fact {
+    Ok(Value),
+    Unreadable(String),
+    Unsupported(String),
 }
 
 impl Fact {
-    fn ok(value: Value) -> Self {
-        Self {
-            state: State::Ok,
-            value,
-            reason: None,
-        }
-    }
-
     pub(crate) fn unreadable(reason: &str) -> Self {
-        Self {
-            state: State::Unreadable,
-            value: Value::Null,
-            reason: Some(clip_reason(reason)),
+        Self::Unreadable(clip_reason(reason))
+    }
+
+    pub(crate) fn unsupported(reason: &str) -> Self {
+        Self::Unsupported(clip_reason(reason))
+    }
+
+    pub fn state(&self) -> State {
+        match self {
+            Self::Ok(_) => State::Ok,
+            Self::Unreadable(_) => State::Unreadable,
+            Self::Unsupported(_) => State::Unsupported,
         }
     }
 
-    fn unsupported(reason: &str) -> Self {
-        Self {
-            state: State::Unsupported,
-            value: Value::Null,
-            reason: Some(clip_reason(reason)),
+    /// The value; `null` unless the state is `ok`.
+    pub fn value(&self) -> &Value {
+        const NULL: &Value = &Value::Null;
+        match self {
+            Self::Ok(value) => value,
+            Self::Unreadable(_) | Self::Unsupported(_) => NULL,
         }
+    }
+
+    /// The reason; `None` exactly when the state is `ok`.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Ok(_) => None,
+            Self::Unreadable(reason) | Self::Unsupported(reason) => Some(reason),
+        }
+    }
+}
+
+impl Serialize for Fact {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("Fact", 3)?;
+        out.serialize_field("state", &self.state())?;
+        out.serialize_field("value", self.value())?;
+        out.serialize_field("reason", &self.reason())?;
+        out.end()
     }
 }
 
@@ -163,10 +193,11 @@ pub fn io_reason(path: &str, error: &io::Error) -> String {
     }
 }
 
-/// What a reader may use: the host, and the time left for commands.
+/// What a reader may use: the host, the time left, and whether the agent is stopping.
 pub struct Ctx<'a> {
     host: &'a dyn Host,
     deadline: Instant,
+    stop: Option<&'a Shutdown>,
 }
 
 impl<'a> Ctx<'a> {
@@ -174,11 +205,27 @@ impl<'a> Ctx<'a> {
         Self {
             host,
             deadline: Instant::now() + budget,
+            stop: None,
         }
+    }
+
+    /// No command or filesystem call starts once `stop` is requested (Rust practice review of
+    /// #114), so a collection that SIGTERM interrupts ends with the one call in flight: at most a
+    /// command's own limit (10 s) or one [`host::IO_TIMEOUT`].
+    pub fn stopping_on(mut self, stop: &'a Shutdown) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    fn stopping(&self) -> bool {
+        self.stop.is_some_and(Shutdown::is_requested)
     }
 
     /// Runs `command`, shortening its time limit to what is left of the budget.
     pub fn run(&self, mut command: Command) -> Result<Vec<u8>, RunError> {
+        if self.stopping() {
+            return Err(RunError::Stopping);
+        }
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(RunError::OutOfTime);
@@ -207,6 +254,12 @@ impl<'a> Ctx<'a> {
     /// up, so 512 paths on a dead mount cost at most the budget plus one [`host::IO_TIMEOUT`], not
     /// 512 of them.
     fn in_time(&self) -> io::Result<()> {
+        if self.stopping() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "not read: the agent is stopping",
+            ));
+        }
         if Instant::now() >= self.deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -293,6 +346,14 @@ pub fn known_keys() -> BTreeMap<&'static str, FactType> {
     SOURCES.iter().flat_map(|s| s.keys()).collect()
 }
 
+/// Every named key, with its reader and type. It never changes, so it is built once.
+static KNOWN: LazyLock<HashMap<&'static str, (Source, FactType)>> = LazyLock::new(|| {
+    SOURCES
+        .iter()
+        .flat_map(|s| s.keys().into_iter().map(move |(k, ty)| (k, (*s, ty))))
+        .collect()
+});
+
 /// How a manifest fact is read.
 enum Plan {
     Named(Source, FactType),
@@ -317,19 +378,30 @@ fn plan(fact: &ManifestFact, known: &HashMap<&'static str, (Source, FactType)>) 
 /// [`BUDGET`] and their own limits, filesystem calls by [`host::IO_TIMEOUT`] each and by the same
 /// budget in all (none starts after it), so a collection ends within the budget plus one call's limit.
 pub fn collect(host: &dyn Host, manifest: &Manifest) -> BTreeMap<String, Fact> {
-    collect_within(host, manifest, BUDGET)
+    collect_within(host, manifest, BUDGET, None)
+}
+
+/// [`collect`], starting nothing new once `stop` is requested; the facts not read then are
+/// `unreadable` ("the agent is stopping"), and the caller drops such a report rather than send it.
+pub fn collect_until(
+    host: &dyn Host,
+    manifest: &Manifest,
+    stop: &Shutdown,
+) -> BTreeMap<String, Fact> {
+    collect_within(host, manifest, BUDGET, Some(stop))
 }
 
 pub fn collect_within(
     host: &dyn Host,
     manifest: &Manifest,
     budget: Duration,
+    stop: Option<&Shutdown>,
 ) -> BTreeMap<String, Fact> {
-    let ctx = Ctx::new(host, budget);
-    let known: HashMap<&'static str, (Source, FactType)> = SOURCES
-        .iter()
-        .flat_map(|s| s.keys().into_iter().map(move |(k, ty)| (k, (*s, ty))))
-        .collect();
+    let mut ctx = Ctx::new(host, budget);
+    if let Some(stop) = stop {
+        ctx = ctx.stopping_on(stop);
+    }
+    let known = &*KNOWN;
 
     let mut outcomes: HashMap<&str, Outcome> = HashMap::new();
     let mut read: HashMap<Source, HashMap<&'static str, Outcome>> = HashMap::new();
@@ -337,7 +409,7 @@ pub fn collect_within(
     let mut units: Vec<&ManifestFact> = Vec::new();
 
     for fact in &manifest.facts {
-        let outcome = match plan(fact, &known) {
+        let outcome = match plan(fact, known) {
             Plan::Unknown => {
                 Outcome::Unsupported("this agent version has no reader for this fact".to_owned())
             }
@@ -450,7 +522,7 @@ pub fn finalize(fact: &ManifestFact, outcome: Outcome) -> Fact {
         Outcome::Unsupported(reason) => Fact::unsupported(&reason),
         Outcome::Unreadable(reason) => Fact::unreadable(&reason),
         Outcome::Ok(value) => match check(fact, &value) {
-            Ok(()) => Fact::ok(value),
+            Ok(()) => Fact::Ok(value),
             Err(problem) => Fact::unreadable(&format!(
                 "the value does not fit what the manifest allows for this fact: {problem}"
             )),
@@ -462,18 +534,19 @@ pub fn finalize(fact: &ManifestFact, outcome: Outcome) -> Fact {
 /// and the contract's (`config.request`), including no control characters in any string.
 pub fn check(fact: &ManifestFact, value: &Value) -> Result<(), String> {
     let limits = &fact.limits;
-    let text_ok = |s: &str, max: usize, what: &str| -> Result<(), String> {
+    // `what` names the string in an error, and is called only for one.
+    let text_ok = |s: &str, max: usize, what: &dyn Fn() -> String| -> Result<(), String> {
         if s.chars().count() > max {
-            return Err(format!("{what} is longer than {max} characters"));
+            return Err(format!("{} is longer than {max} characters", what()));
         }
         if s.chars().any(char::is_control) {
-            return Err(format!("{what} contains a control character"));
+            return Err(format!("{} contains a control character", what()));
         }
         Ok(())
     };
     match &fact.ty {
         FactType::String => match value {
-            Value::String(s) => text_ok(s, limits.max_length, "the value"),
+            Value::String(s) => text_ok(s, limits.max_length, &|| "the value".to_owned()),
             _ => Err("the value is not a string".into()),
         },
         FactType::Integer => match value.as_i64() {
@@ -501,9 +574,10 @@ pub fn check(fact: &ManifestFact, value: &Value) -> Result<(), String> {
             }
             for (index, item) in items.iter().enumerate() {
                 match item {
-                    Value::String(s) => {
-                        text_ok(s, limits.item_max_length, &format!("entry {}", index + 1))?
-                    }
+                    // The label is only formatted for an entry that fails.
+                    Value::String(s) => text_ok(s, limits.item_max_length, &|| {
+                        format!("entry {}", index + 1)
+                    })?,
                     _ => return Err(format!("entry {} is not a string", index + 1)),
                 }
             }
@@ -523,7 +597,7 @@ pub fn check(fact: &ManifestFact, value: &Value) -> Result<(), String> {
                     if s.is_empty() {
                         return Err(format!("the {name} is empty"));
                     }
-                    text_ok(s, 64, name)?;
+                    text_ok(s, 64, &|| name.to_owned())?;
                 }
                 Ok(())
             }

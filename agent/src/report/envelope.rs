@@ -51,6 +51,11 @@ pub struct Envelope {
     pub agent_update: Option<Value>,
     /// The report types the `report_request` directive asked for that this agent sends on request.
     pub report_types: Vec<ReportType>,
+    /// The `report_request` directive was there but could not be read (or the response or its
+    /// `directives` was not an object, so whether it was there is unknown). The request state is then
+    /// left as it is, rather than ending the episode as an absent directive does (Rust practice review
+    /// of #114).
+    pub report_request_unreadable: bool,
     /// Fields and directives present but not understood by this agent, already safe to log.
     pub ignored: Vec<String>,
     /// Values present in a known place but malformed, already safe to log. Each is ignored.
@@ -70,6 +75,7 @@ pub fn parse(body: &Value) -> Envelope {
         envelope
             .problems
             .push(format!("the response is {}, not an object", kind(body)));
+        envelope.report_request_unreadable = true;
         return envelope;
     };
     let mut unknown = Names::default();
@@ -114,9 +120,12 @@ fn directives(value: &Value, envelope: &mut Envelope) {
             }
         }
         // Includes an array, the shape ADR 0008 first planned (amended by ADR 0020).
-        other => envelope
-            .problems
-            .push(format!("`directives` is {}, not an object", kind(other))),
+        other => {
+            envelope
+                .problems
+                .push(format!("`directives` is {}, not an object", kind(other)));
+            envelope.report_request_unreadable = true;
+        }
     }
     unknown.finish(envelope);
 }
@@ -133,6 +142,7 @@ fn report_request(value: &Value, envelope: &mut Envelope) {
                 "directive `report_request` is {}, not an object",
                 kind(other)
             ));
+            envelope.report_request_unreadable = true;
             return;
         }
     };
@@ -148,12 +158,14 @@ fn report_request(value: &Value, envelope: &mut Envelope) {
     let problem = |what: &str| format!("directive `report_request.types` {what}");
     let Some(Value::Array(list)) = types else {
         envelope.problems.push(problem("is missing or not a list"));
+        envelope.report_request_unreadable = true;
         return;
     };
     if list.is_empty() || list.len() > MAX_REPORT_TYPES {
         envelope
             .problems
             .push(problem("is empty or has far too many entries"));
+        envelope.report_request_unreadable = true;
         return;
     }
     let mut seen: Vec<&str> = Vec::new();
@@ -164,12 +176,14 @@ fn report_request(value: &Value, envelope: &mut Envelope) {
             envelope
                 .problems
                 .push(problem("has an entry that is not a string"));
+            envelope.report_request_unreadable = true;
             return;
         };
         if seen.contains(&text) {
             envelope
                 .problems
                 .push(problem("names a type more than once"));
+            envelope.report_request_unreadable = true;
             return;
         }
         seen.push(text);
@@ -530,6 +544,7 @@ mod tests {
         ] {
             let envelope = parse(&json!({"directives": {"report_request": directive}}));
             assert!(envelope.report_types.is_empty(), "{directive}");
+            assert!(envelope.report_request_unreadable, "{directive}");
             assert!(
                 envelope.problems.iter().any(|p| p.contains(needle)),
                 "{directive}: {:?}",
@@ -538,6 +553,10 @@ mod tests {
         }
         let envelope = parse(&json!({"directives": {"report_request": null}}));
         assert!(envelope.report_types.is_empty() && envelope.problems.is_empty());
+        assert!(!envelope.report_request_unreadable, "null is absent");
+        assert!(!parse(&json!({"directives": {}})).report_request_unreadable);
+        assert!(parse(&json!({"directives": []})).report_request_unreadable);
+        assert!(parse(&json!([])).report_request_unreadable);
     }
 
     #[test]

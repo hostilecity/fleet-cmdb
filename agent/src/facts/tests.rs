@@ -20,16 +20,16 @@ fn collect_stock() -> (FakeHost, BTreeMap<String, Fact>) {
 
 fn ok(facts: &BTreeMap<String, Fact>, key: &str) -> Value {
     let fact = &facts[key];
-    assert_eq!(fact.state, State::Ok, "{key}: {fact:?}");
-    assert_eq!(fact.reason, None, "{key}");
-    fact.value.clone()
+    assert_eq!(fact.state(), State::Ok, "{key}: {fact:?}");
+    assert_eq!(fact.reason(), None, "{key}");
+    fact.value().clone()
 }
 
 fn reason(facts: &BTreeMap<String, Fact>, key: &str, state: State) -> String {
     let fact = &facts[key];
-    assert_eq!(fact.state, state, "{key}: {fact:?}");
-    assert_eq!(fact.value, Value::Null, "{key}");
-    fact.reason.clone().expect("a reason")
+    assert_eq!(fact.state(), state, "{key}: {fact:?}");
+    assert_eq!(fact.value(), &Value::Null, "{key}");
+    fact.reason().expect("a reason").to_owned()
 }
 
 fn manifest_of(facts: Value) -> Manifest {
@@ -74,7 +74,7 @@ fn every_fact_of_the_manifest_is_in_the_result_and_none_is_unsupported() {
     }
     let unsupported: Vec<_> = facts
         .iter()
-        .filter(|(_, f)| f.state == State::Unsupported)
+        .filter(|(_, f)| f.state() == State::Unsupported)
         .map(|(k, _)| k.as_str())
         .collect();
     // Only a named key with no reader may be unsupported (none today: the published manifest has 89
@@ -281,7 +281,7 @@ fn sensitive_files_are_only_ever_statted() {
             .filter(|e| e.ends_with(&format!(" {path}")))
             .collect();
         assert_eq!(touching, [&format!("stat {path}")], "{path}");
-        assert_eq!(facts[&format!("file:{path}")].state, State::Ok);
+        assert_eq!(facts[&format!("file:{path}")].state(), State::Ok);
     }
     assert!(!log.iter().any(|e| e.starts_with("read ")
         && (e.contains("shadow") || e.contains("sudoers") || e.contains("_key"))));
@@ -394,10 +394,10 @@ fn a_hostile_manifest_never_gets_anything_run() {
         "file:/etc//passwd",
         "file:/etc/",
     ] {
-        assert_eq!(facts[key].state, State::Unsupported, "{key}");
+        assert_eq!(facts[key].state(), State::Unsupported, "{key}");
     }
-    assert_eq!(facts["service:ssh.service"].state, State::Ok);
-    assert_eq!(facts["file:/etc/passwd"].state, State::Ok);
+    assert_eq!(facts["service:ssh.service"].state(), State::Ok);
+    assert_eq!(facts["file:/etc/passwd"].state(), State::Ok);
     assert_eq!(facts.len(), 11);
     for entry in host.log() {
         assert!(
@@ -432,7 +432,7 @@ fn a_huge_manifest_is_bounded() {
     assert_eq!(stats, MAX_FILE_FACTS);
     let over = collected
         .values()
-        .filter(|f| f.state == State::Unsupported)
+        .filter(|f| f.state() == State::Unsupported)
         .count();
     assert_eq!(
         over,
@@ -454,12 +454,9 @@ fn every_failure_mode_gives_a_reason_not_a_crash() {
     // sshd absent (AC: "when sshd is absent, the facts are unreadable with a reason").
     let facts = collect(&FakeHost::debian13().without_output("sshd -T"), &manifest);
     for (key, fact) in facts.iter().filter(|(k, _)| k.starts_with("sshd.")) {
-        assert_eq!(fact.state, State::Unreadable, "{key}");
+        assert_eq!(fact.state(), State::Unreadable, "{key}");
         assert!(
-            fact.reason
-                .as_ref()
-                .unwrap()
-                .contains("sshd -T is not installed"),
+            fact.reason().unwrap().contains("sshd -T is not installed"),
             "{key}"
         );
     }
@@ -542,7 +539,7 @@ fn every_failure_mode_gives_a_reason_not_a_crash() {
 #[test]
 fn the_time_budget_stops_commands_and_filesystem_calls_from_starting() {
     let host = FakeHost::debian13();
-    let facts = collect_within(&host, &server_manifest_parsed(), Duration::ZERO);
+    let facts = collect_within(&host, &server_manifest_parsed(), Duration::ZERO, None);
     assert!(reason(&facts, "sshd.permitrootlogin", State::Unreadable).contains("time budget"));
     assert!(reason(&facts, "service:ssh.service", State::Unreadable).contains("time budget"));
     // Review of #114: filesystem calls share the budget, so a manifest of paths on a dead mount
@@ -610,7 +607,7 @@ fn reasons_are_safe_and_within_the_contract() {
         }),
     );
     for (key, fact) in collect(&host, &server_manifest_parsed()) {
-        if let Some(reason) = fact.reason {
+        if let Some(reason) = fact.reason() {
             assert!(
                 (1..=MAX_REASON_CHARS).contains(&reason.chars().count()),
                 "{key}"
@@ -722,5 +719,42 @@ fn the_server_manifest_reader_agrees_with_the_manifest_file() {
     assert_eq!(
         find("service:telnet.socket")["type"],
         json!("service_state")
+    );
+}
+
+#[test]
+fn nothing_starts_once_the_agent_is_stopping() {
+    // Rust practice review of #114: a stop request ends the collection at the call in flight.
+    let host = FakeHost::debian13();
+    let stop = crate::shutdown::Shutdown::default();
+    stop.request();
+    let facts = collect_until(&host, &server_manifest_parsed(), &stop);
+    assert!(host.log().is_empty(), "{:?}", host.log());
+    assert_eq!(facts.len(), server_manifest_parsed().facts.len());
+    assert!(reason(&facts, "sshd.permitrootlogin", State::Unreadable).contains("stopping"));
+    assert!(reason(&facts, "file:/etc/passwd", State::Unreadable).contains("stopping"));
+    // Without a stop request the same call reads normally.
+    let facts = collect_until(&host, &server_manifest_parsed(), &Default::default());
+    assert_eq!(ok(&facts, "sshd.maxauthtries"), json!(6));
+}
+
+#[test]
+fn a_fact_serializes_as_state_value_and_reason() {
+    // The enum keeps the contract's wire form (Rust practice review of #114).
+    assert_eq!(
+        serde_json::to_value(Fact::Ok(json!(22))).unwrap(),
+        json!({"state": "ok", "value": 22, "reason": null})
+    );
+    assert_eq!(
+        serde_json::to_value(Fact::Ok(Value::Null)).unwrap(),
+        json!({"state": "ok", "value": null, "reason": null})
+    );
+    assert_eq!(
+        serde_json::to_value(Fact::unreadable("no\u{0}sshd")).unwrap(),
+        json!({"state": "unreadable", "value": null, "reason": "no sshd"})
+    );
+    assert_eq!(
+        serde_json::to_value(Fact::unsupported("")).unwrap(),
+        json!({"state": "unsupported", "value": null, "reason": "no reason was given"})
     );
 }

@@ -2,7 +2,7 @@
 
 The agent sends a configuration report ([FR-2.1](../backlog/specs/p2-agent-facts.md), `POST /api/v1/reports/config`) to the server: the value of each configuration fact in the server's manifest ([config-facts.md](config-facts.md)), or the reason it could not give one. This page says what the agent reads for each fact, how to see what it reported, and what the states mean.
 
-The agent runs as root under the systemd sandbox ([`agent/contrib/README.md`](../../agent/contrib/README.md)): it can read configuration files, but it has no network administration capability, writes nothing outside its state directory, and never reads password hashes, private keys, or file contents beyond the settings listed here.
+The agent runs as root under the systemd sandbox ([`agent/contrib/README.md`](../../agent/contrib/README.md)): it can read configuration files, but it has no network administration capability, writes nothing outside its state directory, and never reads password hashes, private keys, or file contents beyond the settings listed here. A configuration file that is a symlink to a secret file (such as a drop-in linked to `/etc/shadow`) is refused rather than opened, and that fact is `unreadable`.
 
 ## When it reports
 
@@ -14,6 +14,8 @@ The agent runs as root under the systemd sandbox ([`agent/contrib/README.md`](..
 Each report starts with a conditional fetch of the manifest (`GET /api/v1/manifest/config` with the previous `ETag`). If the server cannot be reached for that, the agent uses the manifest it has; with none, it waits and retries. A report that fails to send is retried with the same `report_id`, so the server discards a duplicate. A report the server rejects for its content is logged with the server's message and not retried.
 
 The agent never runs anything the manifest names. The manifest lists keys, file paths, and unit names; the agent has a fixed reader for each key it knows, and it reports every other key as `unsupported`.
+
+**Stopping.** `systemctl stop fleet-agent` takes at most about 40 seconds, inside systemd's default 90 second stop timeout. A config report being collected stops after the one command or file read in flight and is dropped, not sent; the agent sends a startup report when it starts again.
 
 ## What each fact is read from
 

@@ -24,9 +24,14 @@
 //!   in directories only root can change. What is read through a link is still only parsed for the
 //!   few settings a reader wants; nothing from a file is reported beyond them.
 //! - **Secrets.** [`read_file`] refuses the paths in [`is_secret_path`] whatever a reader asks for, a
-//!   second line of defence behind the readers themselves never asking.
+//!   second line of defence behind the readers themselves never asking. [`RealHost::read`] also
+//!   resolves the path (inside the bounded call, so a dead mount cannot hang it) and refuses it when
+//!   it *leads to* a secret file, then reads the resolved path: a `pwquality.conf.d/x.conf` linked to
+//!   `/etc/shadow` is refused, not opened. A resolved path that is not UTF-8 is refused too.
 //! - **Commands** run from absolute paths (never a `PATH` search), with no shell, `stdin` closed, a
 //!   cleared environment, and a kill at the time limit or when the output passes its bound.
+//! - **Threads.** Every thread is started with `thread::Builder`, so one that cannot start (a task
+//!   limit, memory pressure) fails that call with an error instead of panicking the agent.
 
 use std::collections::HashSet;
 use std::fs;
@@ -96,6 +101,8 @@ pub enum RunError {
     TooMuchOutput(usize),
     /// The collection's overall time budget ran out before the command could start.
     OutOfTime,
+    /// The agent is stopping, so the command was not started.
+    Stopping,
     /// Exited with a failure status; `stderr` is its first line, made safe to log.
     Failed {
         status: String,
@@ -120,6 +127,7 @@ impl RunError {
             Self::OutOfTime => format!(
                 "not run: the collection's time budget was used up before {what} could start"
             ),
+            Self::Stopping => format!("not run: the agent is stopping, so {what} was not started"),
             Self::Failed { status, stderr } if stderr.is_empty() => {
                 format!("{what} failed ({status})")
             }
@@ -142,12 +150,16 @@ pub trait Host: Send + Sync {
 /// Reads a file through `host`, refusing the paths that hold secrets ([`is_secret_path`]).
 pub fn read_file(host: &dyn Host, path: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
     if is_secret_path(path) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "refused: this agent never reads secret files",
-        ));
+        return Err(refused());
     }
     host.read(Path::new(path), max_bytes)
+}
+
+fn refused() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "refused: this agent never reads secret files",
+    )
 }
 
 /// Files whose contents are secret, or hold secrets: password hashes, group passwords, sudo rules,
@@ -220,12 +232,10 @@ impl RealHost {
         let (sender, receiver) = mpsc::channel();
         let target = path.to_owned();
         // If the thread cannot start, the closure (and `release` with it) is dropped, which frees the key.
-        thread::Builder::new()
-            .name("fleet-agent-fact-io".into())
-            .spawn(move || {
-                let _release = release;
-                let _ = sender.send(f(&target));
-            })?;
+        start_thread("fleet-agent-fact-io", move || {
+            let _release = release;
+            let _ = sender.send(f(&target));
+        })?;
         match receiver.recv_timeout(IO_TIMEOUT) {
             Ok(result) => result,
             Err(_) => Err(io::Error::new(
@@ -250,7 +260,15 @@ impl Host for RealHost {
 
     fn read(&self, path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
         self.bounded(Op::Read, path, move |path| {
-            fsx::read_regular(path, max_bytes, Symlinks::Follow)
+            // Reads follow symlinks, so the secret check also applies to where the path leads (Rust
+            // practice review of #114): `pwquality.conf.d/x.conf -> /etc/shadow` is refused. It runs
+            // inside the bounded call, so resolving a path on a dead mount cannot hang the agent, and
+            // the resolved path is what is read.
+            let resolved = fs::canonicalize(path)?;
+            if resolved.to_str().is_none_or(is_secret_path) {
+                return Err(refused());
+            }
+            fsx::read_regular(&resolved, max_bytes, Symlinks::Follow)
         })
     }
 
@@ -307,14 +325,25 @@ fn run(command: &Command) -> Result<Vec<u8>, RunError> {
             _ => RunError::Io(crate::logging::sanitize(&e.to_string(), 200)),
         })?;
     let exceeded = Arc::new(AtomicBool::new(false));
-    let stdout = child
-        .stdout
-        .take()
-        .map(|pipe| drain(pipe, command.max_output, Some(Arc::clone(&exceeded))));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|pipe| drain(pipe, MAX_STDERR, None));
+    let pipes = child.stdout.take().zip(child.stderr.take());
+    let drained = pipes.map(|(out, err)| {
+        let stdout = drain(out, command.max_output, Some(Arc::clone(&exceeded)))?;
+        let stderr = drain(err, MAX_STDERR, None)?;
+        Ok::<_, io::Error>((stdout, stderr))
+    });
+    let (stdout, stderr) = match drained.transpose() {
+        Ok(pipes) => pipes.unzip(),
+        // A thread that cannot start (a task limit, memory pressure) fails this command, not the
+        // agent (Rust practice review of #114).
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(RunError::Io(format!(
+                "cannot start a thread to read its output: {}",
+                crate::logging::sanitize(&e.to_string(), 200)
+            )));
+        }
+    };
 
     let deadline = Instant::now() + command.timeout;
     let status = loop {
@@ -375,9 +404,9 @@ fn drain(
     mut pipe: impl Read + Send + 'static,
     limit: usize,
     exceeded: Option<Arc<AtomicBool>>,
-) -> Drained {
+) -> io::Result<Drained> {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
+    start_thread("fleet-agent-fact-pipe", move || {
         let mut kept = Vec::new();
         let mut chunk = [0u8; 8192];
         loop {
@@ -395,8 +424,17 @@ fn drain(
             }
         }
         let _ = sender.send(kept);
-    });
-    receiver
+    })?;
+    Ok(receiver)
+}
+
+/// Starts a named thread, returning the error rather than panicking as `thread::spawn` does.
+fn start_thread(name: &str, f: impl FnOnce() + Send + 'static) -> io::Result<()> {
+    #[cfg(test)]
+    if tests::FAIL_THREAD_START.with(std::cell::Cell::get) {
+        return Err(io::Error::other("simulated: no thread could be started"));
+    }
+    thread::Builder::new().name(name.into()).spawn(f).map(drop)
 }
 
 fn collect_pipe(pipe: Option<Drained>) -> Result<Vec<u8>, RunError> {
@@ -469,6 +507,25 @@ mod tests {
     }
 
     #[test]
+    fn a_symlink_to_a_secret_file_is_refused() {
+        // Rust practice review of #114: only the requested path was checked, and reads follow links.
+        let dir = TempDir::new();
+        let secret = dir.write("shadow", "root:$y$not-a-real-hash:19000:0:99999:7:::\n");
+        let link = dir.path("x.conf");
+        symlink(&secret, &link).unwrap();
+        let host = RealHost::new();
+        let error = host.read(&link, 4096).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        // A link to an ordinary file is still read, and through `read_file` the same holds.
+        let plain = dir.write("pwquality.conf", "minlen = 12\n");
+        let ok_link = dir.path("y.conf");
+        symlink(&plain, &ok_link).unwrap();
+        assert_eq!(host.read(&ok_link, 4096).unwrap(), b"minlen = 12\n");
+        let through = read_file(&host, link.to_str().unwrap(), 4096).unwrap_err();
+        assert_eq!(through.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
     fn a_fifo_is_refused_at_once_instead_of_waited_on() {
         let dir = TempDir::new();
         let fifo = dir.path("pipe");
@@ -499,6 +556,29 @@ mod tests {
 
     fn sh(script: &str) -> Command {
         Command::new(&["/bin/sh", "/usr/bin/sh"], &["-c", script])
+    }
+
+    thread_local! {
+        /// Makes [`start_thread`] fail on this test's thread, as a task limit or memory pressure would.
+        pub(super) static FAIL_THREAD_START: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[test]
+    fn a_thread_that_cannot_start_fails_the_command_not_the_agent() {
+        // Rust practice review of #114: the output reader used `thread::spawn`, which panics when no
+        // thread can be started, and the panic stopped the agent.
+        FAIL_THREAD_START.with(|f| f.set(true));
+        let started = Instant::now();
+        let result = RealHost::new().run(&sh("exec sleep 30"));
+        FAIL_THREAD_START.with(|f| f.set(false));
+        match result {
+            Err(RunError::Io(message)) => {
+                assert!(message.contains("cannot start a thread"), "{message}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // The program was killed and reaped, not left to run out its 30 seconds.
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

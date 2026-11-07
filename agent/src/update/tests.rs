@@ -903,6 +903,17 @@ impl Transport for BelowMinimum {
             }),
         }
     }
+
+    fn get_conditional(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<crate::client::Conditional, ApiError> {
+        Err(ApiError::AgentVersionUnsupported {
+            message: "minimum agent version is 99.0.0".into(),
+            request_id: None,
+        })
+    }
 }
 
 #[test]

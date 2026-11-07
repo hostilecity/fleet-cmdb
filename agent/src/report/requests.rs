@@ -9,7 +9,9 @@
 //! ([`ReportRequests::observe`]); the report loop takes it ([`ReportRequests::take`]), collects after
 //! that moment, and sends. Later heartbeats of the same episode raise nothing. A heartbeat response
 //! without the type ends its episode, so a new operator request, later, starts a new one. A heartbeat
-//! that fails says nothing and changes nothing.
+//! that fails says nothing and changes nothing, and neither does one whose `report_request` (or whole
+//! `directives`) is present but unreadable: it is not observed at all, since reading it as "no types"
+//! would end the episode and the next readable heartbeat would raise the same request again.
 //!
 //! An episode also ends when the server has accepted the report sent for it
 //! ([`ReportRequests::answered`]): the server stops listing a type once such a report is in, so a

@@ -11,8 +11,19 @@
 //! The server's `report_request` directive reaches the report loops through [`requests`]: the heartbeat
 //! loop raises one request per episode and the report loops poll for it every [`REQUEST_POLL`].
 //!
-//! All wait with [`Shutdown::wait`], so `SIGTERM` ends them between requests; a request already in
-//! flight finishes first (at most the client's 30 s timeout). The state record is written atomically
+//! All wait with [`Shutdown::wait`], so `SIGTERM` ends them between requests; what is in flight
+//! finishes first. The loops stop in parallel, so stopping takes as long as the slowest of them
+//! (Rust practice review of #114):
+//!
+//! - heartbeat: the request in flight, at most the client's 30 s timeout;
+//! - config: the one request or collection call in flight, at most 30 s for a request, 10 s for a
+//!   command, 5 s for a filesystem call. The reporter checks [`Shutdown`] itself: the collection
+//!   starts nothing new, a report collected meanwhile is dropped, and nothing is fetched or sent
+//!   after the stop request;
+//! - inventory: a collection already started (about 10 s) and its send (30 s), about 40 s.
+//!
+//! So the agent stops within about 40 s, inside systemd's default 90 s stop timeout (the unit sets
+//! no `TimeoutStopSec`). The state record is written atomically
 //! after each accepted report, so stopping at any point loses nothing. If either loop ends unexpectedly
 //! (a bug that panics), the others are stopped too and the agent exits with a failure, so systemd
 //! restarts it rather than leaving it half working.
@@ -55,10 +66,9 @@ pub const REQUEST_POLL: Duration = Duration::from_secs(5);
 pub trait Transport {
     fn post(&self, path: &str, body: &serde_json::Value) -> Result<ApiResponse, ApiError>;
 
-    /// GETs a JSON document with an optional `If-None-Match` (the config manifest).
-    fn get_conditional(&self, _path: &str, _etag: Option<&str>) -> Result<Conditional, ApiError> {
-        Err(ApiError::Transport("this transport cannot GET".into()))
-    }
+    /// GETs a JSON document with an optional `If-None-Match` (the config manifest). Required, so a
+    /// transport cannot forget it and fail only at run time.
+    fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError>;
 }
 
 impl Transport for Client {
@@ -253,7 +263,8 @@ fn config_loop(
         interval,
         Backoff::new(RetryPolicy::default(), seeded(5)),
         seeded(6),
-    );
+    )
+    .stopping_on(shutdown);
     while !shutdown.is_requested() {
         if requests.take(ReportType::Config).is_some() {
             reporter.request();
@@ -612,6 +623,10 @@ pub(crate) mod tests {
                 if path == heartbeat::HEARTBEAT_PATH {
                     panic!("simulated bug");
                 }
+                Err(ApiError::Transport("down".into()))
+            }
+
+            fn get_conditional(&self, _: &str, _: Option<&str>) -> Result<Conditional, ApiError> {
                 Err(ApiError::Transport("down".into()))
             }
         }

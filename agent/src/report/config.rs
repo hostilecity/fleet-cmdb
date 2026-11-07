@@ -26,6 +26,11 @@
 //!
 //! The body is kept under [`MAX_BODY_BYTES`] (the server's request limit is 1 MiB on the wire and the
 //! agent has no compression): the largest list facts become `unreadable` with a reason until it fits.
+//!
+//! **Stopping.** With [`Reporter::stopping_on`], a stop request ends a tick after what is in flight:
+//! the collection starts no further command or filesystem call, a report collected meanwhile is
+//! dropped (not sent, not kept), and no manifest fetch or send starts. An unsent report is simply
+//! lost; the next start sends a startup report.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime};
@@ -39,6 +44,7 @@ use crate::facts::host::Host;
 use crate::facts::manifest::{self, Manifest};
 use crate::facts::{self, Fact, State};
 use crate::retry::{Backoff, Rng};
+use crate::shutdown::Shutdown;
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
 pub const CONFIG_PATH: &str = "/api/v1/reports/config";
@@ -92,12 +98,14 @@ pub struct Reporter<'a, R: Rng> {
     pending: Option<Pending>,
     retry_at: Option<Instant>,
     last_done: Option<Instant>,
-    jitter_permille: u64,
+    jitter_permille: u32,
     hold_until: Option<Instant>,
     /// A report is wanted now, and why.
     wanted: Option<Reason>,
     /// A report built for a request was accepted ([`Reporter::take_answered`]).
     answered: bool,
+    /// Once requested, nothing new starts: no collection call, no send ([`Reporter::stopping_on`]).
+    stop: Option<&'a Shutdown>,
     new_id: fn() -> std::io::Result<String>,
 }
 
@@ -116,8 +124,22 @@ impl<'a, R: Rng> Reporter<'a, R> {
             hold_until: None,
             wanted: None,
             answered: false,
+            stop: None,
             new_id: new_report_id,
         }
+    }
+
+    /// Stops starting work once `stop` is requested (Rust practice review of #114): the collection
+    /// starts no command or filesystem call, a report collected meanwhile is dropped rather than sent,
+    /// and nothing is fetched or sent after that. So SIGTERM during a tick ends it after the one
+    /// request or call in flight, well inside systemd's 90 s stop timeout.
+    pub fn stopping_on(mut self, stop: &'a Shutdown) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    fn stopping(&self) -> bool {
+        self.stop.is_some_and(Shutdown::is_requested)
     }
 
     /// Asks for one extra report at the next [`Reporter::tick`].
@@ -172,7 +194,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
         let due = match (&self.pending, self.last_done) {
             (Some(pending), _) => pending.built_at + self.interval,
             (None, Some(done)) => {
-                done + self.interval - self.interval * self.jitter_permille as u32 / 1000
+                done + self.interval - self.interval * self.jitter_permille / 1000
             }
             (None, None) => now,
         };
@@ -218,6 +240,9 @@ impl<'a, R: Rng> Reporter<'a, R> {
 
     /// Builds a report with a new id, replacing any report still waiting.
     fn build(&mut self, reason: Reason, now: Instant, transport: &dyn Transport) {
+        if self.stopping() {
+            return;
+        }
         if let Err(e) = self.manifest(transport) {
             let wait = self.backoff.on_failure(&e);
             tracing::warn!(
@@ -246,14 +271,26 @@ impl<'a, R: Rng> Reporter<'a, R> {
         };
         let version = cache.manifest.version;
         let collected_at = rfc3339(SystemTime::now());
-        let mut collected = facts::collect(self.host, &cache.manifest);
+        let mut collected = match self.stop {
+            Some(stop) => facts::collect_until(self.host, &cache.manifest, stop),
+            None => facts::collect(self.host, &cache.manifest),
+        };
+        if self.stopping() {
+            // Collected while stopping: some facts may say only "the agent is stopping". Dropped,
+            // not sent; the next start sends a startup report.
+            tracing::info!(
+                reason = reason.as_str(),
+                "the agent is stopping; the config report just collected is not sent"
+            );
+            return;
+        }
         let (body, shrunk) = build_body(&report_id, &collected_at, version, &mut collected);
         self.hold_until = None;
         // A new report is not held back by the failed attempts of the one it replaces.
         self.retry_at = None;
         let span = tracing::info_span!("config_report", report_id = report_id.as_str());
         let _entered = span.enter();
-        let count = |s: State| collected.values().filter(|f| f.state == s).count();
+        let count = |s: State| collected.values().filter(|f| f.state() == s).count();
         tracing::info!(
             reason = reason.as_str(),
             manifest_version = version,
@@ -274,6 +311,9 @@ impl<'a, R: Rng> Reporter<'a, R> {
     }
 
     fn send(&mut self, transport: &dyn Transport, now: Instant) {
+        if self.stopping() {
+            return;
+        }
         let Some(pending) = self.pending.as_ref() else {
             return;
         };
@@ -310,6 +350,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 self.finished(now);
                 if let Some(server) = server_version
                     && server > used
+                    && !self.stopping()
                 {
                     self.follow_manifest(server, used, transport);
                 }
@@ -361,7 +402,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
         self.retry_at = None;
         self.backoff.on_success();
         self.last_done = Some(now);
-        self.jitter_permille = self.rng.next_u64() % 101;
+        self.jitter_permille = (self.rng.next_u64() % 101) as u32; // 0..=100 fits
     }
 }
 
@@ -384,7 +425,7 @@ fn build_body(
     if total > MAX_BODY_BYTES {
         let mut by_size: Vec<(usize, String)> = collected
             .iter()
-            .filter(|(_, f)| f.state == State::Ok)
+            .filter(|(_, f)| f.state() == State::Ok)
             .map(|(k, f)| (serde_json::to_vec(f).map_or(0, |v| v.len()), k.clone()))
             .collect();
         by_size.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
