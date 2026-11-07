@@ -1,0 +1,59 @@
+<%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :vulnerabilities %>
+<%= render "hosts/advisory_freshness", statuses: @freshness %>
+<% evaluated = @evaluation && !@evaluation.not_evaluated? %>
+<% filtered = @severity || @query.present? %>
+<% unless evaluated %>
+  <%= render "host_vulnerabilities/not_evaluated", host: @host, evaluation: @evaluation, context: @context, open_count: @state_counts["open"] %>
+<% end %>
+<% if evaluated && @evaluation.not_evaluated_count.positive? %>
+  <div class="notice" role="status" id="unchecked_packages"><strong><%= pluralize(@evaluation.not_evaluated_count, "package and advisory pair") %> could not be checked.</strong>
+    <p>Their versions, or the advisories' ranges, cannot be compared by the package manager's rules, so those advisories were not compared. Findings for them are unchanged.</p></div>
+  <div class="table-wrap"><table id="unchecked_list"><caption class="visually-hidden">Packages that could not be evaluated</caption>
+    <thead><tr><th scope="col">Package</th><th scope="col">Installed version</th><th scope="col">Advisory</th><th scope="col">Why</th></tr></thead><tbody>
+    <% @evaluation.not_evaluated.each do |entry| %>
+      <tr><td><span class="mono"><%= entry["package"] %>:<%= entry["architecture"] %></span></td><td><span class="mono"><%= entry["version"] %></span></td>
+        <td><span class="mono"><%= entry["advisory"] %></span></td><td><%= entry["reason"] %></td></tr>
+    <% end %>
+  </tbody></table></div>
+  <% if @evaluation.not_evaluated_count > @evaluation.not_evaluated.size %><p class="muted">Showing the first <%= @evaluation.not_evaluated.size %>.</p><% end %>
+<% end %>
+<% if evaluated || @state_counts["all"].positive? %>
+  <ul class="chips" aria-label="Filter findings by state" id="state_filters">
+    <% { "open" => "Open and reopened", "resolved" => "Resolved", "all" => "All" }.each do |state, label| %>
+      <li><%= link_to vulnerabilities_host_path(@host, { state: (state unless state == "open"), severity: @severity, q: @query.presence }.compact), "aria-current": (@state == state ? "true" : nil) do %><%= label %> <span class="n"><%= @state_counts[state] %></span><% end %></li>
+    <% end %>
+  </ul>
+  <%= form_with url: vulnerabilities_host_path(@host), method: :get, class: "filters", role: "search", id: "finding_filters", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+    <% if @state != "open" %><%= hidden_field_tag :state, @state, id: nil %><% end %>
+    <label>Severity<%= select_tag :severity, options_for_select([ [ "All severities", "" ] ] + Advisory::SEVERITIES.map { |s| [ s.capitalize, s ] }, @severity) %></label>
+    <label>Package or advisory<%= search_field_tag :q, @query, placeholder: "openssl or DSA-1234-1", maxlength: HostVulnerabilitiesController::QUERY_MAX %></label>
+    <button class="btn quiet" type="submit">Apply</button>
+  <% end %>
+  <% if evaluated && @state != "resolved" && @state_counts["open"].zero? && !filtered %>
+    <div class="sheet" id="no_open_findings"><p><span class="none-open"><strong>No open vulnerability findings.</strong></span></p>
+      <p class="muted">Evaluated <%= utc(@evaluation.evaluated_at) %>: <%= pluralize(number_with_delimiter(@package_set&.package_count.to_i), "package") %> matched against <%= pluralize(number_with_delimiter(@advisory_count), "#{@evaluation.ecosystem} advisory", plural: "#{@evaluation.ecosystem} advisories") %>. <%= pluralize(@state_counts["resolved"], "resolved finding") %>.</p></div>
+  <% end %>
+  <% if @state != "resolved" && (@open_groups.any? || @state_counts["open"].positive? || filtered) %>
+    <section aria-labelledby="open_heading" id="open_findings">
+      <% open = @open_groups.flat_map(&:findings) %>
+      <h2 id="open_heading">Open findings <span class="muted"><%= open.size %><%= ": #{severity_counts(open.map { |f| f.advisory.severity }.tally.sort_by { |s, _| Advisory::SEVERITIES.index(s) })}" if open.any? %></span></h2>
+      <% if @open_groups.empty? %>
+        <p class="muted">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
+      <% else %>
+        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_groups, caption: "Open and reopened vulnerability findings", id: "open_list" %>
+      <% end %>
+    </section>
+  <% end %>
+  <% if @state != "open" %>
+    <section aria-labelledby="resolved_heading" id="resolved_findings">
+      <% resolved = @resolved_groups.flat_map(&:findings) %>
+      <h2 id="resolved_heading">Resolved findings <span class="muted"><%= resolved.size %></span></h2>
+      <% if @resolved_groups.empty? %>
+        <p class="muted"><%= filtered ? "No resolved findings match." : "None yet." %></p>
+      <% else %>
+        <%= render "host_vulnerabilities/groups", host: @host, groups: @resolved_groups, caption: "Resolved vulnerability findings", id: "resolved_list" %>
+        <p class="pager"><span>Showing <%= pluralize(resolved.size, "resolved finding") %>.</span><span>Sorted by severity, then first seen.</span></p>
+      <% end %>
+    </section>
+  <% end %>
+<% end %>
