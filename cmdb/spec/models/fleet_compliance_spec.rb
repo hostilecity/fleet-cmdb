@@ -135,6 +135,14 @@ RSpec.describe FleetCompliance do
     expect(names(status: "bogus", cis: "bogus", vuln: "bogus").size).to eq(6)
   end
 
+  it "filters by the distribution release an ecosystem covers, from the inventory, for the Data sources page's link" do
+    record_inventory(media)
+    record_inventory(web, os: { "id" => "alpine", "version_id" => "3.20", "pretty_name" => "Alpine Linux v3.20" })
+    expect(names(ecosystem: "Debian:13", sort: "name")).to eq([ "Build runner", "Media server" ])
+    expect(names(ecosystem: "Debian:12").size).to eq(6) # not in the fleet profile: ignored
+    expect(described_class.new(ecosystem: "Debian:13").params_with).to eq(ecosystem: "Debian:13")
+  end
+
   it "lists the tags of active hosts only" do
     expect(described_class.tags).to eq(%w[ci infra lab media storage web])
   end

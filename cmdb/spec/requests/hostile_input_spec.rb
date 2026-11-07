@@ -157,7 +157,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         [
           [ "/", true ], [ "/?q=#{CGI.escape(text.first(200))}", false ], [ "/?tag=#{CGI.escape(text.first(30))}&status=#{CGI.escape(text.first(30))}", false ],
           [ "/compliance", true ], [ "/compliance?tag=#{CGI.escape(text.first(32))}", false ],
-          [ "/compliance?q=#{CGI.escape(text.first(200))}&tag=#{CGI.escape(text.first(30))}&status=#{CGI.escape(text.first(30))}&cis=#{CGI.escape(text.first(30))}" \
+          [ "/compliance?q=#{CGI.escape(text.first(200))}&tag=#{CGI.escape(text.first(30))}&ecosystem=#{CGI.escape(text.first(30))}&status=#{CGI.escape(text.first(30))}&cis=#{CGI.escape(text.first(30))}" \
             "&vuln=#{CGI.escape(text.first(30))}&sort=#{CGI.escape(text.first(30))}&page=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}", true ], [ "/hosts/#{host.id}/edit", true ],
           [ "/hosts/#{host.id}/config?result=all&facts=all&history=all", true ], [ "/hosts/#{host.id}/config/compare", true ],

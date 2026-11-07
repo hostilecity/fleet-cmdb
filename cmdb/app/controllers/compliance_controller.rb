@@ -4,7 +4,7 @@
 # builds the page in a fixed number of queries whatever the fleet size.
 class ComplianceController < ApplicationController
   def index
-    @compliance = FleetCompliance.new(params.permit(:q, :tag, :status, :cis, :vuln, :sort, :page))
+    @compliance = FleetCompliance.new(params.permit(:q, :tag, :ecosystem, :status, :cis, :vuln, :sort, :page))
     @totals = FleetCompliance.totals
     @rows = @totals.hosts.zero? ? [] : @compliance.rows
     @tags = FleetCompliance.tags

@@ -46,9 +46,16 @@
     <label>Tag<%= select_tag :tag, options_for_select(@tags, @compliance.tag), include_blank: "All tags" %></label>
     <label>Status<%= select_tag :status, options_for_select(FleetCompliance::STATUSES.invert, @compliance.status), include_blank: "All hosts" %></label>
     <label>Sort<%= select_tag :sort, options_for_select(FleetCompliance::SORTS.invert, @compliance.sort) %></label>
+    <%= hidden_field_tag :ecosystem, @compliance.ecosystem if @compliance.ecosystem %>
     <%= hidden_field_tag :cis, @compliance.cis if @compliance.cis %>
     <%= hidden_field_tag :vuln, @compliance.vuln if @compliance.vuln %>
     <button class="btn quiet" type="submit">Apply</button>
+  <% end %>
+  <% if @compliance.ecosystem %>
+    <p class="applied" id="ecosystem_filter">
+      <span>Showing hosts running <span class="mono"><%= @compliance.ecosystem %></span>.</span>
+      <%= link_to "Show every distribution", compliance_path(@compliance.params_with(ecosystem: nil)) %>
+    </p>
   <% end %>
   <% if @compliance.cis || @compliance.vuln %>
     <p class="applied" id="severity_filter">
@@ -59,6 +66,7 @@
   <% if @rows.empty? %>
     <div class="sheet empty" id="no_matches">
       <p><strong>No hosts match <%= [ (@compliance.q && %("#{@compliance.q}")), (@compliance.tag && %(tag "#{@compliance.tag}")),
+                                       (@compliance.ecosystem && "distribution #{@compliance.ecosystem}"),
                                        (@compliance.status && %(status "#{FleetCompliance::STATUSES[@compliance.status]}")),
                                        (@compliance.cis && %(open #{@compliance.cis} CIS-aligned check failures)),
                                        (@compliance.vuln && %(open #{@compliance.vuln} vulnerability findings)) ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>

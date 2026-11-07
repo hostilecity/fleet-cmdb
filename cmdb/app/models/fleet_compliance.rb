@@ -1,7 +1,7 @@
 # The fleet compliance view (P2-D05, FR-2.5; approved mockup compliance.html): every active host with its CIS-aligned pass
 # rate, its open CIS-aligned check failures by severity, and its open vulnerability findings by severity, and the same
 # counts for the whole fleet. Built from query parameters so every view is linkable, as FleetList is: q (name or hostname),
-# tag, status, cis and vuln (a severity, from the fleet-wide counts), sort, and page.
+# tag, ecosystem (a distribution release such as Debian:13), status, cis and vuln (a severity, from the fleet-wide counts), sort, and page.
 #
 # Everything is counted in the database from the rows the host pages show: CIS results with the severity of the rule
 # version that produced them (the current version when a result names none), as the Configuration tab does, and open or
@@ -119,7 +119,7 @@ class FleetCompliance
     def vulns_not_evaluated = hosts - vulns_evaluated
   end
 
-  attr_reader :q, :tag, :status, :cis, :vuln, :sort
+  attr_reader :q, :tag, :ecosystem, :status, :cis, :vuln, :sort
 
   def initialize(params = {})
     @q = params[:q].to_s.strip.first(QUERY_MAX).presence
@@ -127,6 +127,7 @@ class FleetCompliance
     @status = STATUSES.key?(params[:status]) ? params[:status] : nil
     @cis = CIS_FILTERS.key?(params[:cis]) ? params[:cis] : nil
     @vuln = VULN_FILTERS.key?(params[:vuln]) ? params[:vuln] : nil
+    @ecosystem = Ecosystems.supported?(params[:ecosystem]) ? params[:ecosystem] : nil
     @sort = SORTS.key?(params[:sort]) ? params[:sort] : "worst"
     @requested_page = [ params[:page].to_i, 1 ].max
   end
@@ -164,12 +165,21 @@ class FleetCompliance
     Totals.new(hosts:, cis_evaluated:, cis_passed:, cis_counted:, cis:, vulns_evaluated:, vulns: VULN_SEVERITIES.zip(values).to_h)
   end
 
-  def self.tags = Host.active.distinct.pluck(Arel.sql("unnest(hosts.tags)")).sort
+  # The ids of hosts whose inventory reports a distribution release in the ecosystem (Ecosystems::TABLE, DEC-01), as a
+  # subquery: the Data sources page's "Hosts using it" links here (owner decision on #128).
+  def self.running(ecosystem)
+    releases = Ecosystems::TABLE.select { |_, e| e == ecosystem }.keys
+    releases.map { |id, version| HostInventory.where("lower(stable -> 'os' ->> 'id') = ? AND stable -> 'os' ->> 'version_id' = ?", id, version) }
+            .reduce(:or).select(:host_id)
+  end
+
+  def self.tags =Host.active.distinct.pluck(Arel.sql("unnest(hosts.tags)")).sort
 
   def scope
     hosts = Host.active
     hosts = hosts.where("hosts.name ILIKE :p OR hosts.hostname ILIKE :p", p: "%#{Host.sanitize_sql_like(q)}%") if q
     hosts = hosts.tagged(tag) if tag
+    hosts = hosts.where(id: self.class.running(ecosystem)) if ecosystem
     relation = self.class.per_host(hosts)
     relation = relation.where(STATUS_FILTERS.fetch(status)) if status
     relation = relation.where(CIS_FILTERS.fetch(cis)) if cis
@@ -187,11 +197,11 @@ class FleetCompliance
     @rows ||= self.class.rows_for(scope.order(*ORDERS.fetch(sort)).offset((page - 1) * PER_PAGE).limit(PER_PAGE).to_a).values
   end
 
-  def filtered? = [ q, tag, status, cis, vuln ].any?
+  def filtered? = [ q, tag, ecosystem, status, cis, vuln ].any?
 
   # Query parameters for a link, keeping the filters and the sort unless changed (nil removes one). Defaults are left out.
   def params_with(**changes)
-    { q:, tag:, status:, cis:, vuln:, sort: (sort unless sort == "worst") }.merge(changes).compact
+    { q:, tag:, ecosystem:, status:, cis:, vuln:, sort: (sort unless sort == "worst") }.merge(changes).compact
   end
 
   def aria_sort(column) = sort == column ? "ascending" : "none"

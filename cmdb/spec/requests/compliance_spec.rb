@@ -172,6 +172,18 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       expect(words(page.at_css("#compliance_pager"))).to eq("2 of 4 active hosts.")
     end
 
+    it "filters by distribution from the URL, as the Data sources page links to it" do
+      record_inventory(web)
+      get "/compliance", params: { ecosystem: "Debian:13", sort: "name" }
+      expect(row_names).to eq([ "Build runner", "Web A" ])
+      expect(page.at_css("input[name=ecosystem]")["value"]).to eq("Debian:13")
+      expect(words(page.at_css("#ecosystem_filter"))).to eq("Showing hosts running Debian:13. Show every distribution")
+      expect(query(page.at_css("#ecosystem_filter a"))).to eq("sort" => "name")
+      expect(query(page.at_css("th a[href*='sort=pass_rate']"))).to eq("ecosystem" => "Debian:13", "sort" => "pass_rate")
+      get "/compliance", params: { ecosystem: "Debian:13", tag: "storage" }
+      expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage" with distribution Debian:13.))
+    end
+
     it "explains when nothing matches, with a way back" do
       get "/compliance", params: { tag: "storage", status: "not_evaluated", cis: "low" }
       expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage", status "Not evaluated", and open low CIS-aligned check failures.))
