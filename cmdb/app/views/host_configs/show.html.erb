@@ -1,0 +1,169 @@
+<%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :config %>
+<% cis = @summary.cis %>
+<% cooldown = ReportRequests::COOLDOWN.in_minutes.to_i %>
+<% ttl = ReportRequests::TTL.in_minutes.to_i %>
+<% ready = if @config
+     safe_join([ tag.strong("Config report received #{seen_ago(@config.received_at).downcase_first}."),
+                 " Collected #{utc(@config.collected_at)}#{" by agent #{@host.agent_version}" if @host.agent_version}, manifest version #{@config.manifest_version}.",
+                 (" Facts unchanged since snapshot #{utc(@latest_snapshot.received_at)}." if @latest_snapshot) ].compact)
+   else
+     tag.strong("No config report yet.")
+   end %>
+<%= render "hosts/request_box", host: @host, availability: @availability, return_to: "config", ready:,
+           ready_hint: "Config reports arrive every 6 hours, or when you ask. Each report type can be requested once every #{cooldown} minutes; an unanswered request expires after #{ttl} minutes.",
+           answered_hint: (@availability.latest&.satisfied_by_report_id && @availability.latest.satisfied_by_report_id == @latest_snapshot&.report_id ? "The new report changed some facts, so a new snapshot was recorded." : "The new report showed no change, so no new snapshot was recorded. That still answers the request.") %>
+
+<section aria-labelledby="results" id="results_section">
+  <h2 id="results">CIS-aligned checks</h2>
+  <% if @checks.empty? %>
+    <div class="sheet empty"><p><strong>No CIS-aligned rules are defined.</strong></p><p class="muted">Import the starter rules with <span class="mono">bin/rails rules:import FILE=config/rules/debian-13.yml</span>; every host is then checked against them with no agent contact.</p></div>
+  <% else %>
+    <% if cis.pass_rate %>
+      <p>This host passes <strong><%= cis.passed %> of <%= cis.counted %></strong> checks (<%= pass_percent(cis.pass_rate) %>). Not applicable and not evaluated checks are not counted. Rules are written in our own words and the numbers point at the CIS benchmark sections they align with.</p>
+    <% else %>
+      <p><span class="not-eval">Not evaluated.</span> No check on this host has passed, failed, or been unreadable yet<%= ", because the host has not sent a config report" unless @config %>. Rules are written in our own words and the numbers point at the CIS benchmark sections they align with.</p>
+    <% end %>
+    <ul class="chips" aria-label="Filter checks by result">
+      <% HostConfigsHelper::RESULT_CHIPS.each do |filter, label| %>
+        <% count = case filter when "attention" then cis.attention when "all" then @checks.size else @result_counts.fetch(filter, 0) end %>
+        <li><%= link_to with_params(result: (filter == "attention" ? nil : filter)), "aria-current": (filter == @result_filter ? "true" : nil) do %><%= label %> <span class="n"><%= count %></span><% end %></li>
+      <% end %>
+    </ul>
+    <%= form_with url: config_host_path(@host), method: :get, class: "filters", role: "search", id: "check_filters", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+      <% if @result_filter != "attention" %><%= hidden_field_tag :result, @result_filter, id: nil %><% end %>
+      <% if params[:facts] == "all" %><%= hidden_field_tag :facts, "all", id: nil %><% end %>
+      <label>Severity<%= select_tag :severity, options_for_select([ [ "All severities", "" ] ] + HostConfigsController::SEVERITY_ORDER.map { |s| [ s.capitalize, s ] }, @severity) %></label>
+      <label>Search checks<%= search_field_tag :q, @query, placeholder: "ssh or 5.1", maxlength: HostConfigsController::QUERY_MAX %></label>
+      <button class="btn quiet" type="submit">Apply</button>
+    <% end %>
+    <% if @shown_checks.empty? %>
+      <div class="sheet empty" id="no_checks"><p><strong>No checks match.</strong></p><p class="muted"><%= link_to "Show all #{@checks.size} checks", config_host_path(@host, result: "all", anchor: "results") %></p></div>
+    <% end %>
+    <% by_area = @checks.group_by(&:area) %>
+    <% ConfigArea.group(@shown_checks) { |check| check.version.fact }.each do |area, checks| %>
+      <% in_area = by_area.fetch(area) %>
+      <div class="group-head"><h3><%= area %></h3><span class="muted"><%= in_area.count(&:attention?) %> of <%= pluralize(in_area.size, "check") %> <%= in_area.count(&:attention?) == 1 ? "needs" : "need" %> attention</span></div>
+      <div class="table-wrap"><table class="checks-table"><caption class="visually-hidden"><%= area %>: checks</caption>
+        <thead><tr><th scope="col">Result</th><th scope="col">Severity</th><th scope="col">Check</th><th scope="col">Observed and expected</th></tr></thead><tbody>
+        <% checks.each do |check| %>
+          <% version = check.version %>
+          <% fact_type = ConfigManifest.current.fact(version.fact)&.type %>
+          <tr id="check_<%= check.rule.key %>" class="check <%= check.result %>">
+            <td><%= result_lamp(check.result) %></td>
+            <td><%= severity_tag(version.severity) %></td>
+            <td><%= version.title %><span class="ref"><%= version.reference %> · <code><%= check.rule.key %></code> · rule v<%= version.version %></span>
+              <% if check.attention? %><details class="fix"><summary>Remediation</summary><p><%= version.remediation %></p></details><% end %></td>
+            <td>
+              <% if check.result.in?(%w[pass fail]) %>
+                <span class="state-note">Observed</span><%= observed_value(check.observed, version.fact) %>
+              <% else %>
+                <span class="reason-line"><%= check_reason(check) %></span>
+              <% end %>
+              <% unless check.result.in?(%w[not_applicable not_evaluated]) %><span class="state-note">Expected <%= expected_words(version.condition, fact_type) %></span><% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+    <% hidden = @checks.size - @shown_checks.size %>
+    <% if hidden.positive? %>
+      <p class="pager" id="checks_pager"><span><%= @result_filter == "attention" && @severity.nil? && @query.empty? ? "#{pluralize(@shown_checks.size, 'check')} #{@shown_checks.size == 1 ? 'needs' : 'need'} attention" : "#{pluralize(@shown_checks.size, 'check')} shown" %>. The other <%= hidden %> <%= hidden == 1 ? "is" : "are" %> filtered out.</span><%= link_to "Show all #{@checks.size}", config_host_path(@host, result: "all", anchor: "results") %></p>
+    <% end %>
+  <% end %>
+</section>
+
+<section aria-labelledby="facts" id="facts_section">
+  <h2 id="facts">Configuration facts</h2>
+  <% if @config.nil? %>
+    <div class="sheet empty"><p><strong>No config report yet.</strong></p><p class="muted">Facts appear after the agent sends its first config report, every 6 hours or when you ask with the button above.</p></div>
+  <% else %>
+    <p class="muted"><%= pluralize(@fact_total, "fact") %> in the latest snapshot: <%= fact_state_counts(@fact_counts) %>. Unreadable, unsupported, and missing facts keep their reason; they are never hidden or guessed.</p>
+    <% ConfigArea.group(@shown_facts.to_a, &:first).each do |area, facts| %>
+      <div class="group-head"><h3><%= area %></h3></div>
+      <div class="table-wrap"><table class="facts-table"><caption class="visually-hidden"><%= area %>: facts</caption>
+        <thead><tr><th scope="col">Fact</th><th scope="col">State</th><th scope="col">Value</th><th scope="col">Reason</th></tr></thead><tbody>
+        <% facts.each do |key, fact| %>
+          <% definition = ConfigManifest.current.fact(key) %>
+          <tr class="fact <%= fact["state"] %>">
+            <td><span class="mono"><%= key %></span><% if definition %><span class="state-note"><%= definition.description %></span><% end %></td>
+            <td><%= fact_state_lamp(fact["state"]) %></td>
+            <td><%= fact["state"] == "ok" ? fact_value(key, fact["value"], definition) : tag.span("No value", class: "unavailable") %></td>
+            <td><%= fact["state"] == "ok" ? tag.span("—", class: "muted") : tag.span(fact["reason"], class: "reason-line") %></td>
+          </tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+    <p class="pager" id="facts_pager">
+      <% if @all_facts %>
+        <span>Showing all <%= pluralize(@fact_total, "fact") %>.</span><%= link_to "Show the ones with a rule or a problem", with_params(facts: nil) + "#facts" %>
+      <% else %>
+        <span>Showing <%= @shown_facts.size %> of <%= pluralize(@fact_total, "fact") %>: the ones a rule checks or that are not OK.</span><%= link_to "Show all #{@fact_total}", with_params(facts: "all") + "#facts" %>
+      <% end %>
+    </p>
+  <% end %>
+</section>
+
+<section aria-labelledby="snapshots" id="snapshots_section">
+  <h2 id="snapshots">Config snapshots</h2>
+  <p class="muted">A snapshot is kept only when a fact changes. <%= link_to "Compare any two", compare_config_host_path(@host) %>, or use the links in the table.</p>
+  <% if @snapshots.empty? %>
+    <p class="muted">No snapshots yet.</p>
+  <% else %>
+    <div class="table-wrap"><table id="snapshot_list"><caption class="visually-hidden">Config snapshots</caption>
+      <thead><tr><th scope="col" class="when">Recorded (UTC)</th><th scope="col">What changed</th><th scope="col">Check results that changed</th><th scope="col">Compare</th></tr></thead><tbody>
+      <% latest = @snapshots.first[:snapshot] %>
+      <% @snapshots.each do |row| %>
+        <% snapshot = row[:snapshot] %>
+        <tr id="<%= dom_id(snapshot) %>">
+          <td><%= utc(snapshot.received_at) %><% if snapshot == latest %> <span class="badge">Latest</span><% end %></td>
+          <td><% if row[:diff] %><%= pluralize(row[:diff].changed.size + row[:diff].added.size + row[:diff].removed.size, "fact") %> changed<% elsif row[:first] %>First config report<% else %><span class="muted">Older snapshots are not listed</span><% end %></td>
+          <td>
+            <% if row[:first] %>
+              First results recorded
+            <% elsif row[:flips].empty? %>
+              <span class="muted">None</span>
+            <% else %>
+              <% row[:flips].group_by { |entry| [ entry.from, entry.to ] }.each_with_index do |((from, to), entries), i| %>
+                <%= tag.br if i.positive? %><%= HostConfigsHelper::RESULTS.dig(from, 0) %> &rarr; <%= HostConfigsHelper::RESULTS.dig(to, 0) %>: <%= safe_join(entries.map { |e| tag.code(e.rule_key) }, ", ") %>
+              <% end %>
+            <% end %>
+          </td>
+          <td>
+            <% if row[:previous] %>
+              <%= link_to "With the one before", compare_config_host_path(@host, from: row[:previous].id, to: snapshot.id) %>
+              <% if snapshot != latest %><br><%= link_to "With the latest", compare_config_host_path(@host, from: snapshot.id, to: latest.id) %><% end %>
+            <% else %>
+              <span class="muted">Nothing before it</span>
+            <% end %>
+          </td>
+        </tr>
+      <% end %>
+    </tbody></table></div>
+    <% if @more_snapshots %><p class="pager"><span>Showing the latest <%= HostConfigsController::SNAPSHOT_LIMIT %> snapshots. Older ones can be picked on the comparison page.</span></p><% end %>
+  <% end %>
+</section>
+
+<section aria-labelledby="history" id="history_section">
+  <h2 id="history">Check result changes</h2>
+  <p class="muted">When a check started or stopped failing, newest first. A rule edit re-evaluates every host with no agent contact, so a result can change without a new snapshot.</p>
+  <% shown = params[:history] == "all" ? @history : @history.first(HostConfigsController::HISTORY_LIMIT) %>
+  <% if shown.empty? %>
+    <p class="muted">No changes yet.</p>
+  <% else %>
+    <div class="table-wrap"><table id="result_changes"><caption class="visually-hidden">Recent check result changes</caption>
+      <thead><tr><th scope="col" class="when">When (UTC)</th><th scope="col">Check</th><th scope="col">Change</th><th scope="col">Because of</th></tr></thead><tbody>
+      <% shown.each do |entry| %>
+        <tr><td><%= utc(entry.occurred_at) %></td><td><code><%= entry.rule_key %></code></td>
+          <td><% if entry.from %><%= result_flip(entry.from, entry.to) %><% else %><%= result_lamp(entry.to) %><% end %></td>
+          <td><%= change_cause(entry) %></td></tr>
+      <% end %>
+    </tbody></table></div>
+    <p class="pager">
+      <% if params[:history] == "all" %>
+        <span>Showing the latest <%= pluralize(shown.size, "change") %>.</span>
+      <% elsif @history.size > HostConfigsController::HISTORY_LIMIT %>
+        <span>Showing the latest <%= HostConfigsController::HISTORY_LIMIT %> changes.</span><%= link_to "Older changes", with_params(history: "all") + "#history" %>
+      <% end %>
+    </p>
+  <% end %>
+</section>

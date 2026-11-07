@@ -69,6 +69,31 @@ module ReportRequests
     end
   end
 
+  # Whether each report type can be requested now, for the request buttons (P2-D02, owner decision Q7: a
+  # rate-limited button is disabled with the time it can be used again). Reads only; the same rules as request!:
+  #   inactive      the host is not active, so nothing can be requested
+  #   pending       a request is outstanding (and is in every heartbeat until it ends)
+  #   rate_limited  the latest request is younger than COOLDOWN; retry_at is when it may be requested again
+  #   ready         anything else
+  # latest is the type's newest request (with requested_by loaded), or nil.
+  Availability = Data.define(:type, :state, :latest, :retry_at) do
+    def ready? = state == :ready
+  end
+
+  def availability(host:, now: Time.current)
+    latest = ReportRequest.where(host_id: host.id).select("DISTINCT ON (report_type) report_requests.*")
+                          .order(:report_type, requested_at: :desc, id: :desc).includes(:requested_by).index_by(&:report_type)
+    ReportRequest::TYPES.to_h do |type|
+      request = latest[type]
+      state = if host.enrollment_state != "active" then :inactive
+      elsif request&.display_state(now) == "pending" then :pending
+      elsif request && request.requested_at > now - COOLDOWN then :rate_limited
+      else :ready
+      end
+      [ type, Availability.new(type:, state:, latest: request, retry_at: (request.requested_at + COOLDOWN if state == :rate_limited)) ]
+    end
+  end
+
   # The report_request directive for a heartbeat, or nil when nothing is outstanding. Marks the requests a
   # heartbeat carries for the first time as sent, at now (server clock) and agent_time (the heartbeat's own
   # agent_time, the agent's clock). Runs in the heartbeat's transaction, under the host row lock. A host with

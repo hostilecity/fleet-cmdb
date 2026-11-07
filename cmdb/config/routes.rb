@@ -59,6 +59,9 @@ Rails.application.routes.draw do
         post :reenroll, to: "host_actions#reenroll"
         # Not destructive, so no confirmation page; still a CSRF-protected POST (P2-S03).
         post :request_reports, to: "host_actions#request_reports"
+        # Host tabs (P2-D02 to P2-D04): read-only pages; filters, sort, and the compared snapshots are in the URL.
+        get :config, to: "host_configs#show"
+        get "config/compare", to: "host_configs#compare", as: :compare_config
       end
     end
     # Onboarding approval (P1-D07, DEC-17): the installer's verification URI is /onboard/<user code>.

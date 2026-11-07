@@ -107,11 +107,36 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         rollout
       end
 
+      # Config facts, CIS-aligned results, and result changes with hostile values, reasons, and fact keys (P2-D02).
+      let!(:config) do
+        facts = ->(value) do
+          { "sshd.banner" => { "state" => "ok", "value" => value, "reason" => nil }, "sshd.maxauthtries" => { "state" => "unreadable", "value" => nil, "reason" => text },
+            "users.login" => { "state" => "ok", "value" => [ text, value ], "reason" => nil }, text.first(200) => { "state" => "missing", "value" => nil, "reason" => text } }
+        end
+        older, newer = [ text, "#{text} (changed)" ].each_with_index.map do |value, index|
+          ConfigSnapshot.create!(host:, facts: facts.(value), content_hash: SecureRandom.hex(32), manifest_version: 1, report_id: SecureRandom.uuid,
+                                 collected_at: (2 - index).hours.ago, received_at: (2 - index).hours.ago)
+        end
+        HostConfig.create!(host:, facts: newer.facts, content_hash: newer.content_hash, manifest_version: 1, report_id: newer.report_id, schema_version: 1,
+                           collected_at: newer.collected_at, received_at: newer.received_at)
+        allow(CisEvaluationJob).to receive(:perform_later)
+        rule, = define_cis_rules(cis_rule_hash(key: "ssh-banner", title: fit(200), reference: fit(128), fact: "sshd.banner", condition: { "eq" => text.first(100) }, remediation: text))
+        [ older, newer ].each_with_index do |snapshot, index|
+          CisResultChange.create!(host:, cis_rule: rule, cis_rule_version: rule.current_version, config_snapshot: snapshot, from_result: index.zero? ? nil : "pass",
+                                  to_result: "fail", observed: text, reason: nil, occurred_at: snapshot.received_at + 1.second)
+        end
+        CisResult.create!(host:, cis_rule: rule, cis_rule_version: rule.current_version, config_snapshot: newer, result: "fail", observed: text,
+                          evaluated_at: Time.current, changed_at: Time.current)
+      end
+
       # [path, whether a value from above is shown on the page as text]
       def pages
         [
           [ "/", true ], [ "/?q=#{CGI.escape(text.first(200))}", false ], [ "/?tag=#{CGI.escape(text.first(30))}&status=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}", true ], [ "/hosts/#{host.id}/edit", true ],
+          [ "/hosts/#{host.id}/config?result=all&facts=all&history=all", true ], [ "/hosts/#{host.id}/config/compare", true ],
+          [ "/hosts/#{host.id}/config?q=#{CGI.escape(text.first(100))}&severity=#{CGI.escape(text.first(30))}&result=#{CGI.escape(text.first(30))}", false ],
+          [ "/hosts/#{host.id}/config/compare?from=#{CGI.escape(text.first(30))}&to=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}/revoke", true ], [ "/hosts/#{host.id}/retire", true ], [ "/hosts/#{host.id}/reenroll", true ],
           [ "/audit", true ], [ "/audit?actor=#{CGI.escape(text.first(100))}&target=#{CGI.escape(text.first(100))}&action=#{CGI.escape(text.first(30))}", false ],
           [ "/audit?host_id=#{host.id}", true ],
@@ -188,7 +213,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
   end
 
   it "names the same views the dashboard has, so a new one cannot be forgotten here" do
-    shown = %w[hosts#index hosts#show hosts#edit hosts#new host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
+    shown = %w[hosts#index hosts#show hosts#edit hosts#new host_configs#show host_configs#compare host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
                rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel]
     views = Rails.application.routes.routes.filter_map do |route|
