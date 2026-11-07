@@ -2,9 +2,26 @@
 <% counts = @import.counts %>
 <p><%= link_to "← Advisory data sources", data_sources_path %></p>
 <div class="page-head"><div><h1>Import result</h1>
-  <p><%= import_how(@import) %> by <%= import_by(@import) %>, <%= utc(@import.finished_at) %>.</p></div></div>
+  <p><%= import_how(@import) %> by <%= import_by(@import) %>, <%= utc(import_time(@import)) %>.</p></div></div>
 
-<% if @import.state == "failed" %>
+<% if @import.in_progress? %>
+  <%# Refreshes itself until the import is done (refresh-after, as rate-limited buttons do), then shows the result below. %>
+  <%= tag.div class: "notice info", role: "status", id: "import_outcome",
+              data: { controller: "refresh-after", refresh_after_seconds_value: DataSourcesController::PROGRESS_REFRESH_SECONDS } do %>
+    <% if @import.state == "queued" %>
+      <strong>Queued: waiting for the import job.</strong>
+      <p>The file is stored on the server and imports in the background. This page updates by itself when the import starts and when it ends.</p>
+    <% else %>
+      <strong>Importing now.</strong>
+      <p>Each record is checked and stored in one transaction, so nothing shows until the whole file is done. This page updates by itself when it ends.</p>
+    <% end %>
+  <% end %>
+  <dl class="facts">
+    <dt>File</dt><dd class="mono"><%= @import.source %></dd>
+    <dt>Type</dt><dd><%= import_type_text(@import) %></dd>
+    <dt>Uploaded</dt><dd><%= utc(@import.started_at) %></dd>
+  </dl>
+<% elsif @import.state == "failed" %>
   <div class="notice error" role="alert" id="import_outcome"><strong>Nothing was imported.</strong>
     <p><%= @import.reason %>.
       <% if @import.origin == "file" %>A file that cannot be read at all, or that breaks a size limit, imports nothing. Check the download and upload it again.
@@ -34,8 +51,8 @@
     <% if counts["skipped"].to_i.positive? %><dt>Other ecosystems</dt><dd><%= number_with_delimiter(counts["skipped"].to_i) %> (nothing for the fleet's ecosystems)</dd><% end %>
     <dt>Withdrawn</dt><dd><%= number_with_delimiter(import_withdrawn(@import)) %><% if counts["absent"].to_i.positive? %> (<%= number_with_delimiter(counts["absent"].to_i) %> because the full import did not contain them)<% end %></dd>
     <dt>Skipped</dt><dd><%= number_with_delimiter(malformed) %></dd>
-    <% if @matching %>
-      <dt>Matching</dt><dd><%= @matching["packages"].to_i.zero? ? "No package's advisories changed, so no findings change." : "Findings are being matched again for #{pluralize(@matching['packages'].to_i, 'package')} on #{pluralize(@matching['hosts'].to_i, 'host')}." %></dd>
+    <% if (matching = @import.matching).is_a?(Hash) %>
+      <dt>Matching</dt><dd><%= matching["packages"].to_i.zero? ? "No package's advisories changed, so no findings change." : "Findings are matched again for #{pluralize(matching['packages'].to_i, 'package')} on #{pluralize(matching['hosts'].to_i, 'host')} after the import." %></dd>
     <% end %>
   </dl>
   <% if counts["rejected_urls"].to_i.positive? %>

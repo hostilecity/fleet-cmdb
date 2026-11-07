@@ -1,16 +1,19 @@
 # The Advisory data sources page (P2-D06, FR-2.4; approved mockups data-sources.html, data-sources-stale.html,
 # data-sources-import.html, and the refresh and full import confirmations in dialogs.html): where vulnerability
 # data comes from and how fresh it is, "Refresh now" with its cool-down (P2-S15), and uploading an advisory
-# file (P2-S10). Every change is audited with the signed-in operator as actor, by Advisories::ManualRefresh and
-# Advisories::Import.
+# file (P2-S10). Every change is audited with the signed-in operator as actor, by Advisories::ManualRefresh,
+# this controller (the upload), and Advisories::Import (its outcome).
 #
-# An upload is imported while the operator waits, as an agent release upload is verified (P1-RELEASES), rather
-# than by a job: the file then never has to be stored where a worker can read it. The upload is at most
-# MAX_UPLOAD_BYTES, the server's request body limit (config/puma.rb), which imports in well under a minute (about
-# 2,000 records a second in testing). A larger archive is imported with bin/rails advisories:import. If a proxy
-# in front of the server gives up first, the import still finishes and appears under Recent imports.
+# An upload is imported in the background (owner decision on #129): the file, at most MAX_UPLOAD_BYTES (the
+# server's request body limit, config/puma.rb), is stored with its queued import in one transaction
+# (AdvisoryUpload), AdvisoryUploadImportJob imports it, and the result page refreshes itself until it is done.
+# At most AdvisoryUpload::MAX_PENDING uploads are stored at once. A larger archive is imported with
+# bin/rails advisories:import.
 class DataSourcesController < ApplicationController
-  MAX_UPLOAD_BYTES = 64.megabytes
+  MAX_UPLOAD_BYTES = AdvisoryUpload::MAX_BYTES
+  # How often the result page of an import in progress refreshes itself.
+  PROGRESS_REFRESH_SECONDS = 2
+  PENDING_LOCK_KEY = "advisories.upload".freeze
   # The multipart framing and the form's other fields around the file.
   MAX_BODY_BYTES = MAX_UPLOAD_BYTES + 64.kilobytes
   EXTENSIONS = %w[.json .zip].freeze
@@ -49,7 +52,8 @@ class DataSourcesController < ApplicationController
     redirect_to data_sources_path, alert: NOT_CONFIGURED
   end
 
-  # POST /data-sources/upload: import an OSV .json file or a .zip archive of them, then show the result.
+  # POST /data-sources/upload: store an OSV .json file or a .zip archive of them, queue its import, and show its
+  # progress.
   def upload
     file = params[:advisory_file]
     return refuse("Choose an advisory file to upload.") unless file.is_a?(ActionDispatch::Http::UploadedFile)
@@ -62,21 +66,16 @@ class DataSourcesController < ApplicationController
     # A full import can mark advisories withdrawn and so resolve findings: it needs the confirmation's own button.
     return refuse("Confirm the full import, or clear Full import to import without withdrawing.", field: :full) if @full && params[:confirm_full] != "1"
 
-    result = Advisories::Import.new(origin: "file", source: @name, full: @full, operator: current_operator)
-                               .call(Advisories::Reader.new(file.path, name: @name))
-    # Kept for the result page that follows, once: re-matching runs in a job and the import does not store it.
-    session[:advisory_matching] = matching(result)
-    redirect_to advisory_import_path(result.import)
-  rescue Advisories::Unreadable => e
-    import = Advisories::Import.record_failure(origin: "file", source: @name, reason: e.message, operator: current_operator, full: @full)
+    import = store_upload(file)
+    return refuse("#{AdvisoryUpload::MAX_PENDING} uploads are already waiting to be imported. Wait for one to finish, then upload again.") unless import
+
+    AdvisoryUploadImportJob.perform_later(import.id)
     redirect_to advisory_import_path(import)
   end
 
   # GET /data-sources/imports/:id: what one import did (data-sources-import.html).
   def import
     @import = AdvisoryImport.includes(:operator).find(params[:id])
-    matching = session.delete(:advisory_matching)
-    @matching = matching if matching.is_a?(Hash) && matching["import_id"] == @import.id
   end
 
   private
@@ -104,11 +103,21 @@ class DataSourcesController < ApplicationController
     Advisories::Record.clean_text(name, 200) || "upload"
   end
 
-  # What the import result page says about re-matching: how many changed source packages, on how many hosts.
-  def matching(result)
-    sources = result.changed_packages.values.flatten.uniq
-    hosts = sources.empty? ? 0 : HostPackage.joins(:host).merge(Host.in_fleet).where("COALESCE(host_packages.source, host_packages.name) IN (?)", sources).distinct.count(:host_id)
-    { "import_id" => result.import.id, "packages" => sources.size, "hosts" => hosts }
+  # The queued import and its stored file, in one transaction, audited; nil when MAX_PENDING uploads are stored
+  # already. The count is taken under a lock, so uploads sent together cannot pass it.
+  def store_upload(file)
+    AdvisoryImport.transaction do
+      AdvisoryImport.connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{AdvisoryImport.connection.quote(PENDING_LOCK_KEY)}))")
+      next nil if AdvisoryUpload.count >= AdvisoryUpload::MAX_PENDING
+
+      now = Time.current
+      import = AdvisoryImport.create!(origin: "file", source: @name, full: @full, operator: current_operator, state: "queued", started_at: now)
+      AdvisoryUpload.create!(advisory_import: import, operator: current_operator, filename: @name, byte_size: file.size,
+                             data: File.binread(file.path), created_at: now, expires_at: now + AdvisoryUpload::LIFETIME)
+      Audit.record(actor: current_operator, action: Audit::Actions::ADVISORY_UPLOADED, target: import,
+                   changes: { "source" => @name, "full" => @full, "bytes" => file.size })
+      import
+    end
   end
 
   # As on the Agents page's upload (AgentReleasesController): a body without a length, or longer than the limit,

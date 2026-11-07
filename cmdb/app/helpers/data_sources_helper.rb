@@ -23,14 +23,23 @@ module DataSourcesHelper
 
   def import_by(import) = import.operator&.display_name || "System"
 
+  IMPORT_LAMPS = { "queued" => [ "Queued", "pending" ], "importing" => [ "Importing", "awaiting" ], "succeeded" => [ "Succeeded", "online" ],
+                   "failed" => [ "Failed", "fail" ] }.freeze
+
   def import_result_lamp(import)
-    import.state == "succeeded" ? tag.span("Succeeded", class: "lamp online") : tag.span("Failed", class: "lamp fail")
+    word, lamp = IMPORT_LAMPS.fetch(import.state)
+    tag.span(word, class: [ "lamp", lamp ])
   end
+
+  # When an import finished, or, while it is in progress, when it was uploaded.
+  def import_time(import) = import.finished_at || import.started_at
 
   # The counts that matter in one line: "38,412 records read: 6 new, 22 changed, 0 withdrawn", with a link to the
   # skipped records when some were malformed.
   def import_summary(import)
     counts = import.counts
+    return link_to("Waiting to be imported", advisory_import_path(import)) if import.state == "queued"
+    return link_to("Importing now", advisory_import_path(import)) if import.state == "importing"
     return "Nothing imported: #{import.reason}" if import.state == "failed"
     return "Not modified since the last download; nothing imported" if counts["not_modified"]
 

@@ -39,6 +39,7 @@ module Audit
     ADVISORY_IMPORT_FAILED = "advisory.import_failed"
     ADVISORY_REFRESH_REQUESTED = "advisory.refresh_requested"
     ADVISORY_REFRESH_REFUSED = "advisory.refresh_refused"
+    ADVISORY_UPLOADED = "advisory.uploaded"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end
