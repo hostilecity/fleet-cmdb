@@ -1,0 +1,4 @@
+<% content_for :title, "Add rule" %>
+<p><%= link_to "← Rules", rules_path %></p>
+<div class="page-head"><div><h1>Add rule</h1><p>Creates version 1 of a new rule. The same checks as importing a file run when you preview and again when you save.</p></div></div>
+<%= render "rules/form", form: @form, url: preview_new_rules_path, base_version: nil %>

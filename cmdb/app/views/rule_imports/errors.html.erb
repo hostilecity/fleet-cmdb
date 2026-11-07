@@ -1,0 +1,14 @@
+<% content_for :title, "Import rules file: problems" %>
+<p><%= link_to "← Import rules file", import_rules_path %></p>
+<div class="page-head"><div><h1>Import rules file</h1><p>Check a YAML or JSON rules file and see what it would change. Nothing is written until you apply it.</p></div></div>
+<div class="notice error" role="alert" id="import_problems_summary"><strong>Nothing was imported. <span class="mono"><%= @filename %></span> has <%= pluralize(@problems.size, "problem") %><%= " (the first #{CisRules::RuleFile::MAX_ERRORS} are listed)" if @problems.size >= CisRules::RuleFile::MAX_ERRORS %>.</strong>
+  <p>A file with any problem imports nothing, so no rule is half-applied. Fix the problems below and upload the file again.</p></div>
+<div class="table-wrap"><table class="errlist" id="import_problems">
+  <caption class="visually-hidden">Problems found in the rules file</caption>
+  <thead><tr><th scope="col">Where in the file (JSON Pointer)</th><th scope="col">Problem</th></tr></thead>
+  <tbody>
+    <% @problems.each do |problem| %><tr><td><code><%= problem.pointer %></code></td><td><%= problem.message %></td></tr><% end %>
+  </tbody>
+</table></div>
+<p class="muted small-print">Pointers count rules from 0, in file order: <code>/rules/2</code> is the third rule. At most <%= CisRules::RuleFile::MAX_ERRORS %> problems are listed; fix these and upload again to see any more.</p>
+<%= render "rule_imports/upload_form", full: false %>

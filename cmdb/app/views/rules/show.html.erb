@@ -1,0 +1,115 @@
+<% content_for :title, "Rule: #{@rule.key}" %>
+<% fact = ConfigManifest.current.fact(@version.fact) %>
+<p><%= link_to "← Rules", rules_path %></p>
+<div class="host-head">
+  <div>
+    <h1><%= @version.title %></h1>
+    <div class="sub"><span class="mono"><%= @rule.key %></span><span><%= @version.reference %></span><%= severity_tag(@version.severity) %><%= rule_status_lamp(@rule) %><span><span class="badge">Version <%= @version.version %>, current</span></span></div>
+  </div>
+  <div class="actions">
+    <%= link_to "Edit", edit_rule_path(@rule), class: "btn" %>
+    <%= link_to(@rule.enabled ? "Disable" : "Enable", @rule.enabled ? disable_rule_path(@rule) : enable_rule_path(@rule), class: "btn quiet") %>
+    <%= link_to "Audit log", audit_page_path(action: Audit::Actions::RULE_EDITED), class: "btn quiet" %>
+  </div>
+</div>
+<div class="columns">
+<div>
+  <section class="sheet" aria-labelledby="def">
+    <h2 id="def">Definition</h2>
+    <dl class="facts">
+      <dt>Key</dt><dd class="mono"><%= @rule.key %> <span class="muted">(never changes, never reused)</span></dd>
+      <dt>Reference</dt><dd><%= @version.reference %> <span class="muted">(a pointer, not benchmark text)</span></dd>
+      <dt>Severity</dt><dd><%= severity_tag(@version.severity) %></dd>
+      <dt>Applies to</dt><dd><%= platforms_text(@version.applies_to) %></dd>
+      <dt>Fact</dt><dd><span class="mono"><%= @version.fact %></span><% if (type = fact_type_text(fact)) %> <span class="muted">(<%= type %>)</span><% end %></dd>
+      <dt>Expected value</dt><dd><%= rule_expected(@version).upcase_first %></dd>
+      <dt>Condition</dt><dd><pre class="code"><%= condition_yaml(@version.condition) %></pre></dd>
+      <dt>Remediation</dt><dd><%= @version.remediation %></dd>
+    </dl>
+  </section>
+  <section aria-labelledby="results" id="results_section">
+    <h2 id="results">Results on hosts</h2>
+    <p class="muted intro">Each result names the rule version and config snapshot that produced it.</p>
+    <% if @results.rows.empty? %>
+      <div class="sheet"><p><strong>No hosts in the fleet.</strong></p></div>
+    <% else %>
+      <div class="table-wrap"><table id="rule_results">
+        <caption class="visually-hidden">Results of this rule on each host</caption>
+        <thead><tr><th scope="col">Host</th><th scope="col">Result</th><th scope="col">Observed</th><th scope="col">Rule version</th><th scope="col">Since (UTC)</th></tr></thead>
+        <tbody>
+          <% @results.rows.each do |row| %>
+            <tr id="result_host_<%= row.host.id %>">
+              <td><%= link_to row.host.name, row.stored ? config_host_path(row.host) : host_path(row.host) %></td>
+              <td><%= result_lamp(row.result) %></td>
+              <td><% if row.result.in?(%w[pass fail]) %><%= observed_value(row.stored.observed, @version.fact) %><% else %><span class="reason-line"><%= row.reason %></span><% end %></td>
+              <td><% if (used = row.stored&.cis_rule_version) %><span class="badge<%= ' old' unless used.id == @version.id %>">v<%= used.version %></span><% else %><span class="muted">—</span><% end %></td>
+              <td><%= row.stored ? rule_time(row.stored.changed_at) : tag.span("—", class: "muted") %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table></div>
+    <% end %>
+  </section>
+  <section aria-labelledby="versions_title" id="versions">
+    <h2 id="versions_title">Versions</h2>
+    <p class="muted intro">A rule is never edited in place. Each edit is a new, read-only version, and results keep pointing at the version that produced them.</p>
+    <div class="table-wrap"><table id="rule_versions">
+      <caption class="visually-hidden">Versions of this rule</caption>
+      <thead><tr><th scope="col">Version</th><th scope="col">Created (UTC)</th><th scope="col">By</th><th scope="col">Severity</th><th scope="col">Expected value</th><th scope="col"><span class="visually-hidden">Link</span></th></tr></thead>
+      <tbody>
+        <% @rule.versions.reverse.each do |version| %>
+          <tr>
+            <td><% if version.id == @version.id %><span class="badge">v<%= version.version %></span> <span class="badge immutable">Current</span><% else %><span class="badge old">v<%= version.version %></span><% end %></td>
+            <td><%= rule_time(version.created_at) %></td>
+            <td><%= @authors[version.version] ? rule_actor(@authors[version.version], @records) : tag.span("—", class: "muted") %></td>
+            <td><%= severity_tag(version.severity) %></td>
+            <td><%= rule_expected(version) %></td>
+            <td><%= link_to "View", version_rule_path(@rule, version.version), "aria-label": "View version #{version.version}" %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table></div>
+  </section>
+  <section aria-labelledby="log_title" id="log">
+    <h2 id="log_title">Change log</h2>
+    <p class="muted intro">Who changed what, with before and after values. The same entries are in the <%= link_to "audit log", audit_page_path(action: Audit::Actions::RULE_EDITED) %>.</p>
+    <div class="table-wrap"><table id="rule_log">
+      <caption class="visually-hidden">Change log of this rule</caption>
+      <thead><tr><th scope="col">When (UTC)</th><th scope="col">Who</th><th scope="col">Change</th><th scope="col">Before and after</th></tr></thead>
+      <tbody>
+        <% @entries.first(RulesController::CHANGE_LOG_LIMIT).each do |entry| %>
+          <tr>
+            <td><%= rule_time(entry.occurred_at) %></td>
+            <td><%= rule_actor(entry, @records) %></td>
+            <td><%= rule_change_summary(entry) %></td>
+            <td><%= rule_change_details(entry) %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table></div>
+    <% if @entries.size > RulesController::CHANGE_LOG_LIMIT %><p class="muted">The <%= RulesController::CHANGE_LOG_LIMIT %> latest changes are shown; the audit log has them all.</p><% end %>
+  </section>
+</div>
+<div>
+  <section class="sheet" aria-labelledby="fact">
+    <h2 id="fact">The fact it checks</h2>
+    <dl class="facts">
+      <dt>Key</dt><dd class="mono"><%= @version.fact %></dd>
+      <% if fact %>
+        <dt>Meaning</dt><dd><%= fact.description %></dd>
+        <dt>Type</dt><dd><%= fact_type_text(fact).upcase_first %></dd>
+      <% end %>
+      <dt>Used by</dt><dd><%= @fact_users <= 1 ? "This rule only" : "This rule and #{pluralize(@fact_users - 1, 'other')}" %></dd>
+    </dl>
+  </section>
+  <section class="sheet" aria-labelledby="eff" id="fleet_effect">
+    <h2 id="eff">Fleet effect</h2>
+    <% if !@rule.enabled %>
+      <p class="intro">Disabled: not evaluated on any host, and left out of every pass rate.</p>
+    <% else %>
+      <p class="intro">Fails on <strong><%= @results.count("fail") %></strong> of <%= hosts_count(@results.evaluated) %> evaluated.<% if @results.without_report.positive? %> <%= @results.without_report == 1 ? "1 host has" : "#{@results.without_report} hosts have" %> no config report yet.<% end %></p>
+    <% end %>
+    <p class="muted tail">Editing the expected value or <%= @rule.enabled ? "disabling" : "enabling" %> the rule re-evaluates every host's latest snapshot at once. No agent is contacted.</p>
+  </section>
+</div>
+</div>

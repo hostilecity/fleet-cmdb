@@ -1,0 +1,41 @@
+<% content_for :title, "Rule #{@rule.key}, version #{@version.version}" %>
+<% current = @version.id == @current.id %>
+<% differs = ->(field) { !current && @version.public_send(field) != @current.public_send(field) } %>
+<p><%= link_to "← #{@rule.key}, versions", rule_path(@rule, anchor: "versions") %></p>
+<div class="host-head">
+  <div>
+    <h1><%= @version.title %></h1>
+    <div class="sub"><span class="mono"><%= @rule.key %></span><span><span class="badge<%= ' old' unless current %>">Version <%= @version.version %></span></span><span class="badge immutable">Read-only</span>
+      <span>Created <%= utc(@version.created_at) %><% if @author %> by <%= rule_actor(@author, @records) %><% end %></span></div>
+  </div>
+  <div class="actions"><%= link_to "Current version (#{@current.version})", rule_path(@rule), class: "btn quiet" %></div>
+</div>
+<% if current %>
+  <div class="notice info" role="status"><strong>This is the current version of the rule.</strong><p>It can never be changed or deleted. <%= link_to "Edit the rule", edit_rule_path(@rule) %> to make version <%= @current.version + 1 %>.</p></div>
+<% else %>
+  <div class="notice info" role="status"><strong>This is an old version of the rule.</strong><p>It can never be changed or deleted. Results recorded while it was current still point here. Version <%= @current.version %> is current; <%= link_to "edit the rule", edit_rule_path(@rule) %> to make version <%= @current.version + 1 %>.</p></div>
+<% end %>
+<div class="columns">
+<div>
+  <section class="sheet" aria-labelledby="def">
+    <h2 id="def">Definition in version <%= @version.version %></h2>
+    <dl class="facts">
+      <dt>Title</dt><dd><%= @version.title %><% if differs.(:title) %> <span class="muted">(changed in version <%= @current.version %>)</span><% end %></dd>
+      <dt>Reference</dt><dd><%= @version.reference %><% if differs.(:reference) %> <span class="muted">(<%= @current.reference %> in version <%= @current.version %>)</span><% end %></dd>
+      <dt>Severity</dt><dd><%= severity_tag(@version.severity) %><% if differs.(:severity) %> <span class="muted">(<%= @current.severity %> in version <%= @current.version %>)</span><% end %></dd>
+      <dt>Applies to</dt><dd><%= platforms_text(@version.applies_to) %><% if differs.(:applies_to) %> <span class="muted">(<%= platforms_text(@current.applies_to) %> in version <%= @current.version %>)</span><% end %></dd>
+      <dt>Fact</dt><dd><span class="mono"><%= @version.fact %></span><% if differs.(:fact) %> <span class="muted">(<span class="mono"><%= @current.fact %></span> in version <%= @current.version %>)</span><% end %></dd>
+      <dt>Expected value</dt><dd><%= rule_expected(@version).upcase_first %><% if differs.(:condition) %> <span class="muted">(<%= rule_expected(@current) %> in version <%= @current.version %>)</span><% end %></dd>
+      <dt>Condition</dt><dd><pre class="code"><%= condition_yaml(@version.condition) %></pre></dd>
+      <dt>Remediation</dt><dd><%= @version.remediation %><% if differs.(:remediation) %> <span class="muted">(changed in version <%= @current.version %>)</span><% end %></dd>
+    </dl>
+  </section>
+</div>
+<div>
+  <section class="sheet" aria-labelledby="used">
+    <h2 id="used">Where it was used</h2>
+    <p class="intro">Version <%= @version.version %> <%= current ? "has been" : "was" %> current from <%= rule_time(@version.created_at) %><%= @next ? " to #{rule_time(@next.created_at)}" : "" %> UTC<%= " and still is" if current %>.</p>
+    <p class="muted tail"><%= @results_using.zero? ? "No host's current result uses it now." : "#{@results_using == 1 ? "1 host's current result uses" : "#{@results_using} hosts' current results use"} it." %> Result changes recorded under it stay in each host's history.</p>
+  </section>
+</div>
+</div>

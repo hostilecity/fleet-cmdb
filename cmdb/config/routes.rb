@@ -71,6 +71,27 @@ Rails.application.routes.draw do
     end
     # Fleet compliance (P2-D05): read-only; filters, sort, and page are in the URL.
     get "compliance", to: "compliance#index", as: :compliance
+    # CIS-aligned rules (P2-D06). Adding and editing preview first (a POST that writes nothing), then save; enable and
+    # disable are a confirmation page (GET) and a CSRF-protected POST. An uploaded rules file is previewed from a
+    # short-lived copy (RuleImportPreview, owner decision Q13) named by a token, then applied or cancelled.
+    resources :rules, only: %i[index show new create edit update], constraints: { id: /\d+/ } do
+      collection do
+        post :preview, to: "rules#preview_new", as: :preview_new
+        get :import, to: "rule_imports#new"
+        post :import, to: "rule_imports#create"
+        get "import/:token", to: "rule_imports#show", as: :import_preview, constraints: { token: /[A-Za-z0-9_-]{1,64}/ }
+        post "import/:token/apply", to: "rule_imports#apply", as: :apply_import, constraints: { token: /[A-Za-z0-9_-]{1,64}/ }
+        delete "import/:token", to: "rule_imports#destroy", as: :cancel_import, constraints: { token: /[A-Za-z0-9_-]{1,64}/ }
+      end
+      member do
+        post :preview, to: "rules#preview_edit", as: :preview_edit
+        get :disable, to: "rules#confirm_disable"
+        post :disable
+        get :enable, to: "rules#confirm_enable"
+        post :enable
+        get "versions/:version", to: "rule_versions#show", as: :version, constraints: { version: /[1-9]\d{0,8}/ }
+      end
+    end
     # Onboarding approval (P1-D07, DEC-17): the installer's verification URI is /onboard/<user code>.
     get "onboard", to: "approvals#index", as: :onboard
     post "onboard", to: "approvals#lookup"

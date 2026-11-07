@@ -1,0 +1,60 @@
+<% content_for :title, "Rules" %>
+<div class="page-head">
+  <div><h1>Rules</h1><p>CIS-aligned rules, written in our own words. The reference is a section number, never benchmark text. <%= pluralize(@list.total, "rule") %>: <%= @list.enabled_count %> enabled, <%= @list.total - @list.enabled_count %> disabled.</p></div>
+  <div class="actions"><%= link_to "Add rule", new_rule_path, class: "btn" %><%= link_to "Import rules file", import_rules_path, class: "btn quiet" %></div>
+</div>
+<% if @list.total.zero? %>
+  <div class="sheet" id="no_rules"><p><strong>No rules yet.</strong></p><p>Rules are imported from a file you keep. Nothing is checked until at least one rule is enabled.</p><%= link_to "Import rules file", import_rules_path, class: "btn" %></div>
+<% else %>
+  <%= form_with url: rules_path, method: :get, class: "filters", role: "search", id: "rule_filters" do %>
+    <label>Search title, key, or reference<%= search_field_tag :q, @list.q, placeholder: "ssh or CIS Debian 13 5.1", maxlength: RuleList::QUERY_MAX, id: "q" %></label>
+    <label>Severity<%= select_tag :severity, options_for_select(RuleList::SEVERITIES.map { |s| [ s.capitalize, s ] }, @list.severity), include_blank: "All severities", id: "severity" %></label>
+    <label>Status<%= select_tag :status, options_for_select(RuleList::STATUSES.invert, @list.status), include_blank: "Enabled and disabled", id: "status" %></label>
+    <label>Applies to<%= select_tag :applies, options_for_select(@list.applies_options, @list.applies), include_blank: "Any distribution", id: "applies" %></label>
+    <label>Fleet result<%= select_tag :result, options_for_select(RuleList::RESULTS.invert, @list.result), include_blank: "Any", id: "result" %></label>
+    <%= hidden_field_tag :sort, @list.sort, id: nil unless @list.sort == "name" %>
+    <%= hidden_field_tag :dir, @list.direction, id: nil unless @list.direction == "asc" %>
+    <button class="btn quiet" type="submit">Apply</button>
+  <% end %>
+  <% if @list.rows.empty? %>
+    <div class="sheet" id="no_matches">
+      <p><strong>No rules match <%= [ (%("#{@list.q}") if @list.q), (%(severity "#{@list.severity}") if @list.severity), (%(status "#{RuleList::STATUSES[@list.status]}") if @list.status),
+                                     (%(applies to "#{@list.applies.tr(':', ' ')}") if @list.applies), (%(fleet result "#{RuleList::RESULTS[@list.result]}") if @list.result) ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ").presence || "this page" %>.</strong></p>
+      <p><%= link_to "Clear the search and filters", rules_path %></p>
+    </div>
+  <% else %>
+    <div class="table-wrap"><table id="rules">
+      <caption class="visually-hidden">CIS-aligned rules</caption>
+      <thead><tr>
+        <th scope="col" aria-sort="<%= @list.aria_sort("name") %>"><%= link_to "Rule", rules_path(@list.sort_params("name")) %></th>
+        <th scope="col" aria-sort="<%= @list.aria_sort("severity") %>"><%= link_to "Severity", rules_path(@list.sort_params("severity")) %></th>
+        <th scope="col">Applies to</th>
+        <th scope="col">Fact and expected value</th>
+        <th scope="col">Version</th>
+        <th scope="col" aria-sort="<%= @list.aria_sort("status") %>"><%= link_to "Status", rules_path(@list.sort_params("status")) %></th>
+        <th scope="col">Fleet result</th>
+      </tr></thead>
+      <tbody>
+        <% @list.rows.each do |row| %>
+          <tr id="rule_<%= row.rule.id %>">
+            <td><%= link_to row.version.title, rule_path(row.rule) %><span class="ref"><code><%= row.rule.key %></code> · <%= row.version.reference %></span></td>
+            <td><%= severity_tag(row.version.severity) %></td>
+            <td><%= platforms_text(row.version.applies_to) %></td>
+            <td><span class="mono"><%= row.version.fact %></span><span class="state-note"><%= rule_expected(row.version) %></span></td>
+            <td><span class="badge">v<%= row.version.version %></span></td>
+            <td><%= rule_status_lamp(row.rule) %></td>
+            <td><%= fleet_result(row) %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table></div>
+    <nav class="pager" aria-label="Rule pages">
+      <span>Rules <%= @list.first_shown %>&ndash;<%= @list.last_shown %> of <%= @list.matching.size %>, sorted by <%= @list.sort %><%= ", reversed" if @list.direction == "desc" %></span>
+      <span>
+        <% if @list.page > 1 %><%= link_to "Previous", rules_path(@list.params_with(page: @list.page - 1)), rel: "prev" %><% else %><span class="off">Previous</span><% end %>
+        &middot;
+        <% if @list.page < @list.pages %><%= link_to "Next", rules_path(@list.params_with(page: @list.page + 1)), rel: "next" %><% else %><span class="off">Next</span><% end %>
+      </span>
+    </nav>
+  <% end %>
+<% end %>
