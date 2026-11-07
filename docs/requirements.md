@@ -231,6 +231,7 @@ Phase 2 starts only after Phase 1 is accepted.
 - Rules are versioned. Editing a rule creates a new version, and each result records the rule version that produced it, so history is never rewritten.
 - The dashboard shows per-host and per-rule results, a compliance summary per host (passed / failed / not evaluated), and result history so an operator can see a failure appear and clear.
 - Editing, disabling, or adding a rule re-evaluates each host's latest config snapshot without contacting agents.
+- Before an edit or a new rule is saved, the server can show which hosts would change result under it (a dry run that writes nothing), so an operator sees the effect first.
 
 ### FR-2.3 Package reporting
 
@@ -250,6 +251,8 @@ Phase 2 starts only after Phase 1 is accepted.
 
 - Host detail gains three views: configuration (latest facts, CIS results, snapshot diff), packages (current set, snapshot diff), and vulnerabilities (open and resolved findings).
 - A fleet compliance view lists every host with its CIS pass rate, open CIS failures by severity, and open vulnerability findings by severity.
+- Rules are managed in the dashboard: list and filter, view versions, add one rule from a form, edit a rule with a preview of the hosts that would change result, enable and disable, and import a file with a preview of what would change. Rules with several conditions are added by importing a file.
+- Advisory data is managed in the dashboard: sources, last import, an upload, and a manual feed refresh that is limited to one every 5 minutes.
 
 ### Phase 2 acceptance criteria
 

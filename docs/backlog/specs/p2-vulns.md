@@ -41,6 +41,7 @@ Stale vulnerability data fails silently: the dashboard would report zero finding
 - Source configuration and any API key stored in Rails credentials or environment, never logged or shown.
 - Dashboard shows "advisory data last updated" per ecosystem, with a clear warning when older than a configured threshold, and the same on [P2-D04](p2-dash-host.md) and [P2-D05](p2-dash-fleet.md).
 - Failures retry with backoff and surface through the failed-jobs indicator ([P1-O02](p1-operability.md)).
+- A manual refresh from the dashboard has a cool-down: [P2-S15](p2-refresh-limit.md).
 - Delivered as `AdvisoryFeedRefreshJob` and `Advisories::Feed`, every 6 hours in production (`cmdb/config/recurring.yml`), and `bin/rails advisories:refresh`.
   - **Source.** The default is OSV's `https://storage.googleapis.com/osv-vulnerabilities/Debian/all.zip`. OSV publishes no per-release archive, so this covers every Debian release and the importer keeps `Debian:13`. Set `FLEET_ADVISORY_FEED_URL` empty to turn the refresh off.
   - **Download.** HTTPS only, with the certificate verified (`VERIFY_PEER`). At most 3 HTTPS redirects, at most `FLEET_ADVISORY_MAX_DOWNLOAD_MB`, and within 15 minutes for the whole exchange (`Timeout`), including the status line and headers. Requests are conditional (`If-None-Match`, `If-Modified-Since`), unless the last download had malformed records, in which case the archive is fetched in full again. A 304 is recorded as a successful refresh that imports nothing and is not audited. The import is full.

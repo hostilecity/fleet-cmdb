@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edit rule with errors · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rule.html">&larr; shadow-file-mode</a></p>
+<div class="page-head"><div><h1>Edit rule</h1><p>Saving creates version 3. Nothing has been saved.</p></div></div>
+<form class="form wide" action="rule-edit-errors.html" method="get" novalidate>
+  <div class="notice error" role="alert"><strong>The rule was not saved. 2 problems:</strong>
+    <ul style="margin:0.25rem 0 0;padding-left:1.25rem"><li><a href="#ref">Reference</a>: is required</li><li><a href="#cond">Condition</a>: <code>/condition/all/0/mode_at_most</code> does not match pattern: <code>^[0-7]{3,4}$</code></li></ul></div>
+  <div class="field"><label for="key">Key</label><input id="key" class="mono" value="shadow-file-mode" readonly></div>
+  <div class="field"><label for="title">Title</label><input id="title" maxlength="200" value="The password hash file is not readable by everyone"></div>
+  <div class="row">
+    <div class="field invalid"><label for="ref">Reference</label><input id="ref" maxlength="128" value="" aria-invalid="true" aria-describedby="ref-e"><p class="error-text" id="ref-e">Reference is required. Use a section number such as CIS Debian 13 7.1.3, never benchmark text.</p></div>
+    <div class="field"><label for="sevr">Severity</label><select id="sevr"><option>Low</option><option>Medium</option><option selected>High</option><option>Critical</option></select></div>
+  </div>
+  <div class="field"><label for="fact">Fact</label><select id="fact"><option>file:/etc/shadow (file attributes)</option></select></div>
+  <div class="field invalid"><label for="cond">Condition (YAML or JSON)</label>
+<textarea id="cond" class="mono" rows="9" aria-invalid="true" aria-describedby="cond-h cond-e">all:
+  - mode_at_most: rw-r-----
+  - field: owner
+    eq: root
+  - field: group
+    in: [root, shadow]</textarea>
+    <p class="hint" id="cond-h">This rule combines several conditions, so it is edited as text. Operators: eq, ne, in, not_in, gte, lte, matches, mode_at_most, present, absent, all, any, not. No code is ever run.</p>
+    <p class="error-text" id="cond-e"><code>/condition/all/0/mode_at_most</code>: does not match pattern: <code>^[0-7]{3,4}$</code>. Write the mode as octal digits, for example <code>0640</code>.</p></div>
+  <div class="field"><label for="rem">Remediation</label><textarea id="rem" maxlength="4000">Run chmod 0640 /etc/shadow and chown root:shadow /etc/shadow.</textarea></div>
+  <div class="actions"><button class="btn" type="submit">Save as version 3</button><a class="btn quiet" href="rule.html">Cancel</a></div>
+</form>
+<p class="note">Errors are listed at the top and again beside the field, each with the JSON Pointer into the rule that the import uses, so the same problem reads the same way in both places. The form keeps what was typed. A rule is saved only when every problem is fixed; it is never saved in part.</p>
+</main>
+</body>
+</html>

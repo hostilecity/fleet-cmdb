@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media server: packages · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a><a class="btn quiet" href="../phase-1/dialogs.html#reenroll">Re-enroll</a><a class="btn danger quiet" href="../phase-1/dialogs.html#revoke">Revoke credential</a><a class="btn danger quiet" href="../phase-1/dialogs.html#retire">Retire</a></div>
+</div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">5</span><span class="detail">1 high, 2 medium, 1 low, 1 unknown</span></a>
+  <a href="host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="host-overview.html">Overview</a><a href="host-config.html">Configuration</a><a href="host-packages.html" aria-current="page">Packages <span class="count">1,243</span></a><a href="host-vulns.html">Vulnerabilities <span class="count">5 open</span></a></nav>
+
+<div class="request-box">
+  <div>
+    <p><strong>Package report received 3 minutes ago.</strong> Collected 12:00:03 UTC by agent 0.1.0. Package set unchanged since snapshot 2026-11-05 18:22 UTC.</p>
+    <p class="hint">Package reports arrive every 6 hours, or when you ask. Each report type can be requested once every 5 minutes.</p>
+  </div>
+  <form action="report-requests.html" method="get"><button class="btn quiet" type="submit">Request fresh package report</button></form>
+</div>
+<section aria-labelledby="current" id="current">
+  <h2 id="current" style="margin-top:0">Installed packages</h2>
+  <p class="muted" style="margin-top:0">1,243 packages from <strong>dpkg</strong>. The list is the package manager's own, with no packages added or left out. Source package is shown where the manager records one.</p>
+  <form class="filters" role="search" action="host-packages.html" method="get">
+    <label>Search name or source package<input type="search" name="q" placeholder="curl or util-linux" maxlength="100"></label>
+    <label>Architecture<select name="arch"><option>All architectures</option><option>amd64</option><option>all</option><option>i386</option></select></label>
+    <label><span>With findings</span><select name="findings"><option>Any package</option><option>Open findings only</option></select></label>
+    <button class="btn quiet" type="submit">Apply</button>
+  </form>
+<div class="table-wrap"><table><caption class="visually-hidden">Installed packages, sorted by name</caption><thead><tr><th scope="col" aria-sort="ascending"><a href="host-packages.html?sort=name&amp;dir=desc">Package</a></th><th scope="col" aria-sort="none"><a href="host-packages.html?sort=version">Version</a></th><th scope="col">Architecture</th><th scope="col" aria-sort="none"><a href="host-packages.html?sort=source">Source package</a></th><th scope="col">Manager</th><th scope="col">Open findings</th></tr></thead><tbody>
+<tr><td><span class="mono">acme-daemon</span></td><td><span class="mono">2.4.1-2</span></td><td><span class="mono">amd64</span></td><td><span class="mono">acme-daemon</span></td><td>dpkg</td><td><a href="host-vuln-package.html?package=acme-daemon">1 open</a></td></tr>
+<tr><td><span class="mono">acme-docs</span></td><td><span class="mono">4.0-1</span></td><td><span class="mono">all</span></td><td><span class="mono">acme-docs</span></td><td>dpkg</td><td><a href="host-vulns.html?package=acme-docs">1 open</a></td></tr>
+<tr><td><span class="mono">acme-tools</span></td><td><span class="mono">1:7.8p1-4</span></td><td><span class="mono">amd64</span></td><td><span class="mono">acme-suite</span></td><td>dpkg</td><td><a href="host-vuln-package.html?package=acme-tools">1 open (reopened)</a></td></tr>
+<tr><td><span class="mono">adduser</span></td><td><span class="mono">3.152</span></td><td><span class="mono">all</span></td><td><span class="mono">adduser</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">apt</span></td><td><span class="mono">3.0.3</span></td><td><span class="mono">amd64</span></td><td><span class="mono">apt</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">apt-utils</span></td><td><span class="mono">3.0.3</span></td><td><span class="mono">amd64</span></td><td><span class="mono">apt</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">base-files</span></td><td><span class="mono">13.8</span></td><td><span class="mono">amd64</span></td><td><span class="mono">base-files</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">base-passwd</span></td><td><span class="mono">3.6.7</span></td><td><span class="mono">amd64</span></td><td><span class="mono">base-passwd</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">bash</span></td><td><span class="mono">5.2.37-2</span></td><td><span class="mono">amd64</span></td><td><span class="mono">bash</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">bsdutils</span></td><td><span class="mono">1:2.41-5</span></td><td><span class="mono">amd64</span></td><td><span class="mono">util-linux</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">ca-certificates</span></td><td><span class="mono">20250419</span></td><td><span class="mono">all</span></td><td><span class="mono">ca-certificates</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">coreutils</span></td><td><span class="mono">9.7-3</span></td><td><span class="mono">amd64</span></td><td><span class="mono">coreutils</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">cron</span></td><td><span class="mono">3.0pl1-197</span></td><td><span class="mono">amd64</span></td><td><span class="mono">cron</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">curl</span></td><td><span class="mono">8.14.1-2</span></td><td><span class="mono">amd64</span></td><td><span class="mono">curl</span></td><td>dpkg</td><td><span class="muted">—</span></td></tr>
+</tbody></table></div>
+  <nav class="pager" aria-label="Package pages"><span>Packages 1&ndash;50 of 1,243</span><span><span class="off">Newer</span> &middot; Page 1 of 25 &middot; <a rel="next" href="host-packages.html?page=2">Older</a></span></nav>
+<p class="note"><span class="review-q">Review Q15.</span> A 3,000-package host. Drawn: server-side search, sort, and pages of 50 (the mockup draws 14 rows of the page). Search and sort are in the URL so a view can be bookmarked, as on the Phase 1 fleet list. The alternative is to render every row and let the browser scroll (virtual rendering), which needs JavaScript the Phase 1 screens do not use.</p>
+</section>
+<section aria-labelledby="snapshots" id="snapshots">
+  <h2 id="snapshots">Package snapshots</h2>
+  <p class="muted" style="margin-top:0">A snapshot is kept only when the package set changes.</p>
+<div class="table-wrap"><table><caption class="visually-hidden">Package snapshots</caption><thead><tr><th scope="col">Recorded (UTC)</th><th scope="col">What changed</th><th scope="col">Compare</th></tr></thead><tbody>
+<tr><td>2026-11-05 18:22 <span class="badge">Latest</span></td><td>2 installed, 1 removed, 3 upgraded, 1 downgraded, 1 not comparable, 1 source changed</td><td><a href="host-packages-diff.html">With the one before</a></td></tr>
+<tr><td>2026-11-03 16:40</td><td>5 upgraded</td><td><a href="host-packages-diff.html?from=2026-10-28&amp;to=2026-11-03">With the one before</a></td></tr>
+<tr><td>2026-10-28 11:02</td><td>First package report, 1,240 packages</td><td><span class="muted">Nothing before it</span></td></tr>
+</tbody></table></div>
+  <p class="note">Package snapshots use the same two-snapshot picker as config snapshots (Q5): each row links to a comparison page, and the picker on that page chooses any two.</p>
+</section>
+</main>
+</body>
+</html>

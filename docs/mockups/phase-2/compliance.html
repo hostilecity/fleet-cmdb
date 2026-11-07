@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compliance · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html" aria-current="page">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Compliance</h1><p>CIS-aligned check results and open vulnerability findings for the 5 active hosts. Retired hosts are not counted.</p></div><div class="actions"><a class="btn quiet" href="rules.html">Manage rules</a><a class="btn quiet" href="data-sources.html">Data sources</a></div></div>
+<p class="freshness" id="advisory_freshness"><span>Advisory data last updated: <span class="mono">Debian:13</span> 3 hours ago.</span> <a href="data-sources.html">Data sources</a></p>
+<div class="strip-title"><h2>Open CIS-aligned check failures</h2><span class="muted">4 of 5 hosts evaluated. Not evaluated hosts are not counted.</span></div>
+<div class="sevstrip four" role="group" aria-label="Open CIS-aligned check failures by severity">
+  <a href="compliance.html?cis=critical"><span class="count">1</span><span class="sev critical">Critical</span></a>
+  <a href="compliance.html?cis=high"><span class="count">3</span><span class="sev high">High</span></a>
+  <a href="compliance.html?cis=medium"><span class="count">4</span><span class="sev medium">Medium</span></a>
+  <a href="compliance.html?cis=low"><span class="count">3</span><span class="sev low">Low</span></a>
+</div>
+<p class="muted" style="margin:0.375rem 0 0">Fleet pass rate: <strong>89.5%</strong>, 128 of 143 checks pass on the 4 hosts evaluated.</p>
+<div class="strip-title"><h2>Open vulnerability findings</h2><span class="muted">3 of 5 hosts evaluated. 2 hosts are not evaluated: <a href="compliance.html?status=not_evaluated">see which and why</a>.</span></div>
+<div class="sevstrip" role="group" aria-label="Open vulnerability findings by severity">
+  <a href="compliance.html?vuln=critical"><span class="count">1</span><span class="sev critical">Critical</span></a>
+  <a href="compliance.html?vuln=high"><span class="count">1</span><span class="sev high">High</span></a>
+  <a href="compliance.html?vuln=medium"><span class="count">2</span><span class="sev medium">Medium</span></a>
+  <a href="compliance.html?vuln=low"><span class="count">2</span><span class="sev low">Low</span></a>
+  <a href="compliance.html?vuln=unknown"><span class="count">1</span><span class="sev unknown">Unknown</span></a>
+</div>
+<p class="note">The counts are links that filter the table below, like the Phase 1 status counts. They are computed in the database from the same rows as the host pages, so a count here always equals the sum of the table. Hosts that are not evaluated add nothing to a count and say so above it; they are never shown as zero.</p>
+<form class="filters" role="search" action="compliance.html" method="get">
+  <label>Search name or hostname<input type="search" name="q" placeholder="vm-01 or Media server" maxlength="100"></label>
+  <label>Tag<select name="tag"><option>All tags</option><option>ci</option><option>infra</option><option>lab</option><option>media</option><option>storage</option><option>web</option></select></label>
+  <label>Status<select name="status"><option>All hosts</option><option>Has open failures or findings</option><option>Has critical or high</option><option>No open findings</option><option>Not evaluated</option></select></label>
+  <label>Sort<select name="sort"><option selected>Worst first</option><option>Lowest CIS pass rate</option><option>Most open vulnerabilities</option><option>Name</option></select></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<div class="table-wrap"><table>
+<caption class="visually-hidden">Compliance by host, worst first</caption>
+<thead>
+<tr class="group"><th rowspan="2" scope="col" aria-sort="none"><a href="#">Host</a></th><th rowspan="2" scope="col" aria-sort="none"><a href="#">CIS pass rate</a></th><th colspan="4" scope="colgroup">Open CIS-aligned check failures</th><th colspan="5" scope="colgroup">Open vulnerability findings</th><th rowspan="2" scope="col">Last reports</th></tr>
+<tr><th scope="col" class="num">Critical</th><th scope="col" class="num">High</th><th scope="col" class="num">Medium</th><th scope="col" class="num">Low</th><th scope="col" class="num">Critical</th><th scope="col" class="num">High</th><th scope="col" class="num">Medium</th><th scope="col" class="num">Low</th><th scope="col" class="num">Unknown</th></tr>
+</thead>
+<tbody>
+<tr><th scope="row"><a href="host-overview.html">Build runner</a><span class="state-note"><span class="lamp stale">Stale</span></span><span class="state-note"><span class="tag">ci</span></span></th><td><span class="rate">83.3%<span class="meter" aria-hidden="true"><span style="width:83.3%"></span></span></span><span class="rate-detail">30 of 36 checks</span></td><td class="sevcount hot">1</td><td class="sevcount hot">1</td><td class="sevcount">1</td><td class="sevcount">1</td><td colspan="5"><span class="not-eval">Not evaluated</span><span class="reason-line">No package report yet</span></td><td class="muted">Config 5 hours ago<br>Packages never</td></tr>
+<tr><th scope="row"><a href="host-overview.html">Web A</a><span class="state-note"><span class="lamp online">Online</span></span><span class="state-note"><span class="tag">web</span><span class="tag">lab</span></span></th><td><span class="rate">94.3%<span class="meter" aria-hidden="true"><span style="width:94.3%"></span></span></span><span class="rate-detail">33 of 35 checks</span></td><td class="sevcount zero">0</td><td class="sevcount zero">0</td><td class="sevcount">1</td><td class="sevcount">1</td><td class="sevcount hot">1</td><td class="sevcount zero">0</td><td class="sevcount zero">0</td><td class="sevcount">1</td><td class="sevcount zero">0</td><td class="muted">Config 2 hours ago<br>Packages 2 hours ago</td></tr>
+<tr><th scope="row"><a href="host-overview.html">Media server</a><span class="state-note"><span class="lamp online">Online</span></span><span class="state-note"><span class="tag">media</span></span></th><td><span class="rate">80.6%<span class="meter" aria-hidden="true"><span style="width:80.6%"></span></span></span><span class="rate-detail">29 of 36 checks</span></td><td class="sevcount zero">0</td><td class="sevcount hot">2</td><td class="sevcount">2</td><td class="sevcount">1</td><td class="sevcount zero">0</td><td class="sevcount hot">1</td><td class="sevcount">2</td><td class="sevcount">1</td><td class="sevcount">1</td><td class="muted">Config 3 minutes ago<br>Packages 3 minutes ago</td></tr>
+<tr><th scope="row"><a href="host-overview.html">Backup target</a><span class="state-note"><span class="lamp offline">Offline</span></span><span class="state-note"><span class="tag">storage</span></span></th><td><span class="rate">100%<span class="meter" aria-hidden="true"><span style="width:100%"></span></span></span><span class="rate-detail">36 of 36 checks</span></td><td colspan="4"><span class="none-open">None open</span></td><td colspan="5"><span class="none-open">None open</span></td><td class="muted">Config 5 hours ago<br>Packages 5 hours ago</td></tr>
+<tr class="not-evaluated"><th scope="row"><a href="host-overview.html">DNS resolver</a><span class="state-note"><span class="lamp awaiting">Awaiting first contact</span></span><span class="state-note"><span class="tag">infra</span></span></th><td colspan="5"><span class="not-eval">Not evaluated</span><span class="reason-line">No config report yet</span></td><td colspan="5"><span class="not-eval">Not evaluated</span><span class="reason-line">No inventory yet, so the distribution is not known</span></td><td class="muted">Never</td></tr>
+</tbody></table></div>
+<p class="note"><span class="review-q">Review Q9.</span> Sorting by worst, and where hosts that are not evaluated go. Drawn: "worst first" orders hosts by their critical findings (CIS failures plus vulnerabilities together), then high, medium, low, and unknown, then by lowest pass rate. Hosts with nothing evaluated at all sit below everything, shaded and labelled, so an unknown host is neither at the top as an emergency nor mixed in with the clean ones. Alternative: put not-evaluated hosts first, because an unknown host is a risk too. Status filter "Not evaluated" lists only them either way.</p><p class="note">Three things look different on purpose. <strong>0</strong> in grey is a severity with no open findings on a host that has some. <span class="none-open">None open</span> is an evaluated host with no findings at all. <span class="not-eval">Not evaluated</span> with its reason is a host the server could not judge (AC: "Not evaluated" and "zero findings" are never shown the same way). Column headers carry severity as words, and every number is a link target on the host page, not colour.</p><p class="note">The pass rate uses the definition on the host page (Q3): passed &divide; (passed + failed + not readable).</p>
+<p class="pager"><span>5 of 5 active hosts.</span><span>A fleet of 50 hosts fits one page; larger fleets page by 100.</span></p>
+</main>
+</body>
+</html>

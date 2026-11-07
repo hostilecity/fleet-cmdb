@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import rules file · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rules.html">&larr; Rules</a></p>
+<div class="page-head"><div><h1>Import rules file</h1><p>Check a YAML or JSON rules file and see what it would change. Nothing is written until you apply it.</p></div></div>
+<form class="form wide" action="rules-import-preview.html" method="get" enctype="multipart/form-data">
+  <div class="field"><label for="file">Rules file</label><input id="file" type="file" accept=".yml,.yaml,.json" aria-describedby="file-h"><p class="hint" id="file-h">YAML or JSON, format version 1, at most 1 MiB. See the <a href="../../api/rules/README.md">rule file format</a>.</p></div>
+  <div class="field"><label class="choice" style="margin:0;font-weight:400"><input type="checkbox"> <strong>Disable rules this file does not list</strong><p>Off by default. Rules missing from the file stay as they are. Turn it on when the file is the complete list you want enabled.</p></label></div>
+  <div class="notice info" role="note"><strong>What happens next</strong><p>The whole file is checked first. If every rule is valid you see what would be added, changed, and left alone, and you can apply it or cancel. If anything is wrong, nothing is imported and every problem is listed.</p></div>
+  <div class="actions"><button class="btn" type="submit">Check file and preview</button><a class="btn quiet" href="rules.html">Cancel</a></div>
+</form>
+<p class="note"><span class="review-q">Review Q13.</span> The preview. Drawn: uploading shows the preview; "Apply import" then applies exactly the file that was previewed, which the server keeps for a short time (about 15 minutes) and drops when you apply, cancel, or it expires. Alternative: ask for the file again on the apply step, which stores nothing but makes the operator pick the same file twice and risks applying a file different from the one previewed. The first needs a short-lived store of an uploaded file; say if that is not acceptable.</p>
+<p class="note"><a href="rules-import-preview.html">See the preview of a valid file</a> and <a href="rules-import-errors.html">the output for a file with problems</a>.</p>
+</main>
+</body>
+</html>

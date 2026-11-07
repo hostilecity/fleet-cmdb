@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>States: packages and vulnerabilities · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>States: packages and vulnerabilities</h1><p>Every way the Packages and Vulnerabilities tabs say "we cannot tell" instead of showing an empty list.</p></div></div>
+<nav aria-label="On this page"><ul class="chips"><li><a href="#unsupported">Unsupported package manager</a></li><li><a href="#nopackages">No package report</a></li><li><a href="#nomatch">No matches</a></li><li><a href="#reasons">Not evaluated reasons</a></li><li><a href="#kept">Findings from an earlier evaluation</a></li><li><a href="#clean">Evaluated, no findings</a></li><li><a href="#unparseable">Packages that cannot be checked</a></li></ul></nav>
+<section aria-labelledby="unsupported-h" id="unsupported"><h2 id="unsupported-h" class="state-title">Packages tab: unsupported package manager</h2>
+<div class="notice" role="status"><strong>This host's package manager is not supported, so its packages are unknown.</strong>
+<p>The agent reported: <span class="mono">apk is not supported by this agent version</span>. Supported package managers: dpkg. This is not an empty package list.</p></div>
+<dl class="facts"><dt>Package manager</dt><dd><span class="lamp unsup">Unsupported</span></dd><dt>Packages</dt><dd class="unavailable">Unknown</dd><dt>Last report</dt><dd>Received 3 minutes ago, collected 12:00:03 UTC</dd></dl>
+<p class="muted">Snapshots comparison on this host: <strong>no diff is available</strong> when either snapshot is from an unsupported manager, because showing every package as removed or installed would be wrong.</p><p class="note">The Packages tab shows the explicit state (P2-D03) instead of an empty table or "0 packages". The count in the tab label reads "Unsupported" instead of a number. The Vulnerabilities tab says "Not evaluated" for the same reason (see below).</p>
+</section>
+<section aria-labelledby="nopackages-h" id="nopackages"><h2 id="nopackages-h" class="state-title">Packages tab: no package report yet</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No package report yet.</strong></p><p>The package list appears after the agent sends its first package report, within 6 hours of enrolling, or when you ask for one.</p><form action="report-requests.html" method="get"><button class="btn quiet" type="submit">Request fresh package report</button></form></div>
+</section>
+<section aria-labelledby="nomatch-h" id="nomatch"><h2 id="nomatch-h" class="state-title">Packages tab: no matches, and a first snapshot</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No packages match "zzz" on architecture "amd64".</strong></p><p><a href="host-packages.html">Clear the search and filters</a></p></div><div style="height:.75rem"></div><div class="sheet"><p style="margin-top:0"><strong>Only one package snapshot so far.</strong></p><p>There is nothing to compare it with yet. A new snapshot is kept when the package set changes.</p></div>
+</section>
+<section aria-labelledby="reasons-h" id="reasons"><h2 id="reasons-h" class="state-title">Vulnerabilities tab: not evaluated, with the reason</h2>
+<div style='margin-bottom:1rem'><div class="notice" role="status"><strong>Not evaluated: this host's vulnerabilities are unknown, not zero.</strong>
+<p>The host has not reported its inventory, so its distribution is not known.</p><p class="muted" style="margin-top:0.25rem">Reason <span class="mono">no_inventory</span>. It is evaluated as soon as the agent sends its first inventory and package reports.</p></div></div><div style='margin-bottom:1rem'><div class="notice" role="status"><strong>Not evaluated: this host's vulnerabilities are unknown, not zero.</strong>
+<p>alpine 3.20 is not in the fleet profile (DEC-01), so no advisory data applies to it.</p><p class="muted" style="margin-top:0.25rem">Reason <span class="mono">unmapped_distribution</span>. Adding a distribution needs a new decision; until then its packages are listed but not matched.</p></div></div><div style='margin-bottom:1rem'><div class="notice" role="status"><strong>Not evaluated: this host's vulnerabilities are unknown, not zero.</strong>
+<p>The host has not reported its packages.</p><p class="muted" style="margin-top:0.25rem">Reason <span class="mono">no_package_report</span>. <a href="report-requests.html">Request a package report</a> or wait for the next scheduled one.</p></div></div><div style='margin-bottom:1rem'><div class="notice" role="status"><strong>Not evaluated: this host's vulnerabilities are unknown, not zero.</strong>
+<p>The host's package manager is not supported: apk is not supported by this agent version</p><p class="muted" style="margin-top:0.25rem">Reason <span class="mono">unsupported_package_manager</span>. Packages and vulnerabilities cannot be shown for this host.</p></div></div><div style='margin-bottom:1rem'><div class="notice" role="status"><strong>Not evaluated: this host's vulnerabilities are unknown, not zero.</strong>
+<p>No advisory data has been imported for Debian:13.</p><p class="muted" style="margin-top:0.25rem">Reason <span class="mono">no_advisory_data</span>. <a href="data-sources.html">Check the data sources</a>: the first refresh may have failed or not run yet.</p></div></div><p class="note">D04: a host that cannot be evaluated says so and why instead of showing an empty table. The five reasons are the server's own, with its own wording. Finding counts for such a host are never shown as 0: the Compliance and Fleet views show "Not evaluated" (grey, hollow lamp) in the same place. Findings recorded before the host became not evaluated are left as they were; the next example shows how that reads.</p>
+</section>
+<section aria-labelledby="kept-h" id="kept"><h2 id="kept-h" class="state-title">Vulnerabilities tab: not evaluated, but earlier findings kept</h2>
+<div class="notice" role="status"><strong>Not evaluated now. These findings are from the last evaluation, 2026-11-05 18:30 UTC.</strong><p>No advisory data has been imported for Debian:13 since then, so these may be out of date: findings could be missing, and some may no longer apply.</p></div><div class="table-wrap"><table><caption class="visually-hidden">Findings kept from the last evaluation</caption><thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Package</th><th scope="col">Installed</th><th scope="col">State</th></tr></thead><tbody>
+<tr><td><span class="sev medium">Medium</span></td><td><a href="https://security.example.lan/advisories/DSA-9102-1" rel="noopener noreferrer">DSA-9102-1</a></td><td><span class="mono">acme-daemon:amd64</span></td><td><span class="mono">2.4.1-2</span></td><td><span class="lamp fail">Open</span></td></tr>
+</tbody></table></div>
+</section>
+<section aria-labelledby="clean-h" id="clean"><h2 id="clean-h" class="state-title">Vulnerabilities tab: evaluated, nothing found</h2>
+<p class="freshness"><span>Advisory data last updated: <span class="mono">Debian:13</span> 3 hours ago.</span></p>
+<div class="sheet"><p style="margin:0"><span class="none-open"><strong>No open vulnerability findings.</strong></span></p><p class="muted" style="margin:0.25rem 0 0">Evaluated 2026-11-06 09:15 UTC: 1,243 packages matched against 38,412 Debian:13 advisories. 0 resolved findings.</p></div><p class="note">This is the only "zero" state: the host was evaluated and nothing matched. It carries a check mark, the evaluation time, and the amount of data it was checked against, so it cannot be mistaken for "not evaluated".</p>
+</section>
+<section aria-labelledby="unparseable-h" id="unparseable"><h2 id="unparseable-h" class="state-title">Vulnerabilities tab: some packages cannot be checked</h2>
+<div class="notice" role="status"><strong>2 packages could not be checked.</strong><p>Their versions are not valid for dpkg, so no advisory was compared. Findings for them are unchanged.</p></div><div class="table-wrap"><table><caption class="visually-hidden">Packages that could not be evaluated</caption><thead><tr><th scope="col">Package</th><th scope="col">Installed version</th><th scope="col">Why</th></tr></thead><tbody>
+<tr><td><span class="mono">acme-prototype:amd64</span></td><td><span class="mono">2.0_rc2</span></td><td>Version cannot be parsed by dpkg rules</td></tr>
+<tr><td><span class="mono">libacme-beta1:amd64</span></td><td><span class="mono">1.0:~x</span></td><td>Version cannot be parsed by dpkg rules</td></tr>
+</tbody></table></div>
+</section>
+</main>
+</body>
+</html>

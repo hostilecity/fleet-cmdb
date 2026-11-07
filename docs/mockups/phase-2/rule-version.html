@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rule ssh-max-auth-tries, version 1 · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rule.html#versions">&larr; ssh-max-auth-tries, versions</a></p>
+<div class="host-head">
+  <div>
+    <h1>SSH limits authentication attempts per connection</h1>
+    <div class="sub"><span class="mono">ssh-max-auth-tries</span><span><span class="badge old">Version 1</span></span><span class="badge immutable">Read-only</span><span>Created 2026-10-20 09:00 UTC by Example Operator</span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="rule.html">Current version (2)</a></div>
+</div>
+<div class="notice info" role="status"><strong>This is an old version of the rule.</strong><p>It can never be changed or deleted. Results recorded while it was current still point here. Version 2 is current; <a href="rule-edit.html">edit the rule</a> to make version 3.</p></div>
+<div class="columns">
+<div>
+  <section class="sheet" aria-labelledby="def">
+    <h2 id="def">Definition in version 1</h2>
+    <dl class="facts">
+      <dt>Reference</dt><dd>CIS Debian 13 5.1.18</dd>
+      <dt>Severity</dt><dd><span class="sev low">Low</span> <span class="muted">(medium in version 2)</span></dd>
+      <dt>Applies to</dt><dd>debian 13</dd>
+      <dt>Fact</dt><dd><span class="mono">sshd.maxauthtries</span></dd>
+      <dt>Expected value</dt><dd>At most <span class="val">6</span> <span class="muted">(4 in version 2)</span></dd>
+      <dt>Condition</dt><dd><pre class="code">lte: 6</pre></dd>
+      <dt>Remediation</dt><dd>Set MaxAuthTries to 6 or lower in /etc/ssh/sshd_config and reload ssh.</dd>
+    </dl>
+  </section>
+</div>
+<div>
+  <section class="sheet" aria-labelledby="used">
+    <h2 id="used">Where it was used</h2>
+    <p style="margin-top:0">Version 1 was current from 2026-10-20 09:00 to 2026-10-30 10:12 UTC.</p>
+    <p class="muted" style="margin-bottom:0">No host's current result uses it now. Result changes recorded under it stay in each host's history.</p>
+  </section>
+</div>
+</div>
+</main>
+</body>
+</html>
