@@ -2,6 +2,7 @@
 # Revoke, retire, re-enroll, and requesting fresh reports (P2-S03) are in HostActionsController.
 class HostsController < ApplicationController
   include ShowsEnrollmentToken
+  include HostTab
 
   FIELDS = %i[name hostname tags description notes].freeze
   HISTORY_LIMIT = 25
@@ -20,15 +21,14 @@ class HostsController < ApplicationController
   end
 
   def show
-    @host = Host.includes(:inventory).find(params[:id]) # retired hosts keep their page and history
+    load_host_tab # retired hosts keep their page and history
     @inventory = @host.inventory
-    @credential = @host.agent_credentials.order(created_at: :desc, id: :desc).first
-    @token = @host.enrollment_tokens.redeemable.order(created_at: :desc, id: :desc).first if @host.enrollment_state == "pending"
     @history = history
     @status_events = @host.status_events.order(occurred_at: :desc, id: :desc).limit(STATUS_HISTORY_LIMIT)
     @audit_entries = AuditEntry.for_target(@host).order(occurred_at: :desc, id: :desc).limit(AUDIT_LIMIT).to_a
     @actors = audit_actors(@audit_entries)
     @report_requests = @host.report_requests.includes(:requested_by).order(requested_at: :desc, id: :desc).limit(REPORT_REQUEST_LIMIT)
+    @availability = ReportRequests.availability(host: @host)
     load_update_history
   end
 

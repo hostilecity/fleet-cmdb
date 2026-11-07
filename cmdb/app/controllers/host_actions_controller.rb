@@ -43,14 +43,22 @@ class HostActionsController < ApplicationController
   def request_reports
     types = params.permit(report_types: []).fetch(:report_types, [])
     result = ReportRequests.request!(host: @host, types:, actor: current_operator)
-    redirect_to host_path(@host, anchor: "report_requests"), **report_request_flash(result)
+    redirect_to report_requests_return_path, **report_request_flash(result)
   rescue ReportRequests::NoTypes
-    redirect_to host_path(@host, anchor: "report_requests"), alert: "Choose at least one report to request."
+    redirect_to report_requests_return_path, alert: "Choose at least one report to request."
   rescue ReportRequests::NotActive
     redirect_to host_path(@host), alert: "Only an active host's agent can be asked for a report."
   end
 
   private
+
+  # Back to the tab whose button was pressed (owner decision Q6), or to the Overview's form. Only known tabs.
+  def report_requests_return_path
+    case params[:return_to]
+    when "config" then config_host_path(@host, anchor: "request")
+    else host_path(@host, anchor: "report_requests")
+    end
+  end
 
   # A notice for what was requested; an alert when everything asked for was rate limited.
   def report_request_flash(result)

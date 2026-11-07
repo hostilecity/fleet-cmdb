@@ -215,4 +215,38 @@ RSpec.describe ReportRequests do
       expect([ pending.display_state(now + 59.minutes), pending.display_state(now + 1.hour) ]).to eq(%w[pending expired])
     end
   end
+
+  describe ".availability (the request buttons, P2-D02)" do
+    def states(at) = described_class.availability(host: host.reload, now: at).transform_values { |a| [ a.state, a.retry_at ] }
+
+    it "is ready for every type before any request, and inactive on a host that is not active" do
+      expect(states(now)).to eq("config" => [ :ready, nil ], "inventory" => [ :ready, nil ], "packages" => [ :ready, nil ])
+      host.revoke!(actor: Audit::SYSTEM)
+      expect(states(now).values.map(&:first).uniq).to eq([ :inactive ])
+    end
+
+    it "is pending while a request is outstanding, rate limited for five minutes after it ended, then ready" do
+      request(%w[config])
+      expect(states(now + 1.minute)["config"]).to eq([ :pending, nil ])
+      directive(at: now + 1.minute)
+      satisfy("config", now + 2.minutes, at: now + 2.minutes)
+      expect(states(now + 3.minutes)["config"]).to eq([ :rate_limited, now + 5.minutes ])
+      expect(states(now + 5.minutes)["config"]).to eq([ :ready, nil ])
+      expect(described_class.availability(host:, now:)["config"].latest).to have_attributes(state: "satisfied", requested_by: operator)
+    end
+
+    it "is pending past the cool-down until the request expires, as request! leaves it outstanding" do
+      request(%w[packages])
+      expect(states(now + 30.minutes)["packages"]).to eq([ :pending, nil ])
+      expect(states(now + 1.hour)["packages"]).to eq([ :ready, nil ])
+      expect(states(now + 30.minutes)["inventory"]).to eq([ :ready, nil ])
+    end
+
+    it "reads the newest request of each type" do
+      request(%w[config])
+      described_class.expire!(now: now + 1.hour)
+      request(%w[config], at: now + 2.hours)
+      expect(described_class.availability(host:, now: now + 2.hours)["config"].latest.requested_at).to eq(now + 2.hours)
+    end
+  end
 end
