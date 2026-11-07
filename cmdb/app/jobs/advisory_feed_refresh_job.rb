@@ -14,6 +14,13 @@
 # neither is ever refused. A manual refresh
 # was recorded when the operator asked, and passes that attempt's id: its import and any failure are then
 # attributed to that operator.
+#
+# A refresh that would withdraw too many advisories (Advisories::Import's guard, review of #129) is not a fault:
+# nothing is written, the data stays as it was, and the refusal is recorded as a failed import with the counts
+# per ecosystem and audited, but the job ends normally, so it is not retried and does not show as a failed job.
+# The Data sources page and the freshness notice warn about it, and an operator can confirm the counts
+# (Advisories::ManualRefresh.confirm_withdrawals!), which downloads the feed again with withdrawals allowed up to
+# them (allowed_withdrawals).
 class AdvisoryFeedRefreshJob < ApplicationJob
   queue_as :default
 
@@ -23,8 +30,10 @@ class AdvisoryFeedRefreshJob < ApplicationJob
   end
 
   # attempt_id: the manual attempt Advisories::ManualRefresh.request! recorded. kind: what to record a run
-  # without one as ("scheduled", or "task" from bin/rails advisories:refresh).
-  def perform(attempt_id: nil, kind: "scheduled")
+  # without one as ("scheduled", or "task" from bin/rails advisories:refresh). allowed_withdrawals: per
+  # ecosystem, how many advisories an operator confirmed this refresh may withdraw ({ "Debian:13" => 41 }).
+  def perform(attempt_id: nil, kind: "scheduled", allowed_withdrawals: {})
+    @allowed_withdrawals = allowed_withdrawals.to_h.transform_keys(&:to_s)
     feed = Advisories::Feed.new
     if feed.url.nil?
       logger.info("[advisories] no feed configured (FLEET_ADVISORY_FEED_URL); refresh skipped")
@@ -47,6 +56,11 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     result = download.not_modified? ? not_modified(last) : import(download)
     logger.info("[advisories] feed refresh from #{@source} succeeded: #{result.import.counts.to_json}")
     result
+  rescue Advisories::Import::WithdrawalsRefused => e
+    logger.warn("[advisories] feed refresh from #{@source} refused, nothing imported: #{e.message}")
+    import = Advisories::Import.record_failure(origin: "feed", source: @source, reason: e.message, full: true, operator: @operator,
+                                               counts: { "would_withdraw" => e.withdrawals })
+    Advisories::Import::Result.new(import:, changed_packages: {})
   rescue Advisories::Feed::Unavailable, Advisories::Unreadable => e
     logger.warn("[advisories] feed refresh failed (attempt #{executions} of #{ATTEMPTS}): #{e.message}")
     raise
@@ -77,7 +91,8 @@ class AdvisoryFeedRefreshJob < ApplicationJob
   private
 
   def import(download)
-    Advisories::Import.new(origin: "feed", source: @source, full: true, operator: @operator, etag: download.etag, last_modified: download.last_modified)
+    Advisories::Import.new(origin: "feed", source: @source, full: true, operator: @operator, etag: download.etag, last_modified: download.last_modified,
+                           allowed_withdrawals: @allowed_withdrawals)
                       .call(Advisories::Reader.new(download.file.path, name: File.basename(@source)))
   end
 

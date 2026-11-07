@@ -23,7 +23,7 @@ class AdvisoryDataSources
     hosts = Ecosystems.host_counts
     statuses.map do |status|
       e = status.ecosystem
-      Ecosystem.new(status:, name: Ecosystems.name(e), current: counts.fetch([ e, true ], 0), withdrawn: counts.fetch([ e, false ], 0), hosts: hosts.fetch(e, 0))
+      Ecosystem.new(status:, name: Ecosystems.display_name(e), current: counts.fetch([ e, true ], 0), withdrawn: counts.fetch([ e, false ], 0), hosts: hosts.fetch(e, 0))
     end
   end
 

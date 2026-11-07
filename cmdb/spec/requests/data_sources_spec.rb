@@ -39,6 +39,9 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       expect(response).to have_http_status(:ok)
       expect(page.at_css('nav[aria-label="Main"] a[aria-current="page"]').text).to eq("Data sources")
       expect(page.at_css("h1").text).to eq("Advisory data sources")
+      # Uploads are for small files; a full archive comes through the feed or the rake task (owner decision on #129).
+      expect(page.at_css("#advisory_file_hint").text.squish).to include("up to 64 MiB, for small files",
+                                                                         "comes through the scheduled feed or bin/rails advisories:import")
     end
 
     it "shows freshness, current and withdrawn advisories, and hosts per ecosystem, counted in the database" do
@@ -318,12 +321,10 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
                                         "or that breaks a size limit, imports nothing. Check the download and upload it again.")
     end
 
-    it "asks for confirmation before a full import, which the server requires, and then withdraws what the file lacks" do
+    # Within the withdrawal guard's thresholds, so no second confirmation is needed (that is the next example).
+    it "asks for confirmation before a full import, which the server requires, and then withdraws what the file lacks", withdrawal_guard: { share: 0.6, min_records: 1 } do
       import_advisories(osv_record(id: "DSA-9001-1"), osv_record(id: "DSA-9002-1"), full: true)
       zip = osv_zip("DSA-9001-1.json" => osv_record(id: "DSA-9001-1", modified: "2026-10-22T08:00:00Z"))
-      # Within the withdrawal guard's thresholds, so no second confirmation is needed (that is the next example).
-      stub_const("Advisories::Import::WITHDRAW_SHARE", 0.6)
-      stub_const("Advisories::Import::SMALL_FILE_RECORDS", 1)
 
       get "/data-sources"
       form = page.at_css("#upload_form")
@@ -357,7 +358,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       run_import_jobs
       refused = AdvisoryImport.order(:id).last
       expect(refused).to have_attributes(state: "failed", full: true)
-      expect(refused.reason).to eq("this full import would mark 4 of 5 current Debian:13 advisories (the file has 1 record for it) withdrawn, " \
+      expect(refused.reason).to eq("this full import would mark 4 of 5 current Debian:13 advisories (the import has 1 record for it) withdrawn, " \
                                    "which resolves the findings they produced; nothing was imported")
       expect(refused.counts).to eq("would_withdraw" => { "Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 } })
       expect(Advisory.current.count).to eq(5)
@@ -535,6 +536,66 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       run_import_jobs
       get "/data-sources/imports/#{AdvisoryImport.order(:id).last.id}"
       expect(facts(page.at_css("dl.facts"))["Matching"]).to eq("No package's advisories changed. Hosts not yet evaluated against advisory data are evaluated in full.")
+    end
+  end
+
+  # Owner decision on #129: a scheduled refresh the withdrawal guard refused is shown as a warning, and an operator
+  # confirms its counts on its page, which downloads the feed again with withdrawals allowed up to them.
+  describe "a refused feed refresh" do
+    let!(:refused) do
+      import_advisories(*(1..5).map { |i| osv_record(id: "DSA-900#{i}-1") }, full: true, origin: "feed", source: "feeds.example.lan/osv/Debian/all.zip")
+      Advisories::Import.record_failure(origin: "feed", source: "feeds.example.lan/osv/Debian/all.zip", full: true,
+                                        reason: "this full import would mark 4 of 5 current Debian:13 advisories (the import has 1 record for it) withdrawn",
+                                        counts: { "would_withdraw" => { "Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 } } })
+    end
+
+    it "warns on the data sources page and wherever freshness is shown, without a failed job" do
+      [ "/data-sources", "/" ].each do |path|
+        get path
+        held = page.at_css("#advisory_held")
+        expect(held.text.squish).to include("The last advisory refresh was held back.", "It would have marked 4 of 5 Debian:13 advisories withdrawn", "may be going stale")
+        expect(held.at_css("a")["href"]).to eq("/data-sources/imports/#{refused.id}")
+        expect(page.at_css("#failed_jobs_banner")).to be_nil
+      end
+      get "/data-sources"
+      expect(page.at_css("#imports a[href='/data-sources/imports/#{refused.id}']").text).to eq("Held back: would withdraw 4 advisories; nothing imported")
+    end
+
+    it "is confirmed once by an operator naming the counts, which refreshes again allowed up to them, audited" do
+      get "/data-sources/imports/#{refused.id}"
+      expect(page.css("#withdrawals tbody td").map(&:text)).to eq([ "Debian:13", "4", "5", "1" ])
+      expect(page.at_css("form#confirm_withdrawals button").text).to eq("Withdraw and refresh")
+
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { withdrawals: { "Debian:13" => "4" } }
+      expect(flash[:alert]).to eq("Tick the box that names the withdrawals to confirm them.")
+      expect(AdvisoryRefreshAttempt.count).to eq(0)
+
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { confirm: "1", withdrawals: { "Debian:13" => "4" } }
+      expect(response).to redirect_to("/data-sources#imps")
+      attempt = AdvisoryRefreshAttempt.sole
+      expect(attempt).to have_attributes(kind: "manual", operator:)
+      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id, allowed_withdrawals: { "Debian:13" => 4 })
+      expect(AuditEntry.where(action: "advisory.withdrawals_confirmed").sole)
+        .to have_attributes(actor_id: operator.id, target_id: refused.id, changeset: { "source" => refused.source, "refused_import_id" => refused.id, "withdrawals" => { "Debian:13" => 4 } })
+      expect(refused.reload.counts["confirmed_at"]).to be_present
+      get "/"
+      expect(page.at_css("#advisory_held")).to be_nil
+
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { confirm: "1", withdrawals: { "Debian:13" => "4" } }
+      expect(flash[:alert]).to eq("This refusal was confirmed already.")
+      expect(AdvisoryRefreshAttempt.count).to eq(1)
+      get "/data-sources/imports/#{refused.id}"
+      expect(page.at_css("form#confirm_withdrawals")).to be_nil
+      expect(page.at_css("#withdrawals_expired").text).to start_with("These withdrawals were confirmed")
+    end
+
+    it "cannot be confirmed with no feed configured" do
+      Advisories.config.feed_url = nil
+      get "/data-sources/imports/#{refused.id}"
+      expect(page.at_css("form#confirm_withdrawals")).to be_nil
+      post "/data-sources/imports/#{refused.id}/confirm-withdrawals", params: { confirm: "1", withdrawals: { "Debian:13" => "4" } }
+      expect(flash[:alert]).to start_with("No advisory feed is configured")
+      expect(AdvisoryRefreshAttempt.count).to eq(0)
     end
   end
 

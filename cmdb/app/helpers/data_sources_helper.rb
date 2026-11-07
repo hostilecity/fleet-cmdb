@@ -40,6 +40,10 @@ module DataSourcesHelper
     counts = import.counts
     return link_to("Waiting to be imported", advisory_import_path(import)) if import.state == "queued"
     return link_to("Importing now", advisory_import_path(import)) if import.state == "importing"
+    if import.state == "failed" && import.counts["would_withdraw"].is_a?(Hash)
+      withdraw = import.counts["would_withdraw"].values.sum { |w| w["withdraw"].to_i }
+      return link_to("Held back: would withdraw #{number_with_delimiter(withdraw)} #{'advisory'.pluralize(withdraw)}; nothing imported", advisory_import_path(import))
+    end
     return "Nothing imported: #{import.reason}" if import.state == "failed"
     return "Not modified since the last download; nothing imported" if counts["not_modified"]
 

@@ -22,32 +22,37 @@
     <dt>Uploaded</dt><dd><%= utc(@import.started_at) %></dd>
   </dl>
 <% elsif @withdrawals %>
-  <%# A guarded full import refused for what it would withdraw (review of #129): the counts, and the second confirmation that names them. %>
+  <%# A full import refused for what it would withdraw (an upload, the feed, or the rake task; review of #129): the counts, and the
+      confirmation that names them. %>
+  <% feed = @import.origin == "feed" %>
   <div class="notice error" role="alert" id="import_outcome"><strong>Nothing was imported: this full import would withdraw too many advisories.</strong>
-    <p>The file is treated as the complete list for each ecosystem it has records for, so every advisory it lacks would be marked withdrawn and the findings it produced would resolve. That is more than <%= number_to_percentage(Advisories::Import::WITHDRAW_SHARE * 100, precision: 0) %> of an ecosystem's advisories, or the file has fewer than <%= number_with_delimiter(Advisories::Import::SMALL_FILE_RECORDS) %> records for it. A partial import adds the file's advisories without withdrawing any.</p></div>
+    <p><%= feed ? "The feed's archive" : "The file" %> is treated as the complete list for each ecosystem it has records for, so every advisory it lacks would be marked withdrawn and the findings it produced would resolve. That is more than <%= number_to_percentage(Advisories.config.withdraw_share * 100, precision: 0) %> of an ecosystem's advisories, or the import has fewer than <%= number_with_delimiter(Advisories.config.withdraw_min_records) %> records for it.
+      <%= feed ? "The advisory data stays as it was, so it may be going stale until a refresh is imported." : "A partial import adds the file's advisories without withdrawing any." %></p></div>
   <div class="table-wrap"><table id="withdrawals"><caption class="visually-hidden">What the full import would withdraw</caption>
-    <thead><tr><th scope="col">Ecosystem</th><th scope="col">Would be withdrawn</th><th scope="col">Current advisories</th><th scope="col">Records in the file</th></tr></thead>
+    <thead><tr><th scope="col">Ecosystem</th><th scope="col">Would be withdrawn</th><th scope="col">Current advisories</th><th scope="col">Records in the import</th></tr></thead>
     <tbody>
     <% @withdrawals.each do |ecosystem, w| %>
       <tr><td class="mono"><%= ecosystem %></td><td><%= number_with_delimiter(w["withdraw"].to_i) %></td><td><%= number_with_delimiter(w["current"].to_i) %></td><td><%= number_with_delimiter(w["records"].to_i) %></td></tr>
     <% end %>
     </tbody>
   </table></div>
-  <% if @upload_kept %>
+  <% if @confirmable %>
     <%= form_with url: confirm_withdrawals_advisory_import_path(@import), method: :post, id: "confirm_withdrawals", class: "form", data: { turbo: false } do %>
       <% @withdrawals.each do |ecosystem, w| %><%= hidden_field_tag "withdrawals[#{ecosystem}]", w["withdraw"].to_i, id: nil %><% end %>
       <div class="field">
         <label class="choice flush"><%= check_box_tag :confirm, "1", false, id: "confirm_withdrawals_box", required: true %>
           <strong>Withdraw <%= safe_join(@withdrawals.map { |ecosystem, w| safe_join([ number_with_delimiter(w["withdraw"].to_i), " ", tag.span(ecosystem, class: "mono") ]) }, " and ") %> <%= "advisory".pluralize(@withdrawals.values.sum { |w| w["withdraw"].to_i }) %></strong>
-          <p>Only if this file really is the complete advisory list. The import runs again and stops if it would withdraw more than this.</p></label>
+          <p><%= feed ? "Only if the feed really dropped these advisories. The feed is downloaded again" : "Only if this file really is the complete advisory list. The import runs again" %> and stops if it would withdraw more than this.</p></label>
       </div>
-      <div class="actions"><button class="btn danger" type="submit">Withdraw and import</button><%= link_to "Cancel", data_sources_path, class: "btn quiet" %></div>
+      <div class="actions"><button class="btn danger" type="submit"><%= feed ? "Withdraw and refresh" : "Withdraw and import" %></button><%= link_to "Cancel", data_sources_path, class: "btn quiet" %></div>
     <% end %>
+  <% elsif feed %>
+    <p class="muted" id="withdrawals_expired"><%= @import.counts["confirmed_at"] ? "These withdrawals were confirmed; the refresh that followed is under Recent imports." : "No feed is configured, so this refresh cannot be run again." %></p>
   <% else %>
     <p class="muted" id="withdrawals_expired">The file is no longer stored. Upload it again to import it.</p>
   <% end %>
   <dl class="facts">
-    <dt>File</dt><dd class="mono"><%= @import.source %></dd>
+    <dt><%= feed ? "Source" : "File" %></dt><dd class="mono"><%= @import.source %></dd>
     <dt>Type</dt><dd><%= import_type_text(@import) %></dd>
   </dl>
 <% elsif @import.state == "failed" %>

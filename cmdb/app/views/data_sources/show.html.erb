@@ -71,7 +71,7 @@
         <%= file_field_tag :advisory_file, id: "advisory_file", accept: DataSourcesController::EXTENSIONS.join(","), required: true,
               "aria-invalid": (file_error ? "true" : nil), "aria-describedby": [ ("advisory_file_error" if file_error), "advisory_file_hint" ].compact.join(" ") %>
         <% if file_error %><p class="error-text" id="advisory_file_error" role="alert"><%= file_error %></p><% end %>
-        <p class="hint" id="advisory_file_hint">OSV JSON, or a zip archive of it, up to <%= DataSourcesController::MAX_UPLOAD_BYTES / 1.megabyte %> MiB. Records for other ecosystems are skipped. The file is imported in the background, and its result page updates by itself.</p>
+        <p class="hint" id="advisory_file_hint">OSV JSON, or a zip archive of it, up to <%= DataSourcesController::MAX_UPLOAD_BYTES / 1.megabyte %> MiB, for small files. A full archive, such as OSV's Debian archive (about 80 MB and growing), comes through the scheduled feed or <span class="mono">bin/rails advisories:import</span> on the server. Records for other ecosystems are skipped. The file is imported in the background, and its result page updates by itself.</p>
       </div>
       <% full_error = error&.dig(:full) %>
       <div class="field<%= " invalid" if full_error %>">

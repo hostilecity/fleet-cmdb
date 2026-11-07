@@ -9,7 +9,7 @@
 #   TIME_LIMIT once the import lock is held (review of #129). A file that cannot be read at all, breaks a limit,
 #   or runs past the time limit is an outcome, not a fault: the import is failed with the reason and the job
 #   ends, with no retry. Waiting more than LOCK_WAIT for the lock (a feed refresh importing) is retried.
-# - A full import is guarded (Advisories::Import, guard_withdrawals): one that would withdraw too much of an
+# - A full import is guarded (Advisories::Import, as every full import is): one that would withdraw too much of an
 #   ecosystem is failed with the counts and its file kept, so the operator can confirm those counts on the
 #   result page (DataSourcesController#confirm_withdrawals), which queues it again with them allowed.
 # - Any other error is retried with backoff (ApplicationJob's schedule). After the last attempt the import is
@@ -41,7 +41,7 @@ class AdvisoryUploadImportJob < ApplicationJob
       file.write(upload.read_data)
       file.flush
       reader = Advisories::Reader.new(file.path, name: upload.filename, limits: Advisories::Reader::UPLOAD)
-      result = Advisories::Import.new(record: import, guard_withdrawals: true, allowed_withdrawals: upload.allowed_withdrawals)
+      result = Advisories::Import.new(record: import, allowed_withdrawals: upload.allowed_withdrawals)
                                  .call(reader, time_limit: TIME_LIMIT.to_i, lock_timeout: LOCK_WAIT.to_i)
       import.update!(matching: matching(result.changed_packages))
     end

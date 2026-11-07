@@ -58,7 +58,23 @@ module AdvisoryHelpers
   end
 end
 
+# Withdrawal guard thresholds for a group (review of #129): withdrawal_guard: { share: 1.0, min_records: 0 } turns
+# it off for specs about the absence sweep itself; the guard has its own specs.
+RSpec.shared_context "withdrawal guard thresholds" do
+  around do |example|
+    config = Advisories.config
+    saved = config.to_h.slice(:withdraw_share, :withdraw_min_records)
+    guard = example.metadata[:withdrawal_guard]
+    config.withdraw_share = guard.fetch(:share, saved[:withdraw_share])
+    config.withdraw_min_records = guard.fetch(:min_records, saved[:withdraw_min_records])
+    example.run
+  ensure
+    config.withdraw_share, config.withdraw_min_records = saved.values_at(:withdraw_share, :withdraw_min_records)
+  end
+end
+
 RSpec.configure do |config|
+  config.include_context "withdrawal guard thresholds", :withdrawal_guard
   config.include AdvisoryHelpers
   config.after { @osv_dirs&.each { |dir| FileUtils.rm_rf(dir) } }
 end

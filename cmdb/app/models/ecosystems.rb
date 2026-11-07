@@ -16,7 +16,8 @@ module Ecosystems
 
   def supported = TABLE.values
 
-  def name(ecosystem) = NAMES[ecosystem]
+  # Not "name", which would hide Module#name (Rails and stub_const call it).
+  def display_name(ecosystem) = NAMES[ecosystem]
 
   # How many active hosts (the set the Compliance page lists, owner decision on #129) report each supported
   # ecosystem's distribution, counted in the database:
