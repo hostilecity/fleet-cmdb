@@ -32,6 +32,10 @@
 #                            failed, 1.0.0 runs
 #   crash loop and reboot    a release that crash-loops, switched to, then the VM restarts: rolled
 #                            back (by the failure hook, as nothing else runs)
+#
+# Before them, one check of the package report (P2-AGENT-PACKAGES, AC-2.3): the report the agent sends
+# at startup, under the real unit on the real image, lists exactly the VM's own dpkg listing, with the
+# source package of each.
 set -euo pipefail
 
 dir=${1:?usage: scripts/vm-test.sh DIR IMAGE OUT}
@@ -449,6 +453,36 @@ crash_loop_and_reboot() {
         || fail "the failure hook did not run after the reboot"
 }
 
+# AC-2.3: the package report equals `dpkg-query --show` on the VM without the removed (config-files)
+# packages: no package missing or invented, the same versions, and each source package, read here from
+# the raw Source field (its version cut off, the package's own name when there is none).
+package_report_matches_dpkg() {
+    reset
+    # Nothing installs or removes a package between the report and the listing it is compared with.
+    vm 'systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service'
+    rm -f "$stub/packages.json"
+    vm 'systemctl restart fleet-agent'
+    wait_until "the startup package report" 90 test -s "$stub/packages.json"
+    jq -e '.manager == "dpkg" and .unsupported_reason == null and .warnings == []' "$stub/packages.json" > /dev/null \
+        || fail "the report is not a clean dpkg listing: $(jq -c '{manager, unsupported_reason, warnings}' "$stub/packages.json")"
+    event_exists '[.[] | select(.kind == "packages" and .encoding == "gzip")] | length > 0' \
+        || fail "the package report was not sent gzip-compressed"
+    local format reference reported count
+    # shellcheck disable=SC2016 # dpkg-query's own field syntax, expanded by dpkg-query in the guest
+    format='${db:Status-Abbrev}|${Package}:${Architecture} ${Version}|${Package}|${Source}\n'
+    reference=$(vm "dpkg-query --show --showformat='$format'" \
+        | awk -F'|' 'substr($1, 2, 1) != "c" { s = $4; sub(/ .*/, "", s); if (s == "") s = $3; print $2 " " s }' | sort)
+    reported=$(jq -r '.packages[] | "\(.name):\(.architecture) \(.version) \(.source)"' "$stub/packages.json" | sort)
+    count=$(printf '%s\n' "$reported" | grep -c .)
+    [ "$count" -gt 100 ] || fail "only $count packages reported"
+    if [ "$reference" != "$reported" ]; then
+        diff <(printf '%s\n' "$reference") <(printf '%s\n' "$reported") | head -n 20 >&2 || true
+        fail "the package report differs from dpkg-query on the VM (< dpkg-query, > report)"
+    fi
+    echo "the package report lists the same $count packages as dpkg-query, with their source packages"
+    printf '%s' "$count packages, equal to dpkg-query" > "$tmp/last-result"
+}
+
 # --- Running and recording (vm-test-record.sh) -------------------------------------------------------
 
 diagnostics() {
@@ -467,9 +501,11 @@ record_header() {
     echo "## Agent update failure tests on a VM (P1-A12)"
     echo
     echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with \`fleet-agent install\`."
-    echo "Each scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
+    echo "The package report check (AC-2.3) compares the agent's startup package report with \`dpkg-query --show\` on the VM."
+    echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
+scenario 300 "Package report matches dpkg-query (AC-2.3)" package_report_matches_dpkg
 scenario 301 "Supervisor killed before the switch" kill_before_switch
 scenario 302 "Supervisor killed after the switch" kill_after_switch
 scenario 303 "Hard reset after the switch, before confirmation" reset_after_switch

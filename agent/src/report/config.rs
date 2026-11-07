@@ -454,7 +454,7 @@ fn build_body(
 }
 
 /// `400`, `413`, and `422` say the body itself is unacceptable; sending it again cannot help.
-fn rejected_for_content(error: &ApiError) -> bool {
+pub(super) fn rejected_for_content(error: &ApiError) -> bool {
     matches!(
         error,
         ApiError::PayloadTooLarge { .. }

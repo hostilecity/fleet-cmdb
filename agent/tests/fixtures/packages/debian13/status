@@ -1,0 +1,481 @@
+Package: adduser
+Status: install ok installed
+Priority: important
+Section: admin
+Installed-Size: 849
+Maintainer: Debian Adduser Developers <maintainers@example.lan>
+Architecture: all
+Multi-Arch: foreign
+Version: 3.152
+Depends: passwd (>= 1:4.17.2-5)
+Description: add and remove users and groups
+ This package includes the 'adduser' and 'deluser' commands for creating
+ and removing users.
+
+Package: apt
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 4554
+Maintainer: APT Development Team <maintainers@example.lan>
+Architecture: amd64
+Version: 3.0.3
+Replaces: apt-transport-https (<< 1.5~alpha4~), apt-utils (<< 1.3~exp2~)
+Provides: apt-transport-https (= 3.0.3)
+Depends: base-passwd (>= 3.6.1) | adduser, debian-archive-keyring, libapt-pkg7.0 (>= 3.0.3), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libseccomp2 (>= 2.4.2), libssl3t64 (>= 3.0.0), libstdc++6 (>= 13.1), libsystemd0, sqv (>= 1.3.0)
+Description: commandline package manager
+ This package provides commandline tools for searching and
+ managing as well as querying information about packages
+ as a low-level access to all features of the libapt-pkg library.
+
+Package: base-files
+Essential: yes
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 349
+Maintainer: Santiago Vila <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Version: 13.8+deb13u1
+Replaces: base, dpkg (<= 1.15.0), miscutils
+Provides: base
+Conffiles:
+ /etc/debian_version 5c3b9cf6dbcbfa1c8ac2a9e8ba2bcc5f
+ /etc/dpkg/origins/debian 731423fa8ba067262f8ef37882d1e742
+ /etc/host.conf 4eb63731c9f5e30903ac4fc07a7fe3d6
+ /etc/issue 4aa5e5d5ed4bb2e6bd4f8a8a3c0ab5ff
+ /etc/issue.net 52e0e4b3f1e6c5f0e4e2f1d1b5a0b6c7
+Description: Debian base system miscellaneous files
+ This package contains the basic filesystem hierarchy of a Debian system, and
+ several important miscellaneous files, such as /etc/debian_version.
+
+Package: bsdutils
+Essential: yes
+Status: install ok installed
+Priority: required
+Section: utils
+Installed-Size: 340
+Maintainer: Chris Hofstaedtler <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Source: util-linux (2.41-5)
+Version: 1:2.41-5
+Pre-Depends: libc6 (>= 2.38), libsystemd0
+Description: basic utilities from 4.4BSD-Lite
+ This package contains the bare minimum of BSD utilities needed for a
+ Debian system: logger, renice, script, scriptlive, scriptreplay and wall.
+
+Package: ca-certificates
+Status: install ok installed
+Priority: optional
+Section: misc
+Installed-Size: 391
+Maintainer: Julien Cristau <maintainers@example.lan>
+Architecture: all
+Multi-Arch: foreign
+Version: 20250419
+Depends: openssl (>= 1.1.1), debconf (>= 0.5) | debconf-2.0
+Description: Common CA certificates
+ Contains the certificate authorities shipped with Mozilla's browser to allow
+ SSL-based applications to check for the authenticity of SSL connections.
+
+Package: cloud-init
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 3376
+Maintainer: Debian Cloud Team <maintainers@example.lan>
+Architecture: all
+Version: 25.1.4-1~deb13u1
+Depends: python3:any, python3-yaml, python3-jinja2, isc-dhcp-client | dhcpcd-base
+Description: initialization and customization tool for cloud instances
+ Cloud-init is the industry standard multi-distribution method for
+ cross-platform cloud instance initialization.
+
+Package: dpkg
+Essential: yes
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 6672
+Maintainer: Dpkg Developers <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Version: 1.22.21
+Pre-Depends: libbz2-1.0, libc6 (>= 2.38), liblzma5 (>= 5.4.0), libmd0 (>= 0.0.0), libselinux1 (>= 3.1~), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)
+Description: Debian package management system
+ This package provides the low-level infrastructure for handling the
+ installation and removal of Debian software packages.
+
+Package: grub-efi-amd64-signed
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 6234
+Maintainer: GRUB Maintainers <maintainers@example.lan>
+Architecture: amd64
+Version: 1+2.12+9
+Depends: grub-common (= 2.12-9)
+Description: GRand Unified Bootloader, version 2 (amd64 UEFI signed by Debian)
+ This package contains the binaries signed by the Debian UEFI CA to be used
+ by shim-signed.
+
+Package: libc-bin
+Essential: yes
+Status: install ok installed
+Priority: required
+Section: libs
+Installed-Size: 2764
+Maintainer: GNU Libc Maintainers <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Source: glibc
+Version: 2.41-12
+Depends: libc6 (>> 2.41), libc6 (<< 2.42)
+Description: GNU C Library: Binaries
+ This package contains utility programs related to the GNU C Library.
+
+Package: libc6
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 12989
+Maintainer: GNU Libc Maintainers <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: same
+Source: glibc
+Version: 2.41-12
+Depends: libgcc-s1
+Description: GNU C Library: Shared libraries
+ Contains the standard libraries that are used by nearly all programs on
+ the system.
+
+Package: libc6
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 12437
+Maintainer: GNU Libc Maintainers <maintainers@example.lan>
+Architecture: i386
+Multi-Arch: same
+Source: glibc
+Version: 2.41-12
+Depends: libgcc-s1
+Description: GNU C Library: Shared libraries
+ Contains the standard libraries that are used by nearly all programs on
+ the system.
+
+Package: libgcc-s1
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 145
+Maintainer: Debian GCC Maintainers <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: same
+Source: gcc-14 (14.2.0-19)
+Version: 14.2.0-19
+Depends: gcc-14-base (= 14.2.0-19), libc6 (>= 2.35)
+Description: GCC support library
+ Shared version of the support library, a library of internal subroutines
+ that GCC uses to overcome shortcomings of particular machines.
+
+Package: libgcc-s1
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 160
+Maintainer: Debian GCC Maintainers <maintainers@example.lan>
+Architecture: i386
+Multi-Arch: same
+Source: gcc-14 (14.2.0-19)
+Version: 14.2.0-19
+Depends: gcc-14-base (= 14.2.0-19), libc6 (>= 2.35)
+Description: GCC support library
+ Shared version of the support library, a library of internal subroutines
+ that GCC uses to overcome shortcomings of particular machines.
+
+Package: libssl3t64
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 7616
+Maintainer: Debian OpenSSL Team <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: same
+Source: openssl
+Version: 3.5.1-1+deb13u1
+Replaces: libssl3
+Provides: libssl3 (= 3.5.1-1+deb13u1)
+Depends: libc6 (>= 2.38), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4), openssl-provider-legacy
+Breaks: libssl3 (<< 3.5.1-1+deb13u1)
+Description: Secure Sockets Layer toolkit - shared libraries
+ This package is part of the OpenSSL project's implementation of the SSL
+ and TLS cryptographic protocols for secure communication over the
+ Internet.
+
+Package: libstdc++6
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 2830
+Maintainer: Debian GCC Maintainers <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: same
+Source: gcc-14 (14.2.0-19)
+Version: 14.2.0-19
+Depends: gcc-14-base (= 14.2.0-19), libc6 (>= 2.38), libgcc-s1 (>= 4.3)
+Description: GNU Standard C++ Library v3
+ This package contains an additional runtime library for C++ programs
+ built with the GNU compiler.
+
+Package: libzstd1
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 896
+Maintainer: Debian Med Packaging Team <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: same
+Source: libzstd
+Version: 1.5.7+dfsg-1
+Depends: libc6 (>= 2.34)
+Description: fast lossless compression algorithm
+ Zstd, short for Zstandard, is a fast lossless compression algorithm,
+ targeting real-time compression scenarios at zlib-level compression ratio.
+
+Package: linux-image-6.12.33+deb13-amd64
+Status: deinstall ok config-files
+Priority: optional
+Section: kernel
+Installed-Size: 413716
+Maintainer: Debian Kernel Team <maintainers@example.lan>
+Architecture: amd64
+Source: linux-signed-amd64 (6.12.33+1)
+Version: 6.12.33-1
+Conffiles:
+ /etc/kernel/postinst.d/dkms 3b3fc0a5fb95e4e5e8dbe3a1e0d9d1e2
+Description: Linux 6.12 for 64-bit PCs (signed)
+ The Linux kernel 6.12 and modules for use on PCs with AMD64, Intel 64 or
+ VIA Nano processors.
+
+Package: linux-image-6.12.48+deb13-cloud-amd64
+Status: install ok installed
+Priority: optional
+Section: kernel
+Installed-Size: 71908
+Maintainer: Debian Kernel Team <maintainers@example.lan>
+Architecture: amd64
+Source: linux-signed-amd64 (6.12.48+1)
+Version: 6.12.48-1
+Depends: kmod, linux-base (>= 4.12~), initramfs-tools (>= 0.120+deb8u2) | linux-initramfs-tool
+Description: Linux 6.12 for x86-64 cloud (signed)
+ The Linux kernel 6.12 and modules for use on cloud instances with AMD64
+ or Intel 64 processors.
+
+Package: linux-image-cloud-amd64
+Status: hold ok installed
+Priority: optional
+Section: kernel
+Installed-Size: 13
+Maintainer: Debian Kernel Team <maintainers@example.lan>
+Architecture: amd64
+Source: linux-signed-amd64 (6.12.48+1)
+Version: 6.12.48-1
+Depends: linux-image-6.12.48+deb13-cloud-amd64 (= 6.12.48-1)
+Description: Linux for x86-64 cloud (meta-package)
+ This package depends on the latest Linux kernel and modules for use on
+ cloud instances with AMD64 or Intel 64 processors.
+
+Package: local-tool
+Status: install ok installed
+Priority: optional
+Section: misc
+Installed-Size: 120
+Maintainer: Operations <maintainers@example.lan>
+Architecture: amd64
+Version: 0.1
+Description: in-house tool, packaged locally
+ A package built on site with no Source field.
+
+Package: openssh-server
+Status: install ok installed
+Priority: optional
+Section: net
+Installed-Size: 2139
+Maintainer: Debian OpenSSH Maintainers <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Source: openssh
+Version: 1:10.0p1-7
+Replaces: openssh-client (<< 1:7.9p1-8), ssh (<< 1:6.5p1-2), ssh-krb5 (<< 1:6.5p1-2)
+Provides: ssh-server
+Depends: libpam-modules, libpam-runtime, lsb-base, openssh-client (= 1:10.0p1-7), openssh-sftp-server, procps, ucf, debconf (>= 0.5) | debconf-2.0, runit-helper (>= 2.14.0~), libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libssl3t64 (>= 3.0.13), libsystemd0
+Conffiles:
+ /etc/default/ssh 500e3cf069fe9a7b9936108eb9d9c035
+ /etc/init.d/ssh 3649a6fe8c18ad1d5245fd91737de507
+ /etc/pam.d/sshd 8b4c7a12b031424b2a9946881da59812
+Description: secure shell (SSH) server, for secure access from remote machines
+ This is the portable version of OpenSSH, a free implementation of
+ the Secure Shell protocol as specified by the IETF secsh working
+ group.
+
+Package: openssl
+Status: install ok installed
+Priority: optional
+Section: utils
+Installed-Size: 2289
+Maintainer: Debian OpenSSL Team <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Version: 3.5.1-1+deb13u1
+Depends: libc6 (>= 2.38), libssl3t64 (>= 3.5.0)
+Conffiles:
+ /etc/ssl/openssl.cnf 6b4ee6f2bc8bdf7f7d9e4b4b8a4e2f60
+Description: Secure Sockets Layer toolkit - cryptographic utility
+ This package is part of the OpenSSL project's implementation of the SSL
+ and TLS cryptographic protocols for secure communication over the
+ Internet.
+
+Package: python3.13
+Status: install ok installed
+Priority: optional
+Section: python
+Installed-Size: 636
+Maintainer: Matthias Klose <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: allowed
+Version: 3.13.5-2
+Depends: python3.13-minimal (= 3.13.5-2), libpython3.13-stdlib (= 3.13.5-2), media-types | mime-support, tzdata
+Description: Interactive high-level object-oriented language (version 3.13)
+ Python is a high-level, interactive, object-oriented language.
+
+Package: qemu-guest-agent
+Status: install ok unpacked
+Priority: optional
+Section: admin
+Installed-Size: 3404
+Maintainer: Debian QEMU Team <maintainers@example.lan>
+Architecture: amd64
+Source: qemu
+Version: 1:10.0.2+ds-2
+Depends: libc6 (>= 2.38), libglib2.0-0t64 (>= 2.75.3), liburing2 (>= 2.3), libudev1 (>= 183)
+Description: Guest-side qemu-system agent
+ It is a daemon that runs on the guest and reports various information
+ about the guest machine.
+
+Package: sudo
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 6205
+Maintainer: Sudo Maintainers <maintainers@example.lan>
+Architecture: amd64
+Version: 1.9.16p2-3
+Depends: libapparmor1 (>= 2.7.0~beta1+bzr1772), libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libpam0g (>= 0.99.7.1), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.0), zlib1g (>= 1:1.2.0.2), libpam-modules
+Conffiles:
+ /etc/pam.d/sudo 85da64f888739f193fc0fa896680030e
+ /etc/sudoers 45437b4e86fba2ab890ac81db2ec3606
+Description: Provide limited super user privileges to specific users
+ Sudo is a program designed to allow a sysadmin to give limited root
+ privileges to users and log root activity.
+
+Package: systemd
+Status: install ok triggers-pending
+Priority: important
+Section: admin
+Installed-Size: 11423
+Maintainer: Debian systemd Maintainers <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: foreign
+Version: 257.8-1~deb13u2
+Depends: libacl1 (>= 2.2.23), libapparmor1 (>= 2.13), libaudit1 (>= 1:2.2.1), libblkid1 (>= 2.24), libc6 (>= 2.39), libmount1 (>= 2.30), libpam0g (>= 0.99.7.1), libseccomp2 (>= 2.4.1), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.0), libsystemd-shared (= 257.8-1~deb13u2), mount
+Triggers-Pending: /usr/lib/systemd/system
+Description: system and service manager
+ systemd is a system and service manager for Linux. It provides aggressive
+ parallelization capabilities, uses socket and D-Bus activation for starting
+ services.
+
+Package: tzdata
+Status: install ok installed
+Priority: required
+Section: localization
+Installed-Size: 1446
+Maintainer: GNU Libc Maintainers <maintainers@example.lan>
+Architecture: all
+Multi-Arch: foreign
+Version: 2025b-4+deb13u1
+Replaces: libc0.1, libc0.3, libc6, libc6.1
+Provides: tzdata-trixie
+Depends: debconf (>= 0.5) | debconf-2.0
+Description: time zone and daylight-saving time data
+ This package contains data required for the implementation of
+ standard local time for many representative locations around the globe.
+
+Package: unattended-upgrades
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 371
+Maintainer: Michael Vogt <maintainers@example.lan>
+Architecture: all
+Version: 2.12
+Depends: debconf (>= 0.5) | debconf-2.0, debconf, python3, python3-apt (>= 1.9.6~), python3-dbus, python3-distro-info, ucf, lsb-release, xz-utils
+Conffiles:
+ /etc/apt/apt.conf.d/50unattended-upgrades 9a6f4a2c8e9f5a5b0e6a3f1d2c4b5a6e
+Description: automatic installation of security upgrades
+ This package can download and install security upgrades automatically
+ and unattended, taking care to only install packages from the
+ configured APT sources.
+
+Package: vim
+Status: install ok installed
+Priority: optional
+Section: editors
+Installed-Size: 4118
+Maintainer: Debian Vim Maintainers <maintainers@example.lan>
+Architecture: amd64
+Version: 2:9.1.1230-2
+Provides: editor
+Depends: vim-common (= 2:9.1.1230-2), vim-runtime (= 2:9.1.1230-2), libacl1 (>= 2.2.23), libc6 (>= 2.38), libgpm2 (>= 1.20.7), libselinux1 (>= 3.1~), libsodium23 (>= 1.0.14), libtinfo6 (>= 6)
+Description: Vi IMproved - enhanced vi editor
+ Vim is an almost compatible version of the UNIX editor Vi.
+
+Package: vim-common
+Status: install ok installed
+Priority: important
+Section: editors
+Installed-Size: 247
+Maintainer: Debian Vim Maintainers <maintainers@example.lan>
+Architecture: all
+Multi-Arch: foreign
+Source: vim
+Version: 2:9.1.1230-2
+Conffiles:
+ /etc/vim/vimrc 2e8a2a2b6dc6b8b1a7e3d8c4e9f0a1b2
+Description: Vi IMproved - Common files
+ Vim is an almost compatible version of the UNIX editor Vi.
+
+Package: zlib1g
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 168
+Maintainer: Mark Brown <maintainers@example.lan>
+Architecture: amd64
+Multi-Arch: same
+Source: zlib
+Version: 1:1.3.dfsg+really1.3.1-1+b1
+Provides: libz1
+Depends: libc6 (>= 2.14)
+Breaks: libxml2 (<< 2.7.6.dfsg-2), texlive-binaries (<< 2009-12)
+Description: compression library - runtime
+ zlib is a library implementing the deflate compression method found
+ in gzip and PKZIP.
+
+Package: nano
+Status: purge ok not-installed
+Priority: optional
+Section: editors
+Architecture: amd64

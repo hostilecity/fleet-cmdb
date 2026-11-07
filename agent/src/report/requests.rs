@@ -37,16 +37,22 @@ use std::time::Instant;
 pub enum ReportType {
     Config,
     Inventory,
+    Packages,
 }
 
 impl ReportType {
-    pub const ALL: [ReportType; 2] = [ReportType::Config, ReportType::Inventory];
+    pub const ALL: [ReportType; 3] = [
+        ReportType::Config,
+        ReportType::Inventory,
+        ReportType::Packages,
+    ];
 
     /// The type's name in `directives.report_request.types`.
     pub fn name(self) -> &'static str {
         match self {
             Self::Config => "config",
             Self::Inventory => "inventory",
+            Self::Packages => "packages",
         }
     }
 
@@ -58,6 +64,7 @@ impl ReportType {
         match self {
             Self::Config => 0,
             Self::Inventory => 1,
+            Self::Packages => 2,
         }
     }
 }
@@ -65,11 +72,11 @@ impl ReportType {
 #[derive(Default)]
 struct Inner {
     /// The type is in the heartbeat responses of the current episode.
-    present: [bool; 2],
+    present: [bool; 3],
     /// When the episode's request was raised, until a report loop takes it.
-    pending: [Option<Instant>; 2],
+    pending: [Option<Instant>; 3],
     /// When the report sent for the episode was accepted.
-    answered: [Option<Instant>; 2],
+    answered: [Option<Instant>; 3],
 }
 
 /// Shared between the heartbeat loop, which observes, and the report loops, which take.
@@ -126,7 +133,7 @@ impl ReportRequests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ReportType::{Config, Inventory};
+    use ReportType::{Config, Inventory, Packages};
     use std::time::Duration;
 
     #[test]
@@ -229,10 +236,32 @@ mod tests {
     }
 
     #[test]
+    fn a_packages_request_is_one_report_per_episode_like_the_others() {
+        // P2-AGENT-PACKAGES: `packages` has its own episode, untouched by the other types.
+        let requests = ReportRequests::new();
+        let t0 = Instant::now();
+        assert_eq!(
+            requests.observe(&[Config, Inventory, Packages], t0),
+            [Config, Inventory, Packages]
+        );
+        assert_eq!(requests.take(Packages), Some(t0));
+        assert!(requests.observe(&[Packages], t0).is_empty());
+        assert_eq!(requests.take(Packages), None);
+        requests.answered(Packages, t0 + Duration::from_secs(5));
+        let next = t0 + Duration::from_secs(600);
+        assert_eq!(requests.observe(&[Packages], next), [Packages]);
+        assert_eq!(requests.take(Packages), Some(next));
+        // Config's request, never taken, is still pending; inventory's episode ended.
+        assert_eq!(requests.take(Config), Some(t0));
+        assert_eq!(requests.take(Inventory), Some(t0));
+    }
+
+    #[test]
     fn names() {
         assert_eq!(ReportType::from_name("config"), Some(Config));
         assert_eq!(ReportType::from_name("inventory"), Some(Inventory));
-        assert_eq!(ReportType::from_name("packages"), None);
+        assert_eq!(ReportType::from_name("packages"), Some(Packages));
+        assert_eq!(ReportType::from_name("vulnerabilities"), None);
         assert_eq!(ReportType::from_name("Config"), None);
     }
 }

@@ -15,7 +15,7 @@ Each report starts with a conditional fetch of the manifest (`GET /api/v1/manife
 
 The agent never runs anything the manifest names. The manifest lists keys, file paths, and unit names; the agent has a fixed reader for each key it knows, and it reports every other key as `unsupported`.
 
-**Stopping.** `systemctl stop fleet-agent` takes at most about 40 seconds, inside systemd's default 90 second stop timeout. A config report being collected stops after the one command or file read in flight and is dropped, not sent; the agent sends a startup report when it starts again.
+**Stopping.** `systemctl stop fleet-agent` takes at most about 40 seconds, inside systemd's default 90 second stop timeout: the inventory loop's collection and send (about 40 s) are the longest; a heartbeat, config report, or package report in flight takes at most 30 s, a package listing at most 20 s. A config report being collected stops after the one command or file read in flight and is dropped, not sent; so is a package listing ([agent-packages.md](agent-packages.md)). The agent sends startup reports when it starts again.
 
 ## What each fact is read from
 

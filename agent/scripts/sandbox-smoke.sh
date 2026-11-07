@@ -13,6 +13,9 @@
 #    directory, and the sandboxed inventory must have every fact the unsandboxed one has and no warning
 #    it does not. A blocked system call (SystemCallErrorNumber=EPERM) or a hidden path would otherwise
 #    only show as a quietly missing fact across the fleet.
+# 4. Both send a package report (P2-AGENT-PACKAGES, gzip): the sandboxed one must list the same
+#    packages as the unsandboxed one, with the same manager and no new warning, so `dpkg-query` works
+#    under the unit (the runner is a dpkg system).
 set -eu
 
 binary=${1:?usage: sudo scripts/sandbox-smoke.sh BINARY [UNIT]}
@@ -101,6 +104,7 @@ done
 ok=
 for _ in $(seq 1 60); do
     if [ -s "$tmp/sandboxed/inventory.json" ] && [ -s "$tmp/baseline/inventory.json" ] \
+        && [ -s "$tmp/sandboxed/packages.json" ] && [ -s "$tmp/baseline/packages.json" ] \
         && [ -s /var/lib/fleet-agent-smoke-sandboxed/heartbeat.json ] \
         && [ -s /var/lib/fleet-agent-smoke-sandboxed/inventory.json ] \
         && [ -s /var/lib/fleet-agent-smoke-baseline/heartbeat.json ]; then
@@ -140,8 +144,31 @@ for name, value in (("facts lost in the sandbox", lost), ("list entries lost", f
 if lost or fewer or new:
     sys.exit(1)
 print("sandbox-smoke: the sandboxed agent reported every fact the unsandboxed one did, with no new warning")
+
+# Package reports (P2-AGENT-PACKAGES).
+sandboxed, baseline = (json.load(open(path)) for path in sys.argv[3:5])
+key = lambda p: (p["name"], p["architecture"], p["version"], p["source"])
+problems = []
+if sandboxed["manager"] != baseline["manager"]:
+    problems.append(f"manager {sandboxed['manager']!r} ({sandboxed['unsupported_reason']}), "
+                    f"unsandboxed {baseline['manager']!r} ({baseline['unsupported_reason']})")
+if baseline["manager"] != "dpkg":
+    problems.append(f"the unsandboxed agent found no dpkg: {baseline['unsupported_reason']}")
+missing = sorted(set(map(key, baseline["packages"])) - set(map(key, sandboxed["packages"])))
+extra = sorted(set(map(key, sandboxed["packages"])) - set(map(key, baseline["packages"])))
+new = [w for w in sandboxed["warnings"] if w not in baseline["warnings"]]
+for name, value in (("packages missing in the sandbox", missing[:10]), ("packages only in the sandbox", extra[:10]),
+                    ("package warnings only in the sandbox", new)):
+    if value:
+        problems.append(f"{name}: {value}")
+for problem in problems:
+    print(f"sandbox-smoke: {problem}", file=sys.stderr)
+if problems:
+    sys.exit(1)
+print(f"sandbox-smoke: the sandboxed agent listed the same {len(sandboxed['packages'])} packages as the unsandboxed one")
 EOF
-if ! result=$(python3 "$tmp/compare.py" "$tmp/sandboxed/inventory.json" "$tmp/baseline/inventory.json" 2>&1); then
+if ! result=$(python3 "$tmp/compare.py" "$tmp/sandboxed/inventory.json" "$tmp/baseline/inventory.json" \
+    "$tmp/sandboxed/packages.json" "$tmp/baseline/packages.json" 2>&1); then
     printf '%s\n' "$result" >&2
     annotate "sandbox-smoke: the sandbox cost facts" "$result
 $(journal sandboxed)"

@@ -23,7 +23,7 @@
 //! min_seconds = 300
 //! max_seconds = 21600
 //!
-//! [config_report]                            # optional; seconds (FR-2.1)
+//! [config_report]                            # optional; seconds (FR-2.1); package reports too (FR-2.3)
 //! interval_seconds = 21600
 //! min_seconds = 3600
 //! max_seconds = 86400
@@ -75,7 +75,8 @@ const INVENTORY_LIMITS: IntervalLimits = IntervalLimits {
     default_max: 21_600,
 };
 
-/// FR-2.1, P2-A01: the configuration report every 6 hours by default. The server does not direct this
+/// FR-2.1, P2-A01: the configuration report every 6 hours by default, and the package report with it
+/// (FR-2.3: "on the same reporting cadence"). The server does not direct this
 /// interval yet; `min` and `max` are carried for symmetry with the others (and the installer's
 /// carry-over) so a future directive can clamp to them.
 const CONFIG_REPORT_LIMITS: IntervalLimits = IntervalLimits {
@@ -201,7 +202,7 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub heartbeat: Interval,
     pub inventory: Interval,
-    /// How often the configuration report is sent (FR-2.1, P2-A01).
+    /// How often the configuration report is sent (FR-2.1, P2-A01), and the package report (FR-2.3).
     pub config_report: Interval,
     /// How long a newly installed agent version has to get a heartbeat acknowledged by the server
     /// before the update is rolled back, in seconds (P1-AGENT-UPDATE, ADR 0018).

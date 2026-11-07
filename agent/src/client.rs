@@ -266,6 +266,21 @@ impl Client {
     pub fn post_json<T: Serialize>(&self, path: &str, body: &T) -> Result<ApiResponse, ApiError> {
         let bytes = serde_json::to_vec(body)
             .map_err(|e| ApiError::InvalidResponse(format!("cannot encode request: {e}")))?;
+        self.post_bytes(path, &bytes, None)
+    }
+
+    /// POSTs `gzipped`, a gzip-compressed JSON body, with `Content-Encoding: gzip` (the package report,
+    /// P2-S08). Read like [`Client::post_json`].
+    pub fn post_gzip_json(&self, path: &str, gzipped: &[u8]) -> Result<ApiResponse, ApiError> {
+        self.post_bytes(path, gzipped, Some("gzip"))
+    }
+
+    fn post_bytes(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        encoding: Option<&str>,
+    ) -> Result<ApiResponse, ApiError> {
         let mut request = self.agent.post(self.url(path));
         if let Some(credential) = &self.credential {
             request = request.header(
@@ -273,10 +288,13 @@ impl Client {
                 format!("Bearer {}", credential.expose_secret()),
             );
         }
+        if let Some(encoding) = encoding {
+            request = request.header("Content-Encoding", encoding);
+        }
         let response = request
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .send(&bytes[..])
+            .send(bytes)
             .map_err(|e| ApiError::Transport(transport_message(&e)))?;
         read_response(response)
     }
@@ -574,6 +592,36 @@ pub(crate) mod tests {
         assert!(lower.contains(&format!("user-agent: fleet-agent/{AGENT_VERSION}")));
         assert!(lower.contains("content-type: application/json"));
         assert!(request.ends_with(r#"{"x":1}"#));
+    }
+
+    #[test]
+    fn a_gzip_body_is_sent_as_it_is_with_content_encoding_gzip() {
+        // P2-S08: the package report is compressed; the server reads `Content-Encoding: gzip`.
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(br#"{"x":1}"#).unwrap();
+        let gzipped = encoder.finish().unwrap();
+        let pki = TestPki::generate();
+        let dir = TempDir::new();
+        let server = TlsServer::start(
+            &pki,
+            vec![response(
+                "200 OK",
+                &[],
+                r#"{"report_id":"r","duplicate":false}"#,
+            )],
+        );
+        let client = trusting_client(&server, &pki, &dir);
+        let result = client.post_gzip_json("/api/v1/reports/packages", &gzipped);
+        let request = server.finish().into_iter().next().unwrap();
+        assert_eq!(result.unwrap().body["duplicate"], false);
+        let lower = request.to_ascii_lowercase();
+        assert!(lower.contains("content-encoding: gzip"), "{request}");
+        assert!(lower.contains("content-type: application/json"));
+        assert!(lower.contains(&format!("content-length: {}", gzipped.len())));
+        assert!(lower.contains("authorization: bearer "));
+        // The test server decompresses a gzip body, so the JSON is what arrived.
+        assert!(request.ends_with(r#"{"x":1}"#), "{request}");
     }
 
     #[test]

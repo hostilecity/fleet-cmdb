@@ -177,6 +177,10 @@ impl Transport for StopAfterManifest<'_> {
         self.inner.post(path, body)
     }
 
+    fn post_gzip(&self, path: &str, gzipped: &[u8]) -> Result<ApiResponse, ApiError> {
+        self.inner.post_gzip(path, gzipped)
+    }
+
     fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError> {
         let reply = self.inner.get_conditional(path, etag);
         self.stop.request();
