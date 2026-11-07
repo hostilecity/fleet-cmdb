@@ -45,6 +45,10 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       debian_host
       debian_host
       debian_host(os: { "id" => "ubuntu", "version_id" => "24.04", "name" => "Ubuntu" })
+      # Only active hosts count, the set the Compliance page lists (owner decision on #129): not a pending, revoked, or retired one.
+      debian_host.revoke!(actor: operator)
+      Host.where(id: debian_host.id).update_all(enrollment_state: "pending") # a pre-registered host is pending until it enrolls
+      Host.where(id: debian_host.id).update_all(enrollment_state: "retired")
       import_advisories(osv_record(id: "DSA-9001-1"), osv_record(id: "DSA-9002-1", package: "curl"),
                         osv_record(id: "DSA-9003-1", withdrawn: "2026-10-21T00:00:00Z"), full: true)
       get "/data-sources"
