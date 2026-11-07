@@ -1,15 +1,20 @@
-<%# Request fresh reports (P2-S03). The full configuration tab with this button is P2-D02. %>
-<section aria-labelledby="report_requests_heading" id="report_requests">
+<%# Request fresh reports (P2-S03): the Overview keeps the three-way form (owner decision Q6); each tab has its own button.
+    A type that is pending or rate limited cannot be ticked, and says until when (Q7). %>
+<% availabilities = availability.values %>
+<%= tag.section "aria-labelledby": "report_requests_heading", id: "report_requests", data: refresh_when_available(availabilities) do %>
   <h2 id="report_requests_heading">Fresh reports</h2>
   <% if host.enrollment_state == "active" %>
     <%= form_with url: request_reports_host_path(host), method: :post, id: "report_request_form" do %>
       <fieldset class="report-types">
         <legend>Ask the agent, on its next heartbeat, for a new</legend>
-        <% ReportRequest::TYPES.each do |type| %>
-          <label class="check"><%= check_box_tag "report_types[]", type, true, id: "report_type_#{type}" %><%= report_names([ type ]) %></label>
+        <% availabilities.each do |a| %>
+          <label class="check"><%= check_box_tag "report_types[]", a.type, a.ready?, id: "report_type_#{a.type}", disabled: !a.ready?, "aria-describedby": ("report_type_#{a.type}_note" unless a.ready?) %><%= report_names([ a.type ]) %>
+            <% if a.state == :pending %><span class="muted" id="report_type_<%= a.type %>_note">(pending)</span><% end %>
+            <% if a.state == :rate_limited %><span class="muted" id="report_type_<%= a.type %>_note">(requested less than <%= ReportRequests::COOLDOWN.in_minutes.to_i %> minutes ago. <%= report_retry_text(a) %>)</span><% end %>
+          </label>
         <% end %>
       </fieldset>
-      <button class="btn quiet" type="submit">Request fresh reports</button>
+      <button class="btn quiet" type="submit"<%= " disabled" if availabilities.none?(&:ready?) %>>Request fresh reports</button>
     <% end %>
     <p class="hint">Each report type can be requested once every <%= ReportRequests::COOLDOWN.in_minutes.to_i %> minutes. A request no report answers expires after <%= ReportRequests::TTL.in_minutes.to_i %> minutes.</p>
   <% else %>
@@ -23,4 +28,4 @@
       <% end %>
     </tbody></table></div>
   <% end %>
-</section>
+<% end %>

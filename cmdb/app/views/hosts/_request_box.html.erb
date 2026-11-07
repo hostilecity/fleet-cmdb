@@ -1,0 +1,52 @@
+<%# One tab's own "Request fresh ... report" button and what it says in each state (P2-D02, approved mockup report-requests.html,
+    owner decisions Q6 and Q7). locals: host, availability (ReportRequests::Availability), return_to (the tab), ready (what the
+    report says when nothing is going on), ready_hint, answered_hint. %>
+<% type = availability.type %>
+<% name = report_names([ type ]) %>
+<% request = availability.latest %>
+<% outcome = recent_outcome(availability) %>
+<%= tag.div class: "request-box", id: "request", data: refresh_when_available(availability) do %>
+  <div>
+    <% case availability.state %>
+    <% when :pending %>
+      <% if request.sent_at %>
+        <p><strong>Agent asked <%= utc_clock(request.sent_at) %>, waiting for the report.</strong></p>
+        <p class="hint">Expires <%= utc_clock(request.expires_at) %> if no report arrives. A report the agent collected after it was asked answers the request, even if nothing in it changed.</p>
+      <% else %>
+        <p><strong>Requested.</strong> <%= name.upcase_first %> requested. The agent is asked on its next heartbeat.</p>
+        <p class="hint">Requested by <%= request.requested_by.display_name %>, <%= utc_clock(request.requested_at) %>. The agent checks in about once a minute. The button is not offered again while a request is pending.</p>
+      <% end %>
+    <% when :rate_limited %>
+      <p><strong><%= name.upcase_first %> requested less than <%= ReportRequests::COOLDOWN.in_minutes.to_i %> minutes ago.</strong></p>
+      <p class="hint"><span id="request_retry"><%= report_retry_text(availability) %></span> This limit applies to each report type separately, however the earlier request ended.</p>
+    <% else %>
+      <% if outcome == :answered %>
+        <p><strong>Received <%= utc_clock(request.satisfied_at) %>.</strong> <%= name.upcase_first %> requested by <%= request.requested_by.display_name %>, <%= utc_clock(request.requested_at) %>.</p>
+        <p class="hint"><%= answered_hint %></p>
+      <% elsif outcome == :expired %>
+        <p><strong>Expired <%= utc_clock(request.expired_at || request.expires_at) %>: no report arrived within <%= ReportRequests::TTL.in_minutes.to_i %> minutes.</strong> Requested by <%= request.requested_by.display_name %>, <%= utc_clock(request.requested_at) %>.</p>
+        <p class="hint">The agent may be offline or too old to understand the request. Check the host's status, then request again.</p>
+      <% else %>
+        <p><%= ready %></p>
+        <p class="hint"><%= ready_hint %></p>
+      <% end %>
+      <% if availability.state == :inactive %>
+        <p><strong>Only an active host's agent can be asked for a report.</strong></p>
+      <% end %>
+    <% end %>
+  </div>
+  <% unless availability.state == :inactive %>
+    <%= form_with url: request_reports_host_path(host), method: :post, id: "request_#{type}_form" do %>
+      <%= hidden_field_tag "report_types[]", type, id: nil %>
+      <%= hidden_field_tag :return_to, return_to, id: nil %>
+      <% case availability.state %>
+      <% when :pending %>
+        <button class="btn quiet" type="submit" disabled>Request pending</button>
+      <% when :rate_limited %>
+        <button class="btn quiet" type="submit" disabled aria-describedby="request_retry">Request fresh <%= name %></button>
+      <% else %>
+        <button class="btn quiet" type="submit">Request fresh <%= name %></button>
+      <% end %>
+    <% end %>
+  <% end %>
+<% end %>

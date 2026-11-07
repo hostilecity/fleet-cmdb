@@ -13,10 +13,11 @@ module CisHelpers
   end
 
   # Stores a config report for an enrolled host through ConfigRecorder, as the endpoint does. facts are merged
-  # over the typical docs/api example.
-  def record_config(host, facts = {})
+  # over the typical docs/api example; collected_at (the agent's clock) defaults to the example's.
+  def record_config(host, facts = {}, collected_at = nil)
     example = ApiContract.example("config.request", "typical")
     payload = example.merge("report_id" => SecureRandom.uuid, "facts" => example["facts"].merge(facts))
+    payload["collected_at"] = collected_at.utc.iso8601 if collected_at
     Host.transaction do
       ConfigRecorder.record!(host_id: host.id, credential_id: host.agent_credentials.active.pick(:id), report: AgentApi::ConfigReport.new(payload))
     end
