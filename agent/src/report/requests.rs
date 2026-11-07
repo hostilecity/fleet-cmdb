@@ -11,6 +11,14 @@
 //! without the type ends its episode, so a new operator request, later, starts a new one. A heartbeat
 //! that fails says nothing and changes nothing.
 //!
+//! An episode also ends when the server has accepted the report sent for it
+//! ([`ReportRequests::answered`]): the server stops listing a type once such a report is in, so a
+//! heartbeat *sent after* that acceptance that still lists the type carries a new request (an operator
+//! may ask again after five minutes, sooner than a long heartbeat interval brings a heartbeat without
+//! the type; review of #114). A heartbeat sent before the acceptance proves nothing, since the server
+//! may have built its answer before the report arrived, so it raises nothing. The directive carries no
+//! request identifier, so this ordering is how one request is told from the next.
+//!
 //! If the report is lost or rejected, the episode still gives no second report: the next scheduled
 //! report follows its normal timetable, and the server expires the request. That is the "one extra
 //! report and then no more" of P2-A01, at the cost of an hour of "requested" on the dashboard in the
@@ -58,6 +66,8 @@ struct Inner {
     present: [bool; 2],
     /// When the episode's request was raised, until a report loop takes it.
     pending: [Option<Instant>; 2],
+    /// When the report sent for the episode was accepted.
+    answered: [Option<Instant>; 2],
 }
 
 /// Shared between the heartbeat loop, which observes, and the report loops, which take.
@@ -70,23 +80,35 @@ impl ReportRequests {
     }
 
     /// Records what one accepted heartbeat response asked for (`wanted` empty when it had no
-    /// `report_request`). Returns the types whose episode just began.
-    pub fn observe(&self, wanted: &[ReportType], now: Instant) -> Vec<ReportType> {
+    /// `report_request`); `sent` is when that heartbeat was sent. Returns the types whose episode
+    /// just began.
+    pub fn observe(&self, wanted: &[ReportType], sent: Instant) -> Vec<ReportType> {
         let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let mut began = Vec::new();
         for ty in ReportType::ALL {
             let i = ty.index();
             if wanted.contains(&ty) {
-                if !inner.present[i] {
+                let new_request = inner.answered[i].is_some_and(|answered| answered < sent);
+                if !inner.present[i] || new_request {
                     inner.present[i] = true;
-                    inner.pending[i] = Some(now);
+                    inner.pending[i] = Some(sent);
+                    inner.answered[i] = None;
                     began.push(ty);
                 }
             } else {
                 inner.present[i] = false;
+                inner.answered[i] = None;
             }
         }
         began
+    }
+
+    /// The server accepted the report sent for `ty`'s current request, at `at` or before.
+    pub fn answered(&self, ty: ReportType, at: Instant) {
+        let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if inner.present[ty.index()] {
+            inner.answered[ty.index()] = Some(at);
+        }
     }
 
     /// Takes the pending request of `ty`, if any: when it was raised.
@@ -103,6 +125,7 @@ impl ReportRequests {
 mod tests {
     use super::*;
     use ReportType::{Config, Inventory};
+    use std::time::Duration;
 
     #[test]
     fn a_directive_causes_one_request_however_many_heartbeats_carry_it() {
@@ -134,6 +157,55 @@ mod tests {
         assert!(requests.observe(&[], Instant::now()).is_empty());
         assert_eq!(requests.observe(&[Config], Instant::now()), [Config]);
         assert!(requests.take(Config).is_some());
+    }
+
+    #[test]
+    fn a_new_request_after_the_answer_was_accepted_starts_a_new_episode() {
+        // Review of #114: report accepted, operator asks again after the five-minute cooldown, and the
+        // next heartbeat (ten minutes on) lists the type again with no heartbeat without it between.
+        let requests = ReportRequests::new();
+        let t0 = Instant::now();
+        assert_eq!(requests.observe(&[Config], t0), [Config]);
+        assert!(requests.take(Config).is_some());
+        requests.answered(Config, t0 + Duration::from_secs(5));
+        let next = t0 + Duration::from_secs(600);
+        assert_eq!(requests.observe(&[Config], next), [Config]);
+        assert_eq!(requests.take(Config), Some(next));
+        // And that one is again raised only once.
+        assert!(
+            requests
+                .observe(&[Config], next + Duration::from_secs(60))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_sent_before_the_answer_was_accepted_raises_nothing() {
+        // The server may have built that response before the report arrived.
+        let requests = ReportRequests::new();
+        let t0 = Instant::now();
+        requests.observe(&[Config], t0);
+        requests.take(Config);
+        let in_flight = t0 + Duration::from_secs(60);
+        requests.answered(Config, t0 + Duration::from_secs(61));
+        assert!(requests.observe(&[Config], in_flight).is_empty());
+        assert_eq!(requests.take(Config), None);
+    }
+
+    #[test]
+    fn an_unanswered_request_is_still_one_report() {
+        // A lost or rejected report is not answered, so the repeated directive raises nothing.
+        let requests = ReportRequests::new();
+        let t0 = Instant::now();
+        requests.observe(&[Config], t0);
+        requests.take(Config);
+        for i in 1..10 {
+            assert!(
+                requests
+                    .observe(&[Config], t0 + Duration::from_secs(i * 60))
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

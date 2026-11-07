@@ -788,3 +788,25 @@ fn a_report_request_sends_one_extra_report_even_when_nothing_changed() {
     h.tick(&mut reporter, &transport, later + secs(10));
     assert_eq!(ids(&transport).len(), 2);
 }
+
+#[test]
+fn a_requested_report_is_sent_at_once_even_while_the_old_one_waits_for_its_retry() {
+    // Review of #114: the requested report inherited the retry deadline of the one it replaced.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![Err(ApiError::Transport("down".into()))]);
+    transport.set_accepting(true);
+    let now = h.at(Duration::ZERO);
+    h.tick(&mut reporter, &transport, now);
+    let first = reporter.pending_report_id().unwrap().to_owned();
+    // The server is back; a request arrives a second later, well inside the backoff.
+    reporter.request();
+    h.tick(&mut reporter, &transport, now + secs(1));
+    let sent = ids(&transport);
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0], first);
+    assert_ne!(sent[1], first);
+    assert!(reporter.pending_report_id().is_none());
+    assert!(reporter.take_answered(), "the request was answered");
+    assert!(!reporter.take_answered());
+}

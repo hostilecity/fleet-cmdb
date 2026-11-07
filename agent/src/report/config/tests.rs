@@ -167,6 +167,34 @@ fn one_request_gives_exactly_one_extra_report() {
 }
 
 #[test]
+fn only_an_accepted_requested_report_answers_the_request() {
+    // Review of #114: the request loop learns that the request is over, so a later one is seen.
+    let host = FakeHost::debian13();
+    let transport = transport();
+    let mut reporter = reporter(&host);
+    let t0 = Instant::now();
+    reporter.tick(t0, &transport);
+    assert!(
+        !reporter.take_answered(),
+        "a startup report answers nothing"
+    );
+    reporter.request();
+    reporter.tick(t0 + secs(5), &transport);
+    assert!(reporter.take_answered());
+    assert!(!reporter.take_answered(), "once");
+    // A requested report the server rejects answers nothing (it is not repeated either).
+    transport.push(Err(ApiError::Rejected {
+        status: 422,
+        code: "validation_failed".into(),
+        message: "no".into(),
+        request_id: None,
+    }));
+    reporter.request();
+    reporter.tick(t0 + secs(10), &transport);
+    assert!(!reporter.take_answered());
+}
+
+#[test]
 fn a_newer_manifest_named_by_the_server_is_fetched_and_reported_against_at_once() {
     let host = FakeHost::debian13();
     let v = manifest_version();

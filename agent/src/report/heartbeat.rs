@@ -158,6 +158,8 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                 return self.intervals.heartbeat();
             }
         };
+        // When the request left: a report request it carries is told from an answered one by this.
+        let sent = Instant::now();
         match transport.post(HEARTBEAT_PATH, &body) {
             Ok(response) => {
                 let failures = self.backoff.failures();
@@ -179,14 +181,14 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                     tracing::debug!(request_id, "heartbeat accepted");
                 }
                 self.accepted_once = true;
-                self.handle(&envelope::parse(&response.body), wall);
+                self.handle(&envelope::parse(&response.body), wall, sent);
                 jittered(self.intervals.heartbeat(), &mut self.rng)
             }
             Err(error) => self.backoff.on_failure(&error),
         }
     }
 
-    fn handle(&mut self, envelope: &Envelope, wall: SystemTime) {
+    fn handle(&mut self, envelope: &Envelope, wall: SystemTime, sent: Instant) {
         for problem in &envelope.problems {
             if self.notes.first(problem) {
                 tracing::warn!(
@@ -205,7 +207,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         }
         self.intervals.apply(envelope.intervals);
         if let Some(requests) = self.requests {
-            for ty in requests.observe(&envelope.report_types, Instant::now()) {
+            for ty in requests.observe(&envelope.report_types, sent) {
                 tracing::info!(
                     report_type = ty.name(),
                     "the server asked for a {} report; sending one now",

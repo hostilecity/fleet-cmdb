@@ -69,12 +69,12 @@ impl UnitInfo {
         self.active == "active"
     }
 
-    /// Starts at boot: `enabled` and the states that mean the same for this purpose.
+    /// Set to start at boot: `UnitFileState=enabled` only (review of #114). `enabled-runtime` links
+    /// live under `/run` and are gone after a reboot; `static`, `alias`, and `generated` say how the
+    /// unit file is installed, not that anything pulls the unit in at boot. A false "starts at boot"
+    /// would report a firewall or automatic updates as protecting a host they may not protect.
     pub fn starts_at_boot(&self) -> bool {
-        matches!(
-            self.enabled.as_str(),
-            "enabled" | "enabled-runtime" | "static" | "alias" | "generated"
-        )
+        self.enabled == "enabled"
     }
 }
 
@@ -201,6 +201,18 @@ fn listing(ctx: &Ctx, args: &[&str], what: &str) -> Result<Vec<String>, String> 
     parse_listing(&output).map_err(|problem| format!("cannot read the output of {what}: {problem}"))
 }
 
+/// Whether a name systemd printed in a listing is a service unit name. Looser than [`valid_unit`],
+/// which guards what goes *into* a command: systemd's own names may be escaped
+/// (`systemd-fsck@dev-disk-by\x2duuid-….service`) or longer than the manifest's 100 characters, and
+/// one such name must not make the whole list unreadable (review of #114). The report's limits on
+/// items are still applied when the fact is finalized.
+fn listed_service(name: &str) -> bool {
+    name.len() > ".service".len()
+        && name.ends_with(".service")
+        && !name.starts_with('-')
+        && !name.chars().any(char::is_control)
+}
+
 /// The first column of a `systemctl list-units` or `list-unit-files` listing without a legend: the
 /// unit names, sorted, each once. A line that does not start with a unit name is an error, so a
 /// format change shows up as unreadable rather than as a wrong list.
@@ -214,7 +226,7 @@ pub fn parse_listing(output: &[u8]) -> Result<Vec<String>, String> {
             continue;
         }
         let name = line.split_whitespace().next().unwrap_or("");
-        if !valid_unit(name) || !name.ends_with(".service") {
+        if !listed_service(name) {
             return Err(format!(
                 "line {} does not start with a service unit name",
                 index + 1
@@ -340,10 +352,13 @@ mod tests {
         assert!(unit("active", "enabled").is_active());
         assert!(!unit("inactive", "enabled").is_active());
         assert!(!unit("activating", "enabled").is_active());
-        for enabled in ["enabled", "enabled-runtime", "static"] {
-            assert!(unit("active", enabled).starts_at_boot(), "{enabled}");
-        }
+        assert!(unit("active", "enabled").starts_at_boot());
+        // Review of #114: none of these persists or proves a boot dependency.
         for enabled in [
+            "enabled-runtime",
+            "static",
+            "alias",
+            "generated",
             "disabled",
             "masked",
             "masked-runtime",
@@ -365,6 +380,25 @@ mod tests {
         assert!(enabled.contains(&"getty@.service".to_owned()));
         assert!(enabled.contains(&"unattended-upgrades.service".to_owned()));
         assert!(parse_listing(b"").unwrap().is_empty());
+    }
+
+    #[test]
+    fn escaped_and_long_names_from_systemd_are_kept_in_a_listing() {
+        // Review of #114: the manifest's unit-name rule made one escaped name fail the whole list.
+        let long = format!("{}.service", "a".repeat(120));
+        let text = format!(
+            "cron.service loaded active running Regular background program processing daemon\n\
+             systemd-fsck@dev-disk-by\\x2duuid-0123.service loaded active running File System Check\n\
+             {long} loaded active running Long\n"
+        );
+        let names = parse_listing(text.as_bytes()).unwrap();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert!(names.contains(&"systemd-fsck@dev-disk-by\\x2duuid-0123.service".to_owned()));
+        assert!(names.contains(&long));
+        // Still refused: what is not a service unit name.
+        assert!(parse_listing(b"ssh.socket loaded active running\n").is_err());
+        assert!(parse_listing(b"0 loaded units listed.\n").is_err());
+        assert!(parse_listing(b".service x\n").is_err());
     }
 
     #[test]

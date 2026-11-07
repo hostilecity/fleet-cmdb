@@ -233,7 +233,10 @@ fn limits(
         match entry.get(name) {
             None | Some(Value::Null) => None,
             Some(value) => {
-                let parsed = value.as_i64().filter(|n| n.abs() <= SAFE_INTEGER);
+                // A range check, not `abs()`: `i64::MIN.abs()` overflows (review of #114).
+                let parsed = value
+                    .as_i64()
+                    .filter(|n| (-SAFE_INTEGER..=SAFE_INTEGER).contains(n));
                 if parsed.is_none() {
                     notes.push(format!(
                         "`{name}` of `{}` is not a whole number; the default is used",
@@ -425,6 +428,26 @@ mod tests {
         assert_eq!(by_key("a.float").minimum, -SAFE_INTEGER);
         assert_eq!(by_key("a.big").maximum, SAFE_INTEGER);
         assert!(!manifest.notes.is_empty());
+    }
+
+    #[test]
+    fn the_most_negative_integer_as_a_limit_is_defaulted_not_a_panic() {
+        // Review of #114: `abs()` of i64::MIN overflowed (a panic with overflow checks, a negative
+        // number that passed the cap without them).
+        let manifest = parse_ok(json!({"manifest_version": 1, "facts": [
+            {"key": "a.min", "type": "integer", "minimum": i64::MIN, "maximum": i64::MIN},
+            {"key": "a.len", "type": "string", "max_length": i64::MIN}
+        ]}));
+        let by_key = |key: &str| manifest.facts.iter().find(|f| f.key == key).unwrap().limits;
+        assert_eq!(by_key("a.min").minimum, -SAFE_INTEGER);
+        assert_eq!(by_key("a.min").maximum, SAFE_INTEGER);
+        assert_eq!(by_key("a.len").max_length, 256);
+        assert!(
+            manifest
+                .notes
+                .iter()
+                .any(|n| n.contains("`minimum` of `a.min`"))
+        );
     }
 
     #[test]

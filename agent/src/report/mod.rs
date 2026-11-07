@@ -229,6 +229,9 @@ fn inventory_loop(
             reporter.request();
         }
         let wake = reporter.tick(Instant::now(), &mut || collector.collect(), transport);
+        if reporter.take_answered() {
+            requests.answered(ReportType::Inventory, Instant::now());
+        }
         let wait = wake
             .saturating_duration_since(Instant::now())
             .min(REQUEST_POLL);
@@ -256,6 +259,9 @@ fn config_loop(
             reporter.request();
         }
         let wake = reporter.tick(Instant::now(), transport);
+        if reporter.take_answered() {
+            requests.answered(ReportType::Config, Instant::now());
+        }
         let wait = wake
             .saturating_duration_since(Instant::now())
             .min(REQUEST_POLL);

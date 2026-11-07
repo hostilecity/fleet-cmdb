@@ -96,6 +96,8 @@ pub struct Reporter<'a, R: Rng> {
     hold_until: Option<Instant>,
     /// A report is wanted now, and why.
     wanted: Option<Reason>,
+    /// A report built for a request was accepted ([`Reporter::take_answered`]).
+    answered: bool,
     new_id: fn() -> std::io::Result<String>,
 }
 
@@ -113,6 +115,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             jitter_permille: 0,
             hold_until: None,
             wanted: None,
+            answered: false,
             new_id: new_report_id,
         }
     }
@@ -120,6 +123,12 @@ impl<'a, R: Rng> Reporter<'a, R> {
     /// Asks for one extra report at the next [`Reporter::tick`].
     pub fn request(&mut self) {
         self.wanted = Some(Reason::Requested);
+    }
+
+    /// Whether a report built for a request has been accepted since the last call, so the request it
+    /// answered is over ([`super::requests::ReportRequests::answered`]).
+    pub fn take_answered(&mut self) -> bool {
+        std::mem::take(&mut self.answered)
     }
 
     #[cfg(test)]
@@ -271,6 +280,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
         let span = tracing::info_span!("config_report", report_id = pending.report_id.as_str());
         let _entered = span.enter();
         let reason = pending.reason.as_str();
+        let requested = pending.reason == Reason::Requested;
         let used = pending.manifest_version;
         let attempt = self.backoff.failures() + 1;
         match transport.post(CONFIG_PATH, &pending.body) {
@@ -296,6 +306,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
                     .body
                     .get("manifest_version")
                     .and_then(Value::as_u64);
+                self.answered |= requested;
                 self.finished(now);
                 if let Some(server) = server_version
                     && server > used

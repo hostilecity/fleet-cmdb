@@ -3,10 +3,11 @@
 //!
 //! - `installed`: `/usr/bin/unattended-upgrade`, the program the package ships, exists.
 //! - `enabled`: installed, and all of
-//!   - `APT::Periodic::Update-Package-Lists` is above 0 and `APT::Periodic::Unattended-Upgrade` is
-//!     above 0 in apt's effective configuration (`apt-config dump`, read-only, fixed arguments; apt
-//!     reads a value that is not a number as 0);
-//!   - `apt-daily.timer` and `apt-daily-upgrade.timer` are active and start at boot.
+//!   - `APT::Periodic::Enable` is not 0 (absent means on), and `APT::Periodic::Update-Package-Lists`
+//!     and `APT::Periodic::Unattended-Upgrade` are intervals that run (`always`, or above 0 with an
+//!     optional `s`, `m`, `h`, or `d` unit) in apt's effective configuration (`apt-config dump`,
+//!     read-only, fixed arguments);
+//!   - `apt-daily.timer` and `apt-daily-upgrade.timer` are active and enabled (`UnitFileState=enabled`).
 //!
 //!   A host without the package is simply not enabled, without running anything else. If a source
 //!   cannot be read (`apt-config` or `systemctl` missing or failing), `enabled` is `unreadable` with
@@ -90,27 +91,49 @@ fn enabled(ctx: &Ctx) -> Outcome {
     Outcome::Ok(json!(settings.periodic_on() && timers_on))
 }
 
-/// The apt settings that switch automatic updates on.
+/// The apt settings that switch automatic updates on, as `apt.systemd.daily` reads them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Periodic {
-    pub update_package_lists: i64,
-    pub unattended_upgrade: i64,
+    /// `APT::Periodic::Enable`, the master switch: on unless set to 0 (review of #114).
+    pub enable: bool,
+    /// `APT::Periodic::Update-Package-Lists` is an interval that runs.
+    pub update_package_lists: bool,
+    /// `APT::Periodic::Unattended-Upgrade` is an interval that runs.
+    pub unattended_upgrade: bool,
 }
 
 impl Periodic {
     pub fn periodic_on(&self) -> bool {
-        self.update_package_lists > 0 && self.unattended_upgrade > 0
+        self.enable && self.update_package_lists && self.unattended_upgrade
     }
 }
 
-/// Reads `APT::Periodic::Update-Package-Lists` and `APT::Periodic::Unattended-Upgrade` from the
-/// output of `apt-config dump` (lines like `APT::Periodic::Unattended-Upgrade "1";`). Names are
-/// matched without regard to case, as apt does; a setting that is absent or not a number is 0.
+/// Whether an `APT::Periodic` interval makes the job run: `always`, or a number above 0, optionally
+/// with apt's unit suffix (`s`, `m`, `h`, `d`; days without one). Absent, `0`, or anything apt
+/// cannot read as an interval is off (review of #114: `always` was read as 0).
+fn interval_runs(value: &str) -> bool {
+    if value.eq_ignore_ascii_case("always") {
+        return true;
+    }
+    let number = value.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(value);
+    number.parse::<i64>().is_ok_and(|n| n > 0)
+}
+
+/// `APT::Periodic::Enable`: `apt.systemd.daily` exits only when it is the number 0, so absent or
+/// anything else leaves the job on.
+fn enable_switch(value: &str) -> bool {
+    !value.parse::<i64>().is_ok_and(|n| n == 0)
+}
+
+/// Reads `APT::Periodic::Enable`, `APT::Periodic::Update-Package-Lists`, and
+/// `APT::Periodic::Unattended-Upgrade` from the output of `apt-config dump` (lines like
+/// `APT::Periodic::Unattended-Upgrade "1";`). Names are matched without regard to case, as apt does.
 pub fn parse_apt_config(output: &[u8]) -> Result<Periodic, String> {
     let text = std::str::from_utf8(output).map_err(|_| "the output is not valid UTF-8")?;
     let mut periodic = Periodic {
-        update_package_lists: 0,
-        unattended_upgrade: 0,
+        enable: true,
+        update_package_lists: false,
+        unattended_upgrade: false,
     };
     let mut any = false;
     for line in text.lines() {
@@ -123,13 +146,13 @@ pub fn parse_apt_config(output: &[u8]) -> Result<Periodic, String> {
             .trim_end_matches(';')
             .trim()
             .trim_matches('"')
-            .trim()
-            .parse::<i64>()
-            .unwrap_or(0);
-        if name.eq_ignore_ascii_case("APT::Periodic::Update-Package-Lists") {
-            periodic.update_package_lists = value;
+            .trim();
+        if name.eq_ignore_ascii_case("APT::Periodic::Enable") {
+            periodic.enable = enable_switch(value);
+        } else if name.eq_ignore_ascii_case("APT::Periodic::Update-Package-Lists") {
+            periodic.update_package_lists = interval_runs(value);
         } else if name.eq_ignore_ascii_case("APT::Periodic::Unattended-Upgrade") {
-            periodic.unattended_upgrade = value;
+            periodic.unattended_upgrade = interval_runs(value);
         }
     }
     if !any {
@@ -151,8 +174,9 @@ mod tests {
         assert_eq!(
             on,
             Periodic {
-                update_package_lists: 1,
-                unattended_upgrade: 1
+                enable: true,
+                update_package_lists: true,
+                unattended_upgrade: true
             }
         );
         assert!(on.periodic_on());
@@ -160,16 +184,49 @@ mod tests {
         assert_eq!(
             off,
             Periodic {
-                update_package_lists: 0,
-                unattended_upgrade: 0
+                enable: true,
+                update_package_lists: false,
+                unattended_upgrade: false
             }
         );
         assert!(!off.periodic_on());
     }
 
     #[test]
+    fn the_master_switch_turns_everything_off() {
+        // Review of #114: `APT::Periodic::Enable "0"` stops apt.systemd.daily whatever the intervals.
+        let text = b"APT::Periodic::Enable \"0\";\nAPT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";\n";
+        let parsed = parse_apt_config(text).unwrap();
+        assert!(!parsed.enable);
+        assert!(!parsed.periodic_on());
+        for value in ["1", "yes", ""] {
+            let text = format!(
+                "APT::Periodic::Enable \"{value}\";\nAPT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";\n"
+            );
+            assert!(
+                parse_apt_config(text.as_bytes()).unwrap().periodic_on(),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn always_and_unit_suffixes_are_intervals_that_run() {
+        // Review of #114: `always` was read as 0, so the host was reported as not updating itself.
+        for value in ["always", "Always", "1d", "12h", "30m", "3600s", "7"] {
+            let text = format!(
+                "APT::Periodic::Update-Package-Lists \"{value}\";\nAPT::Periodic::Unattended-Upgrade \"{value}\";\n"
+            );
+            assert!(
+                parse_apt_config(text.as_bytes()).unwrap().periodic_on(),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn values_that_are_zero_or_not_numbers_are_off() {
-        for value in ["0", "never", "", "-1"] {
+        for value in ["0", "never", "", "-1", "0d", "d"] {
             let text = format!(
                 "APT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"{value}\";\n"
             );

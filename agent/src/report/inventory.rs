@@ -167,6 +167,8 @@ pub struct Reporter<'a, R: Rng> {
     new_id: fn() -> std::io::Result<String>,
     /// The server asked for a report; the next tick builds one.
     requested: bool,
+    /// A report built for a request was accepted ([`Reporter::take_answered`]).
+    answered: bool,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -190,7 +192,13 @@ impl<'a, R: Rng> Reporter<'a, R> {
             hold_until: None,
             new_id: new_report_id,
             requested: false,
+            answered: false,
         }
+    }
+
+    /// Whether a report built for a request has been accepted since the last call.
+    pub fn take_answered(&mut self) -> bool {
+        std::mem::take(&mut self.answered)
     }
 
     /// Asks for one extra report at the next [`Reporter::tick`], built from facts collected then, which
@@ -216,7 +224,14 @@ impl<'a, R: Rng> Reporter<'a, R> {
         let interval = self.intervals.inventory();
         if std::mem::take(&mut self.requested) {
             let inventory = collect();
+            let before = self.pending.as_ref().map(|p| p.report_id.clone());
             self.build(Reason::Requested, inventory, now);
+            // A requested report is not held back by the failed attempts of the report it replaced
+            // (review of #114). Only when it was built: a failed build keeps the old deadline.
+            let built = self.pending.as_ref().map(|p| &p.report_id) != before.as_ref();
+            if built {
+                self.retry_at = None;
+            }
             self.next_check = now + CHANGE_CHECK_INTERVAL;
         } else if now >= self.build_due_at(now, interval) {
             let reason = match &self.pending {
@@ -344,6 +359,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
         let span = tracing::info_span!("inventory", report_id = pending.report_id.as_str());
         let _entered = span.enter();
         let reason = pending.reason.as_str();
+        let requested = pending.reason == Reason::Requested;
         let attempt = self.backoff.failures() + 1;
         match transport.post(INVENTORY_PATH, &pending.body) {
             Ok(response) => {
@@ -372,6 +388,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 } else {
                     tracing::info!(reason, attempt, request_id, "inventory report sent");
                 }
+                self.answered |= requested;
                 self.accepted(now);
             }
             Err(error) if rejected_for_content(&error) => {

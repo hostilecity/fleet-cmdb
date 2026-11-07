@@ -21,7 +21,8 @@
 //!
 //! What this cannot see: rules loaded by hand or by a script that is not one of these units, and
 //! whether an enabled `nftables` or `netfilter-persistent` ruleset is empty. "Enabled" means the
-//! mechanism is set up to load its rules at boot and has done so. If `systemctl` cannot be read,
+//! mechanism is set up to load its rules at boot (`UnitFileState=enabled`, not `enabled-runtime` or
+//! `static`) and has done so. If `systemctl` cannot be read,
 //! both facts are `unreadable` with the reason.
 
 use std::collections::HashMap;
@@ -231,6 +232,19 @@ mod tests {
             ("ufw".into(), true),
             "ufw is first in the order"
         );
+    }
+
+    #[test]
+    fn a_firewall_enabled_only_until_the_next_reboot_is_not_enabled() {
+        // Review of #114: `enabled-runtime` links live in /run and vanish at reboot; `static` does
+        // not mean anything starts the unit at boot.
+        for state in ["enabled-runtime", "static", "generated", "alias"] {
+            let probe = Probe {
+                nftables: unit("active", state),
+                ..Probe::default()
+            };
+            assert_eq!(result(&probe), ("nftables".into(), false), "{state}");
+        }
     }
 
     #[test]

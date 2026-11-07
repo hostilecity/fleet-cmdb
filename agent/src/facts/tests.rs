@@ -540,16 +540,16 @@ fn every_failure_mode_gives_a_reason_not_a_crash() {
 }
 
 #[test]
-fn the_time_budget_stops_commands_from_starting() {
-    let facts = collect_within(
-        &FakeHost::debian13(),
-        &server_manifest_parsed(),
-        Duration::ZERO,
-    );
+fn the_time_budget_stops_commands_and_filesystem_calls_from_starting() {
+    let host = FakeHost::debian13();
+    let facts = collect_within(&host, &server_manifest_parsed(), Duration::ZERO);
     assert!(reason(&facts, "sshd.permitrootlogin", State::Unreadable).contains("time budget"));
     assert!(reason(&facts, "service:ssh.service", State::Unreadable).contains("time budget"));
-    // File reads do not use commands and still work.
-    assert_eq!(ok(&facts, "login_defs.pass_min_days"), json!(0));
+    // Review of #114: filesystem calls share the budget, so a manifest of paths on a dead mount
+    // cannot hold a collection (and shutdown) for 512 times the per-call timeout.
+    assert!(reason(&facts, "login_defs.pass_min_days", State::Unreadable).contains("time budget"));
+    assert!(reason(&facts, "file:/etc/passwd", State::Unreadable).contains("time budget"));
+    assert!(host.log().is_empty(), "{:?}", host.log());
     assert_eq!(facts.len(), server_manifest_parsed().facts.len());
 }
 

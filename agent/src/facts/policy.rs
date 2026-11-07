@@ -19,9 +19,10 @@
 //! # `pwquality.*`: libpwquality
 //!
 //! `minlen`, `minclass`, `maxrepeat`, `dcredit`, `ucredit`, `lcredit`, and `ocredit` are resolved as the
-//! module resolves them: `/etc/security/pwquality.conf`, then the `*.conf` files of
-//! `/etc/security/pwquality.conf.d/` in name order (a later file wins), then options on the
-//! `pam_pwquality.so` line of `/etc/pam.d/common-password` (which win over both). `retry` is a PAM
+//! module resolves them: the `*.conf` files of `/etc/security/pwquality.conf.d/` in name order, then
+//! `/etc/security/pwquality.conf` (a later file wins, so the main file overrides every drop-in, as
+//! pwquality.conf(5) says), then options on the `pam_pwquality.so` line of
+//! `/etc/pam.d/common-password` (which win over both). `retry` is a PAM
 //! option only, so it comes from that line alone. A setting nobody sets is `unreadable` ("not set":
 //! the module's built-in default applies), for the reason given above. When there is no
 //! `pwquality.conf`, no drop-in, and no `pam_pwquality.so` line, every `pwquality.*` fact is
@@ -236,14 +237,8 @@ pub fn read_pwquality(ctx: &Ctx) -> HashMap<&'static str, Outcome> {
     let fail = |reason: String| fail_all(PWQUALITY_KEYS.iter().copied(), reason);
     let mut texts: Vec<Vec<u8>> = Vec::new();
     let mut found_conf = false;
-    match ctx.read(PWQUALITY_CONF, MAX_FILE) {
-        Ok(bytes) => {
-            found_conf = true;
-            texts.push(bytes);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return fail(io_reason(PWQUALITY_CONF, &e)),
-    }
+    // libpwquality reads the drop-ins first, then the main file, and a later setting overrides an
+    // earlier one, so the main file wins over every drop-in (review of #114; pwquality.conf(5)).
     match ctx.list(PWQUALITY_DIR, MAX_DROPINS) {
         Ok(names) => {
             for name in names.into_iter().filter(|n| n.ends_with(".conf")) {
@@ -259,6 +254,14 @@ pub fn read_pwquality(ctx: &Ctx) -> HashMap<&'static str, Outcome> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return fail(io_reason(PWQUALITY_DIR, &e)),
+    }
+    match ctx.read(PWQUALITY_CONF, MAX_FILE) {
+        Ok(bytes) => {
+            found_conf = true;
+            texts.push(bytes);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return fail(io_reason(PWQUALITY_CONF, &e)),
     }
     let pam = match ctx.read(PAM_PASSWORD, MAX_FILE) {
         Ok(bytes) => Some(bytes),
@@ -552,11 +555,11 @@ mod tests {
     }
 
     #[test]
-    fn pwquality_precedence_is_pam_then_dropins_then_the_main_file() {
+    fn pwquality_precedence_is_pam_then_the_main_file_then_the_dropins() {
         // pwquality.conf: minlen=12, minclass=3. The drop-in: minlen=14, dcredit=-1, ucredit=-1.
-        // The PAM line: minlen=16 retry=5.
+        // The PAM line: minlen=16 retry=5. Files are given in the order libpwquality reads them.
         let facts = pwquality_facts(
-            &[PWQUALITY_FIXTURE, PWQUALITY_DROPIN],
+            &[PWQUALITY_DROPIN, PWQUALITY_FIXTURE],
             true,
             Some(PAM_HARDENED),
         );
@@ -573,20 +576,34 @@ mod tests {
         assert_eq!(value(&main_only, "pwquality.minclass"), json!(3));
         assert!(reason(&main_only, "pwquality.retry").contains("retry is not set"));
         let drop = pwquality_facts(
-            &[PWQUALITY_FIXTURE_ACTIVE, PWQUALITY_DROPIN],
+            &[PWQUALITY_DROPIN, PWQUALITY_FIXTURE_ACTIVE],
             true,
             Some(PAM_STOCK),
         );
         assert_eq!(
             value(&drop, "pwquality.minlen"),
-            json!(14),
-            "the later file wins"
+            json!(12),
+            "the main file, read last, wins"
         );
         assert_eq!(
-            value(&drop, "pwquality.minclass"),
-            json!(3),
-            "kept from the main file"
+            value(&drop, "pwquality.dcredit"),
+            json!(-1),
+            "kept from the drop-in"
         );
+    }
+
+    #[test]
+    fn the_reader_lets_the_main_pwquality_file_override_a_dropin() {
+        // Review of #114: the reader merged the main file first, so a drop-in's minlen=14 was reported
+        // although libpwquality applies the main file's minlen=12.
+        let host = crate::facts::fake::FakeHost::debian13()
+            .with_file(PWQUALITY_CONF, PWQUALITY_FIXTURE_ACTIVE)
+            .with_dir(PWQUALITY_DIR, &["50-local.conf"])
+            .with_file(&format!("{PWQUALITY_DIR}/50-local.conf"), PWQUALITY_DROPIN);
+        let ctx = Ctx::new(&host, crate::facts::BUDGET);
+        let facts = read_pwquality(&ctx);
+        assert_eq!(value(&facts, "pwquality.minlen"), json!(12));
+        assert_eq!(value(&facts, "pwquality.dcredit"), json!(-1));
     }
 
     /// The main file with `minlen = 12` and `minclass = 3` set.

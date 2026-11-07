@@ -189,15 +189,31 @@ impl<'a> Ctx<'a> {
 
     /// A bounded read; refuses secret files ([`host::is_secret_path`]).
     pub fn read(&self, path: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
+        self.in_time()?;
         host::read_file(self.host, path, max_bytes)
     }
 
     pub fn stat(&self, path: &str) -> io::Result<Stat> {
+        self.in_time()?;
         self.host.stat(std::path::Path::new(path))
     }
 
     pub fn list(&self, dir: &str, max_entries: usize) -> io::Result<Vec<String>> {
+        self.in_time()?;
         self.host.list(std::path::Path::new(dir), max_entries)
+    }
+
+    /// Filesystem calls share the budget with commands (review of #114): none starts once it is used
+    /// up, so 512 paths on a dead mount cost at most the budget plus one [`host::IO_TIMEOUT`], not
+    /// 512 of them.
+    fn in_time(&self) -> io::Result<()> {
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "not read: the collection's time budget was used up",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -298,7 +314,8 @@ fn plan(fact: &ManifestFact, known: &HashMap<&'static str, (Source, FactType)>) 
 }
 
 /// Collects every fact of `manifest`. Runs in a few seconds on a normal host; commands are bounded by
-/// [`BUDGET`] and their own limits, filesystem calls by [`host::IO_TIMEOUT`].
+/// [`BUDGET`] and their own limits, filesystem calls by [`host::IO_TIMEOUT`] each and by the same
+/// budget in all (none starts after it), so a collection ends within the budget plus one call's limit.
 pub fn collect(host: &dyn Host, manifest: &Manifest) -> BTreeMap<String, Fact> {
     collect_within(host, manifest, BUDGET)
 }
