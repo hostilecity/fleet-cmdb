@@ -1,0 +1,51 @@
+<%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :vulnerabilities, title: "#{@host.name}: findings for #{@package}" %>
+<% open = @findings.reject { |f| f.state == "resolved" } %>
+<% resolved = @findings.select { |f| f.state == "resolved" } %>
+<p><%= link_to "← Vulnerabilities", vulnerabilities_host_path(@host) %></p>
+<h2 class="page-title mono"><%= @package %></h2>
+<div class="cols-2">
+  <section class="sheet flat" aria-labelledby="installed_heading" id="installed_package">
+    <h3 id="installed_heading">Installed package</h3>
+    <% if @installed.empty? %>
+      <p class="muted">Not installed now. The findings below are from when it was.</p>
+    <% else %>
+      <% @installed.each do |package| %>
+        <dl class="facts tight">
+          <dt>Name</dt><dd class="mono"><%= package.name %>:<%= package.architecture %></dd>
+          <dt>Version</dt><dd class="mono"><%= package.version %></dd>
+          <dt>Source package</dt><dd><%= package.source ? tag.span(package.source, class: "mono") : tag.span("None recorded", class: "muted") %></dd>
+          <dt>Package manager</dt><dd><%= @set&.manager %></dd>
+          <dt>Ecosystem</dt><dd><%= @ecosystem ? tag.span(@ecosystem, class: "mono") : tag.span("Not known", class: "muted") %></dd>
+        </dl>
+      <% end %>
+    <% end %>
+  </section>
+  <section class="sheet flat" aria-labelledby="findings_summary_heading" id="package_summary">
+    <h3 id="findings_summary_heading">Findings for this package</h3>
+    <% if @findings.empty? %>
+      <p class="none-open"><strong>No findings.</strong></p>
+    <% else %>
+      <p><strong><%= open.size %> open</strong><%= " (#{open.count { |f| f.state == 'reopened' }} reopened)" if open.any? { |f| f.state == "reopened" } %>, <strong><%= resolved.size %> resolved</strong>.</p>
+      <% open.select(&:fixed_version).each do |finding| %>
+        <p class="muted">The installed version is lower than the fixed version of <span class="mono"><%= finding.advisory.advisory_id %></span>, so updating to <span class="mono"><%= finding.fixed_version %></span> or later resolves it.</p>
+      <% end %>
+    <% end %>
+    <% if @siblings.any? %>
+      <p class="muted">Other packages built from the same source with findings: <%= safe_join(@siblings.map { |name| link_to(name, package_vulnerabilities_host_path(@host, package: name), class: "mono") }, ", ") %>.</p>
+    <% end %>
+  </section>
+</div>
+<% if @findings.any? %>
+  <h3>All findings for <span class="mono"><%= @package %></span></h3>
+  <div class="table-wrap"><table id="package_findings"><caption class="visually-hidden">Findings for <%= @package %></caption>
+    <thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Package</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">History</th></tr></thead><tbody>
+    <% @findings.each do |finding| %>
+      <tr class="finding <%= finding.state %>"><td><%= severity_tag(finding.advisory.severity) %></td><td><%= advisory_cell(finding.advisory) %></td>
+        <td><span class="mono"><%= finding.package %>:<%= finding.architecture %></span></td><td><span class="mono"><%= finding.installed_version %></span></td>
+        <td><%= finding.fixed_version ? tag.span(finding.fixed_version, class: "mono") : tag.span("No fix available", class: "unavailable") %></td>
+        <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>
+        <td><%= finding_history(finding) %></td></tr>
+    <% end %>
+  </tbody></table></div>
+  <p class="muted">A finding keeps only its latest resolution and reopening, so a finding that came and went more than once lists the latest round.</p>
+<% end %>

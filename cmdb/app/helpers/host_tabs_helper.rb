@@ -1,13 +1,14 @@
 # The host tab bar and summary tiles (P2-D02 to P2-D04, approved mockups, owner decision Q1): real links, so the
 # current tab is aria-current, never a script-driven tab widget.
 module HostTabsHelper
-  TABS = { overview: "Overview", config: "Configuration", packages: "Packages" }.freeze
+  TABS = { overview: "Overview", config: "Configuration", packages: "Packages", vulnerabilities: "Vulnerabilities" }.freeze
 
   def host_tab_path(host, tab, **params)
     case tab
     when :overview then host_path(host, **params)
     when :config then config_host_path(host, **params)
     when :packages then packages_host_path(host, **params)
+    when :vulnerabilities then vulnerabilities_host_path(host, **params)
     end
   end
 
@@ -20,15 +21,20 @@ module HostTabsHelper
     end
   end
 
-  # The count beside a tab's name: packages installed ("Unsupported" when unknown).
+  # The count beside a tab's name: packages installed ("Unsupported" when unknown), open findings ("Not evaluated"
+  # when the host is not, unless findings from an earlier evaluation are still open).
   def tab_count(summary, tab)
-    set = summary.package_set
-    return nil unless tab == :packages && set
+    case tab
+    when :packages
+      set = summary.package_set
+      return nil unless set
+      return "Unsupported" if set.unsupported?
+      return "Unreadable" unless set.known?
 
-    return "Unsupported" if set.unsupported?
-    return "Unreadable" unless set.known?
-
-    number_with_delimiter(set.package_count)
+      number_with_delimiter(set.package_count)
+    when :vulnerabilities
+      summary.vulnerabilities_evaluated? || summary.open_findings.positive? ? "#{number_with_delimiter(summary.open_findings)} open" : "Not evaluated"
+    end
   end
 
   # "80.6%", from a pass rate between 0 and 1.
