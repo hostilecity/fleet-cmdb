@@ -26,6 +26,7 @@ RSpec.describe "rules rake tasks (P2-S04)" do
     expect(run("rules:import", "FILE" => example)).to include("Created: 0", "Unchanged: 11")
     expect(run("rules:list")).to include("ssh-root-login-off  v1  enabled  high  sshd.permitrootlogin", "timesync-running  v1  disabled  medium  service:chrony.service")
     expect(AuditEntry.where(action: Audit::Actions::RULE_CREATED).pluck(:actor_type).uniq).to eq([ "system" ])
+    expect(AuditEntry.where(action: Audit::Actions::RULE_CREATED).map { |entry| entry.changeset["source"] }.uniq).to eq([ "rules_import" ]) # P2-D06
   end
 
   it "disables rules missing from the file only with DISABLE_MISSING=1" do
@@ -33,6 +34,7 @@ RSpec.describe "rules rake tasks (P2-S04)" do
     empty = write({ "format_version" => 1, "rules" => [] }.to_yaml)
     expect(run("rules:import", "FILE" => empty)).to include("Disabled: 0")
     expect(run("rules:import", "FILE" => empty, "DISABLE_MISSING" => "1")).to include("Disabled: 10: ")
+    expect(AuditEntry.where(action: Audit::Actions::RULE_DISABLED).map { |entry| entry.changeset["source"] }.uniq).to eq([ "rules_import" ])
   end
 
   it "aborts with every problem and changes nothing for an invalid file" do

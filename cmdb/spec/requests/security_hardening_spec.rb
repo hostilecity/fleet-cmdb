@@ -13,9 +13,10 @@ RSpec.describe "Security hardening", type: :request do
     host, = enrolled_host
     release_for_rollout
     request_record = start_onboarding(client_ip: "192.0.2.10").record
+    rule, = define_cis_rules(cis_rule_hash)
     [ "/", "/hosts/new", "/hosts/#{host.id}", "/hosts/#{host.id}/edit", "/hosts/#{host.id}/revoke", "/hosts/#{host.id}/retire",
       "/hosts/#{host.id}/reenroll", "/settings", "/audit", "/agents", "/agents/install", "/onboard", "/onboard/#{request_record.user_code}",
-      "/jobs/failed" ]
+      "/jobs/failed", "/rules", "/rules/new", "/rules/import", "/rules/#{rule.id}", "/rules/#{rule.id}/edit", "/rules/#{rule.id}/disable" ]
   end
 
   describe "Content Security Policy" do

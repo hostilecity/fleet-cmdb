@@ -1,0 +1,16 @@
+<% content_for :title, "Disable #{@rule.key}" %>
+<% failing = @results.failing %>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <h2 id="dialog_title">Disable <%= @rule.key %>?</h2>
+  <% if @rule.enabled %>
+    <p>The rule is no longer evaluated. Its result on <%= @results.rows.size == 1 ? "the 1 host" : "all #{@results.rows.size} hosts" %> becomes "Not evaluated", and it drops out of every host's pass rate until you enable it again.
+      <% if failing.any? %>Fleet failure counts fall by <%= failing.size %> (<%= (failing.first(5).map(&:name) + (failing.size > 5 ? [ "#{failing.size - 5} more" ] : [])).to_sentence %>).<% else %>It fails on no host now, so fleet failure counts do not change.<% end %>
+      Its history and versions are kept.</p>
+    <%= form_with url: disable_rule_path(@rule), method: :post do %>
+      <div class="actions"><button class="btn danger" type="submit">Disable rule</button><%= link_to "Keep it enabled", rule_path(@rule), class: "btn quiet" %></div>
+    <% end %>
+  <% else %>
+    <p>The rule is already disabled.</p>
+    <div class="actions"><%= link_to "Back to the rule", rule_path(@rule), class: "btn quiet" %></div>
+  <% end %>
+</div>

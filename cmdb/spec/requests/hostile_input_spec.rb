@@ -173,8 +173,56 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
           [ "/agents/rollouts/#{rollout.id}/advance", false ], [ "/agents/rollouts/#{rollout.id}/cancel", false ],
           [ "/agents/rollouts/new?release=#{CGI.escape(text.first(80))}&canary_tag=#{CGI.escape(text.first(32))}&stages=#{CGI.escape(text.first(100))}", false ],
           [ "/onboard", true ], [ "/onboard/#{onboarding.user_code}", true ], [ "/onboard/#{CGI.escape(text.first(30))}", false ],
-          [ "/jobs/failed", true ], [ "/settings", false ], [ "/sign_in?return_to=#{CGI.escape(text.first(100))}", false ]
+          [ "/jobs/failed", true ], [ "/settings", false ], [ "/sign_in?return_to=#{CGI.escape(text.first(100))}", false ],
+          *rule_pages
         ]
+      end
+
+      # The rules pages (P2-D06): the hostile rule's title, reference, remediation, operand, and observed value.
+      def rule_pages
+        id = CisRule.find_by!(key: "ssh-banner").id
+        [ [ "/rules", true ], [ "/rules/#{id}", true ], [ "/rules/#{id}/edit", true ], [ "/rules/#{id}/versions/1", true ],
+          [ "/rules/#{id}/disable", true ], [ "/rules/#{id}/enable", false ], [ "/rules/new", false ], [ "/rules/import", false ],
+          [ "/rules?q=#{CGI.escape(text.first(100))}&severity=#{CGI.escape(text.first(30))}&status=#{CGI.escape(text.first(30))}&applies=#{CGI.escape(text.first(30))}" \
+            "&result=#{CGI.escape(text.first(30))}&sort=#{CGI.escape(text.first(30))}&page=#{CGI.escape(text.first(30))}", false ],
+          [ "/rules/import/#{CGI.escape(text.first(30))}", false ], [ "/rules/#{id}/versions/#{CGI.escape(text.first(30))}", false ] ]
+      end
+
+      # A rule as the add and edit forms send it, every text field hostile.
+      def hostile_rule_params(**overrides)
+        { rule: { "key" => "ssh-banner-2", "title" => fit(200), "reference" => fit(128), "severity" => "low", "fact" => "sshd.banner", "operator" => "eq",
+                  "expected" => text.first(100), "remediation" => text.first(4_000), "enabled" => "1",
+                  "platforms" => { "0" => { "distribution" => "debian", "versions" => "13" } } }.merge(overrides) }
+      end
+
+      it "escapes the rule forms, their previews, and their errors, and an imported file's preview and problems (P2-D06)" do
+        rule = CisRule.find_by!(key: "ssh-banner")
+        [ [ "/rules/preview", hostile_rule_params ], [ "/rules/preview", hostile_rule_params("key" => text.first(64), "fact" => text.first(100), "severity" => text.first(30)) ],
+          [ "/rules/#{rule.id}/preview", hostile_rule_params.merge(base_version_id: rule.current_version_id) ],
+          [ "/rules/#{rule.id}/preview", hostile_rule_params("reference" => "", "condition_text" => text).merge(base_version_id: rule.current_version_id) ],
+          [ "/rules/preview", hostile_rule_params.merge(back: "1") ] ].each do |path, params|
+          post path, params: params
+          expect(response.status).to be_between(200, 499), "POST #{path} -> #{response.status}"
+          expect_no_injected_markup("POST #{path}")
+        end
+
+        file = ->(rules, name) { Rack::Test::UploadedFile.new(StringIO.new(JSON.generate({ "format_version" => 1, "rules" => rules })), "application/json", original_filename: name) }
+        good = cis_rule_hash(key: "ssh-banner-3", title: fit(200), reference: fit(128), fact: "sshd.banner", condition: { "eq" => text.first(100) }, remediation: text.first(4_000))
+        changed = cis_rule_hash(key: "ssh-banner", title: fit(200).reverse, reference: fit(128), fact: "sshd.banner", condition: { "eq" => text.first(99) }, remediation: text.first(3_999))
+        post "/rules/import", params: { file: file.([ good, changed ], "#{fit(200).delete('/')}.json") }
+        if text.match?(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/)
+          expect(response).to have_http_status(:unprocessable_content) # YAML refuses control characters, so the file is listed as a problem
+        else
+          expect(response).to have_http_status(:redirect)
+          follow_redirect!
+          expect(response).to have_http_status(:ok)
+          expect_shown_as_text(text.delete("/"), "rule import preview")
+        end
+        expect_no_injected_markup("rule import preview")
+
+        post "/rules/import", params: { file: file.([ good.merge("key" => text.first(64), "severity" => text.first(30), "fact" => text.first(100)) ], "#{fit(200).delete('/')}.json") }
+        expect(response.status).to eq(422)
+        expect_no_injected_markup("rule import problems")
       end
 
       it "renders every view with the value escaped" do
@@ -245,7 +293,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                host_vulnerabilities#show host_vulnerabilities#package
                host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
-               rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel]
+               rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel
+               rules#index rules#show rules#new rules#edit rules#confirm_disable rules#confirm_enable rule_versions#show rule_imports#new rule_imports#show]
     views = Rails.application.routes.routes.filter_map do |route|
       controller, action = route.defaults.values_at(:controller, :action)
       next unless route.verb == "GET" && controller && !controller.start_with?("api/", "rails/") && controller != "health"
