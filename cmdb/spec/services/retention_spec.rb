@@ -73,7 +73,7 @@ RSpec.describe Retention do
       expect(counts).to eq("inventory_snapshots" => 2, "inventory_report_receipts" => 1, "package_snapshots" => 1,
                            "package_report_receipts" => 1, "config_snapshots" => 1, "config_report_receipts" => 1,
                            "cis_result_changes" => 0, "host_status_events" => 1, "report_requests" => 1,
-                           "advisory_refresh_attempts" => 1)
+                           "advisory_refresh_attempts" => 1, "vulnerability_findings" => 0)
       expect(old.map { |row| row.class.exists?(row.id) }).to all(be(false))
       expect(kept.map { |row| row.class.exists?(row.id) }).to all(be(true))
     end
@@ -97,6 +97,35 @@ RSpec.describe Retention do
 
       expect(described_class.prune!(now:)["cis_result_changes"]).to eq(1)
       expect([ old, kept, current ].map { |row| row.class.exists?(row.id) }).to eq([ false, true, true ])
+    end
+
+    it "prunes findings resolved before the window, never open or reopened ones, however old (P2-S12)" do
+      findings!(host, "high", state: "resolved")
+      findings!(host, "low", state: "resolved")
+      findings!(host, "critical")
+      findings!(host, "medium", state: "reopened")
+      old_resolved, recent_resolved, open, reopened = VulnerabilityFinding.order(:id).to_a
+      old_resolved.update_columns(resolved_at: now - 100.days)
+      recent_resolved.update_columns(resolved_at: now - 10.days)
+      open.update_columns(first_seen_at: now - 400.days)
+      reopened.update_columns(first_seen_at: now - 400.days, resolved_at: now - 300.days, reopened_at: now - 200.days)
+
+      expect(described_class.prune!(now:)["vulnerability_findings"]).to eq(1)
+      expect([ old_resolved, recent_resolved, open, reopened ].map { |row| VulnerabilityFinding.exists?(row.id) }).to eq([ false, true, true, true ])
+    end
+
+    it "opens a new finding when an advisory matches again after its resolved finding was pruned" do
+      record = osv_record(id: "DSA-9001-1", package: "openssl", fixed: "3.5.1-1+deb13u1")
+      import_advisories(record, full: true)
+      vulnerable = debian_host(packages: [ [ "openssl", "3.5.0-1", "openssl" ] ])
+      VulnerabilityMatcher.match!([ vulnerable.id ])
+      finding = VulnerabilityFinding.sole
+      finding.update_columns(state: "resolved", resolution: "fixed", resolved_at: now - 100.days)
+      described_class.prune!(now:)
+      expect(VulnerabilityFinding.count).to eq(0)
+
+      VulnerabilityMatcher.match!([ vulnerable.id ])
+      expect(VulnerabilityFinding.sole).to have_attributes(state: "open", resolved_at: nil, reopened_at: nil)
     end
 
     it "always keeps the newest config snapshot of each host, whatever its age (P2-S02)" do
@@ -196,7 +225,7 @@ RSpec.describe Retention do
 
       described_class.prune!(now:)
 
-      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 package_snapshots=0 package_report_receipts=0 config_snapshots=0 config_report_receipts=0 cis_result_changes=0 host_status_events=0 report_requests=0 advisory_refresh_attempts=0 older than 2026-08-03T12:00:00Z/)
+      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 package_snapshots=0 package_report_receipts=0 config_snapshots=0 config_report_receipts=0 cis_result_changes=0 host_status_events=0 report_requests=0 advisory_refresh_attempts=0 vulnerability_findings=0 older than 2026-08-03T12:00:00Z/)
     end
   end
 
