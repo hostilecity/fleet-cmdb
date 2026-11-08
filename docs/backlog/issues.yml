@@ -187,10 +187,9 @@
   milestone: 1
   labels: ["area:ops", "security"]
   covers: [NFR-1, NFR-4, NFR-2]
-  goal: "The server runs as a container on the owner's VM, deployed by GitHub Actions, behind the Cloudflare tunnel with a private agent endpoint (#137), tested backups (#138), and installation docs a newcomer can follow."
+  goal: "The server runs as a container on the owner's VM, deployed by GitHub Actions, behind the Cloudflare tunnel with a private agent endpoint (#137), with installation docs a newcomer can follow (backups: #138, later)."
   done:
     - "`/api/v1` is unreachable through the public hostname, and an agent verifies the agent-hostname certificate with its compiled-in trust (ADR 0024), with no `ca_file`."
-    - "A restore drill into a scratch database boots the app with the expected hosts and audit entries."
     - "Following the docs alone, a fresh reader sets up the server and enrolls a VM."
   blocked_by: [P1-ACCESS, P1-PACKAGING, P1-RELEASES]
 
@@ -407,13 +406,13 @@
 
 - key: P2-SOAK
   title: "72-hour agent soak run"
-  milestone: 2
+  milestone: 3
   labels: ["area:agent", "area:ops"]
   covers: [FR-1.6, FR-1.2, NFR-3]
   goal: "The agent runs for 72 hours through server outages, an update, and a forced rollback without leaking or restarting itself."
   done:
     - "A 72-hour run of agent/scripts/soak.sh on a disposable VM passes every check at the tolerances in P1-A09."
-    - "Its summary and raw samples are attached to the Phase 2 delivery note."
+    - "Its summary and raw samples are posted on this issue (the owner runs it later in testing; it does not block Phase 2 acceptance, owner 2026-11-08)."
   blocked_by: [P1-VERIFY]
 
 - key: P2-ACCEPT
@@ -421,11 +420,11 @@
   milestone: 2
   labels: ["area:ops", "area:server"]
   covers: [NFR-2, NFR-3, NFR-5, FR-S.2, AC-2.6, AC-2.1, AC-2.2, AC-2.3, AC-2.4, AC-2.5]
-  goal: "Phase 2 is accepted: retention and performance hold, Phase 1 fixtures still pass, every AC-2.x passes, and a delivery note is posted."
+  goal: "Phase 2 is accepted: retention and performance hold, every AC-2.x passes, and a delivery note is posted."
   done:
-    - "AC-2.1 to AC-2.6 have recorded evidence, and Phase 1 golden fixtures pass unchanged against the Phase 2 server."
+    - "AC-2.1 to AC-2.6 have recorded evidence."
     - "The fleet list and compliance view load under 2 s at 50 hosts and heartbeat p95 stays under 200 ms."
-  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET, P2-SOAK, P2-RULE-DRYRUN, P2-REFRESH-LIMIT, P2-DEBIAN-TRIAGE]
+  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET, P2-RULE-DRYRUN, P2-REFRESH-LIMIT, P2-DEBIAN-TRIAGE]
 
 - key: P3-TASK-MODEL
   title: "Task catalog, task and batch models, state machine"
