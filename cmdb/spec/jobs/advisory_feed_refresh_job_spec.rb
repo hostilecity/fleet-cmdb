@@ -298,7 +298,10 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
     let(:tracker) { "https://security-tracker.example.org/tracker/data/json" }
     let(:document) { DebianTrackerHelpers::FIXTURES.join("sample.json").read }
 
-    before { DebianTriage.config.tracker_url = tracker }
+    before do
+      DebianTriage.config.tracker_url = tracker
+      debian_host(packages: nil) # a trixie host, so the tracker refresh has a release to import
+    end
 
     def manual_refresh
       perform_enqueued_jobs { Advisories::ManualRefresh.request!(actor: operator) }
@@ -319,7 +322,7 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
       expect(Advisories::ManualRefresh.next_allowed_at).to be_present
       requested = AuditEntry.where(action: "advisory.refresh_requested").sole
       expect(requested.changeset).to include("source" => "advisories.example.org/osv/Debian/all.zip", "triage_source" => "security-tracker.example.org/tracker/data/json")
-      expect(AuditEntry.order(:id).pluck(:action)).to eq(%w[advisory.refresh_requested advisory.imported advisory.triage_imported])
+      expect(AuditEntry.where("action LIKE ?", "advisory.%").order(:id).pluck(:action)).to eq(%w[advisory.refresh_requested advisory.imported advisory.triage_imported])
       expect(AuditEntry.where(action: "advisory.triage_imported").sole).to have_attributes(actor_type: "operator", actor_id: operator.id)
     end
 

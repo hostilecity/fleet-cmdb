@@ -37,7 +37,7 @@ class DebianTriageRefreshJob < ApplicationJob
     @source = feed.source
     # No active host reports a release in the table: nothing to download (an import that says so, and drops any
     # stored data).
-    return DebianTriage::Import.new(origin: "feed", source: @source).call(nil) if DebianTriage::Releases.in_use.empty?
+    return DebianTriage::Import.new(origin: "feed", source: @source, operator: @operator).call(nil) if DebianTriage::Releases.in_use.empty?
 
     last = TriageImport.debian.where(origin: "feed", source: @source).order(finished_at: :desc, id: :desc).first
     # Only a clean, complete success of the releases hosts now report may be asked about conditionally: after a
