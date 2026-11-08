@@ -8,7 +8,7 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0002](0002-server-stack.md) | Server stack baseline | DEC-02 |
 | [0003](0003-agent-privilege.md) | Agent runs as root under a hardened unit | DEC-03 |
 | [0004](0004-enrollment.md) | Single-use enrollment token (amended by 0017: now pre-registration) | DEC-04 |
-| [0005](0005-hosting-tls-deployment.md) | Docker Compose; Cloudflare tunnel for the dashboard; private agent API | DEC-05 |
+| [0005](0005-hosting-tls-deployment.md) | Docker Compose; Cloudflare tunnel for the dashboard; private agent API (deployment superseded by 0023) | DEC-05 |
 | [0006](0006-operator-authentication.md) | Google OAuth allowlist; app-level second factor for tasks | DEC-06 |
 | [0007](0007-snapshots-and-retention.md) | Snapshot semantics and retention | DEC-07 |
 | [0008](0008-api-conventions.md) | Agent API conventions (amended by 0020: named directives) | DEC-08 |
@@ -26,3 +26,4 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0020](0020-named-heartbeat-directives.md) | Heartbeat directives are named entries in an object | DEC-20 |
 | [0021](0021-release-signature-format.md) | Release signature format: minisign | #15 |
 | [0022](0022-distribution-triage.md) | Show the distribution's own triage beside each finding | DEC-22 |
+| [0023](0023-deploy-with-github-actions.md) | Deploy the server with GitHub Actions as one container | #88 |

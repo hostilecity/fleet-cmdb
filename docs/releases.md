@@ -105,7 +105,7 @@ minisign -G -p next.pub -s next.key -c "fleet-agent release key 2"
 2. In **Settings > Environments > release > Environment secrets**, add `AGENT_RELEASE_SIGNING_KEY` with the **second line only** of `current.key` (the base64 line; the workflow adds the comment line back), and `AGENT_RELEASE_SIGNING_KEY_PASSWORD` with its password. A single-line secret is masked reliably in logs. Never add them as repository secrets.
 3. Back up `current.key`, `next.key`, and both passwords offline, then delete the key files from the machine.
 
-The server checks imported releases against the same public keys, from its own configuration ([P1-RELEASES](backlog/specs/p1-releases.md)): set `FLEET_RELEASE_KEY_CURRENT` (and, once there is one, `FLEET_RELEASE_KEY_NEXT`) to the contents of the `.pub` files (`cmdb/README.md`, "Agent releases"). After a rotation (below), update the server's keys in the same change as `current.pub`.
+The server checks imported releases against the same public keys, from its own configuration ([P1-RELEASES](backlog/specs/p1-releases.md)): set `FLEET_RELEASE_KEY_CURRENT` (and, once there is one, `FLEET_RELEASE_KEY_NEXT`) to the contents of the `.pub` files ([configuration.md](operations/configuration.md#agent-releases)). After a rotation (below), update the server's keys (the GitHub variables of the same names, then deploy) when `current.pub` changes.
 
 ### Rotation
 

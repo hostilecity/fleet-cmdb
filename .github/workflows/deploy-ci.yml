@@ -1,0 +1,132 @@
+# Deploy CI (P1-O03): checks the production image the way .github/workflows/cd.yml runs it. Builds it, starts a
+# throwaway PostgreSQL 17 with the role cmdb owning the four databases (as on the server), runs the image with an
+# env file, the database network, and a published port, waits for /up, and checks that the dashboard hostname serves
+# sign-in and refuses /api/v1, also with a forged X-Forwarded-Host. Also lints the deploy workflows and ops scripts.
+#
+# Branch protection may require the "Deploy CI" job. It always runs and passes when nothing it checks changed.
+name: Deploy CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read # paths-filter lists PR files through the API
+
+concurrency:
+  group: deploy-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect deployment changes
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.deploy }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            deploy:
+              - 'cmdb/**'
+              - 'docs/api/**'
+              - 'ops/**'
+              - '.github/workflows/cd.yml'
+              - '.github/workflows/deploy-ci.yml'
+
+  image:
+    name: Image check
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DASHBOARD: fleet.example.com
+      AGENT: agent.fleet.example.com
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Lint (actionlint also shellchecks the workflows' scripts)
+        run: |
+          shellcheck ops/backup/*.sh
+          curl -sSfL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/cd.yml .github/workflows/deploy-ci.yml
+
+      - name: Build the image (as cd.yml does)
+        run: docker build -q --build-context api=docs/api -t fleet-cmdb:ci cmdb
+
+      - name: Start PostgreSQL with the role cmdb and its four databases
+        run: |
+          password="$(openssl rand -hex 24)"
+          echo "DB_PASSWORD=$password" >> "$GITHUB_ENV"
+          docker network create fleet-db
+          docker run -d --name postgres --network fleet-db -e POSTGRES_PASSWORD="$(openssl rand -hex 24)" postgres:17
+          for _ in $(seq 1 60); do docker exec postgres pg_isready -q -U postgres && break; sleep 1; done
+          docker exec -i postgres psql -q -v ON_ERROR_STOP=1 -U postgres <<SQL
+          CREATE ROLE cmdb LOGIN PASSWORD '$password';
+          CREATE DATABASE cmdb_production OWNER cmdb;
+          CREATE DATABASE cmdb_production_cache OWNER cmdb;
+          CREATE DATABASE cmdb_production_queue OWNER cmdb;
+          CREATE DATABASE cmdb_production_cable OWNER cmdb;
+          SQL
+
+      - name: Run the image (as cd.yml does) and wait for /up
+        run: |
+          (umask 077 && printf '%s\n' SOLID_QUEUE_IN_PUMA=1 PGHOST=postgres "DATABASE_PASSWORD=$DB_PASSWORD" \
+            "SECRET_KEY_BASE=$(openssl rand -hex 64)" GOOGLE_CLIENT_ID=ci.apps.googleusercontent.com \
+            GOOGLE_CLIENT_SECRET=ci "FLEET_DASHBOARD_HOST=$DASHBOARD" "FLEET_AGENT_HOST=$AGENT" > "$RUNNER_TEMP/fleet-cmdb.env")
+          docker volume create fleet-cmdb_storage
+          docker run -d --name fleet-cmdb -p 127.0.0.1:8080:3000 --network fleet-db \
+            -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/fleet-cmdb.env" fleet-cmdb:ci
+          rm -f "$RUNNER_TEMP/fleet-cmdb.env"
+          for _ in $(seq 1 60); do
+            if docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker logs --tail 200 fleet-cmdb
+          exit 1
+
+      - name: Check the dashboard hostname
+        run: |
+          failed=0
+          expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; failed=1; fi; }
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          url=http://127.0.0.1:8080
+          expect "the sign-in page renders" 200 "$(code -H "Host: $DASHBOARD" "$url/sign_in")"
+          expect "the dashboard redirects to sign-in" "302 https://$DASHBOARD/sign_in" \
+            "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H "Host: $DASHBOARD" "$url/")"
+          expect "/api/v1 on the dashboard hostname is 404" 404 "$(code -X POST -H "Host: $DASHBOARD" "$url/api/v1/heartbeat")"
+          expect "a forged X-Forwarded-Host is ignored" 404 \
+            "$(code -X POST -H "Host: $DASHBOARD" -H "X-Forwarded-Host: $AGENT" "$url/api/v1/heartbeat")"
+          expect "a forged Forwarded host is ignored" 404 \
+            "$(code -X POST -H "Host: $DASHBOARD" -H "Forwarded: host=$AGENT" "$url/api/v1/heartbeat")"
+          expect "/health on the dashboard hostname is 404" 404 "$(code -H "Host: $DASHBOARD" "$url/health")"
+          expect "the storage volume belongs to the app" 1000 "$(docker exec fleet-cmdb stat -c %u /rails/storage/releases)"
+          health="$(docker exec fleet-cmdb curl -s -w ' %{http_code}' http://localhost:3000/health)"
+          echo "/health: $health"
+          expect "/health is 503 until a backup exists" 503 "${health##* }"
+          if [ "$failed" -ne 0 ]; then docker logs --tail 100 fleet-cmdb; exit 1; fi
+
+  gate:
+    name: Deploy CI
+    needs: [changes, image]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          IMAGE: ${{ needs.image.result }}
+        run: |
+          echo "changes=$CHANGES image=$IMAGE"
+          if [ "$CHANGES" != "success" ]; then exit 1; fi
+          if [ "$IMAGE" = "failure" ] || [ "$IMAGE" = "cancelled" ]; then exit 1; fi

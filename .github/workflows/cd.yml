@@ -1,0 +1,153 @@
+# Deploy (P1-O03): builds and runs the server on its VM (docs/operations/install-server.md). On a self-hosted runner
+# on the LAN it connects to the VM over SSH, ships the commit (git archive), builds the image there, and replaces the
+# fleet-cmdb container, which joins the existing PostgreSQL container's Docker network and publishes port 80 for the
+# Cloudflare tunnel. Settings come from the "production" environment; secret values travel only on SSH standard
+# input into a mode-0600 env file for `docker run --env-file`, never on a command line.
+#
+# Runs when started by hand (Actions > Deploy > Run workflow; give an earlier commit of main to roll back), and on
+# every push to main only once the repository variable DEPLOY_ON_PUSH is "true".
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit of main to deploy (for a rollback). Empty: the head of the selected branch."
+        required: false
+        default: ""
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail
+
+jobs:
+  deploy:
+    name: Deploy to the server
+    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_ON_PUSH == 'true'
+    runs-on: self-hosted
+    environment: production
+    timeout-minutes: 30
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || 'fleet-cmdb' }}
+      DB_NETWORK: ${{ vars.FLEET_DB_NETWORK }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the commit may be older than the branch head, and must be on main
+          persist-credentials: false
+
+      - name: Choose the commit and check the deploy settings
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: |
+          ref="${REQUESTED_REF:-HEAD}"
+          [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "::error::not a commit: $ref"; exit 1; }
+          sha="$(git rev-parse --verify --end-of-options "$ref^{commit}")"
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$sha is not on main"; exit 1; }
+          echo "DEPLOY_SHA=$sha" >> "$GITHUB_ENV"
+          echo "Deploying $(git log -1 --format='%h %s' "$sha")"
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]] || { echo "::error::set the variable DEPLOY_HOST"; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "::error::set the variable DEPLOY_USER"; exit 1; }
+          [[ "$DEPLOY_DIR" =~ ^[A-Za-z0-9._/-]+$ && "$DEPLOY_DIR" != *..* ]] || { echo "::error::DEPLOY_DIR is not a plain path"; exit 1; }
+          [[ "$DB_NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::set the variable FLEET_DB_NETWORK"; exit 1; }
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          # In this job's temporary directory, removed at the end; never in the runner user's ~/.ssh.
+          dir="$RUNNER_TEMP/deploy-ssh"
+          rm -rf "$dir" && (umask 077 && mkdir "$dir" && printf '%s\n' "$SSH_PRIVATE_KEY" > "$dir/key")
+          if [ -n "$DEPLOY_KNOWN_HOSTS" ]; then printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$dir/known_hosts"
+          else ssh-keyscan -H -T 10 "$DEPLOY_HOST" > "$dir/known_hosts" 2>/dev/null; fi
+          printf 'Host server\n  HostName %s\n  User %s\n  IdentityFile %s/key\n  IdentitiesOnly yes\n  UserKnownHostsFile %s/known_hosts\n  StrictHostKeyChecking yes\n  BatchMode yes\n' \
+            "$DEPLOY_HOST" "$DEPLOY_USER" "$dir" "$dir" > "$dir/config"
+          echo "SSH_CONFIG=$dir/config" >> "$GITHUB_ENV"
+
+      - name: Ship the code
+        run: |
+          git archive --format=tar "$DEPLOY_SHA" | ssh -F "$SSH_CONFIG" server \
+            "rm -rf '$DEPLOY_DIR/build-$DEPLOY_SHA' && mkdir -p '$DEPLOY_DIR/build-$DEPLOY_SHA' && tar -xf - -C '$DEPLOY_DIR/build-$DEPLOY_SHA'"
+
+      - name: Write the app's env file on the server
+        env:
+          SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          FLEET_ADVISORY_FEED_TOKEN: ${{ secrets.FLEET_ADVISORY_FEED_TOKEN }}
+          FLEET_DASHBOARD_HOST: ${{ vars.FLEET_DASHBOARD_HOST }}
+          FLEET_AGENT_HOST: ${{ vars.FLEET_AGENT_HOST }}
+          FLEET_RELEASE_KEY_CURRENT: ${{ vars.FLEET_RELEASE_KEY_CURRENT }}
+          FLEET_RELEASE_KEY_NEXT: ${{ vars.FLEET_RELEASE_KEY_NEXT }}
+          RAILS_LOG_LEVEL: ${{ vars.RAILS_LOG_LEVEL }}
+          PGHOST: ${{ vars.FLEET_DB_HOST || 'postgres' }}
+          FLEET_EXTRA_SETTINGS: ${{ vars.FLEET_EXTRA_SETTINGS }}
+        run: |
+          # One NAME=value per line (docker takes the value literally). Unset optional settings are left out, so the
+          # app's defaults apply. Only names are ever printed.
+          lines=(SOLID_QUEUE_IN_PUMA=1)
+          for name in SECRET_KEY_BASE DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST \
+                      PGHOST RAILS_LOG_LEVEL FLEET_RELEASE_KEY_CURRENT FLEET_RELEASE_KEY_NEXT FLEET_ADVISORY_FEED_TOKEN; do
+            [[ "${!name}" != *$'\n'* ]] || { echo "::error::$name holds a line break"; exit 1; }
+            if [ -n "${!name}" ]; then lines+=("$name=${!name}"); fi
+          done
+          for name in SECRET_KEY_BASE DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST; do
+            [ -n "${!name}" ] || { echo "::error::set $name in the production environment"; exit 1; }
+          done
+          while IFS= read -r line; do # FLEET_EXTRA_SETTINGS: further non-secret settings, NAME=value per line
+            [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+            [[ "$line" =~ ^[A-Z][A-Z0-9_]*= ]] || { echo "::error::FLEET_EXTRA_SETTINGS: a line is not NAME=value"; exit 1; }
+            lines+=("$line")
+          done <<< "$FLEET_EXTRA_SETTINGS"
+          printf '%s\n' "${lines[@]}" | ssh -F "$SSH_CONFIG" server "umask 077 && cat > '$DEPLOY_DIR/fleet-cmdb.env'"
+
+      - name: Build and run on the server
+        run: |
+          ssh -F "$SSH_CONFIG" server "bash -s -- '$DEPLOY_DIR' '$DEPLOY_SHA' '$DB_NETWORK'" <<'REMOTE'
+          set -euo pipefail
+          dir="$1" sha="$2" network="$3"
+          cd "$dir"
+          echo "==> database network $network"
+          docker network inspect "$network" >/dev/null \
+            || { echo "the Docker network $network does not exist: start the PostgreSQL container first, or fix FLEET_DB_NETWORK" >&2; exit 1; }
+          echo "==> storage volume"
+          docker volume create fleet-cmdb_storage >/dev/null
+          echo "==> build fleet-cmdb:$sha"
+          docker build --pull -q --build-context api="build-$sha/docs/api" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
+          echo "==> replace the container"
+          docker rm -f fleet-cmdb >/dev/null 2>&1 || true
+          docker run -d --name fleet-cmdb -p 80:3000 --network "$network" --restart unless-stopped \
+            -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb.env "fleet-cmdb:$sha" >/dev/null
+          rm -f fleet-cmdb.env
+          echo "==> wait for /up (the first start creates and migrates the databases)"
+          for _ in $(seq 1 60); do
+            if docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null; then up=yes; break; fi
+            sleep 5
+          done
+          if [ -z "${up:-}" ]; then docker logs --tail 100 fleet-cmdb; echo "the app did not answer /up" >&2; exit 1; fi
+          docker ps --filter name='^fleet-cmdb$' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          echo "/health: $(docker exec fleet-cmdb curl -s http://localhost:3000/health) (503 until backups exist)"
+          docker images fleet-cmdb --format '{{.Tag}}' | grep -vx -e latest -e "$sha" | sed 's/^/fleet-cmdb:/' | xargs -r docker rmi >/dev/null || true
+          docker image prune -f >/dev/null
+          REMOTE
+
+      - name: Clean up
+        if: always()
+        run: |
+          if [ -n "${SSH_CONFIG:-}" ]; then
+            ssh -F "$SSH_CONFIG" server "rm -rf '$DEPLOY_DIR/build-${DEPLOY_SHA:-none}' '$DEPLOY_DIR/fleet-cmdb.env'" || true
+          fi
+          rm -rf "$RUNNER_TEMP/deploy-ssh"
