@@ -51,6 +51,13 @@ RSpec.describe "Settings", :signed_in, type: :request do
       expect(page.at_css("#server_certificate .notice strong").text).to eq("The server's certificate has expired.")
     end
 
+    it "keeps the section when a change is refused and the page is shown again" do
+      Rails.configuration.x.server_tls = tls(10)
+      patch "/settings", params: { online_minutes: "20", stale_minutes: "15" }
+      expect(page.at_css(".notice.error strong").text).to eq("Settings were not saved.")
+      expect(page.at_css("#server_certificate .notice strong").text).to eq("The server's certificate expires in 9 days.")
+    end
+
     it "says when none is configured" do
       Rails.configuration.x.server_tls = nil
       get "/settings"

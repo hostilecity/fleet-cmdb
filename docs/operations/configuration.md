@@ -23,7 +23,7 @@ Keep a copy of each with your other secrets (GitHub never shows a secret again),
 | `RAILS_MASTER_KEY` | not used | The repository's `cmdb/config/credentials.yml.enc` belongs to its owner and holds nothing a deployment needs; `SECRET_KEY_BASE` replaces it. Not passed by the workflow |
 | `DATABASE_PASSWORD` | required | Password of the existing PostgreSQL role `cmdb`. To change it, change it in PostgreSQL (`ALTER ROLE cmdb PASSWORD '…'`) and in GitHub, then deploy |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | Google OAuth web client for operator sign-in. Redirect URI `https://$FLEET_DASHBOARD_HOST/auth/google_oauth2/callback` |
-| `FLEET_TLS_CERT_BASE64`, `FLEET_TLS_KEY_BASE64` | none (no HTTPS) | The server's certificate and its private key (ADR 0024): each PEM file base64-encoded onto one line. The deploy workflow encodes them from the secrets `FLEET_TLS_CERT` and `FLEET_TLS_KEY`. Puma then serves HTTPS on `FLEET_TLS_PORT`, TLS 1.2 and later. Set both or neither; a key that does not match, or a certificate that does not cover `FLEET_AGENT_HOST`, stops the server at boot. The Settings page shows the certificate's expiry |
+| `FLEET_TLS_CERT_BASE64`, `FLEET_TLS_KEY_BASE64` | none (no HTTPS) | The server's certificate and its private key (ADR 0024): each PEM file base64-encoded onto one line. The deploy workflow encodes them from the secrets `FLEET_TLS_CERT` and `FLEET_TLS_KEY`. Puma then serves HTTPS on port 3443 in the container (published as 443), TLS 1.2 and later. Set both or neither; a key that does not match, or a certificate that does not cover `FLEET_AGENT_HOST`, stops the server at boot. The Settings page shows the certificate's expiry |
 
 ## Agent releases
 
@@ -113,7 +113,6 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `JOB_CONCURRENCY` | `1` | Solid Queue worker processes |
 | `RAILS_ENV` | *fixed* by the image: `production` | |
 | `PORT` | *fixed* by the image: `3000` | Puma's plain-HTTP port inside the container, for its health checks; not published |
-| `FLEET_TLS_PORT` | `3443` | Puma's HTTPS port inside the container, published as port 443 on the server |
 | `SOLID_QUEUE_IN_PUMA` | *fixed* by the workflow: `1` | Background jobs and the recurring schedule run inside the app container |
 | `PGHOST` | *fixed* by the workflow: `$FLEET_DB_HOST` | The PostgreSQL server, for all four databases (role `cmdb`, set in `config/database.yml`) |
 | `DATABASE_URL`, `CACHE_DATABASE_URL`, `QUEUE_DATABASE_URL`, `CABLE_DATABASE_URL` | not set | Override a database's connection (the restore drill sets `DATABASE_URL` to its scratch database). Not used by the deployment |

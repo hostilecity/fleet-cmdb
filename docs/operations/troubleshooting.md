@@ -42,7 +42,7 @@ The agent logs `this host's clock differs from the server's`. The server always 
 
 1. On the VM: `systemctl status fleet-agent`. If it is not running, `journalctl -u fleet-agent -n 50` says why (often a config error, exit code 78, which names the key at fault).
 2. If it is running, its log shows whether requests fail: `cannot reach the fleet server` is a network, DNS, or certificate problem (above); `401` is a credential problem (above); `429` means rate limiting, which resolves itself.
-3. On the server: `curl -s https://fleet-vm.example.com/health`. If `job_liveness` is `failing`, the liveness evaluation is not running, so no host's status changes: check `docker ps --filter name=fleet-cmdb` and `docker logs fleet-cmdb` on the server, and the failed jobs page.
+3. On the server: `docker exec fleet-cmdb curl -s http://localhost:3000/health`. If `job_liveness` is `failing`, the liveness evaluation is not running, so no host's status changes: check `docker ps --filter name=fleet-cmdb` and `docker logs fleet-cmdb` on the server, and the failed jobs page.
 
 ## The onboarding request expired
 

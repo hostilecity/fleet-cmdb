@@ -35,6 +35,7 @@ jobs:
               - 'cmdb/**'
               - 'docs/api/**'
               - 'ops/**'
+              - 'agent/trust/**'
               - '.github/workflows/cd.yml'
               - '.github/workflows/deploy-ci.yml'
 

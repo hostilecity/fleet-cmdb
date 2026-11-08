@@ -1,11 +1,13 @@
 # Liveness thresholds (P1-D02, moved from P1-S09). Validated and audited by Setting; errors are shown in
 # place (FR-S.4).
 class SettingsController < ApplicationController
+  # The server certificate's section (ADR 0024), also when an invalid update renders the page again (review of #145).
+  before_action { @server_tls = Rails.configuration.x.server_tls }
+
   def edit
     thresholds = Setting.liveness_thresholds
     @online = thresholds[:online].in_minutes.to_i
     @stale = thresholds[:stale].in_minutes.to_i
-    @server_tls = Rails.configuration.x.server_tls
   end
 
   def update

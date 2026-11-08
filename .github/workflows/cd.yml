@@ -154,6 +154,10 @@ jobs:
             sleep 5
           done
           if [ -z "${up:-}" ]; then docker logs --tail 100 fleet-cmdb; echo "the app did not answer /up" >&2; exit 1; fi
+          # The HTTPS listener agents and the tunnel use (inside the container; -k: this checks the listener, the deploy
+          # checked the certificate before shipping).
+          docker exec fleet-cmdb curl -fsSk -o /dev/null https://localhost:3443/up \
+            || { docker logs --tail 100 fleet-cmdb; echo "the app does not answer HTTPS on 3443" >&2; exit 1; }
           docker ps --filter name='^fleet-cmdb$' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
           echo "/health: $(docker exec fleet-cmdb curl -s http://localhost:3000/health) (503 until backups exist)"
           docker images fleet-cmdb --format '{{.Tag}}' | grep -vx -e latest -e "$sha" | sed 's/^/fleet-cmdb:/' | xargs -r docker rmi >/dev/null || true
