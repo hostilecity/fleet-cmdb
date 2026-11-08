@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cancel a task · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Cancel a task</h1><p>The cancel confirmation in each case. Shown here open; in the app each opens over the task or batch page. Each needs the second factor unless it was passed in the last 5 minutes.</p></div></div>
+
+<div class="dialog" id="queued" role="dialog" aria-labelledby="q-t"><h2 id="q-t">Cancel task #1208 on sim-028?</h2>
+<p>It has not been delivered. It becomes <strong>cancelled</strong> now, and sim-028 will never receive it, even if it polls a moment from now.</p>
+<div class="field"><label for="otp-q">Code from your authenticator app</label><input id="otp-q" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+<div class="actions"><button class="btn danger" type="button">Cancel task</button><button class="btn quiet" type="button">Keep it</button></div></div>
+
+<div class="dialog" id="claimed" role="dialog" aria-labelledby="c-t"><h2 id="c-t">Cancel task #1214 on sim-031?</h2>
+<p>sim-031 has picked it up but has not started it. It becomes <strong>cancelled</strong> now. If the agent tries to start it, the server refuses and tells it to drop the task, so it never runs.</p>
+<div class="stepup passed" style="margin:0 0 1rem"><p style="margin:0"><strong>Second factor checked at 14:16 UTC.</strong> Not asked again until 14:21 UTC.</p></div>
+<div class="actions"><button class="btn danger" type="button">Cancel task</button><button class="btn quiet" type="button">Keep it</button></div></div>
+
+<div class="dialog" id="running-interruptible" role="dialog" aria-labelledby="ri-t"><h2 id="ri-t">Stop task #1212 on sim-012?</h2>
+<p>Collecting reports can be stopped safely. The agent gets the cancel on its next poll, within about 30 seconds, and stops. Reports it has already sent are kept. The task ends as <strong>cancelled</strong>.</p>
+<div class="field"><label for="otp-ri">Code from your authenticator app</label><input id="otp-ri" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+<div class="actions"><button class="btn danger" type="button">Stop task</button><button class="btn quiet" type="button">Let it run</button></div></div>
+
+<div class="dialog" id="running-not-interruptible" role="dialog" aria-labelledby="rn-t"><h2 id="rn-t">Task #1207 on sim-027 cannot be stopped</h2>
+<p><strong>It will keep running until it finishes</strong>, at 15:05:40 UTC at the latest. Applying package updates cannot be stopped safely once started: stopping the package manager part-way can damage the package database.</p>
+<p>What you can do: record that you asked to cancel, and stop the <strong>1 task in batch 87 that has not started</strong> (sim-028) from ever starting.</p>
+<div class="field"><label for="otp-rn">Code from your authenticator app</label><input id="otp-rn" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+<div class="actions"><button class="btn danger" type="button">Cancel what has not started</button><button class="btn quiet" type="button">Close</button></div></div>
+
+<div class="dialog" id="single-not-interruptible" role="dialog" aria-labelledby="sn-t"><h2 id="sn-t">Task #1215 on sim-015 cannot be stopped</h2>
+<p><strong>It will keep running until it finishes</strong>, at 23:10:00 UTC at the latest. Applying package updates cannot be stopped safely once started. It is not part of a batch, so there is nothing else to stop.</p>
+<div class="field"><label for="otp-sn">Code from your authenticator app</label><input id="otp-sn" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+<div class="actions"><button class="btn quiet" type="button">Record a cancel request anyway</button><button class="btn" type="button">Close</button></div></div>
+
+<div class="dialog" id="batch" role="dialog" aria-labelledby="b-t"><h2 id="b-t">Cancel the rest of batch 87?</h2>
+<ul class="change-list">
+<li><strong>1 waiting task</strong> (sim-028) becomes cancelled now and is never delivered.</li>
+<li><strong>1 running task</strong> (sim-027) cannot be stopped safely and runs to completion, by 15:05:40 UTC at the latest.</li>
+<li><strong>6 finished tasks</strong> are not changed. Nothing is undone.</li>
+</ul>
+<div class="field"><label for="otp-b">Code from your authenticator app</label><input id="otp-b" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+<div class="actions"><button class="btn danger" type="button">Cancel the rest</button><button class="btn quiet" type="button">Keep the batch going</button></div></div>
+
+<p class="note"><span class="review-q">Review Q23.</span> The cancel button is labelled by what it can do: "Cancel task" for queued and claimed, "Stop task" for a running task that can be interrupted, and "Request cancel" on the page for one that cannot, which opens a dialog whose title says it cannot be stopped. The batch dialog counts what will and will not change. "Nothing is undone" is said outright, because a cancel never rolls back a finished restart or upgrade. Any operator can cancel any task, not only the one who created it. Alternative: only the creator and the owner can cancel. The dialog for a lone non-interruptible task still offers to record the request, for the audit trail; say if it should only explain and close.</p>
+
+<h2 id="after" class="state-title">After cancelling</h2>
+<div class="notice info" role="status"><strong>Task #1208 cancelled. sim-028 will never receive it.</strong></div>
+<div class="notice" role="status"><strong>Cancel requested. Task #1207 keeps running until it finishes; 1 task in batch 87 that had not started was cancelled.</strong></div>
+<div class="notice error" role="alert"><strong>Not cancelled: task #1206 already finished</strong><p>It failed at 14:07:41 UTC, before your request. A finished task cannot be cancelled.</p></div>
+<div class="notice error" role="alert"><strong>Not cancelled: the code was not accepted.</strong><p>Nothing was changed. 4 attempts left in the next 15 minutes.</p></div>
+</main>
+</body>
+</html>

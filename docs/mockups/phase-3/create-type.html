@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New task: task type · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="tasks.html">&larr; Tasks</a></p>
+<div class="page-head"><div><h1>New task</h1><p>Tasks come only from this catalog, which is built into the agent. The dashboard cannot send a command, a script, or a program name, and no step of this form has a field for one.</p></div></div>
+<ol class="flow" aria-label="New task: step 1 of 4"><li aria-current="step"><span class="lbl">Task type</span></li><li><span class="lbl">Parameters</span></li><li><span class="lbl">Targets</span></li><li><span class="lbl">Confirm</span></li></ol>
+<form class="form wide" action="create-params.html" method="get">
+<fieldset><legend>Choose what to run</legend>
+<div class="catalog">
+<label class="choice"><input type="radio" name="type" value="refresh_reports"><strong>Collect fresh reports</strong><span class="type-id">refresh_reports</span>
+  <p>The agent collects the reports you choose (inventory, configuration, packages) with its built-in collectors and sends them now, the same reports it sends on its schedule. It changes nothing on the VM.</p>
+  <ul class="props"><li><strong>Can be cancelled while running:</strong> yes</li><li><strong>Time limit:</strong> 10 minutes</li><li><strong>Enabled on agents by default:</strong> yes</li><li><strong>Hosts that will run it:</strong> 41 of 41</li></ul></label>
+<label class="choice"><input type="radio" name="type" value="restart_service" checked><strong>Restart a service</strong><span class="type-id">restart_service</span>
+  <p>The agent asks systemd to restart one service, then checks that the service is running again. You choose the service from the server's allowlist; the VM must also list it in its own allowlist. Protected services (the agent itself, SSH, <span class="mono">systemd-*</span>, networking, D-Bus) are always refused.</p>
+  <ul class="props"><li><strong>Can be cancelled while running:</strong> no</li><li><strong>Time limit:</strong> 5 minutes</li><li><strong>Enabled on agents by default:</strong> no</li><li><strong>Hosts that will run it:</strong> 12 of 41</li></ul></label>
+<label class="choice"><input type="radio" name="type" value="apply_package_updates"><strong>Apply package updates</strong><span class="type-id">apply_package_updates</span>
+  <p>The agent refreshes the package lists, then upgrades installed packages to their newest versions. It never removes or newly installs a package (an upgrade that would need either is held back and listed), never changes the Debian release, keeps local configuration files, and respects holds. It never reboots and never restarts services; it reports whether a reboot is needed. A package report follows.</p>
+  <ul class="props"><li><strong>Can be cancelled while running:</strong> no</li><li><strong>Time limit:</strong> 60 minutes</li><li><strong>Enabled on agents by default:</strong> no</li><li><strong>Hosts that will run it:</strong> 9 of 41</li></ul></label>
+</div>
+</fieldset>
+<div class="actions"><button class="btn" type="submit">Next: parameters</button><a class="btn quiet" href="tasks.html">Cancel</a></div>
+</form>
+<p class="note"><span class="review-q">Review Q3.</span> The flow is four short pages (type, parameters, targets, confirm), each a plain form with Back links and no JavaScript, so every step works the same at phone width and the server re-checks each step. "Read what exactly it will do" is the description on this page and again, in full, on the confirmation. Alternative: one long page with all four sections. The descriptions are the catalog's own text (P3-S01), so the dashboard can never say something the agent does not do. "Hosts that will run it" counts active hosts whose agent reports the type as supported and enabled.</p>
+<p class="note"><span class="review-q">Review Q4.</span> Plain names first ("Restart a service") with the type id beside them in small monospace. Alternative: type ids only, which match the catalog and the audit log but read like code.</p>
+<h2 id="one-off" class="state-title">A type that no host will run</h2>
+<div class="catalog" style="max-width:52rem">
+<div class="choice off" aria-disabled="true"><input type="radio" disabled><strong>Apply package updates</strong><span class="type-id">apply_package_updates</span>
+  <p>The agent refreshes the package lists, then upgrades installed packages&hellip;</p>
+  <span class="why-off">No host will run this yet: no agent has it enabled in its configuration. It is off by default on every VM, and turning it on is a deliberate edit on that VM (<span class="mono">[tasks] enabled</span> in <span class="mono">/etc/fleet-agent/config.toml</span>).</span></div>
+<div class="choice off" aria-disabled="true"><input type="radio" disabled><strong>Restart a service</strong><span class="type-id">restart_service</span>
+  <p>The agent asks systemd to restart one service&hellip;</p>
+  <span class="why-off">The server's allowlist of restartable services is empty, so there is nothing to restart. An operator adds services in <a href="settings-tasks.html#allowlist">Settings: Tasks</a>, and each VM must list them too.</span></div>
+</div>
+<p class="muted" style="font-size:.875rem">More refused states, and what happens if a type is turned off between steps, are on <a href="create-blocked.html">Create task: refused</a>.</p>
+</main>
+</body>
+</html>

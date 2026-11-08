@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Save your recovery codes · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html" aria-current="page">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Save your recovery codes</h1><p>Your authenticator app is set up. These codes are shown once.</p></div></div>
+<ol class="flow" aria-label="Set up: step 3 of 3"><li class="done"><span class="lbl">Sign in again</span></li><li class="done"><span class="lbl">Scan and check</span></li><li aria-current="step"><span class="lbl">Save recovery codes</span></li></ol>
+<div class="notice" role="status"><strong>Save these now. They will not be shown again.</strong><p>Each code works once in place of a 6-digit code, if your phone is lost or broken. Keep them somewhere other than your phone, such as a password manager.</p></div>
+<div class="sheet">
+<ul class="codes" aria-label="Recovery codes">
+<li>EXMPL-4F7Q2</li><li>EXMPL-9KD3W</li><li>EXMPL-T2H8N</li><li>EXMPL-6RVJ5</li><li>EXMPL-PX4M7</li>
+<li>EXMPL-3WQ9C</li><li>EXMPL-H5ZT2</li><li>EXMPL-N8KD4</li><li>EXMPL-2CJF6</li><li>EXMPL-V7RM3</li>
+</ul>
+<div class="actions" style="margin-bottom:1rem"><a class="btn quiet" href="totp-recovery-codes.html" download>Download as a text file</a><button class="btn quiet" type="button">Print</button></div>
+<form action="second-factor.html#enrolled" method="get">
+<div class="checks" style="margin-bottom:1rem"><label><input type="checkbox" name="saved" required> I have saved these 10 codes somewhere other than my phone</label></div>
+<div class="actions"><button class="btn" type="submit">Done</button></div>
+</form>
+</div>
+<p class="note"><span class="review-q">Review Q28.</span> 10 codes of 10 letters and digits (drawn with EXMPL in place of the first five), shown once on this page, served with no caching, and stored only as hashes, so the server cannot show them again. Done needs the box ticked. The second factor is already on when this page appears (the code was checked on the last step), so closing the tab does not lose the authenticator, only the chance to copy the codes; "Make new recovery codes" replaces them. Alternative: turn the factor on only after Done, which makes a closed tab mean starting again.</p>
+
+<h2 id="replace" class="state-title">Making new recovery codes</h2>
+<div class="dialog" role="dialog" aria-labelledby="rc-t"><h2 id="rc-t">Make 10 new recovery codes?</h2>
+<p>Your 9 unused codes stop working now. The new ones are shown once, on the next page.</p>
+<div class="field"><label for="otp-rc">Code from your authenticator app</label><input id="otp-rc" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+<div class="actions"><a class="btn" href="totp-recovery-codes.html">Make new codes</a><button class="btn quiet" type="button">Cancel</button></div></div>
+</main>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 3 mockups · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Phase 3 dashboard mockups</h1><p>Static screens for review before any Phase 3 view is built (P3-D01). All host names, addresses, operators, codes, and keys are examples. Opens with no server; it looks like the <a href="../phase-2/index.html">Phase 2</a> and <a href="../phase-1/index.html">Phase 1</a> mockups and links back to them.</p></div></div>
+<div class="table-wrap"><table>
+<thead><tr><th scope="col">Screen</th><th scope="col">What it shows</th><th scope="col">Built in</th></tr></thead>
+<tbody>
+<tr><th colspan="3" scope="colgroup" style="background:#eef1ee">Create a task</th></tr>
+<tr><td><a href="create-type.html">1. Task type</a></td><td>The catalog: the three task types with exactly what each does, whether it can be cancelled while running, its time limit, its default on agents, and how many hosts will run it. A type no host will run, and the empty allowlist, drawn unavailable with the reason.</td><td>P3-S08 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="create-params.html">2. Parameters</a></td><td>The service chosen from the allowlist (never typed); the report tick boxes; "no parameters" for package updates; errors in place.</td><td>P3-S08 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="create-targets.html">3. Targets</a></td><td>By tag or by picking hosts; the resolved host list; hosts left out with the reason (not enabled on the VM, agent too old, not active, service not allowed for the host's tag); offline hosts; more than 25 hosts; no host can run it.</td><td>P3-S08 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="create-confirm.html">4. Confirm</a></td><td>Exactly what the agent does on which hosts, in plain steps and as the fixed programs built into the agent; the typed host count above 3 hosts; the second factor; refusals on submit. Variants for package updates and for collecting reports.</td><td>P3-S08, P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="create-blocked.html">Create task: refused</a></td><td>No second factor set up, empty allowlist, type enabled on no host, no agent runs tasks, something changed before confirming, and what a forged request gets.</td><td>P3-S06, P3-S08, P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><th colspan="3" scope="colgroup" style="background:#eef1ee">Tasks and batches</th></tr>
+<tr><td><a href="tasks.html">Tasks</a></td><td>Every task, filterable by host, type, state, and batch, with state chips; empty states.</td><td>P3-DASH-TASKS <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="batch.html">Batch progress</a></td><td>Per-host counts for every state (5 succeeded, 1 running, 1 waiting, 1 failed), updating live; per-host rows, problems first; hosts left out; reboot required; when the batch finishes.</td><td>P3-DASH-TASKS <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="batch-partial.html">Batch: partial and cancelled</a></td><td>A batch that ended with failed, refused, and expired tasks, and "run again on the hosts that did not succeed"; a batch cancelled while a task that cannot be interrupted was running.</td><td>P3-DASH-TASKS <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="task.html">Task detail</a></td><td>A finished package update: result, reboot required, services using old libraries, task facts, timeline with server and agent times, escaped output, and its audit entries.</td><td>P3-DASH-TASKS <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="task-states.html">Task states</a></td><td>The task page's result in every state: queued, claimed, running, cancel requested, succeeded, failed (package manager busy, service did not come back, interrupted, lease expired), timed out, cancelled, refused (every reason), expired; output with markup, control characters, and truncation.</td><td>P3-DASH-TASKS <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="cancel.html">Cancel</a></td><td>The cancel confirmation for a queued, claimed, running-interruptible, and running-not-interruptible task, and for the rest of a batch, each with the second factor; the messages after.</td><td>P3-DASH-TASKS, P3-S05, P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="host-tasks.html">Host: Tasks</a></td><td>A host's Tasks tab: which task types its agent will run, what is running now, and its task history.</td><td>P3-DASH-TASKS <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><th colspan="3" scope="colgroup" style="background:#eef1ee">Second factor (TOTP)</th></tr>
+<tr><td><a href="second-factor.html">Your second factor</a></td><td>Not set up, set up, and what to do with a lost authenticator (recovery code, or the console reset).</td><td>P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="totp-enrol.html">Set up an authenticator app</a></td><td>Fresh Google sign-in, the QR code and key shown once, checking a code, a wrong code, and moving to a new phone.</td><td>P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="totp-recovery-codes.html">Recovery codes</a></td><td>10 recovery codes shown once, and making new ones.</td><td>P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="totp-stepup.html">Second factor prompt</a></td><td>The step-up box in every state: asking, passed in the last 5 minutes, window ran out, wrong code, reused code, locked after wrong codes, recovery code, no factor.</td><td>P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><th colspan="3" scope="colgroup" style="background:#eef1ee">Settings and audit</th></tr>
+<tr><td><a href="settings-tasks.html">Settings: Tasks</a></td><td>The restartable-services allowlist (per tag), the protected services, batch size, output limit, poll hint, and expiry per type; removing a service; refused changes; the empty allowlist.</td><td>P3-S06 <span class="muted">(P3-D01 review)</span></td></tr>
+<tr><td><a href="audit.html">Audit log: tasks</a></td><td>The task, task-setting, and second-factor actions in the filter, and sample entries with operator, host, and system as actor.</td><td>P3-S07, P3-S09 <span class="muted">(P3-D01 review)</span></td></tr>
+</tbody></table></div>
+<p class="note">Yellow dashed boxes like this one are review notes, not part of the design. Every screen is marked "P3-D01 review": none is approved yet. Phase 2 screens that Phase 3 does not change stay in <code>../phase-2/</code> and <code>../phase-1/</code> and are linked from the top bar, which gains "Tasks". Host names link to one host page and task numbers to the task pages, as stand-ins.</p>
+
+<h2 id="questions">Open design questions for the owner</h2>
+<p>Each is also a review note on the page named after it. The drawn choice is the recommendation; the alternative is in the note.</p>
+<ol style="list-style:none;padding:0;max-width:70ch">
+<li id="q1"><strong>Q1.</strong> "Tasks" in the top bar second, after Fleet. Alternative: next to Agents. <span class="muted"><a href="tasks.html">tasks.html</a></span></li>
+<li id="q2"><strong>Q2.</strong> The Tasks list is one row per task, opening on All, newest first, with state chips. Alternative: open on the problem states. <span class="muted"><a href="tasks.html">tasks.html</a></span></li>
+<li id="q3"><strong>Q3.</strong> The create flow as four short pages with no JavaScript. Alternative: one long page. <span class="muted"><a href="create-type.html">create-type.html</a></span></li>
+<li id="q4"><strong>Q4.</strong> Plain names first ("Restart a service") with the type id small beside them. Alternative: type ids only. <span class="muted"><a href="create-type.html">create-type.html</a></span></li>
+<li id="q5"><strong>Q5.</strong> The service is chosen from a list of every allowlisted service, with its tag named; hosts outside the tag are left out at the targets step. Alternative: targets first, then only services allowed on all of them. <span class="muted"><a href="create-params.html">create-params.html</a></span></li>
+<li id="q6"><strong>Q6.</strong> The Phase 2 "Request fresh report" buttons stay (no second factor); the Collect fresh reports task, which needs one, is for batches. Alternative: replace the buttons with the task. <span class="muted"><a href="create-params.html#refresh">create-params.html</a></span></li>
+<li id="q7"><strong>Q7.</strong> The server cannot see each VM's own service allowlist, so those VMs refuse at run time. Recommended alternative (a P3-A01 change): agents report their local allowlist so those hosts are left out before anything is sent. <span class="muted"><a href="create-targets.html">create-targets.html</a></span></li>
+<li id="q8"><strong>Q8.</strong> Offline and stale hosts stay in a batch with a warning, and their task expires if they do not return. Alternative: leave them out. <span class="muted"><a href="create-targets.html">create-targets.html</a></span></li>
+<li id="q9"><strong>Q9.</strong> The confirmation shows plain steps and, folded, the fixed programs and arguments built into the agent, plus the exact payload the server sends. Alternative: plain steps only. <span class="muted"><a href="create-confirm.html">create-confirm.html</a></span></li>
+<li id="q10"><strong>Q10.</strong> A batch runs on all its hosts at about the same time; nothing staggers it. Drawn: a warning only. Say if a batch should run one host at a time (a new requirement). <span class="muted"><a href="create-confirm.html">create-confirm.html</a></span></li>
+<li id="q11"><strong>Q11.</strong> The code box sits at the bottom of the confirmation, so one submit checks the typed count and the code. Alternative: a separate step-up page. <span class="muted"><a href="create-confirm.html">create-confirm.html</a></span></li>
+<li id="q12"><strong>Q12.</strong> Without a second factor an operator still reads all task pages; create and cancel are replaced by an explanation. Alternative: hide Tasks entirely. <span class="muted"><a href="create-blocked.html#no-factor">create-blocked.html</a></span></li>
+<li id="q13"><strong>Q13.</strong> Submit is refused if the host list the server works out differs from the one confirmed, or the confirmation is over 30 minutes old. Alternative: create for the current list and show the difference. <span class="muted"><a href="create-blocked.html#changed">create-blocked.html</a></span></li>
+<li id="q14"><strong>Q14.</strong> The batch counts strip has a cell for every state, zeros dimmed. Alternative: only the states that occur. <span class="muted"><a href="batch.html">batch.html</a></span></li>
+<li id="q15"><strong>Q15.</strong> Batch rows problems first. Alternative: host name order. <span class="muted"><a href="batch.html">batch.html</a></span></li>
+<li id="q16"><strong>Q16.</strong> "Run again on the hosts that did not succeed" opens a new, fully re-checked batch at the confirmation. Alternative: no shortcut. <span class="muted"><a href="batch-partial.html">batch-partial.html</a></span></li>
+<li id="q17"><strong>Q17.</strong> Cancelling a running task that cannot be interrupted: it runs to completion, keeps its real state with "cancel requested" beside it, and no unstarted task of the batch starts. Please confirm this reading of FR-3.2 (P3-S05 asks for it in DEC-14). <span class="muted"><a href="batch-partial.html#cancelled">batch-partial.html</a></span></li>
+<li id="q18"><strong>Q18.</strong> The timeline shows server and agent times side by side, with a line when they differ by more than a minute. <span class="muted"><a href="task.html#timeline">task.html</a></span></li>
+<li id="q19"><strong>Q19.</strong> Output is escaped text with agent-written <span class="mono">$</span> lines between steps, and a plain-text download. Alternative: no download. <span class="muted"><a href="task.html#output">task.html</a></span></li>
+<li id="q20"><strong>Q20.</strong> A timed-out package update names <span class="mono">dpkg --configure -a</span> for the operator to run by hand (never a button); a late result after timed out goes in the timeline without changing the state. <span class="muted"><a href="task-states.html#timed-out">task-states.html</a></span></li>
+<li id="q21"><strong>Q21.</strong> Proposed reason codes beyond the spec's: <span class="mono">protected_service</span>, <span class="mono">no_longer_allowed</span>, <span class="mono">package_manager_locked</span>, <span class="mono">not_active_after_restart</span>; a server refusal at claim time shows as Refused. <span class="muted"><a href="task-states.html#refused">task-states.html</a></span></li>
+<li id="q22"><strong>Q22.</strong> Truncated output keeps the start and the end with a page-drawn marker; control characters shown as escapes. Alternative: keep only the end. <span class="muted"><a href="task-states.html#output-hostile">task-states.html</a></span></li>
+<li id="q23"><strong>Q23.</strong> Cancel buttons named by what they can do; any operator can cancel any task; a lone non-interruptible task can still get a recorded cancel request. Alternative: only the creator and the owner can cancel. <span class="muted"><a href="cancel.html">cancel.html</a></span></li>
+<li id="q24"><strong>Q24.</strong> "Your second factor" under Settings. Alternative: an account menu under your name. <span class="muted"><a href="second-factor.html">second-factor.html</a></span></li>
+<li id="q25"><strong>Q25.</strong> A recovery code works anywhere a code is asked, including moving to a new phone; with neither phone nor code, only the console reset. Alternative: recovery codes never replace the authenticator. <span class="muted"><a href="second-factor.html#lost">second-factor.html</a></span></li>
+<li id="q26"><strong>Q26.</strong> The key as a server-drawn QR code and as text, shown once, uncached, 10 minutes after the Google sign-in; 6 digits, 30 seconds, SHA-1. Alternative: 8 digits. <span class="muted"><a href="totp-enrol.html">totp-enrol.html</a></span></li>
+<li id="q27"><strong>Q27.</strong> "Fresh Google sign-in" is a new OAuth round trip for the same account within 10 minutes; the page says Google may not ask for a password. <span class="muted"><a href="totp-enrol.html#reauth">totp-enrol.html</a></span></li>
+<li id="q28"><strong>Q28.</strong> 10 recovery codes, hashed, shown once; the factor is on before they are shown. Alternative: turn it on only after Done. <span class="muted"><a href="totp-recovery-codes.html">totp-recovery-codes.html</a></span></li>
+<li id="q29"><strong>Q29.</strong> The step-up window is a fixed 5 minutes from the last code, per session, not extended by use. Alternative: a sliding window. <span class="muted"><a href="totp-stepup.html#passed">totp-stepup.html</a></span></li>
+<li id="q30"><strong>Q30.</strong> 5 wrong codes in 15 minutes per operator locks the step-up for 15 minutes; a code is accepted once, with one step of drift either side. <span class="muted"><a href="totp-stepup.html#locked">totp-stepup.html</a></span></li>
+<li id="q31"><strong>Q31.</strong> Allowlist entries are full <span class="mono">.service</span> names, no template instances, for every host or one tag. Alternatives: names without the suffix, several tags per entry. <span class="muted"><a href="settings-tasks.html#allowlist">settings-tasks.html</a></span></li>
+<li id="q32"><strong>Q32.</strong> Protected services: ADR 0015 says "always refused, even if listed", FR-3.1 and P3-A06 say "unless the owner explicitly allows". Drawn as ADR 0015 with no override. Please say which. <span class="muted"><a href="settings-tasks.html#protected">settings-tasks.html</a></span></li>
+<li id="q33"><strong>Q33.</strong> Limit ranges: batch 1 to 25, output 4 KiB to 1 MiB (default 64 KiB), poll hint 10 to 300 s (default 30), expiry 1 hour to 7 days per type (default 24 hours). <span class="muted"><a href="settings-tasks.html#limits">settings-tasks.html</a></span></li>
+<li id="q34"><strong>Q34.</strong> A Tasks tab on each host with what its agent will run, and "Run a task on this host". Alternative: a panel on Overview only. <span class="muted"><a href="host-tasks.html">host-tasks.html</a></span></li>
+<li id="q35"><strong>Q35.</strong> Proposed audit action names for tasks, task settings, and the second factor, including refused creations. <span class="muted"><a href="audit.html">audit.html</a></span></li>
+</ol>
+
+<h2>Coverage</h2>
+<div class="table-wrap"><table><caption class="visually-hidden">Where each requirement is drawn</caption><thead><tr><th scope="col">Requirement</th><th scope="col">Where it is drawn</th></tr></thead><tbody>
+<tr><td>FR-3.4 create-task flow: choose type, see exactly what it will do, set validated parameters, choose targets, confirm</td><td><a href="create-type.html">type</a>, <a href="create-params.html">parameters</a>, <a href="create-targets.html">targets</a>, <a href="create-confirm.html">confirm</a></td></tr>
+<tr><td>FR-3.4 a recent second factor (TOTP) to create or cancel a task and change allowlists</td><td><a href="create-confirm.html">confirm</a>, <a href="cancel.html">cancel</a>, <a href="settings-tasks.html">settings</a>, <a href="totp-stepup.html">prompt</a>, <a href="totp-enrol.html">set up</a>, <a href="totp-recovery-codes.html">recovery codes</a>, <a href="create-blocked.html#no-factor">no factor</a></td></tr>
+<tr><td>FR-3.4 task list and detail: state, host, parameters, timeline, output, result, filters by host, type, and state</td><td><a href="tasks.html">Tasks</a>, <a href="task.html">detail</a>, <a href="task-states.html">states</a></td></tr>
+<tr><td>FR-3.4 creation, claim, cancellation, expiry, and result in the audit log</td><td><a href="audit.html">Audit log</a>, <a href="task.html#audit">task audit</a></td></tr>
+<tr><td>FR-3.4 per-host progress counts for fleet-wide actions</td><td><a href="batch.html">Batch progress</a>, <a href="batch-partial.html">partial</a></td></tr>
+<tr><td>FR-3.1 only catalog types; no command; the agent reports what it supports; the double service allowlist; protected services</td><td><a href="create-type.html">type</a>, <a href="create-targets.html#excluded">left out</a>, <a href="host-tasks.html">host</a>, <a href="settings-tasks.html">settings</a>, <a href="task-states.html#refused">refused</a></td></tr>
+<tr><td>FR-3.2 states, expiry, leases, timeout, cancellation; <span class="mono">interrupted</span> and <span class="mono">lease_expired</span></td><td><a href="task-states.html">Task states</a>, <a href="cancel.html">Cancel</a></td></tr>
+<tr><td>FR-3.3 output as untrusted text, truncated and escaped</td><td><a href="task.html#output">output</a>, <a href="task-states.html#output-hostile">hostile output</a></td></tr>
+<tr><td>DEC-14 typed host count above 3 hosts, 25-host cap</td><td><a href="create-confirm.html">confirm</a>, <a href="create-targets.html#cap">cap</a></td></tr>
+<tr><td>DEC-16 package update policy, never reboot, <span class="mono">reboot_required</span></td><td><a href="create-confirm.html#updates">confirm</a>, <a href="task.html">detail</a></td></tr>
+<tr><td>P3-D01 empty-allowlist and disabled-type states; allowlist and limits settings</td><td><a href="create-blocked.html">refused</a>, <a href="create-type.html#one-off">unavailable types</a>, <a href="settings-tasks.html">settings</a></td></tr>
+</tbody></table></div>
+
+<h2>Wording and data</h2>
+<ul>
+<li>Every task is named by what it does, in the catalog's words, never as a command. No page has a field whose value is sent to an agent as a command; the only typed name in Phase 3 is a service added to the allowlist, checked against a strict pattern.</li>
+<li>The fixed programs on the confirmation are labelled as built into the agent and not sent by the server, with the exact payload the server sends beside them.</li>
+<li>Hosts are <code>sim-0NN.example.lan</code>, operators are <code>example.operator@example.com</code> and <code>example.reviewer@example.com</code>, the package mirror is <code>deb.example.lan</code>, and every key and recovery code contains <code>EXAMPLE</code> or <code>EXMPL</code>. The QR code is random and encodes nothing.</li>
+<li>No JavaScript and no external requests. Fonts are the system stack, as in Phase 2.</li>
+<li>Accessibility: every state is a word as well as a lamp shape, every table has headers, form fields have labels, errors are announced and shown beside the field, and every page works at phone width.</li>
+</ul>
+</main>
+</body>
+</html>

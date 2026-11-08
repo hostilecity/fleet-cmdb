@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings: tasks · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html" aria-current="page">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Settings</h1><p>Server-wide rules for tasks. Every change needs the second factor and is recorded in the audit log with the value before and after.</p></div></div>
+<nav class="tabs" aria-label="Settings sections"><a href="../phase-1/settings.html">Liveness</a><a href="settings-tasks.html" aria-current="page">Tasks</a><a href="second-factor.html">Your second factor</a></nav>
+
+<h2 id="allowlist" style="margin-top:0">Services that can be restarted</h2>
+<p>The "Restart a service" task offers only these. Each VM must also list the service in its own configuration (<span class="mono">[tasks] allowed_services</span> in <span class="mono">/etc/fleet-agent/config.toml</span>); a restart runs only where both lists have it.</p>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Restartable services</caption>
+<thead><tr><th scope="col">Service</th><th scope="col">On which hosts</th><th scope="col">Added</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+<tbody>
+<tr><td data-label="Service" class="mono">nginx.service</td><td data-label="On which hosts">Hosts tagged <span class="tag">web</span></td><td data-label="Added">2026-11-08 by example.operator@example.com</td><td data-label="Actions"><a class="btn danger quiet" href="#remove">Remove</a></td></tr>
+<tr><td data-label="Service" class="mono">postgresql.service</td><td data-label="On which hosts">Hosts tagged <span class="tag">db</span></td><td data-label="Added">2026-11-08 by example.operator@example.com</td><td data-label="Actions"><a class="btn danger quiet" href="#remove">Remove</a></td></tr>
+<tr><td data-label="Service" class="mono">chrony.service</td><td data-label="On which hosts">Every host</td><td data-label="Added">2026-11-08 by example.reviewer@example.com</td><td data-label="Actions"><a class="btn danger quiet" href="#remove">Remove</a></td></tr>
+</tbody></table></div>
+<form class="sheet svc-add" style="margin-top:.75rem" action="settings-tasks.html#allowlist" method="get">
+  <div class="field"><label for="svc">Add a service</label><input id="svc" type="text" name="service" placeholder="name.service" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="svc-hint"></div>
+  <div class="field"><label for="scope">On which hosts</label><select id="scope" name="tag"><option>Every host</option><option>Hosts tagged web</option><option>Hosts tagged db</option><option>Hosts tagged lab</option><option>Hosts tagged media</option></select></div>
+  <button class="btn quiet" type="submit">Add</button>
+  <p class="hint" id="svc-hint" style="flex-basis:100%;margin:0">A systemd service unit name as <span class="mono">systemctl</span> shows it, ending in <span class="mono">.service</span>: lower-case letters, digits, and <span class="mono">- _ .</span>, up to 64 characters. Instances such as <span class="mono">getty@tty1.service</span> are not accepted.</p>
+</form>
+<p class="note"><span class="review-q">Review Q31.</span> The allowlist takes a typed name, the one free-text field anywhere in Phase 3, because services must be named somewhere (ADR 0015). It only ever becomes an entry in this list, checked against the pattern above; the restart task then chooses from the list. Drawn: full unit names ending in <span class="mono">.service</span>, no template instances (<span class="mono">@</span>), each entry for every host or for one tag. Alternatives: allow names without the suffix and add it, or allow several tags per entry.</p>
+
+<h3 id="protected">Never restarted remotely</h3>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Protected services</caption>
+<thead><tr><th scope="col">Service</th><th scope="col">Why</th></tr></thead>
+<tbody>
+<tr class="locked-row"><td class="mono">fleet-agent.service</td><td>The agent itself: restarting it would cut off the task that asked for it.</td></tr>
+<tr class="locked-row"><td class="mono">ssh.service, sshd.service</td><td>Remote access to the VM.</td></tr>
+<tr class="locked-row"><td class="mono">systemd-*</td><td>Parts of the service manager.</td></tr>
+<tr class="locked-row"><td class="mono">networking.service, NetworkManager.service, systemd-networkd.service</td><td>The VM's network, and with it the agent's connection.</td></tr>
+<tr class="locked-row"><td class="mono">dbus.service</td><td>The message bus that systemd and other services depend on.</td></tr>
+</tbody></table></div>
+<p class="muted" style="font-size:.875rem">Fixed in the server and the agent (ADR 0015). Adding one of these to the list above is refused, and the agent refuses it even if a VM lists it.</p>
+<p class="note"><span class="review-q">Review Q32.</span> ADR 0015 says these are "always refused, even if listed", while FR-3.1 and P3-A06 say the agent's unit and SSH are refused "unless the owner explicitly allows them". Drawn as ADR 0015: a fixed list with no override in the dashboard. If the owner wants an override, the recommended form is an agent-side setting on that VM only, never a dashboard switch. Please say which, so the requirement and the ADR can be made to agree.</p>
+
+<h2 id="limits">Limits</h2>
+<form class="form wide" action="settings-tasks.html#saved" method="get">
+<div class="row">
+<div class="field"><label for="max">Most hosts in one batch</label><input id="max" type="number" value="25" min="1" max="25"><p class="hint">1 to 25. 25 is the hard cap (ADR 0014).</p></div>
+<div class="field"><label for="out">Output kept per task (KiB)</label><input id="out" type="number" value="64" min="4" max="1024"><p class="hint">4 to 1024. Longer output is cut in the middle.</p></div>
+<div class="field"><label for="poll">Agents poll for tasks every (seconds)</label><input id="poll" type="number" value="30" min="10" max="300"><p class="hint">A hint sent to agents; 10 to 300.</p></div>
+</div>
+<p class="muted" style="margin-top:0">Batches of more than 3 hosts always ask for the host count to be typed (ADR 0014); that is not a setting.</p>
+<fieldset><legend>Expiry: a task not started within this time expires and is never delivered</legend>
+<div class="row">
+<div class="field"><label for="e1">Collect fresh reports (hours)</label><input id="e1" type="number" value="24" min="1" max="168"></div>
+<div class="field"><label for="e2">Restart a service (hours)</label><input id="e2" type="number" value="24" min="1" max="168"></div>
+<div class="field"><label for="e3">Apply package updates (hours)</label><input id="e3" type="number" value="24" min="1" max="168"></div>
+</div><p class="hint" style="margin-top:-.5rem">1 to 168 hours (7 days). Default 24. Applies to tasks created after the change.</p></fieldset>
+<p class="muted">Time limits per task type (10, 5, and 60 minutes) are part of the catalog, not settings.</p>
+<section class="stepup" aria-labelledby="su-h" style="margin:1rem 0">
+<h3 id="su-h">Second factor</h3>
+<p style="margin:0">Changing task settings needs a code from your authenticator app.</p>
+<div class="field"><label for="otp">6-digit code</label><input id="otp" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+</section>
+<div class="actions"><button class="btn" type="submit">Save limits</button></div>
+</form>
+<p class="note"><span class="review-q">Review Q33.</span> The ranges are proposals: batch size 1 to 25 (it can be lowered, never raised past the cap); output 4 KiB to 1 MiB; poll hint 10 to 300 seconds; expiry 1 hour to 7 days per type. FR-3.2 makes expiry configurable per type and sets only the 24-hour default. Changes apply to tasks created afterwards; tasks already queued keep the expiry they were created with. Adding or removing a service asks for the code in the same way (<a href="#remove">drawn below</a>).</p>
+
+<h2 id="remove" class="state-title">Removing a service</h2>
+<div class="dialog" role="dialog" aria-labelledby="rm-t"><h2 id="rm-t">Remove nginx.service from the allowlist?</h2>
+<p>It can no longer be chosen for a new task. <strong>2 queued tasks</strong> that would restart it (batch 88) will be refused when their agent picks them up, and nothing runs. A restart already running finishes.</p>
+<div class="field"><label for="otp-rm">Code from your authenticator app</label><input id="otp-rm" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+<div class="actions"><button class="btn danger" type="button">Remove</button><button class="btn quiet" type="button">Keep it</button></div></div>
+
+<h2 id="errors" class="state-title">Refused changes</h2>
+<div class="notice error" role="alert"><strong>Not added: ssh.service is protected.</strong><p>Protected services are never restarted remotely, so they cannot be added.</p></div>
+<div class="form wide"><div class="field invalid"><label for="svc-e">Add a service</label><input id="svc-e" type="text" value="nginx; reboot" aria-invalid="true" aria-describedby="svc-e-err"><p class="error-text" id="svc-e-err">Not a service unit name. Use lower-case letters, digits, and <span class="mono">- _ .</span>, ending in <span class="mono">.service</span>.</p></div>
+<div class="field invalid"><label for="max-e">Most hosts in one batch</label><input id="max-e" type="number" value="50" aria-invalid="true" aria-describedby="max-e-err"><p class="error-text" id="max-e-err">At most 25. The cap cannot be raised from the dashboard.</p></div></div>
+
+<h2 id="empty" class="state-title">Empty allowlist (how it starts)</h2>
+<div class="sheet"><p style="margin:0"><strong>No service can be restarted yet.</strong> The list starts empty (ADR 0015), so the "Restart a service" task refuses everything until a service is added here and on each VM.</p></div>
+
+<h2 id="saved" class="state-title">Saved</h2>
+<div class="notice info" role="status"><strong>Limits saved. Most hosts in one batch: 25 → 10.</strong><p>Recorded in the audit log. Applies to batches created from now on.</p></div>
+</main>
+</body>
+</html>

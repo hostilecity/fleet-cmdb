@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sim-021: Tasks · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html" aria-current="page">Fleet</a><a href="tasks.html">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div>
+    <h1>sim-021</h1>
+    <div class="sub"><span class="mono">sim-021.example.lan</span><span class="lamp online">Online</span><span>Last seen 12 seconds ago</span><span><span class="tag">lab</span></span></div>
+  </div>
+  <div class="actions"><a class="btn" href="create-type.html">Run a task on this host</a><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a></div>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="../phase-2/host-overview.html">Overview</a><a href="../phase-2/host-config.html">Configuration</a><a href="../phase-2/host-packages.html">Packages <span class="count">1,243</span></a><a href="../phase-2/host-vulns.html">Vulnerabilities <span class="count">2 open</span></a><a href="host-tasks.html" aria-current="page">Tasks <span class="count">1 running</span></a></nav>
+
+<div class="cols-2">
+<section class="sheet" aria-labelledby="cap-h">
+<h2 id="cap-h">What this host will run</h2>
+<p class="muted" style="margin-top:0">As its agent last reported, 12 seconds ago. Agent <span class="mono">0.9.0</span>, catalog version 1.</p>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Task types on this host</caption>
+<thead><tr><th scope="col">Task</th><th scope="col">On this VM</th></tr></thead>
+<tbody>
+<tr><td data-label="Task">Collect fresh reports</td><td data-label="On this VM"><span class="lamp online">Enabled</span></td></tr>
+<tr><td data-label="Task">Restart a service</td><td data-label="On this VM"><span class="lamp na">Not enabled</span><span class="state-sub">Turned off in the VM's configuration (the default).</span></td></tr>
+<tr><td data-label="Task">Apply package updates</td><td data-label="On this VM"><span class="lamp online">Enabled</span></td></tr>
+</tbody></table></div>
+<p class="hint" style="margin-bottom:0">Task types are turned on or off only in <span class="mono">/etc/fleet-agent/config.toml</span> on the VM, never from the dashboard.</p>
+</section>
+<section class="sheet" aria-labelledby="now-h">
+<h2 id="now-h">Now</h2>
+<p style="margin-top:0"><span class="lamp s-running">Running</span> <a href="task-states.html#running">#1216 Apply package updates</a>, started 14:21:02 UTC, batch 89.</p>
+<p><span class="lamp s-queued">Queued</span> <a href="task-states.html#queued">#1217 Collect fresh reports</a>, waits for the running task to finish (one at a time).</p>
+<p class="muted" style="margin-bottom:0">A reboot is required since task #1201 (2026-11-08 14:06 UTC).</p>
+</section>
+</div>
+<p class="note"><span class="review-q">Review Q34.</span> Each host gets a Tasks tab with what its agent will run and its task history, and a "Run a task on this host" button that starts the create flow with this host already chosen. The "Reboot required" line stays until the agent reports a boot after the task. Alternatives: no tab, only a "Recent tasks" panel on the Overview; or no per-host button, so every task starts from the Tasks page. The Fleet list itself gets no task column.</p>
+
+<h2>History</h2>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Tasks on sim-021</caption>
+<thead><tr><th scope="col">Task</th><th scope="col">What</th><th scope="col">State</th><th scope="col">Batch</th><th scope="col">Created (UTC)</th></tr></thead>
+<tbody>
+<tr><td data-label="Task"><a href="task-states.html#queued">#1217</a></td><td data-label="What">Collect fresh reports: <span class="param">packages</span></td><td data-label="State"><span class="lamp s-queued">Queued</span></td><td data-label="Batch"><span class="muted">Single</span></td><td data-label="Created (UTC)" class="mono">2026-11-08 14:21:30</td></tr>
+<tr><td data-label="Task"><a href="task-states.html#running">#1216</a></td><td data-label="What">Apply package updates</td><td data-label="State"><span class="lamp s-running">Running</span></td><td data-label="Batch"><a href="batch.html">89</a></td><td data-label="Created (UTC)" class="mono">2026-11-08 14:20:55</td></tr>
+<tr><td data-label="Task"><a href="task.html">#1201</a></td><td data-label="What">Apply package updates</td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span><span class="state-sub">14 upgraded. Reboot required.</span></td><td data-label="Batch"><a href="batch.html">87</a></td><td data-label="Created (UTC)" class="mono">2026-11-08 14:02:11</td></tr>
+<tr><td data-label="Task"><a href="task-states.html#refused">#1150</a></td><td data-label="What">Restart a service: <span class="param">chrony.service</span></td><td data-label="State"><span class="lamp s-refused">Refused</span><span class="state-sub">Not enabled on this VM: it was turned off after the task was created.</span></td><td data-label="Batch"><a href="batch-partial.html">80</a></td><td data-label="Created (UTC)" class="mono">2026-11-07 10:00:00</td></tr>
+</tbody></table></div>
+<p class="muted" style="font-size:.875rem"><a href="tasks.html?host=sim-021">All tasks for sim-021</a> on the Tasks page.</p>
+</main>
+</body>
+</html>
