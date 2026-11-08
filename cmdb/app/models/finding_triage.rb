@@ -72,14 +72,15 @@ class FindingTriage
 
     TriageEntry.where(tracker: DebianTriage::TRACKER, release: findings.map { |f| release_of(f) }.uniq, package: findings.map(&:source).uniq,
                       cve_id: findings.flat_map { |f| self.class.cve_ids(f.advisory) }.uniq)
-               .order(:cve_id).group_by { |entry| [ entry.release, entry.package ] }
+               .index_by { |entry| [ entry.release, entry.package, entry.cve_id ] }
   end
 
   def build(finding)
     release = release_of(finding)
     cve_ids = self.class.cve_ids(finding.advisory)
     reason = unavailable_reason(finding)
-    entries = reason ? [] : @entries.fetch([ release, finding.source ], []).select { |entry| cve_ids.include?(entry.cve_id) }
+    # In cve_ids' order (sorted in Ruby, so the database's collation does not decide it).
+    entries = reason ? [] : cve_ids.filter_map { |cve_id| @entries[[ release, finding.source, cve_id ]] }
     reason ||= [ "no_entry", release ] if entries.empty?
     key, *arguments = reason
     Triage.new(release:, cve_ids:, entries:, reason: key, detail: key && format(REASONS.fetch(key), *arguments))

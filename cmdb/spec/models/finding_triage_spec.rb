@@ -32,7 +32,7 @@ RSpec.describe FindingTriage do
       import_triage(sample)
       match(host) # matching again after the import changes nothing either
 
-      findings = VulnerabilityFinding.where(host:).order(:package).to_a
+      findings = VulnerabilityFinding.where(host:).to_a.sort_by(&:package) # in Ruby: the database collation orders "-" differently
       expect(findings.map { |f| [ f.package, f.state, f.advisory.severity ] }).to eq([ [ "libc-bin", "open", "high" ], [ "libc6", "open", "high" ] ])
       triage = described_class.load(findings)
       findings.each do |finding|
