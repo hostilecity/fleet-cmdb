@@ -5,4 +5,5 @@
   <p>Use a Google account an operator has added to the allowlist.</p>
   <%= button_to "Sign in with Google", "/auth/google_oauth2", method: :post, class: "btn", data: { turbo: false } %>
   <p class="muted">New operators are added from the server with <code>bin/rails operators:allow</code>.</p>
+  <p class="muted"><%= link_to "Privacy", privacy_path %></p>
 </div>

@@ -131,6 +131,7 @@ Rails.application.routes.draw do
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
     mount ActionCable.server => "/cable"
     get "sign_in", to: "sessions#new", as: :sign_in
+    get "privacy", to: "pages#privacy", as: :privacy # public: Google's OAuth consent screen links to it
     get "auth/google_oauth2/callback", to: "sessions#create", as: :auth_callback
     get "auth/failure", to: "sessions#failure"
     delete "sign_out", to: "sessions#destroy", as: :sign_out
