@@ -42,7 +42,9 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Context
 
-NFR-2 requires a documented, restorable backup procedure before Phase 1 is considered done. A backup that has never been restored is not a backup.
+NFR-2 requires a documented, restorable backup procedure. A backup that has never been restored is not a backup.
+
+**Moved to [#138](https://github.com/hostilecity/fleet-cmdb/issues/138) by the owner (2026-11-08):** the procedure and scripts below are delivered, but setting up backups in the GitHub Actions deployment and performing the restore drill there are done later in testing. They no longer block P1-DEPLOY or either phase's acceptance.
 
 ### Scope
 
@@ -55,7 +57,7 @@ NFR-2 requires a documented, restorable backup procedure before Phase 1 is consi
 
 ### Acceptance criteria
 
-- [ ] The restore drill is performed and the result recorded in the Phase 1 delivery note
+- [ ] The restore drill is performed and the result recorded on #138
 - [ ] A restored database boots the app and shows the expected hosts and audit entries
 - [ ] The procedure is in the install and operations documentation ([P1-X03](p1-deploy.md))
 
