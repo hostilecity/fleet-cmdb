@@ -5,5 +5,7 @@
   <td class="mono"><%= host.hostname %></td>
   <td><% host.tags.each do |t| %><%= link_to t, root_path(tag: t), class: "tag" %><% end %></td>
   <td><%= host.os_name.presence || tag.span("Not reported", class: "unavailable") %></td>
+  <td><%= fleet_cis_cell(host, compliance[host.id], rules_defined) %></td>
+  <td><%= fleet_vulns_cell(host, compliance[host.id]) %></td>
   <td class="mono"><%= host.agent_version.presence || tag.span("—", class: "unavailable") %></td>
 </tr>

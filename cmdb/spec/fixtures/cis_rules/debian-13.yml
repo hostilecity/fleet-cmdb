@@ -1,0 +1,512 @@
+# A passing and a failing value for every rule in config/rules/debian-13.yml (P2-CIS-RULES), checked by
+# spec/rules/debian_13_rules_spec.rb. Values are chosen by hand, as a host would report them for the rule's
+# fact, and are not derived from the rule: a rule whose condition is wrong fails its own fixtures. `also_pass`
+# and `also_fail` add edge cases. A null value is a file or systemd unit that does not exist.
+ssh-root-login-off:
+  pass: 'no'
+  fail: 'yes'
+  also_fail:
+  - prohibit-password
+  - forced-commands-only
+ssh-empty-passwords-off:
+  pass: false
+  fail: true
+ssh-password-login-off:
+  pass: false
+  fail: true
+ssh-host-based-auth-off:
+  pass: false
+  fail: true
+ssh-ignore-rhosts:
+  pass: true
+  fail: false
+ssh-user-environment-off:
+  pass: false
+  fail: true
+ssh-uses-pam:
+  pass: true
+  fail: false
+ssh-max-auth-tries:
+  pass: 4
+  fail: 6
+  also_pass:
+  - 3
+ssh-max-sessions:
+  pass: 10
+  fail: 11
+ssh-login-grace-time:
+  pass: 60
+  fail: 120
+  also_pass:
+  - 30
+  also_fail:
+  - 0
+ssh-log-level:
+  pass: VERBOSE
+  fail: QUIET
+  also_pass:
+  - INFO
+  also_fail:
+  - DEBUG3
+  - ERROR
+ssh-banner:
+  pass: "/etc/issue.net"
+  fail: none
+ssh-client-alive-interval:
+  pass: 15
+  fail: 0
+ssh-client-alive-count:
+  pass: 3
+  fail: 0
+ssh-ciphers-strong:
+  pass:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-ctr
+  fail:
+  - aes256-ctr
+  - aes256-cbc
+  also_fail:
+  - - 3des-cbc
+ssh-kex-strong:
+  pass:
+  - sntrup761x25519-sha512@openssh.com
+  - curve25519-sha256
+  - diffie-hellman-group16-sha512
+  fail:
+  - curve25519-sha256
+  - diffie-hellman-group14-sha1
+ssh-macs-strong:
+  pass:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+  - umac-128-etm@openssh.com
+  fail:
+  - hmac-sha2-256
+  - hmac-md5
+  also_fail:
+  - - umac-64@openssh.com
+ssh-x11-forwarding-off:
+  pass: false
+  fail: true
+ssh-tcp-forwarding-off:
+  pass: 'no'
+  fail: 'yes'
+  also_fail:
+  - local
+sshd-config-access:
+  pass:
+    mode: '0600'
+    owner: root
+    group: root
+  fail:
+    mode: '0644'
+    owner: root
+    group: root
+  also_fail:
+  - mode: '0600'
+    owner: admin
+    group: root
+  - mode: '0600'
+    owner: root
+    group: adm
+  -
+password-max-age:
+  pass: 365
+  fail: 99999
+  also_pass:
+  - 90
+  also_fail:
+  - 0
+  - -1
+password-min-age:
+  pass: 1
+  fail: 0
+password-warn-age:
+  pass: 7
+  fail: 3
+password-hashing:
+  pass: YESCRYPT
+  fail: MD5
+  also_pass:
+  - SHA512
+  also_fail:
+  - DES
+  - SHA256
+inactive-account-lock:
+  pass: 30
+  fail: -1
+  also_pass:
+  - 45
+  also_fail:
+  - 60
+default-umask:
+  pass: '027'
+  fail: '022'
+  also_pass:
+  - '077'
+  - '0027'
+  also_fail:
+  - '002'
+  - '026'
+password-min-length:
+  pass: 14
+  fail: 8
+password-digit-credit:
+  pass: 0
+  fail: 1
+  also_pass:
+  - -1
+password-upper-credit:
+  pass: -1
+  fail: 2
+password-lower-credit:
+  pass: 0
+  fail: 1
+password-other-credit:
+  pass: -2
+  fail: 1
+password-complexity:
+  pass: 4
+  fail: 2
+  also_fail:
+  - 0
+password-repeats:
+  pass: 3
+  fail: 0
+  also_pass:
+  - 2
+  also_fail:
+  - 4
+only-root-uid-0:
+  pass:
+  - root
+  fail:
+  - root
+  - toor
+  also_fail:
+  - []
+firewall-enabled:
+  pass: true
+  fail: false
+automatic-updates:
+  pass: true
+  fail: false
+passwd-access:
+  pass:
+    mode: '0644'
+    owner: root
+    group: root
+  fail:
+    mode: '0664'
+    owner: root
+    group: root
+  also_fail:
+  -
+passwd-backup-access:
+  pass:
+    mode: '0600'
+    owner: root
+    group: root
+  fail:
+    mode: '0666'
+    owner: root
+    group: root
+  also_pass:
+  -
+group-access:
+  pass:
+    mode: '0644'
+    owner: root
+    group: root
+  fail:
+    mode: '0646'
+    owner: root
+    group: root
+group-backup-access:
+  pass:
+    mode: '0644'
+    owner: root
+    group: root
+  fail:
+    mode: '0644'
+    owner: admin
+    group: root
+  also_pass:
+  -
+shadow-access:
+  pass:
+    mode: '0640'
+    owner: root
+    group: shadow
+  fail:
+    mode: '0644'
+    owner: root
+    group: shadow
+  also_pass:
+  - mode: '0000'
+    owner: root
+    group: root
+  also_fail:
+  - mode: '0640'
+    owner: root
+    group: users
+shadow-backup-access:
+  pass:
+    mode: '0600'
+    owner: root
+    group: shadow
+  fail:
+    mode: '0644'
+    owner: root
+    group: root
+  also_pass:
+  -
+gshadow-access:
+  pass:
+    mode: '0640'
+    owner: root
+    group: shadow
+  fail:
+    mode: '0660'
+    owner: root
+    group: shadow
+gshadow-backup-access:
+  pass:
+    mode: '0640'
+    owner: root
+    group: shadow
+  fail:
+    mode: '0640'
+    owner: daemon
+    group: shadow
+  also_pass:
+  -
+sudoers-access:
+  pass:
+    mode: '0440'
+    owner: root
+    group: root
+  fail:
+    mode: '0640'
+    owner: root
+    group: root
+  also_pass:
+  -
+grub-config-access:
+  pass:
+    mode: '0600'
+    owner: root
+    group: root
+  fail:
+    mode: '0444'
+    owner: root
+    group: root
+  also_pass:
+  -
+crontab-access:
+  pass:
+    mode: '0600'
+    owner: root
+    group: root
+  fail:
+    mode: '0644'
+    owner: root
+    group: root
+  also_pass:
+  -
+cron-hourly-access:
+  pass:
+    mode: '0700'
+    owner: root
+    group: root
+  fail:
+    mode: '0755'
+    owner: root
+    group: root
+  also_pass:
+  -
+cron-daily-access:
+  pass:
+    mode: '0700'
+    owner: root
+    group: root
+  fail:
+    mode: '0755'
+    owner: root
+    group: root
+  also_pass:
+  -
+cron-weekly-access:
+  pass:
+    mode: '0700'
+    owner: root
+    group: root
+  fail:
+    mode: '0755'
+    owner: root
+    group: root
+  also_pass:
+  -
+cron-monthly-access:
+  pass:
+    mode: '0700'
+    owner: root
+    group: root
+  fail:
+    mode: '0755'
+    owner: root
+    group: root
+  also_pass:
+  -
+cron-d-access:
+  pass:
+    mode: '0700'
+    owner: root
+    group: root
+  fail:
+    mode: '0755'
+    owner: root
+    group: root
+  also_fail:
+  - mode: '0700'
+    owner: root
+    group: crontab
+motd-access:
+  pass:
+    mode: '0644'
+    owner: root
+    group: root
+  fail:
+    mode: '0666'
+    owner: root
+    group: root
+  also_pass:
+  -
+issue-access:
+  pass:
+    mode: '0644'
+    owner: root
+    group: root
+  fail:
+    mode: '0664'
+    owner: root
+    group: root
+issue-net-access:
+  pass:
+    mode: '0644'
+    owner: root
+    group: root
+  fail:
+    mode: '0644'
+    owner: admin
+    group: admin
+cron-running:
+  pass:
+    active: active
+    enabled: enabled
+  fail:
+    active: inactive
+    enabled: disabled
+  also_fail:
+  - active: active
+    enabled: disabled
+  -
+auditd-running:
+  pass:
+    active: active
+    enabled: enabled
+  fail:
+  also_fail:
+  - active: failed
+    enabled: enabled
+apparmor-running:
+  pass:
+    active: active
+    enabled: enabled
+  fail:
+    active: inactive
+    enabled: masked
+journald-running:
+  pass:
+    active: active
+    enabled: static
+  fail:
+    active: failed
+    enabled: static
+avahi-not-in-use:
+  pass:
+  fail:
+    active: active
+    enabled: enabled
+  also_pass:
+  - active: inactive
+    enabled: disabled
+  - active: inactive
+    enabled: masked
+  also_fail:
+  - active: inactive
+    enabled: enabled
+  - active: active
+    enabled: disabled
+cups-not-in-use:
+  pass:
+  fail:
+    active: active
+    enabled: enabled
+snmp-not-in-use:
+  pass:
+    active: inactive
+    enabled: disabled
+  fail:
+    active: active
+    enabled: enabled
+dhcp-server-not-in-use:
+  pass:
+  fail:
+    active: active
+    enabled: enabled
+nfs-server-not-in-use:
+  pass:
+  fail:
+    active: inactive
+    enabled: enabled-runtime
+rpcbind-not-in-use:
+  pass:
+    active: inactive
+    enabled: masked
+  fail:
+    active: active
+    enabled: enabled
+samba-not-in-use:
+  pass:
+  fail:
+    active: active
+    enabled: enabled
+ftp-server-not-in-use:
+  pass:
+  fail:
+    active: active
+    enabled: enabled
+apache-not-in-use:
+  pass:
+  fail:
+    active: active
+    enabled: enabled
+nginx-not-in-use:
+  pass:
+    active: inactive
+    enabled: disabled
+  fail:
+    active: active
+    enabled: enabled
+telnet-not-in-use:
+  pass:
+  fail:
+    active: active
+    enabled: enabled
+rsh-not-in-use:
+  pass:
+  fail:
+    active: inactive
+    enabled: enabled

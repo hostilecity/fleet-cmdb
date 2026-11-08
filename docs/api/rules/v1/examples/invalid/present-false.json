@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "rules": [
+    {
+      "key": "a",
+      "reference": "Example only",
+      "title": "Example rule a",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "file:/etc/issue.net",
+      "condition": {
+        "present": false
+      },
+      "remediation": "Example remediation."
+    }
+  ]
+}

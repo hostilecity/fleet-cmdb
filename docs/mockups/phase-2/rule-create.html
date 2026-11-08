@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Add rule · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rules.html">&larr; Rules</a></p>
+<div class="page-head"><div><h1>Add rule</h1><p>Creates version 1 of a new rule. The same checks as importing a file run when you preview and again when you save.</p></div></div>
+<form class="form wide" action="rule-create-preview.html" method="get">
+  <div class="field"><label for="key">Key</label><input id="key" class="mono" maxlength="64" placeholder="ssh-ignore-rhosts" aria-describedby="key-h" required><p class="hint" id="key-h">Lower case letters, digits, and hyphens. It never changes after saving and is never reused for another rule.</p></div>
+  <div class="field"><label for="title">Title</label><input id="title" maxlength="200" placeholder="SSH ignores per-user trust files" required><p class="hint">Plain words, at most 200 characters. State the good condition, in your own words.</p></div>
+  <div class="row">
+    <div class="field"><label for="ref">Reference</label><input id="ref" maxlength="128" placeholder="CIS Debian Linux 13 v1.0.0 5.1.9" aria-describedby="ref-h"><p class="hint" id="ref-h">A section number only, never benchmark text.</p></div>
+    <div class="field"><label for="sevr">Severity</label><select id="sevr"><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option></select></div>
+  </div>
+  <fieldset>
+    <legend>Applies to</legend>
+    <div class="row">
+      <div class="field"><label for="dist">Distribution</label><input id="dist" class="mono" value="debian"></div>
+      <div class="field"><label for="vers">Releases</label><input id="vers" class="mono" value="13" aria-describedby="vers-h"><p class="hint" id="vers-h">Comma separated; leave empty for every release.</p></div>
+    </div>
+    <p class="hint" style="margin:0"><a href="rule-create.html">Add another distribution</a></p>
+  </fieldset>
+  <div class="field"><label for="fact">Fact</label><select id="fact"><option>Choose a fact&hellip;</option><option>sshd.ignorerhosts (boolean)</option><option>sshd.maxauthtries (integer)</option><option>sshd.permitrootlogin (string)</option></select><p class="hint">From the fact manifest. The condition operators offered depend on the fact's type.</p></div>
+  <fieldset>
+    <legend>Condition</legend>
+    <div class="row">
+      <div class="field"><label for="op">Passes when the value is</label><select id="op"><option>equal to</option><option>not equal to</option><option>one of</option><option>not one of</option><option>at least</option><option>at most</option></select></div>
+      <div class="field"><label for="exp">Expected value</label><input id="exp" aria-describedby="exp-h"><p class="hint" id="exp-h">Must fit the fact's type. A rule with several conditions can be added by importing a file.</p></div>
+    </div>
+  </fieldset>
+  <div class="field"><label for="rem">Remediation</label><textarea id="rem" maxlength="4000" placeholder="Set IgnoreRhosts to yes in /etc/ssh/sshd_config and reload ssh."></textarea><p class="hint">What an operator does to fix a failure, in your own words.</p></div>
+  <div class="field"><label><input type="checkbox" checked> Enabled</label><p class="hint">A rule that is off is kept but not evaluated.</p></div>
+  <div class="notice info" role="note"><strong>What saving does</strong><p>Press Preview first: it shows how many hosts would pass and fail and writes nothing. Saving then creates version 1 and every host's latest config snapshot is checked against it, now. No agent is contacted. The key must not exist yet. The change is audited with you as the actor. Nothing is written when any field has an error; errors are shown beside the field, as on <a href="rule-edit-errors.html">the edit page</a>.</p></div>
+  <div class="actions"><button class="btn" type="submit">Preview the effect</button><a class="btn quiet" href="rules.html">Cancel</a></div>
+</form>
+<p class="note">Decided in the P2-D01 review (Q11): the dashboard can add one rule. A rule with several conditions (all, any, not) still comes in by importing a file. Decided on #126: adding a rule previews its results before saving, as editing does (<a href="rule-create-preview.html">the preview</a>).</p>
+</main>
+</body>
+</html>

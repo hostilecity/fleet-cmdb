@@ -1,0 +1,4 @@
+<% content_for :title, "Edit #{@rule.key}" %>
+<p><%= link_to "← #{@rule.key}", rule_path(@rule) %></p>
+<div class="page-head"><div><h1>Edit rule</h1><p>Saving creates version <%= @rule.current_version.version + 1 %>. <%= @form.problems.any? ? "Nothing has been saved." : "Version #{@rule.current_version.version} stays as it is." %></p></div></div>
+<%= render "rules/form", form: @form, url: preview_edit_rule_path(@rule), base_version: @base_version %>

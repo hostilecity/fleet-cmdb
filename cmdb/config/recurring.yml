@@ -21,10 +21,22 @@ development:
   onboarding_pruning:
     class: OnboardingPruneJob
     schedule: every hour at minute 7
+  # P2-S03: report requests no report satisfied within an hour become expired (kept, not deleted).
+  report_request_expiry:
+    class: ReportRequestExpiryJob
+    schedule: every minute
+  # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
+  rule_import_preview_pruning:
+    class: RuleImportPreviewPruneJob
+    schedule: every 5 minutes
   # NFR-2, DEC-07: snapshots, report ids, and status events past the retention window; never audit entries.
   retention_pruning:
     class: RetentionPruneJob
     schedule: every day at 3:17am
+  # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
+  advisory_upload_pruning:
+    class: AdvisoryUploadPruneJob
+    schedule: every 10 minutes
   clear_solid_queue_finished_jobs:
     command: "SolidQueue::Job.clear_finished_in_batches(sleep_between_batches: 0.3)"
     schedule: every hour at minute 12
@@ -41,10 +53,27 @@ production:
   onboarding_pruning:
     class: OnboardingPruneJob
     schedule: every hour at minute 7
+  # P2-S03: report requests no report satisfied within an hour become expired (kept, not deleted).
+  report_request_expiry:
+    class: ReportRequestExpiryJob
+    schedule: every minute
+  # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
+  rule_import_preview_pruning:
+    class: RuleImportPreviewPruneJob
+    schedule: every 5 minutes
   # NFR-2, DEC-07: snapshots, report ids, and status events past the retention window; never audit entries.
   retention_pruning:
     class: RetentionPruneJob
     schedule: every day at 3:17am
+  # P2-S13, DEC-11: advisory data from FLEET_ADVISORY_FEED_URL (does nothing when it is empty). Not in
+  # development, so a laptop does not download the archive every 6 hours: run bin/rails advisories:refresh.
+  advisory_feed_refresh:
+    class: AdvisoryFeedRefreshJob
+    schedule: "41 */6 * * *"
+  # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
+  advisory_upload_pruning:
+    class: AdvisoryUploadPruneJob
+    schedule: every 10 minutes
   clear_solid_queue_finished_jobs:
     command: "SolidQueue::Job.clear_finished_in_batches(sleep_between_batches: 0.3)"
     schedule: every hour at minute 12

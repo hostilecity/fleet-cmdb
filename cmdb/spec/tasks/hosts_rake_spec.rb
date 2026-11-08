@@ -25,7 +25,7 @@ RSpec.describe "hosts rake tasks (P1-S05)" do
     expect(host).to have_attributes(enrollment_state: "pending", tags: %w[media lab])
     token = out.lines.map(&:strip).find { |line| EnrollmentToken::FORMAT.match?(line) }
     expect(EnrollmentToken.lock_for_redemption(token)).to have_attributes(host_id: host.id)
-    expect(AuditEntry.for_target(host).pluck(:action)).to eq([ Audit::Actions::HOST_CREATED, Audit::Actions::HOST_ENROLLMENT_TOKEN_ISSUED ])
+    expect(AuditEntry.for_target(host).order(:id).pluck(:action)).to eq([ Audit::Actions::HOST_CREATED, Audit::Actions::HOST_ENROLLMENT_TOKEN_ISSUED ])
   end
 
   it "issues a re-enrollment token by hostname or id" do

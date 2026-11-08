@@ -15,6 +15,9 @@ pub struct Carried {
     pub state_dir: Option<String>,
     pub heartbeat: Option<Interval>,
     pub inventory: Option<Interval>,
+    pub config_report: Option<Interval>,
+    /// `update_confirm_seconds` when it is not the default (P1-AGENT-UPDATE).
+    pub update_confirm_seconds: Option<u64>,
 }
 
 impl Carried {
@@ -27,6 +30,11 @@ impl Carried {
                 .then(|| config.state_dir.to_string_lossy().into_owned()),
             heartbeat: (config.heartbeat != defaults.heartbeat).then_some(config.heartbeat),
             inventory: (config.inventory != defaults.inventory).then_some(config.inventory),
+            config_report: (config.config_report != defaults.config_report)
+                .then_some(config.config_report),
+            update_confirm_seconds: (config.update_confirm_seconds
+                != defaults.update_confirm_seconds)
+                .then_some(config.update_confirm_seconds),
         }
     }
 
@@ -36,6 +44,8 @@ impl Carried {
             state_dir: None,
             heartbeat: None,
             inventory: None,
+            config_report: None,
+            update_confirm_seconds: None,
         }
     }
 }
@@ -117,6 +127,13 @@ pub fn render(
         Some(dir) => out.push_str(&format!("state_dir = {}\n", quoted(dir))),
         None => out.push_str(&format!("# state_dir = {}\n", quoted(DEFAULT_STATE_DIR))),
     }
+    match carried.update_confirm_seconds {
+        Some(seconds) => out.push_str(&format!("update_confirm_seconds = {seconds}\n")),
+        None => out.push_str(&format!(
+            "# update_confirm_seconds = {}             # how long a new version has to confirm an update\n",
+            defaults.update_confirm_seconds
+        )),
+    }
     interval(
         "heartbeat",
         carried.heartbeat.as_ref(),
@@ -127,6 +144,12 @@ pub fn render(
         "inventory",
         carried.inventory.as_ref(),
         &defaults.inventory,
+        &mut out,
+    );
+    interval(
+        "config_report",
+        carried.config_report.as_ref(),
+        &defaults.config_report,
         &mut out,
     );
     // Never write a config the agent would refuse. The parse error never contains the credential.
@@ -162,7 +185,7 @@ mod tests {
     #[test]
     fn custom_settings_are_carried_over() {
         let old = Config::from_toml(&format!(
-            "{}log_level = \"debug\"\nstate_dir = \"/srv/agent \\\"state\\\"\"\n[heartbeat]\ninterval_seconds = 120\n",
+            "{}log_level = \"debug\"\nstate_dir = \"/srv/agent \\\"state\\\"\"\nupdate_confirm_seconds = 120\n[heartbeat]\ninterval_seconds = 120\n",
             minimal()
         ))
         .unwrap();
@@ -181,6 +204,9 @@ mod tests {
         assert_eq!(new.heartbeat, old.heartbeat);
         assert_eq!(new.heartbeat.start, Duration::from_secs(120));
         assert_eq!(new.inventory, old.inventory);
+        assert_eq!(new.config_report, old.config_report);
+        // Review of the VM tests (P1-AGENT-UPDATE): a re-run of the installer used to drop it.
+        assert_eq!(new.update_confirm_seconds, 120);
         assert_eq!(
             new.ca_file.unwrap(),
             Path::new("/etc/fleet-agent/ca \"x\".pem")

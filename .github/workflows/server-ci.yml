@@ -94,9 +94,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  dpkg-corpus:
+    # The version comparison corpus (P2-S09) must be what Debian 13's dpkg says, not what the sandbox that
+    # generated it says: regenerate it here and fail on any difference.
+    name: dpkg corpus on Debian 13
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    container: debian:13
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check the corpus against dpkg --compare-versions
+        run: sh cmdb/script/dpkg-corpus.sh --check
+
   gate:
     name: Server CI
-    needs: [changes, test]
+    needs: [changes, test, dpkg-corpus]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -104,7 +121,10 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           TEST: ${{ needs.test.result }}
+          CORPUS: ${{ needs.dpkg-corpus.result }}
         run: |
-          echo "changes=$CHANGES test=$TEST"
+          echo "changes=$CHANGES test=$TEST dpkg-corpus=$CORPUS"
           if [ "$CHANGES" != "success" ]; then exit 1; fi
-          if [ "$TEST" = "failure" ] || [ "$TEST" = "cancelled" ]; then exit 1; fi
+          for result in "$TEST" "$CORPUS"; do
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then exit 1; fi
+          done

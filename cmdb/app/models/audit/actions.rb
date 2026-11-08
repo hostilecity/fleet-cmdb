@@ -1,5 +1,5 @@
 module Audit
-  # Every audit action name, in one place (FR-S.3). Later phases add rule changes and task actions.
+  # Every audit action name, in one place (FR-S.3). Phase 3 adds task actions.
   module Actions
     HOST_CREATED = "host.created"
     HOST_EDITED = "host.edited"
@@ -10,6 +10,7 @@ module Audit
     HOST_ENROLLMENT_TOKEN_ISSUED = "host.enrollment_token_issued"
     HOST_FIRST_INVENTORY = "host.first_inventory"
     HOST_MACHINE_ID_MISMATCH = "host.machine_id_mismatch"
+    HOST_REPORT_REQUESTED = "host.report_requested"
     ONBOARDING_APPROVED = "onboarding.approved"
     ONBOARDING_REJECTED = "onboarding.rejected"
     OPERATOR_ALLOWED = "operator.allowed"
@@ -30,6 +31,17 @@ module Audit
     UPDATE_ROLLED_BACK = "update.rolled_back"
     UPDATE_UNCONFIRMED = "update.unconfirmed"
     SETTING_CHANGED = "setting.changed"
+    RULE_CREATED = "rule.created"
+    RULE_EDITED = "rule.edited"
+    RULE_ENABLED = "rule.enabled"
+    RULE_DISABLED = "rule.disabled"
+    ADVISORY_IMPORTED = "advisory.imported"
+    ADVISORY_IMPORT_FAILED = "advisory.import_failed"
+    ADVISORY_IMPORT_HELD_BACK = "advisory.import_held_back"
+    ADVISORY_REFRESH_REQUESTED = "advisory.refresh_requested"
+    ADVISORY_REFRESH_REFUSED = "advisory.refresh_refused"
+    ADVISORY_UPLOADED = "advisory.uploaded"
+    ADVISORY_WITHDRAWALS_CONFIRMED = "advisory.withdrawals_confirmed"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

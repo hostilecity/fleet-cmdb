@@ -27,7 +27,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 Run every Phase 1 acceptance criterion on the designated test VM ([DEC-01](../../decisions/0001-fleet-profile.md)) and write the delivery note.
 
 - AC-1.1 to AC-1.10 each executed, with evidence (test name, command output, or screenshot). AC-1.8 is run by someone following only the dashboard install page; AC-1.9 and AC-1.10 use a disposable VM and test releases signed with the real release process.
-- NFR-2: restore drill result. NFR-3: load check numbers from [P1-O04](p1-verify.md). FR-1.6: soak result from [P1-A09](p1-verify.md).
+- NFR-2: restore drill result. NFR-3: load check numbers from [P1-O04](p1-verify.md). FR-1.6: the soak runs from [P1-A09](p1-verify.md) (the 72-hour run is [P2-SOAK](p2-soak.md), in Phase 2).
 - Migrations run forward cleanly from an empty database and the full suite passes in a clean CI run.
 - Documentation reviewed against what was built.
 - Confirm nothing out of scope and nothing from Phase 2 or 3 was added.

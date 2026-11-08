@@ -37,6 +37,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 ### Scope
 
 - Execute every Phase 2 acceptance criterion on the designated test VM, with evidence.
+- Attach the 72-hour agent soak result from [P2-SOAK](p2-soak.md) (deferred from Phase 1) to the delivery note.
 - Confirm migrations run forward from the Phase 1 database and the whole suite (Phase 1 included) passes in a clean CI run.
 - Update documentation: new agent options, rule import, advisory import and refresh, new operator workflows.
 - Confirm nothing out of scope (no remediation) and nothing from Phase 3 was added.

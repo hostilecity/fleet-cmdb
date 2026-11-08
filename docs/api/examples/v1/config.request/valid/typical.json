@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.3.0",
+  "report_id": "00000000-0000-4000-8000-000000000001",
+  "collected_at": "2026-01-01T12:00:00Z",
+  "manifest_version": 1,
+  "facts": {
+    "sshd.permitrootlogin": {
+      "state": "ok",
+      "value": "no",
+      "reason": null
+    },
+    "sshd.passwordauthentication": {
+      "state": "ok",
+      "value": false,
+      "reason": null
+    },
+    "sshd.maxauthtries": {
+      "state": "ok",
+      "value": 4,
+      "reason": null
+    },
+    "sshd.ciphers": {
+      "state": "ok",
+      "value": [
+        "aes256-gcm",
+        "aes256-ctr"
+      ],
+      "reason": null
+    },
+    "sshd.kexalgorithms": {
+      "state": "ok",
+      "value": [
+        "curve25519-sha256"
+      ],
+      "reason": null
+    },
+    "login_defs.pass_max_days": {
+      "state": "ok",
+      "value": 365,
+      "reason": null
+    },
+    "pwquality.minlen": {
+      "state": "ok",
+      "value": 14,
+      "reason": null
+    },
+    "firewall.enabled": {
+      "state": "ok",
+      "value": true,
+      "reason": null
+    },
+    "firewall.backend": {
+      "state": "ok",
+      "value": "nftables",
+      "reason": null
+    },
+    "auto_updates.enabled": {
+      "state": "ok",
+      "value": true,
+      "reason": null
+    },
+    "users.login": {
+      "state": "ok",
+      "value": [
+        "root",
+        "admin"
+      ],
+      "reason": null
+    },
+    "users.uid0": {
+      "state": "ok",
+      "value": [
+        "root"
+      ],
+      "reason": null
+    },
+    "services.running": {
+      "state": "ok",
+      "value": [
+        "ssh.service",
+        "cron.service"
+      ],
+      "reason": null
+    },
+    "file:/etc/shadow": {
+      "state": "ok",
+      "value": {
+        "mode": "0640",
+        "owner": "root",
+        "group": "shadow"
+      },
+      "reason": null
+    },
+    "file:/etc/ssh/sshd_config": {
+      "state": "ok",
+      "value": {
+        "mode": "0600",
+        "owner": "root",
+        "group": "root"
+      },
+      "reason": null
+    },
+    "file:/etc/sudoers": {
+      "state": "unreadable",
+      "value": null,
+      "reason": "Permission denied reading /etc/sudoers."
+    },
+    "service:ssh.service": {
+      "state": "ok",
+      "value": {
+        "active": "active",
+        "enabled": "enabled"
+      },
+      "reason": null
+    },
+    "service:telnet.socket": {
+      "state": "ok",
+      "value": null,
+      "reason": null
+    },
+    "file:/etc/issue.net": {
+      "state": "ok",
+      "value": null,
+      "reason": null
+    },
+    "pwquality.retry": {
+      "state": "unsupported",
+      "value": null,
+      "reason": "libpwquality is not installed."
+    }
+  }
+}

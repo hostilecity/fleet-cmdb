@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media server: compare config snapshots · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a><a class="btn quiet" href="../phase-1/dialogs.html#reenroll">Re-enroll</a><a class="btn danger quiet" href="../phase-1/dialogs.html#revoke">Revoke credential</a><a class="btn danger quiet" href="../phase-1/dialogs.html#retire">Retire</a></div>
+</div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">5</span><span class="detail">1 high, 2 medium, 1 low, 1 unknown</span></a>
+  <a href="host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="host-overview.html">Overview</a><a href="host-config.html" aria-current="page">Configuration</a><a href="host-packages.html">Packages <span class="count">1,243</span></a><a href="host-vulns.html">Vulnerabilities <span class="count">5 open</span></a></nav>
+
+<p><a href="host-config.html#snapshots">&larr; Configuration</a></p>
+<h2 style="margin-top:0">Compare config snapshots</h2>
+
+<form class="picker" action="host-config-diff.html" method="get" aria-label="Choose two config snapshots">
+  <label>Older snapshot<select name="from">
+    <option value="2026-11-03">2026-11-03 16:40 UTC (2 facts changed)</option>
+    <option value="2026-10-28" selected>2026-10-28 11:02 UTC (first report)</option>
+  </select></label>
+  <span class="arrow" aria-hidden="true">&rarr;</span>
+  <label>Newer snapshot<select name="to">
+    <option value="2026-11-06" selected>2026-11-06 09:14 UTC (latest, 3 facts changed)</option>
+    <option value="2026-11-03">2026-11-03 16:40 UTC (2 facts changed)</option>
+  </select></label>
+  <button class="btn" type="submit">Compare</button>
+  <a class="btn quiet" href="host-config-diff.html?from=2026-11-06&amp;to=2026-10-28">Swap</a>
+</form>
+
+<ul class="diffsum" aria-label="Summary of the comparison">
+  <li><strong>3</strong> facts changed value</li>
+  <li><strong>2</strong> facts changed state</li>
+  <li><strong>0</strong> facts added</li>
+  <li><strong>0</strong> facts removed</li>
+  <li><strong>5</strong> checks changed result: 1 to Pass, 2 to Fail, 2 to Not readable</li>
+</ul>
+<h3>Value changes</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Facts whose value changed</caption><thead><tr><th scope="col">Fact</th><th scope="col">Change</th><th scope="col">Older</th><th scope="col">Newer</th><th scope="col">Effect on checks</th></tr></thead><tbody>
+<tr><td><span class="mono">sshd.permitrootlogin</span></td><td><span class="kind">Changed</span></td><td><del class="val">"yes"</del></td><td><ins class="val">"no"</ins></td><td><a href="rule.html">ssh-root-login-off</a><span class="effect"><span class="lamp fail">Fail</span> &rarr; <span class="lamp online">Pass</span></span></td></tr>
+<tr><td><span class="mono">sshd.maxauthtries</span></td><td><span class="kind">Changed</span></td><td><del class="val">4</del></td><td><ins class="val">6</ins></td><td><a href="rule.html">ssh-max-auth-tries</a><span class="effect"><span class="lamp online">Pass</span> &rarr; <span class="lamp fail">Fail</span></span></td></tr>
+<tr><td><span class="mono">login_defs.pass_max_days</span></td><td><span class="kind">Changed</span></td><td><del class="val">365</del></td><td><ins class="val">99999</ins></td><td><a href="rule.html">password-max-age</a><span class="effect"><span class="lamp online">Pass</span> &rarr; <span class="lamp fail">Fail</span></span></td></tr>
+</tbody></table></div>
+<h3>State changes</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Facts whose state changed</caption><thead><tr><th scope="col">Fact</th><th scope="col">Change</th><th scope="col">Older</th><th scope="col">Newer</th><th scope="col">Effect on checks</th></tr></thead><tbody>
+<tr><td><span class="mono">pwquality.minlen</span></td><td><span class="kind">State changed</span></td><td><span class="lamp online">OK</span> <span class="val">14</span></td><td><span class="lamp stale">Unreadable</span><span class="reason-line">/etc/security/pwquality.conf: permission denied</span></td><td><a href="rule.html">password-min-length</a><span class="effect"><span class="lamp online">Pass</span> &rarr; <span class="lamp stale">Not readable</span></span></td></tr>
+<tr><td><span class="mono">pwquality.minclass</span></td><td><span class="kind">State changed</span></td><td><span class="lamp online">OK</span> <span class="val">3</span></td><td><span class="lamp stale">Unreadable</span><span class="reason-line">/etc/security/pwquality.conf: permission denied</span></td><td><a href="rule.html">password-min-classes</a><span class="effect"><span class="lamp online">Pass</span> &rarr; <span class="lamp stale">Not readable</span></span></td></tr>
+</tbody></table></div>
+<h3>Facts added</h3>
+<p class="muted">None. A fact is added when the server's fact manifest gains one after the older snapshot was taken.</p>
+<h3>Facts removed</h3>
+<p class="muted">None. The manifest rules never remove a fact.</p>
+<p class="note">A changed SSH setting shows in the diff and flips the matching check (AC-2.1): <code>sshd.permitrootlogin</code> "yes" to "no" above flips <code>ssh-root-login-off</code> from Fail to Pass. The "Effect on checks" column lists the result changes recorded between the two snapshots, so a fact that became unreadable shows its effect on the dependent checks too (AC-2.5). Values are always escaped text. This pair is the first report against the latest; the link in the snapshot list opens the latest against the one before it.</p>
+<h3>Changes with no new snapshot</h3>
+<p class="muted">Check results also change when a rule is edited, enabled, or disabled. Between these two snapshots: <a href="rule.html">shadow-file-mode</a> went from Pass to Fail on 2026-11-05 14:30 UTC when version 2 of the rule replaced version 1 (no agent contact).</p>
+</main>
+</body>
+</html>

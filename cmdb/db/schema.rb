@@ -10,10 +10,86 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
+
+  create_table "advisories", force: :cascade do |t|
+    t.string "advisory_id", limit: 128, null: false
+    t.string "source", limit: 256, null: false
+    t.string "summary", limit: 512
+    t.string "aliases", default: [], null: false, array: true
+    t.string "severity", limit: 16, null: false
+    t.string "severity_raw", limit: 512
+    t.string "reference_url", limit: 2048
+    t.datetime "published_at"
+    t.datetime "modified_at", null: false
+    t.datetime "withdrawn_at"
+    t.string "withdrawn_reason", limit: 16
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["advisory_id"], name: "index_advisories_on_advisory_id", unique: true
+    t.check_constraint "(withdrawn_at IS NULL) = (withdrawn_reason IS NULL) AND (withdrawn_reason::text = ANY (ARRAY['withdrawn'::character varying, 'absent'::character varying]::text[]))", name: "advisories_withdrawn_reason_valid"
+    t.check_constraint "severity::text = ANY (ARRAY['critical'::character varying, 'high'::character varying, 'medium'::character varying, 'low'::character varying, 'unknown'::character varying]::text[])", name: "advisories_severity_valid"
+  end
+
+  create_table "advisory_imports", force: :cascade do |t|
+    t.bigint "operator_id"
+    t.string "origin", limit: 8, null: false
+    t.string "source", limit: 256, null: false
+    t.boolean "full", default: false, null: false
+    t.string "state", limit: 16, null: false
+    t.string "ecosystems", default: [], null: false, array: true
+    t.jsonb "counts", default: {}, null: false
+    t.jsonb "problems", default: [], null: false
+    t.string "reason", limit: 512
+    t.string "etag", limit: 256
+    t.string "last_modified", limit: 64
+    t.datetime "started_at", null: false
+    t.datetime "finished_at"
+    t.jsonb "matching"
+    t.index ["finished_at"], name: "index_advisory_imports_on_finished_at"
+    t.index ["operator_id"], name: "index_advisory_imports_on_operator_id"
+    t.check_constraint "(finished_at IS NULL) = (state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying]::text[]))", name: "advisory_imports_finished_iff_done"
+    t.check_constraint "origin::text = ANY (ARRAY['feed'::character varying, 'file'::character varying]::text[])", name: "advisory_imports_origin_valid"
+    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'held_back'::character varying]::text[])", name: "advisory_imports_state_valid"
+  end
+
+  create_table "advisory_packages", force: :cascade do |t|
+    t.bigint "advisory_id", null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.string "package", limit: 128, null: false
+    t.jsonb "ranges", null: false
+    t.string "fixed_version", limit: 256
+    t.index ["advisory_id", "ecosystem", "package"], name: "index_advisory_packages_unique", unique: true
+    t.index ["ecosystem", "package"], name: "index_advisory_packages_on_ecosystem_and_package"
+  end
+
+  create_table "advisory_refresh_attempts", force: :cascade do |t|
+    t.string "kind", limit: 16, null: false
+    t.bigint "operator_id"
+    t.datetime "started_at", null: false
+    t.index ["operator_id"], name: "index_advisory_refresh_attempts_on_operator_id"
+    t.index ["started_at"], name: "index_advisory_refresh_attempts_on_started_at"
+    t.check_constraint "(kind::text = 'manual'::text) = (operator_id IS NOT NULL)", name: "advisory_refresh_attempts_operator_iff_manual"
+    t.check_constraint "kind::text = ANY (ARRAY['manual'::character varying, 'scheduled'::character varying, 'task'::character varying]::text[])", name: "advisory_refresh_attempts_kind_valid"
+  end
+
+  create_table "advisory_uploads", force: :cascade do |t|
+    t.bigint "advisory_import_id", null: false
+    t.bigint "operator_id", null: false
+    t.string "filename", limit: 256, null: false
+    t.bigint "byte_size", null: false
+    t.binary "data", null: false
+    t.jsonb "allowed_withdrawals", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.index ["advisory_import_id"], name: "index_advisory_uploads_on_advisory_import_id", unique: true
+    t.index ["expires_at"], name: "index_advisory_uploads_on_expires_at"
+    t.index ["operator_id"], name: "index_advisory_uploads_on_operator_id"
+    t.check_constraint "byte_size = octet_length(data) AND byte_size <= 67108864", name: "advisory_uploads_size_bounded"
+  end
 
   create_table "agent_credentials", force: :cascade do |t|
     t.bigint "host_id", null: false
@@ -105,6 +181,90 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.check_constraint "actor_type::text = ANY (ARRAY['operator'::character varying::text, 'host'::character varying::text, 'system'::character varying::text])", name: "audit_entries_actor_type_valid"
   end
 
+  create_table "cis_result_changes", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "cis_rule_id", null: false
+    t.bigint "cis_rule_version_id"
+    t.bigint "config_snapshot_id"
+    t.string "from_result", limit: 16
+    t.string "to_result", limit: 16, null: false
+    t.jsonb "observed"
+    t.string "reason", limit: 512
+    t.datetime "occurred_at", null: false
+    t.index ["cis_rule_id", "occurred_at"], name: "index_cis_result_changes_on_cis_rule_id_and_occurred_at"
+    t.index ["config_snapshot_id"], name: "index_cis_result_changes_on_config_snapshot_id"
+    t.index ["host_id", "occurred_at"], name: "index_cis_result_changes_on_host_id_and_occurred_at"
+    t.index ["occurred_at"], name: "index_cis_result_changes_on_occurred_at"
+    t.check_constraint "from_result IS NULL OR (from_result::text = ANY (ARRAY['pass'::character varying, 'fail'::character varying, 'not_applicable'::character varying, 'not_readable'::character varying, 'not_evaluated'::character varying]::text[]))", name: "cis_result_changes_from_valid"
+    t.check_constraint "from_result::text IS DISTINCT FROM to_result::text", name: "cis_result_changes_is_a_change"
+    t.check_constraint "to_result::text = ANY (ARRAY['pass'::character varying, 'fail'::character varying, 'not_applicable'::character varying, 'not_readable'::character varying, 'not_evaluated'::character varying]::text[])", name: "cis_result_changes_to_valid"
+  end
+
+  create_table "cis_results", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "cis_rule_id", null: false
+    t.bigint "cis_rule_version_id"
+    t.bigint "config_snapshot_id"
+    t.string "result", limit: 16, null: false
+    t.jsonb "observed"
+    t.string "reason", limit: 512
+    t.datetime "evaluated_at", null: false
+    t.datetime "changed_at", null: false
+    t.index ["cis_rule_id"], name: "index_cis_results_on_cis_rule_id"
+    t.index ["config_snapshot_id"], name: "index_cis_results_on_config_snapshot_id"
+    t.index ["host_id", "cis_rule_id"], name: "index_cis_results_on_host_id_and_cis_rule_id", unique: true
+    t.check_constraint "result::text = ANY (ARRAY['pass'::character varying, 'fail'::character varying, 'not_applicable'::character varying, 'not_readable'::character varying, 'not_evaluated'::character varying]::text[])", name: "cis_results_result_valid"
+  end
+
+  create_table "cis_rule_versions", force: :cascade do |t|
+    t.bigint "cis_rule_id", null: false
+    t.integer "version", null: false
+    t.string "reference", limit: 128, null: false
+    t.string "title", limit: 200, null: false
+    t.string "severity", limit: 16, null: false
+    t.jsonb "applies_to", null: false
+    t.string "fact", limit: 220, null: false
+    t.jsonb "condition", null: false
+    t.text "remediation", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.datetime "created_at", null: false
+    t.index ["cis_rule_id", "version"], name: "index_cis_rule_versions_on_cis_rule_id_and_version", unique: true
+    t.index ["fact"], name: "index_cis_rule_versions_on_fact"
+    t.check_constraint "severity::text = ANY (ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying]::text[])", name: "cis_rule_versions_severity"
+    t.check_constraint "version > 0", name: "cis_rule_versions_version_positive"
+  end
+
+  create_table "cis_rules", force: :cascade do |t|
+    t.string "key", limit: 64, null: false
+    t.boolean "enabled", default: true, null: false
+    t.bigint "current_version_id"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["current_version_id"], name: "index_cis_rules_on_current_version_id", unique: true
+    t.index ["key"], name: "index_cis_rules_on_key", unique: true
+  end
+
+  create_table "config_report_receipts", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.uuid "report_id", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "report_id"], name: "index_config_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["received_at"], name: "index_config_report_receipts_on_received_at"
+  end
+
+  create_table "config_snapshots", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.jsonb "facts", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "state_counts", default: {}, null: false
+    t.integer "manifest_version", null: false
+    t.uuid "report_id", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "received_at"], name: "index_config_snapshots_on_host_id_and_received_at"
+    t.index ["received_at"], name: "index_config_snapshots_on_received_at"
+  end
+
   create_table "enrollment_tokens", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.string "token_digest", limit: 64, null: false
@@ -114,6 +274,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.datetime "updated_at", null: false
     t.index ["host_id"], name: "index_enrollment_tokens_on_host_id"
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
+  end
+
+  create_table "host_configs", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.jsonb "facts", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "state_counts", default: {}, null: false
+    t.integer "manifest_version", null: false
+    t.jsonb "ignored_keys", default: [], null: false
+    t.uuid "report_id", null: false
+    t.integer "schema_version", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_host_configs_on_host_id", unique: true
   end
 
   create_table "host_inventories", force: :cascade do |t|
@@ -131,6 +307,35 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.index ["host_id"], name: "index_host_inventories_on_host_id", unique: true
   end
 
+  create_table "host_package_sets", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "manager", limit: 16, null: false
+    t.string "unsupported_reason", limit: 512
+    t.integer "package_count", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "warnings", default: [], null: false
+    t.uuid "report_id", null: false
+    t.integer "schema_version", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.jsonb "skipped", default: [], null: false
+    t.index ["host_id"], name: "index_host_package_sets_on_host_id", unique: true
+    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "host_package_sets_manager_valid"
+    t.check_constraint "(manager::text = 'dpkg'::text) = (unsupported_reason IS NULL)", name: "host_package_sets_reason_iff_not_dpkg"
+  end
+
+  create_table "host_packages", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "name", limit: 128, null: false
+    t.string "architecture", limit: 32, null: false
+    t.string "version", limit: 256, null: false
+    t.string "source", limit: 128
+    t.index ["host_id", "name", "architecture"], name: "index_host_packages_on_host_id_and_name_and_architecture", unique: true
+    t.index ["source"], name: "index_host_packages_on_source"
+  end
+
   create_table "host_status_events", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.string "from_status"
@@ -143,6 +348,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.check_constraint "from_status::text IS DISTINCT FROM to_status::text", name: "host_status_events_is_a_change"
     t.check_constraint "reason::text = ANY (ARRAY['heartbeat'::character varying::text, 'evaluation'::character varying::text])", name: "host_status_events_reason_valid"
     t.check_constraint "to_status::text = ANY (ARRAY['online'::character varying::text, 'stale'::character varying::text, 'offline'::character varying::text])", name: "host_status_events_to_status_valid"
+  end
+
+  create_table "host_vulnerability_evaluations", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "ecosystem", limit: 64
+    t.string "state", limit: 16, null: false
+    t.string "reason", limit: 32
+    t.string "detail", limit: 512
+    t.jsonb "not_evaluated", default: [], null: false
+    t.integer "not_evaluated_count", default: 0, null: false
+    t.datetime "evaluated_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["host_id"], name: "index_host_vulnerability_evaluations_on_host_id", unique: true
+    t.check_constraint "(state::text = 'not_evaluated'::text) = (reason IS NOT NULL)", name: "host_vulnerability_evaluations_reason_iff_not_evaluated"
+    t.check_constraint "state::text = ANY (ARRAY['evaluated'::character varying, 'not_evaluated'::character varying]::text[])", name: "host_vulnerability_evaluations_state_valid"
   end
 
   create_table "hosts", force: :cascade do |t|
@@ -254,6 +475,56 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 
+  create_table "package_report_receipts", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.uuid "report_id", null: false
+    t.datetime "received_at", null: false
+    t.index ["host_id", "report_id"], name: "index_package_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["received_at"], name: "index_package_report_receipts_on_received_at"
+  end
+
+  create_table "package_snapshots", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "manager", limit: 16, null: false
+    t.string "unsupported_reason", limit: 512
+    t.integer "package_count", null: false
+    t.string "content_hash", limit: 64, null: false
+    t.jsonb "packages", null: false
+    t.jsonb "warnings", default: [], null: false
+    t.uuid "report_id", null: false
+    t.datetime "collected_at", null: false
+    t.datetime "received_at", null: false
+    t.jsonb "skipped", default: [], null: false
+    t.index ["host_id", "received_at"], name: "index_package_snapshots_on_host_id_and_received_at"
+    t.index ["received_at"], name: "index_package_snapshots_on_received_at"
+    t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "package_snapshots_manager_valid"
+  end
+
+  create_table "report_requests", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.string "report_type", limit: 16, null: false
+    t.string "state", limit: 16, default: "pending", null: false
+    t.bigint "requested_by_id", null: false
+    t.datetime "requested_at", null: false
+    t.datetime "expires_at", null: false
+    t.datetime "sent_at"
+    t.datetime "delivered_agent_time"
+    t.datetime "satisfied_at"
+    t.uuid "satisfied_by_report_id"
+    t.datetime "expired_at"
+    t.index ["expires_at"], name: "index_report_requests_pending_expiry", where: "((state)::text = 'pending'::text)"
+    t.index ["host_id", "report_type"], name: "index_report_requests_one_pending", unique: true, where: "((state)::text = 'pending'::text)"
+    t.index ["host_id", "requested_at"], name: "index_report_requests_on_host_id_and_requested_at"
+    t.index ["requested_at"], name: "index_report_requests_on_requested_at"
+    t.check_constraint "(sent_at IS NULL) = (delivered_agent_time IS NULL)", name: "report_requests_delivery_complete"
+    t.check_constraint "(state::text = 'expired'::text) = (expired_at IS NOT NULL)", name: "report_requests_expired_matches_state"
+    t.check_constraint "(state::text = 'satisfied'::text) = (satisfied_at IS NOT NULL AND satisfied_by_report_id IS NOT NULL)", name: "report_requests_satisfied_matches_state"
+    t.check_constraint "expires_at > requested_at", name: "report_requests_expire_after_request"
+    t.check_constraint "report_type::text = ANY (ARRAY['config'::character varying, 'inventory'::character varying, 'packages'::character varying]::text[])", name: "report_requests_type_valid"
+    t.check_constraint "state::text <> 'satisfied'::text OR sent_at IS NOT NULL", name: "report_requests_satisfied_after_delivery"
+    t.check_constraint "state::text = ANY (ARRAY['pending'::character varying, 'satisfied'::character varying, 'expired'::character varying]::text[])", name: "report_requests_state_valid"
+  end
+
   create_table "rollout_hosts", force: :cascade do |t|
     t.bigint "rollout_id", null: false
     t.bigint "host_id", null: false
@@ -264,6 +535,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.datetime "resolved_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "from_version", limit: 64
     t.index ["host_id"], name: "index_rollout_hosts_on_host_id"
     t.index ["offered_at"], name: "index_rollout_hosts_updating", where: "((state)::text = 'updating'::text)"
     t.index ["rollout_id", "host_id"], name: "index_rollout_hosts_on_rollout_id_and_host_id", unique: true
@@ -298,6 +570,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.check_constraint "state::text = ANY (ARRAY['running'::character varying, 'halted'::character varying, 'completed'::character varying, 'cancelled'::character varying]::text[])", name: "rollouts_state_valid"
   end
 
+  create_table "rule_import_previews", force: :cascade do |t|
+    t.bigint "operator_id", null: false
+    t.string "token", limit: 64, null: false
+    t.string "filename", limit: 255, null: false
+    t.text "body", null: false
+    t.string "sha256", limit: 64, null: false
+    t.boolean "disable_missing", default: false, null: false
+    t.string "rules_digest", limit: 64, null: false
+    t.datetime "expires_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["expires_at"], name: "index_rule_import_previews_on_expires_at"
+    t.index ["operator_id"], name: "index_rule_import_previews_on_operator_id", unique: true
+    t.index ["token"], name: "index_rule_import_previews_on_token", unique: true
+    t.check_constraint "octet_length(body) <= 1048576", name: "rule_import_previews_body_size"
+  end
+
   create_table "settings", force: :cascade do |t|
     t.string "key", limit: 100, null: false
     t.jsonb "value", null: false
@@ -306,20 +595,72 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_01_010000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "vulnerability_findings", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "advisory_id", null: false
+    t.string "package", limit: 128, null: false
+    t.string "architecture", limit: 32, null: false
+    t.string "source", limit: 128, null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.string "installed_version", limit: 256, null: false
+    t.string "fixed_version", limit: 256
+    t.string "state", limit: 16, null: false
+    t.string "resolution", limit: 16
+    t.datetime "first_seen_at", null: false
+    t.datetime "resolved_at"
+    t.datetime "reopened_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
+    t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
+    t.index ["host_id", "source"], name: "index_vulnerability_findings_on_host_id_and_source"
+    t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
+    t.check_constraint "(state::text = 'resolved'::text) = (resolution IS NOT NULL) AND (resolution::text = ANY (ARRAY['fixed'::character varying, 'removed'::character varying, 'withdrawn'::character varying, 'not_affected'::character varying]::text[]))", name: "vulnerability_findings_resolution_valid"
+    t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'reopened'::character varying]::text[])", name: "vulnerability_findings_state_valid"
+  end
+
+  add_foreign_key "advisory_imports", "operators"
+  add_foreign_key "advisory_packages", "advisories", on_delete: :cascade
+  add_foreign_key "advisory_refresh_attempts", "operators"
+  add_foreign_key "advisory_uploads", "advisory_imports", on_delete: :cascade
+  add_foreign_key "advisory_uploads", "operators"
   add_foreign_key "agent_credentials", "hosts"
   add_foreign_key "agent_release_imports", "agent_releases"
   add_foreign_key "agent_release_imports", "operators"
   add_foreign_key "agent_releases", "operators", column: "imported_by_id"
   add_foreign_key "agent_updates", "hosts"
   add_foreign_key "agent_updates", "rollouts"
+  add_foreign_key "cis_result_changes", "cis_rule_versions"
+  add_foreign_key "cis_result_changes", "cis_rules"
+  add_foreign_key "cis_result_changes", "config_snapshots", on_delete: :nullify
+  add_foreign_key "cis_result_changes", "hosts"
+  add_foreign_key "cis_results", "cis_rule_versions"
+  add_foreign_key "cis_results", "cis_rules"
+  add_foreign_key "cis_results", "config_snapshots", on_delete: :nullify
+  add_foreign_key "cis_results", "hosts"
+  add_foreign_key "cis_rule_versions", "cis_rules"
+  add_foreign_key "cis_rules", "cis_rule_versions", column: "current_version_id"
+  add_foreign_key "config_report_receipts", "hosts"
+  add_foreign_key "config_snapshots", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
+  add_foreign_key "host_configs", "hosts"
   add_foreign_key "host_inventories", "hosts"
+  add_foreign_key "host_package_sets", "hosts"
+  add_foreign_key "host_packages", "hosts"
   add_foreign_key "host_status_events", "hosts"
+  add_foreign_key "host_vulnerability_evaluations", "hosts"
+  add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
+  add_foreign_key "vulnerability_findings", "advisories"
+  add_foreign_key "vulnerability_findings", "hosts"
   add_foreign_key "inventory_report_receipts", "hosts"
   add_foreign_key "inventory_snapshots", "hosts"
   add_foreign_key "onboarding_requests", "hosts"
   add_foreign_key "onboarding_requests", "operators", column: "decided_by_id"
   add_foreign_key "operator_sessions", "operators"
+  add_foreign_key "package_report_receipts", "hosts"
+  add_foreign_key "package_snapshots", "hosts"
+  add_foreign_key "report_requests", "hosts"
+  add_foreign_key "report_requests", "operators", column: "requested_by_id"
   add_foreign_key "rollout_hosts", "hosts"
   add_foreign_key "rollout_hosts", "rollouts"
   add_foreign_key "rollouts", "agent_releases", on_delete: :restrict

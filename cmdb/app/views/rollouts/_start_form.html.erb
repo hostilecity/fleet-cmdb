@@ -1,0 +1,49 @@
+<%# Start a rollout (P1-D09; approved mockup agents.html). The form asks for a confirmation page, which starts it. %>
+<% open_rollout = rollout if rollout && Rollout::OPEN_STATES.include?(rollout.state) %>
+<% error = errors&.[](:rollout) %>
+<% invalid = ->(field) { error && errors[:rollout_field] == field ? { "aria-invalid": "true", "aria-errormessage": "start_rollout_error" } : {} } %>
+<% disabled = open_rollout.present? || releases.empty? %>
+<%= form_with url: new_rollout_path, method: :get, class: "form", id: "start_rollout", data: { controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
+  <% if open_rollout %>
+    <div class="notice info" role="status"><strong>One rollout at a time.</strong><p>Available when the rollout to <%= open_rollout.agent_release.version %> completes or is cancelled.</p></div>
+  <% elsif releases.empty? %>
+    <div class="notice info" role="status"><strong>Import a release first.</strong><p>A rollout installs an imported, verified release.</p></div>
+  <% end %>
+  <% if error %>
+    <div class="notice error" role="alert" id="start_rollout_error"><strong>The rollout was not started.</strong><p><%= error %></p></div>
+  <% end %>
+  <div class="field">
+    <label for="release">Release</label>
+    <%= select_tag :release, options_for_select(releases.map.with_index { |r, i| [ "#{r.version}#{' (newest)' if i.zero?}", r.version ] }, start[:release]),
+          id: "release", disabled:, **invalid.(:release) %>
+  </div>
+  <div class="field">
+    <label for="canary_tag">Canary hosts</label>
+    <%= select_tag :canary_tag, options_for_select(canary_tags.map { |tag, count| [ "Hosts tagged #{tag} (#{count})", tag ] }, start[:canary_tag]),
+          include_blank: "Only the hosts chosen below", id: "canary_tag", disabled:, "aria-describedby": "canary_hint", **invalid.(:canary_tag) %>
+    <p class="hint" id="canary_hint">They update first. Only active hosts that run an older version than the release take part.</p>
+  </div>
+  <details id="canary_choices"<%= " open" if start[:canary_host_ids].any? %>>
+    <summary>Choose canary hosts<%= " (#{start[:canary_host_ids].size} chosen)" if start[:canary_host_ids].any? %></summary>
+    <% if canary_choices.empty? %>
+      <p class="muted">No active host yet.</p>
+    <% else %>
+      <fieldset class="canary-list">
+        <legend class="visually-hidden">Canary hosts</legend>
+        <% canary_choices.each do |host| %>
+          <label class="check">
+            <%= check_box_tag "canary_host_ids[]", host.id, start[:canary_host_ids].include?(host.id.to_s), id: "canary_host_#{host.id}", disabled: %>
+            <%= host.name %> <span class="muted mono"><%= host.hostname %></span> <span class="muted mono"><%= host.agent_version %></span>
+          </label>
+        <% end %>
+      </fieldset>
+      <% if active_total > canary_choices.size %><p class="hint">Showing the first <%= canary_choices.size %> of <%= active_total %> active hosts. Use a tag to choose others.</p><% end %>
+    <% end %>
+  </details>
+  <div class="field">
+    <label for="stages">Later stages</label>
+    <%= text_field_tag :stages, start[:stages], id: "stages", class: "mono", maxlength: 100, disabled:, "aria-describedby": "stages_hint", **invalid.(:stages) %>
+    <p class="hint" id="stages_hint">Percentages of the hosts on an older version, ending at 100. With 25, 100 the canaries are followed by 25% of hosts and then everyone else. A stage moves on when all its hosts confirm.</p>
+  </div>
+  <div class="actions"><button class="btn" type="submit"<%= " disabled" if disabled %>>Start rollout…</button></div>
+<% end %>

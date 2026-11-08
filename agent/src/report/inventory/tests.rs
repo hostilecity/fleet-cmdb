@@ -765,3 +765,77 @@ fn a_report_waiting_for_its_retry_is_replaced_once_an_interval_old() {
     );
     assert_eq!(transport.sent().last().unwrap().1["uptime_seconds"], 99_999);
 }
+
+#[test]
+fn a_report_request_sends_one_extra_report_even_when_nothing_changed() {
+    // P2-A01, DEC-13: the directive makes one report at the next tick, whatever the stable hash says.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![]);
+    transport.set_accepting(true);
+    let now = h.at(Duration::ZERO);
+    h.tick(&mut reporter, &transport, now);
+    assert_eq!(ids(&transport).len(), 1);
+
+    reporter.request();
+    let later = now + secs(10);
+    h.tick(&mut reporter, &transport, later);
+    let sent = ids(&transport);
+    assert_eq!(sent.len(), 2);
+    assert_ne!(sent[0], sent[1]);
+
+    // Not again until the schedule says so.
+    h.tick(&mut reporter, &transport, later + secs(10));
+    assert_eq!(ids(&transport).len(), 2);
+}
+
+#[test]
+fn a_requested_report_is_sent_at_once_even_while_the_old_one_waits_for_its_retry() {
+    // Review of #114: the requested report inherited the retry deadline of the one it replaced.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![Err(ApiError::Transport("down".into()))]);
+    transport.set_accepting(true);
+    let now = h.at(Duration::ZERO);
+    h.tick(&mut reporter, &transport, now);
+    let first = reporter.pending_report_id().unwrap().to_owned();
+    // The server is back; a request arrives a second later, well inside the backoff.
+    reporter.request();
+    h.tick(&mut reporter, &transport, now + secs(1));
+    let sent = ids(&transport);
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0], first);
+    assert_ne!(sent[1], first);
+    assert!(reporter.pending_report_id().is_none());
+    assert!(reporter.take_answered(), "the request was answered");
+    assert!(!reporter.take_answered());
+}
+
+#[test]
+fn the_backoff_starts_when_the_failed_send_ends() {
+    // Review of #117: the retry time was the tick's `now` plus the backoff, so a request that took its
+    // 30 s timeout (after a collection of up to 10 s) had used up the backoff and was retried at once.
+    let slow = Duration::from_millis(300);
+    let wake_after = |delay: Duration| {
+        let h = Harness::new();
+        let mut reporter = h.reporter();
+        let transport = FakeTransport::new(vec![]);
+        transport.push_with(move |_| {
+            std::thread::sleep(delay);
+            Err(ApiError::Transport("timed out".into()))
+        });
+        let now = h.at(Duration::ZERO);
+        let wake = h.tick(&mut reporter, &transport, now);
+        assert_eq!(transport.sent().len(), 1);
+        wake - now
+    };
+    let fast = wake_after(Duration::ZERO);
+    let late = wake_after(slow);
+    // The retry (a few seconds) comes before the next change check (60 s).
+    assert!(fast < CHANGE_CHECK_INTERVAL, "{fast:?}");
+    // Same seed, same backoff: later by the time the request took, less the tick's own milliseconds.
+    assert!(
+        late >= fast + slow - Duration::from_millis(50),
+        "fast {fast:?}, slow {late:?}"
+    );
+}

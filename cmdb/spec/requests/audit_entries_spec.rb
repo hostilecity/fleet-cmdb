@@ -120,6 +120,31 @@ RSpec.describe "Audit log", :signed_in, type: :request do
       expect(by_id["audit_entry_#{removed.id}"][2..3]).to eq([ "Operator allowed", "operator@example.com" ])
     end
 
+    it "shows rule changes by the rule's key, with their fields labelled (P2-S04)" do
+      text = { "format_version" => 1, "rules" => [ { "key" => "ssh-max-auth-tries", "reference" => "CIS 5.1.6", "title" => "Few SSH attempts", "severity" => "medium",
+                                                       "applies_to" => [ { "distribution" => "debian" } ], "fact" => "sshd.maxauthtries", "condition" => { "lte" => 4 },
+                                                       "remediation" => "Set MaxAuthTries." } ] }
+      CisRules::Import.call(text.to_yaml, actor: Audit::SYSTEM)
+      text["rules"][0]["condition"] = { "lte" => 3 }
+      text["rules"][0]["enabled"] = false
+      CisRules::Import.call(text.to_yaml, actor: Audit::SYSTEM)
+      get "/audit", params: { action: Audit::Actions::RULE_EDITED }
+      edited = AuditEntry.find_by!(action: Audit::Actions::RULE_EDITED)
+      expect(cells(row(edited))[1..3]).to eq([ "System", "Rule edited", "Rule ssh-max-auth-tries" ])
+      expect(row(edited).css(".change-list li").map { |li| li.text.squish }).to eq([ "Version 1 2", "Condition {\"lte\":4} {\"lte\":3}" ])
+      get "/audit", params: { action: Audit::Actions::RULE_DISABLED }
+      expect(cells(row(AuditEntry.find_by!(action: Audit::Actions::RULE_DISABLED)))[2..]).to eq([ "Rule disabled", "Rule ssh-max-auth-tries", "Enabled yes no" ])
+    end
+
+    it "shows a report request by the operator on the host, with the report types labelled (P2-S03)" do
+      host = enrolled_host(name: "Media server").first
+      ReportRequests.request!(host:, types: %w[config packages], actor: operator, now: base)
+      get "/audit", params: { action: Audit::Actions::HOST_REPORT_REQUESTED }
+      requested = AuditEntry.find_by!(action: Audit::Actions::HOST_REPORT_REQUESTED)
+      expect(cells(row(requested))[1..3]).to eq([ "operator@example.com Operator", "Fresh reports requested", "Media server" ])
+      expect(row(requested).css(".change-list li").map { |li| li.text.squish }).to eq([ "Report types config, packages" ])
+    end
+
     it "names an interval setting by its recorded key after clearing it deleted the row (review of #81)" do
       Setting.update_agent_intervals!(heartbeat_seconds: 120, actor: operator)
       Setting.update_agent_intervals!(heartbeat_seconds: nil, actor: operator)
@@ -171,7 +196,7 @@ RSpec.describe "Audit log", :signed_in, type: :request do
     it "shows every action by its label, grouped in the action filter" do
       get "/audit"
       groups = page.css("select[name=action] optgroup").to_h { |g| [ g["label"], g.css("option").map { |o| o["value"] } ] }
-      expect(groups.keys).to eq([ "Hosts", "Onboarding", "Operators", "Agent releases", "Rollouts", "Agent updates", "Settings" ])
+      expect(groups.keys).to eq([ "Hosts", "Onboarding", "Operators", "Agent releases", "Rollouts", "Agent updates", "Settings", "CIS-aligned rules", "Advisory data" ])
       expect(groups.values.flatten).to match_array(Audit::Actions::ALL)
       expect(AuditEntriesHelper::AUDIT_LABELS.keys).to match_array(Audit::Actions::ALL)
     end

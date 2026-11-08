@@ -1,0 +1,15 @@
+APT "";
+APT::Architecture "amd64";
+APT::Architectures "";
+APT::Architectures:: "amd64";
+APT::Install-Recommends "true";
+APT::Periodic "";
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Get "";
+APT::Get::AutomaticRemove "true";
+Unattended-Upgrade "";
+Unattended-Upgrade::Origins-Pattern "";
+Unattended-Upgrade::Origins-Pattern:: "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+Dir "/";
+Dir::Etc "etc/apt/";

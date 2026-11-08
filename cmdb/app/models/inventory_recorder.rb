@@ -7,6 +7,7 @@
 #   hash changes (layer 2), which includes boot id changes, so reboots are visible.
 # - A machine id different from the one the credential was enrolled with sets a visible warning on the host
 #   and is audited once; the first inventory is audited too. Ordinary reports write no audit entries.
+# - A new report, changed or not, satisfies the host's pending inventory report request (ReportRequests, P2-S03).
 module InventoryRecorder
   Result = Data.define(:report_id, :duplicate, :snapshot)
 
@@ -19,8 +20,10 @@ module InventoryRecorder
                                                  unique_by: %i[host_id report_id], returning: :id)
     return Result.new(report_id: report.report_id, duplicate: true, snapshot: false) if inserted.rows.empty?
 
+    ReportRequests.satisfy!(host:, report_type: "inventory", report:, now:) # an operator's request (P2-S03)
     inventory = HostInventory.find_or_initialize_by(host_id:)
     first = inventory.new_record?
+    os_before = inventory.stable&.dig("os")
     hash = report.stable_hash
     snapshot = inventory.stable_hash != hash
     if snapshot
@@ -36,6 +39,9 @@ module InventoryRecorder
                    changes: { "stable_hash" => [ nil, hash ] })
     end
     check_machine_id(host, credential_id, report.machine_id, now)
+    # A rule's applies_to depends on the operating system, so a host whose os changes (or is first known) is
+    # evaluated again (P2-S06).
+    CisEvaluationJob.after_snapshot(host_id) if os_before != report.stable["os"]
     FleetBroadcast.hosts_changed([ host_id ]) if first # the fleet row gains its operating system
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end

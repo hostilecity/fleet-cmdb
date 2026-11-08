@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media server: compare package snapshots · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a><a class="btn quiet" href="../phase-1/dialogs.html#reenroll">Re-enroll</a><a class="btn danger quiet" href="../phase-1/dialogs.html#revoke">Revoke credential</a><a class="btn danger quiet" href="../phase-1/dialogs.html#retire">Retire</a></div>
+</div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">5</span><span class="detail">1 high, 2 medium, 1 low, 1 unknown</span></a>
+  <a href="host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="host-overview.html">Overview</a><a href="host-config.html">Configuration</a><a href="host-packages.html" aria-current="page">Packages <span class="count">1,243</span></a><a href="host-vulns.html">Vulnerabilities <span class="count">5 open</span></a></nav>
+
+<p><a href="host-packages.html#snapshots">&larr; Packages</a></p>
+<h2 style="margin-top:0">Compare package snapshots</h2>
+
+<form class="picker" action="host-packages-diff.html" method="get" aria-label="Choose two package snapshots">
+  <label>Older snapshot<select name="from">
+    <option value="2026-11-03" selected>2026-11-03 16:40 UTC (5 upgraded)</option>
+    <option value="2026-10-28">2026-10-28 11:02 UTC (first report)</option>
+  </select></label>
+  <span class="arrow" aria-hidden="true">&rarr;</span>
+  <label>Newer snapshot<select name="to">
+    <option value="2026-11-05" selected>2026-11-05 18:22 UTC (latest)</option>
+    <option value="2026-11-03">2026-11-03 16:40 UTC (5 upgraded)</option>
+  </select></label>
+  <button class="btn" type="submit">Compare</button>
+  <a class="btn quiet" href="host-packages-diff.html?from=2026-11-05&amp;to=2026-11-03">Swap</a>
+</form>
+
+<ul class="diffsum" aria-label="Summary of the comparison">
+  <li><span class="kind installed">+ Installed</span> <strong>2</strong></li>
+  <li><span class="kind removed">&minus; Removed</span> <strong>1</strong></li>
+  <li><span class="kind up">&uarr; Upgraded</span> <strong>3</strong></li>
+  <li><span class="kind down">&darr; Downgraded</span> <strong>1</strong></li>
+  <li><span class="kind invalid">? Cannot compare</span> <strong>1</strong></li>
+  <li><span class="kind same">&sim; Source changed</span> <strong>1</strong></li>
+</ul>
+<div class="filters" role="group" aria-label="Show">
+  <ul class="chips" style="margin:0">
+    <li><a href="host-packages-diff.html" aria-current="true">All changes <span class="n">9</span></a></li>
+    <li><a href="host-packages-diff.html?kind=installed">Installed <span class="n">2</span></a></li>
+    <li><a href="host-packages-diff.html?kind=removed">Removed <span class="n">1</span></a></li>
+    <li><a href="host-packages-diff.html?kind=upgraded">Upgraded <span class="n">3</span></a></li>
+    <li><a href="host-packages-diff.html?kind=downgraded">Downgraded <span class="n">1</span></a></li>
+    <li><a href="host-packages-diff.html?kind=invalid">Cannot compare <span class="n">1</span></a></li>
+  </ul>
+</div>
+<div class="table-wrap"><table><caption class="visually-hidden">Packages installed, removed, or changed</caption><thead><tr><th scope="col">Package</th><th scope="col">Change</th><th scope="col">Older</th><th scope="col">Newer</th><th scope="col">Source package</th><th scope="col">Findings</th></tr></thead><tbody>
+<tr><td><span class="mono">libacmetls3:amd64</span></td><td><span class="kind installed">+ Installed</span></td><td><span class="unavailable">Not installed</span></td><td><ins class="mono">3.0.15-1~deb13u1</ins></td><td><span class="mono">acmetls</span></td><td><a href="host-vuln-package.html?package=libacmetls3">Opened <span class="mono">DSA-9100-1</span></a></td></tr>
+<tr><td><span class="mono">acme-docs:all</span></td><td><span class="kind installed">+ Installed</span></td><td><span class="unavailable">Not installed</span></td><td><ins class="mono">4.0-1</ins></td><td><span class="mono">acme-docs</span></td><td><a href="host-vulns.html?package=acme-docs">Opened <span class="mono">DSA-9111-1</span></a></td></tr>
+<tr><td><span class="mono">acme-ftpd:amd64</span></td><td><span class="kind removed">&minus; Removed</span></td><td><del class="mono">0.9-3</del></td><td><span class="unavailable">Not installed</span></td><td><span class="mono">acme-ftpd</span></td><td>Resolved <span class="mono">DSA-9093-1</span> (package removed)</td></tr>
+<tr><td><span class="mono">acme-daemon:amd64</span></td><td><span class="kind up">&uarr; Upgraded</span></td><td><del class="mono">2.4.0-1</del></td><td><ins class="mono">2.4.1-2</ins></td><td><span class="mono">acme-daemon</span></td><td>Resolved <span class="mono">DSA-9090-1</span> (fixed in 2.4.1-1)</td></tr>
+<tr><td><span class="mono">bash:amd64</span></td><td><span class="kind up">&uarr; Upgraded</span></td><td><del class="mono">5.2.37-1</del></td><td><ins class="mono">5.2.37-2</ins></td><td><span class="mono">bash</span></td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">curl:amd64</span></td><td><span class="kind up">&uarr; Upgraded</span></td><td><del class="mono">8.14.1-1</del></td><td><ins class="mono">8.14.1-2</ins></td><td><span class="mono">curl</span></td><td><span class="muted">—</span></td></tr>
+<tr><td><span class="mono">acme-tools:amd64</span></td><td><span class="kind down">&darr; Downgraded</span></td><td><del class="mono">1:7.8p1-5</del></td><td><ins class="mono">1:7.8p1-4</ins></td><td><span class="mono">acme-suite</span></td><td>Reopened <span class="mono">DSA-9105-1</span> (fixed in 1:7.8p1-5)</td></tr>
+<tr><td><span class="mono">acme-prototype:amd64</span></td><td><span class="kind invalid">? Cannot compare</span></td><td><del class="mono">2.0_rc1</del></td><td><ins class="mono">2.0_rc2</ins></td><td><span class="mono">acme-prototype</span></td><td><span class="muted">Not matched</span></td></tr>
+<tr><td><span class="mono">libacmeutil1:amd64</span></td><td><span class="kind same">&sim; Source changed</span></td><td><span class="mono">1.1-2</span> from <span class="mono">acme-suite</span></td><td><span class="mono">1.1-2</span> from <span class="mono">acme-utils</span></td><td><span class="mono">acme-utils</span></td><td><span class="muted">—</span></td></tr>
+</tbody></table></div>
+<p class="note">Every change is a word and a symbol, never colour alone. Direction comes from dpkg's version order, so <code>1:7.8p1-5</code> to <code>1:7.8p1-4</code> is a downgrade although the strings sort the other way. "Cannot compare" is shown when either version is not a valid dpkg version; it is never guessed as an upgrade. "Source changed" is a package whose version stayed the same but whose recorded source package changed. The Findings column links the change to the vulnerability findings it opened, resolved, or reopened (AC-2.4); it is an addition to the P2-D03 scope and can be dropped.</p>
+<h3>When a diff cannot be made</h3>
+<div class="notice" role="status"><strong>No diff is available for this pair.</strong><p>One of the two snapshots comes from an unsupported package manager, so its package set is unknown. Showing every package as installed or removed would be wrong. See <a href="states-packages-vulns.html#unsupported">Unsupported package manager</a>.</p></div>
+</main>
+</body>
+</html>

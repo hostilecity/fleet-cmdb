@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media server: overview · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a><a class="btn quiet" href="../phase-1/dialogs.html#reenroll">Re-enroll</a><a class="btn danger quiet" href="../phase-1/dialogs.html#revoke">Revoke credential</a><a class="btn danger quiet" href="../phase-1/dialogs.html#retire">Retire</a></div>
+</div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">5</span><span class="detail">1 high, 2 medium, 1 low, 1 unknown</span></a>
+  <a href="host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="host-overview.html" aria-current="page">Overview</a><a href="host-config.html">Configuration</a><a href="host-packages.html">Packages <span class="count">1,243</span></a><a href="host-vulns.html">Vulnerabilities <span class="count">5 open</span></a></nav>
+<p class="note"><span class="review-q">Review Q1.</span> Where the compliance summary sits. Drawn: one row of four summary tiles under the host header, on every tab, so the answer to "is this host in good shape?" is visible whichever tab is open, and each tile links to its tab. Alternatives: tiles on the Overview tab only (the other tabs start straight at their content), or a single summary line in the header next to the status lamp.</p>
+<div class="columns">
+<div>
+  <section class="sheet" aria-labelledby="inv">
+    <h2 id="inv">Inventory</h2>
+    <p class="muted" style="margin-top:0">Reported 3 minutes ago. Collected by the agent at 12:00:01 UTC.</p>
+    <dl class="facts">
+      <dt>Hostname</dt><dd class="mono">vm-01.example.lan</dd>
+      <dt>Operating system</dt><dd>Debian GNU/Linux 13 (trixie) <span class="muted">(debian 13)</span></dd>
+      <dt>Kernel</dt><dd class="mono">6.12.0-example-amd64</dd>
+      <dt>Architecture</dt><dd class="mono">x86_64</dd>
+      <dt>CPU cores</dt><dd>4</dd>
+      <dt>Total memory</dt><dd>8 GiB</dd>
+      <dt>Agent</dt><dd class="mono">0.1.0</dd>
+    </dl>
+  </section>
+  <p class="note">The rest of this column is the Phase 1 page unchanged: remaining inventory fields, disks, network, and inventory history (<a href="../phase-1/host.html">Phase 1 host page</a>).</p>
+</div>
+<div>
+  <section class="sheet" aria-labelledby="enr">
+    <h2 id="enr">Enrollment</h2>
+    <dl class="facts">
+      <dt>State</dt><dd>Active</dd>
+      <dt>Credential</dt><dd>Active, key <code>fa_EXAMPLEkey01</code></dd>
+      <dt>Last used</dt><dd>3 minutes ago</dd>
+      <dt>First seen</dt><dd>9 days ago</dd>
+    </dl>
+  </section>
+  <section aria-labelledby="report_requests_heading" id="report_requests">
+    <h2 id="report_requests_heading">Fresh reports</h2>
+    <form action="report-requests.html" method="get" id="report_request_form">
+      <fieldset class="report-types">
+        <legend>Ask the agent, on its next heartbeat, for a new</legend>
+        <div class="checks">
+          <label><input type="checkbox" checked> config report</label>
+          <label><input type="checkbox" checked> inventory report</label>
+          <label><input type="checkbox" checked> package report</label>
+        </div>
+      </fieldset>
+      <p><button class="btn quiet" type="submit">Request fresh reports</button></p>
+    </form>
+    <p class="muted" style="font-size:.875rem">Each report type can be requested once every 5 minutes. A request no report answers expires after 60 minutes.</p>
+    <div class="table-wrap"><table><tbody>
+      <tr><td>Config report<br><span class="muted">Received today 08:02 UTC. Requested by example.operator@example.lan, today 07:58 UTC</span></td></tr>
+      <tr><td>Package report<br><span class="muted">Expired yesterday 18:40 UTC: no report arrived within 60 minutes. Requested by example.operator@example.lan, yesterday 17:40 UTC</span></td></tr>
+    </tbody></table></div>
+  </section>
+  <p class="note">This is the section that exists today (P2-S03). It stays on the Overview as the one place to ask for all three reports at once. See <a href="host-config.html#request">Configuration</a> and <a href="host-packages.html">Packages</a> for the per-tab buttons.</p>
+</div>
+</div>
+</main>
+</body>
+</html>

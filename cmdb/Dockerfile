@@ -27,7 +27,8 @@ ENV RAILS_ENV="production" \
     BUNDLE_PATH="/usr/local/bundle" \
     BUNDLE_WITHOUT="development" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so" \
-    FLEET_API_SCHEMAS_DIR="/rails/api-schemas"
+    FLEET_API_SCHEMAS_DIR="/rails/api-schemas" \
+    FLEET_RULES_SCHEMA_DIR="/rails/api-rules"
 
 # Throw-away build stage to reduce size of final image
 FROM base AS build
@@ -51,6 +52,8 @@ COPY . .
 
 # Agent API JSON Schemas, the single source of truth in docs/api (named build context "api").
 COPY --from=api schemas ./api-schemas
+# The CIS-aligned rule file schema (P2-S04), from the same build context.
+COPY --from=api rules ./api-rules
 
 # Precompile bootsnap code for faster boot times.
 # -j 1 disable parallel compilation to avoid a QEMU bug: https://github.com/rails/bootsnap/issues/495

@@ -1,0 +1,31 @@
+<%# Request fresh reports (P2-S03): the Overview keeps the three-way form (owner decision Q6); each tab has its own button.
+    A type that is pending or rate limited cannot be ticked, and says until when (Q7). %>
+<% availabilities = availability.values %>
+<%= tag.section "aria-labelledby": "report_requests_heading", id: "report_requests", data: refresh_when_available(availabilities) do %>
+  <h2 id="report_requests_heading">Fresh reports</h2>
+  <% if host.enrollment_state == "active" %>
+    <%= form_with url: request_reports_host_path(host), method: :post, id: "report_request_form" do %>
+      <fieldset class="report-types">
+        <legend>Ask the agent, on its next heartbeat, for a new</legend>
+        <% availabilities.each do |a| %>
+          <label class="check"><%= check_box_tag "report_types[]", a.type, a.ready?, id: "report_type_#{a.type}", disabled: !a.ready?, "aria-describedby": ("report_type_#{a.type}_note" unless a.ready?) %><%= report_names([ a.type ]) %>
+            <% if a.state == :pending %><span class="muted" id="report_type_<%= a.type %>_note">(pending)</span><% end %>
+            <% if a.state == :rate_limited %><span class="muted" id="report_type_<%= a.type %>_note">(requested less than <%= ReportRequests::COOLDOWN.in_minutes.to_i %> minutes ago. <%= report_retry_text(a) %>)</span><% end %>
+          </label>
+        <% end %>
+      </fieldset>
+      <button class="btn quiet" type="submit"<%= " disabled" if availabilities.none?(&:ready?) %>>Request fresh reports</button>
+    <% end %>
+    <p class="hint">Each report type can be requested once every <%= ReportRequests::COOLDOWN.in_minutes.to_i %> minutes. A request no report answers expires after <%= ReportRequests::TTL.in_minutes.to_i %> minutes.</p>
+  <% else %>
+    <p class="muted">Only an active host's agent can be asked for a report.</p>
+  <% end %>
+  <% if requests.any? %>
+    <div class="table-wrap"><table><tbody>
+      <% requests.each do |request| %>
+        <tr id="<%= dom_id(request) %>" class="report-request <%= request.display_state %>"><td><%= report_names([ request.report_type ]).upcase_first %><br>
+          <span class="muted"><%= report_request_status(request) %>. Requested by <%= request.requested_by.email %>, <%= utc(request.requested_at) %></span></td></tr>
+      <% end %>
+    </tbody></table></div>
+  <% end %>
+<% end %>

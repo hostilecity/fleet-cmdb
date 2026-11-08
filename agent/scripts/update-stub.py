@@ -1,20 +1,30 @@
 #!/usr/bin/env python3
-"""A stand-in for the agent API and the release channel, for scripts/update-smoke.sh (P1-AGENT-UPDATE)
-and scripts/sandbox-smoke.sh (P1-PACKAGING).
+"""A stand-in for the agent API and the release channel, for scripts/update-smoke.sh and
+scripts/vm-test.sh (P1-AGENT-UPDATE) and scripts/sandbox-smoke.sh (P1-PACKAGING).
 
     update-stub.py PORT CERT KEY DIR
+
+Optional environment:
+
+    STUB_PUBLIC_URL     the base URL the agent reaches the stub at, for the release URLs in a directive
+                        (default https://localhost:PORT)
+    STUB_CREDENTIAL     the credential the agent must send (`Authorization: Bearer ...`); anything else
+                        gets 401. Unset: no credential is checked.
+    STUB_ENROLL_TOKEN   accept `POST /api/v1/enroll` with this one-time token, answering with
+                        STUB_CREDENTIAL (for `fleet-agent install --token-stdin`)
 
 DIR holds everything the test shares with the stub:
 
     plan.json                       what the stub does now; re-read on every request, written by the test
     events.jsonl                    what the stub saw, one JSON object per line (written by the stub)
     heartbeat.json, inventory.json  the last accepted heartbeat and inventory report (written by the stub)
+    packages.json                   the last accepted package report, decompressed (P2-AGENT-PACKAGES)
     releases/NAME/manifest.json     a release: its manifest, the minisign signature of the manifest,
     releases/NAME/manifest.json.minisig   and the binary (the test builds and signs them with throwaway keys)
     releases/NAME/fleet-agent
 
-plan.json (every key optional; without one, every heartbeat and inventory report is accepted with
-empty directives):
+plan.json (every key optional; without one, every heartbeat, inventory report, and package report is
+accepted with empty directives; package reports may be gzip, as the server allows):
 
     "directive":  {"rollout_id": 1, "version": "1.0.1", "release": "NAME"}
                   Sent in every heartbeat response until a result for that rollout_id is accepted
@@ -26,9 +36,11 @@ empty directives):
                                     heartbeats from that version are answered late
     "results_503": 2                the first N posts of each update result get 503
 
-It checks no credential: the test is about the update, not about authentication.
+Without STUB_CREDENTIAL it checks no credential: the smoke tests are about the update, not about
+authentication.
 """
 import datetime
+import gzip
 import hashlib
 import json
 import os
@@ -40,6 +52,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT, CERT, KEY, DIR = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+PUBLIC_URL = os.environ.get("STUB_PUBLIC_URL") or f"https://localhost:{PORT}"
+CREDENTIAL = os.environ.get("STUB_CREDENTIAL") or None
+ENROLL_TOKEN = os.environ.get("STUB_ENROLL_TOKEN") or None
 LOCK = threading.Lock()
 ACCEPTED = set()  # report_ids of update results already accepted
 RESULT_POSTS = {}  # report_id -> posts so far
@@ -94,13 +109,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 (http.server naming)
         length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        encoding = self.headers.get("Content-Encoding", "").strip().lower()
         try:
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            return self.error(400, "invalid_json", "Not JSON.")
+            if encoding == "gzip":
+                raw = gzip.decompress(raw)
+            body = json.loads(raw or b"{}")
+        except (OSError, EOFError, ValueError):
+            return self.error(400, "invalid_json", "Not JSON (or not gzip of JSON).")
         agent = str(body.get("agent_version", ""))
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         current = plan()
+        if self.path == "/api/v1/enroll" and ENROLL_TOKEN:
+            if body.get("token") != ENROLL_TOKEN:
+                log(kind="enroll", status=401)
+                return self.error(401, "invalid_token", "Token not valid.")
+            log(kind="enroll", status=201)
+            return self.send(201, {"credential": CREDENTIAL, "host_name": "vm-01", "server_time": now})
+        authorised = CREDENTIAL is None or self.headers.get("Authorization") == f"Bearer {CREDENTIAL}"
+        if self.path.startswith("/api/v1/") and self.path != "/api/v1/enroll" and not authorised:
+            log(kind="unauthorised", path=self.path, agent_version=agent, status=401)
+            return self.error(401, "unauthorized", "Credential rejected.")
         if self.path == "/api/v1/heartbeat":
             return self.heartbeat(current, agent, now, body)
         if self.path == "/api/v1/reports/inventory":
@@ -110,6 +139,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(426, "agent_version_unsupported", f"Agent {agent} is older than the minimum {minimum}.")
             log(kind="inventory", agent_version=agent, status=200)
             save("inventory.json", body)
+            return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
+        if self.path == "/api/v1/reports/packages":
+            log(kind="packages", agent_version=agent, status=200, encoding=encoding or "identity",
+                manager=body.get("manager"), count=len(body.get("packages") or []), skipped=len(body.get("skipped") or []))
+            save("packages.json", body)
             return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
         if self.path == "/api/v1/update-results":
             return self.update_result(current, agent, body)
@@ -125,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
         directives = {}
         offer = current.get("directive")
         if offer and offer["rollout_id"] not in DONE_ROLLOUTS:
-            base = f"https://localhost:{PORT}/api/v1/releases/{offer['release']}"
+            base = f"{PUBLIC_URL}/api/v1/releases/{offer['release']}"
             directives["agent_update"] = {
                 "rollout_id": offer["rollout_id"],
                 "version": offer["version"],

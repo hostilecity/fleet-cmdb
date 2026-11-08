@@ -1,42 +1,7 @@
-<% content_for :title, @host.name %>
-<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
-<%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
+<%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :overview %>
 <% stable = @inventory&.stable || {} %>
 <% volatile = @inventory&.volatile || {} %>
 <% warnings = @inventory&.warnings || [] %>
-<% if @host.machine_id_mismatch? %>
-  <div class="notice" role="status">
-    <strong>This credential was used from another machine.</strong>
-    <p>Enrolled on machine <code><%= @credential&.machine_id || "unknown" %></code>, last report from <code><%= @host.reported_machine_id || "an unreadable machine ID" %></code> (<%= utc(@host.machine_id_mismatch_at) %>). If this VM was cloned, retire the copy or re-enroll this host.</p>
-  </div>
-<% end %>
-<div class="host-head">
-  <div>
-    <h1><%= @host.name %></h1>
-    <%= render "hosts/status", host: @host %>
-  </div>
-  <% unless @host.retired? %>
-    <div class="actions">
-      <%= link_to "Edit", edit_host_path(@host), class: "btn quiet" %>
-      <%= link_to "Re-enroll", reenroll_host_path(@host), class: "btn quiet" %>
-      <% if @host.can_transition?(:revoke) %><%= link_to "Revoke credential", revoke_host_path(@host), class: "btn danger quiet" %><% end %>
-      <%= link_to "Retire", retire_host_path(@host), class: "btn danger quiet" %>
-    </div>
-  <% end %>
-</div>
-<% if @host.enrollment_state == "pending" %>
-  <div class="notice info" role="status">
-    <% if @credential&.active? %>
-      <strong>Re-enrollment in progress.</strong>
-      <p>The agent keeps using credential <code><%= @credential.key_id %></code> until it collects its new one<%= ", by the token that expires #{utc(@token.expires_at)} or an approved request" if @token %>. <%= "If the token or approval has lapsed, re-enroll again." unless @token %></p>
-    <% else %>
-      <strong>Pre-registered. Waiting for the installer to use its token.</strong>
-      <p><%= @token ? "The one-time token expires #{utc(@token.expires_at)}." : "The one-time token has expired." %> If it was lost or has expired, re-enroll to get a new one, or run the installer on the VM without a token and approve it; either way the old token stops working.</p>
-    <% end %>
-  </div>
-<% elsif @host.retired? %>
-  <div class="notice" role="status"><strong>This host is retired.</strong><p>It no longer appears in the fleet. Its history is kept.</p></div>
-<% end %>
 <div class="columns">
 <div>
   <section class="sheet" aria-labelledby="inventory_heading">
@@ -152,6 +117,7 @@
       <dt>Notes</dt><dd class="notes"><%= @host.notes.presence ? simple_format(h(@host.notes), {}, wrapper_tag: "span", sanitize: false) : tag.span("None", class: "muted") %></dd>
     </dl>
   </section>
+  <%= render "hosts/report_requests", host: @host, requests: @report_requests, availability: @availability %>
   <section aria-labelledby="status_heading">
     <h2 id="status_heading">Status history</h2>
     <% if @status_events.empty? %>
@@ -176,6 +142,19 @@
       </tbody></table></div>
     <% end %>
     <p><%= link_to "All entries for this host", audit_path(host_id: @host.id), id: "host_audit_link" %></p>
+  </section>
+  <section aria-labelledby="updates_heading" id="agent_updates">
+    <h2 id="updates_heading">Agent updates</h2>
+    <% if @update_history.empty? %>
+      <p class="muted">This host has not been part of a rollout.</p>
+    <% else %>
+      <div class="table-wrap"><table><tbody>
+        <% @update_history.each do |member| %>
+          <tr id="<%= dom_id(member) %>"><td><%= agent_update_summary(member, member.rollout) %><br><span class="muted"><%= agent_update_detail(member, member.rollout, @update_results[member.rollout_id]) %></span></td></tr>
+        <% end %>
+      </tbody></table></div>
+    <% end %>
+    <p><%= link_to "Agent versions and rollouts", agents_path %></p>
   </section>
 </div>
 </div>

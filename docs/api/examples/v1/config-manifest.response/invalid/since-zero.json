@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "manifest_version": 2,
+  "facts": [
+    {
+      "key": "file:/etc/shadow",
+      "type": "file_attributes",
+      "since": 0,
+      "description": "Password hashes. Only its mode, owner, and group are read, never its contents."
+    },
+    {
+      "key": "service:ssh.service",
+      "type": "service_state",
+      "since": 1,
+      "description": "Whether the SSH service unit is active and whether it is enabled; null when it is not installed."
+    },
+    {
+      "key": "sshd.ciphers",
+      "type": "string_list",
+      "since": 1,
+      "description": "Ciphers SSH offers, in order.",
+      "max_items": 64,
+      "item_max_length": 256,
+      "ordered": true
+    },
+    {
+      "key": "sshd.loglevel",
+      "type": "string",
+      "since": 1,
+      "description": "SSH log verbosity, for example INFO or VERBOSE.",
+      "max_length": 16
+    },
+    {
+      "key": "sshd.maxauthtries",
+      "type": "integer",
+      "since": 1,
+      "description": "Authentication attempts allowed per connection.",
+      "minimum": 0,
+      "maximum": 1000
+    },
+    {
+      "key": "sshd.permitrootlogin",
+      "type": "boolean",
+      "since": 1,
+      "description": "Whether root may log in over SSH."
+    },
+    {
+      "key": "sshd.x11forwarding",
+      "type": "boolean",
+      "since": 2,
+      "description": "Added in a later manifest version."
+    }
+  ]
+}

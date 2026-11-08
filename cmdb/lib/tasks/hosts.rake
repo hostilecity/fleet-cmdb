@@ -47,6 +47,6 @@ module HostsTask
     puts "Host #{host.id} (#{host.hostname}) is #{host.enrollment_state}."
     puts "Enrollment token (shown once, expires #{expires.utc.iso8601}):"
     puts token
-    puts "On the VM: fleet-agent enroll --server https://<agent hostname> --token-stdin"
+    puts "On the VM: sudo fleet-agent install --server https://<agent hostname> --token-stdin"
   end
 end

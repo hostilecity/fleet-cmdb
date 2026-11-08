@@ -199,10 +199,10 @@
   milestone: 1
   labels: ["area:server", "area:agent", "area:ops"]
   covers: [NFR-3, AC-1.2, FR-1.2, FR-1.3, FR-1.6]
-  goal: "A fleet simulator and soak script prove the system holds up at 50 hosts and the agent runs for days without leaking."
+  goal: "A fleet simulator proves the system holds up at 50 hosts, and a soak test checks that the agent does not leak or restart itself."
   done:
     - "50 simulated hosts keep the fleet list under 2 s and heartbeat p95 under 200 ms."
-    - "A 72-hour agent run including server outages, an update, and a forced rollback shows flat memory, file descriptors, and state-directory size."
+    - "The soak script and its analysis are committed and pass a run on systemd with server outages, flapping, an update, and a forced rollback; the 72-hour run is P2-SOAK."
   blocked_by: [P1-HEARTBEAT, P1-INVENTORY, P1-DASH-FLEET, P1-AGENT-REPORT, P1-AGENT-UPDATE]
 
 - key: P1-ONBOARD
@@ -326,6 +326,28 @@
     - "Hosts without advisory data show \"not evaluated\", stale advisory data shows a warning, and a failed refresh is visible to an operator."
   blocked_by: [P2-PACKAGES, P1-OPERABILITY]
 
+- key: P2-RULE-DRYRUN
+  title: "Dry run for an edited CIS rule"
+  milestone: 2
+  labels: ["area:server"]
+  covers: [FR-2.2, AC-2.2]
+  goal: "The server can show which hosts would change result under an unsaved rule definition without writing anything or contacting an agent."
+  done:
+    - "The dry run reports exactly the changes that saving the same definition produces, and changes no table."
+    - "An invalid definition returns its errors with JSON Pointers instead of a preview."
+  blocked_by: [P2-CIS-ENGINE]
+
+- key: P2-REFRESH-LIMIT
+  title: "Cool-down for manual advisory feed refresh"
+  milestone: 2
+  labels: ["area:server"]
+  covers: [FR-2.4]
+  goal: "A manual advisory feed refresh is refused within 5 minutes of the last one and reports when it is next allowed."
+  done:
+    - "A second manual refresh within the cool-down is refused with the time it is next allowed, and concurrent attempts start exactly one job."
+    - "The scheduled refresh is never blocked by a manual one, and both accepted and refused attempts are audited."
+  blocked_by: [P2-VULNS]
+
 - key: P2-DASH-HOST
   title: "Dashboard: host configuration, packages, and vulnerabilities"
   milestone: 2
@@ -342,11 +364,12 @@
   milestone: 2
   labels: ["area:dashboard"]
   covers: [FR-2.5, FR-2.4, FR-2.2, AC-2.2, FR-S.3]
-  goal: "Operators see fleet-wide compliance and vulnerability counts and can manage rules and advisory sources."
+  goal: "Operators see fleet-wide compliance and vulnerability counts and can add, edit, and import rules and manage advisory sources."
   done:
     - "The compliance view loads under 2 s at 50 hosts and never shows \"not evaluated\" the same as \"zero findings\"."
-    - "Editing a rule in the UI re-evaluates results, and every rule or source change is audited (AC-2.2)."
-  blocked_by: [P2-DASH-HOST, P2-CIS-ENGINE, P2-VULNS]
+    - "Adding or editing a rule in the UI re-evaluates results, and every rule or source change is audited (AC-2.2)."
+    - "Adding or editing a rule previews the hosts that would change result before saving, and a manual feed refresh shows its cool-down."
+  blocked_by: [P2-DASH-HOST, P2-CIS-ENGINE, P2-VULNS, P2-RULE-DRYRUN, P2-REFRESH-LIMIT]
 
 - key: P2-AGENT-FACTS
   title: "Agent configuration facts and report scheduling"
@@ -370,6 +393,17 @@
     - "A VM without dpkg reports `unsupported` explicitly."
   blocked_by: [P2-AGENT-FACTS]
 
+- key: P2-SOAK
+  title: "72-hour agent soak run"
+  milestone: 2
+  labels: ["area:agent", "area:ops"]
+  covers: [FR-1.6, FR-1.2, NFR-3]
+  goal: "The agent runs for 72 hours through server outages, an update, and a forced rollback without leaking or restarting itself."
+  done:
+    - "A 72-hour run of agent/scripts/soak.sh on a disposable VM passes every check at the tolerances in P1-A09."
+    - "Its summary and raw samples are attached to the Phase 2 delivery note."
+  blocked_by: [P1-VERIFY]
+
 - key: P2-ACCEPT
   title: "Phase 2 retention, performance, contract tests, acceptance"
   milestone: 2
@@ -379,7 +413,7 @@
   done:
     - "AC-2.1 to AC-2.6 have recorded evidence, and Phase 1 golden fixtures pass unchanged against the Phase 2 server."
     - "The fleet list and compliance view load under 2 s at 50 hosts and heartbeat p95 stays under 200 ms."
-  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET]
+  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET, P2-SOAK, P2-RULE-DRYRUN, P2-REFRESH-LIMIT]
 
 - key: P3-TASK-MODEL
   title: "Task catalog, task and batch models, state machine"

@@ -18,7 +18,15 @@ file target/x86_64-unknown-linux-musl/release/fleet-agent   # "statically linked
 target/x86_64-unknown-linux-musl/release/fleet-agent --version
 ```
 
-Building the musl target from macOS needs a cross linker. The simplest route is to build inside a Linux container or rely on CI, which uploads the binary as a workflow artefact on every push to `main`. Those artefacts are unsigned; signed releases come only from a version tag ([Releases](#releases)).
+The agent builds and runs only on Linux ([DEC-01](../docs/decisions/0001-fleet-profile.md)): it reads `/proc`, runs under systemd, and some system structures differ elsewhere, so on macOS even `cargo build` stops with an error saying so. On macOS, run the same commands in a Linux container, from the repository root (not yet verified on a Mac; CI is the reference):
+
+```sh
+docker run --rm -v "$PWD/agent":/src -w /src -e CARGO_TARGET_DIR=/src/target/linux \
+  -v fleet-agent-cargo:/usr/local/cargo/registry rust:1.97-bookworm \
+  sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --release'
+```
+
+The binary lands in `agent/target/linux/release/fleet-agent`, a Linux binary for the container's architecture; `CARGO_TARGET_DIR` keeps it apart from anything built on the Mac itself, and the named volume keeps downloaded crates between runs. CI also uploads the musl binary as a workflow artefact on every push to `main`. Those artefacts are unsigned; signed releases come only from a version tag ([Releases](#releases)).
 
 `--version` prints the agent version (from `Cargo.toml`) and the agent schema version, the integer `schema_version` sent with reports ([DEC-08](../docs/decisions/0008-api-conventions.md)):
 
@@ -105,6 +113,11 @@ max_seconds = 600
 interval_seconds = 900
 min_seconds = 300
 max_seconds = 21600
+
+[config_report]                                  # optional; seconds; allowed 300..=86400 (see Configuration reports)
+interval_seconds = 21600
+min_seconds = 3600
+max_seconds = 86400
 ```
 
 If only `interval_seconds` is set, the default bounds widen to include it. [`contrib/config.example.toml`](contrib/config.example.toml) documents every option.
@@ -129,6 +142,25 @@ If only `interval_seconds` is set, the default bounds widen to include it. [`con
 - **State:** after each accepted report, `inventory.json` in `state_dir` records its stable hash, boot identifier, agent version, and `report_id`, written atomically. The startup report logs whether the stable facts changed and whether the host rebooted since then. A missing or corrupt record is treated as none.
 - **Stopping:** `SIGTERM` or `SIGINT` ends both loops between requests; a request in flight finishes first (at most the 30 s timeout). If either loop fails unexpectedly, the agent stops and exits with status `1`, so systemd restarts it.
 
+## Configuration reports
+
+A third thread sends the configuration report ([FR-2.1](../docs/backlog/specs/p2-agent-facts.md), `POST /api/v1/reports/config`): the value of every fact in the server's manifest, or why there is none. What is read for each fact, and what the three states mean, is in [docs/operations/agent-config-facts.md](../docs/operations/agent-config-facts.md). The module documentation in `src/report/config.rs` and `src/facts/` has the details.
+
+- **Manifest.** `GET /api/v1/manifest/config` with the last `ETag` before each report (`304` keeps the cached copy; if the fetch fails the cached copy is used). The manifest is data: the agent reads only the keys it has a reader for, reports every other key `unsupported`, and runs nothing the manifest names. File paths and unit names from the manifest are validated, secret paths are never opened, at most 512 files and 512 units are read, and limits are clamped to hard caps.
+- **When.** At startup, every `[config_report] interval_seconds` (6 hours) less up to 10% jitter, once per `report_request` directive (`directives.report_request.types` in the heartbeat response; many heartbeats carrying the same request give one report; a later request gives another, whether a heartbeat without the type came between or the first request's report was accepted before the heartbeat that carries it was sent), and at once when the server's answer names a manifest newer than the one used. `inventory` in the same directive gives one extra inventory report, and `packages` one extra package report (see [Package reports](#package-reports)).
+- **Retries.** As for inventory: the same `report_id` and body on retry, replaced by a new report when a request arrives or the report is one interval old, and never retried after `400`, `413`, or `422`.
+- **Bounded and safe.** Every command is an absolute path with fixed arguments, no shell, a cleared environment, a time limit, and an output cap, within a 60 second budget for the whole collection, which filesystem calls share (5 seconds each, none started once it is spent). A value outside the manifest's limits is reported `unreadable`, never cut. The body is kept under 1,000,000 bytes (the server accepts 1 MiB; the agent does not compress) by turning the largest list facts `unreadable`.
+- **Firewall.** The unit's capability set has no `CAP_NET_ADMIN`, so the firewall facts come from systemd unit state, not the live ruleset (see the operations page).
+
+## Package reports
+
+A fourth thread sends the package report ([FR-2.3](../docs/backlog/specs/p2-agent-packages.md), `POST /api/v1/reports/packages`): every installed dpkg package with its full version (epoch included), architecture, and source package; the names of packages it did not list as installed (`skipped`: an interrupted installation, or a line it cannot carry); or `unsupported` (no dpkg) or `unreadable` (dpkg is there but cannot be listed) with the reason. What counts as installed, what `skipped`, `unsupported`, and `unreadable` cover, and how to check a report against the host are in [docs/operations/agent-packages.md](../docs/operations/agent-packages.md); the details are in the module documentation of `src/packages.rs` and `src/report/packages.rs`.
+
+- **When.** As the config report: at startup, every `[config_report] interval_seconds`, and once per `report_request` episode naming `packages`. Retries reuse the `report_id` and body; `400`, `413`, and `422` are not retried.
+- **Source.** One fixed command, `/usr/bin/dpkg-query --show` with a fixed `--showformat` of five tab-separated fields, through the same bounded `Host` as the fact readers (no shell, cleared environment, 20 s limit, 8 MiB output cap). Nothing else is read but a `stat` of `/var/lib/dpkg/status`.
+- **Never cut.** A line the contract cannot carry is left out with a warning, and named in `skipped` when its package name is readable; status `installed` and the trigger states (`triggers-awaited`, `triggers-pending`) are listed, and an interrupted installation (`unpacked`, `half-installed`, `half-configured`) is named in `skipped` (at most 64, the rest counted in a warning). A list too large to send whole (over 20,000 packages, 4,000,000 bytes of JSON, or 1,000,000 bytes compressed) or a dpkg that cannot be listed is reported `unreadable` with the reason rather than sent in part.
+- **Compressed and bounded.** The body is serialized straight into a gzip encoder and sent with `Content-Encoding: gzip`; only the compressed body is kept for a retry. A 3,000-package host peaks at about 1.0 MB of heap for the report.
+
 ## Releases
 
 A version tag `agent-v<version>` on `main` makes a release: `.github/workflows/agent-release.yml` builds the static binary, writes a manifest (version, target, SHA-256, size), has it signed with the Ed25519 release key after the owner approves the run, and publishes the binary, the manifest, its minisign signature, and `SHA256SUMS` as a GitHub release. The release public keys, current and next, are built into the agent from `release-keys/`; until the owner generates them those files hold no key and no release verifies. Formats, key generation and rotation, and the release steps: [docs/releases.md](../docs/releases.md).
@@ -147,7 +179,9 @@ The agent updates itself only through the signed release channel ([ADR 0018](../
 
 An agent older than the server's minimum version still updates: the update path uses only `heartbeat`, `update-results`, and the public release downloads, none of which are refused with `426` (NFR-5). Two versions are kept; older ones are removed after a confirmed update. `fleet-agent self-test` can be run by hand to check a binary against this host's config. No release verifies until the owner has put real keys in `release-keys/` ([Releases](#releases)).
 
-`scripts/update-smoke.sh` is the end-to-end test CI runs on systemd with throwaway keys (see the spec's "As built"). It rewrites `/usr/lib/fleet-agent`, `/etc/fleet-agent`, and `/etc/systemd/system`, so it refuses to run outside CI unless `UPDATE_SMOKE_DISPOSABLE=yes`, and never where an agent is installed.
+`scripts/update-smoke.sh` is the end-to-end test CI runs on systemd with throwaway keys (see the spec's "As built"), on every change under `agent/` and every push to main, as three parallel jobs (`refusals`, `rollbacks`, `recovery`: pass the group as a second argument to run one part). It rewrites `/usr/lib/fleet-agent`, `/etc/fleet-agent`, and `/etc/systemd/system`, so it refuses to run outside CI unless `UPDATE_SMOKE_DISPOSABLE=yes`, and never where an agent is installed.
+
+`scripts/vm-test.sh` (workflow "Agent VM tests") is the failure test on a disposable Debian 13 VM under QEMU. It installs the agent with the real installer, then kills the supervisor and restarts the VM in the middle of updates, and each time checks that exactly one working version runs (see the spec's "Recorded runs"). It needs only QEMU, runs as an unprivileged user, and uploads its results as the `vm-test-results` artifact.
 
 ## Systemd unit
 
@@ -162,7 +196,9 @@ An agent older than the server's minimum version still updates: the update path 
 | `retry` | Backoff with jitter and cap, long waits for `401`/`403`/`426`, `Retry-After`, failure log lines | P1-AGENT-CORE |
 | `shutdown` | Graceful stop on `SIGTERM` and `SIGINT` | P1-AGENT-CORE |
 | `collect` | Read-only system, disk, and network collectors; see [Collected facts](#collected-facts) | P1-AGENT-COLLECT |
-| `report` | Heartbeat loop, server-directed intervals, and inventory reports; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT |
+| `report` | Heartbeat loop, server-directed intervals, inventory reports, config reports, package reports, and on-demand report requests; see [Heartbeats and inventory reports](#heartbeats-and-inventory-reports) | P1-AGENT-REPORT, P2-A01 |
+| `facts` | Configuration fact readers behind a `Host` trait (files, `sshd -T`, systemd, apt, passwd), the manifest parser, and bounded, validated collection; see [Configuration reports](#configuration-reports) | P2-A01, P2-A02, P2-A03 |
+| `packages` | Package manager detection and the dpkg listing, checked against the contract; see [Package reports](#package-reports) | P2-AGENT-PACKAGES |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
 | `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup, `flock` locks | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
@@ -207,6 +243,7 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Arguments | `lexopt` | Splits the command line (`--opt value`, `--opt=value`, `--`, non-UTF-8 arguments without a panic) for `run`, `check-config`, `install`, and `uninstall`. No dependencies of its own. Error messages never repeat an argument that could be a secret (`src/cli.rs`) |
 | Release signatures | `minisign-verify` | Verifies the minisign (Ed25519) signature of a release manifest against the embedded release keys ([ADR 0021](../docs/decisions/0021-release-signature-format.md), proposed). Verify-only, by minisign's author, no dependencies, used by the Tauri updater. It brings its own Ed25519 and BLAKE2b code rather than `ring`'s; legacy (not pre-hashed) signatures are refused |
 | Versions | `semver` | Strict SemVer parsing of release versions and their ordering, for the no-downgrade rule (ADR 0018). dtolnay's crate, as used by Cargo; no dependencies |
+| Compression | `flate2` with its `rust_backend` (`miniz_oxide`), default features off | Gzip for the package report body (P2-S08). rust-lang's crate; the backend is pure Rust, so no C zlib is built or linked. It brings `miniz_oxide`, `adler2`, `simd-adler32`, and `crc32fast`. `ureq`'s own gzip feature only decodes responses, which the agent does not need |
 | QR code | `qrcodegen` | The installer prints a QR code of the approval page (P1-AGENT-INSTALL). Nayuki's reference encoder: pure Rust, no dependencies, `forbid(unsafe_code)`, about 1,200 lines |
 
 Test-only dependencies (`[dev-dependencies]`, never in the binary): `jsonschema` (default features off, so it never fetches remote schemas), which with `serde_json` checks payloads against the API contract in [`docs/api`](../docs/api/README.md) (in a test, use `assert_conforms` from `tests/support/contract.rs`); `rcgen` plus `rustls`, which run a local TLS server with a certificate authority generated per test, so no certificate or key is checked in; and `minisign`, which generates throwaway release keys and signs test manifests, so no release key is checked in either.

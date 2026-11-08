@@ -22,6 +22,11 @@
 //! interval_seconds = 900
 //! min_seconds = 300
 //! max_seconds = 21600
+//!
+//! [config_report]                            # optional; seconds (FR-2.1); package reports too (FR-2.3)
+//! interval_seconds = 21600
+//! min_seconds = 3600
+//! max_seconds = 86400
 //! ```
 
 use std::fmt;
@@ -68,6 +73,19 @@ const INVENTORY_LIMITS: IntervalLimits = IntervalLimits {
     default_interval: 900,
     default_min: 300,
     default_max: 21_600,
+};
+
+/// FR-2.1, P2-A01: the configuration report every 6 hours by default, and the package report with it
+/// (FR-2.3: "on the same reporting cadence"). The server does not direct this
+/// interval yet; `min` and `max` are carried for symmetry with the others (and the installer's
+/// carry-over) so a future directive can clamp to them.
+const CONFIG_REPORT_LIMITS: IntervalLimits = IntervalLimits {
+    name: "config_report",
+    floor: 300,
+    ceiling: 86_400,
+    default_interval: 21_600,
+    default_min: 3_600,
+    default_max: 86_400,
 };
 
 /// The per-host agent credential, `<key_id>.<secret>` (DEC-08).
@@ -184,6 +202,8 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub heartbeat: Interval,
     pub inventory: Interval,
+    /// How often the configuration report is sent (FR-2.1, P2-A01), and the package report (FR-2.3).
+    pub config_report: Interval,
     /// How long a newly installed agent version has to get a heartbeat acknowledged by the server
     /// before the update is rolled back, in seconds (P1-AGENT-UPDATE, ADR 0018).
     pub update_confirm_seconds: u64,
@@ -252,6 +272,7 @@ struct RawConfig {
     update_confirm_seconds: Option<u64>,
     heartbeat: Option<RawInterval>,
     inventory: Option<RawInterval>,
+    config_report: Option<RawInterval>,
 }
 
 #[derive(Default, Deserialize)]
@@ -359,6 +380,10 @@ impl Config {
             state_dir,
             heartbeat: validate_interval(&HEARTBEAT_LIMITS, raw.heartbeat.unwrap_or_default())?,
             inventory: validate_interval(&INVENTORY_LIMITS, raw.inventory.unwrap_or_default())?,
+            config_report: validate_interval(
+                &CONFIG_REPORT_LIMITS,
+                raw.config_report.unwrap_or_default(),
+            )?,
         })
     }
 }
@@ -838,6 +863,7 @@ pub(crate) mod tests {
         assert_eq!(example.state_dir, defaults.state_dir);
         assert_eq!(example.heartbeat, defaults.heartbeat);
         assert_eq!(example.inventory, defaults.inventory);
+        assert_eq!(example.config_report, defaults.config_report);
         assert_eq!(
             example.update_confirm_seconds,
             defaults.update_confirm_seconds

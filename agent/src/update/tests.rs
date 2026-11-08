@@ -297,6 +297,7 @@ impl World {
             restarted: false,
             rollback_reason: None,
             boot_id: Some(BOOT.into()),
+            previous_before: None,
         };
         record.write(self.state()).unwrap();
         record
@@ -901,6 +902,25 @@ impl Transport for BelowMinimum {
                 request_id: None,
             }),
         }
+    }
+
+    fn post_gzip(&self, path: &str, _: &[u8]) -> Result<ApiResponse, ApiError> {
+        self.paths.lock().unwrap().push(path.to_owned());
+        Err(ApiError::AgentVersionUnsupported {
+            message: "minimum agent version is 99.0.0".into(),
+            request_id: None,
+        })
+    }
+
+    fn get_conditional(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<crate::client::Conditional, ApiError> {
+        Err(ApiError::AgentVersionUnsupported {
+            message: "minimum agent version is 99.0.0".into(),
+            request_id: None,
+        })
     }
 }
 

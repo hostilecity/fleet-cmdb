@@ -27,6 +27,9 @@ Rails.application.routes.draw do
         post "onboarding/token", to: "onboardings#token"
         post "heartbeat", to: "heartbeats#create"
         post "reports/inventory", to: "inventory_reports#create"
+        post "reports/packages", to: "package_reports#create"
+        post "reports/config", to: "config_reports#create"
+        get "manifest/config", to: "config_manifests#show"
         # Update outcomes (P1-UPDATES): exempt from the minimum version, like heartbeats and release downloads.
         post "update-results", to: "update_results#create"
         # Release downloads (P1-S16): unauthenticated, limited per address, exempt from the minimum version.
@@ -54,6 +57,39 @@ Rails.application.routes.draw do
         post :retire, to: "host_actions#retire"
         get :reenroll, to: "host_actions#confirm_reenroll"
         post :reenroll, to: "host_actions#reenroll"
+        # Not destructive, so no confirmation page; still a CSRF-protected POST (P2-S03).
+        post :request_reports, to: "host_actions#request_reports"
+        # Host tabs (P2-D02 to P2-D04): read-only pages; filters, sort, and the compared snapshots are in the URL.
+        get :config, to: "host_configs#show"
+        get "config/compare", to: "host_configs#compare", as: :compare_config
+        get :packages, to: "host_packages#show"
+        get "packages/compare", to: "host_packages#compare", as: :compare_packages
+        get :vulnerabilities, to: "host_vulnerabilities#show"
+        # The package name is a query parameter (?package=), as in the mockup, so no stored name can break a path.
+        get "vulnerabilities/package", to: "host_vulnerabilities#package", as: :package_vulnerabilities
+      end
+    end
+    # Fleet compliance (P2-D05): read-only; filters, sort, and page are in the URL.
+    get "compliance", to: "compliance#index", as: :compliance
+    # CIS-aligned rules (P2-D06). Adding and editing preview first (a POST that writes nothing), then save; enable and
+    # disable are a confirmation page (GET) and a CSRF-protected POST. An uploaded rules file is previewed from a
+    # short-lived copy (RuleImportPreview, owner decision Q13) named by a token, then applied or cancelled.
+    resources :rules, only: %i[index show new create edit update], constraints: { id: /\d+/ } do
+      collection do
+        post :preview, to: "rules#preview_new", as: :preview_new
+        get :import, to: "rule_imports#new"
+        post :import, to: "rule_imports#create"
+        get "import/:token", to: "rule_imports#show", as: :import_preview, constraints: { token: /[A-Za-z0-9_-]{1,64}/ }
+        post "import/:token/apply", to: "rule_imports#apply", as: :apply_import, constraints: { token: /[A-Za-z0-9_-]{1,64}/ }
+        delete "import/:token", to: "rule_imports#destroy", as: :cancel_import, constraints: { token: /[A-Za-z0-9_-]{1,64}/ }
+      end
+      member do
+        post :preview, to: "rules#preview_edit", as: :preview_edit
+        get :disable, to: "rules#confirm_disable"
+        post :disable
+        get :enable, to: "rules#confirm_enable"
+        post :enable
+        get "versions/:version", to: "rule_versions#show", as: :version, constraints: { version: /[1-9]\d{0,8}/ }
       end
     end
     # Onboarding approval (P1-D07, DEC-17): the installer's verification URI is /onboard/<user code>.
@@ -72,6 +108,25 @@ Rails.application.routes.draw do
     post "agents/releases/import", to: "agent_releases#import", as: :import_agent_release
     post "agents/releases/upload", to: "agent_releases#upload", as: :upload_agent_release
     get "agents/install", to: "agent_installs#show", as: :agent_install
+    # Rollouts (P1-D09): each action is a confirmation page (GET) and a CSRF-protected POST to the Rollouts
+    # service. Starting is confirmed too: the form on /agents asks for the confirmation page.
+    resources :rollouts, path: "agents/rollouts", only: %i[new create] do
+      member do
+        %i[advance halt resume cancel].each do |action|
+          get action, to: "rollouts#confirm_#{action}"
+          post action
+        end
+      end
+    end
+    # Advisory data sources (P2-D06): refreshing is a confirmation page (GET) and a CSRF-protected POST, limited
+    # by the cool-down (P2-S15); an upload is a CSRF-protected POST whose result has its own page.
+    get "data-sources", to: "data_sources#show", as: :data_sources
+    get "data-sources/refresh", to: "data_sources#confirm_refresh", as: :refresh_data_sources
+    post "data-sources/refresh", to: "data_sources#refresh"
+    post "data-sources/upload", to: "data_sources#upload", as: :upload_data_sources
+    get "data-sources/imports/:id", to: "data_sources#import", as: :advisory_import, constraints: { id: /\d+/ }
+    # A full import refused for what it would withdraw: the second confirmation, naming the counts (review of #129).
+    post "data-sources/imports/:id/confirm-withdrawals", to: "data_sources#confirm_withdrawals", as: :confirm_withdrawals_advisory_import, constraints: { id: /\d+/ }
     patch "settings", to: "settings#update"
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
     mount ActionCable.server => "/cable"

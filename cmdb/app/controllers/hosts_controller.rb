@@ -1,12 +1,15 @@
 # The fleet list and host detail pages (FR-1.5, P1-D02, P1-D03), pre-registration and editing (P1-D04).
-# Revoke, retire, and re-enroll are in HostActionsController.
+# Revoke, retire, re-enroll, and requesting fresh reports (P2-S03) are in HostActionsController.
 class HostsController < ApplicationController
   include ShowsEnrollmentToken
+  include HostTab
 
   FIELDS = %i[name hostname tags description notes].freeze
   HISTORY_LIMIT = 25
   STATUS_HISTORY_LIMIT = 20
   AUDIT_LIMIT = 20
+  UPDATE_HISTORY_LIMIT = 20
+  REPORT_REQUEST_LIMIT = 10
 
   def index
     @fleet = FleetList.new(params.permit(:q, :tag, :status, :sort, :dir))
@@ -14,17 +17,23 @@ class HostsController < ApplicationController
     @counts = FleetList.counts
     @tags = FleetList.tags
     @awaiting_approval = OnboardingRequest.awaiting.count
+    @advisory_freshness = Advisories::Freshness.statuses
+    # The compliance panel and the two compliance columns (P2-D05, owner decision Q8); only active hosts are tracked.
+    @compliance = FleetCompliance.rows_for(@hosts.select { |host| host.enrollment_state == "active" })
+    @compliance_totals = FleetCompliance.totals
+    @rules_defined = CisRule.exists?
   end
 
   def show
-    @host = Host.includes(:inventory).find(params[:id]) # retired hosts keep their page and history
+    load_host_tab # retired hosts keep their page and history
     @inventory = @host.inventory
-    @credential = @host.agent_credentials.order(created_at: :desc, id: :desc).first
-    @token = @host.enrollment_tokens.redeemable.order(created_at: :desc, id: :desc).first if @host.enrollment_state == "pending"
     @history = history
     @status_events = @host.status_events.order(occurred_at: :desc, id: :desc).limit(STATUS_HISTORY_LIMIT)
     @audit_entries = AuditEntry.for_target(@host).order(occurred_at: :desc, id: :desc).limit(AUDIT_LIMIT).to_a
     @actors = audit_actors(@audit_entries)
+    @report_requests = @host.report_requests.includes(:requested_by).order(requested_at: :desc, id: :desc).limit(REPORT_REQUEST_LIMIT)
+    @availability = ReportRequests.availability(host: @host)
+    load_update_history
   end
 
   # Pre-register a host for an unattended install (P1-D04, DEC-17): the host is created pending with a
@@ -66,6 +75,12 @@ class HostsController < ApplicationController
       previous = snapshots[i + 1]
       { snapshot:, first: previous.nil? && snapshots.size <= HISTORY_LIMIT, changes: previous ? InventoryDiff.between(previous.stable, snapshot.stable) : [] }
     end
+  end
+
+  # The host's part in each rollout, newest first, with the latest result it reported for each (P1-D09).
+  def load_update_history
+    @update_history = @host.rollout_hosts.includes(rollout: :agent_release).order(created_at: :desc, id: :desc).limit(UPDATE_HISTORY_LIMIT).to_a
+    @update_results = @host.agent_updates.where(rollout_id: @update_history.map(&:rollout_id)).order(:received_at, :id).index_by(&:rollout_id)
   end
 
   # Display names for audit actors, loaded in two queries.

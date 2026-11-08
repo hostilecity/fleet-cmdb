@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import rules file: problems · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rules-import.html">&larr; Import rules file</a></p>
+<div class="page-head"><div><h1>Import rules file</h1><p>Check a YAML or JSON rules file and see what it would change. Nothing is written until you apply it.</p></div></div>
+<div class="notice error" role="alert"><strong>Nothing was imported. <span class="mono">rules-2026-11.yml</span> has 6 problems.</strong><p>A file with any problem imports nothing, so no rule is half-applied. Fix the problems below and upload the file again.</p></div>
+<div class="table-wrap"><table class="errlist"><caption class="visually-hidden">Problems found in the rules file</caption><thead><tr><th scope="col">Where in the file (JSON Pointer)</th><th scope="col">Problem</th></tr></thead><tbody>
+<tr><td><code>/rules/0/severity</code></td><td>is not one of: ["low", "medium", "high", "critical"]</td></tr>
+<tr><td><code>/rules/2/key</code></td><td>ssh-log-level is already used by /rules/1</td></tr>
+<tr><td><code>/rules/3/fact</code></td><td>nope.fact is not in the fact manifest</td></tr>
+<tr><td><code>/rules/4/condition</code></td><td>matches works only on a string or list fact, and sshd.maxauthtries is integer</td></tr>
+<tr><td><code>/rules/5/condition</code></td><td>eq needs a string (quote yes, no, on, and off in YAML, or they are read as true and false)</td></tr>
+<tr><td><code>/rules/6/condition</code></td><td>does not match exactly one `oneOf` schema</td></tr>
+</tbody></table></div>
+<p class="muted" style="font-size:.875rem">Pointers count rules from 0, in file order: <code>/rules/2</code> is the third rule. At most 200 problems are listed; fix these and upload again to see any more.</p>
+<form class="form wide" action="rules-import-preview.html" method="get" style="margin-top:1.25rem">
+  <div class="field"><label for="file">Rules file</label><input id="file" type="file" accept=".yml,.yaml,.json"></div>
+  <div class="field"><label class="choice" style="margin:0;font-weight:400"><input type="checkbox"> <strong>Disable rules this file does not list</strong></label></div>
+  <div class="actions"><button class="btn" type="submit">Check file and preview</button></div>
+</form>
+<h2>Other ways a file is refused</h2>
+<div class="table-wrap"><table class="errlist"><caption class="visually-hidden">Examples of file-level problems</caption><thead><tr><th scope="col">Where</th><th scope="col">Problem</th></tr></thead><tbody>
+<tr><td><code>/</code></td><td>is larger than 1 MiB</td></tr>
+<tr><td><code>/</code></td><td>is not a plain YAML or JSON document (while parsing a block mapping, line 14 column 3)</td></tr>
+<tr><td><code>/rules/0/title</code></td><td>contains a NUL character</td></tr>
+<tr><td><code>/format_version</code></td><td>must be 1</td></tr>
+</tbody></table></div><p class="note">The output is one row per problem with the JSON Pointer the server produces, copied so an operator can search the file. Problem text is escaped: a file that contains markup shows it as text. Wording is the server's own message, unchanged.</p>
+</main>
+</body>
+</html>

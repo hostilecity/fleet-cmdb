@@ -34,7 +34,15 @@ The development and test databases use your macOS user over the local socket, so
 
 ## First run
 
-From this directory:
+To run the whole system on your machine, including a real agent against this server, see [docs/operations/running-locally.md](../docs/operations/running-locally.md).
+
+From this directory, create your local settings file first (`.env` is ignored by git and loaded in development and test by `dotenv-rails`):
+
+```sh
+cp .env.example .env   # then fill in the values
+```
+
+Then:
 
 ```sh
 bin/setup --skip-server   # installs gems and creates and prepares all databases
@@ -60,6 +68,10 @@ The test environment uses two databases, `cmdb_test` and `cmdb_test_queue` (Soli
 Specs run in random order. To reproduce a failure, rerun with the seed RSpec printed: `bundle exec rspec spec/path_spec.rb:12 --seed 1234`. In GitHub Actions, each failing example, any error outside an example, and any failed `bin/ci` step also becomes an error annotation on the pull request (with the seed and the rerun command), because the job log cannot always be read. The workflow keeps the full `bin/ci` log and RSpec's JSON results as the `bin-ci-log` artifact.
 
 Specs that use threads (`spec/services/*_concurrency_spec.rb`) run outside the test transaction. Each thread loads its own records on its own connection: Active Record objects are not thread-safe, and sharing one between threads made a spec fail intermittently (#69).
+
+### Fleet simulator and load check
+
+`bin/simulate-fleet` runs fake hosts against a running development server through the real agent API: seed data, the NFR-3 load check (`--load-check`), and a scaled-down AC-1.2 liveness check (`--liveness-check`). See [docs/operations/fleet-simulator.md](../docs/operations/fleet-simulator.md).
 
 ## Databases
 
@@ -112,6 +124,133 @@ bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 - **Clone detection (FR-S.1).** A machine id different from the one the credential was enrolled with sets `hosts.machine_id_mismatch_at`. It is audited once and cleared when the host is re-enrolled.
 - **Audit entries.** Ordinary reports write none; only the first inventory and a machine id mismatch are audited.
 
+### Config fact manifest
+
+`GET /api/v1/manifest/config` (FR-2.1, P2-S01) publishes the facts an agent may report: `config/fact_manifest.yml`, loaded and validated as a whole by `lib/config_manifest.rb` (a manifest that does not validate stops the first use, with every problem listed), served to an active host with a strong `ETag`. Config reports (P2-S02) are validated against the same facts. To add a fact, see [docs/operations/config-facts.md](../docs/operations/config-facts.md).
+
+### CIS-aligned rules
+
+Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the operator controls; the format is in [docs/api/rules](../docs/api/rules/README.md). The starter set for Debian 13 is `config/rules/debian-13.yml` (`bin/rails rules:import FILE=config/rules/debian-13.yml`); its fixtures are `spec/fixtures/cis_rules/debian-13.yml`, and [docs/operations/cis-rules.md](../docs/operations/cis-rules.md) covers adding and tuning rules and the licensing rules (P2-CIS-RULES).
+
+- **Import.** `bin/rails rules:import FILE=rules.yml` checks the whole file (`CisRules::RuleFile`: safe YAML, the JSON Schema, then each rule against the fact manifest) and writes nothing if anything is wrong, listing every problem. `DISABLE_MISSING=1` disables enabled rules the file does not list; otherwise they are left alone. `bin/rails rules:list` shows each rule's key, version, flag, severity, and fact. Imports are serialised with the dashboard's rule changes (`CisRule.with_write_lock`) and audited with the system actor; the dashboard's upload is the same import, audited with the operator.
+- **Storage.** `cis_rules`: the stable key, the enabled flag, and the current version. `cis_rule_versions`: one row per definition, never changed (`readonly?`), numbered from 1; an import creates one only when the definition's content hash changes.
+- **Audit.** `rule.created`, `rule.edited` (each changed field before and after, and the version), `rule.enabled`, `rule.disabled`; the audit page names the rule by its key.
+- **Evaluation.** `CisRules::Evaluator.call(rule, facts, os)` (P2-S05) is a pure function returning `pass`, `fail`, `not_applicable`, or `not_readable`, with the observed value or the reason. It never runs rule data as code (a spec checks the rule code's tokens); patterns are anchored and time-limited.
+- **Results** (P2-S06). `CisEvaluation.evaluate!(host_ids, rule_ids: nil)` evaluates each host's latest config snapshot, with the os from its inventory, and stores:
+  - `cis_results`: one row per host and rule with the result (`pass`, `fail`, `not_applicable`, `not_readable`, or `not_evaluated`), the observed value, the reason, and the rule version and snapshot used. A disabled rule, and every rule on a host with no config report, is `not_evaluated`.
+  - `cis_result_changes`: a row only when a result changes (from, to, when, version, snapshot), so running evaluation again writes nothing new. Pruned by `Retention`; current results never are.
+  - Each host is evaluated in its own transaction under its row lock, the lock agent writes take, so it never sees half of a config report.
+- **When it runs.** `CisEvaluationJob` runs for a host after a new config snapshot and when its operating system changes, and for a rule on every host after it is created, edited, enabled, or disabled. All enqueued once the transaction commits, so a rule import re-evaluates without agents.
+- **Dry run** (P2-S14). `CisDryRun.call(rule)` takes an unsaved rule (a Hash as a rule file holds it, or a `CisRules::Definition`) and returns either its errors, each with a JSON Pointer into the rule (`CisRules::RuleFile.parse_rule`, the import's checks), or a preview: the hosts whose result would change if it were saved (current result, result under the definition, observed value) and the counts the edit and add-rule previews show (pass to fail, fail to pass, to not applicable, other changes, unchanged, not applicable, no config report; a host dropping from a real result to not applicable is listed). It evaluates as saving would, with `CisEvaluation.outcome`, writes nothing, contacts no agent, and takes no lock: six queries whatever the fleet size, in one read-only transaction (about 12 ms for 50 hosts with 300 rules).
+- **Dashboard** (P2-D06). `/rules` lists the rules (`RuleList`; filters and sort in the URL) and links to each rule's page: its results on every host (`RuleResults`), its versions (`/rules/:id/versions/:n`, read-only), and its change log from the audit entries. Adding and editing go form, Preview (a POST that writes nothing: `RuleForm` builds the rule, the import's checks validate it, `CisDryRun` previews it), then Save, which is refused unless the preview's signature (`RulePreviewSignature`, 15 minutes) names exactly the rule submitted and goes through `CisRule.define!` under `CisRule.with_write_lock` with the operator as actor; an edit is refused if another version was saved since it began. Enable and disable have a confirmation page. Every rule audit entry records its `source` (`CisRule::SOURCES`: `file_upload`, `dashboard`, or `rules_import` for the rake task), which the change log names. Importing a file (`/rules/import`) previews it with `CisRules::ImportPlan` and keeps the file as a `RuleImportPreview` (below) so Apply imports exactly what was previewed.
+- **Import previews.** `rule_import_previews` keeps an uploaded rules file while its preview is open (owner decision Q13): only a file that passed every check (at most 1 MiB; a check constraint holds the limit), one row per operator (a new upload replaces it), named by a random token in the URL and found only for the operator who uploaded it, and expiring 15 minutes after the preview. Applying, cancelling, or a later upload deletes it, and `RuleImportPreviewPruneJob` deletes expired rows every 5 minutes. It also keeps `CisRule.state_digest` from the preview: `CisRules::Import.call(..., expected_state:)` checks it under the write lock and raises `Stale` without writing if any rule was added, edited, enabled, or disabled since, and the dashboard then previews the same file again against the rules as they are.
+- **Compliance.** `CisCompliance.for_host(id)` and `for_hosts(ids)` count passed, failed, not applicable, not readable, and not evaluated (a rule without a result yet counts as not evaluated, so the counts add up to the number of rules).
+- **Image.** The schema is read at runtime from `FLEET_RULES_SCHEMA_DIR` (default `../docs/api/rules`); the Docker image copies `docs/api/rules` from the `api` build context.
+
+### Config reports
+
+`POST /api/v1/reports/config` (FR-2.1, DEC-07, DEC-08, P2-S02) takes the host's configuration facts keyed by the fact keys of the config fact manifest, as JSON or gzip, with the same limits as package reports (4 MiB of JSON, 1 MiB compressed). The response carries the server's `manifest_version`, so an agent with an older copy fetches the manifest again.
+
+- **Validation.** The body is validated against `docs/api`; `lib/agent_api/config_report.rb` then checks each `ok` value against its fact in the manifest (type, length, range, list size) and refuses a NUL anywhere in a value. Any problem refuses the whole report, with a pointer per fact, and nothing is written. A manifest version newer than the server's is refused; a fact key the manifest does not have is ignored and logged, and kept in `ignored_keys`.
+- **Missing facts.** Every manifest fact the report leaves out is stored as `missing`, with a reason: "not included", or, for a fact added after the report's manifest version, which version added it. Unordered lists are stored sorted, so a reordering is no change.
+- **Storage.** `ConfigRecorder` stores a valid report under the host row lock:
+  - `config_report_receipts`: report ids already processed. A retried report is answered `duplicate: true` and changes nothing.
+  - `host_configs`: the current facts (`{key => {state, value, reason}}`, the form `CisRules::Evaluator` reads), counts per state, the content hash, the report's manifest version, and the ignored keys, updated on every report.
+  - `config_snapshots`: the facts as they were, written only when the content hash changes. Retention keeps the newest per host.
+- **Diff.** `ConfigDiff.between(older, newer)` (or `ConfigDiff.for(snapshot)`) lists facts added, removed, and changed, where a change of state or reason alone (ok to unreadable) counts.
+- **Evaluation.** A new snapshot enqueues `CisEvaluationJob` for the host (P2-S06).
+
+### Package reports
+
+`POST /api/v1/reports/packages` (FR-2.3, DEC-07, P2-S08) takes every installed package, as JSON or gzip (`Content-Encoding: gzip`): at most 4 MiB of JSON, sent plain or once decompressed, and 1 MiB compressed. `AgentApiRequestGuard` lets this path's plain bodies past its general 1 MiB limit (`UNCOMPRESSED_LIMITS`).
+
+- **Validation.** The body is validated against `docs/api`; `lib/agent_api/package_report.rb` then refuses a package listed twice for one architecture. `manager: unsupported` and `manager: unreadable` (dpkg is there, its database could not be listed) carry a reason and no packages; `skipped` names packages not listed as installed (an interrupted installation), stored sorted and without duplicates. A version dpkg would refuse is stored as reported; matching treats it as not evaluated.
+- **Storage.** `PackageRecorder` stores a valid report under the host row lock:
+  - `package_report_receipts`: report ids already processed. A retried report is answered `duplicate: true` and changes nothing.
+  - `host_package_sets`: the manager (or that it is unsupported or unreadable, and why), the package count, the content hash, the skipped names, and warnings, updated on every report. After an unreadable report the count and the `host_packages` rows are those of the last readable one.
+  - `host_packages`: one row per installed package, replaced when the set changes; indexed by source package for matching.
+  - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows plus the skipped names, written only when the content hash changes (an unreadable report is a snapshot with no packages). Retention keeps the newest per host.
+- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). A package in the older set and not the newer one is `removed`, or `skipped` (with the reason) when the newer report names it in `skipped`. A skipped name counts as present: installed after being skipped is `completed`, and skipped then neither listed nor skipped is `removed_skipped` (no version known). The class comment in `app/models/package_diff.rb` lists each kind's shape. With an unsupported or unreadable manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
+
+### Report requests
+
+An operator can ask a host's agent for fresh config, inventory, and package reports (FR-2.1, DEC-13, P2-S03) with "Request fresh reports" on the host page (`POST /hosts/:id/request_reports`, CSRF-protected, no confirmation page since it changes nothing on the VM). `ReportRequests` is the only code that changes `report_requests`:
+
+- **Request.** One `report_requests` row per type, pending, with the operator and the server time, audited as `host.report_requested`. Only an active host can be asked. A partial unique index allows one pending request per host and type.
+- **Rate limit.** One request per host and type every 5 minutes (`ReportRequests::COOLDOWN`), whatever happened to the previous one; a type still pending from an older request is left as it is. The page says when to try again.
+- **Directive.** Every heartbeat carries the outstanding types as `"report_request": {"types": [...]}` (DEC-20) until each request ends. The first heartbeat that carries a request records `sent_at` (server clock) and its own `agent_time` as `delivered_agent_time` (agent clock). A host with nothing outstanding costs one indexed SELECT. An agent that ignores the directive is unaffected.
+- **Satisfied.** `InventoryRecorder`, `PackageRecorder`, and `ConfigRecorder` call `ReportRequests.satisfy!` for every new report, changed or not. A report clears the request only when a heartbeat has delivered it and the report's `collected_at` is later than `delivered_agent_time`, recording the report id. Both times are the agent's clock, so clock skew cancels out and network delay can only make the check stricter; the one window is a report collected while the delivering heartbeat was in flight. A report from before delivery, or before any heartbeat carried the request, leaves it pending. A retried (duplicate) report clears nothing.
+- **Expired.** A request no report answers within an hour (`ReportRequests::TTL`) stops being sent, and `ReportRequestExpiryJob` (every minute, `config/recurring.yml`) marks it `expired` with `expired_at`. Ended requests are kept for the host page and pruned by Retention after the retention window.
+
+### Advisory data
+
+Vulnerability advisories (FR-2.4, DEC-11, P2-S10, P2-S13) are OSV records for the fleet profile's ecosystems: `Ecosystems` (`app/models/ecosystems.rb`) maps an inventory's os id and version to one, and only `debian` `13` → `Debian:13` is listed (DEC-01). Records for other ecosystems are skipped.
+
+- **Import** (`Advisories::Import`, `app/services/advisories`), from a `.json` file, a directory of them, or a `.zip` archive such as OSV's `all.zip`. Each run is one transaction, so input that cannot be read at all imports nothing.
+  - **Idempotent** by advisory id and `modified`: the same or an older record changes nothing, and a newer one replaces the advisory and its packages.
+  - **Malformed records** are skipped and reported with where they were and why, and the valid records import.
+  - **Limits:** each document is read to at most 2 MiB, and an archive may be at most `FLEET_ADVISORY_MAX_DOWNLOAD_MB` and hold at most a million documents and 8 GiB of JSON. For scale, measured by the owner on 2026-11-07, OSV's Debian `all.zip` was 77.4 MiB zipped, 73,658 JSON records, 260.9 MiB of JSON in all, and its largest record 34.1 KiB (`DLA-4008-1.json`). That leaves 6x to 60x headroom for growth and more releases; check the limits again when distributions are added.
+  - **Stored:** text has control characters removed and a length cap, and only `http` and `https` reference URLs are kept.
+  - **Severity** is normalised to critical, high, medium, low, or unknown by the rule in `Advisories::Severity` (a CVSS v3 score, then a severity word, then a Debian urgency), keeping the raw value.
+  - **Withdrawn advisories** are kept and marked. A *full* import (the refresh, or `FULL=1`) is the whole data set for its ecosystems, so an advisory it does not contain is marked withdrawn as `absent`: OSV moves withdrawn records out of an ecosystem's archive. That sweep is skipped when any record was malformed, and spares advisories newer than the newest record in the import.
+  - **Withdrawal guard.** Every full import is guarded against mass withdrawal: the scheduled refresh, `bin/rails advisories:import FULL=1`, and a full upload (review of #129, owner decision). Before the absence sweep writes, the import counts per ecosystem how many current advisories it would mark withdrawn. If that is more than `FLEET_ADVISORY_WITHDRAW_SHARE` (0.10) of an ecosystem's current advisories, or any of them when the import has fewer than `FLEET_ADVISORY_WITHDRAW_MIN_RECORDS` (1,000) records for that ecosystem, it is refused: nothing is written, and the import is recorded as held back (its own state, `held_back`, not a failure) and audited as `advisory.import_held_back` with the counts per ecosystem. The share is of the ecosystem's current advisories before the import, so advisories it adds cannot dilute it. An operator's allowance is a ceiling, not a bypass: once one is given, each ecosystem may withdraw at most its allowed count (none for one it does not name), whatever the thresholds say (review of #131). The rule and its thresholds are the same for every ecosystem.
+    - **Scheduled refresh:** a refusal is not a fault, and is shown as "Held back", never as failed. The job ends normally, so it is not retried and does not show as a failed job, and the data stays as it was. The Data sources page and the freshness notice on every page that shows it warn that the refresh was held back and the data may be going stale. An operator confirms the counts on the refusal's page (`POST /data-sources/imports/:id/confirm-withdrawals`, a box naming each count; once per refusal; audited `advisory.withdrawals_confirmed`), which downloads the feed again as a manual refresh allowed to withdraw at most those counts. The archive is downloaded again rather than kept, since a full archive is larger than the upload store holds; a new download that would withdraw more is refused again.
+    - **`bin/rails advisories:import FULL=1` and `advisories:refresh`:** a refusal prints the counts and the exact allowance, and the task is run again with `ALLOW_WITHDRAWALS=<ecosystem>:<count>[,...]` (for example `ALLOW_WITHDRAWALS=Debian:13:41`; the count follows the last colon).
+    - **Upload:** the result page offers the same confirmation, and the file is kept an hour for it.
+  - **Audit:** every import is audited (`advisory.imported`, `advisory.import_failed`) with the operator or the system as actor, the source, and the counts.
+- **Storage.** `advisories` holds each advisory at its newest version. `advisory_packages` holds one row per advisory, ecosystem, and source package, with the OSV `ECOSYSTEM` ranges' events, indexed by ecosystem and package for matching. `advisory_imports` records every import, which is how freshness is known.
+- **Scheduled refresh.** `AdvisoryFeedRefreshJob` runs every 6 hours in production (`config/recurring.yml`).
+  - It downloads `FLEET_ADVISORY_FEED_URL` over HTTPS with the certificate verified, within 15 minutes for the whole exchange, and imports it as a full data set. The request is conditional (`If-None-Match`, `If-Modified-Since`) unless the last download had malformed records.
+  - A failure of any kind is retried with backoff. After the last attempt it is recorded and audited, and the job fails, so it shows on the failed-jobs banner and in `/health`.
+  - Errors and logs name only the feed's host, never its path, query, or token.
+- **Manual refresh cool-down** (P2-S15). `Advisories::ManualRefresh.request!(actor:)` is the dashboard's "Refresh now": it enqueues the same `AdvisoryFeedRefreshJob` as the schedule, unless the last refresh of any kind (manual, scheduled, or `bin/rails advisories:refresh`) started less than `FLEET_ADVISORY_REFRESH_COOLDOWN` seconds ago. Then it is refused with the time a refresh is next allowed, and starts nothing.
+  - Each refresh records when it started in `advisory_refresh_attempts`. The check and the record run under one PostgreSQL advisory lock, so two operators clicking together start one refresh. Retention keeps the newest attempt however old, since it holds the cool-down.
+  - The schedule and the rake task are never refused, but they count: the next manual refresh waits for the cool-down after them.
+  - Both outcomes are audited with the operator as actor (`advisory.refresh_requested`, `advisory.refresh_refused`) and the time a refresh is next allowed. The import a manual refresh leads to is attributed to that operator.
+  - `Advisories::ManualRefresh.next_allowed_at` is when the button can next be used (nil: now), for the disabled button and its "available again" text.
+- **Freshness.** Data is as fresh as the last successful full import with records for the ecosystem. The fleet page shows when each ecosystem's data was last updated, and a warning when it is older than `FLEET_ADVISORY_MAX_AGE_HOURS` or was never refreshed. A partial import adds data but does not count.
+- **Dashboard** (P2-D06, `/data-sources`, "Data sources" in the navigation): freshness, current and withdrawn advisories, and active hosts per ecosystem (the set the Compliance page lists); the scheduled feed (its host and path only, never the token, userinfo, or query string); "Refresh now" behind a confirmation, disabled with the time it is available again during the cool-down, and refused by the server if a stale page sends it; the latest 10 imports with who and what they did; and uploading a `.json` record or a `.zip` archive of them, with a result page (`/data-sources/imports/:id`) listing counts and each malformed record's location, id, and reason. A full import (advisories the file lacks are marked withdrawn, which can resolve findings) needs its confirmation; the server refuses one without it.
+  - **Uploads are imported in the background, and are for small files** (owner decision on #129). An upload is at most 64 MiB, the server's request body limit (`config/puma.rb`); a larger body is refused before it is parsed. A full archive (OSV's Debian archive is about 80 MB and growing) comes through the scheduled feed or `bin/rails advisories:import`, not the upload.
+    - The file is stored with its import, `queued`, in one transaction: `advisory_uploads`, a `bytea` row tied to the operator and the import, bounded to 64 MiB by a check constraint. At most 3 are stored at once. The upload is audited (`advisory.uploaded`).
+    - It lives in the database, not on disk, so the import job can read it whichever process or container runs it, and nothing lands where the web server could serve it.
+    - `AdvisoryUploadImportJob` marks the import `importing`, imports the file through a private temporary file, and finishes the same row, audited with the operator. It stores the re-matching summary for the result page.
+    - The job deletes the stored file however the import ends. `AdvisoryUploadPruneJob` runs every 10 minutes and deletes any file left an hour after its upload (a job that never ran or was interrupted), failing its import with a reason.
+    - **Limits** (`Advisories::Reader::UPLOAD`, much lower than the feed's): 256 KiB a record (a larger one is reported as malformed), 200,000 records, and 512 MiB of JSON in all. These would hold the measured Debian archive's contents too (above); only the 64 MiB cap keeps a full archive out. Reading and storing may take 10 minutes once the import lock is held, and the job waits at most 2 minutes for that lock (a feed refresh importing); a lock wait that runs out is retried.
+    - A file that cannot be read, or that breaks a limit or the time limit, fails the import with the reason, with no retry. Any other error is retried with backoff; after the last attempt the import is failed with a reason and the job fails, so it shows on the failed-jobs page and in `/health`.
+    - **Full uploads are guarded** like every full import (the withdrawal guard, above). The refused file is kept for an hour, and a confirmation naming the counts (`advisory.withdrawals_confirmed`) imports it again, allowed to withdraw at most those counts.
+    - The import's page refreshes itself every 2 seconds while it is queued or importing, then shows the result.
+
+```sh
+bin/rails advisories:import FILE=path/to/all.zip FULL=1   # a complete archive, for a server without internet access
+bin/rails advisories:import FILE=path/to/DSA-5800-1.json  # one advisory (or a directory of them)
+bin/rails advisories:refresh                              # run the scheduled refresh now
+bin/rails advisories:status                               # freshness per ecosystem and the last import
+```
+
+The settings (the feed, its token, the download limit, the staleness warning, the withdrawal guard, and the refresh cool-down) are in [docs/operations/configuration.md](../docs/operations/configuration.md#advisory-data).
+
+### Vulnerability findings
+
+`VulnerabilityMatcher` (P2-S11, FR-2.4, AC-2.4) matches each host's installed packages against the advisories for its ecosystem.
+
+- **Matching.**
+  - It matches on source package name, or the binary name when dpkg records no source.
+  - It applies OSV's range algorithm, `limit` included, with dpkg's version order (`PackageVersions`), never string comparison. A finding's fixed version is the fix of the range the installed version is in.
+- **Findings.** `vulnerability_findings` holds one finding per host, advisory, and installed binary package (name and architecture), so each binary built from an affected source has its own.
+  - **States:** `open`, `resolved` with a resolution (`fixed`, `removed`, `withdrawn`, or `not_affected`), and `reopened` when the condition returns, for example after a downgrade or a reinstall.
+  - **Timestamps:** `first_seen_at`, `resolved_at`, and `reopened_at`.
+- **Not evaluated.** `host_vulnerability_evaluations` records each host's last run.
+  - **A whole host** is "not evaluated", with the reason, when it has no inventory, is on a distribution outside the fleet profile, has no package report, has an unsupported package manager, has a package database that could not be read, or has no advisory data for its ecosystem. Its findings are left as they were.
+  - **One package** whose version, or whose advisory's version, dpkg cannot parse is listed as not evaluated, and its finding is left as it was.
+- **When it runs.** `VulnerabilityMatchJob` runs after each commit that adds a package snapshot (for that host) and after each import (for the packages it changed, plus hosts not yet evaluated). Agents are not involved.
+  - **Idempotent:** running it again changes nothing.
+  - **Concurrency:** each host is matched in its own short transaction under its row lock (`FOR UPDATE`), the lock package reports take, so it never sees half of a report.
+  - **Cost:** a fixed number of queries per host whatever its package count. 50 hosts by 2,000 packages take about 5 s.
+
+```sh
+bin/rails vulnerabilities:match   # match every host now
+```
+
 ## Hostnames and operator sign-in
 
 The server has two faces (DEC-05), each on its own hostname:
@@ -149,9 +288,11 @@ Settings and their defaults: [docs/operations/configuration.md](../docs/operatio
 Server-rendered Hotwire views built from the approved mockups in `../docs/mockups/phase-1/` (P1-DASH-FLEET). The styles are `app/assets/stylesheets/application.css`, with self-hosted fonts (OFL licences beside them in `app/assets/fonts/`).
 
 - **Fleet list** (`/`): counts by status, search, tag and status filters, and sortable columns. All of it lives in the query string, so a view can be bookmarked. `FleetList` builds the list in two queries whatever the fleet size; retired hosts are never listed or counted.
+- **Compliance** (`/compliance`, P2-D05): fleet-wide open CIS-aligned check failures and open vulnerability findings by severity, then every active host with its pass rate and its counts by severity; search, tag, status, and severity filters, sort, and page live in the query string. Hosts that are not evaluated say so and why, never zero. `FleetCompliance` counts everything in the database in a fixed number of queries; the fleet list shows the same counts in a summary panel and two columns.
 - **Host detail** (`/hosts/:id`): current inventory (unreadable facts show "Not available" with the agent's warning), inventory history with the changed fields (`InventoryDiff`), enrollment and credential state, status history, and the host's audit entries. Operator actions arrive with P1-DASH-ACTIONS.
 - **Audit log** (`/audit`, P1-AUDIT-PAGE): every audit entry, newest first, read-only. Filters (actor type and actor, action, target host, date range in whole UTC days, and "hide sign-ins") and the page position live in the query string. Pages are keyset ranges on `(occurred_at, id)`, 50 entries each, with a readable cursor (`before=2026-10-14T10:02:31.482113Z,4127`), so a page costs the same however long the log grows. `AuditLog` builds the query; the host page's "All entries for this host" link filters by host id. Onboarding approvals and rejections target the request; the log links a request to its host through the host's "Enrolled" entry and a re-enrollment approval's `host_id` (requests are pruned, the log is not), using two small partial indexes.
 - **Settings** (`/settings`): the liveness thresholds.
+- **Data sources** (`/data-sources`, P2-D06): advisory data freshness, the scheduled feed and "Refresh now", advisory file uploads, and recent imports ("Advisory data", above).
 - **Agents** (`/agents`, P1-RELEASES): imported releases, which key signed each, and how many hosts in the fleet run it; imports from GitHub and by upload (below). Rollouts join this page with P1-UPDATES.
 - **Install an agent** (`/agents/install`, P1-D08): the exact commands for the newest imported release that is not a pre-release (or `?version=`): download from the agent hostname, check the SHA-256, run `fleet-agent install`, then approve; and the pre-registered-token and cloud-init variants. Every URL and checksum on the page comes from the one release shown. A pre-registered host's token page shows the same download and check.
 - **Host actions** (P1-D04): pre-register (the one-time token and install commands appear only in the response to that POST, marked `no-store`), edit, and, each behind a confirmation page and a CSRF-protected POST: revoke, re-enroll (instructions for `fleet-agent install --reenroll`, or a new one-time token), and retire (the hostname must be typed).
@@ -226,7 +367,7 @@ Settings and their defaults: [docs/operations/configuration.md](../docs/operatio
 
 ### Docker image
 
-The image needs the schemas too, so build it from `cmdb/` with `docs/api` as a named build context (`../compose.yaml` does this):
+The image needs the agent API schemas and the rule file schema too, so build it from `cmdb/` with `docs/api` as a named build context (`../compose.yaml` does this):
 
 ```sh
 docker build --build-context api=../docs/api -t cmdb .

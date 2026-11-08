@@ -1,0 +1,260 @@
+{
+  "format_version": 1,
+  "rules": [
+    {
+      "key": "ssh-root-login-off",
+      "reference": "CIS Debian 13 5.1.20 (pointer only)",
+      "title": "Example rule ssh-root-login-off",
+      "severity": "high",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "sshd.permitrootlogin",
+      "condition": {
+        "eq": "no"
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "ssh-forwarding-not-yes",
+      "reference": "Example only",
+      "title": "Example rule ssh-forwarding-not-yes",
+      "severity": "low",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "sshd.allowtcpforwarding",
+      "condition": {
+        "ne": "yes"
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "ssh-log-level",
+      "reference": "Example only",
+      "title": "Example rule ssh-log-level",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "sshd.loglevel",
+      "condition": {
+        "in": [
+          "INFO",
+          "VERBOSE"
+        ]
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "no-telnet-running",
+      "reference": "Example only",
+      "title": "Example rule no-telnet-running",
+      "severity": "critical",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "services.running",
+      "condition": {
+        "not_in": [
+          "telnet.socket",
+          "rsh.socket"
+        ]
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "login-banner-file",
+      "reference": "Example only",
+      "title": "Example rule ssh-banner-set",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "file:/etc/issue.net",
+      "condition": {
+        "present": true
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "no-rsh-unit",
+      "reference": "Example only",
+      "title": "Example rule no-rsh-unit",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "service:rsh.socket",
+      "condition": {
+        "absent": true
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "ssh-max-auth-tries",
+      "reference": "Example only",
+      "title": "Example rule ssh-max-auth-tries",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "sshd.maxauthtries",
+      "condition": {
+        "all": [
+          {
+            "gte": 1
+          },
+          {
+            "lte": 4
+          }
+        ]
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "ssh-ciphers-modern",
+      "reference": "Example only",
+      "title": "Example rule ssh-ciphers-modern",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "sshd.ciphers",
+      "condition": {
+        "matches": "(chacha20-poly1305|aes(128|192|256)-(gcm|ctr))(@openssh\\.com)?"
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "shadow-mode",
+      "reference": "Example only",
+      "title": "Example rule shadow-mode",
+      "severity": "high",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "file:/etc/shadow",
+      "condition": {
+        "all": [
+          {
+            "mode_at_most": "0640"
+          },
+          {
+            "field": "owner",
+            "eq": "root"
+          },
+          {
+            "field": "group",
+            "in": [
+              "root",
+              "shadow"
+            ]
+          }
+        ]
+      },
+      "remediation": "Example remediation."
+    },
+    {
+      "key": "timesync-running",
+      "reference": "Example only",
+      "title": "Example rule timesync-running",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "12",
+            "13"
+          ]
+        },
+        {
+          "distribution": "ubuntu"
+        }
+      ],
+      "fact": "service:chrony.service",
+      "condition": {
+        "any": [
+          {
+            "field": "active",
+            "eq": "active"
+          },
+          {
+            "not": {
+              "absent": true
+            }
+          }
+        ]
+      },
+      "remediation": "Example remediation.",
+      "enabled": false
+    },
+    {
+      "key": "ciphers-exact",
+      "reference": "Example only",
+      "title": "Example rule ciphers-exact",
+      "severity": "medium",
+      "applies_to": [
+        {
+          "distribution": "debian",
+          "versions": [
+            "13"
+          ]
+        }
+      ],
+      "fact": "sshd.ciphers",
+      "condition": {
+        "eq": [
+          "chacha20-poly1305@openssh.com",
+          "aes256-gcm@openssh.com"
+        ]
+      },
+      "remediation": "Example remediation."
+    }
+  ]
+}

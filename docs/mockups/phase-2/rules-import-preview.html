@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import preview · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rules-import.html">&larr; Import rules file</a></p>
+<div class="page-head"><div><h1>Preview: <span class="mono" style="font-size:1.375rem">rules-2026-11.yml</span></h1><p>3.4 KiB, format version 1, 36 rules. Checksum <span class="mono">EXAMPLE0F3A9C21</span>. Nothing has been written yet.</p></div></div>
+<div class="notice info" role="status"><strong>The file is valid: 2 to add, 3 to change, 1 to enable, 33 unchanged.</strong><p>After 42 rules in total, every host's latest config snapshot is checked again against the added and changed rules. No agent is contacted.</p></div>
+<div class="verdict-group"><h3>Added <span class="muted" style="font-weight:400">2</span></h3></div>
+<div class="table-wrap"><table><caption class="visually-hidden">Rules that would be added</caption><thead><tr><th scope="col">Rule</th><th scope="col">Severity</th><th scope="col">Applies to</th><th scope="col">Fact and expected value</th><th scope="col">Enabled</th></tr></thead><tbody>
+<tr><td><span class="v-added">+ Add</span> <span class="mono">ssh-ignore-rhosts</span><span class="ref">SSH ignores per-user trust files · CIS Debian 13 5.1.9</span></td><td><span class="sev medium">Medium</span></td><td>debian 13</td><td><span class="mono">sshd.ignorerhosts</span><span class="state-note">equals <span class="val">true</span></span></td><td>Yes</td></tr>
+<tr><td><span class="v-added">+ Add</span> <span class="mono">no-extra-uid0</span><span class="ref">Only root has user ID 0 · CIS Debian 13 5.4.2.1</span></td><td><span class="sev critical">Critical</span></td><td>debian 13</td><td><span class="mono">users.uid0</span><span class="state-note">equals <span class="val">"root"</span></span></td><td>Yes</td></tr>
+</tbody></table></div>
+<div class="verdict-group"><h3>Changed <span class="muted" style="font-weight:400">3, each becomes a new version</span></h3></div>
+<div class="table-wrap"><table><caption class="visually-hidden">Rules that would change</caption><thead><tr><th scope="col">Rule</th><th scope="col">What changes</th><th scope="col">Version</th></tr></thead><tbody>
+<tr><td><span class="v-changed">~ Change</span> <span class="mono">ssh-max-auth-tries</span></td><td><ul class="change-list"><li>Condition <del class="mono">lte: 4</del> <ins class="mono">lte: 3</ins></li></ul></td><td>2 &rarr; 3</td></tr>
+<tr><td><span class="v-changed">~ Change</span> <span class="mono">password-max-age</span></td><td><ul class="change-list"><li>Severity <del>medium</del> <ins>high</ins></li><li>Remediation <del>Set PASS_MAX_DAYS to 365 or lower…</del> <ins>Set PASS_MAX_DAYS to 90 or lower…</ins></li><li>Condition <del class="mono">lte: 365</del> <ins class="mono">lte: 90</ins></li></ul></td><td>1 &rarr; 2</td></tr>
+<tr><td><span class="v-changed">~ Change</span> <span class="mono">shadow-file-mode</span></td><td><ul class="change-list"><li>Title <del>The password hash file is not world readable</del> <ins>The password hash file is not readable by everyone</ins></li></ul></td><td>2 &rarr; 3</td></tr>
+</tbody></table></div>
+<div class="verdict-group"><h3>Enabled or disabled <span class="muted" style="font-weight:400">1</span></h3></div>
+<div class="table-wrap"><table><caption class="visually-hidden">Rules whose enabled flag would change</caption><thead><tr><th scope="col">Rule</th><th scope="col">Change</th></tr></thead><tbody>
+<tr><td><span class="v-changed">~ Enable</span> <span class="mono">ssh-strong-ciphers</span></td><td>Enabled <del>no</del> <ins>yes</ins> <span class="muted">(the file says <code>enabled: true</code>). No new version.</span></td></tr>
+</tbody></table></div>
+<div class="verdict-group"><h3>Unchanged <span class="muted" style="font-weight:400">33</span></h3></div>
+<details class="fix"><summary>Show the 33 rules the file lists unchanged</summary><p class="mono" style="overflow-wrap:anywhere">ssh-root-login-off, ssh-password-auth-off, ssh-empty-passwords-off, ssh-x11-forwarding-off, ssh-log-level, password-min-length, password-min-classes, firewall-enabled, auto-updates-enabled, no-telnet-running, ubuntu-crash-reports-off, and 22 more</p></details>
+<div class="verdict-group"><h3>Not listed in the file <span class="muted" style="font-weight:400">3</span></h3></div>
+<p class="muted" style="margin-top:0">These 3 rules are left as they are, because "Disable rules this file does not list" was off: <span class="mono">login-banner-set</span>, <span class="mono">core-dumps-restricted</span>, <span class="mono">time-sync-running</span>. <a href="rules-import.html">Start again with the option on</a> to disable them.</p>
+<form class="actions" action="rules.html" method="get" style="margin-top:1.5rem"><button class="btn" type="submit">Apply import</button><a class="btn quiet" href="rules-import.html">Cancel</a></form>
+<p class="muted" style="font-size:.875rem">Applying records one audit entry for each rule added, changed, or enabled, with you as the actor. The file is discarded after applying or after 15 minutes.</p>
+<p class="note">The preview uses the same checks as the real import, so a file that previews as valid applies as previewed. Unchanged means identical to the current version whatever the order of its keys. The words Add, Change, and Enable carry the meaning, with symbols; colour is only a second cue.</p>
+</main>
+</body>
+</html>

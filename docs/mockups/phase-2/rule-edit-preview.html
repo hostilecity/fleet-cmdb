@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preview: ssh-max-auth-tries · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rule-edit.html">&larr; Edit rule</a></p>
+<div class="page-head"><div><h1>Preview: <span class="mono" style="font-size:1.375rem">ssh-max-auth-tries</span></h1><p>Version 3 would replace version 2. Nothing has been saved yet.</p></div></div>
+<div class="notice info" role="status"><strong>3 of 41 hosts would change result: 2 pass &rarr; fail, 1 fail &rarr; pass.</strong><p>Calculated now from each host's latest config snapshot; 1 host has no config report and 2 hosts are not Debian 13, so the rule does not apply to them. No agent is contacted.</p></div>
+<div class="verdict-group"><h3>Would change <span class="muted" style="font-weight:400">3</span></h3></div>
+<div class="table-wrap"><table><caption class="visually-hidden">Hosts whose result would change</caption><thead><tr><th scope="col">Host</th><th scope="col">Observed</th><th scope="col">Now (version 2, at most 4)</th><th scope="col">After (version 3, at most 3)</th></tr></thead><tbody>
+<tr><td><a href="host-config.html">web-01</a></td><td><span class="val">4</span></td><td><span class="lamp online">Pass</span></td><td><span class="lamp fail">Fail</span></td></tr>
+<tr><td><a href="host-config.html">web-02</a></td><td><span class="val">4</span></td><td><span class="lamp online">Pass</span></td><td><span class="lamp fail">Fail</span></td></tr>
+<tr><td><a href="host-config.html">db-01</a></td><td><span class="val">6</span></td><td><span class="lamp fail">Fail</span></td><td><span class="lamp online">Pass</span></td></tr>
+</tbody></table></div>
+<p class="muted">The change from fail to pass on db-01 is only because the condition changed; its observed value, 6, is the same. The other 38 hosts keep their result.</p>
+<p class="muted">An edit to <em>Applies to</em> that drops a host which passes, fails, or is not readable now is listed here too, with <span class="lamp na">Not applicable</span> after, so you see which hosts the rule would stop checking. Saving an unchanged rule shows &ldquo;No change: saving makes no new version.&rdquo; instead of this table.</p>
+<form class="actions" action="rule.html" method="get" style="margin-top:1.5rem"><button class="btn" type="submit">Save as version 3</button><a class="btn quiet" href="rule-edit.html">Back to editing</a></form>
+<p class="muted" style="font-size:.875rem">Saving checks again against the rule as it is then. If the rule or a host's snapshot changed since this preview, the results may differ from what is shown. Saving records one audit entry with you as the actor and the before and after values.</p>
+<p class="note">Review note: the preview needs a server-side dry run, which evaluates the edited rule on each host's latest snapshot and writes nothing. It is a small addition to P2-S06 and is in the spec (P2-S14). Decided on #126: hosts that drop out to not applicable are listed; an unchanged rule previews as no change.</p>
+</main>
+</body>
+</html>

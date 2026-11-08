@@ -31,10 +31,13 @@ class Host < ApplicationRecord
   has_many :agent_credentials, dependent: :restrict_with_exception
   has_many :status_events, class_name: "HostStatusEvent", dependent: :restrict_with_exception
   has_one :inventory, class_name: "HostInventory", dependent: :restrict_with_exception
+  has_one :host_config, dependent: :restrict_with_exception
+  has_many :config_snapshots, dependent: :restrict_with_exception
   has_many :inventory_snapshots, dependent: :restrict_with_exception
   has_many :enrollment_tokens, dependent: :restrict_with_exception
   has_many :rollout_hosts, dependent: :restrict_with_exception
   has_many :agent_updates, dependent: :restrict_with_exception
+  has_many :report_requests, dependent: :restrict_with_exception
 
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
   validates :hostname, presence: true, length: { maximum: 253 }, format: { with: HOSTNAME_FORMAT, allow_blank: true }

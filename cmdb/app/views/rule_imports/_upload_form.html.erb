@@ -1,0 +1,15 @@
+<%# The upload form (rules-import.html); full: with the hints and the "what happens next" note. %>
+<%= form_with url: import_rules_path, method: :post, multipart: true, class: "form wide", id: "import_form", data: { turbo: false } do %>
+  <div class="field<%= " invalid" if local_assigns[:error] %>">
+    <label for="file">Rules file</label>
+    <%= file_field_tag :file, id: "file", accept: ".yml,.yaml,.json", "aria-describedby": [ ("file_error" if local_assigns[:error]), ("file_hint" if full) ].compact.join(" ").presence,
+                       "aria-invalid": (local_assigns[:error] ? "true" : nil) %>
+    <% if full %><p class="hint" id="file_hint">YAML or JSON, format version <%= CisRules::FORMAT_VERSION %>, at most <%= CisRules::RuleFile::MAX_BYTES / 1.megabyte %> MiB. The format is described in <code>docs/api/rules/README.md</code>.</p><% end %>
+    <% if local_assigns[:error] %><p class="error-text" id="file_error"><%= error %></p><% end %>
+  </div>
+  <div class="field"><label class="choice plain"><%= check_box_tag :disable_missing, "1", false, id: "disable_missing" %> <strong>Disable rules this file does not list</strong><% if full %><p>Off by default. Rules missing from the file stay as they are. Turn it on when the file is the complete list you want enabled.</p><% end %></label></div>
+  <% if full %>
+    <div class="notice info" role="note"><strong>What happens next</strong><p>The whole file is checked first. If every rule is valid you see what would be added, changed, and left alone, and you can apply it or cancel. If anything is wrong, nothing is imported and every problem is listed. The file is kept for <%= RuleImportPreview::TTL.in_minutes.to_i %> minutes so that applying it applies exactly what you previewed.</p></div>
+  <% end %>
+  <div class="actions"><button class="btn" type="submit">Check file and preview</button><% if full %><%= link_to "Cancel", rules_path, class: "btn quiet" %><% end %></div>
+<% end %>

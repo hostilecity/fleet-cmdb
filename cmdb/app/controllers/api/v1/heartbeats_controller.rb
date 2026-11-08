@@ -9,7 +9,9 @@ module Api
     # The response carries the directives (DEC-20, P1-UPDATES): the intervals the operator set, and the
     # agent_update directive for a host in an open rollout stage that runs an older version. Heartbeats are
     # exempt from the minimum agent version, so an agent that is too old for the other endpoints still learns
-    # of the release that updates it (FR-S.5). A host with nothing pending costs two extra SELECTs, no writes.
+    # of the release that updates it (FR-S.5). The report_request directive lists the report types an operator
+    # asked for that no report has answered yet (P2-S03, ReportRequests). A host with nothing pending costs
+    # three extra SELECTs, no writes.
     class HeartbeatsController < AuthenticatedController
       self.max_body_bytes = 4.kilobytes
       self.records_credential_use = false
@@ -20,19 +22,21 @@ module Api
       atomic :create
 
       def create
+        agent_time = Time.iso8601(payload["agent_time"])
         recorded_at = Liveness.record_heartbeat!(host_id: current_host.id, credential_id: current_credential.id,
                                                  agent_version: payload["agent_version"], agent_schema_version: payload["schema_version"],
-                                                 agent_time: Time.iso8601(payload["agent_time"]))
-        render json: { server_time: recorded_at.utc.iso8601, directives: directives(recorded_at) }
+                                                 agent_time:)
+        render json: { server_time: recorded_at.utc.iso8601, directives: directives(recorded_at, agent_time) }
       end
 
       private
 
       # Named entries in an object (DEC-20); a directive with nothing to say is left out.
-      def directives(now)
+      def directives(now, agent_time)
         intervals = Setting.agent_intervals
         update = Rollouts.directive_for(host_id: current_host.id, agent_version: payload["agent_version"], now:)
-        { intervals: intervals.presence, agent_update: update }.compact
+        report_request = ReportRequests.directive_for(host_id: current_host.id, agent_time:, now:)
+        { intervals: intervals.presence, agent_update: update, report_request: }.compact
       end
     end
   end

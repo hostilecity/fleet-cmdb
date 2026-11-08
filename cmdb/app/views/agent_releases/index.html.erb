@@ -1,7 +1,12 @@
 <% content_for :title, "Agents" %>
 <%= turbo_refreshes_with method: :morph, scroll: :preserve %>
 <%= turbo_stream_from FleetBroadcast::STREAM, id: "fleet_stream", data: { turbo_permanent: true } %>
-<div class="page-head"><div><h1>Agents</h1><p>Signed releases and the version each host runs. Agents only install releases signed by the release key, and never move to an older version.</p></div><%= link_to "Install an agent", agent_install_path, class: "btn" %></div>
+<div class="page-head"><div><h1>Agents</h1><p>Signed releases, the version each host runs, and rollouts. Agents only install releases signed by the release key, and never move to an older version.</p></div><%= link_to "Install an agent", agent_install_path, class: "btn" %></div>
+
+<% if @rollout %>
+  <%= render "rollouts/rollout", rollout: @rollout, stage_counts: @stage_counts, hosts: @rollout_hosts, total: @rollout_host_total,
+             canary_names: @canary_names, reasons: @update_reasons %>
+<% end %>
 
 <h2>Releases</h2>
 <% if @keys.empty? %>
@@ -64,3 +69,8 @@
   </tbody></table></div>
 <% end %>
 <p class="muted">Every import, refusal, and failure is in the <%= link_to "audit log", audit_path %>.</p>
+
+<h2>Start a rollout</h2>
+<%= render "rollouts/start_form", rollout: @rollout, releases: @releases, start: @start, errors: @errors, canary_tags: @canary_tags,
+           canary_choices: @canary_choices, active_total: @active_total %>
+<p class="muted" id="rollout_rules">Progress updates live. A stage moves on when all its hosts confirm; any failure, rollback, or missing confirmation halts the whole rollout until an operator resumes it. "Confirmed" means the new version completed a heartbeat; until then the agent can still roll back to the version it ran before.</p>

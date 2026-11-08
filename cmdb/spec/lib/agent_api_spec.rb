@@ -51,6 +51,12 @@ RSpec.describe AgentApi::Schema do
     expect(described_class.undeclared_pointers("inventory.request", 1, data)).to eq([ "/extra", "/os/codename", "/disks/0/inode~1s" ])
   end
 
+  it "finds undeclared keys inside the entries of an object keyed by data, but not the data keys themselves" do
+    data = { "facts" => { "sshd.permitrootlogin" => { "state" => "ok", "value" => "no", "reason" => nil, "source" => "sshd -T" },
+                          "sshd.someday" => { "state" => "ok", "value" => "yes", "reason" => nil } } }
+    expect(described_class.undeclared_pointers("config.request", 1, data)).to eq([ "/facts/sshd.permitrootlogin/source" ])
+  end
+
   it "reports problems without echoing values" do
     errors = described_class.errors("enroll.request", 1, { "token" => "EXAMPLE-sensitive-value" })
     expect(errors).to include(a_hash_including("pointer" => "/token"))

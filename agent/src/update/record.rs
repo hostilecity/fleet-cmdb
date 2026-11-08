@@ -59,6 +59,22 @@ pub struct Record {
     /// during the update, and an update the VM restarted under is never confirmed (ADR 0018).
     #[serde(default)]
     pub boot_id: Option<String>,
+    /// Where `previous` pointed before the switch moved it to `from_version`, so a rollback can put it
+    /// back and the version it returns to keeps its own rollback target (ADR 0018: two versions kept).
+    /// Set once, as the switch starts. `None` in a record from an agent that did not keep it; a rollback
+    /// then leaves `previous` as the switch set it.
+    #[serde(default)]
+    pub previous_before: Option<PreviousLink>,
+}
+
+/// What `previous` was before a switch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviousLink {
+    /// There was no `previous` (the first update after an install).
+    Missing,
+    /// It pointed to this version.
+    Version(String),
 }
 
 impl Record {
@@ -211,6 +227,7 @@ pub(crate) mod tests {
             restarted: false,
             rollback_reason: None,
             boot_id: Some("boot-1".into()),
+            previous_before: None,
         }
     }
 
@@ -235,6 +252,21 @@ pub(crate) mod tests {
         let dir = TempDir::new();
         std::fs::write(dir.path(RECORD_FILE), "{not json").unwrap();
         assert!(Record::read(dir.root()).is_err());
+    }
+
+    #[test]
+    fn a_record_from_an_agent_that_did_not_keep_previous_still_reads() {
+        let dir = TempDir::new();
+        let mut json = serde_json::to_value(record()).unwrap();
+        json.as_object_mut().unwrap().remove("previous_before");
+        std::fs::write(dir.path(RECORD_FILE), json.to_string()).unwrap();
+        let read = Record::read(&dir.path("")).unwrap().unwrap();
+        assert_eq!(read.previous_before, None);
+
+        let mut kept = record();
+        kept.previous_before = Some(PreviousLink::Version("0.1.0".into()));
+        kept.write(&dir.path("")).unwrap();
+        assert_eq!(Record::read(&dir.path("")).unwrap().unwrap(), kept);
     }
 
     #[test]

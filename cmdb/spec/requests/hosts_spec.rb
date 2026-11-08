@@ -31,7 +31,8 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         travel_to(media.reload.last_seen_at) { get "/" }
         row = page.at_css("tr#row_host_#{media.id}")
         expect(row.css("td").map { |td| td.text.squish }).to eq(
-          [ "Media server", "Online", "less than 5 seconds ago", media.hostname, "media", "Debian GNU/Linux 13 (trixie)", "0.1.0" ]
+          [ "Media server", "Online", "less than 5 seconds ago", media.hostname, "media", "Debian GNU/Linux 13 (trixie)",
+            "Not evaluated: no rules are defined", "Not evaluated: no package report yet", "0.1.0" ]
         )
         expect(row_names).to eq([ "Lab sandbox", "Media server" ])
         expect(response.body).not_to include("Retired box")
@@ -56,9 +57,9 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(Rack::Utils.parse_query(URI(name_link).query)).to eq("q" => "server", "tag" => "media", "status" => "online", "sort" => "name", "dir" => "asc")
       end
 
-      it "explains when nothing matches, with a way back" do
-        get "/", params: { q: "vm-99", tag: "media" }
-        expect(page.at_css(".empty strong").text).to eq(%(No hosts match "vm-99" with tag "media".))
+      it "explains when nothing matches, with a way back" do # not "vm-99": factory hostnames are vm-N, so that matched once the sequence passed 99
+        get "/", params: { q: "no-such-host", tag: "media" }
+        expect(page.at_css(".empty strong").text).to eq(%(No hosts match "no-such-host" with tag "media".))
         expect(page.at_css(".empty a")["href"]).to eq("/")
       end
 
@@ -66,6 +67,84 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         get "/"
         expect(page.css("#fleet_counts a").map { |a| a["href"] }).to eq(%w[online stale offline awaiting pending revoked].map { |s| "/?status=#{s}" })
       end
+    end
+
+    # The compliance panel and the CIS pass rate and open vulnerabilities columns (P2-D05, owner decision Q8).
+    context "with compliance results" do
+      let!(:rules) { compliance_rules(2).values.flatten }
+      let!(:media) { enrolled_host(name: "Media server").first }
+      let!(:web) { enrolled_host(name: "Web A").first }
+      let!(:backup) { enrolled_host(name: "Backup target").first }
+      let!(:dns) { enrolled_host(name: "DNS resolver").first }
+      let!(:pending) { create(:host, name: "Lab sandbox") }
+
+      # Each cell's text with the link and the detail line apart; the screen-reader reason follows "Not evaluated" as it reads.
+      def cells(host) = page.css("tr#row_host_#{host.id} td").map { |td| td.xpath(".//text()").map(&:text).join(" ").squish.gsub(" :", ":") }
+
+      before do
+        failing = %w[high-0 medium-0 low-0]
+        cis_results!(media, rules.to_h { |r| [ r, failing.include?(r.key) ? "fail" : "pass" ] })
+        cis_results!(web, rules.to_h { |r| [ r, r.key == "critical-0" ? "fail" : "pass" ] })
+        cis_results!(backup, rules.to_h { |r| [ r, "pass" ] })
+        [ media, web, backup ].each { |h| host_config!(h) && package_set!(h) && vulns_evaluated!(h) }
+        findings!(media, "high", "medium")
+        findings!(web, "critical", "low", "low")
+        findings!(dns, "high", state: "resolved")
+      end
+
+      it "sums up open CIS-aligned failures and vulnerability findings, linking to the Compliance view" do
+        get "/"
+        panel = page.at_css("#compliance_summary")
+        expect(panel.at_css("a")["href"]).to eq("/compliance")
+        expect(panel.at_css("p").text.squish).to eq(
+          "4 open CIS-aligned check failures (1 critical, 1 high) on 3 of 4 hosts evaluated. 5 open vulnerability findings (1 critical, 1 high) on 3 of 4 hosts evaluated."
+        )
+      end
+
+      it "shows each host's pass rate and open findings, linked to its tabs; not evaluated and not tracked are words, never zero" do
+        get "/"
+        expect(cells(media)[6..7]).to eq([ "62.5% 3 failing, 1 high", "2 open 1 high" ])
+        expect(cells(web)[6..7]).to eq([ "87.5% 1 failing, 1 critical", "3 open 1 critical" ])
+        expect(cells(backup)[6..7]).to eq([ "100% None failing", "None open" ])
+        expect(cells(dns)[6..7]).to eq([ "Not evaluated: no config report yet", "Not evaluated: no inventory yet, so the distribution is not known" ])
+        expect(cells(pending)[6..7]).to eq([ "Not tracked", "Not tracked" ])
+        expect(page.at_css("tr#row_host_#{media.id} td:nth-child(7) a")["href"]).to eq("/hosts/#{media.id}/config#results")
+        expect(page.at_css("tr#row_host_#{media.id} td:nth-child(8) a")["href"]).to eq("/hosts/#{media.id}/vulnerabilities")
+        expect(page.css("tr#row_host_#{dns.id} .not-eval").size).to eq(2)
+        expect(page.css("tr#row_host_#{backup.id} .none-open").size).to eq(2)
+      end
+
+      it "sorts by pass rate and by open vulnerabilities, with hosts that are not evaluated or not tracked last" do
+        get "/", params: { sort: "cis" }
+        expect(row_names).to eq([ "Media server", "Web A", "Backup target", "DNS resolver", "Lab sandbox" ])
+        expect(page.at_css("th[aria-sort=ascending]").text).to eq("CIS pass rate")
+        expect(page.at_css("caption").text).to eq("Hosts, CIS pass rate ascending")
+        get "/", params: { sort: "cis", dir: "desc" }
+        expect(row_names).to eq([ "Backup target", "Web A", "Media server", "DNS resolver", "Lab sandbox" ])
+        get "/", params: { sort: "vulns", dir: "desc" }
+        expect(row_names).to eq([ "Web A", "Media server", "Backup target", "DNS resolver", "Lab sandbox" ])
+        expect(page.at_css("caption").text).to eq("Hosts, open vulnerabilities descending")
+      end
+
+      it "says when nothing is evaluated yet instead of counting zero" do
+        CisResult.delete_all
+        HostVulnerabilityEvaluation.delete_all
+        VulnerabilityFinding.delete_all
+        get "/"
+        expect(page.at_css("#compliance_summary p").text.squish).to eq(
+          "CIS-aligned checks are not evaluated on any of the 4 active hosts: none has a pass, fail, or not readable result. " \
+          "Vulnerabilities are not evaluated on any of the 4 active hosts now."
+        )
+      end
+    end
+
+    it "shows no compliance panel without active hosts, and says when no rules are defined" do
+      create(:host, name: "Lab sandbox")
+      get "/"
+      expect(page.at_css("#compliance_summary")).to be_nil
+      enrolled_host
+      get "/"
+      expect(page.at_css("#compliance_summary p").text.squish).to start_with("CIS-aligned checks are not evaluated: no rules are defined.")
     end
 
     it "escapes operator- and agent-supplied text (P1-S12)" do

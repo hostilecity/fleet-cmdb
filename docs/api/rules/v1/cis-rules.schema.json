@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fleet-cmdb.invalid/rules/v1/cis-rules.schema.json",
+  "title": "CIS-aligned rule file",
+  "description": "A file of CIS-aligned rules the server evaluates against config snapshots (FR-2.2, DEC-12). Written in YAML or JSON. Rules are data: there is no code, only the closed set of operators below.",
+  "type": "object",
+  "required": [
+    "format_version",
+    "rules"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": {
+      "description": "The rule file format. This schema is format 1.",
+      "const": 1
+    },
+    "rules": {
+      "description": "The rules. A key appears once.",
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "reference",
+        "title",
+        "severity",
+        "applies_to",
+        "fact",
+        "condition",
+        "remediation"
+      ],
+      "properties": {
+        "key": {
+          "description": "The rule's stable identifier: lower-case letters, digits, and hyphens. Never reused for another rule.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "reference": {
+          "description": "Where the rule comes from, as a pointer only (for example a CIS section number); no benchmark text (DEC-10).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "description": "What the rule checks, in our own words.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "severity": {
+          "description": "How much a failure matters.",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "applies_to": {
+          "description": "The operating systems the rule applies to; any other host is not applicable.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/platform"
+          }
+        },
+        "fact": {
+          "description": "The config fact the rule inspects, a key from the fact manifest (GET /api/v1/manifest/config).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 220
+        },
+        "condition": {
+          "$ref": "#/$defs/condition"
+        },
+        "remediation": {
+          "description": "How to fix a failure, in our own words.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "enabled": {
+          "description": "Whether the rule is evaluated. Defaults to true.",
+          "type": "boolean"
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distribution"
+      ],
+      "properties": {
+        "distribution": {
+          "description": "The os-release ID, for example debian.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "versions": {
+          "description": "os-release VERSION_ID values, for example \"13\". Omitted: every release. A host that reports no VERSION_ID matches only when this is omitted.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._~-]{1,64}$"
+          }
+        }
+      }
+    },
+    "condition": {
+      "description": "Exactly one operator, or one combinator. `field` picks a part of a file (`mode`, `owner`, `group`) or service (`active`, `enabled`) value.",
+      "type": "object",
+      "properties": {
+        "eq": {
+          "description": "Equal to the operand: a string, integer, or boolean, or for a list fact a list of strings (compared ignoring order unless the list is ordered).",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ],
+              "maxLength": 1024
+            },
+            {
+              "$ref": "#/$defs/string_list"
+            }
+          ]
+        },
+        "ne": {
+          "description": "Not equal to the operand (a part of a missing file or unit is not equal).",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ],
+              "maxLength": 1024
+            },
+            {
+              "$ref": "#/$defs/string_list"
+            }
+          ]
+        },
+        "in": {
+          "description": "One of the listed values. For a list fact: every entry is one of them.",
+          "$ref": "#/$defs/scalar_list"
+        },
+        "not_in": {
+          "description": "None of the listed values. For a list fact: no entry is one of them (a part of a missing file or unit passes).",
+          "$ref": "#/$defs/scalar_list"
+        },
+        "present": {
+          "description": "For a file or service fact: the file or unit exists. The operand is always true.",
+          "const": true
+        },
+        "absent": {
+          "description": "For a file or service fact: the file or unit does not exist. The operand is always true.",
+          "const": true
+        },
+        "gte": {
+          "description": "An integer at least the operand.",
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "lte": {
+          "description": "An integer at most the operand.",
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "matches": {
+          "description": "Matches the regular expression as a whole (it is anchored at both ends, and time-limited). For a list fact: every entry matches.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "mode_at_most": {
+          "description": "For a file: its mode grants no permission the operand does not (for example 0640 allows 0600 and 0640, not 0644).",
+          "type": "string",
+          "pattern": "^[0-7]{3,4}$"
+        },
+        "field": {
+          "description": "For a file or service fact: the part of the value the operator tests.",
+          "type": "string",
+          "enum": [
+            "mode",
+            "owner",
+            "group",
+            "active",
+            "enabled"
+          ]
+        },
+        "all": {
+          "description": "Passes when every condition passes.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "any": {
+          "description": "Passes when at least one condition passes.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "not": {
+          "description": "Passes when the condition fails.",
+          "$ref": "#/$defs/condition"
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 2,
+      "oneOf": [
+        {
+          "required": [
+            "eq"
+          ]
+        },
+        {
+          "required": [
+            "ne"
+          ]
+        },
+        {
+          "required": [
+            "in"
+          ]
+        },
+        {
+          "required": [
+            "not_in"
+          ]
+        },
+        {
+          "required": [
+            "present"
+          ]
+        },
+        {
+          "required": [
+            "absent"
+          ]
+        },
+        {
+          "required": [
+            "gte"
+          ]
+        },
+        {
+          "required": [
+            "lte"
+          ]
+        },
+        {
+          "required": [
+            "matches"
+          ]
+        },
+        {
+          "required": [
+            "mode_at_most"
+          ]
+        },
+        {
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "required": [
+            "not"
+          ]
+        }
+      ],
+      "dependentSchemas": {
+        "field": {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    "string_list": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "string",
+        "maxLength": 1024
+      }
+    },
+    "scalar_list": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "type": [
+          "string",
+          "integer",
+          "boolean"
+        ],
+        "maxLength": 1024
+      }
+    }
+  }
+}

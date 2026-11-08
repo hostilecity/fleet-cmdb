@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rule: ssh-max-auth-tries · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html" aria-current="page">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="rules.html">&larr; Rules</a></p>
+<div class="host-head">
+  <div>
+    <h1>SSH limits authentication attempts per connection</h1>
+    <div class="sub"><span class="mono">ssh-max-auth-tries</span><span>CIS Debian 13 5.1.18</span><span class="sev medium">Medium</span><span class="lamp online">Enabled</span><span><span class="badge">Version 2, current</span></span></div>
+  </div>
+  <div class="actions"><a class="btn" href="rule-edit.html">Edit</a><a class="btn quiet" href="dialogs.html#disable">Disable</a><a class="btn quiet" href="../phase-1/audit.html?action=rule.edited">Audit log</a></div>
+</div>
+<div class="columns">
+<div>
+  <section class="sheet" aria-labelledby="def">
+    <h2 id="def">Definition</h2>
+    <dl class="facts">
+      <dt>Key</dt><dd class="mono">ssh-max-auth-tries <span class="muted">(never changes, never reused)</span></dd>
+      <dt>Reference</dt><dd>CIS Debian 13 5.1.18 <span class="muted">(a pointer, not benchmark text)</span></dd>
+      <dt>Severity</dt><dd><span class="sev medium">Medium</span></dd>
+      <dt>Applies to</dt><dd>debian 13</dd>
+      <dt>Fact</dt><dd><span class="mono">sshd.maxauthtries</span> <span class="muted">(integer, 0 to 1000)</span></dd>
+      <dt>Expected value</dt><dd>At most <span class="val">4</span></dd>
+      <dt>Condition</dt><dd><pre class="code">lte: 4</pre></dd>
+      <dt>Remediation</dt><dd>Set MaxAuthTries to 4 or lower in /etc/ssh/sshd_config and reload ssh.</dd>
+    </dl>
+  </section>
+  <section aria-labelledby="results">
+    <h2 id="results">Results on hosts</h2>
+    <p class="muted" style="margin-top:0">Each result names the rule version and config snapshot that produced it.</p>
+<div class="table-wrap"><table><caption class="visually-hidden">Results of this rule on each host</caption><thead><tr><th scope="col">Host</th><th scope="col">Result</th><th scope="col">Observed</th><th scope="col">Rule version</th><th scope="col">Since (UTC)</th></tr></thead><tbody>
+<tr><td><a href="host-config.html">Media server</a></td><td><span class="lamp fail">Fail</span></td><td><span class="val">6</span></td><td><span class="badge">v2</span></td><td>2026-11-06 09:14</td></tr>
+<tr><td><a href="host-config.html">Web A</a></td><td><span class="lamp fail">Fail</span></td><td><span class="val">5</span></td><td><span class="badge">v2</span></td><td>2026-10-30 10:12</td></tr>
+<tr><td><a href="host-config.html">Build runner</a></td><td><span class="lamp online">Pass</span></td><td><span class="val">3</span></td><td><span class="badge">v2</span></td><td>2026-10-30 10:12</td></tr>
+<tr><td><a href="host-config.html">Backup target</a></td><td><span class="lamp online">Pass</span></td><td><span class="val">4</span></td><td><span class="badge">v2</span></td><td>2026-10-30 10:12</td></tr>
+<tr><td><a href="host-overview.html">DNS resolver</a></td><td><span class="lamp awaiting">Not evaluated</span></td><td><span class="reason-line">The host has not sent a config report.</span></td><td><span class="muted">—</span></td><td><span class="muted">—</span></td></tr>
+</tbody></table></div>
+  </section>
+  <section aria-labelledby="versions" id="versions">
+    <h2 id="versions">Versions</h2>
+    <p class="muted" style="margin-top:0">A rule is never edited in place. Each edit is a new, read-only version, and results keep pointing at the version that produced them.</p>
+<div class="table-wrap"><table><caption class="visually-hidden">Versions of this rule</caption><thead><tr><th scope="col">Version</th><th scope="col">Created (UTC)</th><th scope="col">By</th><th scope="col">Severity</th><th scope="col">Expected value</th><th scope="col"></th></tr></thead><tbody>
+<tr><td><span class="badge">v2</span> <span class="badge immutable">Current</span></td><td>2026-10-30 10:12</td><td>Example Operator</td><td><span class="sev medium">Medium</span></td><td>at most 4</td><td><a href="rule-version.html">View</a></td></tr>
+<tr><td><span class="badge old">v1</span></td><td>2026-10-20 09:00</td><td>Example Operator</td><td><span class="sev low">Low</span></td><td>at most 6</td><td><a href="rule-version.html">View</a></td></tr>
+</tbody></table></div>
+  </section>
+  <section aria-labelledby="log" id="log">
+    <h2 id="log">Change log</h2>
+    <p class="muted" style="margin-top:0">Who changed what, with before and after values. The same entries are in the <a href="../phase-1/audit.html?action=rule.edited">audit log</a>.</p>
+<div class="table-wrap"><table><caption class="visually-hidden">Change log of this rule</caption><thead><tr><th scope="col">When (UTC)</th><th scope="col">Who</th><th scope="col">Change</th><th scope="col">Before and after</th></tr></thead><tbody>
+<tr><td>2026-10-30 10:12</td><td>Example Operator</td><td>Edited, version 1 &rarr; 2</td><td><ul class="change-list"><li>Severity <del>low</del> <ins>medium</ins></li><li>Condition <del class="mono">lte: 6</del> <ins class="mono">lte: 4</ins></li></ul></td></tr>
+<tr><td>2026-10-26 15:02</td><td>Example Reviewer</td><td>Enabled</td><td><ul class="change-list"><li>Enabled <del>no</del> <ins>yes</ins></li></ul></td></tr>
+<tr><td>2026-10-25 11:40</td><td>Example Operator</td><td>Disabled</td><td><ul class="change-list"><li>Enabled <del>yes</del> <ins>no</ins></li></ul></td></tr>
+<tr><td>2026-10-20 09:00</td><td>Example Operator</td><td>Created from a rules file import, version 1</td><td><span class="muted">All fields set, enabled</span></td></tr>
+</tbody></table></div>
+  </section>
+</div>
+<div>
+  <section class="sheet" aria-labelledby="fact">
+    <h2 id="fact">The fact it checks</h2>
+    <dl class="facts">
+      <dt>Key</dt><dd class="mono">sshd.maxauthtries</dd>
+      <dt>Meaning</dt><dd>Authentication attempts allowed per connection.</dd>
+      <dt>Type</dt><dd>Integer, 0 to 1000</dd>
+      <dt>Used by</dt><dd>This rule only</dd>
+    </dl>
+  </section>
+  <section class="sheet" aria-labelledby="eff" style="margin-top:1rem">
+    <h2 id="eff">Fleet effect</h2>
+    <p style="margin-top:0">Fails on <strong>2</strong> of 4 evaluated hosts. 1 host has no config report yet.</p>
+    <p class="muted" style="margin-bottom:0">Editing the expected value or disabling the rule re-evaluates every host's latest snapshot at once. No agent is contacted.</p>
+  </section>
+</div>
+</div>
+<p class="note">Rule titles on other pages all link here: the mockup draws one rule as a stand-in. Names in the change log are the operator who acted. A file import is recorded as the operator who uploaded it.</p>
+</main>
+</body>
+</html>

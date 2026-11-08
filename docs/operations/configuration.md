@@ -42,7 +42,23 @@ Keep a copy of each with your other secrets, never in git or in the backup set (
 
 ### Outbound access
 
-Importing a release **from GitHub** needs outbound HTTPS from the server to `github.com` (`https://github.com/$FLEET_RELEASE_REPOSITORY/releases/download/agent-v<version>/…`) and to the host GitHub redirects release downloads to, currently `release-assets.githubusercontent.com` (formerly `objects.githubusercontent.com`). The GitHub API (`api.github.com`) is not used, and no token is needed. **Uploading** a release from the Agents page needs no outbound access at all. Besides that, the stack reaches Cloudflare (tunnel and DNS API), Let's Encrypt, and Docker Hub (when pulling images).
+Importing a release **from GitHub** needs outbound HTTPS from the server to `github.com` (`https://github.com/$FLEET_RELEASE_REPOSITORY/releases/download/agent-v<version>/…`) and to the host GitHub redirects release downloads to, currently `release-assets.githubusercontent.com` (formerly `objects.githubusercontent.com`). The GitHub API (`api.github.com`) is not used, and no token is needed. **Uploading** a release from the Agents page needs no outbound access at all. **Advisory data** needs outbound HTTPS to `storage.googleapis.com` (the default `FLEET_ADVISORY_FEED_URL`), or to your mirror; with the setting empty the server needs none, and archives are imported with `bin/rails advisories:import`. Besides that, the stack reaches Cloudflare (tunnel and DNS API), Let's Encrypt, and Docker Hub (when pulling images).
+
+## Advisory data
+
+The server downloads vulnerability advisories itself and matches them against the packages agents report; agents never fetch advisories. How the refresh, imports, and the withdrawal guard work: [cmdb/README.md](../../cmdb/README.md#advisory-data) and [health-and-jobs.md](health-and-jobs.md).
+
+| Setting | Default | |
+|---|---|---|
+| `FLEET_ADVISORY_FEED_URL` | `https://storage.googleapis.com/osv-vulnerabilities/Debian/all.zip` | The OSV archive the refresh downloads (Debian's covers every release; only `Debian:13` is kept). HTTPS only, or empty to turn the refresh off |
+| `FLEET_ADVISORY_FEED_TOKEN` | none | Sent as a bearer token, for a mirror that needs one; also read from credentials (`advisories.feed_token`). Never logged or shown |
+| `FLEET_ADVISORY_MAX_DOWNLOAD_MB` | `512` | The largest archive downloaded or imported |
+| `FLEET_ADVISORY_MAX_AGE_HOURS` | `48` | Older data shows a warning on the dashboard |
+| `FLEET_ADVISORY_WITHDRAW_SHARE` | `0.10` | A full import that would mark more than this share of an ecosystem's current advisories withdrawn is refused with the counts until an operator allows them. A decimal from 0 to 1; anything else stops the server at boot |
+| `FLEET_ADVISORY_WITHDRAW_MIN_RECORDS` | `1000` | A full import with fewer records than this for an ecosystem is refused if it would withdraw any of its advisories, until an operator allows them. A whole number, 0 or more |
+| `FLEET_ADVISORY_REFRESH_COOLDOWN` | `300` | Seconds after a refresh starts before the dashboard's "Refresh now" may start another. A whole number, at least 1: any other value stops the server at boot with an error naming the setting |
+
+The real OSV Debian archive measured 77.4 MiB zipped, 73,658 records, and 260.9 MiB of JSON (largest record 34.1 KiB) on 2026-11-07, well inside these limits; check again when another distribution's feed is added.
 
 ## Agent API and enrollment
 
@@ -103,4 +119,4 @@ Read by `compose.yaml` only.
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`; `PGUSER`, `PGPASSWORD` | *fixed*: `cmdb` and `$CMDB_DATABASE_PASSWORD` | Given to the database container (role created on first start) and to the restore drill (libpq) |
 | `DATABASE_URL`, `CACHE_DATABASE_URL`, `QUEUE_DATABASE_URL`, `CABLE_DATABASE_URL` | not set | Override a database's connection (the restore drill sets `DATABASE_URL` to its scratch database). Not used by the Compose deployment |
 
-Not settings: `SECRET_KEY_BASE_DUMMY` is used only while building the image, and `BUNDLE_GEMFILE` is set by the image; `WEB_CONCURRENCY` and `PIDFILE` (Puma) are not passed by `compose.yaml`; `CI` and `GITHUB_ACTIONS` affect only the test suite; and `EMAIL`, `DISPLAY_NAME`, `VM_HOSTNAME`, `TAGS`, `DESCRIPTION`, `HOST_ID`, `ONLINE_MINUTES`, `STALE_MINUTES`, `DAYS`, and `COUNTS` are arguments of the `bin/rails` tasks named in these guides.
+Not settings: `SECRET_KEY_BASE_DUMMY` is used only while building the image, and `BUNDLE_GEMFILE`, `FLEET_API_SCHEMAS_DIR`, and `FLEET_RULES_SCHEMA_DIR` are set by the image; `WEB_CONCURRENCY` and `PIDFILE` (Puma) are not passed by `compose.yaml`; `CI` and `GITHUB_ACTIONS` affect only the test suite; and `EMAIL`, `DISPLAY_NAME`, `VM_HOSTNAME`, `TAGS`, `DESCRIPTION`, `HOST_ID`, `ONLINE_MINUTES`, `STALE_MINUTES`, `DAYS`, `COUNTS`, `FULL`, `ALLOW_WITHDRAWALS`, and `DISABLE_MISSING` are arguments of the `bin/rails` tasks named in these guides.

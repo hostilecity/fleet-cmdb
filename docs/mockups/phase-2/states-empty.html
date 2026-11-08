@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Empty states · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Empty states</h1><p>What the Phase 2 screens show before there is anything to show.</p></div></div>
+<nav aria-label="On this page"><ul class="chips"><li><a href="#noconfig">No config report yet</a></li><li><a href="#norules">No rules</a></li><li><a href="#nomatch">No matches</a></li><li><a href="#nohosts">No hosts</a></li><li><a href="#freshness">Advisory freshness</a></li></ul></nav>
+<section aria-labelledby="noconfig-h" id="noconfig"><h2 id="noconfig-h" class="state-title">Configuration tab: no config report yet</h2>
+<div class="request-box"><div><p><strong>No config report yet.</strong></p><p class="hint">The agent sends its first config report within 6 hours of enrolling, or you can ask for one now. Until then no check can be evaluated.</p></div><form action="report-requests.html" method="get"><button class="btn quiet" type="submit">Request fresh config report</button></form></div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="host-config.html"><span class="label">CIS-aligned checks</span><span class="big"><span class="not-eval">Not evaluated</span></span><span class="detail">No config report yet. All 40 checks not evaluated.</span></a>
+  <a href="host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big"><span class="not-eval">Not evaluated</span></span><span class="detail">No package report yet</span></a>
+  <a href="host-packages.html"><span class="label">Packages</span><span class="big">—</span><span class="detail">Not reported</span></a>
+  <a href="report-requests.html"><span class="label">Last reports received</span><span class="big">Never</span><span class="detail">Awaiting first contact</span></a>
+</div>
+<h3>CIS-aligned checks</h3>
+<div class="sheet"><p style="margin-top:0"><strong>Not evaluated.</strong> The host has not sent a config report, so all 40 checks are not evaluated. There is no pass rate: it is not 0%.</p><p class="muted" style="margin-bottom:0">Facts, snapshots, and result history appear here after the first report.</p></div><p class="note">A host with no report shows "Not evaluated" in the summary tiles and no percentage, never "0%" or "0 failures". Each check's own result is Not evaluated with the reason "The host has not sent a config report." (see <a href="states-host.html#results">result states</a>).</p>
+</section>
+<section aria-labelledby="norules-h" id="norules"><h2 id="norules-h" class="state-title">No rules yet</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No rules yet.</strong></p><p>Rules are imported from a file you keep. Nothing is checked until at least one rule is enabled.</p><a class="btn" href="rules-import.html">Import rules file</a></div>
+<h3>On a host's Configuration tab</h3>
+<div class="sheet"><p style="margin-top:0"><strong>No rules are defined, so nothing was evaluated.</strong></p><p class="muted" style="margin-bottom:0">Facts and snapshots are still shown. <a href="rules.html">Rules</a></p></div>
+<h3>On Compliance</h3>
+<div class="notice info" role="status"><strong>No rules are defined.</strong><p>CIS pass rates and failure counts are blank until rules are imported. Open vulnerability findings are not affected.</p></div>
+</section>
+<section aria-labelledby="nomatch-h" id="nomatch"><h2 id="nomatch-h" class="state-title">No matches</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No rules match "zzz" with severity "critical".</strong></p><p><a href="rules.html">Clear the search and filters</a></p></div>
+<h3>Compliance</h3>
+<div class="sheet"><p style="margin-top:0"><strong>No hosts match tag "media" with status "Not evaluated".</strong></p><p><a href="compliance.html">Clear the search and filters</a></p></div>
+<h3>Vulnerabilities</h3>
+<div class="sheet"><p style="margin-top:0"><strong>No findings match severity "critical" in state "Resolved".</strong></p><p>This host has 5 open and 5 resolved findings in total. <a href="host-vulns.html">Clear the filters</a></p></div>
+</section>
+<section aria-labelledby="nohosts-h" id="nohosts"><h2 id="nohosts-h" class="state-title">Compliance: no active hosts</h2>
+<div class="sheet"><p style="margin-top:0"><strong>No active hosts to show.</strong></p><p>Compliance covers active hosts. Install the agent on a VM and approve it to see it here.</p><a class="btn" href="../phase-1/agents-install.html">Install an agent</a></div>
+</section>
+<section aria-labelledby="freshness-h" id="freshness"><h2 id="freshness-h" class="state-title">Advisory data freshness indicator</h2>
+
+<h3>Fresh</h3>
+<p class="freshness"><span>Advisory data last updated: <span class="mono">Debian:13</span> 3 hours ago.</span></p>
+<h3>Stale: older than 48 hours</h3>
+<div class="notice" role="alert"><strong>Vulnerability data is out of date.</strong><p><span class="mono">Debian:13</span> advisory data was last updated 3 days ago (2026-11-03 06:00 UTC), so findings may be missing. <a href="data-sources-stale.html">See the data sources</a>.</p></div>
+<h3>Never refreshed</h3>
+<div class="notice" role="alert"><strong>Vulnerability data has never been refreshed.</strong><p><span class="mono">Debian:13</span> advisory data has never been updated from the feed or a full import, so findings may be missing. <a href="data-sources.html">Refresh it or upload a file</a>.</p></div>
+<h3>Automatic refresh turned off</h3>
+<div class="notice info" role="status"><strong>Automatic advisory refresh is off.</strong><p>No feed is configured on the server, so advisory data changes only when you upload a file. <span class="mono">Debian:13</span> was last updated 5 days ago, which is older than 48 hours.</p></div>
+<h3>Several ecosystems</h3>
+<p class="freshness"><span>Advisory data last updated: <span class="mono">Debian:13</span> 3 hours ago, <span class="mono">Debian:12</span> <span class="stale-word">3 days ago, stale</span>.</span></p><p class="note">The indicator appears on the Fleet list, Compliance, each host's Vulnerabilities tab, and the data sources page. Fresh data is one quiet line. Stale or never refreshed data is a warning notice (amber, a heading in words, and a link to the fix) because stale data looks the same as "no vulnerabilities". The wording of the first three is the wording the server uses today (P2-S13). The fleet profile has one ecosystem today, so the last variant is for when it has more.</p>
+</section>
+</main>
+</body>
+</html>

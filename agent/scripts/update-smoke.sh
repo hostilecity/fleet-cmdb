@@ -3,7 +3,11 @@
 # (P1-AGENT-UPDATE, ADR 0018): the real unit files, the real side-by-side layout, a real `systemd-run`
 # from inside the agent's sandbox, and releases signed with throwaway keys.
 #
-#   sudo scripts/update-smoke.sh DIR            (run from agent/)
+#   sudo scripts/update-smoke.sh DIR [GROUP]    (run from agent/)
+#
+# GROUP runs one part, so CI can run the parts side by side: refusals (the four refused releases), rollbacks
+# (exits at start, crash loop, no credential), or recovery (both killed supervisors, success, below minimum).
+# Without it, every scenario runs.
 #
 # DIR holds what the workflow prepared (scripts/update-smoke-build.sh, minisign -G -W): test.key and
 # other.key (throwaway private keys, never committed), and fleet-agent-1.0.0 and fleet-agent-1.0.1, the
@@ -26,8 +30,15 @@
 #   below minimum  an agent the server answers 426 on inventory still updates (NFR-5)
 set -euo pipefail
 
-dir=${1:?usage: sudo scripts/update-smoke.sh DIR}
+dir=${1:?usage: sudo scripts/update-smoke.sh DIR [refusals|rollbacks|recovery]}
+group=${2:-all}
+case "$group" in
+    all | refusals | rollbacks | recovery) ;;
+    *) echo "update-smoke: unknown group $group (refusals, rollbacks, or recovery)" >&2; exit 2 ;;
+esac
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
+. "$here/update-test-lib.sh"
 agent_dir=$(dirname "$here")
 [ "$(id -u)" = 0 ] || { echo "update-smoke: run as root (sudo)" >&2; exit 2; }
 [ -d /run/systemd/system ] || { echo "update-smoke: needs a host running systemd" >&2; exit 2; }
@@ -38,7 +49,6 @@ STATE=/var/lib/fleet-agent
 UNITS=/etc/systemd/system
 OLD=1.0.0
 NEW=1.0.1
-TARGET=x86_64-unknown-linux-musl
 
 if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${UPDATE_SMOKE_DISPOSABLE:-}" != yes ]; then
     echo "update-smoke: this rewrites $LIB, $ETC, $STATE and $UNITS; run it on a disposable machine and set UPDATE_SMOKE_DISPOSABLE=yes" >&2
@@ -147,26 +157,9 @@ result_field() {
     jq -rs "[.[] | select(.kind == \"result\" and .status == 200 and .body.rollout_id == $rollout)] | last | .body.$1" "$events"
 }
 
-# mkrelease NAME VERSION BINARY [KEY]: a signed release for the stub to serve.
-mkrelease() {
-    local name=$1 version=$2 binary=$3 key=${4:-$dir/test.key} d=$tmp/releases/$1
-    mkdir -p "$d"
-    cp "$binary" "$d/fleet-agent"
-    "$here/release-manifest.sh" "$version" "$TARGET" "$d/fleet-agent" > "$d/manifest.json"
-    minisign -S -s "$key" -m "$d/manifest.json" -x "$d/manifest.json.minisig" -t "update-smoke $name" > /dev/null
-}
-
-# mkscript FILE VERSION RUN_BODY: a "release" that passes its self-test and does RUN_BODY when run.
-mkscript() {
-    cat > "$1" <<EOF
-#!/bin/sh
-case "\$1" in
-    self-test) echo "self-test OK: fleet-agent $2 (agent schema 1)" ;;
-    --version) echo "fleet-agent $2 (agent schema 1)" ;;
-    run) $3 ;;
-esac
-EOF
-    chmod 0755 "$1"
+# release NAME VERSION BINARY [KEY]: a signed release for the stub to serve (update-test-lib.sh).
+release() {
+    mkrelease "$tmp/releases" "$1" "$2" "$3" "${4:-$dir/test.key}"
 }
 
 # reset: the installed 1.0.0 running, no update in progress, the stub offering nothing.
@@ -200,35 +193,31 @@ expect_result() { # SCENARIO OUTCOME [AGENT_VERSION]
     [ "$outcome" = "$2" ] || fail "$1: the result is $outcome, expected $2"
     [ -z "${3:-}" ] || [ "$reporter" = "$3" ] || fail "$1: the result was reported by $reporter, expected $3"
     if [ "$2" != succeeded ]; then
-        [ -n "$reason" ] && [ "$reason" != null ] || fail "$1: no reason was given"
+        if [ -z "$reason" ] || [ "$reason" = null ]; then
+            fail "$1: no reason was given"
+        fi
     fi
 }
 
 # --- Setup --------------------------------------------------------------------------------------------
 
 # A throwaway CA and a localhost server certificate it signs (as scripts/sandbox-smoke.sh does).
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=update-smoke CA" \
-    -keyout "$tmp/ca-key.pem" -out "$tmp/ca.pem" 2> /dev/null
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=localhost" \
-    -keyout "$tmp/key.pem" -out "$tmp/server.csr" 2> /dev/null
-printf 'subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' > "$tmp/ext.cnf"
-openssl x509 -req -in "$tmp/server.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pem" -CAcreateserial -days 1 \
-    -extfile "$tmp/ext.cnf" -out "$tmp/cert.pem" 2> /dev/null
+make_certs "$tmp" localhost
 
 # The releases the stub serves.
 mkdir -p "$tmp/releases"
-mkrelease good "$NEW" "$dir/fleet-agent-$NEW"
-mkrelease tampered "$NEW" "$dir/fleet-agent-$NEW"
+release good "$NEW" "$dir/fleet-agent-$NEW"
+release tampered "$NEW" "$dir/fleet-agent-$NEW"
 printf 'tampered-by-the-test' | dd of="$tmp/releases/tampered/fleet-agent" bs=1 seek=4096 conv=notrunc 2> /dev/null
-mkrelease unsigned "$NEW" "$dir/fleet-agent-$NEW"
+release unsigned "$NEW" "$dir/fleet-agent-$NEW"
 printf 'this is not a signature\n' > "$tmp/releases/unsigned/manifest.json.minisig"
-mkrelease unknown_key "$NEW" "$dir/fleet-agent-$NEW" "$dir/other.key"
+release unknown_key "$NEW" "$dir/fleet-agent-$NEW" "$dir/other.key"
 mkscript "$tmp/older.sh" 0.9.0 'exit 0'
-mkrelease older 0.9.0 "$tmp/older.sh"
+release older 0.9.0 "$tmp/older.sh"
 mkscript "$tmp/exits.sh" 1.0.2 'echo "update-smoke: release 1.0.2 refuses to start" >&2; exit 1'
-mkrelease exits_at_start 1.0.2 "$tmp/exits.sh"
+release exits_at_start 1.0.2 "$tmp/exits.sh"
 mkscript "$tmp/loops.sh" 1.0.3 'echo "update-smoke: release 1.0.3 started" >&2; sleep 2; exit 1'
-mkrelease crash_loop 1.0.3 "$tmp/loops.sh"
+release crash_loop 1.0.3 "$tmp/loops.sh"
 
 python3 "$here/update-stub.py" 8443 "$tmp/cert.pem" "$tmp/key.pem" "$tmp" &
 stub_pid=$!
@@ -249,7 +238,7 @@ server_url = "https://localhost:8443"
 credential = "EXAMPLEkey01.EXAMPLE-secret-not-a-real-credential-0001"
 ca_file = "$ETC/ca.pem"
 log_level = "debug"
-update_confirm_seconds = 30
+update_confirm_seconds = 15
 
 [heartbeat]
 interval_seconds = 10
@@ -264,6 +253,8 @@ config_before=$(sha256sum "$ETC/config.toml" "$ETC/ca.pem")
 
 # --- Scenarios ----------------------------------------------------------------------------------------
 
+in_group() { [ "$group" = all ] || [ "$group" = "$1" ]; }
+
 refused() { # RELEASE VERSION
     echo "== refused: $1 ($2)"
     reset
@@ -273,10 +264,12 @@ refused() { # RELEASE VERSION
     expect_old_running "refused $1"
     [ ! -e "$LIB/versions/$2" ] || fail "refused $1: $LIB/versions/$2 exists"
 }
-refused tampered "$NEW"
-refused unsigned "$NEW"
-refused unknown_key "$NEW"
-refused older 0.9.0
+if in_group refusals; then
+    refused tampered "$NEW"
+    refused unsigned "$NEW"
+    refused unknown_key "$NEW"
+    refused older 0.9.0
+fi
 
 rolled_back() { # SCENARIO RELEASE VERSION [EXTRA_PLAN]
     echo "== rolled back: $1"
@@ -286,9 +279,13 @@ rolled_back() { # SCENARIO RELEASE VERSION [EXTRA_PLAN]
     expect_result "$1" rolled_back "$OLD"
     expect_old_running "$1"
 }
-rolled_back "a release that exits at start" exits_at_start 1.0.2
-rolled_back "a crash-looping release" crash_loop 1.0.3
-rolled_back "a release that cannot authenticate" good "$NEW" "{\"deny_heartbeat\": [\"$NEW\"]}"
+if in_group rollbacks; then
+    rolled_back "a release that exits at start" exits_at_start 1.0.2
+    rolled_back "a crash-looping release" crash_loop 1.0.3
+    rolled_back "a release that cannot authenticate" good "$NEW" "{\"deny_heartbeat\": [\"$NEW\"]}"
+fi
+
+in_group recovery || { echo "update-smoke: every $group scenario passed"; exit 0; }
 
 echo "== killed: the supervisor dies after the switch of a good release"
 reset
@@ -342,4 +339,4 @@ running_is "$NEW" || fail "below minimum: running $(running_version)"
 # The new version's startup inventory (since is still from before the update; inventory is every 15 min).
 wait_until "inventory from $NEW to be accepted" 90 inventory_from "$NEW" 200
 
-echo "update-smoke: every scenario passed"
+echo "update-smoke: every $group scenario passed"

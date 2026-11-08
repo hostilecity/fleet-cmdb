@@ -1,0 +1,9 @@
+APT "";
+APT::Architecture "amd64";
+APT::Architectures "";
+APT::Architectures:: "amd64";
+APT::Install-Recommends "true";
+APT::Get "";
+APT::Get::AutomaticRemove "true";
+Dir "/";
+Dir::Etc "etc/apt/";

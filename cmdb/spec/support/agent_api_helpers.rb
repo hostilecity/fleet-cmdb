@@ -8,10 +8,10 @@ module AgentApiHelpers
   end
 
   # Records a heartbeat for an enrolled host through Liveness, as the endpoint does.
-  def record_heartbeat(host, agent_time: Time.current)
+  def record_heartbeat(host, agent_time: Time.current, agent_version: "0.1.0")
     Host.transaction do
       Liveness.record_heartbeat!(host_id: host.id, credential_id: host.agent_credentials.active.pick(:id),
-                                 agent_version: "0.1.0", agent_schema_version: 1, agent_time:)
+                                 agent_version:, agent_schema_version: 1, agent_time:)
     end
   end
 

@@ -1,7 +1,9 @@
 # The Agents page's releases (P1-RELEASES, P1-D06 mockup agents.html): imported releases, imports from GitHub,
 # and uploads for networks without internet access. Every import and refusal is audited with the signed-in
-# operator as actor. Rollouts join this page with P1-UPDATES.
+# operator as actor. The page also shows rollouts (P1-D09, RolloutsController); AgentsPage loads it all.
 class AgentReleasesController < ApplicationController
+  include AgentsPage
+
   # The three uploaded files, with room for the multipart framing. Checked before the body is parsed.
   MAX_UPLOAD_BYTES = Releases::MAX_BINARY_BYTES + Releases::MAX_MANIFEST_BYTES + Releases::MAX_SIGNATURE_BYTES + 64.kilobytes
   # "0.3.0", "v0.3.0", or the tag "agent-v0.3.0".
@@ -11,7 +13,7 @@ class AgentReleasesController < ApplicationController
   prepend_before_action :limit_upload_size, only: :upload
 
   def index
-    load_page
+    load_agents_page
   end
 
   # POST /agents/releases/import: queue an import from GitHub.
@@ -67,16 +69,9 @@ class AgentReleasesController < ApplicationController
     render plain: "The upload is larger than an agent release can be (#{Releases::MAX_BINARY_BYTES / 1.megabyte} MiB).", status: :content_too_large
   end
 
-  def load_page
-    @releases = AgentRelease.includes(:imported_by).newest_first
-    @running = Host.in_fleet.where(agent_version: @releases.map(&:version)).group(:agent_version).count
-    @imports = AgentReleaseImport.includes(:operator).recent.to_a
-    @keys = Releases.keys
-  end
-
   def refuse_form(form, message, status: :unprocessable_content)
     @errors = { form => message }
-    load_page
+    load_agents_page
     render :index, status:
   end
 end

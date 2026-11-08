@@ -1,0 +1,38 @@
+<%# Advisory data freshness (P2-S13; approved mockups states-empty.html#freshness and data-sources-stale.html): a warning when any
+    ecosystem's data is older than FLEET_ADVISORY_MAX_AGE_HOURS or was never refreshed, since stale data would otherwise look like no
+    vulnerabilities. With no feed configured, stale data is the expected state, and the notice says so instead. locals: statuses;
+    here (on the data sources page, which needs no link to itself) and failed_refreshes (feed refreshes that failed since the last success). %>
+<% stale = statuses.select(&:stale) %>
+<% here = local_assigns[:here] %>
+<% failed = local_assigns[:failed_refreshes].to_i %>
+<% hours = pluralize((Advisories.config.max_age / 1.hour).round, "hour") %>
+<% if stale.any? && Advisories.config.feed_url.nil? %>
+  <div class="notice info" role="status" id="advisory_freshness">
+    <strong>Automatic advisory refresh is off.</strong>
+    <p>No feed is configured on the server, so advisory data changes only when you upload a file.
+      <% stale.each do |status| %><span class="mono"><%= status.ecosystem %></span> <%= status.never? ? "has never been updated from a full import" : "was last updated #{seen_ago(status.updated_at)}, which is older than #{hours}" %>.<% end %>
+      <% unless here %><%= link_to "Upload a file", data_sources_path(anchor: "up") %>.<% end %></p>
+  </div>
+<% elsif stale.any? %>
+  <div class="notice" role="alert" id="advisory_freshness">
+    <strong><%= stale.all?(&:never?) ? "Vulnerability data has never been refreshed." : "Vulnerability data is out of date." %></strong>
+    <% stale.each do |status| %>
+      <p><span class="mono"><%= status.ecosystem %></span> advisory data <%= status.never? ? "has never been updated from the feed or a full import" : "was last updated #{seen_ago(status.updated_at)} (#{utc(status.updated_at)})" %>, so findings may be missing.
+        <% if here %>
+          <% if failed.positive? %><%= failed == 1 ? "The last refresh failed" : "The last #{failed} refreshes failed" %>; see the imports below, or the <%= link_to "failed jobs page", failed_jobs_path %>.<% end %>
+        <% else %>
+          <%= link_to(status.never? ? "Refresh it or upload a file" : "See the data sources", data_sources_path) %>.
+        <% end %></p>
+    <% end %>
+  </div>
+<% else %>
+  <p class="muted" id="advisory_freshness">Advisory data last updated: <%= safe_join(statuses.map { |status| safe_join([ tag.span(status.ecosystem, class: "mono"), " #{seen_ago(status.updated_at)}" ]) }, ", ") %>.</p>
+<% end %>
+<%# A feed refresh the withdrawal guard held back (review of #129): not a failed job, but the data stays as it was and may be going stale. %>
+<% if Advisories.config.feed_url && (held = Advisories::Freshness.held_refresh) %>
+  <% withdraw = held.counts["would_withdraw"] %>
+  <div class="notice" role="alert" id="advisory_held">
+    <strong>The last advisory refresh was held back.</strong>
+    <p>It would have marked <%= safe_join(withdraw.map { |ecosystem, w| safe_join([ number_with_delimiter(w["withdraw"].to_i), " of ", number_with_delimiter(w["current"].to_i), " ", tag.span(ecosystem, class: "mono") ]) }, ", ") %> advisories withdrawn (<%= utc(held.finished_at) %>), so nothing was imported and the data may be going stale. <%= link_to "Review the counts", advisory_import_path(held) %>.</p>
+  </div>
+<% end %>

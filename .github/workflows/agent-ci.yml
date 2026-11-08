@@ -2,7 +2,8 @@
 # Runs cargo fmt, clippy, tests, a dependency audit, the systemd unit check, the static musl release
 # build for each target in DEC-01 (x86_64-unknown-linux-musl only) with a reproducibility check, a release
 # dry run with a throwaway key, the sandbox smoke test (the musl binary under the unit, on systemd), and
-# the update smoke test (a supervised agent update and its rollbacks on systemd, P1-AGENT-UPDATE).
+# the update smoke test (a supervised agent update and its rollbacks on systemd, P1-AGENT-UPDATE; agent
+# changes and pushes to main only, in three parallel groups).
 # Pushes to main upload the binary as a workflow artefact (built with the release keys in
 # agent/release-keys, unsigned). Signed releases are published only by agent-release.yml, on a version
 # tag, after the owner's approval (P1-PACKAGING, ADR 0018); nothing here has access to the release key.
@@ -35,6 +36,9 @@ jobs:
     outputs:
       # Pushes to main always run the full check; pull requests only when agent/, docs/api/, or this workflow changed.
       agent: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.agent }}
+      # The update smoke test exercises the agent binary only, so a pull request that changes nothing but the
+      # API contract (most server work) skips it; the contract tests in "fmt, clippy, test" still run then.
+      update: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.update }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -46,6 +50,9 @@ jobs:
               - '.github/workflows/agent-ci.yml'
               - '.github/workflows/agent-release.yml'
               - 'docs/api/**' # shared API contract (P0-CONTRACT)
+            update:
+              - 'agent/**'
+              - '.github/workflows/agent-ci.yml'
 
   check:
     name: fmt, clippy, test
@@ -253,18 +260,23 @@ jobs:
         run: sudo GITHUB_ACTIONS=true scripts/sandbox-smoke.sh target/x86_64-unknown-linux-musl/release/fleet-agent src/install/fleet-agent.service
 
   update:
-    name: Update smoke test (supervised update and rollback on systemd)
+    name: Update smoke test (${{ matrix.group }})
     # The agent updating itself on a real systemd (P1-AGENT-UPDATE, ADR 0018): the real unit files and
     # layout, two builds of the musl agent that trust a throwaway release key generated here, and a local
     # stand-in for the API and the release channel. A good release is installed; tampered, unsigned,
     # wrongly signed, older, failing, crash-looping, and unauthenticated releases are refused or rolled
     # back; a killed supervisor is resumed or backstopped by the OnFailure unit; an agent below the
     # server's minimum version still updates (scripts/update-smoke.sh). No private key is committed:
-    # the keys exist only in the runner's temporary directory.
+    # the keys exist only in the runner's temporary directory. The scenarios run in three groups side by
+    # side; each job builds its own two versions (cached), so the throwaway keys never leave its runner.
     needs: changes
-    if: needs.changes.outputs.agent == 'true'
+    if: needs.changes.outputs.update == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [refusals, rollbacks, recovery]
     defaults:
       run:
         working-directory: agent
@@ -299,7 +311,9 @@ jobs:
       - name: Update, refuse, and roll back under systemd
         # sudo resets the environment; GITHUB_ACTIONS turns on the script's annotations and its
         # permission to rewrite /usr/lib/fleet-agent, /etc/fleet-agent and /etc/systemd/system.
-        run: sudo GITHUB_ACTIONS=true scripts/update-smoke.sh "$RUNNER_TEMP/update-smoke"
+        env:
+          GROUP: ${{ matrix.group }}
+        run: sudo GITHUB_ACTIONS=true scripts/update-smoke.sh "$RUNNER_TEMP/update-smoke" "$GROUP"
 
   gate:
     name: Agent CI

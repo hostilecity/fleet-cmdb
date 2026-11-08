@@ -1,24 +1,46 @@
-//! Heartbeats and inventory reports (FR-1.2, FR-1.3, P1-AGENT-REPORT).
+//! Heartbeats, inventory reports, configuration reports, and package reports (FR-1.2, FR-1.3, FR-2.1,
+//! FR-2.3, P1-AGENT-REPORT, P2-A01, P2-AGENT-PACKAGES).
 //!
-//! [`run`] drives two loops until shutdown, each on its own thread so a slow collection or a hung
-//! inventory request never delays a heartbeat:
+//! [`run`] drives four loops until shutdown, each on its own thread so a slow collection or a hung
+//! request never delays a heartbeat:
 //!
 //! - the heartbeat loop ([`heartbeat`]): a heartbeat at once, then every heartbeat interval;
-//! - the inventory loop ([`inventory`]): a report at once, then on schedule and on stable-fact change.
+//! - the inventory loop ([`inventory`]): a report at once, then on schedule and on stable-fact change;
+//! - the config loop ([`config`]): the manifest and a report at once, then every 6 hours;
+//! - the packages loop ([`packages`]): a package report at once, then on the config report's interval.
 //!
-//! Both wait with [`Shutdown::wait`], so `SIGTERM` ends them between requests; a request already in
-//! flight finishes first (at most the client's 30 s timeout). The state record is written atomically
-//! after each accepted report, so stopping at any point loses nothing. If either loop ends unexpectedly
-//! (a bug that panics), the other is stopped too and the agent exits with a failure, so systemd
+//! The server's `report_request` directive reaches the report loops through [`requests`]: the heartbeat
+//! loop raises one request per episode and the report loops poll for it every [`REQUEST_POLL`].
+//!
+//! All wait with [`Shutdown::wait`], so `SIGTERM` ends them between requests; what is in flight
+//! finishes first. The loops stop in parallel, so stopping takes as long as the slowest of them
+//! (Rust practice review of #114):
+//!
+//! - heartbeat: the request in flight, at most the client's 30 s timeout;
+//! - config: the one request or collection call in flight, at most 30 s for a request, 10 s for a
+//!   command, 5 s for a filesystem call. The reporter checks [`Shutdown`] itself: the collection
+//!   starts nothing new, a report collected meanwhile is dropped, and nothing is fetched or sent
+//!   after the stop request;
+//! - packages: the listing in flight (at most 20 s, then dropped) or the request in flight (30 s);
+//!   like the config reporter, it starts nothing after the stop request;
+//! - inventory: a collection already started (about 10 s) and its send (30 s), about 40 s.
+//!
+//! So the agent stops within about 40 s, inside systemd's default 90 s stop timeout (the unit sets
+//! no `TimeoutStopSec`). The state record is written atomically
+//! after each accepted report, so stopping at any point loses nothing. If any loop ends unexpectedly
+//! (a bug that panics), the others are stopped too and the agent exits with a failure, so systemd
 //! restarts it rather than leaving it half working.
 //!
 //! The intervals in force are shared ([`intervals::Intervals`]): the heartbeat loop applies what the
 //! server directs, and the inventory loop reads it.
 
+mod config;
 mod envelope;
 mod heartbeat;
 mod intervals;
 mod inventory;
+mod packages;
+mod requests;
 mod time;
 
 use std::collections::HashSet;
@@ -27,9 +49,10 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::client::{ApiError, ApiResponse, Client};
+use crate::client::{ApiError, ApiResponse, Client, Conditional};
 use crate::collect::Collector;
 use crate::config::Config;
+use crate::facts::host::{Host, RealHost};
 use crate::retry::{Backoff, RetryPolicy, Rng, SplitMix64};
 use crate::shutdown::Shutdown;
 use crate::update::Updater;
@@ -37,20 +60,40 @@ use crate::update::Updater;
 pub use heartbeat::{ACK_RECORD, Ack, HEARTBEAT_PATH, Heartbeat, HeartbeatRequest};
 pub use intervals::Intervals;
 pub use inventory::Reporter;
+use requests::{ReportRequests, ReportType};
 pub use time::rfc3339;
+
+/// How often a report loop looks for a `report_request` the heartbeat loop raised.
+pub const REQUEST_POLL: Duration = Duration::from_secs(5);
 
 /// Sends one JSON request. [`Client`] in production; a scripted fake in tests.
 pub trait Transport {
     fn post(&self, path: &str, body: &serde_json::Value) -> Result<ApiResponse, ApiError>;
+
+    /// POSTs a gzip-compressed JSON body with `Content-Encoding: gzip` (the package report). Required,
+    /// like the GET below.
+    fn post_gzip(&self, path: &str, gzipped: &[u8]) -> Result<ApiResponse, ApiError>;
+
+    /// GETs a JSON document with an optional `If-None-Match` (the config manifest). Required, so a
+    /// transport cannot forget it and fail only at run time.
+    fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError>;
 }
 
 impl Transport for Client {
     fn post(&self, path: &str, body: &serde_json::Value) -> Result<ApiResponse, ApiError> {
         self.post_json(path, body)
     }
+
+    fn post_gzip(&self, path: &str, gzipped: &[u8]) -> Result<ApiResponse, ApiError> {
+        self.post_gzip_json(path, gzipped)
+    }
+
+    fn get_conditional(&self, path: &str, etag: Option<&str>) -> Result<Conditional, ApiError> {
+        self.get_json_conditional(path, etag)
+    }
 }
 
-/// Runs both loops until `shutdown` is requested. Returns `false` if a loop ended unexpectedly.
+/// Runs all loops until `shutdown` is requested. Returns `false` if a loop ended unexpectedly.
 pub fn run(
     config: &Config,
     client: &Client,
@@ -64,43 +107,84 @@ pub fn run(
         shutdown,
         started,
         &Collector::new(),
+        &RealHost::new(),
         updater,
     )
 }
 
-/// [`run`] with the transport and collector given (tests).
+/// [`run`] with the transport, collector and fact reader's host given (tests).
 fn run_with(
     config: &Config,
     transport: &(dyn Transport + Sync),
     shutdown: &Shutdown,
     started: Instant,
     collector: &Collector,
+    host: &dyn Host,
     updater: &Updater,
 ) -> bool {
     let intervals = Intervals::new(config.heartbeat, config.inventory);
     let intervals = &intervals;
+    let requests = ReportRequests::new();
+    let requests = &requests;
     thread::scope(|scope| {
-        let heartbeat = thread::Builder::new()
-            .name("fleet-agent-heartbeat".into())
-            .spawn_scoped(scope, || {
-                let _stop = StopOnExit(shutdown);
-                heartbeat_loop(
-                    intervals,
-                    &config.state_dir,
-                    transport,
-                    shutdown,
-                    started,
-                    updater,
-                );
-            });
-        let inventory = thread::Builder::new()
-            .name("fleet-agent-inventory".into())
-            .spawn_scoped(scope, || {
-                let _stop = StopOnExit(shutdown);
-                inventory_loop(intervals, &config.state_dir, collector, transport, shutdown);
-            });
+        let heartbeat = spawn_loop(scope, "heartbeat", || {
+            let _stop = StopOnExit(shutdown);
+            heartbeat_loop(
+                intervals,
+                &config.state_dir,
+                transport,
+                shutdown,
+                started,
+                updater,
+                requests,
+            );
+        });
+        let inventory = spawn_loop(scope, "inventory", || {
+            let _stop = StopOnExit(shutdown);
+            inventory_loop(
+                intervals,
+                &config.state_dir,
+                collector,
+                transport,
+                shutdown,
+                requests,
+            );
+        });
+        let config_report = spawn_loop(scope, "config", || {
+            let _stop = StopOnExit(shutdown);
+            config_loop(
+                config.config_report.start,
+                host,
+                transport,
+                shutdown,
+                requests,
+            );
+        });
+        // FR-2.3: packages on the same cadence as the configuration report.
+        let packages_report = spawn_loop(scope, "packages", || {
+            let _stop = StopOnExit(shutdown);
+            packages_loop(
+                config.config_report.start,
+                host,
+                transport,
+                shutdown,
+                requests,
+            );
+        });
+        let handles = [
+            ("heartbeat", heartbeat),
+            ("inventory", inventory),
+            ("config", config_report),
+            ("packages", packages_report),
+        ];
+        // A loop that could not start never runs its StopOnExit, and the others (the heartbeat loop
+        // above all) run until shutdown: stop them now, before waiting on any of them, so the agent
+        // exits with a failure for systemd to restart instead of running half working (review of #117).
+        if handles.iter().any(|(_, handle)| handle.is_err()) {
+            shutdown.request();
+        }
         let mut clean = true;
-        for (name, handle) in [("heartbeat", heartbeat), ("inventory", inventory)] {
+        for (name, handle) in handles {
             match handle {
                 Ok(handle) => {
                     if handle.join().is_err() {
@@ -122,6 +206,21 @@ fn run_with(
     })
 }
 
+/// Starts the thread of one loop, `fleet-agent-<name>`.
+fn spawn_loop<'scope, 'env>(
+    scope: &'scope thread::Scope<'scope, 'env>,
+    name: &'static str,
+    f: impl FnOnce() + Send + 'scope,
+) -> io::Result<thread::ScopedJoinHandle<'scope, ()>> {
+    #[cfg(test)]
+    if tests::FAIL_SPAWN.with(|fail| fail.get() == Some(name)) {
+        return Err(io::Error::other("simulated: no thread could be started"));
+    }
+    thread::Builder::new()
+        .name(format!("fleet-agent-{name}"))
+        .spawn_scoped(scope, f)
+}
+
 /// Requests shutdown when dropped, including when a loop panics, so the other loop stops too.
 struct StopOnExit<'a>(&'a Shutdown);
 
@@ -138,6 +237,7 @@ fn heartbeat_loop(
     shutdown: &Shutdown,
     started: Instant,
     updater: &Updater,
+    requests: &ReportRequests,
 ) {
     let mut heartbeat = Heartbeat::new(
         intervals,
@@ -146,7 +246,8 @@ fn heartbeat_loop(
         started,
     )
     .record_first_ack_in(state_dir.to_owned())
-    .with_updater(updater);
+    .with_updater(updater)
+    .with_requests(requests);
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();
         let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());
@@ -165,6 +266,7 @@ fn inventory_loop(
     collector: &Collector,
     transport: &dyn Transport,
     shutdown: &Shutdown,
+    requests: &ReportRequests,
 ) {
     let mut reporter = Reporter::new(
         intervals,
@@ -173,11 +275,91 @@ fn inventory_loop(
         seeded(4),
     );
     while !shutdown.is_requested() {
+        if requests.take(ReportType::Inventory).is_some() {
+            reporter.request();
+        }
         let wake = reporter.tick(Instant::now(), &mut || collector.collect(), transport);
-        if shutdown.wait(wake.saturating_duration_since(Instant::now())) {
+        if reporter.take_answered() {
+            requests.answered(ReportType::Inventory, Instant::now());
+        }
+        let wait = wake
+            .saturating_duration_since(Instant::now())
+            .min(REQUEST_POLL);
+        if shutdown.wait(wait) {
             break;
         }
     }
+}
+
+fn config_loop(
+    interval: Duration,
+    host: &dyn Host,
+    transport: &dyn Transport,
+    shutdown: &Shutdown,
+    requests: &ReportRequests,
+) {
+    let mut reporter = config::Reporter::new(
+        host,
+        interval,
+        Backoff::new(RetryPolicy::default(), seeded(5)),
+        seeded(6),
+    )
+    .stopping_on(shutdown);
+    while !shutdown.is_requested() {
+        if requests.take(ReportType::Config).is_some() {
+            reporter.request();
+        }
+        let wake = reporter.tick(Instant::now(), transport);
+        if reporter.take_answered() {
+            requests.answered(ReportType::Config, Instant::now());
+        }
+        let wait = wake
+            .saturating_duration_since(Instant::now())
+            .min(REQUEST_POLL);
+        if shutdown.wait(wait) {
+            break;
+        }
+    }
+}
+
+fn packages_loop(
+    interval: Duration,
+    host: &dyn Host,
+    transport: &dyn Transport,
+    shutdown: &Shutdown,
+    requests: &ReportRequests,
+) {
+    let mut reporter = packages::Reporter::new(
+        host,
+        interval,
+        Backoff::new(RetryPolicy::default(), seeded(7)),
+        seeded(8),
+    )
+    .stopping_on(shutdown);
+    while !shutdown.is_requested() {
+        if requests.take(ReportType::Packages).is_some() {
+            reporter.request();
+        }
+        let wake = reporter.tick(Instant::now(), transport);
+        if reporter.take_answered() {
+            requests.answered(ReportType::Packages, Instant::now());
+        }
+        let wait = wake
+            .saturating_duration_since(Instant::now())
+            .min(REQUEST_POLL);
+        if shutdown.wait(wait) {
+            break;
+        }
+    }
+}
+
+/// When a failure in a tick that began at the (simulated) `now` happened: `now` moved on by the real
+/// time since `tick_started`. A backoff or `Retry-After` delay is a wait *after* the failure, so it is
+/// counted from here; counted from `now`, a request that took its whole 30 s timeout would have used
+/// up a 5 s backoff and been retried at once (review of #117). Tests drive `now` by hand and lose only
+/// the few real milliseconds a tick takes.
+fn failed_at(now: Instant, tick_started: Instant) -> Instant {
+    now + tick_started.elapsed()
 }
 
 /// A jitter source per use, so the streams differ.
@@ -258,6 +440,11 @@ pub(crate) mod tests {
         replies: RefCell<VecDeque<Reply>>,
         accepting: std::cell::Cell<bool>,
         sent: RefCell<Vec<(String, serde_json::Value)>>,
+        gets: RefCell<VecDeque<Result<Conditional, ApiError>>>,
+        /// The `If-None-Match` of every GET, in order.
+        got: RefCell<Vec<Option<String>>>,
+        /// The paths of the requests sent gzip-compressed, in order.
+        gzipped: RefCell<Vec<String>>,
     }
 
     impl FakeTransport {
@@ -266,6 +453,9 @@ pub(crate) mod tests {
                 replies: RefCell::default(),
                 accepting: std::cell::Cell::new(false),
                 sent: RefCell::default(),
+                gets: RefCell::default(),
+                got: RefCell::default(),
+                gzipped: RefCell::default(),
             };
             for reply in replies {
                 transport.push(reply);
@@ -289,8 +479,22 @@ pub(crate) mod tests {
             self.accepting.set(accepting);
         }
 
+        /// Queues the answer to the next GET.
+        pub fn push_get(&self, reply: Result<Conditional, ApiError>) {
+            self.gets.borrow_mut().push_back(reply);
+        }
+
+        pub fn gets(&self) -> Vec<Option<String>> {
+            self.got.borrow().clone()
+        }
+
         pub fn sent(&self) -> Vec<(String, serde_json::Value)> {
             self.sent.borrow().clone()
+        }
+
+        /// The paths of the requests that were sent gzip-compressed.
+        pub fn gzipped(&self) -> Vec<String> {
+            self.gzipped.borrow().clone()
         }
     }
 
@@ -305,10 +509,46 @@ pub(crate) mod tests {
                         ok(
                             serde_json::json!({"server_time": "2026-01-01T12:00:00Z", "directives": {}}),
                         )
+                    } else if path == config::CONFIG_PATH {
+                        ok(serde_json::json!({
+                            "report_id": body["report_id"],
+                            "duplicate": false,
+                            "manifest_version": body["manifest_version"],
+                        }))
                     } else {
                         ok(serde_json::json!({"report_id": body["report_id"], "duplicate": false}))
                     }
                 }
+                None => Err(ApiError::Transport("connection refused".into())),
+            }
+        }
+
+        /// Decompresses and parses the body as the server would, then answers like [`Self::post`]; a
+        /// body that is not gzip of JSON fails the test.
+        fn post_gzip(&self, path: &str, gzipped: &[u8]) -> Result<ApiResponse, ApiError> {
+            use std::io::Read;
+            let mut json = Vec::new();
+            flate2::read::GzDecoder::new(gzipped)
+                .read_to_end(&mut json)
+                .expect("a gzip body");
+            let body: serde_json::Value = serde_json::from_slice(&json).expect("gzip of JSON");
+            self.gzipped.borrow_mut().push(path.to_owned());
+            self.post(path, &body)
+        }
+
+        fn get_conditional(
+            &self,
+            _path: &str,
+            etag: Option<&str>,
+        ) -> Result<Conditional, ApiError> {
+            self.got.borrow_mut().push(etag.map(str::to_owned));
+            match self.gets.borrow_mut().pop_front() {
+                Some(reply) => reply,
+                None if self.accepting.get() && etag.is_some() => Ok(Conditional::NotModified),
+                None if self.accepting.get() => Ok(Conditional::Modified {
+                    body: crate::facts::fake::server_manifest(),
+                    etag: Some("\"m1\"".into()),
+                }),
                 None => Err(ApiError::Transport("connection refused".into())),
             }
         }
@@ -377,6 +617,20 @@ pub(crate) mod tests {
     fn reply_for(request: &str) -> String {
         let body = if request.starts_with("POST /api/v1/heartbeat ") {
             r#"{"server_time":"2026-01-01T12:00:00Z","directives":{}}"#.to_owned()
+        } else if request.starts_with("GET /api/v1/manifest/config ") {
+            return crate::test_support::http_reply(
+                "200 OK",
+                &["X-Request-Id: req-1", "ETag: \"m1\""],
+                &crate::facts::fake::server_manifest().to_string(),
+            );
+        } else if request.starts_with("POST /api/v1/reports/config ") {
+            let id = request
+                .split("\"report_id\":\"")
+                .nth(1)
+                .and_then(|rest| rest.get(..36))
+                .unwrap_or("");
+            let version = crate::facts::fake::server_manifest()["manifest_version"].clone();
+            format!(r#"{{"report_id":"{id}","duplicate":false,"manifest_version":{version}}}"#)
         } else {
             let id = request
                 .split("\"report_id\":\"")
@@ -394,7 +648,7 @@ pub(crate) mod tests {
         // the startup report reach the server within seconds (AC: "first heartbeat within seconds").
         let pki = TestPki::generate();
         let dir = TempDir::new();
-        let server = TlsServer::serve(&pki, 2, reply_for);
+        let server = TlsServer::serve(&pki, 5, reply_for);
         let client = trusting_client(&server, &pki, &dir);
         let state_dir = dir.path("state");
         crate::state::ensure_dir(&state_dir).unwrap();
@@ -412,6 +666,7 @@ pub(crate) mod tests {
                     &shutdown,
                     started,
                     &Collector::new(),
+                    &crate::facts::fake::FakeHost::debian13(),
                     &Updater::inert(&state_dir),
                 )
             });
@@ -430,12 +685,31 @@ pub(crate) mod tests {
             "took {:?}",
             started.elapsed()
         );
-        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert_eq!(requests.len(), 5, "{requests:?}");
+        let mut saw_config = false;
+        let mut saw_packages = false;
         for request in &requests {
             let (head, body) = request.split_once("\r\n\r\n").unwrap();
+            if head.starts_with("GET /api/v1/manifest/config ") {
+                continue;
+            }
             let body: serde_json::Value = serde_json::from_str(body).unwrap();
             if head.starts_with("POST /api/v1/heartbeat ") {
                 crate::collect::contract::assert_conforms("v1", "heartbeat.request", &body);
+            } else if head.starts_with("POST /api/v1/reports/config ") {
+                // P2-A01: what the agent really sends over TLS conforms to the contract.
+                crate::collect::contract::assert_conforms("v1", "config.request", &body);
+                saw_config = true;
+            } else if head.starts_with("POST /api/v1/reports/packages ") {
+                // P2-AGENT-PACKAGES: compressed on the wire, and the fake host's dpkg listing in full.
+                assert!(
+                    head.to_ascii_lowercase().contains("content-encoding: gzip"),
+                    "{head}"
+                );
+                crate::collect::contract::assert_conforms("v1", "packages.request", &body);
+                assert_eq!(body["manager"], "dpkg");
+                assert_eq!(body["packages"].as_array().unwrap().len(), 29);
+                saw_packages = true;
             } else {
                 assert!(
                     head.starts_with("POST /api/v1/reports/inventory "),
@@ -444,6 +718,7 @@ pub(crate) mod tests {
                 crate::collect::contract::assert_conforms("v1", "inventory.request", &body);
             }
         }
+        assert!(saw_config && saw_packages, "{requests:?}");
         let record: inventory::Record =
             serde_json::from_slice(&std::fs::read(state_dir.join(inventory::RECORD_NAME)).unwrap())
                 .unwrap();
@@ -462,6 +737,14 @@ pub(crate) mod tests {
                 }
                 Err(ApiError::Transport("down".into()))
             }
+
+            fn post_gzip(&self, _: &str, _: &[u8]) -> Result<ApiResponse, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
+
+            fn get_conditional(&self, _: &str, _: Option<&str>) -> Result<Conditional, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
         }
         let dir = TempDir::new();
         let config = Config {
@@ -472,11 +755,73 @@ pub(crate) mod tests {
         let collector = Collector::new();
         let started = Instant::now();
         let updater = Updater::inert(&config.state_dir);
+        let host = crate::facts::fake::FakeHost::debian13();
         let clean = run_with(
-            &config, &Panicking, &shutdown, started, &collector, &updater,
+            &config, &Panicking, &shutdown, started, &collector, &host, &updater,
         );
         assert!(!clean);
         assert!(shutdown.is_requested());
         assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    thread_local! {
+        /// Makes [`spawn_loop`] fail for the loop of this name, on this thread, as a thread limit would.
+        pub(super) static FAIL_SPAWN: std::cell::Cell<Option<&'static str>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    #[test]
+    fn a_loop_that_cannot_start_stops_the_agent_at_once() {
+        // Review of #117: a failed spawn was only seen after joining the loops before it, and the
+        // heartbeat loop runs until shutdown, so the agent kept running without that loop. Every loop
+        // is tried, the heartbeat's included.
+        struct Down;
+        impl Transport for Down {
+            fn post(&self, _: &str, _: &serde_json::Value) -> Result<ApiResponse, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
+            fn post_gzip(&self, _: &str, _: &[u8]) -> Result<ApiResponse, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
+            fn get_conditional(&self, _: &str, _: Option<&str>) -> Result<Conditional, ApiError> {
+                Err(ApiError::Transport("down".into()))
+            }
+        }
+        for name in ["heartbeat", "inventory", "config", "packages"] {
+            let dir = TempDir::new();
+            let config = Config {
+                state_dir: dir.path("state"),
+                ..Config::from_toml(&cfg::minimal()).unwrap()
+            };
+            let shutdown = Shutdown::default();
+            let (done, finished) = std::sync::mpsc::channel();
+            let outcome = thread::scope(|scope| {
+                scope.spawn(|| {
+                    FAIL_SPAWN.with(|fail| fail.set(Some(name)));
+                    let collector = Collector::new();
+                    let updater = Updater::inert(&config.state_dir);
+                    let host = crate::facts::fake::FakeHost::debian13();
+                    let clean = run_with(
+                        &config,
+                        &Down,
+                        &shutdown,
+                        Instant::now(),
+                        &collector,
+                        &host,
+                        &updater,
+                    );
+                    let _ = done.send(clean);
+                });
+                let outcome = finished.recv_timeout(Duration::from_secs(20));
+                // Unblock the run if it is still going (the old behaviour), so the test fails, not hangs.
+                shutdown.request();
+                outcome
+            });
+            assert_eq!(
+                outcome,
+                Ok(false),
+                "the {name} loop could not start, but the agent kept running"
+            );
+        }
     }
 }

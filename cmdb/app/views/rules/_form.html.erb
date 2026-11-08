@@ -1,0 +1,104 @@
+<%# The add and edit form (rule-create.html, rule-edit.html, rule-edit-errors.html). form: a RuleForm; url: the preview action. %>
+<% problem_field = ->(field, classes = "field") { [ classes, ("invalid" if form.invalid?(field)) ].compact.join(" ") } %>
+<%= form_with url: url, method: :post, class: "form wide", id: "rule_form", data: { turbo: false }, html: { novalidate: form.problems.any? } do %>
+  <% if form.problems.any? %>
+    <div class="notice error" role="alert" id="rule_problems"><strong>The rule was not <%= form.new_rule? ? "added" : "saved" %>. <%= pluralize(form.problems.size, "problem") %>:</strong>
+      <ul class="problem-list"><% form.problems.each do |problem| %><%= rule_problem_line(problem) %><% end %></ul></div>
+  <% end %>
+  <%= hidden_field_tag :base_version_id, base_version.id, id: nil if base_version %>
+  <div class="<%= problem_field.("key") %>">
+    <label for="rule_key">Key</label>
+    <% if form.new_rule? %>
+      <%= text_field_tag "rule[key]", form.key, id: "rule_key", class: "mono", maxlength: 64, placeholder: "ssh-ignore-rhosts", required: true, autocomplete: "off",
+                         "aria-invalid": (form.invalid?("key") || nil), "aria-describedby": rule_described_by(form, "key") %>
+      <p class="hint" id="rule_key_hint">Lower case letters, digits, and hyphens. It never changes after saving and is never reused for another rule.</p>
+    <% else %>
+      <%= text_field_tag "rule[key]", form.key, id: "rule_key", class: "mono", readonly: true, "aria-describedby": "rule_key_hint" %>
+      <p class="hint" id="rule_key_hint">The key never changes and is never reused for another rule.</p>
+    <% end %>
+    <%= rule_field_errors(form, "key") %>
+  </div>
+  <div class="<%= problem_field.("title") %>">
+    <label for="rule_title">Title</label>
+    <%= text_field_tag "rule[title]", form.title, id: "rule_title", maxlength: 200, placeholder: ("SSH ignores per-user trust files" if form.new_rule?), required: true,
+                       "aria-invalid": (form.invalid?("title") || nil), "aria-describedby": rule_described_by(form, "title") %>
+    <p class="hint" id="rule_title_hint">Plain words, at most 200 characters.<%= " State the good condition, in your own words." if form.new_rule? %></p>
+    <%= rule_field_errors(form, "title") %>
+  </div>
+  <div class="row">
+    <div class="<%= problem_field.("reference") %>">
+      <label for="rule_reference">Reference</label>
+      <%= text_field_tag "rule[reference]", form.reference, id: "rule_reference", maxlength: 128, placeholder: ("CIS Debian Linux 13 v1.0.0 5.1.9" if form.new_rule?), required: true,
+                         "aria-invalid": (form.invalid?("reference") || nil), "aria-describedby": rule_described_by(form, "reference") %>
+      <p class="hint" id="rule_reference_hint">A section number only, never benchmark text.</p>
+      <%= rule_field_errors(form, "reference") %>
+    </div>
+    <div class="<%= problem_field.("severity") %>">
+      <label for="rule_severity">Severity</label>
+      <%= select_tag "rule[severity]", options_for_select(CisRules::SEVERITIES.map { |s| [ s.capitalize, s ] }, form.severity), id: "rule_severity",
+                     "aria-invalid": (form.invalid?("severity") || nil), "aria-describedby": rule_described_by(form, "severity", hint: false) %>
+      <%= rule_field_errors(form, "severity") %>
+    </div>
+  </div>
+  <fieldset id="rule_applies_to" class="<%= "invalid" if form.invalid?("applies_to") %>" aria-describedby="<%= rule_described_by(form, "applies_to") %>">
+    <legend>Applies to</legend>
+    <% rows = form.platforms.size < RuleForm::MAX_PLATFORMS ? form.platforms + [ RuleForm::Platform.new(distribution: "", versions: "") ] : form.platforms %>
+    <% rows.each_with_index do |platform, index| %>
+      <% another = index.positive? && index == form.platforms.size %>
+      <div class="row">
+        <div class="field"><label for="rule_platforms_<%= index %>_distribution"><%= another ? "Another distribution (optional)" : "Distribution" %></label><%= text_field_tag "rule[platforms][#{index}][distribution]", platform.distribution, id: "rule_platforms_#{index}_distribution", class: "mono", maxlength: 64, autocomplete: "off" %></div>
+        <div class="field"><label for="rule_platforms_<%= index %>_versions">Releases</label><%= text_field_tag "rule[platforms][#{index}][versions]", platform.versions, id: "rule_platforms_#{index}_versions", class: "mono", autocomplete: "off", "aria-describedby": "rule_applies_to_hint" %></div>
+      </div>
+    <% end %>
+    <p class="hint" id="rule_applies_to_hint">Releases are comma separated; leave them empty for every release. To add another distribution, fill in the empty row; an empty row is left out.</p>
+    <%= rule_field_errors(form, "applies_to") %>
+  </fieldset>
+  <div class="<%= problem_field.("fact") %>">
+    <label for="rule_fact">Fact</label>
+    <%= select_tag "rule[fact]", options_for_select(form.fact_choices.map { |definition| [ fact_option_label(definition), definition.key ] }, form.fact), id: "rule_fact",
+                   include_blank: (form.new_rule? ? "Choose a fact…" : false), "aria-invalid": (form.invalid?("fact") || nil), "aria-describedby": rule_described_by(form, "fact") %>
+    <p class="hint" id="rule_fact_hint"><%= form.new_rule? ? "From the fact manifest. The condition operators offered depend on the fact's type." : "From the fact manifest. Changing it checks the condition again." %></p>
+    <%= rule_field_errors(form, "fact") %>
+  </div>
+  <% if form.condition_as_text? %>
+    <div class="<%= problem_field.("condition") %>">
+      <label for="rule_condition">Condition (YAML or JSON)</label>
+      <%= text_area_tag "rule[condition_text]", form.condition_text, id: "rule_condition", class: "mono", rows: 9, "aria-invalid": (form.invalid?("condition") || nil),
+                        "aria-describedby": rule_described_by(form, "condition") %>
+      <p class="hint" id="rule_condition_hint">This rule combines several conditions, or tests part of a file or service, so it is edited as text. Operators: eq, ne, in, not_in, gte, lte, matches, mode_at_most, present, absent, all, any, not. No code is ever run.</p>
+      <%= rule_field_errors(form, "condition") %>
+    </div>
+  <% else %>
+    <fieldset id="rule_condition_fields">
+      <legend>Condition</legend>
+      <div class="row">
+        <div class="field"><label for="rule_operator">Passes when the value is</label><%= select_tag "rule[operator]", options_for_select(form.operator_choices.invert, form.operator), id: "rule_operator" %></div>
+        <div class="<%= problem_field.("condition") %>">
+          <label for="rule_condition">Expected value</label>
+          <%# Text, whatever the fact: the operator and fact can change without the page knowing, and "one of" takes a list. The server reads it by the fact's type (review of #130). %>
+          <%= text_field_tag("rule[expected]", form.expected, id: "rule_condition", autocomplete: "off", "aria-invalid": (form.invalid?("condition") || nil), "aria-describedby": rule_described_by(form, "condition")) %>
+          <p class="hint" id="rule_condition_hint"><%= expected_value_hint(form) %></p>
+          <%= rule_field_errors(form, "condition") %>
+        </div>
+      </div>
+    </fieldset>
+  <% end %>
+  <div class="<%= problem_field.("remediation") %>">
+    <label for="rule_remediation">Remediation</label>
+    <%= text_area_tag "rule[remediation]", form.remediation, id: "rule_remediation", maxlength: 4000, required: true, placeholder: ("Set IgnoreRhosts to yes in /etc/ssh/sshd_config and reload ssh." if form.new_rule?),
+                      "aria-invalid": (form.invalid?("remediation") || nil), "aria-describedby": rule_described_by(form, "remediation") %>
+    <p class="hint" id="rule_remediation_hint">What an operator does to fix a failure, in your own words.</p>
+    <%= rule_field_errors(form, "remediation") %>
+  </div>
+  <% if form.new_rule? %>
+    <div class="field"><label><%= hidden_field_tag "rule[enabled]", "0", id: nil %><%= check_box_tag "rule[enabled]", "1", form.enabled?, id: "rule_enabled" %> Enabled</label><p class="hint">A rule that is off is kept but not evaluated.</p></div>
+  <% end %>
+  <div class="notice info" role="note"><strong>What saving does</strong>
+    <% if form.new_rule? %>
+      <p>Press Preview first: it shows how many hosts would pass and fail and writes nothing. Saving then creates version 1 and every host's latest config snapshot is checked against it, now. No agent is contacted. The key must not exist yet. The change is audited with you as the actor. Nothing is written when any field has an error; errors are shown beside the field.</p>
+    <% else %>
+      <p>Press Preview first: it shows which hosts would change result and writes nothing. Saving then makes a new version, <%= @rule.current_version.version + 1 %>, which replaces version <%= @rule.current_version.version %> as current. Every host's latest config snapshot is checked again against it, now, and any result that changes is recorded in that host's history. No agent is contacted. The change is audited with you as the actor and the before and after values. Saving without a change makes no new version.</p>
+    <% end %>
+  </div>
+  <div class="actions"><button class="btn" type="submit">Preview the effect</button><%= link_to "Cancel", form.new_rule? ? rules_path : rule_path(@rule), class: "btn quiet" %></div>
+<% end %>
