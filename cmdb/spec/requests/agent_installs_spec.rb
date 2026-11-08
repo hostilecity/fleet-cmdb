@@ -137,6 +137,53 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     expect(run_cloud_init(argv, "")).to eq([ false, false ]) # empty or truncated download
   end
 
+  describe "with a server certificate from Cloudflare's Origin CA (ADR 0024)" do
+    let(:root) { Rails.root.join("../agent/trust/cloudflare-origin-ecc.pem").read }
+
+    around do |example|
+      saved = Rails.configuration.x.server_tls_root
+      Rails.configuration.x.server_tls_root = root
+      example.run
+    ensure
+      Rails.configuration.x.server_tls_root = saved
+    end
+
+    # Runs a command as copied, with a curl that records its arguments and the CA file it was given.
+    def run_download(script, dir)
+      bin = FileUtils.mkdir_p(File.join(dir, "bin")).first
+      File.write(File.join(bin, "curl"), %(#!/bin/sh\nprintf '%s\\n' "$@" > "#{dir}/curl-args"\nwhile [ "$1" != --cacert ]; do shift; done\ncp "$2" "#{dir}/given-ca"\n))
+      File.chmod(0o755, File.join(bin, "curl"))
+      Open3.capture2e({ "PATH" => "#{bin}:#{ENV.fetch('PATH')}" }, "sh", "-ec", script, chdir: dir)
+    end
+
+    it "writes that certificate authority for curl, without touching the VM's trust store, then downloads with it" do
+      import_release(signed_release(version: "1.2.0"), operator:)
+      get "/agents/install"
+      download = command("download_command")
+      expect(download.lines.first.chomp).to eq("cat > fleet-server-ca.pem <<'EOF'")
+      expect(download.lines.last).to eq("curl -fL --cacert fleet-server-ca.pem -o fleet-agent https://agent.fleet.example.lan/api/v1/releases/1.2.0/binary")
+      expect(download).not_to include("update-ca-certificates", "--insecure", " -k ")
+      Dir.mktmpdir do |dir|
+        output, status = run_download(download, dir)
+        expect(status).to be_success, output
+        expect(File.read(File.join(dir, "given-ca")).strip).to eq(root.strip)
+        expect(File.read(File.join(dir, "curl-args")).lines.map(&:chomp)).to include("https://agent.fleet.example.lan/api/v1/releases/1.2.0/binary")
+      end
+    end
+
+    it "does the same in the cloud-init command, which still never runs a download that fails the checksum" do
+      binary = %(#!/bin/sh\ntouch "$MARKER"\n)
+      import_release(release = signed_release(version: "1.2.0", binary:), operator:)
+      get "/agents/install"
+      script = cloud_init_script
+      expect(script.first(3)).to eq([ "cat > /root/fleet-server-ca.pem <<'EOF'", "-----BEGIN CERTIFICATE-----", root.lines[1].chomp ])
+      expect(script).to include("curl -fL --cacert /root/fleet-server-ca.pem -o /root/fleet-agent https://agent.fleet.example.lan/api/v1/releases/1.2.0/binary")
+      argv = cloud_init_argv
+      expect(run_cloud_init(argv, release.binary)).to eq([ true, true ])
+      expect(run_cloud_init(argv, "")).to eq([ false, false ])
+    end
+  end
+
   it "shows what the installer prints for approval, as the installer prints it (agent/src/install/ui.rs)" do
     import_release(signed_release(version: "1.2.0"), operator:)
     get "/agents/install"

@@ -2,9 +2,10 @@
 # check=error=true
 
 # This Dockerfile is designed for production, not development. .github/workflows/cd.yml builds and runs it on the
-# server (docs/operations/install-server.md). Build it from cmdb/ with the agent API schemas from docs/api passed in
-# as a named build context (they are read at runtime; P1-API-AUTH):
-# docker build --build-context api=../docs/api -t cmdb .
+# server (docs/operations/install-server.md). Build it from cmdb/ with the agent API schemas from docs/api and the
+# agent's compiled-in certificate authorities from agent/trust passed in as named build contexts (read at runtime;
+# P1-API-AUTH, ADR 0024):
+# docker build --build-context api=../docs/api --build-context trust=../agent/trust -t cmdb .
 
 # For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
 
@@ -28,7 +29,8 @@ ENV RAILS_ENV="production" \
     BUNDLE_WITHOUT="development" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so" \
     FLEET_API_SCHEMAS_DIR="/rails/api-schemas" \
-    FLEET_RULES_SCHEMA_DIR="/rails/api-rules"
+    FLEET_RULES_SCHEMA_DIR="/rails/api-rules" \
+    FLEET_AGENT_TRUST_DIR="/rails/agent-trust"
 
 # Throw-away build stage to reduce size of final image
 FROM base AS build
@@ -57,6 +59,9 @@ RUN mkdir -p storage/releases storage/backup
 COPY --from=api schemas ./api-schemas
 # The CIS-aligned rule file schema (P2-S04), from the same build context.
 COPY --from=api rules ./api-rules
+# The certificate authorities compiled into the agent (ADR 0024), the same files: the install page gives curl the one
+# that signed the server's certificate (named build context "trust").
+COPY --from=trust *.pem ./agent-trust/
 
 # Precompile bootsnap code for faster boot times.
 # -j 1 disable parallel compilation to avoid a QEMU bug: https://github.com/rails/bootsnap/issues/495
@@ -84,8 +89,9 @@ COPY --chown=rails:rails --from=build /rails /rails
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 
 # Puma directly, not through Thruster (P1-O03): HostSeparation trusts X-Forwarded-* headers only from the proxy
-# that connected, and behind Thruster every request would come from loopback, which is always trusted. TLS is
-# terminated in front of the app (the Cloudflare tunnel for the dashboard).
+# that connected, and behind Thruster every request would come from loopback, which is always trusted. Puma also
+# serves HTTPS on 3443 with the server's Cloudflare Origin CA certificate when it is configured (ADR 0024,
+# config/puma.rb); 3000 is plain HTTP for the container's own health checks.
 ENV PORT="3000"
-EXPOSE 3000
-CMD ["./bin/rails", "server"]
+EXPOSE 3000 3443
+CMD ["bundle", "exec", "puma", "-C", "config/puma.rb"]

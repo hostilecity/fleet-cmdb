@@ -35,6 +35,7 @@ jobs:
               - 'cmdb/**'
               - 'docs/api/**'
               - 'ops/**'
+              - 'agent/trust/**'
               - '.github/workflows/cd.yml'
               - '.github/workflows/deploy-ci.yml'
 
@@ -62,7 +63,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/cd.yml .github/workflows/deploy-ci.yml
 
       - name: Build the image (as cd.yml does)
-        run: docker build -q --build-context api=docs/api -t fleet-cmdb:ci cmdb
+        run: docker build -q --build-context api=docs/api --build-context trust=agent/trust -t fleet-cmdb:ci cmdb
 
       - name: Start PostgreSQL with the role cmdb and its four databases
         run: |
@@ -79,13 +80,25 @@ jobs:
           CREATE DATABASE cmdb_production_cable OWNER cmdb;
           SQL
 
+      - name: Make a throwaway certificate authority and a certificate for the agent hostname
+        # Stands in for the Cloudflare Origin CA certificate (ADR 0024): signed by a CA, for the agent hostname only.
+        run: |
+          tls="$RUNNER_TEMP/tls" && mkdir -p "$tls" && cd "$tls"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=Deploy CI CA" -keyout ca.key -out ca.pem 2>/dev/null
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$AGENT" -keyout server.key -out server.csr 2>/dev/null
+          printf 'subjectAltName=DNS:%s\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' "$AGENT" > ext
+          openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile ext -out server.pem 2>/dev/null
+          echo "TLS_DIR=$tls" >> "$GITHUB_ENV"
+
       - name: Run the image (as cd.yml does) and wait for /up
         run: |
           (umask 077 && printf '%s\n' SOLID_QUEUE_IN_PUMA=1 PGHOST=postgres "DATABASE_PASSWORD=$DB_PASSWORD" \
             "SECRET_KEY_BASE=$(openssl rand -hex 64)" GOOGLE_CLIENT_ID=ci.apps.googleusercontent.com \
-            GOOGLE_CLIENT_SECRET=ci "FLEET_DASHBOARD_HOST=$DASHBOARD" "FLEET_AGENT_HOST=$AGENT" > "$RUNNER_TEMP/fleet-cmdb.env")
+            GOOGLE_CLIENT_SECRET=ci "FLEET_DASHBOARD_HOST=$DASHBOARD" "FLEET_AGENT_HOST=$AGENT" \
+            "FLEET_TLS_CERT_BASE64=$(base64 -w0 "$TLS_DIR/server.pem")" "FLEET_TLS_KEY_BASE64=$(base64 -w0 "$TLS_DIR/server.key")" \
+            > "$RUNNER_TEMP/fleet-cmdb.env")
           docker volume create fleet-cmdb_storage
-          docker run -d --name fleet-cmdb -p 127.0.0.1:8080:3000 --network fleet-db \
+          docker run -d --name fleet-cmdb -p 127.0.0.1:8443:3443 --network fleet-db \
             -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/fleet-cmdb.env" fleet-cmdb:ci
           rm -f "$RUNNER_TEMP/fleet-cmdb.env"
           for _ in $(seq 1 60); do
@@ -95,15 +108,23 @@ jobs:
           docker logs --tail 200 fleet-cmdb
           exit 1
 
-      - name: Check the dashboard hostname
+      - name: Check HTTPS and both hostnames
         run: |
           failed=0
           expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; failed=1; fi; }
-          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
-          url=http://127.0.0.1:8080
+          # As cloudflared and agents connect: to the agent hostname, verifying its certificate against the CA. The tunnel
+          # passes the browser's hostname in Host, so dashboard requests carry the dashboard hostname over the same connection.
+          code() { curl -s -o /dev/null -w '%{http_code}' --cacert "$TLS_DIR/ca.pem" --resolve "$AGENT:8443:127.0.0.1" "$@"; }
+          url="https://$AGENT:8443"
+          expect "the certificate verifies for the agent hostname" 200 "$(code "$url/up")"
+          expect "TLS 1.1 and older are refused" 35 "$(curl -s -o /dev/null --tls-max 1.1 --cacert "$TLS_DIR/ca.pem" --resolve "$AGENT:8443:127.0.0.1" "$url/up"; echo $?)"
+          expect "the deploy's HTTPS readiness check passes (cd.yml)" 0 "$(docker exec fleet-cmdb curl -fsSk -o /dev/null https://localhost:3443/up; echo $?)"
+          expect "plain HTTP is not published" 7 "$(curl -s -o /dev/null http://127.0.0.1:8080/up; echo $?)"
+          expect "the agent API answers on the agent hostname" 401 "$(code -X POST -H "Content-Type: application/json" -d '{}' "$url/api/v1/heartbeat")"
+          expect "the dashboard is 404 on the agent hostname" 404 "$(code "$url/sign_in")"
           expect "the sign-in page renders" 200 "$(code -H "Host: $DASHBOARD" "$url/sign_in")"
           expect "the dashboard redirects to sign-in" "302 https://$DASHBOARD/sign_in" \
-            "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H "Host: $DASHBOARD" "$url/")"
+            "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --cacert "$TLS_DIR/ca.pem" --resolve "$AGENT:8443:127.0.0.1" -H "Host: $DASHBOARD" "$url/")"
           expect "/api/v1 on the dashboard hostname is 404" 404 "$(code -X POST -H "Host: $DASHBOARD" "$url/api/v1/heartbeat")"
           expect "a forged X-Forwarded-Host is ignored" 404 \
             "$(code -X POST -H "Host: $DASHBOARD" -H "X-Forwarded-Host: $AGENT" "$url/api/v1/heartbeat")"

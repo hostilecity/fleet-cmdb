@@ -1,8 +1,8 @@
 # Install, update, and remove agents
 
-How to put the agent on a VM, enroll it, keep it updated, roll back, and remove it. The server must be installed with at least one release imported first ([install-server.md](install-server.md)). **Agents can be installed only once the agent hostname is served with TLS ([#137](https://github.com/hostilecity/fleet-cmdb/issues/137)); until then this page describes what comes next.** The agent's own reference (every option, exit code, file, and the update mechanism) is [agent/README.md](../../agent/README.md); this page is the operator's path through it.
+How to put the agent on a VM, enroll it, keep it updated, roll back, and remove it. The server must be installed with at least one release imported first ([install-server.md](install-server.md)). **Install agents from the first release that includes Cloudflare's Origin CA roots ([agent/trust](../../agent/trust/README.md), ADR 0024)**: older agents do not trust the server's certificate. The agent's own reference (every option, exit code, file, and the update mechanism) is [agent/README.md](../../agent/README.md); this page is the operator's path through it.
 
-**VM requirements:** Debian 13 on x86_64 with systemd ([DEC-01](../decisions/0001-fleet-profile.md)), root, `curl`, and HTTPS access to the agent hostname (`agent.fleet.example.com`) on port 443. The VM must resolve the agent hostname through the LAN DNS, and its clock must be right (`timedatectl` shows `System clock synchronized: yes`).
+**VM requirements:** Debian 13 on x86_64 with systemd ([DEC-01](../decisions/0001-fleet-profile.md)), root, `curl`, and HTTPS access to the agent hostname (`fleet-vm.example.com`) on port 443. The VM must resolve the agent hostname through the LAN DNS, and its clock must be right (`timedatectl` shows `System clock synchronized: yes`).
 
 ## Install one VM (approved in the dashboard)
 
@@ -11,8 +11,15 @@ The primary path is the dashboard's **Agents > Install an agent** page. It shows
 1. **Download** the agent on the VM, from the agent hostname:
 
    ```sh
-   curl -fL -o fleet-agent https://agent.fleet.example.com/api/v1/releases/1.2.0/binary
+   cat > fleet-server-ca.pem <<'EOF'
+   -----BEGIN CERTIFICATE-----
+   … (the page fills in the certificate authority that signed the server's certificate)
+   -----END CERTIFICATE-----
+   EOF
+   curl -fL --cacert fleet-server-ca.pem -o fleet-agent https://fleet-vm.example.com/api/v1/releases/1.2.0/binary
    ```
+
+   curl knows only the VM's system trust store, and the server's certificate comes from Cloudflare's Origin CA (ADR 0024), so the command hands curl that one authority for this download. The VM's trust store is not changed. The agent itself trusts the authority from its build.
 
 2. **Check** it against the SHA-256 on the page (the page fills it in):
 
@@ -24,7 +31,7 @@ The primary path is the dashboard's **Agents > Install an agent** page. It shows
 3. **Run the installer** as root:
 
    ```sh
-   chmod +x fleet-agent && sudo ./fleet-agent install --server https://agent.fleet.example.com
+   chmod +x fleet-agent && sudo ./fleet-agent install --server https://fleet-vm.example.com
    ```
 
    It checks the VM (Debian 13, systemd, a server certificate it trusts) and changes nothing if a check fails. Then it installs the binary under `/usr/lib/fleet-agent`, writes the systemd unit, and prints an approval link and a code such as `WDJB-MJHT`, then waits (10 minutes by default).
@@ -53,7 +60,7 @@ For cloud-init, templates, and scripts, where nobody is at the terminal to appro
 2. On the VM, download and check the agent as above, then run the installer with the token on standard input, never on the command line:
 
    ```sh
-   chmod +x fleet-agent && sudo ./fleet-agent install --server https://agent.fleet.example.com --token-stdin
+   chmod +x fleet-agent && sudo ./fleet-agent install --server https://fleet-vm.example.com --token-stdin
    ```
 
    On a terminal it asks for the token with the input hidden; a provisioning tool pipes it in instead. The token is never accepted as a command-line value, so it cannot end up in the process list or shell history.

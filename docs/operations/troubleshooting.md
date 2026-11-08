@@ -10,13 +10,14 @@ The installer stops with `presented a certificate this VM does not trust`, or th
 2. **Which certificate does the server present?**
 
    ```sh
-   echo | openssl s_client -connect agent.fleet.example.com:443 -servername agent.fleet.example.com 2>/dev/null \
-     | openssl x509 -noout -subject -issuer -enddate
+   echo | openssl s_client -connect fleet-vm.example.com:443 -servername fleet-vm.example.com 2>/dev/null \
+     | openssl x509 -noout -subject -issuer -enddate -ext subjectAltName
    ```
 
-   - Issuer `Let's Encrypt` and a future `notAfter`: the certificate is fine; check the VM's trust store (`apt install --reinstall ca-certificates`).
-   - Anything else: the TLS proxy for the agent hostname ([#137](https://github.com/hostilecity/fleet-cmdb/issues/137)) has no valid certificate; its log says why.
-3. **Is the name pointing at the server?** `getent hosts agent.fleet.example.com` on the VM must give the server's LAN address. A different address means the LAN DNS record is missing or the VM uses another resolver.
+   - Issuer `CloudFlare Origin SSL ...`, the internal hostname in `subjectAltName`, and a future `notAfter`: the certificate is right ([ADR 0024](../decisions/0024-cloudflare-origin-ca-for-the-server.md)). Then the agent is too old to trust it: agents trust Cloudflare's Origin CA from the first release that includes `agent/trust`. Install a current release.
+   - An expired `notAfter`: renew the certificate ([install-server.md](install-server.md#7-upgrade-change-a-setting-roll-back)); the Settings page also says so.
+   - No certificate at all, or the connection is refused: the server is not serving HTTPS. `docker logs fleet-cmdb` says why it did not start (a key that does not match, or a certificate for another name).
+3. **Is the name pointing at the server?** `getent hosts fleet-vm.example.com` on the VM must give the server's address. A different address means the internal DNS record is missing or the VM uses another resolver.
 
 Only for a private certificate authority (not the default setup): pass `--ca-file ca.pem` to the installer.
 
@@ -24,7 +25,7 @@ Only for a private certificate authority (not the default setup): pass `--ca-fil
 
 Cloudflare shows an error page for `fleet.example.com`.
 
-- **`502` or `Bad gateway`:** the tunnel VM cannot reach `http://192.0.2.10:80`. From the tunnel VM, `curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: fleet.example.com' http://192.0.2.10/sign_in` should print `200`. If it does not connect, check `docker ps --filter name=fleet-cmdb` on the server and the firewall rule (it must allow the tunnel VM).
+- **`502` or `Bad gateway`:** the tunnel VM cannot reach `https://fleet-vm.example.com`. From the tunnel VM, `curl -sk -o /dev/null -w '%{http_code}\n' -H 'Host: fleet.example.com' https://fleet-vm.example.com/sign_in` should print `200` (`-k`: curl does not know Cloudflare's Origin CA; the tunnel does). If it does not connect, check `docker ps --filter name=fleet-cmdb` on the server, that the name resolves on the tunnel VM, and the firewall rule (it must allow the tunnel VM). A certificate error in the tunnel's log means **No TLS Verify** is off as it should be, but the certificate is not for `fleet-vm.example.com` or has expired.
 - **An empty `404`:** the request did not carry the dashboard hostname. Leave **HTTP Host Header** empty in the tunnel's public hostname, and check that `FLEET_DASHBOARD_HOST` matches it.
 
 ## The agent gets `401`
@@ -41,7 +42,7 @@ The agent logs `this host's clock differs from the server's`. The server always 
 
 1. On the VM: `systemctl status fleet-agent`. If it is not running, `journalctl -u fleet-agent -n 50` says why (often a config error, exit code 78, which names the key at fault).
 2. If it is running, its log shows whether requests fail: `cannot reach the fleet server` is a network, DNS, or certificate problem (above); `401` is a credential problem (above); `429` means rate limiting, which resolves itself.
-3. On the server: `curl -s https://agent.fleet.example.com/health`. If `job_liveness` is `failing`, the liveness evaluation is not running, so no host's status changes: check `docker ps --filter name=fleet-cmdb` and `docker logs fleet-cmdb` on the server, and the failed jobs page.
+3. On the server: `docker exec fleet-cmdb curl -s http://localhost:3000/health`. If `job_liveness` is `failing`, the liveness evaluation is not running, so no host's status changes: check `docker ps --filter name=fleet-cmdb` and `docker logs fleet-cmdb` on the server, and the failed jobs page.
 
 ## The onboarding request expired
 
@@ -70,4 +71,4 @@ The new version's own log lines, before the rollback, say why it did not confirm
 
 ## `/health` is unhealthy
 
-`docker exec fleet-cmdb curl -s http://localhost:3000/health` on the server (or `https://agent.fleet.example.com/health` once [#137](https://github.com/hostilecity/fleet-cmdb/issues/137) serves the agent hostname) names the failing check; [health-and-jobs.md](health-and-jobs.md) explains each. `backup` fails until a backup has run (backups are not set up by the deployment yet, so `/health` stays `503` until then), and `job_liveness` until a minute or two after a start; both are expected.
+`docker exec fleet-cmdb curl -s http://localhost:3000/health` on the server (or `curl --cacert <(cat agent/trust/*.pem) https://fleet-vm.example.com/health` from a VM on your network) names the failing check; [health-and-jobs.md](health-and-jobs.md) explains each. `backup` fails until a backup has run (backups are not set up by the deployment yet, so `/health` stays `503` until then), and `job_liveness` until a minute or two after a start; both are expected.

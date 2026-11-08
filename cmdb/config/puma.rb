@@ -31,6 +31,16 @@ threads threads_count, threads_count
 # Specifies the `port` that Puma will listen on to receive requests; default is 3000.
 port ENV.fetch("PORT", 3000)
 
+# HTTPS with the server's own certificate (ADR 0024, lib/tls/server_tls.rb) when FLEET_TLS_CERT_BASE64 and
+# FLEET_TLS_KEY_BASE64 are set, on 3443: the port the deployment publishes (as 443), for agents and the tunnel. Fixed,
+# so the deploy's port mapping and its HTTPS readiness check always match it (review of #145). The plain port above
+# stays inside the container for its health checks. TLS 1.2 and later only.
+require_relative "../lib/tls/server_tls"
+if (tls = ServerTls.from_env)
+  ssl_bind "0.0.0.0", 3443, cert_pem: tls.cert_pem, key_pem: tls.key_pem,
+                                       no_tlsv1: true, no_tlsv1_1: true, verify_mode: "none"
+end
+
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
 

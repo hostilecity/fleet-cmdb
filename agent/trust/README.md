@@ -13,10 +13,10 @@ Both files are copied unchanged from Cloudflare's documentation repository (`clo
 
 Agents download their updates over the same HTTPS connection whose certificate they check. So a new root must reach the agents **before** the server's certificate uses it:
 
-1. Add the new root here (keep the old one), update the table and the fingerprints in `src/client.rs`'s tests, and release an agent.
+1. Add the new root here (keep the old one), add it to `EMBEDDED_ROOTS` in `src/client.rs` (which names each file, so a file alone is not compiled in), update the table and the fingerprints in the tests beside it, and release an agent.
 2. Roll it out to every host. The Agents page shows each host's version.
 3. Only then reissue the server's certificate under the new root and update its secrets.
-4. In a later release, remove the retired root.
+4. In a later release, remove the retired root: its file, its `EMBEDDED_ROOTS` entry (the build fails if the entry names a missing file), and its fingerprint in the tests.
 
 A host that misses step 2, for example a VM that was powered off, cannot connect after step 3 and needs a manual reinstall.
 

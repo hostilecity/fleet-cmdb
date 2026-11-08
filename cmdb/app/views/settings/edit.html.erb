@@ -18,3 +18,22 @@
   <% end %>
   <div class="actions"><button class="btn" type="submit">Save settings</button></div>
 <% end %>
+
+<%# The server's certificate (ADR 0024): Cloudflare sends no expiry reminders, so this page says when it expires. %>
+<section class="sheet spaced" aria-labelledby="server_certificate_heading" id="server_certificate">
+  <h2 id="server_certificate_heading">Server certificate</h2>
+  <% if @server_tls %>
+    <% days = ((@server_tls.not_after - Time.current) / 1.day).floor %>
+    <% if days < 30 %>
+      <div class="notice error" role="alert"><strong><%= days.negative? ? "The server's certificate has expired." : "The server's certificate expires in #{pluralize(days, 'day')}." %></strong>
+        <p>Agents and the tunnel stop connecting when it expires. Create a new Origin certificate in Cloudflare, put it in the <span class="mono">FLEET_TLS_CERT</span> and <span class="mono">FLEET_TLS_KEY</span> secrets, and run the Deploy workflow.</p></div>
+    <% end %>
+    <dl class="facts">
+      <dt>For</dt><dd class="mono"><%= @server_tls.names.join(", ").presence || "no hostname" %></dd>
+      <dt>Issued by</dt><dd><%= @server_tls.issuer.presence || "unknown" %></dd>
+      <dt>Expires</dt><dd><%= utc(@server_tls.not_after) %><%= " (in #{pluralize(days, 'day')})" unless days.negative? %></dd>
+    </dl>
+  <% else %>
+    <p class="muted">No certificate is configured (<span class="mono">FLEET_TLS_CERT_BASE64</span>), so the server serves only plain HTTP inside its container. Agents connect only over HTTPS.</p>
+  <% end %>
+</section>
