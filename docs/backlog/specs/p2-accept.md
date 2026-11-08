@@ -17,19 +17,16 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] Fleet compliance view and fleet list each load in under 2 seconds with 50 hosts (numbers recorded)
 - [ ] Heartbeat p95 remains under 200 ms
 
-## P2-X01: Phase 2 contract tests and backward compatibility
+## P2-X01: Phase 2 contract tests
 
 ### Scope
 
 - Schemas and examples in `docs/api/` for the manifest, config report, package report, and heartbeat directives, with valid and invalid cases.
 - Server and agent tests consume them as in [P1-X01](p1-accept.md).
-- The frozen Phase 1 golden fixtures still pass unchanged against the Phase 2 server. If a Phase 1 schema needed a change, the version is bumped with a documented migration.
-- An agent from the end of Phase 1 (previous release) is run against the Phase 2 server in CI or by a documented manual check: it must keep working, and ignore the new directives.
+- Backward compatibility with Phase 1 agents and fixtures is not checked: the owner does not require it before the end of Phase 3 (NFR-5, 2026-11-08).
 
 ### Acceptance criteria
 
-- [ ] Phase 1 fixtures pass unchanged
-- [ ] Previous agent release works against the new server
 - [ ] AC-2.6 tests (config validation, rule evaluation, version comparison, matching and resolution) are listed by name for the delivery note
 
 ## P2-X02: Phase 2 acceptance run and delivery note

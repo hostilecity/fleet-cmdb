@@ -420,9 +420,9 @@
   milestone: 2
   labels: ["area:ops", "area:server"]
   covers: [NFR-2, NFR-3, NFR-5, FR-S.2, AC-2.6, AC-2.1, AC-2.2, AC-2.3, AC-2.4, AC-2.5]
-  goal: "Phase 2 is accepted: retention and performance hold, Phase 1 fixtures still pass, every AC-2.x passes, and a delivery note is posted."
+  goal: "Phase 2 is accepted: retention and performance hold, every AC-2.x passes, and a delivery note is posted."
   done:
-    - "AC-2.1 to AC-2.6 have recorded evidence, and Phase 1 golden fixtures pass unchanged against the Phase 2 server."
+    - "AC-2.1 to AC-2.6 have recorded evidence."
     - "The fleet list and compliance view load under 2 s at 50 hosts and heartbeat p95 stays under 200 ms."
   blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET, P2-RULE-DRYRUN, P2-REFRESH-LIMIT, P2-DEBIAN-TRIAGE]
 
