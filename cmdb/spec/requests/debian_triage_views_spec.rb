@@ -156,6 +156,31 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       expect([ note.text, note.children.map(&:name) ]).to eq([ "Exactly as Debian says it: \"quoted\", <b>tags</b> & all", [ "text" ] ])
     end
 
+    it "shows a no-DSA note after a status that is not open, and counts only entries Debian has not resolved (review of #136)" do
+      host, document = state_catalogue
+      release = ->(name, index) { document["src-#{name}"][cve(index)]["releases"]["trixie"] }
+      release.("undetermined", 8).merge!("nodsa" => "Example: needs triage", "nodsa_reason" => "ignored")
+      release.("resolved", 9).merge!("nodsa" => "Minor issue")
+      import_triage(document)
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(tab_lines.values_at("bin-undetermined DEBIAN-CVE-2026-99108", "bin-resolved DEBIAN-CVE-2026-99109")).to eq([
+        [ [ "Debian: not yet determined for trixie; ignored, no fix planned for this release (Example: needs triage)", nil ] ],
+        [ [ "Debian: fixed for trixie in 2.0-1; no security update planned (Minor issue)", "This host has 1.0-1, so the finding stays open." ] ]
+      ])
+      expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 6") # the undetermined one, not the resolved one
+
+      get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "bin-resolved" }
+      expect(page.at_css("#package_findings tbody tr td:nth-child(7) .triage .why").text.squish).to start_with("This host has 1.0-1, so the finding stays open.")
+    end
+
+    it "quotes Debian's note with its spaces and lines as written (review of #136)" do
+      host, document = state_catalogue
+      document["src-nodsa"]["CVE-2026-99101"]["releases"]["trixie"]["nodsa"] = "See  section A\nthen B"
+      import_triage(document)
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(page.at_css("#open_list tbody:has(a[href$='package=bin-nodsa']) q").text).to eq("See  section A\nthen B")
+    end
+
     it "filters by 'Debian: no security update planned' on every no-DSA reason, keeping the other filters, counted within the state (T3)" do
       host, document = state_catalogue
       import_triage(document)
@@ -288,7 +313,8 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       expect(response.body).not_to include("1100001") # Debian's bug number is not shown (T6)
       expect(facts(page.at_css("#installed_package"))).to include("Debian triage for" => "trixie (Debian 13)")
       expect(page.at_css("#package_summary").text.squish).to include(
-        "The advisory gives no fixed version for trixie yet, so no update resolves DEBIAN-CVE-2026-19499 today. Debian's note says a fix is planned for the next point release; " \
+        "The advisory data gives no fixed version for DEBIAN-CVE-2026-19499 in trixie yet; check the advisory's affected range for a version outside it. " \
+        "Debian's note says a fix is planned for the next point release; " \
         "the finding resolves only when the installed version is outside the affected range."
       )
     end
@@ -351,8 +377,8 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       expect(notice.text.squish).to eq(
         "The last Debian Security Tracker refresh was held back. It would have removed 1 of 1 stored bookworm entries (100%), 1 of 1 stored forky entries (100%), " \
         "1 of 1 stored sid entries (100%), and 3 of 3 stored trixie entries (100%), more than the 10% limit, at 2026-11-07 10:00 UTC, so bookworm, forky, sid, and trixie " \
-        "kept their previous data, which is still shown beside findings. It goes stale 48 hours after trixie's last successful import (2026-11-07 09:00 UTC) unless a later " \
-        "refresh imports. Findings, severity, and counts are not affected."
+        "kept their previous data. The previous data for trixie is shown beside findings until it goes stale, 48 hours after its last successful import " \
+        "(2026-11-07 09:00 UTC), unless a later refresh imports. Findings, severity, and counts are not affected."
       )
       expect(page.at_css("#tracker_releases tbody tr td:nth-child(2)").text.squish).to eq("Fresh Last refresh held back")
       held = page.at_css("#tracker_import_list tbody tr")
@@ -367,6 +393,14 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       get "/hosts/#{host.id}/vulnerabilities"
       expect(page.at_css("#tracker_held, #triage_stale")).to be_nil
       expect(tab_lines.values.flatten(1).first.first).to start_with("Debian: no security update planned") # the kept data is still shown
+
+      # Once the kept data is stale it is no longer shown, and the notice says so (review of #136).
+      travel 2.days
+      sign_in_operator # the session expired meanwhile
+      get "/data-sources"
+      expect(page.at_css("#tracker_held").text.squish).to include(
+        "kept their previous data. The previous data for trixie is out of date, so it is no longer shown beside findings. Findings, severity"
+      )
     ensure
       travel_back
     end

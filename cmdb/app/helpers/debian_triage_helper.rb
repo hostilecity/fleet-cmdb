@@ -14,9 +14,9 @@ module DebianTriageHelper
   TRIAGE_NO_DSA = { nil => "no security update planned", "postponed" => "postponed to a later update or point release",
                     "ignored" => "ignored, no fix planned for this release" }.freeze
 
-  # Whether the triage has a no-DSA note of any reason (none, postponed, or ignored): the "Debian: no security
-  # update planned" chip (T3).
-  def triage_no_dsa?(triage) = triage.available? && triage.entries.any?(&:no_dsa)
+  # Whether the triage has a no-DSA note of any reason (none, postponed, or ignored) on an entry Debian has not
+  # resolved: the "Debian: no security update planned" chip (T3). A resolved entry has a fix, whatever its note says.
+  def triage_no_dsa?(triage) = triage.available? && triage.entries.any? { |entry| entry.no_dsa && entry.status != "resolved" }
 
   # Debian's note text as the tracker gives it, cut at TRIAGE_NOTE_MAX characters with an ellipsis (T7).
   def triage_note(note) = note.length > TRIAGE_NOTE_MAX ? "#{note[0, TRIAGE_NOTE_MAX]}…" : note
@@ -40,13 +40,23 @@ module DebianTriageHelper
     safe_join(lines)
   end
 
-  # What one tracker entry says, in our words with Debian's note quoted (T7).
+  # What one tracker entry says, in our words with Debian's note quoted (T7). A no-DSA note on an entry that is not
+  # open follows its status (review of #136): "not yet determined for trixie; ignored, no fix planned ...".
   def triage_summary(entry, release)
     summary = if entry.no_dsa
       category = TRIAGE_NO_DSA.fetch(entry.no_dsa_reason, TRIAGE_NO_DSA[nil])
       note = entry.no_dsa_note.presence
-      safe_join([ category, (safe_join([ " (", tag.q(triage_note(note)), ")" ]) if note), (", urgency #{entry.urgency}" if entry.urgency) ].compact)
-    elsif entry.status == "resolved" && triage_fixed_version(entry)
+      no_dsa = safe_join([ category, (safe_join([ " (", tag.q(triage_note(note), class: "note"), ")" ]) if note), (", urgency #{entry.urgency}" if entry.urgency) ].compact)
+      entry.status == "open" ? no_dsa : safe_join([ triage_status(entry, release), "; ", no_dsa ])
+    else
+      triage_status(entry, release)
+    end
+    entry.next_point_update && entry.status != "resolved" ? safe_join([ summary, "; fix planned for the next point release" ]) : summary
+  end
+
+  # An entry's status in our words, without its no-DSA note.
+  def triage_status(entry, release)
+    if entry.status == "resolved" && triage_fixed_version(entry)
       safe_join([ "fixed for #{release} in ", tag.span(entry.fixed_version, class: "mono") ])
     elsif entry.status == "resolved" then "marked resolved for #{release}"
     elsif entry.status == "undetermined" then "not yet determined for #{release}"
@@ -54,7 +64,6 @@ module DebianTriageHelper
     elsif entry.urgency then "urgency #{entry.urgency}"
     else "not triaged yet"
     end
-    entry.next_point_update && entry.status != "resolved" ? safe_join([ summary, "; fix planned for the next point release" ]) : summary
   end
 
   # The host's release and its freshness for the line under the tab bar and on the data sources page: "Debian's
@@ -160,7 +169,7 @@ module DebianTriageHelper
     if !entry.no_dsa && entry.status == "open" && entry.urgency == "unimportant"
       why << "Debian's urgency for this release. The installed version is still in the affected range."
     end
-    why << triage_version_why(finding, entry) if entry.status == "resolved" && !entry.no_dsa
+    why << triage_version_why(finding, entry) if entry.status == "resolved"
     why.compact
   end
 
@@ -170,7 +179,9 @@ module DebianTriageHelper
     release = triage.release
     why = []
     why << "#{entry.cve_id}." if triage_cve_named?(finding, entry)
-    if entry.no_dsa
+    if entry.status == "resolved"
+      why << triage_version_why(finding, entry)
+    elsif entry.no_dsa
       why << case entry.no_dsa_reason
       when "postponed" then "Debian's security team has postponed the fix for this in #{release} to a later update or point release."
       when "ignored" then "Debian's security team does not plan to fix this in #{release}."
@@ -179,8 +190,6 @@ module DebianTriageHelper
       if triage_active?(finding)
         why << (entry.next_point_update ? "Until then the installed version is still in the affected range." : "The installed version is still in the affected range.")
       end
-    elsif entry.status == "resolved"
-      why << triage_version_why(finding, entry)
     elsif entry.urgency == "unimportant"
       why << "Debian's urgency for #{release}; it does not say the package is unaffected."
     end

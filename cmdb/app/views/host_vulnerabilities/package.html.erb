@@ -44,7 +44,7 @@
       <% end %>
       <%# Debian plans the fix for its next point release, but the advisory data has no fixed version yet (host-vuln-package-libc6.html). %>
       <% open.reject(&:fixed_version).select { |f| (t = @triage[f]).available? && t.entries.any?(&:next_point_update) }.each do |finding| %>
-        <p class="muted next-point">The advisory gives no fixed version for <span class="mono"><%= @triage_release %></span> yet, so no update resolves <span class="mono"><%= finding.advisory.advisory_id %></span> today. Debian's note says a fix is planned for the next point release; the finding resolves only when the installed version is outside the affected range.</p>
+        <p class="muted next-point">The advisory data gives no fixed version for <span class="mono"><%= finding.advisory.advisory_id %></span> in <span class="mono"><%= @triage_release %></span> yet; check the advisory's affected range for a version outside it. Debian's note says a fix is planned for the next point release; the finding resolves only when the installed version is outside the affected range.</p>
       <% end %>
     <% end %>
     <% if @siblings.any? %>
