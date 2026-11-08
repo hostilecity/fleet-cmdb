@@ -402,13 +402,13 @@ Settings and their defaults: [docs/operations/configuration.md](../docs/operatio
 
 ### Docker image
 
-The image needs the agent API schemas and the rule file schema too, so build it from `cmdb/` with `docs/api` as a named build context (`.github/workflows/cd.yml` does this):
+The image needs the agent API schemas, the rule file schema, and the agent's compiled-in certificate authorities too, so build it from `cmdb/` with `docs/api` and `agent/trust` as named build contexts (`.github/workflows/cd.yml` does this):
 
 ```sh
-docker build --build-context api=../docs/api -t cmdb .
+docker build --build-context api=../docs/api --build-context trust=../agent/trust -t cmdb .
 ```
 
-It runs Puma directly on port 3000, without Thruster: `HostSeparation` trusts forwarded headers only from the proxy that connected, and behind Thruster every request would come from loopback. Deploying it: [docs/operations/install-server.md](../docs/operations/install-server.md).
+It runs Puma directly (`puma -C config/puma.rb`: plain HTTP on 3000 inside the container, HTTPS on 3443 with the server's certificate, ADR 0024), without Thruster: `HostSeparation` trusts forwarded headers only from the proxy that connected, and behind Thruster every request would come from loopback. Deploying it: [docs/operations/install-server.md](../docs/operations/install-server.md).
 
 ## Secrets
 
@@ -418,5 +418,5 @@ It runs Puma directly on port 3000, without Thruster: `HostSeparation` trusts fo
 
 ## Layout notes
 
-- `Dockerfile` is the Rails production image. `.github/workflows/cd.yml` builds and runs it on the server (P1-O03): one container on the existing PostgreSQL container's network, published on port 80 for the Cloudflare tunnel.
+- `Dockerfile` is the Rails production image. `.github/workflows/cd.yml` builds and runs it on the server (P1-O03): one container on the existing PostgreSQL container's network, serving HTTPS on port 443 with the server's Cloudflare Origin CA certificate, for agents and the Cloudflare tunnel (ADR 0024, `config/puma.rb`, `lib/tls/server_tls.rb`).
 - Kamal, Action Mailer, Action Mailbox, Action Text, Active Storage, and jbuilder were deliberately not generated.

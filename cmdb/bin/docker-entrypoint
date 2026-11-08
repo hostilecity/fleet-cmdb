@@ -1,7 +1,8 @@
 #!/bin/bash -e
 
-# If running the rails server then create or migrate existing database
-if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
+# If running the server, create or migrate the databases first. The image runs Puma directly with its config
+# (config/puma.rb), because `bin/rails server` replaces the config's listeners, including the HTTPS one (ADR 0024).
+if [ "$*" == "./bin/rails server" ] || [ "$*" == "bundle exec puma -C config/puma.rb" ]; then
   ./bin/rails db:prepare
 fi
 

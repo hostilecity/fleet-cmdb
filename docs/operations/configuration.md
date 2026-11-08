@@ -9,9 +9,9 @@ Settings marked *fixed* are set by the workflow or the image and are listed so t
 | Setting | Default | |
 |---|---|---|
 | `FLEET_DASHBOARD_HOST` | required | Public dashboard hostname, published through the Cloudflare tunnel. The app serves the dashboard, sign-in, and the OAuth callback only on this name |
-| `FLEET_AGENT_HOST` | required | Private agent API hostname, resolving only on the LAN. The app serves `/api/v1`, `/up`, and `/health` only on this name. Must differ from the dashboard hostname; the boot stops otherwise. Required at boot, but nothing serves it with TLS yet: that is [#137](https://github.com/hostilecity/fleet-cmdb/issues/137) |
+| `FLEET_AGENT_HOST` | required | The server VM's internal hostname, resolving only on your network: agents and the tunnel connect to it over HTTPS (ADR 0024). The app serves `/api/v1`, `/up`, and `/health` only on this name. Must differ from the dashboard hostname, and the server's certificate must cover it; the boot stops otherwise |
 | `FLEET_DASHBOARD_URL` | `https://$FLEET_DASHBOARD_HOST` | Base of the approval link the agent installer prints, if the dashboard is on another scheme or port |
-| `FLEET_TRUSTED_PROXIES` | none (loopback only) | Addresses or CIDRs (comma-separated) allowed to set `X-Forwarded-Host`, `X-Forwarded-For`, `Client-IP`, and `Forwarded`; loopback is always trusted. **Leave it unset in this deployment**: the tunnel connector reaches the app directly and passes on headers a browser sent, so trusting it would let a client claim the agent hostname with `X-Forwarded-Host`. For the TLS proxy of [#137](https://github.com/hostilecity/fleet-cmdb/issues/137) |
+| `FLEET_TRUSTED_PROXIES` | none (loopback only) | Addresses or CIDRs (comma-separated) allowed to set `X-Forwarded-Host`, `X-Forwarded-For`, `Client-IP`, and `Forwarded`; loopback is always trusted. **Leave it unset in this deployment**: the tunnel connector reaches the app directly and passes on headers a browser sent, so trusting it would let a client claim the agent hostname with `X-Forwarded-Host`. For a TLS proxy in front of the app, if a deployment adds one |
 
 ## Secrets
 
@@ -23,6 +23,7 @@ Keep a copy of each with your other secrets (GitHub never shows a secret again),
 | `RAILS_MASTER_KEY` | not used | The repository's `cmdb/config/credentials.yml.enc` belongs to its owner and holds nothing a deployment needs; `SECRET_KEY_BASE` replaces it. Not passed by the workflow |
 | `DATABASE_PASSWORD` | required | Password of the existing PostgreSQL role `cmdb`. To change it, change it in PostgreSQL (`ALTER ROLE cmdb PASSWORD '…'`) and in GitHub, then deploy |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | Google OAuth web client for operator sign-in. Redirect URI `https://$FLEET_DASHBOARD_HOST/auth/google_oauth2/callback` |
+| `FLEET_TLS_CERT_BASE64`, `FLEET_TLS_KEY_BASE64` | none (no HTTPS) | The server's certificate and its private key (ADR 0024): each PEM file base64-encoded onto one line. The deploy workflow encodes them from the secrets `FLEET_TLS_CERT` and `FLEET_TLS_KEY`. Puma then serves HTTPS on `FLEET_TLS_PORT`, TLS 1.2 and later. Set both or neither; a key that does not match, or a certificate that does not cover `FLEET_AGENT_HOST`, stops the server at boot. The Settings page shows the certificate's expiry |
 
 ## Agent releases
 
@@ -73,6 +74,7 @@ The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (O
 | `FLEET_ONBOARDING_MAX_OPEN_PER_ADDRESS` | `5` | Onboarding requests awaiting approval, per client address |
 | `FLEET_ONBOARDING_RATE_LIMIT_PER_MINUTE` | `10` | Onboarding starts per client address |
 | `FLEET_API_SCHEMAS_DIR` | *fixed* by the image: `/rails/api-schemas` (`../docs/api/schemas` outside it) | The agent API JSON Schemas, read at runtime; the boot stops without them |
+| `FLEET_AGENT_TRUST_DIR` | *fixed* by the image: `/rails/agent-trust` (`../agent/trust` outside it) | The certificate authorities compiled into the agent (ADR 0024). The install page gives curl the one that signed the server's certificate |
 
 ## Operator sessions
 
@@ -110,9 +112,10 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `RAILS_MAX_THREADS` | Puma: `3` threads; database pool: `5` | Sets both. Keep the default unless the dashboard is slow under load |
 | `JOB_CONCURRENCY` | `1` | Solid Queue worker processes |
 | `RAILS_ENV` | *fixed* by the image: `production` | |
-| `PORT` | *fixed* by the image: `3000` | Puma's port inside the container, published as port 80 on the server |
+| `PORT` | *fixed* by the image: `3000` | Puma's plain-HTTP port inside the container, for its health checks; not published |
+| `FLEET_TLS_PORT` | `3443` | Puma's HTTPS port inside the container, published as port 443 on the server |
 | `SOLID_QUEUE_IN_PUMA` | *fixed* by the workflow: `1` | Background jobs and the recurring schedule run inside the app container |
 | `PGHOST` | *fixed* by the workflow: `$FLEET_DB_HOST` | The PostgreSQL server, for all four databases (role `cmdb`, set in `config/database.yml`) |
 | `DATABASE_URL`, `CACHE_DATABASE_URL`, `QUEUE_DATABASE_URL`, `CABLE_DATABASE_URL` | not set | Override a database's connection (the restore drill sets `DATABASE_URL` to its scratch database). Not used by the deployment |
 
-Not settings: `SECRET_KEY_BASE_DUMMY` is used only while building the image, and `BUNDLE_GEMFILE`, `FLEET_API_SCHEMAS_DIR`, and `FLEET_RULES_SCHEMA_DIR` are set by the image; `WEB_CONCURRENCY` and `PIDFILE` (Puma) are not needed; `CI`, `GITHUB_ACTIONS`, `COVERAGE_MINIMUM`, `NO_COVERAGE`, and `SHOW_TIMINGS` affect only the test suite and CI; the `DEPLOY_*` variables, `SSH_PRIVATE_KEY`, and `FLEET_EXTRA_SETTINGS` belong to the deploy workflow; `BACKUP_*` and the libpq variables `PGUSER`, `PGPASSWORD`, `PGPORT` are read by the scripts in `ops/backup/`; and `EMAIL`, `DISPLAY_NAME`, `VM_HOSTNAME`, `TAGS`, `DESCRIPTION`, `HOST_ID`, `ONLINE_MINUTES`, `STALE_MINUTES`, `DAYS`, `COUNTS`, `FULL`, `ALLOW_WITHDRAWALS`, and `DISABLE_MISSING` are arguments of the `bin/rails` tasks named in these guides.
+Not settings: `SECRET_KEY_BASE_DUMMY` is used only while building the image, and `BUNDLE_GEMFILE`, `FLEET_API_SCHEMAS_DIR`, `FLEET_RULES_SCHEMA_DIR`, and `FLEET_AGENT_TRUST_DIR` (the agent's compiled-in certificate authorities, `agent/trust`) are set by the image; `WEB_CONCURRENCY` and `PIDFILE` (Puma) are not needed; `CI`, `GITHUB_ACTIONS`, `COVERAGE_MINIMUM`, `NO_COVERAGE`, and `SHOW_TIMINGS` affect only the test suite and CI; the `DEPLOY_*` variables, `SSH_PRIVATE_KEY`, and `FLEET_EXTRA_SETTINGS` belong to the deploy workflow; `BACKUP_*` and the libpq variables `PGUSER`, `PGPASSWORD`, `PGPORT` are read by the scripts in `ops/backup/`; and `EMAIL`, `DISPLAY_NAME`, `VM_HOSTNAME`, `TAGS`, `DESCRIPTION`, `HOST_ID`, `ONLINE_MINUTES`, `STALE_MINUTES`, `DAYS`, `COUNTS`, `FULL`, `ALLOW_WITHDRAWALS`, and `DISABLE_MISSING` are arguments of the `bin/rails` tasks named in these guides.

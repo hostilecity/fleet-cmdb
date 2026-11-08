@@ -9,6 +9,55 @@ RSpec.describe "Settings", :signed_in, type: :request do
     expect(page.at_css("#stale_minutes")["value"]).to eq("15")
   end
 
+  describe "the server certificate (ADR 0024)" do
+    def tls(days)
+      key = OpenSSL::PKey::EC.generate("prime256v1")
+      cert = OpenSSL::X509::Certificate.new
+      cert.version = 2
+      cert.serial = 1
+      cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/O=CloudFlare, Inc./OU=CloudFlare Origin SSL ECC Certificate Authority")
+      cert.public_key = key
+      cert.not_before = 1.day.ago
+      cert.not_after = days.days.from_now
+      factory = OpenSSL::X509::ExtensionFactory.new
+      factory.subject_certificate = cert
+      cert.add_extension(factory.create_extension("subjectAltName", "DNS:agent.fleet.example.lan"))
+      cert.sign(key, OpenSSL::Digest.new("SHA256"))
+      ServerTls.new(cert.to_pem, key.to_pem)
+    end
+
+    around do |example|
+      saved = Rails.configuration.x.server_tls
+      example.run
+    ensure
+      Rails.configuration.x.server_tls = saved
+    end
+
+    it "shows what it is for, who issued it, and when it expires" do
+      Rails.configuration.x.server_tls = tls(400)
+      get "/settings"
+      section = page.at_css("#server_certificate")
+      expect(section.css("dd").map { |dd| dd.text.squish }.values_at(0, 1)).to eq([ "agent.fleet.example.lan", "CloudFlare Origin SSL ECC Certificate Authority" ])
+      expect(section.css("dd")[2].text).to end_with("(in 399 days)")
+      expect(section.at_css(".notice")).to be_nil
+    end
+
+    it "warns within 30 days of expiry, and once it has expired" do
+      Rails.configuration.x.server_tls = tls(10)
+      get "/settings"
+      expect(page.at_css("#server_certificate .notice strong").text).to eq("The server's certificate expires in 9 days.")
+      Rails.configuration.x.server_tls = tls(-1)
+      get "/settings"
+      expect(page.at_css("#server_certificate .notice strong").text).to eq("The server's certificate has expired.")
+    end
+
+    it "says when none is configured" do
+      Rails.configuration.x.server_tls = nil
+      get "/settings"
+      expect(page.at_css("#server_certificate").text.squish).to include("No certificate is configured")
+    end
+  end
+
   it "changes the thresholds and audits the change against the operator" do
     expect { patch "/settings", params: { online_minutes: "5", stale_minutes: "20" } }.to change(AuditEntry, :count).by(2)
     expect(response).to redirect_to("/settings")

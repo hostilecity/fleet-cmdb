@@ -5,6 +5,7 @@ class SettingsController < ApplicationController
     thresholds = Setting.liveness_thresholds
     @online = thresholds[:online].in_minutes.to_i
     @stale = thresholds[:stale].in_minutes.to_i
+    @server_tls = Rails.configuration.x.server_tls
   end
 
   def update

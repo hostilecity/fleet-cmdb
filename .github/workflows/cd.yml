@@ -1,13 +1,15 @@
 # Deploy (P1-O03): builds and runs the server on its VM (docs/operations/install-server.md). On a self-hosted runner
-# on the LAN it connects to the VM over SSH, ships the commit's cmdb/ and docs/api/ (tar), builds the image there, and replaces the
-# fleet-cmdb container, which joins the existing PostgreSQL container's Docker network and publishes port 80 for the
-# Cloudflare tunnel. Settings come from the "production" environment; secret values travel only on SSH standard
-# input into a mode-0600 env file for `docker run --env-file`, never on a command line.
+# on the LAN it connects to the VM over SSH, ships the commit's cmdb/, docs/api/, and agent/trust/ (tar), builds the image there, and replaces the
+# fleet-cmdb container, which joins the existing PostgreSQL container's Docker network and publishes port 443: HTTPS
+# with the server's Cloudflare Origin CA certificate, for agents and the Cloudflare tunnel (ADR 0024). Settings come
+# from the "production" environment; secret values travel only on SSH standard input into a mode-0600 env file for
+# `docker run --env-file`, never on a command line.
 #
 # Runs on every push to main, and when started by hand on main (Actions > Deploy > Run workflow, e.g. after changing
 # a setting). It deploys the run's own commit (GITHUB_SHA), so to roll back,
 # re-run an earlier Deploy run (it redeploys its commit) or revert on main. The runner needs bash, ssh and tar, not
-# git: actions/checkout downloads the commit through the API when git is missing.
+# git: actions/checkout downloads the commit through the API when git is missing. It also needs openssl, to check
+# that agents will trust the server's certificate before it is deployed.
 name: Deploy
 
 on:
@@ -67,9 +69,25 @@ jobs:
             "$DEPLOY_HOST" "$DEPLOY_USER" "$dir" "$dir" > "$dir/config"
           echo "SSH_CONFIG=$dir/config" >> "$GITHUB_ENV"
 
+      - name: Check that agents will trust the certificate
+        env:
+          FLEET_TLS_CERT: ${{ secrets.FLEET_TLS_CERT }}
+        run: |
+          # Agents trust the system store plus the roots compiled in from agent/trust (ADR 0024). A certificate they do not
+          # trust would cut every agent off, including from the update that could fix it, so it stops the deploy here.
+          # The key matching the certificate, and the certificate covering FLEET_AGENT_HOST, are checked when the app boots.
+          [ -n "$FLEET_TLS_CERT" ] || { echo "::error::set FLEET_TLS_CERT in the production environment (the Origin CA certificate, PEM)"; exit 1; }
+          cat agent/trust/*.pem > "$RUNNER_TEMP/agent-roots.pem"
+          printf '%s\n' "$FLEET_TLS_CERT" > "$RUNNER_TEMP/server-cert.pem"
+          if ! openssl verify -purpose sslserver -CAfile "$RUNNER_TEMP/agent-roots.pem" -untrusted "$RUNNER_TEMP/server-cert.pem" "$RUNNER_TEMP/server-cert.pem"; then
+            echo "::error::FLEET_TLS_CERT is not signed by a certificate authority agents trust (agent/trust, or the system store)"; exit 1
+          fi
+          openssl x509 -in "$RUNNER_TEMP/server-cert.pem" -noout -subject -ext subjectAltName -enddate
+          rm -f "$RUNNER_TEMP/agent-roots.pem" "$RUNNER_TEMP/server-cert.pem"
+
       - name: Ship the code
         run: |
-          tar -cf - cmdb docs/api | ssh -F "$SSH_CONFIG" server \
+          tar -cf - cmdb docs/api agent/trust | ssh -F "$SSH_CONFIG" server \
             "rm -rf '$DEPLOY_DIR/build-$DEPLOY_SHA' && mkdir -p '$DEPLOY_DIR/build-$DEPLOY_SHA' && tar -xf - -C '$DEPLOY_DIR/build-$DEPLOY_SHA'"
 
       - name: Write the app's env file on the server
@@ -78,6 +96,8 @@ jobs:
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          FLEET_TLS_CERT: ${{ secrets.FLEET_TLS_CERT }}
+          FLEET_TLS_KEY: ${{ secrets.FLEET_TLS_KEY }}
           FLEET_ADVISORY_FEED_TOKEN: ${{ secrets.FLEET_ADVISORY_FEED_TOKEN }}
           FLEET_DASHBOARD_HOST: ${{ vars.FLEET_DASHBOARD_HOST }}
           FLEET_AGENT_HOST: ${{ vars.FLEET_AGENT_HOST }}
@@ -98,6 +118,11 @@ jobs:
           for name in SECRET_KEY_BASE DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST; do
             [ -n "${!name}" ] || { echo "::error::set $name in the production environment"; exit 1; }
           done
+          # The certificate and key are PEM files with line breaks; docker takes one line per value, so they are base64.
+          for name in FLEET_TLS_CERT FLEET_TLS_KEY; do
+            [ -n "${!name}" ] || { echo "::error::set $name in the production environment"; exit 1; }
+            lines+=("${name}_BASE64=$(printf '%s\n' "${!name}" | base64 -w0)")
+          done
           while IFS= read -r line; do # FLEET_EXTRA_SETTINGS: further non-secret settings, NAME=value per line
             [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
             [[ "$line" =~ ^[A-Z][A-Z0-9_]*= ]] || { echo "::error::FLEET_EXTRA_SETTINGS: a line is not NAME=value"; exit 1; }
@@ -117,10 +142,10 @@ jobs:
           echo "==> storage volume"
           docker volume create fleet-cmdb_storage >/dev/null
           echo "==> build fleet-cmdb:$sha"
-          docker build --pull -q --build-context api="build-$sha/docs/api" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
+          docker build --pull -q --build-context api="build-$sha/docs/api" --build-context trust="build-$sha/agent/trust" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
           echo "==> replace the container"
           docker rm -f fleet-cmdb >/dev/null 2>&1 || true
-          docker run -d --name fleet-cmdb -p 80:3000 --network "$network" --restart unless-stopped \
+          docker run -d --name fleet-cmdb -p 443:3443 --network "$network" --restart unless-stopped \
             -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb.env "fleet-cmdb:$sha" >/dev/null
           rm -f fleet-cmdb.env
           echo "==> wait for /up (the first start creates and migrates the databases)"

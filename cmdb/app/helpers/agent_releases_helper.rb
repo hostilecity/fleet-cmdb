@@ -4,12 +4,23 @@
 module AgentReleasesHelper
   # The file name the commands save the binary as.
   INSTALL_FILE = "fleet-agent".freeze
+  # The file the download command writes the server's certificate authority to, when curl needs it (ADR 0024).
+  INSTALL_CA_FILE = "fleet-server-ca.pem".freeze
   # Shown where a pre-registered host's token goes. Not a valid token, so a command copied without
   # replacing it fails on the VM before contacting the server.
   TOKEN_PLACEHOLDER = "<one-time token>".freeze
 
+  # With a server certificate from a certificate authority curl does not know (Cloudflare's Origin CA, ADR 0024), the
+  # command first writes that authority's certificate (Rails.configuration.x.server_tls_root, public) next to the
+  # binary and gives it to curl, so the download is verified without changing the VM's trust store. The SHA-256 check
+  # that follows is what vouches for the binary either way.
   def install_download_command(release, file: INSTALL_FILE)
-    "curl -fL -o #{file} #{Releases.download_url(release.version, 'binary')}"
+    curl = "curl -fL -o #{file} #{Releases.download_url(release.version, 'binary')}"
+    root = Rails.configuration.x.server_tls_root
+    return curl unless root
+
+    ca = File.join(File.dirname(file), INSTALL_CA_FILE).delete_prefix("./")
+    "cat > #{ca} <<'EOF'\n#{root.strip}\nEOF\n#{curl.sub('curl -fL', "curl -fL --cacert #{ca}")}"
   end
 
   # Two spaces between checksum and name, as sha256sum -c requires.
@@ -31,7 +42,7 @@ module AgentReleasesHelper
   # #!/bin/sh script without `set -e`, so a failed checksum would not stop it, and the unverified download
   # would then run as root (review of #74). With -e, any failing step stops the script before the binary runs.
   def install_cloud_init(release, token: TOKEN_PLACEHOLDER)
-    script = install_cloud_init_script(release, token:).map { |line| "      #{line}\n" }.join
+    script = install_cloud_init_script(release, token:).flat_map { |command| command.split("\n") }.map { |line| "      #{line}\n" }.join
     "#cloud-config\nruncmd:\n  - - sh\n    - -ec\n    - |\n#{script}"
   end
 
