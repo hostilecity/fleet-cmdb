@@ -118,6 +118,7 @@ jobs:
           url="https://$AGENT:8443"
           expect "the certificate verifies for the agent hostname" 200 "$(code "$url/up")"
           expect "TLS 1.1 and older are refused" 35 "$(curl -s -o /dev/null --tls-max 1.1 --cacert "$TLS_DIR/ca.pem" --resolve "$AGENT:8443:127.0.0.1" "$url/up"; echo $?)"
+          expect "the deploy's HTTPS readiness check passes (cd.yml)" 0 "$(docker exec fleet-cmdb curl -fsSk -o /dev/null https://localhost:3443/up; echo $?)"
           expect "plain HTTP is not published" 7 "$(curl -s -o /dev/null http://127.0.0.1:8080/up; echo $?)"
           expect "the agent API answers on the agent hostname" 401 "$(code -X POST -H "Content-Type: application/json" -d '{}' "$url/api/v1/heartbeat")"
           expect "the dashboard is 404 on the agent hostname" 404 "$(code "$url/sign_in")"
