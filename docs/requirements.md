@@ -246,13 +246,14 @@ Phase 2 starts only after Phase 1 is accepted.
 - When a new package snapshot arrives or vulnerability data is refreshed, matching re-runs automatically in a background job. Agents are not involved.
 - The dashboard shows findings per host and per package, filterable by severity, with fleet-wide counts of open findings by severity.
 - Matching must handle version comparison using the package manager's own version rules. String comparison of versions is not acceptable.
+- Where the distribution publishes its own triage of a CVE for a release (for Debian, the Security Tracker's status, urgency, and no-DSA or postponed notes), the server imports it beside the advisory data and the dashboard shows it next to each finding, saying when it is not available. It never changes a finding's state, its normalised severity, or any count. (DEC-22)
 
 ### FR-2.5 Dashboard — Phase 2 additions
 
 - Host detail gains three views: configuration (latest facts, CIS results, snapshot diff), packages (current set, snapshot diff), and vulnerabilities (open and resolved findings).
 - A fleet compliance view lists every host with its CIS pass rate, open CIS failures by severity, and open vulnerability findings by severity.
 - Rules are managed in the dashboard: list and filter, view versions, add one rule from a form and edit a rule, each with a preview of the hosts that would change result before saving, enable and disable, and import a file with a preview of what would change. Rules with several conditions are added by importing a file.
-- Advisory data is managed in the dashboard: sources, last import, an upload, and a manual feed refresh that is limited to one every 5 minutes.
+- Advisory data is managed in the dashboard: sources (OSV and the distribution's triage source), last import, an upload, and a manual feed refresh that is limited to one every 5 minutes.
 
 ### Phase 2 acceptance criteria
 
