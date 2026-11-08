@@ -6,7 +6,7 @@ module DebianTriage
   # - Per release, source package, and CVE it keeps the status, urgency (normalised, with the raw text), fixed
   #   version, no-DSA note and reason, next_point_update, and the CVE's scope. An entry or a release's data
   #   that is not in that shape is skipped and counted as malformed, with where it was (the first PROBLEM_LIMIT).
-  # - The document is read once, into a temporary table, and each release's stored data is then replaced from it
+  # - The document is read once, into a temporary table (with COPY), and each release's stored data is then replaced from it
   #   in the same transaction, so readers see a release's old data or its new data, never a mix. A document that
   #   cannot be read at all (Advisories::Unreadable) stores nothing.
   # - Truncation guard (as the OSV withdrawal guard, review of #131): a release whose stored entries the document
@@ -23,11 +23,10 @@ module DebianTriage
     STAGING = "triage_staging".freeze
     COLUMNS = %w[release package cve_id status urgency urgency_raw fixed_version no_dsa no_dsa_note no_dsa_reason next_point_update scope].freeze
     PACKAGE = /\A[a-z0-9][a-z0-9+.~-]{0,127}\z/
-    UNASSIGNED = [ "", "not yet assigned" ].freeze
     SCOPES = %w[local remote].freeze
     COPY_ENCODER = PG::TextEncoder::CopyRow.new
 
-    # The entries a release could not be stored with.
+    # An entry, or one release's data in it, that is not in the tracker's shape: skipped and counted.
     class Malformed < StandardError; end
 
     # Records an import that stored nothing (the document could not be downloaded or read), audited, in its own
