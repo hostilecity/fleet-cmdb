@@ -164,6 +164,31 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         [ partial, failed, queued ]
       end
 
+      # Debian's triage with hostile note text, reason, fixed version, and scope for a trixie host's finding, and tracker
+      # imports whose source, failure reason, and per-release counts are hostile, by a hostile operator (P2-D08). Rows are
+      # written directly, so the views are tested on their own: the import would clean some of these.
+      let!(:triage_host) do
+        triage_host, = enrolled_host
+        HostInventory.create!(host: triage_host, stable: { "os" => { "id" => "debian", "version_id" => "13", "pretty_name" => "Debian GNU/Linux 13 (trixie)" } },
+                              volatile: {}, warnings: [], stable_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid, schema_version: 1,
+                              collected_at: 1.minute.ago, received_at: 1.minute.ago)
+        advisory = Advisory.create!(advisory_id: "DSA-9199-1", source: "test", summary: "Example.", severity: "high", aliases: %w[CVE-2026-91991 CVE-2026-91992],
+                                    modified_at: Time.current)
+        VulnerabilityFinding.create!(host: triage_host, advisory:, package: "libc6", architecture: "amd64", source: "glibc", ecosystem: "Debian:13",
+                                     installed_version: "2.41-12+deb13u4", state: "open", first_seen_at: 1.hour.ago)
+        base = { tracker: "debian", release: "trixie", package: "glibc" }
+        TriageEntry.create!(base.merge(cve_id: "CVE-2026-91991", status: "open", urgency: "low", urgency_raw: fit(64), no_dsa: true, no_dsa_note: fit(512),
+                                       no_dsa_reason: fit(32), next_point_update: true, scope: fit(8)))
+        TriageEntry.create!(base.merge(cve_id: "CVE-2026-91992", status: "resolved", fixed_version: fit(256), scope: fit(8)))
+        now = Time.current
+        TriageImport.create!(tracker: "debian", origin: "feed", source: fit(256), operator: hostile_operator, state: "held_back", releases: [ "trixie" ],
+                             counts: { "entries" => 2, "malformed" => 0, "releases" => { fit(32) => { "stored" => 9, "in_file" => 1, "dropped" => 8, "outcome" => "held_back" },
+                                                                                        "trixie" => { "stored" => 2, "in_file" => 2, "dropped" => 0, "outcome" => "replaced" } } },
+                             reason: fit(512), started_at: now, finished_at: now)
+        TriageImport.create!(tracker: "debian", origin: "file", source: fit(256), operator: hostile_operator, state: "failed", reason: fit(512), started_at: now, finished_at: now)
+        triage_host
+      end
+
       # [path, whether a value from above is shown on the page as text]
       def pages
         [
@@ -178,7 +203,10 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
           [ "/hosts/#{host.id}/packages", true ], [ "/hosts/#{host.id}/packages/compare", true ],
           [ "/hosts/#{host.id}/packages?q=#{CGI.escape(text.first(100))}&arch=#{CGI.escape(text.first(30))}&sort=#{CGI.escape(text.first(30))}&page=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}/packages/compare?kind=#{CGI.escape(text.first(30))}", true ],
-          [ "/hosts/#{host.id}/vulnerabilities?state=all", true ], [ "/hosts/#{host.id}/vulnerabilities/package?package=#{CGI.escape(text.first(128))}", true ],
+          [ "/hosts/#{host.id}/vulnerabilities?state=all", true ],
+          [ "/hosts/#{triage_host.id}/vulnerabilities", true ], [ "/hosts/#{triage_host.id}/vulnerabilities?debian=no_dsa", true ],
+          [ "/hosts/#{triage_host.id}/vulnerabilities/package?package=libc6", true ],
+          [ "/hosts/#{triage_host.id}/vulnerabilities?debian=#{CGI.escape(text.first(30))}", true ], [ "/hosts/#{host.id}/vulnerabilities/package?package=#{CGI.escape(text.first(128))}", true ],
           [ "/hosts/#{host.id}/vulnerabilities?q=#{CGI.escape(text.first(100))}&severity=#{CGI.escape(text.first(30))}&state=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}/revoke", true ], [ "/hosts/#{host.id}/retire", true ], [ "/hosts/#{host.id}/reenroll", true ],
           [ "/audit", true ], [ "/audit?actor=#{CGI.escape(text.first(100))}&target=#{CGI.escape(text.first(100))}&action=#{CGI.escape(text.first(30))}", false ],

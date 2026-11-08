@@ -6,7 +6,11 @@ module Advisories
   # - request! is the action behind the dashboard button (P2-D06). Accepted, it records a manual attempt,
   #   audits advisory.refresh_requested with the operator as actor, and enqueues AdvisoryFeedRefreshJob, the
   #   job the schedule runs, once the transaction commits. Refused, it audits advisory.refresh_refused with the
-  #   time a refresh is next allowed, and writes nothing else.
+  #   time a refresh is next allowed, and writes nothing else. Unless the Debian Security Tracker is turned off
+  #   (FLEET_DEBIAN_TRACKER_URL empty), the same refresh then refreshes Debian's triage (P2-D08, owner decision T2
+  #   on #134): the job runs DebianTriageRefreshJob once the OSV refresh is done, whatever its outcome, under this
+  #   one cool-down and this one audit entry (which names both sources). A tracker failure never changes the OSV
+  #   import's outcome: it is the tracker job's own failure.
   # - next_allowed_at is when request! would next accept, or nil when it would now; the dashboard reads it to
   #   disable the button with the time left. last_attempt is the newest attempt, for "last refresh at".
   # - record_start! is called by AdvisoryFeedRefreshJob when a scheduled run or the rake task starts. Neither
@@ -27,8 +31,9 @@ module Advisories
     class NotConfigured < StandardError; end
 
     # accepted: whether a refresh was started. attempt: the manual attempt recorded (nil when refused).
-    # next_allowed_at: when a manual refresh is next allowed (after this one, when accepted).
-    Result = Data.define(:accepted, :attempt, :next_allowed_at) do
+    # next_allowed_at: when a manual refresh is next allowed (after this one, when accepted). triage: whether Debian's
+    # triage is refreshed right after the advisory data.
+    Result = Data.define(:accepted, :attempt, :next_allowed_at, :triage) do
       def accepted? = accepted
       def refused? = !accepted
     end
@@ -45,15 +50,16 @@ module Advisories
         lock!
         if (next_at = next_allowed_at(now:))
           Audit.record(actor:, action: Audit::Actions::ADVISORY_REFRESH_REFUSED, changes: { "next_allowed_at" => next_at.utc.iso8601 })
-          next Result.new(accepted: false, attempt: nil, next_allowed_at: next_at)
+          next Result.new(accepted: false, attempt: nil, next_allowed_at: next_at, triage: false)
         end
 
         attempt = AdvisoryRefreshAttempt.create!(kind: "manual", operator: actor, started_at: now)
         next_at = now + cooldown
+        triage = !DebianTriage.config.tracker_url.nil?
         Audit.record(actor:, action: Audit::Actions::ADVISORY_REFRESH_REQUESTED,
-                     changes: { "source" => Feed.new.source, "next_allowed_at" => next_at.utc.iso8601 })
-        ActiveRecord.after_all_transactions_commit { AdvisoryFeedRefreshJob.perform_later(attempt_id: attempt.id) }
-        Result.new(accepted: true, attempt:, next_allowed_at: next_at)
+                     changes: { "source" => Feed.new.source, "triage_source" => (DebianTriage.feed.source if triage), "next_allowed_at" => next_at.utc.iso8601 })
+        ActiveRecord.after_all_transactions_commit { AdvisoryFeedRefreshJob.perform_later(attempt_id: attempt.id, triage:) }
+        Result.new(accepted: true, attempt:, next_allowed_at: next_at, triage:)
       end
     end
 

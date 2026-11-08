@@ -155,7 +155,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
         expect(flash[:notice]).to start_with("Refresh started.")
         attempt = AdvisoryRefreshAttempt.sole
         expect(attempt).to have_attributes(kind: "manual", operator:)
-        expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id)
+        expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id, triage: true)
         expect(AuditEntry.where(action: "advisory.refresh_requested").sole).to have_attributes(actor_type: "operator", actor_id: operator.id)
 
         travel 1.minute

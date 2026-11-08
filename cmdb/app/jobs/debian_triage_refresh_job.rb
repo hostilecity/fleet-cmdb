@@ -18,6 +18,9 @@
 # A held-back import (the truncation guard in DebianTriage::Import) is not a fault: the job ends normally, so it
 # is not retried and does not show as a failed job. allowed_drops is an operator's confirmation of the counts,
 # from bin/rails advisories:triage_refresh ALLOW_DROPS=...
+#
+# operator_id: the operator whose "Refresh now" ran it right after the advisory feed (P2-D08, T2): the import and
+# any failure are attributed to them.
 class DebianTriageRefreshJob < ApplicationJob
   queue_as :default
 
@@ -26,7 +29,8 @@ class DebianTriageRefreshJob < ApplicationJob
     raise error
   end
 
-  def perform(allowed_drops: {})
+  def perform(allowed_drops: {}, operator_id: nil)
+    @operator = operator_id && Operator.find_by(id: operator_id)
     feed = DebianTriage.feed
     if feed.url.nil?
       logger.info("[triage] no Debian Security Tracker configured (FLEET_DEBIAN_TRACKER_URL); refresh skipped")
@@ -36,7 +40,7 @@ class DebianTriageRefreshJob < ApplicationJob
     @source = feed.source
     # No active host reports a release in the table: nothing to download (an import that says so, and drops any
     # stored data).
-    return DebianTriage::Import.new(origin: "feed", source: @source).call(nil) if DebianTriage::Releases.in_use.empty?
+    return DebianTriage::Import.new(origin: "feed", source: @source, operator: @operator).call(nil) if DebianTriage::Releases.in_use.empty?
 
     last = conditional_base
     download = feed.fetch(etag: last&.etag, last_modified: last&.last_modified)
@@ -65,7 +69,8 @@ class DebianTriageRefreshJob < ApplicationJob
     else "the refresh failed on the server (#{error.class.name}); see the server log"
     end
     logger.error("[triage] refresh failed after #{[ executions, 1 ].max} attempts: #{reason}")
-    DebianTriage::Import.record_failure(origin: "feed", source: @source || DebianTriage.feed.source, reason:)
+    @operator ||= (id = arguments.first.to_h.symbolize_keys[:operator_id]) && Operator.find_by(id:)
+    DebianTriage::Import.record_failure(origin: "feed", source: @source || DebianTriage.feed.source, reason:, operator: @operator)
   end
 
   private
@@ -83,7 +88,7 @@ class DebianTriageRefreshJob < ApplicationJob
   end
 
   def import(download, allowed_drops)
-    DebianTriage::Import.new(origin: "feed", source: @source, etag: download.etag, last_modified: download.last_modified, allowed_drops:)
+    DebianTriage::Import.new(origin: "feed", source: @source, operator: @operator, etag: download.etag, last_modified: download.last_modified, allowed_drops:)
                         .call(DebianTriage::Reader.new(download.file.path, name: File.basename(@source)))
   end
 
@@ -95,7 +100,7 @@ class DebianTriageRefreshJob < ApplicationJob
       next nil unless conditional_base&.id == last.id
 
       now = Time.current
-      TriageImport.create!(tracker: DebianTriage::TRACKER, origin: "feed", source: @source, state: "succeeded", releases: last.releases,
+      TriageImport.create!(tracker: DebianTriage::TRACKER, origin: "feed", source: @source, operator: @operator, state: "succeeded", releases: last.releases,
                            counts: { "not_modified" => true }, etag: last.etag, last_modified: last.last_modified, started_at: now, finished_at: now)
     end
   end

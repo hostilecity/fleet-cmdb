@@ -1,0 +1,98 @@
+<%# The Debian Security Tracker panel (P2-D08, ADR 0022; approved mockups data-sources.html#tracker, data-sources-stale.html#tracker,
+    data-sources-held.html, owner decisions T2, T4, T8 on #134). Triage only: it never changes a finding's state, severity, or count.
+    No upload and no button of its own. locals: tracker (TriageDataSources), feed_configured (the advisory feed's Refresh now exists). %>
+<% hours = triage_hours %>
+<% releases = tracker.releases %>
+<% held = tracker.held_import %>
+<% stale = releases.select { |row| row.status.stale } %>
+<section class="sheet spaced" aria-labelledby="tracker_heading" id="tracker">
+  <h2 id="tracker_heading">Debian Security Tracker <span class="badge">Triage only</span></h2>
+  <p class="measure">Debian's own triage of each CVE for each release: status, urgency, and no-DSA or postponed notes. It is shown beside findings on each host's Vulnerabilities tab and package pages. It never changes a finding's state, its severity, or any count; those come from the advisory data above (ADR 0022).</p>
+  <% if !tracker.configured? %>
+    <div class="notice info" role="status" id="tracker_off"><strong>Debian's triage refresh is off.</strong>
+      <p>No tracker is configured on the server (<span class="mono">FLEET_DEBIAN_TRACKER_URL</span> is empty), so its data changes only when a file is imported on the server with <span class="mono">bin/rails advisories:triage_import</span>. Findings say Debian's triage is not available when there is no data imported within <%= hours %>.</p></div>
+  <% elsif stale.any? %>
+    <% failed = tracker.failed_refreshes %>
+    <div class="notice info" role="status" id="tracker_freshness"><strong>Debian's triage is out of date, so it is not shown beside findings.</strong>
+      <p><% stale.each do |row| %>Tracker data for <span class="mono"><%= row.release %></span> <%= row.status.never? ? "has not been imported yet" : "was last imported #{seen_ago(row.status.updated_at)} (#{utc(row.status.updated_at)})" %>. <% end %>
+        <% if failed.positive? %><%= failed == 1 ? "The last refresh failed" : "The last #{failed} refreshes failed" %>; see the imports below, or the <%= link_to "failed jobs page", failed_jobs_path %>. <% end %>Findings, severity, and counts are not affected.</p></div>
+  <% end %>
+  <% if held %>
+    <% outcomes = held.counts["releases"].to_h.select { |_, o| o.is_a?(Hash) && o["outcome"] == "held_back" }.sort.to_h %>
+    <% kept = outcomes.keys %>
+    <div class="notice" role="status" id="tracker_held"><strong>The last Debian Security Tracker refresh was held back.</strong>
+      <p>It would have removed <%= outcomes.map { |release, o| "#{number_with_delimiter(o['dropped'].to_i)} of #{number_with_delimiter(o['stored'].to_i)} stored #{release} entries (#{triage_share(o['dropped'], o['stored'])})" }.to_sentence %>, more than the <%= (Advisories.config.withdraw_share * 100).round %>% limit, at <%= utc(held.finished_at) %>, so <%= kept.to_sentence %> kept <%= kept.size == 1 ? "its" : "their" %> previous data.
+        <% releases.select(&:held).each do |row| %><% if row.status.stale %>The previous data for <%= row.release %> is out of date, so it is no longer shown beside findings. <% else %>The previous data for <%= row.release %> is shown beside findings until it goes stale, <%= hours %> after its last successful import (<%= utc(row.status.updated_at) %>), unless a later refresh imports. <% end %><% end %>Findings, severity, and counts are not affected.</p></div>
+  <% end %>
+  <div class="table-wrap"><table id="tracker_releases"><caption class="visually-hidden">Debian Security Tracker data by release</caption>
+    <thead><tr><th scope="col">Release</th><th scope="col">Freshness</th><th scope="col">Last successful import</th><th scope="col">Entries kept</th><th scope="col">Hosts using it</th></tr></thead>
+    <tbody>
+    <% if releases.empty? %>
+      <tr><td colspan="5" class="muted">No active host uses a release in the release table yet.</td></tr>
+    <% end %>
+    <% releases.each do |row| %>
+      <% status = row.status %>
+      <tr>
+        <td><span class="mono"><%= row.release %></span><span class="state-note"><%= row.name %><% if row.ecosystem %>, <span class="mono"><%= row.ecosystem %></span><% end %></span></td>
+        <td>
+          <% if status.never? %><span class="stale-word">Never imported</span>
+          <% elsif status.stale %><span class="stale-word">Stale: older than <%= hours %></span>
+          <% else %><span class="lamp online">Fresh</span><% end %>
+          <% if row.held %><span class="state-note">Last refresh held back</span><% end %>
+        </td>
+        <td><% if status.never? %><span class="muted">Never</span><% else %><%= utc(status.updated_at) %> <span class="state-note"><%= seen_ago(status.updated_at) %></span><% end %></td>
+        <td><%= number_with_delimiter(row.entries) %> <%= "entry".pluralize(row.entries) %><span class="state-note"><%= number_with_delimiter(row.open) %> open: <%= number_with_delimiter(row.no_dsa) %> no-DSA, <%= number_with_delimiter(row.postponed) %> postponed, <%= number_with_delimiter(row.ignored) %> ignored</span></td>
+        <td><%= row.ecosystem ? link_to(pluralize(row.hosts, "host"), compliance_path(ecosystem: row.ecosystem)) : pluralize(row.hosts, "host") %></td>
+      </tr>
+    <% end %>
+    </tbody>
+  </table></div>
+  <p class="muted small">Only releases in the release table are kept (<span class="mono">config/triage_releases.yml</span>: <span class="mono">debian</span> <span class="mono">13</span> is <span class="mono">trixie</span>); the others in the file are skipped. A release appears here when an active host uses it. Stale after <%= hours %>, the same limit as the advisory data.</p>
+  <div class="cols-2 spaced">
+    <section aria-labelledby="tracker_feed">
+      <h3 id="tracker_feed">Scheduled download</h3>
+      <dl class="facts tight">
+        <dt>Source</dt><dd><%= tracker.source ? tag.span(tracker.source, class: "mono") : tag.span("None: turned off on this server", class: "muted") %></dd>
+        <% if tracker.configured? %>
+          <dt>Refresh</dt><dd><%= triage_schedule_text(TriageDataSources.schedule) %></dd>
+          <dt>Refresh now</dt><dd><% if feed_configured %>Refreshes with the advisory data: the one <strong>Refresh now</strong> above runs OSV and then this source, under the same cool-down (<%= cooldown_words %>)<% else %>Only with the advisory feed, which is not configured; run <span class="mono">bin/rails advisories:triage_refresh</span> on the server<% end %></dd>
+          <dt>Request</dt><dd>One file per refresh, conditional (ETag or Last-Modified), so an unchanged file is not downloaded again</dd>
+          <dt>Limits</dt><dd>Download <%= DebianTriage.config.max_download_bytes / 1.megabyte %> MiB, <%= Advisories::Feed::DEADLINE / 60 %> minutes</dd>
+        <% end %>
+        <dt>Guard</dt><dd>An import that would remove more than <%= (Advisories.config.withdraw_share * 100).round %>% of a release's entries is held back and keeps the previous data</dd>
+      </dl>
+      <% if held %>
+        <p class="muted flush">There is no button to accept a held-back download. The next scheduled refresh tries again; <strong>Refresh now</strong> on the scheduled feed above does too.</p>
+      <% elsif tracker.configured? %>
+        <p class="muted flush">Manual refresh is the <strong>Refresh now</strong> button on the scheduled feed above, which refreshes both sources. A failed tracker refresh never stops the advisory refresh or matching.</p>
+      <% end %>
+    </section>
+    <section aria-labelledby="tracker_upload">
+      <h3 id="tracker_upload">No upload</h3>
+      <p>This source has no upload form. A server without internet access imports the file on the server with <span class="mono">bin/rails advisories:triage_import FILE=&hellip;</span>.</p>
+      <p class="hint muted small">Only the source's host and path are shown. It is set in the server's configuration (<span class="mono">FLEET_DEBIAN_TRACKER_URL</span>; empty turns it off), not here.</p>
+    </section>
+  </div>
+  <h3 id="tracker_imports">Recent tracker imports</h3>
+  <% imports = tracker.imports %>
+  <% if imports.empty? %>
+    <p class="muted" id="no_tracker_imports">No Debian Security Tracker data has been imported yet. Until then findings say Debian's triage is not available.</p>
+  <% else %>
+    <div class="table-wrap"><table id="tracker_import_list"><caption class="visually-hidden">Recent Debian Security Tracker imports</caption>
+      <thead><tr><th scope="col">When (UTC)</th><th scope="col">How</th><th scope="col">Source</th><th scope="col">Result</th><th scope="col">What happened</th><th scope="col">By</th></tr></thead>
+      <tbody>
+      <% imports.each do |import| %>
+        <tr id="<%= dom_id(import) %>">
+          <td><%= import.finished_at.utc.strftime("%Y-%m-%d %H:%M") %></td>
+          <td><%= triage_import_how(import) %></td>
+          <td class="mono"><%= import.source %></td>
+          <td><%= triage_import_lamp(import) %></td>
+          <td><%= triage_import_summary(import) %></td>
+          <td><%= triage_import_by(import) %></td>
+        </tr>
+      <% end %>
+      </tbody>
+    </table></div>
+    <p class="pager"><span>Showing the latest <%= pluralize(imports.size, "import") %>.</span><span>Every import is in the <%= link_to "audit log", audit_path %>.</span></p>
+  <% end %>
+</section>

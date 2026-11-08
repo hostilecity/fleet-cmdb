@@ -1,4 +1,6 @@
-<%# Findings grouped by binary package, advisories nested (owner decision Q16). locals: host, groups, caption, id. %>
+<%# Findings grouped by binary package, advisories nested (owner decision Q16). locals: host, groups, caption, id; and triage
+    (FindingTriage, or nil), triage_status, triage_os: Debian's triage under the advisory of open and reopened rows (P2-D08, T1, T5). %>
+<% triage = local_assigns[:triage] %>
 <div class="table-wrap"><table id="<%= id %>" class="findings"><caption class="visually-hidden"><%= caption %></caption>
   <thead><tr><th scope="col" colspan="2">Package and advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">First seen &rarr; resolved</th></tr></thead>
   <% groups.each do |group| %>
@@ -7,7 +9,7 @@
         <span class="muted">installed</span> <span class="mono"><%= group.installed_version %></span></th>
         <td><%= severity_tag(group.worst) %> <span class="state-note">worst of <%= group.findings.size %></span></td><td colspan="3"><%= pluralize(group.findings.size, "finding") %></td></tr>
       <% group.findings.each do |finding| %>
-        <tr class="nested finding <%= finding.state %>"><td></td><td><%= advisory_cell(finding.advisory) %></td><td><%= severity_tag(finding.advisory.severity) %></td>
+        <tr class="nested finding <%= finding.state %>"><td></td><td><%= advisory_cell(finding.advisory) %><% if triage && finding.state != "resolved" %><%= triage_lines(finding, triage[finding], page: :tab, status: local_assigns[:triage_status], os: local_assigns[:triage_os]) %><% end %></td><td><%= severity_tag(finding.advisory.severity) %></td>
           <td><%= fixed_in(finding) %></td>
           <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>
           <td><%= finding_dates(finding) %></td></tr>

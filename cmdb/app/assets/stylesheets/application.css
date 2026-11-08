@@ -264,7 +264,7 @@ th.when { width: 11rem; }
 
 /* Text from a VM can contain bidirectional controls (an unterminated right-to-left override). Isolating each
    element that shows such text keeps it from reordering the text around it (NFR-1, P1-S12). */
-main :is(h1, h2, h3, p, li, dd, td, th, code, ins, del, strong, span, a, .mono) { unicode-bidi: isolate; }
+main :is(h1, h2, h3, p, li, dd, td, th, code, ins, del, strong, span, a, q, .mono) { unicode-bidi: isolate; }
 
 /* P2-D02 (#24): host tabs, summary tiles, and the Configuration tab (approved mockups docs/mockups/phase-2, phase2.css) */
 nav.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--rule); margin-bottom: 1rem; overflow-x: auto; }
@@ -442,3 +442,21 @@ label.choice.flush { margin: 0; font-weight: 400; }
 dl.facts.spaced-below { margin-bottom: 1rem; }
 dialog.dialog { margin: auto; color: var(--ink); }
 dialog.dialog::backdrop { background: rgb(29 42 46 / 0.45); }
+
+/* Debian's triage beside a finding (P2-D08, approved mockups host-vulns.html and host-vuln-package.html). A note
+   quoted from another source, never a second severity or a state: neutral ink, no lamp, no pips, no severity
+   colours, and always the word "Debian" first. */
+.triage { display: block; margin-top: 0.375rem; padding: 0.0625rem 0 0.0625rem 0.625rem; border-left: 3px double var(--ink-soft); font-size: 0.875rem; color: var(--ink); max-width: 48ch; min-width: 13rem; }
+.triage .who { font-weight: 700; }
+.triage q { font-style: italic; overflow-wrap: anywhere; white-space: pre-wrap; } /* Debian's note as written (T7) */
+.triage .why { display: block; color: var(--ink-soft); font-size: 0.8125rem; }
+.triage.na { color: var(--ink-soft); font-style: italic; border-left-style: dotted; }
+.triage.na .why { font-style: normal; }
+.triage-legend { font-size: 0.875rem; color: var(--ink-soft); margin: -0.25rem 0 1rem; max-width: 70ch; }
+.triage-legend .triage { display: inline; margin: 0; padding-right: 0.25rem; min-width: 0; }
+.chips.triage-filter a { border-style: dashed; }
+.chips.triage-filter a[aria-current="true"] { border-style: solid; }
+.sheet.spaced { margin-top: 1.5rem; }
+.measure { max-width: 70ch; }
+#tracker h3 { margin-top: 0; }
+#tracker #tracker_imports { margin-top: 1.25rem; }

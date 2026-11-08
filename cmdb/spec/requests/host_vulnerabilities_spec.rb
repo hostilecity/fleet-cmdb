@@ -20,8 +20,14 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
                references: url ? [ { "type" => "ADVISORY", "url" => url } ] : [], **extra)
   end
 
+  # A cell's words without Debian's triage lines (P2-D08), which spec/requests/debian_triage_views_spec.rb covers.
+  def cell_words(td) = words(td.dup.tap { |cell| cell.css(".triage").each(&:remove) })
+
   # [package row, [advisory rows]] for each group of a findings table.
-  def groups(table) = page.css("##{table} tbody").map { |body| [ words(body.at_css("tr.pkg-group")), body.css("tr.nested").map { |row| row.css("td").drop(1).map { |td| words(td) } } ] }
+  def groups(table) = page.css("##{table} tbody").map { |body| [ words(body.at_css("tr.pkg-group")), body.css("tr.nested").map { |row| row.css("td").drop(1).map { |td| cell_words(td) } } ] }
+
+  # The package page's rows, without the Debian's triage column (P2-D08).
+  def package_rows = page.css("#package_findings tbody tr").map { |row| row.css("td").map { |td| cell_words(td) }.tap { |cells| cells.delete_at(6) } }
 
   describe "an evaluated host" do
     let!(:host) do
@@ -98,7 +104,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(words(page.at_css("#resolved_findings .pager"))).to eq("Showing 3 resolved findings. Sorted by severity, then first seen.")
 
       get "/hosts/#{host.id}/vulnerabilities/package?package=acme-daemon"
-      rows = page.css("#package_findings tbody tr").map { |row| row.css("td").map { |td| words(td) } }
+      rows = package_rows
       expect(rows).to eq([
         [ "High", "DSA-9100-1 Example: a flaw in acme.", "acme-daemon:amd64", "1.0-1", "2.0-1", "Reopened",
           "2026-11-06 09:00 UTC first seen 2026-11-06 10:00 UTC resolved 2026-11-06 12:00 UTC reopened" ],
@@ -114,7 +120,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
 
     it "shows one package: what is installed, and a package no longer installed" do
       get "/hosts/#{host.id}/vulnerabilities/package?package=acme-docs"
-      expect(words(page.at_css("#installed_package"))).to eq("Installed package Name acme-docs:all Version 1.0-1 Source package acme-docs Package manager dpkg Ecosystem Debian:13")
+      expect(words(page.at_css("#installed_package"))).to eq("Installed package Name acme-docs:all Version 1.0-1 Source package acme-docs Package manager dpkg Ecosystem Debian:13 Debian triage for trixie (Debian 13)")
       report_packages(host, [ [ "bash", "5.2.37-1", "bash" ] ])
       match(host)
       get "/hosts/#{host.id}/vulnerabilities/package?package=acme-docs"
@@ -303,7 +309,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       travel_to(start + 1.hour) { import_advisories(advisory("DSA-9100-1", "acme", modified: "2026-11-01T00:00:00Z", introduced: "1.5-1", fixed: "2.0-1")) }
       match(host, at: start + 1.hour)
       package_page(host, "acme")
-      row = page.css("#package_findings tbody tr").map { |tr| tr.css("td").map { |td| words(td) } }.first
+      row = package_rows.first
       expect(row[5]).to eq("Resolved Fixed: the installed version is outside the affected ranges")
       expect(row[6]).to include("resolved: fixed: the installed version is outside the affected ranges")
       expect(page.text).not_to include("package updated")
