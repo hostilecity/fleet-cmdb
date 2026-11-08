@@ -1,0 +1,40 @@
+{
+  "glibc": {
+    "CVE-2026-19499": {
+      "description": "made-up description of the owner's example; the triage below is as the tracker showed it on 2026-11-07",
+      "debianbug": 1100001,
+      "scope": "remote",
+      "releases": {
+        "bookworm": {"status": "open", "repositories": {"bookworm": "2.36-9+deb12u10"}, "urgency": "not yet assigned", "nodsa": "Minor issue", "nodsa_reason": "postponed"},
+        "bullseye": {"status": "open", "repositories": {"bullseye": "2.31-13+deb11u11"}, "urgency": "not yet assigned"},
+        "forky": {"status": "resolved", "repositories": {"forky": "2.43-5"}, "fixed_version": "2.43-5", "urgency": "not yet assigned"},
+        "sid": {"status": "resolved", "repositories": {"sid": "2.43-5"}, "fixed_version": "2.43-5", "urgency": "not yet assigned"},
+        "trixie": {"status": "open", "repositories": {"trixie": "2.41-12+deb13u4"}, "urgency": "not yet assigned", "nodsa": "Minor issue", "nodsa_reason": "", "next_point_update": true}
+      }
+    },
+    "CVE-2026-90010": {
+      "description": "made-up: braces { } [ ] and an escaped \"quote\" and backslash \\ in a string",
+      "scope": "local",
+      "releases": {
+        "trixie": {"status": "resolved", "repositories": {"trixie": "2.41-12+deb13u4"}, "fixed_version": "2.41-12+deb13u3", "urgency": "low*"}
+      }
+    },
+    "TEMP-0000000-ABCDEF": {
+      "description": "an id the advisories cannot join on",
+      "releases": {"trixie": {"status": "open", "repositories": {"trixie": "2.41-12+deb13u4"}, "urgency": "unimportant"}}
+    }
+  },
+  "openssl": {
+    "CVE-2026-90011": {
+      "scope": "remote",
+      "releases": {
+        "trixie": {"status": "undetermined", "repositories": {"trixie": "3.5.1-1"}, "urgency": "high", "nodsa": "Not worth a DSA", "nodsa_reason": "ignored"},
+        "bookworm": {"status": "fixed", "repositories": {"bookworm": "3.0.17-1~deb12u2"}, "urgency": "medium"}
+      }
+    },
+    "CVE-2026-90012": {"description": "no releases object"}
+  },
+  "Not A Package": {
+    "CVE-2026-90013": {"releases": {}}
+  }
+}

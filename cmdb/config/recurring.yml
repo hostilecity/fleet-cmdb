@@ -70,6 +70,11 @@ production:
   advisory_feed_refresh:
     class: AdvisoryFeedRefreshJob
     schedule: "41 */6 * * *"
+  # P2-S16, ADR 0022: Debian's triage from FLEET_DEBIAN_TRACKER_URL (does nothing when it is empty), at the same
+  # cadence, 15 minutes after the OSV refresh. Its own job, so its failures never hold up OSV or matching.
+  debian_triage_refresh:
+    class: DebianTriageRefreshJob
+    schedule: "56 */6 * * *"
   # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
   advisory_upload_pruning:
     class: AdvisoryUploadPruneJob

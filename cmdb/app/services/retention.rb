@@ -7,6 +7,8 @@
 # - The newest row of the whole table survives for the tables registered with `keep_newest`, whatever its age:
 #   the last advisory refresh attempt holds the cool-down (P2-S15), which can be longer than the window (review
 #   of #125).
+# - Advisory and triage import records, and the current triage entries, are not history: freshness is read from the
+#   imports, so they are kept however old (P2-D06, P2-S16), and the entries are replaced only by an import.
 # - Audit entries are never pruned (FR-S.3). They are not registered here, and the database blocks deleting
 #   them anyway.
 # - Deletes run in batches of `batch_size` rows, each its own short statement, so a large table never holds a

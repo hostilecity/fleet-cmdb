@@ -42,6 +42,9 @@ module Audit
     ADVISORY_REFRESH_REFUSED = "advisory.refresh_refused"
     ADVISORY_UPLOADED = "advisory.uploaded"
     ADVISORY_WITHDRAWALS_CONFIRMED = "advisory.withdrawals_confirmed"
+    ADVISORY_TRIAGE_IMPORTED = "advisory.triage_imported"
+    ADVISORY_TRIAGE_IMPORT_FAILED = "advisory.triage_import_failed"
+    ADVISORY_TRIAGE_IMPORT_HELD_BACK = "advisory.triage_import_held_back"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

@@ -1,0 +1,72 @@
+# Refreshes the Debian Security Tracker's triage (P2-S16, ADR 0022) from FLEET_DEBIAN_TRACKER_URL, on the schedule
+# in config/recurring.yml (after the OSV refresh) or from bin/rails advisories:triage_refresh. Does nothing when
+# no URL is configured.
+#
+# It is its own job, apart from AdvisoryFeedRefreshJob, so a failure here never delays or blocks an OSV refresh or
+# matching, and triage never enqueues matching: it changes no finding.
+#
+# The download is one document, over HTTPS with the certificate verified, at most FLEET_DEBIAN_TRACKER_MAX_DOWNLOAD_MB,
+# within Advisories::Feed's time limits, and conditional on the last import's validators when that import was a
+# clean success of the same releases: "not modified" is then recorded as a successful refresh of those releases,
+# so freshness reflects that the data was checked (it stores nothing, so it is not audited). A failure (the
+# tracker unreachable or timing out, an HTTP error, a document that cannot be read) is retried with backoff; after
+# the last attempt it is recorded as a failed import, audited, and raised again, so it shows as a failed job.
+#
+# A held-back import (the truncation guard in DebianTriage::Import) is not a fault: the job ends normally, so it
+# is not retried and does not show as a failed job. allowed_drops is an operator's confirmation of the counts,
+# from bin/rails advisories:triage_refresh ALLOW_DROPS=...
+class DebianTriageRefreshJob < ApplicationJob
+  queue_as :default
+
+  retry_on StandardError, wait: :polynomially_longer, attempts: ATTEMPTS do |job, error|
+    job.give_up(error)
+    raise error
+  end
+
+  def perform(allowed_drops: {})
+    feed = DebianTriage.feed
+    if feed.url.nil?
+      logger.info("[triage] no Debian Security Tracker configured (FLEET_DEBIAN_TRACKER_URL); refresh skipped")
+      return nil
+    end
+
+    @source = feed.source
+    last = TriageImport.debian.where(origin: "feed", source: @source).order(finished_at: :desc, id: :desc).first
+    # Only a clean, complete success of the releases now listed may be asked about conditionally: after a held-back
+    # or failed import, or with a release added to the table, the same document is needed again.
+    last = nil unless last&.state == "succeeded" && last.counts["malformed"].to_i.zero? && last.releases.sort == DebianTriage::Releases.names
+    download = feed.fetch(etag: last&.etag, last_modified: last&.last_modified)
+    import = download.not_modified? ? not_modified(last) : import(download, allowed_drops)
+    logger.info("[triage] refresh from #{@source} #{import.state}: #{import.counts.except('releases').to_json}")
+    import
+  rescue Advisories::Feed::Unavailable, Advisories::Unreadable => e
+    logger.warn("[triage] refresh failed (attempt #{executions} of #{ATTEMPTS}): #{e.message}")
+    raise
+  ensure
+    download&.close!
+  end
+
+  # Called by retry_on once the retries are used up, and by bin/rails advisories:triage_refresh on its one
+  # attempt. Returns the failed TriageImport.
+  def give_up(error)
+    reason = case error
+    when Advisories::Feed::Unavailable, Advisories::Unreadable then error.message
+    else "the refresh failed on the server (#{error.class.name}); see the server log"
+    end
+    logger.error("[triage] refresh failed after #{[ executions, 1 ].max} attempts: #{reason}")
+    DebianTriage::Import.record_failure(origin: "feed", source: @source || DebianTriage.feed.source, reason:)
+  end
+
+  private
+
+  def import(download, allowed_drops)
+    DebianTriage::Import.new(origin: "feed", source: @source, etag: download.etag, last_modified: download.last_modified, allowed_drops:)
+                        .call(DebianTriage::Reader.new(download.file.path, name: File.basename(@source)))
+  end
+
+  def not_modified(last)
+    now = Time.current
+    TriageImport.create!(tracker: DebianTriage::TRACKER, origin: "feed", source: @source, state: "succeeded", releases: last.releases,
+                         counts: { "not_modified" => true }, etag: last.etag, last_modified: last.last_modified, started_at: now, finished_at: now)
+  end
+end

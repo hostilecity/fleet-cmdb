@@ -43,7 +43,10 @@ module AuditEntriesHelper
     Audit::Actions::ADVISORY_REFRESH_REQUESTED => "Advisory refresh started",
     Audit::Actions::ADVISORY_REFRESH_REFUSED => "Advisory refresh refused (cool-down)",
     Audit::Actions::ADVISORY_UPLOADED => "Advisory file uploaded",
-    Audit::Actions::ADVISORY_WITHDRAWALS_CONFIRMED => "Advisory withdrawals confirmed (full import)"
+    Audit::Actions::ADVISORY_WITHDRAWALS_CONFIRMED => "Advisory withdrawals confirmed (full import)",
+    Audit::Actions::ADVISORY_TRIAGE_IMPORTED => "Debian triage imported",
+    Audit::Actions::ADVISORY_TRIAGE_IMPORT_FAILED => "Debian triage import failed",
+    Audit::Actions::ADVISORY_TRIAGE_IMPORT_HELD_BACK => "Debian triage import held back (would drop too many entries)"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.

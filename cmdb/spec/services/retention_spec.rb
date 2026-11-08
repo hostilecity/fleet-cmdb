@@ -146,6 +146,12 @@ RSpec.describe Retention do
       expect { AuditEntry.where(id: ancient.id).delete_all }.to raise_error(ActiveRecord::StatementInvalid, /append-only/)
     end
 
+    # Freshness is read from the import records, so they are kept however old, as the OSV imports are (P2-D06,
+    # P2-S16); so is the current triage data, which is replaced only by an import.
+    it "never prunes advisory imports, triage imports, or triage entries" do
+      expect(described_class.targets.map(&:model)).not_to include(AdvisoryImport, TriageImport, TriageEntry)
+    end
+
     it "uses the configured window" do
       snapshot(host, 40)
       keeper = snapshot(host, 3)

@@ -126,13 +126,82 @@ RSpec.describe "advisories rake tasks" do
     end
   end
 
-  it "shows each ecosystem's freshness and the last import" do
-    expect(run("advisories:status")).to eq("Debian:13: never refreshed (older than 48 hours), 0 advisories\n")
-    travel_to(Time.utc(2026, 11, 6, 12)) { import_advisories(osv_record(id: "DSA-1-1"), full: true, source: "all.zip") }
+  it "shows each ecosystem's freshness and the last import, then each release's Debian triage (P2-S16)" do
+    never = %w[bookworm forky sid trixie].map { |r| "Debian triage, #{r}: never imported (older than 48 hours), 0 entries\n" }.join
+    expect(run("advisories:status")).to eq("Debian:13: never refreshed (older than 48 hours), 0 advisories\n#{never}")
+    travel_to(Time.utc(2026, 11, 6, 12)) do
+      import_advisories(osv_record(id: "DSA-1-1"), full: true, source: "all.zip")
+      import_triage(tracker_document("curl" => { "CVE-2026-0001" => { "trixie" => tracker_release } }))
+    end
     travel_to(Time.utc(2026, 11, 6, 13)) do
       Advisories::Import.record_failure(origin: "feed", source: "example.org/all.zip", reason: "the advisory feed at example.org answered HTTP 500")
       expect(run("advisories:status")).to eq("Debian:13: last updated 2026-11-06T12:00:00Z, 1 advisories\n" \
-                                              "Last import: failed 2026-11-06T13:00:00Z from example.org/all.zip: the advisory feed at example.org answered HTTP 500\n")
+                                              "Last import: failed 2026-11-06T13:00:00Z from example.org/all.zip: the advisory feed at example.org answered HTTP 500\n" \
+                                              "Debian triage, bookworm: last updated 2026-11-06T12:00:00Z, 0 entries\n" \
+                                              "Debian triage, forky: last updated 2026-11-06T12:00:00Z, 0 entries\n" \
+                                              "Debian triage, sid: last updated 2026-11-06T12:00:00Z, 0 entries\n" \
+                                              "Debian triage, trixie: last updated 2026-11-06T12:00:00Z, 1 entries\n")
+    end
+  end
+
+  # P2-S16: Debian's triage, by hand (a server without internet access) or from the tracker now.
+  describe "triage_import and triage_refresh" do
+    let(:sample) { DebianTrackerHelpers::FIXTURES.join("sample.json").to_s }
+    let(:url) { "https://security-tracker.example.org/tracker/data/json" }
+
+    around do |example|
+      saved = DebianTriage.config.tracker_url
+      DebianTriage.config.tracker_url = url
+      example.run
+    ensure
+      DebianTriage.config.tracker_url = saved
+    end
+
+    it "imports a file, printing the counts per release and each malformed entry, audited with the system actor" do
+      output = run("advisories:triage_import", "FILE" => sample)
+      expect(output).to include("sample.json: 3 source packages, 5 entries (1 not CVE ids), 3 malformed, 1 for releases not in the table.",
+                                "  trixie: 3 entries in the file, 0 stored before, 0 dropped, replaced",
+                                "  malformed: openssl CVE-2026-90012 is not an object with a releases object", "  malformed: Not A Package is not a valid source package name")
+      expect(TriageImport.sole).to have_attributes(origin: "file", source: "sample.json", state: "succeeded")
+      expect(AuditEntry.sole).to have_attributes(action: "advisory.triage_imported", actor_type: "system")
+    end
+
+    it "holds back a truncated file with the counts and the exact allowance, then imports it with ALLOW_DROPS" do
+      run("advisories:triage_import", "FILE" => sample)
+      empty = tracker_file("{}").to_s
+      expect { expect { run("advisories:triage_import", "FILE" => empty) }.to output(
+        /Held back: the document would drop 1 of 1 stored bookworm entries.*\nIf that is right, run it again with ALLOW_DROPS=bookworm:1,forky:1,sid:1,trixie:3 bin\/rails advisories:triage_import FILE=#{Regexp.escape(empty)}/m
+      ).to_stderr }.to raise_error(SystemExit)
+      expect(TriageEntry.count).to eq(6)
+      expect { expect { run("advisories:triage_import", "FILE" => empty, "ALLOW_DROPS" => "trixie") }.to output(/ALLOW_DROPS must be release:count pairs separated by commas, such as trixie:120/).to_stderr }
+        .to raise_error(SystemExit)
+      expect(run("advisories:triage_import", "FILE" => empty, "ALLOW_DROPS" => "bookworm:1,forky:1,sid:1,trixie:3")).to include("trixie: 0 entries in the file, 3 stored before, 3 dropped, replaced")
+      expect(TriageEntry.count).to eq(0)
+    end
+
+    it "deletes a release taken out of the table and says so", triage_releases: { [ "debian", "13" ] => "trixie" } do
+      TriageEntry.create!(tracker: "debian", release: "bookworm", package: "curl", cve_id: "CVE-2026-0001", status: "open")
+      expect(run("advisories:triage_import", "FILE" => sample)).to include("  bookworm: no longer in the release table, 1 entries deleted")
+    end
+
+    it "records an unreadable file as failed, and explains usage" do
+      expect { expect { run("advisories:triage_import", "FILE" => "/nonexistent/json") }.to output(/Nothing imported: json is not a file/).to_stderr }.to raise_error(SystemExit)
+      expect(TriageImport.sole).to have_attributes(state: "failed", origin: "file", reason: "json is not a file")
+      expect { expect { run("advisories:triage_import", "FILE" => nil) }.to output(/Usage/).to_stderr }.to raise_error(SystemExit)
+    end
+
+    it "refreshes from the tracker now, says when it has not changed, why it failed, and when it is turned off" do
+      clean = tracker_document("curl" => { "CVE-2026-0001" => { "trixie" => tracker_release } }).to_json
+      stub_request(:get, url).to_return(status: 200, body: clean, headers: { "ETag" => '"t1"' })
+      expect(run("advisories:triage_refresh")).to include("security-tracker.example.org/tracker/data/json: 1 source packages, 1 entries")
+      stub_request(:get, url).to_return(status: 304)
+      expect(run("advisories:triage_refresh")).to eq("security-tracker.example.org/tracker/data/json: not modified since the last refresh.\n")
+      stub_request(:get, url).to_return(status: 404)
+      expect { expect { run("advisories:triage_refresh") }.to output(/Refresh failed: the Debian Security Tracker at security-tracker.example.org answered HTTP 404/).to_stderr }
+        .to raise_error(SystemExit)
+      expect(TriageImport.order(:id).last).to have_attributes(state: "failed", origin: "feed")
+      DebianTriage.config.tracker_url = nil
+      expect(run("advisories:triage_refresh")).to include("No Debian Security Tracker is configured")
     end
   end
 end
