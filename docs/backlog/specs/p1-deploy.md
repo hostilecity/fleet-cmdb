@@ -26,7 +26,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] A request to `/api/v1/*` through the public dashboard hostname fails; the same request on the agent hostname succeeds (the agent hostname part: #137)
 - [ ] An agent on a Debian VM verifies the agent hostname certificate using only the system trust store (moved to #137)
 - [ ] Certificate renewal is automatic and its failure is visible (log or health) (moved to #137)
-- [ ] Rebuilding the stack from backups restores state (ties into [P1-O01](p1-deploy.md); moved to the backups issue)
+- [ ] Rebuilding the stack from backups restores state (ties into [P1-O01](p1-deploy.md); moved to [#138](https://github.com/hostilecity/fleet-cmdb/issues/138))
 
 ### As built
 

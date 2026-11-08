@@ -187,7 +187,7 @@
   milestone: 1
   labels: ["area:ops", "security"]
   covers: [NFR-1, NFR-4, NFR-2]
-  goal: "The server runs from Docker Compose behind the Cloudflare tunnel with a private agent endpoint, tested backups, and installation docs a newcomer can follow."
+  goal: "The server runs as a container on the owner's VM, deployed by GitHub Actions, behind the Cloudflare tunnel with a private agent endpoint (#137), tested backups (#138), and installation docs a newcomer can follow."
   done:
     - "`/api/v1` is unreachable through the public hostname, and an agent verifies the agent-hostname certificate using only the system trust store."
     - "A restore drill into a scratch database boots the app with the expected hosts and audit entries."

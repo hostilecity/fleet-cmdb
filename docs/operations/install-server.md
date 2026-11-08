@@ -15,7 +15,7 @@ You set secrets and variables in GitHub; nothing is edited on the VM.
 
 **Not here yet:**
 - **The agent hostname and its TLS proxy** come in [#137](https://github.com/hostilecity/fleet-cmdb/issues/137). Until then no agent can be installed; [install-agent.md](install-agent.md) applies after it.
-- **Backups** get their own issue. Until a backup exists, `/health` reports `503` (`"backup":"failing"`). That is expected, not a fault.
+- **Backups** come in [#138](https://github.com/hostilecity/fleet-cmdb/issues/138). Until a backup exists, `/health` reports `503` (`"backup":"failing"`). That is expected, not a fault.
 
 Names below are placeholders:
 
