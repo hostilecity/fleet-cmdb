@@ -319,8 +319,9 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
 
       "#{controller}##{action}"
     end
-    # Pages that do not render stored text: sign-in and OAuth plumbing, the live-update socket, and the token page (a POST result).
-    plumbing = %w[sessions#create sessions#failure action_cable#serve]
+    # Pages that do not render stored text: sign-in and OAuth plumbing, the live-update socket, the token page (a POST result),
+    # and the privacy page (fixed text).
+    plumbing = %w[sessions#create sessions#failure action_cable#serve pages#privacy]
     expect(views - shown - plumbing).to eq([]), "views not covered by the hostile-input spec: #{views - shown - plumbing}"
   end
 end
