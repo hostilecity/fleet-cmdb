@@ -38,6 +38,7 @@ class Host < ApplicationRecord
   has_many :rollout_hosts, dependent: :restrict_with_exception
   has_many :agent_updates, dependent: :restrict_with_exception
   has_many :report_requests, dependent: :restrict_with_exception
+  has_many :tasks, dependent: :restrict_with_exception
 
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
   validates :hostname, presence: true, length: { maximum: 253 }, format: { with: HOSTNAME_FORMAT, allow_blank: true }
@@ -133,6 +134,19 @@ class Host < ApplicationRecord
 
   # FR-S.1: the credential has been used from a machine other than the one it was enrolled on.
   def machine_id_mismatch? = machine_id_mismatch_at.present?
+
+  # Why a task of this catalog entry's type cannot be created for this host, as one of
+  # TaskBatches::EXCLUSION_REASONS, or nil when it can (FR-3.1, P3-S02). Only active hosts whose agent reports
+  # a catalog that has the type, and implements and enables it, are targeted (P3-A01); a host whose credential
+  # is in use on another machine (FR-S.1) is not.
+  def task_exclusion_reason(entry)
+    return "not_active" unless enrollment_state == "active"
+    return "machine_id_mismatch" if machine_id_mismatch?
+    return "no_capability_report" if task_capabilities_reported_at.nil? || task_catalog_version.nil?
+    return "not_supported" unless task_catalog_version >= entry.since && task_types_supported.include?(entry.type)
+
+    "not_enabled" unless task_types_enabled.include?(entry.type)
+  end
 
   # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an
   # active host that has not sent a heartbeat yet, and the enrollment state for everything else.

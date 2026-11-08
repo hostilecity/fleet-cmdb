@@ -1,5 +1,5 @@
 module Audit
-  # Every audit action name, in one place (FR-S.3). Phase 3 adds task actions.
+  # Every audit action name, in one place (FR-S.3).
   module Actions
     HOST_CREATED = "host.created"
     HOST_EDITED = "host.edited"
@@ -45,6 +45,18 @@ module Audit
     ADVISORY_TRIAGE_IMPORTED = "advisory.triage_imported"
     ADVISORY_TRIAGE_IMPORT_FAILED = "advisory.triage_import_failed"
     ADVISORY_TRIAGE_IMPORT_HELD_BACK = "advisory.triage_import_held_back"
+    # Tasks (FR-3.4, P3-S02, P3-S07): a batch and its tasks created, then one entry per state transition.
+    TASK_BATCH_CREATED = "task.batch_created"
+    TASK_CREATED = "task.created"
+    TASK_CLAIMED = "task.claimed"
+    TASK_REQUEUED = "task.requeued"
+    TASK_STARTED = "task.started"
+    TASK_SUCCEEDED = "task.succeeded"
+    TASK_FAILED = "task.failed"
+    TASK_TIMED_OUT = "task.timed_out"
+    TASK_CANCELLED = "task.cancelled"
+    TASK_REFUSED = "task.refused"
+    TASK_EXPIRED = "task.expired"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

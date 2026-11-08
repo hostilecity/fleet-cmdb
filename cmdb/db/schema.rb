@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_08_100100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -383,6 +383,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
     t.datetime "agent_reported_at"
     t.datetime "machine_id_mismatch_at"
     t.string "reported_machine_id", limit: 32
+    t.integer "task_catalog_version"
+    t.string "task_types_supported", default: [], null: false, array: true
+    t.string "task_types_enabled", default: [], null: false, array: true
+    t.datetime "task_capabilities_reported_at"
     t.index ["agent_version"], name: "index_hosts_in_fleet_on_agent_version", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
@@ -595,6 +599,62 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "task_batches", force: :cascade do |t|
+    t.bigint "operator_id", null: false
+    t.string "task_type", limit: 64, null: false
+    t.jsonb "parameters", default: {}, null: false
+    t.string "selection_method", limit: 16, null: false
+    t.string "selection_tag", limit: 32
+    t.bigint "selected_host_ids", default: [], null: false, array: true
+    t.jsonb "excluded_hosts", default: [], null: false
+    t.integer "confirmed_host_count"
+    t.integer "catalog_version", null: false
+    t.string "catalog_digest", limit: 64, null: false
+    t.datetime "created_at", null: false
+    t.index ["operator_id"], name: "index_task_batches_on_operator_id"
+    t.check_constraint "(selection_method::text = 'tag'::text) = (selection_tag IS NOT NULL)", name: "task_batches_selection_tag"
+    t.check_constraint "cardinality(selected_host_ids) >= 1 AND cardinality(selected_host_ids) <= 25", name: "task_batches_selection_size"
+    t.check_constraint "jsonb_typeof(parameters) = 'object'::text", name: "task_batches_parameters_object"
+    t.check_constraint "octet_length(parameters::text) <= 8192", name: "task_batches_parameters_size"
+    t.check_constraint "selection_method::text = ANY (ARRAY['explicit'::character varying, 'tag'::character varying]::text[])", name: "task_batches_selection_method"
+  end
+
+  create_table "tasks", force: :cascade do |t|
+    t.uuid "uuid", default: -> { "gen_random_uuid()" }, null: false
+    t.bigint "task_batch_id", null: false
+    t.bigint "host_id", null: false
+    t.string "task_type", limit: 64, null: false
+    t.jsonb "parameters", default: {}, null: false
+    t.string "state", limit: 16, default: "queued", null: false
+    t.string "reason", limit: 32
+    t.integer "timeout_seconds", null: false
+    t.datetime "expires_at", null: false
+    t.datetime "lease_expires_at"
+    t.datetime "claimed_at"
+    t.datetime "started_at"
+    t.datetime "finished_at"
+    t.integer "exit_status"
+    t.text "output"
+    t.boolean "output_truncated", default: false, null: false
+    t.datetime "cancel_requested_at"
+    t.bigint "cancel_requested_by_id"
+    t.datetime "agent_started_at"
+    t.datetime "agent_finished_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["expires_at"], name: "index_tasks_queued_by_expiry", where: "((state)::text = 'queued'::text)"
+    t.index ["host_id", "state"], name: "index_tasks_on_host_id_and_state"
+    t.index ["lease_expires_at"], name: "index_tasks_open_by_lease", where: "((state)::text = ANY ((ARRAY['claimed'::character varying, 'running'::character varying])::text[]))"
+    t.index ["task_batch_id"], name: "index_tasks_on_task_batch_id"
+    t.index ["uuid"], name: "index_tasks_on_uuid", unique: true
+    t.check_constraint "(state::text = ANY (ARRAY['failed'::character varying, 'refused'::character varying]::text[])) = (reason IS NOT NULL)", name: "tasks_reason_for_failed_and_refused"
+    t.check_constraint "jsonb_typeof(parameters) = 'object'::text", name: "tasks_parameters_object"
+    t.check_constraint "octet_length(output) <= 1048576", name: "tasks_output_size"
+    t.check_constraint "octet_length(parameters::text) <= 8192", name: "tasks_parameters_size"
+    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'claimed'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'timed_out'::character varying, 'cancelled'::character varying, 'refused'::character varying, 'expired'::character varying]::text[])", name: "tasks_state"
+    t.check_constraint "timeout_seconds >= 1 AND timeout_seconds <= 86400", name: "tasks_timeout"
+  end
+
   create_table "triage_entries", force: :cascade do |t|
     t.string "tracker", limit: 16, null: false
     t.string "release", limit: 32, null: false
@@ -691,6 +751,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
   add_foreign_key "host_status_events", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
+  add_foreign_key "task_batches", "operators"
+  add_foreign_key "tasks", "hosts"
+  add_foreign_key "tasks", "operators", column: "cancel_requested_by_id"
+  add_foreign_key "tasks", "task_batches"
   add_foreign_key "triage_imports", "operators"
   add_foreign_key "vulnerability_findings", "advisories"
   add_foreign_key "vulnerability_findings", "hosts"
@@ -793,6 +857,83 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
       $function$
   SQL
 
+  create_function :task_batches_guard, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.task_batches_guard()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- A batch records what an operator asked for and what it resolved to (P3-S02); it is never changed or deleted.
+        RAISE EXCEPTION 'task batches are never changed or deleted: % is not allowed', TG_OP
+          USING ERRCODE = 'insufficient_privilege';
+      END;
+      $function$
+  SQL
+
+  create_function :tasks_guard, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.tasks_guard()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- Tasks are kept as the record of what ran (P3-S02, P3-S07).
+        IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+          RAISE EXCEPTION 'tasks are never deleted: % is not allowed', TG_OP
+            USING ERRCODE = 'insufficient_privilege';
+        END IF;
+
+        -- A task starts queued, with no lease, claim, start, or result (P3-S02).
+        IF TG_OP = 'INSERT' THEN
+          IF NEW.state <> 'queued' OR NEW.claimed_at IS NOT NULL OR NEW.started_at IS NOT NULL OR NEW.finished_at IS NOT NULL
+             OR NEW.lease_expires_at IS NOT NULL THEN
+            RAISE EXCEPTION 'new tasks start queued, not %', NEW.state
+              USING ERRCODE = 'check_violation';
+          END IF;
+          RETURN NEW;
+        END IF;
+
+        -- Terminal states are immutable: nothing about a finished task changes.
+        IF OLD.state IN ('succeeded', 'failed', 'timed_out', 'cancelled', 'refused', 'expired') THEN
+          RAISE EXCEPTION 'task % is %, which is final; it cannot change', OLD.id, OLD.state
+            USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- What a task is never changes: no code path can retarget it or change its parameters after validation.
+        IF NEW.id IS DISTINCT FROM OLD.id OR NEW.uuid IS DISTINCT FROM OLD.uuid
+           OR NEW.task_batch_id IS DISTINCT FROM OLD.task_batch_id OR NEW.host_id IS DISTINCT FROM OLD.host_id
+           OR NEW.task_type IS DISTINCT FROM OLD.task_type OR NEW.parameters IS DISTINCT FROM OLD.parameters
+           OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR NEW.timeout_seconds IS DISTINCT FROM OLD.timeout_seconds
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+          RAISE EXCEPTION 'a task''s id, batch, host, type, parameters, expiry, and timeout never change'
+            USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- Only the transitions in Task::TRANSITIONS.
+        IF NEW.state IS DISTINCT FROM OLD.state
+           AND (OLD.state::text, NEW.state::text) NOT IN (
+             ('queued', 'claimed'),
+             ('queued', 'cancelled'),
+             ('queued', 'refused'),
+             ('queued', 'expired'),
+             ('claimed', 'queued'),
+             ('claimed', 'running'),
+             ('claimed', 'failed'),
+             ('claimed', 'cancelled'),
+             ('claimed', 'refused'),
+             ('running', 'succeeded'),
+             ('running', 'failed'),
+             ('running', 'timed_out'),
+             ('running', 'cancelled'),
+             ('running', 'refused')
+           ) THEN
+          RAISE EXCEPTION 'invalid task state transition: % -> %', OLD.state, NEW.state
+            USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+      END;
+      $function$
+  SQL
+
   create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
       CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
   SQL
@@ -819,5 +960,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
 
   create_trigger :agent_releases_immutable, sql_definition: <<-SQL
       CREATE TRIGGER agent_releases_immutable BEFORE DELETE OR UPDATE ON public.agent_releases FOR EACH ROW EXECUTE FUNCTION agent_releases_guard()
+  SQL
+
+  create_trigger :task_batches_immutable, sql_definition: <<-SQL
+      CREATE TRIGGER task_batches_immutable BEFORE DELETE OR UPDATE ON public.task_batches FOR EACH ROW EXECUTE FUNCTION task_batches_guard()
+  SQL
+
+  create_trigger :task_batches_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER task_batches_no_truncate BEFORE TRUNCATE ON public.task_batches FOR EACH STATEMENT EXECUTE FUNCTION task_batches_guard()
+  SQL
+
+  create_trigger :tasks_guard, sql_definition: <<-SQL
+      CREATE TRIGGER tasks_guard BEFORE INSERT OR DELETE OR UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION tasks_guard()
+  SQL
+
+  create_trigger :tasks_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER tasks_no_truncate BEFORE TRUNCATE ON public.tasks FOR EACH STATEMENT EXECUTE FUNCTION tasks_guard()
   SQL
 end

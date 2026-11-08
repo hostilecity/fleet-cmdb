@@ -286,6 +286,15 @@ bin/rails advisories:status                               # also shows each rele
 bin/rails vulnerabilities:match   # match every host now
 ```
 
+### Tasks (Phase 3, in progress)
+
+Remote tasks are chosen from a fixed catalog; the server can never send a command line, script, or executable name (FR-3.1, AC-3.2). No endpoint or page creates or delivers tasks yet (P3-TASK-API, P3-DASH-CREATE).
+
+- **Catalog.** `docs/api/tasks/task-catalog.json`, the same file the agent compiles in, loaded and linted at boot by `TaskCatalog` (`lib/task_catalog.rb`; a catalog that fails the lint stops the server with every problem listed). Format, lint rules, and how to add a type: [docs/api/tasks/README.md](../docs/api/tasks/README.md). `TaskCatalog.current.entry(type).parameter_errors(params)` validates parameters against the type's closed schema.
+- **Policy.** `TaskPolicy.refusal(type, params)` adds the server's own checks (DEC-15: protected services, the restart allowlist, which is empty until P3-S06 adds its setting, so no restart task can be created yet). It runs at creation and, through `Task#refusal_reason`, at claim time.
+- **Batches and tasks.** `TaskBatches.create!(request, operator:)` is the only code that creates them: a closed request (any other field, such as `command`, refuses it with nothing written), at most 25 selected hosts, the host count confirmed above 3 (DEC-14), and one independent queued task per active host whose agent supports and enables the type; other hosts are excluded and listed with the reason. Each task expires 24 hours after creation unless it has started (DEC-14).
+- **State machine.** `Task` changes state only through its transition methods, which follow `Task::TRANSITIONS`, raise `Task::InvalidTransition` otherwise, and write one audit entry each with the actor given. Terminal states (`succeeded`, `failed`, `timed_out`, `cancelled`, `refused`, `expired`) are read-only. The `tasks_guard` and `task_batches_guard` triggers (`db/functions/`, `db/triggers/`) enforce the same table, the immutability of a task's type, parameters, host, and expiry, and that batches and tasks are never deleted, whatever code writes the rows.
+
 ## Hostnames and operator sign-in
 
 The server has two faces (DEC-05), each on its own hostname:
@@ -402,7 +411,7 @@ Settings and their defaults: [docs/operations/configuration.md](../docs/operatio
 
 ### Docker image
 
-The image needs the agent API schemas, the rule file schema, and the agent's compiled-in certificate authorities too, so build it from `cmdb/` with `docs/api` and `agent/trust` as named build contexts (`.github/workflows/cd.yml` does this):
+The image needs the agent API schemas, the rule file schema, the task catalog, and the agent's compiled-in certificate authorities too, so build it from `cmdb/` with `docs/api` and `agent/trust` as named build contexts (`.github/workflows/cd.yml` does this):
 
 ```sh
 docker build --build-context api=../docs/api --build-context trust=../agent/trust -t cmdb .

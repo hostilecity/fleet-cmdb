@@ -53,6 +53,18 @@ RSpec.describe "Task catalog file (docs/api/tasks)" do
     end
   end
 
+  # The agent half of "server and agent catalogs are identical" (P3-A01, #34): wherever the agent compiles in the
+  # catalog, it must be this file, and nothing in the repository may hold a second copy that could drift.
+  it "is the only catalog in the repository, and the only one the agent compiles in" do
+    repo = Rails.root.join("..").expand_path
+    copies = repo.glob("{docs,agent/src,agent/tests,agent/build.rs,cmdb/app,cmdb/lib,cmdb/config,ops}/**/*catalog*.{json,yml,yaml,toml}")
+    expect(copies.map { |path| path.relative_path_from(repo).to_s }.reject { |path| path.start_with?("docs/api/tasks/") }).to eq([])
+    embedded = repo.glob("agent/{src,tests}/**/*.rs").push(repo.join("agent/build.rs")).select(&:file?).flat_map do |source|
+      source.read.scan(/include_(?:str|bytes)!\(\s*"([^"]*task-catalog[^"]*)"/).flatten.map { |path| source.dirname.join(path).expand_path }
+    end
+    expect(embedded.uniq - [ TaskCatalog::PATH ]).to eq([])
+  end
+
   it "keeps real hostnames and addresses out of the file" do
     text = TaskCatalog::PATH.read
     expect(text).not_to match(/\b\d{1,3}(\.\d{1,3}){3}\b/)

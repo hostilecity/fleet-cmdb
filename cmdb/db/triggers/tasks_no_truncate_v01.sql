@@ -1,0 +1,4 @@
+CREATE TRIGGER tasks_no_truncate
+  BEFORE TRUNCATE ON tasks
+  FOR EACH STATEMENT
+  EXECUTE FUNCTION tasks_guard();
