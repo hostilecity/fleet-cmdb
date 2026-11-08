@@ -31,10 +31,14 @@ class DebianTriageRefreshJob < ApplicationJob
     end
 
     @source = feed.source
+    # No active host reports a release in the table: nothing to download (an import that says so, and drops any
+    # stored data).
+    return DebianTriage::Import.new(origin: "feed", source: @source).call(nil) if DebianTriage::Releases.in_use.empty?
+
     last = TriageImport.debian.where(origin: "feed", source: @source).order(finished_at: :desc, id: :desc).first
-    # Only a clean, complete success of the releases now listed may be asked about conditionally: after a held-back
-    # or failed import, or with a release added to the table, the same document is needed again.
-    last = nil unless last&.state == "succeeded" && last.counts["malformed"].to_i.zero? && last.releases.sort == DebianTriage::Releases.names
+    # Only a clean, complete success of the releases hosts now report may be asked about conditionally: after a
+    # held-back or failed import, or once a host reports another release, the same document is needed again.
+    last = nil unless last&.state == "succeeded" && last.counts["malformed"].to_i.zero? && last.releases.sort == DebianTriage::Releases.in_use
     download = feed.fetch(etag: last&.etag, last_modified: last&.last_modified)
     import = download.not_modified? ? not_modified(last) : import(download, allowed_drops)
     logger.info("[triage] refresh from #{@source} #{import.state}: #{import.counts.except('releases').to_json}")

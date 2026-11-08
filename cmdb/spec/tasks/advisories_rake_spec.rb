@@ -149,6 +149,8 @@ RSpec.describe "advisories rake tasks" do
     let(:sample) { DebianTrackerHelpers::FIXTURES.join("sample.json").to_s }
     let(:url) { "https://security-tracker.example.org/tracker/data/json" }
 
+    before { hosts_on("12", "13", "14", nil) }
+
     around do |example|
       saved = DebianTriage.config.tracker_url
       DebianTriage.config.tracker_url = url
@@ -159,11 +161,11 @@ RSpec.describe "advisories rake tasks" do
 
     it "imports a file, printing the counts per release and each malformed entry, audited with the system actor" do
       output = run("advisories:triage_import", "FILE" => sample)
-      expect(output).to include("sample.json: 3 source packages, 5 entries (1 not CVE ids), 3 malformed, 1 for releases not in the table.",
+      expect(output).to include("sample.json: 3 source packages, 5 entries (1 not CVE ids), 3 malformed, 1 for releases no active host reports.",
                                 "  trixie: 3 entries in the file, 0 stored before, 0 dropped, replaced",
                                 "  malformed: openssl CVE-2026-90012 is not an object with a releases object", "  malformed: Not A Package is not a valid source package name")
       expect(TriageImport.sole).to have_attributes(origin: "file", source: "sample.json", state: "succeeded")
-      expect(AuditEntry.sole).to have_attributes(action: "advisory.triage_imported", actor_type: "system")
+      expect(AuditEntry.where("action LIKE 'advisory.%'").sole).to have_attributes(action: "advisory.triage_imported", actor_type: "system")
     end
 
     it "holds back a truncated file with the counts and the exact allowance, then imports it with ALLOW_DROPS" do
@@ -181,7 +183,16 @@ RSpec.describe "advisories rake tasks" do
 
     it "deletes a release taken out of the table and says so", triage_releases: { [ "debian", "13" ] => "trixie" } do
       TriageEntry.create!(tracker: "debian", release: "bookworm", package: "curl", cve_id: "CVE-2026-0001", status: "open")
-      expect(run("advisories:triage_import", "FILE" => sample)).to include("  bookworm: no longer in the release table, 1 entries deleted")
+      expect(run("advisories:triage_import", "FILE" => sample)).to include("  bookworm: not imported (no longer in the release table), 1 entries deleted")
+    end
+
+    it "drops a release no active host reports, and says when no active host reports any" do
+      run("advisories:triage_import", "FILE" => sample)
+      Host.find_each { |host| host.retire!(actor: Audit::SYSTEM) unless host.inventory.stable.dig("os", "version_id") == "13" }
+      expect(run("advisories:triage_import", "FILE" => sample)).to include("  bookworm: not imported (no active host reports it), 1 entries deleted")
+      Host.active.find_each { |host| host.retire!(actor: Audit::SYSTEM) }
+      expect(run("advisories:triage_import", "FILE" => sample))
+        .to start_with("sample.json: no active host reports a release in the release table (config/triage_releases.yml), so nothing was imported.\n")
     end
 
     it "records an unreadable file as failed, and explains usage" do

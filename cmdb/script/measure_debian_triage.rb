@@ -7,9 +7,13 @@
 #   bin/rails runner script/measure_debian_triage.rb FILE=json  # measure a real downloaded document instead
 #
 # Each step runs in a fresh process so its peak is its own: the Rails baseline, DebianTriage::Reader, JSON.parse of
-# the whole document (what the reader avoids), and DebianTriage::Import into the database (development's; it
-# replaces the triage stored there).
+# the whole document (what the reader avoids), and DebianTriage::Import of RELEASES into the database (development's;
+# it replaces the triage stored there), with the table's size after it.
 require Rails.root.join("spec/support/debian_tracker_document").to_s
+
+# The releases imported: trixie, the one release the MVP fleet reports (only releases hosts report are imported).
+# RELEASES=bookworm,trixie measures more.
+RELEASES = ENV.fetch("RELEASES", "trixie").split(",")
 
 def peak_mib = File.read("/proc/self/status")[/VmHWM:\s+(\d+)/, 1].to_i / 1024
 def clock = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -26,9 +30,10 @@ if (step = ENV["STEP"])
       "#{packages} packages, #{entries} entries"
     when "parse" then "#{JSON.parse(File.read(path)).size} packages"
     when "import"
-      import = DebianTriage::Import.new(origin: "file", source: File.basename(path), allowed_drops: DebianTriage::Releases.names.index_with { 10**9 }) # a rerun may replace everything
+      import = DebianTriage::Import.new(origin: "file", source: File.basename(path), releases: RELEASES, allowed_drops: RELEASES.index_with { 10**9 }) # a rerun may replace everything
                                    .call(DebianTriage::Reader.new(path))
-      "#{import.state}, #{import.counts['releases'].transform_values { |c| c['in_file'] }.to_json} rows"
+      size = TriageEntry.connection.select_value("SELECT pg_size_pretty(pg_total_relation_size('triage_entries'))")
+      "#{import.state}, #{import.counts['releases'].transform_values { |c| c['in_file'] }.to_json} rows, table #{size}"
     end
   puts format("%-9s peak %4d MiB  %6.2f s  %s", step, peak_mib, clock - started, detail)
   exit

@@ -7,7 +7,8 @@
 #   text; no_dsa_reason is nil for a plain no-DSA, else Debian's reason ("postponed", "ignored").
 # - triage_imports records every import (the scheduled refresh, or a file by hand) with its outcome and counts,
 #   which is how freshness is known. releases lists the releases whose data it stored: a held-back release kept
-#   its previous data, so it is not among them.
+#   its previous data, so it is not among them. removed_releases lists the releases it did not import because
+#   no active host reports them (or the release table no longer lists them), whose stored data it deleted.
 class CreateTriageEntries < ActiveRecord::Migration[8.1]
   def change
     create_table :triage_imports do |t|
@@ -16,6 +17,7 @@ class CreateTriageEntries < ActiveRecord::Migration[8.1]
       t.string :source, null: false, limit: 256
       t.string :state, null: false, limit: 16
       t.string :releases, null: false, array: true, default: []
+      t.string :removed_releases, null: false, array: true, default: []
       t.jsonb :counts, null: false, default: {}
       t.jsonb :problems, null: false, default: []
       t.string :reason, limit: 512

@@ -24,8 +24,17 @@ module DebianTrackerHelpers
     end
   end
 
-  def import_triage(document, origin: "file", source: "json", **)
-    DebianTriage::Import.new(origin:, source:, **).call(DebianTriage::Reader.new(document.is_a?(Pathname) ? document : tracker_file(document)))
+  # Every release in the release table, which most specs import so they need no hosts. releases: nil imports what
+  # active hosts report, as the job and the rake tasks do.
+  ALL_RELEASES = %w[bookworm forky sid trixie].freeze
+
+  def import_triage(document, origin: "file", source: "json", releases: ALL_RELEASES, **)
+    DebianTriage::Import.new(origin:, source:, releases:, **).call(DebianTriage::Reader.new(document.is_a?(Pathname) ? document : tracker_file(document)))
+  end
+
+  # An active host reporting Debian at each VERSION_ID (nil: none, as sid), with no package report.
+  def hosts_on(*version_ids)
+    version_ids.map { |version_id| debian_host(packages: nil, os: { "id" => "debian", "version_id" => version_id, "pretty_name" => "Debian GNU/Linux" }) }
   end
 end
 

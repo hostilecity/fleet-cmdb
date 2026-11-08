@@ -7,6 +7,15 @@ RSpec.describe DebianTriageRefreshJob, type: :job do
 
   let(:url) { "https://security-tracker.example.org/tracker/data/json" }
   let(:document) { DebianTrackerHelpers::FIXTURES.join("sample.json").read }
+  # Active hosts on every release in the table, so the refresh imports them all (owner decision on #135).
+  let(:versions) { [ "12", "13", "14", nil ] }
+
+  before do
+    hosts_on(*versions)
+    clear_enqueued_jobs
+  end
+
+  def triage_audits = AuditEntry.where("action LIKE 'advisory.%'")
 
   around do |example|
     saved = DebianTriage.config.tracker_url
@@ -47,7 +56,7 @@ RSpec.describe DebianTriageRefreshJob, type: :job do
       stub_request(:get, url).with(headers: { "If-None-Match" => '"t1"', "If-Modified-Since" => "Sat, 07 Nov 2026 10:00:00 GMT" }).to_return(status: 304)
       import = refresh
       expect(import).to have_attributes(state: "succeeded", counts: { "not_modified" => true }, releases: %w[bookworm forky sid trixie], etag: '"t1"')
-      expect(AuditEntry.count).to eq(1)
+      expect(triage_audits.count).to eq(1)
       expect(DebianTriage::Freshness.statuses.map(&:updated_at)).to all(be_within(1.minute).of(Time.current))
     end
   end
@@ -59,18 +68,27 @@ RSpec.describe DebianTriageRefreshJob, type: :job do
     expect(a_request(:get, url).with(headers: { "If-None-Match" => /./ })).not_to have_been_made
   end
 
-  it "downloads the whole document again after a release is added to the table" do
-    clean = tracker_document("curl" => { "CVE-2026-0001" => { "trixie" => tracker_release } }).to_json
-    saved = DebianTriage.config.releases
-    DebianTriage.config.releases = { [ "debian", "13" ] => "trixie" }
-    stub_tracker(body: clean)
-    refresh
-    DebianTriage.config.releases = saved
-    refresh
-    expect(a_request(:get, url).with(headers: { "If-None-Match" => /./ })).not_to have_been_made
-    expect(TriageImport.order(:id).last.releases).to eq(%w[bookworm forky sid trixie])
-  ensure
-    DebianTriage.config.releases = saved
+  context "with only a trixie host" do
+    let(:versions) { [ "13" ] }
+
+    it "imports only trixie, and downloads the whole document again once a host reports another release" do
+      stub_tracker(body: tracker_document("curl" => { "CVE-2026-0001" => { "trixie" => tracker_release, "bookworm" => tracker_release } }).to_json)
+      expect(refresh.releases).to eq([ "trixie" ])
+      hosts_on("12")
+      expect(refresh.releases).to eq(%w[bookworm trixie])
+      expect(a_request(:get, url).with(headers: { "If-None-Match" => /./ })).not_to have_been_made
+      expect(TriageEntry.distinct.pluck(:release)).to contain_exactly("bookworm", "trixie")
+    end
+  end
+
+  context "with no active host" do
+    let(:versions) { [] }
+
+    it "downloads nothing, and records that nothing was imported" do
+      import = refresh
+      expect(import).to have_attributes(state: "succeeded", releases: [], counts: include("no_hosts" => true))
+      expect(a_request(:get, url)).not_to have_been_made
+    end
   end
 
   it "holds back a truncated document without failing the job, so it is not retried" do
@@ -99,7 +117,7 @@ RSpec.describe DebianTriageRefreshJob, type: :job do
     expect { refresh }.to raise_error(Advisories::Feed::Unavailable, "the Debian Security Tracker at security-tracker.example.org answered HTTP 503")
     expect(a_request(:get, url)).to have_been_made.times(described_class::ATTEMPTS)
     expect(TriageImport.sole).to have_attributes(state: "failed", reason: "the Debian Security Tracker at security-tracker.example.org answered HTTP 503")
-    expect(AuditEntry.sole.action).to eq("advisory.triage_import_failed")
+    expect(triage_audits.sole.action).to eq("advisory.triage_import_failed")
   end
 
   it "fails a document that cannot be read, and reports a fault on this server without its details" do

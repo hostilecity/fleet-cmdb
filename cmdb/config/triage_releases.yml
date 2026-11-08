@@ -1,6 +1,7 @@
 # Which release of a triage source each host's distribution is (P2-S16, ADR 0022): a host's inventory reports
-# os-release's ID and VERSION_ID, and the source names its releases its own way. The import keeps only the
-# releases listed here, and a finding is joined to the triage of its host's release. Adding a release, or another
+# os-release's ID and VERSION_ID, and the source names its releases its own way. The import keeps the releases
+# that active hosts map to through this table (owner decision on #135), and a finding is joined to the triage of
+# its host's release. Adding a release, or another
 # distribution's tracker, is a change to this file, not to code. It is checked when the server starts.
 #
 # version_id: null is a host whose os-release has no VERSION_ID (Debian unstable, and testing before its release).
