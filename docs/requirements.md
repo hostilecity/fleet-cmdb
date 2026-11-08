@@ -111,6 +111,7 @@ Build these in Phase 1 and reuse them unchanged in Phases 2 and 3.
 ### FR-S.4 Dashboard access
 
 - The dashboard requires operator sign-in. There is no public or anonymous view of fleet data.
+- A privacy page (`/privacy`) is public, on the dashboard hostname only: in plain words, what the dashboard keeps about the people who sign in, which other services are involved, and how to have access removed. Google's OAuth consent screen links to it, and the sign-in page links to it. It holds no fleet data and must be kept accurate when what the dashboard stores changes.
 - Operators sign in with Google OAuth against an allowlist of operator email addresses held by the server; there are no application passwords and no public sign-up. The first operator is added to the allowlist from the command line. An operator is a user record keyed by their Google account, so a second operator is an additional allowlist entry. (decided, DEC-06)
 - A single-operator setup is acceptable for Phases 1–3, but the design must not hard-code one user in a way that blocks adding a second operator later.
 - All dashboard forms validate input and show errors in place. Destructive actions — retire host, revoke credential, cancel task — require explicit confirmation.

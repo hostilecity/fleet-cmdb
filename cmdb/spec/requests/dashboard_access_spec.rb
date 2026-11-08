@@ -3,7 +3,7 @@ require "rails_helper"
 # FR-S.4, P1-S01: no dashboard route is reachable without an allowlisted, signed-in operator.
 RSpec.describe "Dashboard access", type: :request do
   # Routes that must work signed out: the sign-in page, the OAuth callback and failure, and sign-out.
-  PUBLIC = %w[sessions#new sessions#create sessions#failure sessions#destroy].freeze
+  PUBLIC = %w[sessions#new sessions#create sessions#failure sessions#destroy pages#privacy].freeze
 
   def dashboard_routes
     Rails.application.routes.routes.filter_map do |route|

@@ -52,7 +52,7 @@ The private key goes into the secret `SSH_PRIVATE_KEY`; then delete both files.
 **Google OAuth client.**
 1. In the Google Cloud console, open **APIs & Services > Credentials** and create an **OAuth client ID** of type **Web application**.
 2. Set the authorised redirect URI to `https://fleet.example.com/auth/google_oauth2/callback`.
-3. On the consent screen, use **Internal** (Workspace) or **External** with your operators as test users. The scopes are `openid`, `email`, and `profile`.
+3. On the consent screen, use **Internal** (Workspace) or **External** with your operators as test users. The scopes are `openid`, `email`, and `profile`. Set the privacy policy link to `https://fleet.example.com/privacy`, a public page that says what the dashboard keeps about the people who sign in.
 
 ## 2. Create the GitHub environment
 
@@ -88,6 +88,8 @@ In **Cloudflare Zero Trust > Networks > Tunnels**, open the tunnel whose connect
 **Never add the agent hostname or an `/api` path to the tunnel.** The app refuses `/api/v1` on the dashboard hostname anyway (`cmdb/lib/middleware/host_separation.rb`).
 
 In **Zero Trust > Access > Applications**, add a **Self-hosted** application for `fleet.example.com`, with an **Allow** policy for your operators' email addresses. Operators then pass Access and also sign in with Google as an allowlisted operator (step 5).
+
+So that Google and anyone else can read the privacy page without passing Access, add a second **Self-hosted** application for `fleet.example.com` with the path `privacy`, and give it a **Bypass** policy for **Everyone**. The more specific path takes precedence. It is the only page the app serves without sign-in apart from the sign-in page itself.
 
 ## 4. Deploy
 

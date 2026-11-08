@@ -1,0 +1,44 @@
+<% content_for :title, "Privacy" %>
+<%# Keep this accurate when what the dashboard stores changes: operators (Google ID, email, name, last sign-in),
+    operator sessions, the audit log, the session cookie, request logs, and the agents' reports. %>
+<article class="sheet privacy" aria-labelledby="privacy_heading">
+  <h1 id="privacy_heading">Privacy</h1>
+  <p class="muted">Last updated 8 November 2026</p>
+
+  <p>Fleet CMDB is a private tool for keeping track of the virtual machines on one network: what is installed on them, how they are set up, and which known security problems affect them. Only people the administrator has added can sign in. Nothing here is sold or shared for advertising, and the site has no analytics or tracking.</p>
+
+  <h2>When you sign in</h2>
+  <p>You sign in with your Google account. Your password stays with Google. This site keeps:</p>
+  <ul>
+    <li>your Google account ID, email address, and name, to check that you are allowed in and to show who is signed in;</li>
+    <li>when you last signed in.</li>
+  </ul>
+
+  <h2>What is recorded while you use it</h2>
+  <ul>
+    <li><strong>An audit log</strong> of sign-ins and of the changes you make, such as approving a machine or changing a setting, with the time and your account. It is kept permanently, so every change can be traced.</li>
+    <li><strong>Server logs</strong> of each request (the time, the page, and the network address it came from), used to fix problems.</li>
+    <li><strong>One cookie</strong>, which keeps you signed in. It ends when you sign out, or by default after 2 hours without activity or 12 hours in total. Cloudflare's access check (below) sets its own cookie to remember that you passed it. There are no other cookies.</li>
+  </ul>
+
+  <h2>Information about the machines</h2>
+  <p>A small program on each machine reports how that machine is set up: its name, operating system, installed software, security settings, and the names of its local user accounts (never passwords). This describes the machines, not you, and only signed-in users can see it. Past reports are deleted after 90 days by default; the administrator can change this.</p>
+
+  <h2>Other services involved</h2>
+  <ul>
+    <li><strong>Google</strong> handles sign-in (<a href="https://policies.google.com/privacy" rel="noopener noreferrer">Google's privacy policy</a>).</li>
+    <li><strong>Cloudflare</strong> carries the connection to this site and checks that you are allowed in before the dashboard loads (<a href="https://www.cloudflare.com/privacypolicy/" rel="noopener noreferrer">Cloudflare's privacy policy</a>).</li>
+    <li>The server downloads public security information (from OSV and the Debian Security Tracker) and agent updates (from GitHub). Nothing about you is sent to them.</li>
+  </ul>
+
+  <h2>Your choices</h2>
+  <ul>
+    <li>Ask the administrator who gave you access to show you what is stored about you, to correct it, or to remove your access. Removing access signs you out and stops future sign-ins. Your past entries in the audit log stay, because that log cannot be changed.</li>
+    <li>You can also remove this site's access to your Google account at any time in your <a href="https://myaccount.google.com/connections" rel="noopener noreferrer">Google account settings</a>.</li>
+  </ul>
+
+  <h2>Changes</h2>
+  <p>If this page changes, the new version is posted here with a new date.</p>
+
+  <p><%= link_to "Back to Fleet CMDB", root_path %></p>
+</article>

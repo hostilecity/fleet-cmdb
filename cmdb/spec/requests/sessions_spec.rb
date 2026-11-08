@@ -15,6 +15,16 @@ RSpec.describe "Operator sign-in", type: :request do
     expect(AuditEntry.where(action: Audit::Actions::OPERATOR_SIGNED_IN).sole).to have_attributes(actor_type: "operator", actor_id: operator.id)
   end
 
+  it "shows the logo on the sign-in page, and every page links the favicon" do
+    get sign_in_path
+    expect(response).to have_http_status(:ok)
+    page = Nokogiri::HTML(response.body)
+    expect(page.at_css("img.sign-in-logo")).to have_attributes(attributes: include("alt" => have_attributes(value: "Fleet CMDB")))
+    expect(page.at_css("img.sign-in-logo")["src"]).to match(%r{\A/assets/logo-\h+\.svg\z})
+    expect(page.css("link[rel=icon]").map { |link| link["href"] }).to eq([ "/favicon.ico" ])
+    expect(Rails.root.join("public/favicon.ico")).to be_file
+  end
+
   it "keeps one record per Google account across sign-ins" do
     2.times { sign_in_with_google }
     expect(Operator.count).to eq(1)
