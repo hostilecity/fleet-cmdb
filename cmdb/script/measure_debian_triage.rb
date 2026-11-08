@@ -4,7 +4,7 @@
 # shape and counts (spec/support/debian_tracker_document.rb). Linux only (peak memory is /proc's VmHWM).
 #
 #   bin/rails runner script/measure_debian_triage.rb            # generate, then measure each step in its own process
-#   bin/rails runner script/measure_debian_triage.rb FILE=json  # measure a real downloaded document instead
+#   FILE=json bin/rails runner script/measure_debian_triage.rb  # measure a real downloaded document instead
 #
 # Each step runs in a fresh process so its peak is its own: the Rails baseline, DebianTriage::Reader, JSON.parse of
 # the whole document (what the reader avoids), and DebianTriage::Import of RELEASES into the database (development's;

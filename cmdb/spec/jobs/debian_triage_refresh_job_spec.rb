@@ -61,6 +61,43 @@ RSpec.describe DebianTriageRefreshJob, type: :job do
     end
   end
 
+  describe "validators only for the latest stored snapshot (review of #135)" do
+    let(:fixed) { tracker_document("curl" => { "CVE-2026-0001" => { "trixie" => tracker_release(status: "resolved", fixed_version: "8.14.1-2") } }).to_json }
+    let(:conditional) { { "If-None-Match" => '"t1"', "If-Modified-Since" => "Sat, 07 Nov 2026 10:00:00 GMT" } }
+
+    before do
+      stub_tracker(body: tracker_document("curl" => { "CVE-2026-0001" => { "trixie" => tracker_release } }).to_json)
+      refresh
+    end
+
+    def curl_status = TriageEntry.find_by!(release: "trixie", package: "curl").status
+
+    it "downloads the whole document after a file import, rather than renewing the file's data as the feed's" do
+      import_triage(fixed)
+      travel 7.hours do
+        import = refresh
+        expect(a_request(:get, url).with(headers: conditional)).not_to have_been_made
+        expect(import).to have_attributes(origin: "feed", state: "succeeded")
+        expect(import.counts).not_to have_key("not_modified")
+        expect(curl_status).to eq("open")
+      end
+    end
+
+    it "downloads the whole document when another import stores data while the conditional request is answered" do
+      travel 7.hours do
+        stub_request(:get, url).with(headers: conditional).to_return do
+          import_triage(fixed)
+          { status: 304 }
+        end
+        import = refresh
+        expect(a_request(:get, url).with(headers: conditional)).to have_been_made.once
+        expect(import).to have_attributes(origin: "feed", state: "succeeded")
+        expect(import.counts).not_to have_key("not_modified")
+        expect(curl_status).to eq("open")
+      end
+    end
+  end
+
   it "downloads the whole document again after malformed entries" do
     stub_tracker
     refresh # the sample has malformed entries

@@ -6,9 +6,12 @@
 # matching, and triage never enqueues matching: it changes no finding.
 #
 # The download is one document, over HTTPS with the certificate verified, at most FLEET_DEBIAN_TRACKER_MAX_DOWNLOAD_MB,
-# within Advisories::Feed's time limits, and conditional on the last import's validators when that import was a
-# clean success of the same releases: "not modified" is then recorded as a successful refresh of those releases,
-# so freshness reflects that the data was checked (it stores nothing, so it is not audited). A failure (the
+# within Advisories::Feed's time limits, and conditional on the validators of the latest import that stored data,
+# from any origin or source, only when that import came from this feed and was a clean success of the same
+# releases: "not modified" is then recorded as a successful refresh of those releases, so freshness reflects that
+# the data was checked (it stores nothing, so it is not audited). That is rechecked under the import lock before
+# it is recorded; if another import stored data meanwhile, the document is downloaded again without validators
+# (review of #135: otherwise a file import after a feed import could be renewed as fresh forever). A failure (the
 # tracker unreachable or timing out, an HTTP error, a document that cannot be read) is retried with backoff; after
 # the last attempt it is recorded as a failed import, audited, and raised again, so it shows as a failed job.
 #
@@ -39,12 +42,16 @@ class DebianTriageRefreshJob < ApplicationJob
     # stored data).
     return DebianTriage::Import.new(origin: "feed", source: @source, operator: @operator).call(nil) if DebianTriage::Releases.in_use.empty?
 
-    last = TriageImport.debian.where(origin: "feed", source: @source).order(finished_at: :desc, id: :desc).first
-    # Only a clean, complete success of the releases hosts now report may be asked about conditionally: after a
-    # held-back or failed import, or once a host reports another release, the same document is needed again.
-    last = nil unless last&.state == "succeeded" && last.counts["malformed"].to_i.zero? && last.releases.sort == DebianTriage::Releases.in_use
+    last = conditional_base
     download = feed.fetch(etag: last&.etag, last_modified: last&.last_modified)
-    import = download.not_modified? ? not_modified(last) : import(download, allowed_drops)
+    import = not_modified(last) if download.not_modified?
+    if import.nil?
+      if download.not_modified? # another import stored data since the request was made: the document is needed
+        download.close!
+        download = feed.fetch
+      end
+      import = import(download, allowed_drops)
+    end
     logger.info("[triage] refresh from #{@source} #{import.state}: #{import.counts.except('releases').to_json}")
     import
   rescue Advisories::Feed::Unavailable, Advisories::Unreadable => e
@@ -68,14 +75,33 @@ class DebianTriageRefreshJob < ApplicationJob
 
   private
 
+  # The import whose validators may be sent, or nil: the latest import that stored or checked data, whatever its
+  # origin or source, if it is a clean, complete success of the releases hosts now report from this feed. After a
+  # file import, an import from another URL, a held-back import, or once a host reports another release, the same
+  # document is needed again.
+  def conditional_base
+    latest = TriageImport.debian.where(state: %w[succeeded held_back]).order(finished_at: :desc, id: :desc).first
+    return nil unless latest&.origin == "feed" && latest.source == @source && latest.state == "succeeded"
+    return nil unless latest.counts["malformed"].to_i.zero? && latest.releases.sort == DebianTriage::Releases.in_use
+
+    latest
+  end
+
   def import(download, allowed_drops)
     DebianTriage::Import.new(origin: "feed", source: @source, operator: @operator, etag: download.etag, last_modified: download.last_modified, allowed_drops:)
                         .call(DebianTriage::Reader.new(download.file.path, name: File.basename(@source)))
   end
 
+  # Records "not modified" as a refresh of last's releases, under the import lock, if last is still the latest stored
+  # snapshot; nil if another import stored data meanwhile.
   def not_modified(last)
-    now = Time.current
-    TriageImport.create!(tracker: DebianTriage::TRACKER, origin: "feed", source: @source, operator: @operator, state: "succeeded", releases: last.releases,
-                         counts: { "not_modified" => true }, etag: last.etag, last_modified: last.last_modified, started_at: now, finished_at: now)
+    TriageImport.transaction do
+      DebianTriage::Import.lock!
+      next nil unless conditional_base&.id == last.id
+
+      now = Time.current
+      TriageImport.create!(tracker: DebianTriage::TRACKER, origin: "feed", source: @source, operator: @operator, state: "succeeded", releases: last.releases,
+                           counts: { "not_modified" => true }, etag: last.etag, last_modified: last.last_modified, started_at: now, finished_at: now)
+    end
   end
 end

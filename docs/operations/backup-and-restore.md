@@ -16,7 +16,7 @@ Each run writes one directory, `fleet-cmdb-<UTC time>/`, with the files above an
 **Back up separately, never in this set and never in git** (the dump contains the whole inventory and audit log, and none of these):
 
 - the Rails master key (`config/master.key`) or `RAILS_MASTER_KEY`, and `SECRET_KEY_BASE` if set;
-- the environment file: hostnames, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `CMDB_DATABASE_PASSWORD`, the release public keys (`FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT`);
+- the environment file: hostnames, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `DATABASE_PASSWORD`, the release public keys (`FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT`);
 - the Cloudflare API token (DNS edit for the one zone) and the tunnel credentials;
 - the agent hostname certificate state (the proxy's ACME account and certificate volume). It can be re-issued by the DNS challenge, so losing it costs minutes, not data.
 

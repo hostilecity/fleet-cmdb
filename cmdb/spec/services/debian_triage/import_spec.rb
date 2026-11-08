@@ -51,6 +51,15 @@ RSpec.describe DebianTriage::Import do
     expect(TriageEntry.sole).to have_attributes(cve_id: "CVE-2026-0005", urgency: nil, urgency_raw: "", no_dsa: true, no_dsa_note: nil, no_dsa_reason: "postponed")
   end
 
+  it "keeps Debian's no-DSA note as written, removing only control characters (review of #136)" do
+    import_triage(tracker_document("curl" => {
+      "CVE-2026-0001" => { "trixie" => tracker_release(nodsa: "See  section A\r\nthen B\u0000\u0007.") },
+      "CVE-2026-0002" => { "trixie" => tracker_release(nodsa: " \t\n ") }
+    }))
+    expect(TriageEntry.find_by!(cve_id: "CVE-2026-0001").no_dsa_note).to eq("See  section A\nthen B.")
+    expect(TriageEntry.find_by!(cve_id: "CVE-2026-0002")).to have_attributes(no_dsa: true, no_dsa_note: nil)
+  end
+
   it "reports a package whose value could not be read, and lists only the first problems" do
     stub_const("#{described_class}::PROBLEM_LIMIT", 1)
     import = import_triage(%({"curl": [1], "wget": {"x": tru}}))

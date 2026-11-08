@@ -50,9 +50,9 @@ module DebianTriage
     private
 
     def read_document
-      skip_whitespace
+      skip_gap
       expect!("{")
-      skip_whitespace
+      skip_gap
       return expect!("}") && finish if peek == "}"
 
       loop do
@@ -72,14 +72,13 @@ module DebianTriage
         raise unreadable("has #{separator.inspect} where a comma or the end of the document belongs") unless separator == ","
 
         compact
-        @start = @scanner.pos
-        skip_whitespace
+        skip_gap
       end
       finish
     end
 
     def finish
-      skip_whitespace
+      skip_gap
       raise unreadable("has data after the end of the document") unless @scanner.eos?
     end
 
@@ -147,6 +146,21 @@ module DebianTriage
       check_package_size!
     end
 
+    # Whitespace outside any package (before the document, between packages, after the end): nothing before it is
+    # needed any more, so the buffer is emptied each time it runs out, and padding of any length holds at most one
+    # chunk (review of #135: before the first package nothing bounded it). No package is in progress (@start nil).
+    def skip_gap
+      @start = nil
+      loop do
+        @scanner.skip(WHITESPACE)
+        break unless @scanner.eos?
+
+        @scanner = StringScanner.new(+"".b)
+        break unless fill
+      end
+    end
+
+    # Whitespace inside a package (around its key's colon, after its value), counted against MAX_PACKAGE_BYTES.
     def skip_whitespace
       @scanner.skip(WHITESPACE)
       while @scanner.eos? && fill
