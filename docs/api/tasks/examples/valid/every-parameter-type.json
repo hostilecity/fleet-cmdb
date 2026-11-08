@@ -1,0 +1,69 @@
+{
+  "format_version": 1,
+  "catalog_version": 1,
+  "tasks": [
+    {
+      "type": "example_task",
+      "name": "Example task",
+      "description": "An example task for the catalog lint's tests. It runs nothing.",
+      "since": 1,
+      "privilege": "service_manager",
+      "interruptible": false,
+      "enabled_by_default": false,
+      "timeout_seconds": 60,
+      "expiry_seconds": 86400,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "unit": {
+            "type": "string",
+            "description": "A value.",
+            "maxLength": 64,
+            "pattern": "^[a-z0-9][a-z0-9_.@-]{0,54}\\.service$"
+          },
+          "mode": {
+            "type": "string",
+            "description": "A value.",
+            "maxLength": 16,
+            "enum": [
+              "quick",
+              "full"
+            ]
+          },
+          "level": {
+            "type": "string",
+            "description": "A value.",
+            "minLength": 1,
+            "maxLength": 8,
+            "enum": [
+              "low",
+              "high"
+            ],
+            "pattern": "^[a-z]+$"
+          },
+          "count": {
+            "type": "integer",
+            "description": "How many.",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Whether to change nothing."
+          },
+          "version": {
+            "type": "string",
+            "description": "A value.",
+            "maxLength": 32,
+            "pattern": "^\\d+(\\.\\d+){0,3}(\\+[a-z0-9]+)?$"
+          }
+        },
+        "required": [
+          "unit",
+          "mode"
+        ]
+      }
+    }
+  ]
+}

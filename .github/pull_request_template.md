@@ -29,3 +29,4 @@ Closes #
 - [ ] Nothing out of scope or from a later phase was added
 - [ ] API payload changes update `docs/api/` schemas and examples (or: not applicable)
 - [ ] Task-related changes: no path lets the server send a command, script, or executable name (or: not applicable)
+- [ ] Task catalog changes (`docs/api/tasks/task-catalog.json`): an owner decision names what the type runs; `catalog_version` and `since` increased; no existing type or parameter removed, renamed, retyped, or widened; the agent implements it and its privilege is in the privilege table; the lint passes (or: not applicable; see `docs/api/tasks/README.md`)

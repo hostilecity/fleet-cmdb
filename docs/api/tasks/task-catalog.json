@@ -1,0 +1,65 @@
+{
+  "format_version": 1,
+  "catalog_version": 1,
+  "tasks": [
+    {
+      "type": "refresh_reports",
+      "name": "Refresh reports",
+      "description": "Collects the host's inventory, configuration facts, and installed packages again and sends one report of each type to the server, through the same endpoints and checks as the scheduled reports and the on-demand report request (DEC-13). Reads only: it changes nothing on the VM and runs no package manager or service manager command.",
+      "since": 1,
+      "privilege": "read_only",
+      "interruptible": true,
+      "enabled_by_default": true,
+      "timeout_seconds": 600,
+      "expiry_seconds": 86400,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "type": "restart_service",
+      "name": "Restart a service",
+      "description": "Asks systemd to restart one service unit, the one named by the service parameter (systemctl restart), and reports whether the unit is active afterwards. The unit must be on the server's restart allowlist and on this VM's own allowlist, or the task is refused with nothing run. The agent's own unit, ssh and sshd, systemd-* units, networking, and D-Bus are always refused, even when listed (DEC-15). Disabled on every VM until enabled in its local configuration (DEC-14).",
+      "since": 1,
+      "privilege": "service_manager",
+      "interruptible": false,
+      "enabled_by_default": false,
+      "timeout_seconds": 300,
+      "expiry_seconds": 86400,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "The full name of a systemd service unit, for example nginx.service: letters, digits, and _ . @ -, starting with a letter or digit and ending in .service.",
+            "minLength": 9,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@-]{0,247}\\.service$"
+          }
+        },
+        "required": ["service"]
+      }
+    },
+    {
+      "type": "apply_package_updates",
+      "name": "Apply package updates",
+      "description": "Runs apt-get update, then apt-get upgrade, non-interactively: keeps local configuration files (--force-confold, --force-confdef), respects package holds, installs no new packages, removes nothing, and never runs dist-upgrade. Waits a bounded time for the dpkg lock and fails clearly if it stays held. Never reboots: it reports whether a reboot is required and which services need a restart, without restarting them, then sends a package report. Debian only. Cannot be interrupted once running; after 60 minutes it is terminated gently and the result says the dpkg database may need dpkg --configure -a (DEC-16). Disabled on every VM until enabled in its local configuration (DEC-14).",
+      "since": 1,
+      "privilege": "package_manager",
+      "interruptible": false,
+      "enabled_by_default": false,
+      "timeout_seconds": 3600,
+      "expiry_seconds": 86400,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}
