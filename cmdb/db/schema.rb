@@ -621,6 +621,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
     t.string "source", limit: 256, null: false
     t.string "state", limit: 16, null: false
     t.string "releases", default: [], null: false, array: true
+    t.string "removed_releases", default: [], null: false, array: true
     t.jsonb "counts", default: {}, null: false
     t.jsonb "problems", default: [], null: false
     t.string "reason", limit: 512

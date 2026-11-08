@@ -112,12 +112,13 @@ module AdvisoriesTask
     counts = import.counts
     return puts("#{import.source}: not modified since the last refresh.") if counts["not_modified"]
 
-    puts "#{import.source}: #{counts['packages']} source packages, #{counts['entries']} entries (#{counts['other_ids']} not CVE ids), " \
-         "#{counts['malformed']} malformed, #{counts['other_releases']} for releases not in the table."
+    puts(counts["no_hosts"] ? "#{import.source}: #{import.reason}." :
+         "#{import.source}: #{counts['packages']} source packages, #{counts['entries']} entries (#{counts['other_ids']} not CVE ids), " \
+         "#{counts['malformed']} malformed, #{counts['other_releases']} for releases no active host reports.")
     counts["releases"].each do |release, c|
       puts "  #{release}: #{c['in_file']} entries in the file, #{c['stored']} stored before, #{c['dropped']} dropped, #{c['outcome'].tr('_', ' ')}"
     end
-    counts["removed_releases"].each { |release, n| puts "  #{release}: no longer in the release table, #{n} entries deleted" }
+    counts["removed_releases"].each { |release, n| puts "  #{release}: not imported (#{DebianTriage::Releases.names.include?(release) ? 'no active host reports it' : 'no longer in the release table'}), #{n} entries deleted" }
     import.problems.each { |p| puts "  malformed: #{p['package']}#{" #{p['id']}" if p['id']} #{p['problem']}" }
     return unless import.state == "held_back"
 

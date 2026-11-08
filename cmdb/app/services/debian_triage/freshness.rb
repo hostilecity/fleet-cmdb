@@ -4,7 +4,9 @@ module DebianTriage
   #
   # A release is as fresh as the last import that stored its data: a successful one, a held-back one for the
   # releases it did store, or a refresh the tracker answered "not modified". A release a held-back import kept
-  # back is not refreshed by it, so it goes stale if that continues.
+  # back is not refreshed by it, so it goes stale if that continues. A release an import later dropped (no active
+  # host reported it; removed_releases) is never imported again until an import stores it, so a host that starts
+  # reporting it reads "not imported yet", not a stale or an empty result.
   module Freshness
     Status = Data.define(:release, :updated_at, :stale) do
       def never? = updated_at.nil?
@@ -14,9 +16,15 @@ module DebianTriage
 
     # One Status per release in the release table, in one query.
     def statuses(now: Time.current, max_age: Advisories.config.max_age)
-      updated = TriageImport.debian.stored.from("triage_imports, unnest(triage_imports.releases) AS release").group("release").maximum(:finished_at)
+      latest = TriageImport.debian.stored
+                           .from("triage_imports CROSS JOIN LATERAL (SELECT unnest(triage_imports.releases) AS release, 'stored' AS kind " \
+                                 "UNION ALL SELECT unnest(triage_imports.removed_releases), 'removed') AS r")
+                           .group("r.release", "r.kind").maximum(:finished_at)
+      updated = latest.filter_map { |(release, kind), at| [ release, at ] if kind == "stored" }.to_h
+      removed = latest.filter_map { |(release, kind), at| [ release, at ] if kind == "removed" }.to_h
       Releases.names.map do |release|
         at = updated[release]
+        at = nil if at && removed[release] && removed[release] >= at
         Status.new(release:, updated_at: at, stale: at.nil? || at < now - max_age)
       end
     end

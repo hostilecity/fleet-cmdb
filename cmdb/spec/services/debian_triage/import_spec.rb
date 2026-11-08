@@ -87,11 +87,74 @@ RSpec.describe DebianTriage::Import do
   end
 
   it "deletes a release taken out of the release table", triage_releases: { [ "debian", "13" ] => "trixie" } do
+    hosts_on("12", "13")
     TriageEntry.create!(tracker: "debian", release: "bookworm", package: "curl", cve_id: "CVE-2026-0001", status: "open")
-    import = import_triage(document(2))
+    import = import_triage(document(2), releases: nil)
     expect(import).to have_attributes(state: "succeeded", releases: [ "trixie" ])
     expect(import.counts["removed_releases"]).to eq("bookworm" => 1)
     expect(TriageEntry.distinct.pluck(:release)).to eq([ "trixie" ])
+  end
+
+  # Owner decision on #135: only the releases active hosts report are imported (as the spec says), through the
+  # release table.
+  describe "the releases hosts report" do
+    def import_for_hosts(document = sample) = import_triage(document, releases: nil)
+
+    it "keeps only the releases active hosts report, counting the others" do
+      trixie, bookworm = hosts_on("13", "12")
+      bookworm.retire!(actor: Audit::SYSTEM)
+      import = import_for_hosts
+      expect(trixie).to be_present
+      expect(import).to have_attributes(state: "succeeded", releases: [ "trixie" ], removed_releases: %w[bookworm forky sid])
+      expect(import.counts["releases"].keys).to eq([ "trixie" ])
+      expect(import.counts["other_releases"]).to eq(5) # bullseye, and glibc's bookworm, forky, and sid
+      expect(TriageEntry.distinct.pluck(:release)).to eq([ "trixie" ])
+    end
+
+    it "drops a release no active host reports any more without the truncation guard, and says so in the audit entry" do
+      _trixie, bookworm = hosts_on("13", "12")
+      expect(import_for_hosts.releases).to eq(%w[bookworm trixie])
+      bookworm.retire!(actor: Audit::SYSTEM)
+      import = import_for_hosts
+      expect(import).to have_attributes(state: "succeeded", releases: [ "trixie" ], reason: nil)
+      expect(import.counts["removed_releases"]).to eq("bookworm" => 1)
+      expect(TriageEntry.where(release: "bookworm")).to be_empty
+      expect(AuditEntry.where(action: "advisory.triage_imported").order(:id).last.changeset["removed"])
+        .to eq("dropped bookworm (1 entries: no active host reports it); dropping a release the fleet does not use is expected, so the truncation guard does not apply")
+    end
+
+    it "imports a release a host starts reporting at the next import, and says it is not imported yet until then" do
+      hosts_on("13")
+      import_for_hosts
+      statuses = -> { DebianTriage::Freshness.statuses.index_by(&:release) }
+      expect(statuses.call["bookworm"]).to be_never
+      bookworm = hosts_on("12").first
+      expect(statuses.call["bookworm"]).to be_never
+      expect(import_for_hosts.releases).to eq(%w[bookworm trixie])
+      expect(statuses.call["bookworm"]).not_to be_never
+      expect(TriageEntry.where(release: "bookworm").count).to eq(1)
+
+      # Dropped, then reported again: not imported yet, rather than fresh with nothing in it.
+      travel 1.minute do
+        bookworm.retire!(actor: Audit::SYSTEM)
+        import_for_hosts
+      end
+      travel 2.minutes do
+        hosts_on("12")
+        expect(statuses.call["bookworm"]).to be_never
+      end
+    end
+
+    it "imports nothing with no active host, without reading the document, and says so" do
+      import_triage(sample)
+      reader = instance_double(DebianTriage::Reader)
+      import = described_class.new(origin: "file", source: "json").call(reader)
+      expect(import).to have_attributes(state: "succeeded", releases: [], removed_releases: %w[bookworm forky sid trixie],
+                                        reason: "no active host reports a release in the release table (config/triage_releases.yml), so nothing was imported")
+      expect(import.counts).to include("no_hosts" => true, "removed_releases" => { "bookworm" => 1, "forky" => 1, "sid" => 1, "trixie" => 3 })
+      expect(TriageEntry.count).to eq(0)
+      expect(AuditEntry.order(:id).last).to have_attributes(action: "advisory.triage_imported")
+    end
   end
 
   # P2-S16 acceptance: a file missing most of a release's entries keeps the previous data and is recorded as held

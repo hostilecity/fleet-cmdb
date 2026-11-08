@@ -16,7 +16,7 @@ class FindingTriage
   REASONS = {
     "unmapped_release" => "%s has no release in the Debian Security Tracker's release table.",
     "source_off" => "Debian triage is turned off (FLEET_DEBIAN_TRACKER_URL is empty) and no current data has been imported for %s.",
-    "never_imported" => "Debian triage for %s has not been imported yet.",
+    "never_imported" => "Debian triage for %s has not been imported yet; it is imported at the next refresh once an active host reports that release.",
     "stale" => "Debian triage for %s is older than %d hours.",
     "no_cve" => "The advisory names no CVE to look up in the Debian Security Tracker.",
     "no_entry" => "The Debian Security Tracker has no entry for this package and CVE in %s."

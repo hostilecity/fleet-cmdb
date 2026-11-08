@@ -1,8 +1,9 @@
 module DebianTriage
   # Stores the Debian Security Tracker's triage from a Reader (P2-S16, ADR 0022) and audits the import.
   #
-  # - Only the releases in the release table (DebianTriage::Releases) are kept, and only CVE ids, which are what
-  #   the advisories join on; the tracker's other ids (TEMP-...) and other releases are counted, not stored.
+  # - Only the releases active hosts report are kept (DebianTriage::Releases.in_use, through the release table;
+  #   owner decision on #135), and only CVE ids, which are what the advisories join on; the tracker's other ids
+  #   (TEMP-...) and other releases are counted, not stored. With no such release, nothing is read or imported.
   # - Per release, source package, and CVE it keeps the status, urgency (normalised, with the raw text), fixed
   #   version, no-DSA note and reason, next_point_update, and the CVE's scope. An entry or a release's data
   #   that is not in that shape is skipped and counted as malformed, with where it was (the first PROBLEM_LIMIT).
@@ -14,7 +15,9 @@ module DebianTriage
   #   previous data, and the import is held back with the counts. The other releases are stored. allowed_drops
   #   ({ "trixie" => 9000 }, an operator's confirmation from the rake tasks) is a ceiling, not a bypass: once one
   #   is given, each release may drop at most its allowed count (none for a release it does not name).
-  # - A release taken out of the release table has its stored data deleted: the fleet no longer uses it.
+  # - A release no active host reports any more, or one taken out of the release table, has its stored data
+  #   deleted, without the truncation guard (dropping a release the fleet does not use is expected), and the audit
+  #   entry says so. A release a host starts reporting is imported at the next refresh.
   # - It never touches findings, advisories, or matching: triage is an annotation (ADR 0022, item 3).
   class Import
     LOCK_KEY = "debian_triage.import".freeze
@@ -25,6 +28,7 @@ module DebianTriage
     PACKAGE = /\A[a-z0-9][a-z0-9+.~-]{0,127}\z/
     SCOPES = %w[local remote].freeze
     COPY_ENCODER = PG::TextEncoder::CopyRow.new
+    NO_HOSTS = "no active host reports a release in the release table (config/triage_releases.yml), so nothing was imported".freeze
 
     # An entry, or one release's data in it, that is not in the tracker's shape: skipped and counted.
     class Malformed < StandardError; end
@@ -41,38 +45,39 @@ module DebianTriage
       end
     end
 
-    # origin: "feed" or "file". source: the feed's host and path, or the file name.
-    def initialize(origin:, source:, operator: nil, etag: nil, last_modified: nil, allowed_drops: {})
+    # origin: "feed" or "file". source: the feed's host and path, or the file name. releases: the releases to keep;
+    # by default the ones active hosts report (Releases.in_use), read under the import's lock.
+    def initialize(origin:, source:, operator: nil, etag: nil, last_modified: nil, allowed_drops: {}, releases: nil)
       @origin = origin
       @source = Advisories::Record.clean_text(source, 256) || "unknown"
       @operator = operator
       @validators = { etag:, last_modified: }
       @allowed_drops = allowed_drops.to_h.transform_keys(&:to_s)
+      @only = releases
     end
 
+    # reader is not read when no active host reports a release in the table: nothing is imported then.
     def call(reader)
       started_at = Time.current
-      @releases = Releases.names
       @counts = { "packages" => 0, "entries" => 0, "other_ids" => 0, "other_releases" => 0, "malformed" => 0, "repeated" => 0 }
       @problems = []
       @rows = []
 
       TriageImport.transaction do
         connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{connection.quote(LOCK_KEY)}))")
-        create_staging
-        reader.each { |package| read(package) }
-        flush
-        outcomes = replace_releases
+        @releases = (@only || Releases.in_use).map(&:to_s).uniq.sort
+        outcomes = @releases.empty? ? {} : read_and_replace(reader)
         held = outcomes.select { |_, o| o["outcome"] == "held_back" }.keys
+        removed = remove_unused
         @counts["releases"] = outcomes
-        @counts["removed_releases"] = remove_unlisted
+        @counts["removed_releases"] = removed
+        @counts["no_hosts"] = true if @releases.empty?
         import = TriageImport.create!(tracker: TRACKER, origin: @origin, source: @source, operator: @operator, state: held.any? ? "held_back" : "succeeded",
-                                      releases: @releases - held, counts: @counts, problems: @problems, reason: held.any? ? held_reason(outcomes, held) : nil,
-                                      **@validators, started_at:, finished_at: Time.current)
+                                      releases: @releases - held, removed_releases: (Releases.names | removed.keys).sort - @releases,
+                                      counts: @counts, problems: @problems, reason: reason(outcomes, held), **@validators, started_at:, finished_at: Time.current)
         action = held.any? ? Audit::Actions::ADVISORY_TRIAGE_IMPORT_HELD_BACK : Audit::Actions::ADVISORY_TRIAGE_IMPORTED
         Audit.record(actor: @operator || Audit::SYSTEM, action:, target: import,
-                     changes: { "origin" => @origin, "source" => @source, "counts" => @counts, "reason" => import.reason }.compact)
-        connection.execute("DROP TABLE #{STAGING}")
+                     changes: { "origin" => @origin, "source" => @source, "counts" => @counts, "reason" => import.reason, "removed" => removed_note(removed) }.compact)
         import
       end
     end
@@ -80,6 +85,13 @@ module DebianTriage
     private
 
     def connection = TriageEntry.connection
+
+    def read_and_replace(reader)
+      create_staging
+      reader.each { |package| read(package) }
+      flush
+      replace_releases.tap { connection.execute("DROP TABLE #{STAGING}") }
+    end
 
     # Dropped first: an import that raised inside an enclosing transaction (a spec's) leaves it behind.
     def create_staging
@@ -193,10 +205,29 @@ module DebianTriage
       counts["dropped"] > counts["stored"] * Advisories.config.withdraw_share
     end
 
-    def remove_unlisted
-      TriageEntry.where(tracker: TRACKER).where.not(release: @releases).group(:release).count.each_key.to_h do |release|
+    # Deletes the stored data of every release this import does not keep: no active host reports it, or the release
+    # table no longer lists it. Expected, so the truncation guard does not apply. { "bookworm" => 812 }.
+    def remove_unused
+      TriageEntry.where(tracker: TRACKER).where.not(release: @releases).group(:release).count.each_key.sort.to_h do |release|
         [ release, TriageEntry.where(tracker: TRACKER, release:).delete_all ]
       end
+    end
+
+    # What the audit entry says about the releases dropped.
+    def removed_note(removed)
+      return nil if removed.empty?
+
+      parts = removed.map do |release, count|
+        why = Releases.names.include?(release) ? "no active host reports it" : "the release table no longer lists it"
+        "#{release} (#{count} entries: #{why})"
+      end
+      "dropped #{parts.to_sentence}; dropping a release the fleet does not use is expected, so the truncation guard does not apply"
+    end
+
+    def reason(outcomes, held)
+      return held_reason(outcomes, held) if held.any?
+
+      NO_HOSTS if @releases.empty?
     end
 
     def held_reason(outcomes, held)

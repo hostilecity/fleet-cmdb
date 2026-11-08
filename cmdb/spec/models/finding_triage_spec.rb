@@ -54,7 +54,7 @@ RSpec.describe FindingTriage do
       # Failing from the start: nothing was ever imported.
       DebianTriage::Import.record_failure(reason: "the Debian Security Tracker at example.org answered HTTP 503", origin: "feed", source: "example.org/json")
       expect(described_class.load([ finding ])[finding]).to have_attributes(available?: false, reason: "never_imported", entries: [],
-                                                                            detail: "Debian triage for trixie has not been imported yet.")
+                                                                            detail: "Debian triage for trixie has not been imported yet; it is imported at the next refresh once an active host reports that release.")
 
       import_triage(sample)
       travel 49.hours do

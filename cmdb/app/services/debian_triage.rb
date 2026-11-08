@@ -4,8 +4,8 @@
 #
 # - DebianTriage::Releases maps a host's inventory to the tracker's release name (config/triage_releases.yml).
 # - DebianTriage::Reader reads the tracker's one JSON document one source package at a time, in bounded memory.
-# - DebianTriage::Import stores the mapped releases' entries, each release replaced in one transaction, behind a
-#   truncation guard, and audits the import.
+# - DebianTriage::Import stores the entries of the releases active hosts report, each release replaced in one
+#   transaction, behind a truncation guard, and audits the import.
 # - DebianTriageRefreshJob downloads the document with Advisories::Feed on a schedule.
 # - DebianTriage::Freshness says how old each release's data is; FindingTriage joins findings to it.
 module DebianTriage

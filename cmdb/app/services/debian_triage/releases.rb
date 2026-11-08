@@ -10,8 +10,17 @@ module DebianTriage
 
     def table = DebianTriage.config.releases
 
-    # Every release the import keeps, sorted.
+    # Every release in the table, sorted.
     def names = table.values.uniq.sort
+
+    # The releases the import keeps (owner decision on #135): those an active host's inventory maps to, sorted. A
+    # release no active host reports is not imported, and its stored data is dropped.
+    def in_use
+      os_id = Arel.sql("lower(host_inventories.stable -> 'os' ->> 'id')")
+      version = Arel.sql("host_inventories.stable -> 'os' ->> 'version_id'")
+      HostInventory.joins(:host).merge(Host.active).distinct.pluck(os_id, version)
+                   .filter_map { |id, version_id| for_os("id" => id, "version_id" => version_id) }.uniq.sort
+    end
 
     # The release for an inventory's os hash ({"id" => "debian", "version_id" => "13"}), or nil.
     def for_os(os)
