@@ -3,6 +3,8 @@ module FleetSimulator
   # With --load-check or --liveness-check, the checks decide the exit status.
   class Report
     FLEET_LIST_TARGET_MS = 2_000 # NFR-3
+    # The Phase 2 pages timed with --phase2, held to the fleet list's target (P2-S12).
+    PHASE2_PAGES = { compliance: "Fleet compliance view", vulnerabilities: "Host vulnerabilities", package_diff: "Package comparison" }.freeze
     HEARTBEAT_P95_TARGET_MS = 200 # NFR-3
     SIMULATED_HOUR = 3_600
 
@@ -35,7 +37,9 @@ module FleetSimulator
         time_scale: @options.time_scale,
         snapshots: InventorySnapshot.where(host_id: @hosts.map(&:host_id)).count,
         status_events: HostStatusEvent.where(host_id: @hosts.map(&:host_id)).count,
-        requests: %i[heartbeat inventory duplicate seed fleet_list].to_h { |kind| [ kind, @stats.summary(kind).merge(statuses: @stats.status_counts(kind)) ] },
+        phase2: phase2_counts,
+        requests: %i[heartbeat inventory duplicate seed config packages seed_reports fleet_list compliance vulnerabilities package_diff]
+          .to_h { |kind| [ kind, @stats.summary(kind).merge(statuses: @stats.status_counts(kind)) ] },
         heartbeat_quarters: @stats.quarters(:heartbeat),
         liveness: @liveness&.log,
         checks: checks.map(&:to_h)
@@ -48,7 +52,8 @@ module FleetSimulator
                 "#{data[:hosts]} hosts (#{data[:enrolled]} enrolled), #{data[:real_seconds]} s real time at #{@options.time_scale}x " \
                 "= #{data[:simulated_seconds]} s simulated, #{data[:started_at]} to #{data[:finished_at]}.",
                 "Behaviours: #{data[:behaviours].presence&.map { |b, n| "#{b} #{n}" }&.join(', ') || 'none'}. " \
-                "Snapshots for these hosts: #{data[:snapshots]}. Status events: #{data[:status_events]}.", "",
+                "Snapshots for these hosts: #{data[:snapshots]}. Status events: #{data[:status_events]}." +
+                  (data[:phase2] ? " Phase 2: #{data[:phase2].map { |name, count| "#{name.to_s.tr('_', ' ')} #{count}" }.join(', ')}." : ""), "",
                 "| Requests | Count | Errors | p50 ms | p95 ms | p99 ms | Max ms | Statuses |", "|---|---|---|---|---|---|---|---|" ]
       data[:requests].each do |kind, s|
         next if s[:count].zero?
@@ -74,6 +79,17 @@ module FleetSimulator
 
     private
 
+    # What the Phase 2 data amounts to for these hosts, or nil without --phase2.
+    def phase2_counts
+      return nil unless @options.phase2
+
+      ids = @hosts.map(&:host_id)
+      findings = VulnerabilityFinding.where(host_id: ids)
+      { config_snapshots: ConfigSnapshot.where(host_id: ids).count, package_snapshots: PackageSnapshot.where(host_id: ids).count,
+        cis_results: CisResult.where(host_id: ids).count, cis_failures: CisResult.where(host_id: ids, result: "fail").count,
+        open_findings: findings.where.not(state: "resolved").count, resolved_findings: findings.where(state: "resolved").count }
+    end
+
     def load_checks
       fleet = @stats.summary(:fleet_list)
       heartbeat = @stats.summary(:heartbeat)
@@ -88,8 +104,26 @@ module FleetSimulator
         Check.new("Heartbeat p95 under #{HEARTBEAT_P95_TARGET_MS} ms", heartbeat[:count].positive? && heartbeat[:p95].to_f < HEARTBEAT_P95_TARGET_MS,
                   "p95 #{heartbeat[:p95]} ms over #{heartbeat[:count]} heartbeats"),
         Check.new("Heartbeat p95 still under #{HEARTBEAT_P95_TARGET_MS} ms in the last quarter (no degradation)", last_quarter[:p95].to_f < HEARTBEAT_P95_TARGET_MS,
-                  "first quarter #{@stats.quarters(:heartbeat)[:first][:p95]} ms, last quarter #{last_quarter[:p95]} ms")
+                  "first quarter #{@stats.quarters(:heartbeat)[:first][:p95]} ms, last quarter #{last_quarter[:p95]} ms"),
+        *phase2_checks
       ]
+    end
+
+    def phase2_checks
+      return [] unless @options.phase2
+
+      accepted = ->(kind) { @stats.of(kind).select { |s| s.status.to_i.between?(200, 299) }.map(&:host).to_set }
+      reported = (accepted.(:config) & accepted.(:packages)).size
+      checks = [ Check.new("At least #{Options::LOAD_CHECK[:hosts]} hosts sent configuration and package reports", reported >= Options::LOAD_CHECK[:hosts],
+                           "#{reported} of #{@hosts.size} hosts had both accepted in the run") ]
+      PHASE2_PAGES.each do |kind, name|
+        page = @stats.summary(kind)
+        next if page[:count].zero? && kind == :package_diff
+
+        checks << Check.new("#{name} complete and under #{FLEET_LIST_TARGET_MS} ms every time", page[:count].positive? && page[:errors].zero? && page[:max].to_f < FLEET_LIST_TARGET_MS,
+                            "#{page[:count]} loads, max #{page[:max]} ms, p95 #{page[:p95]} ms, #{page[:errors]} failed or incomplete")
+      end
+      checks
     end
 
     # Hosts that took part in the measured run: at least one accepted heartbeat and one accepted report. Enrolled
@@ -101,7 +135,7 @@ module FleetSimulator
 
     # Requests from well-behaved and misbehaving hosts alike must all be accepted, and duplicates recognised.
     def behaviour_checks
-      failures = %i[heartbeat inventory seed].sum { |kind| @stats.summary(kind)[:errors] }
+      failures = %i[heartbeat inventory seed config packages seed_reports].sum { |kind| @stats.summary(kind)[:errors] }
       list = [ Check.new("Every heartbeat and report accepted", failures.zero?, "#{failures} failed") ]
       duplicates = @stats.of(:duplicate)
       if duplicates.any?

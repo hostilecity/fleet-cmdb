@@ -30,7 +30,7 @@ In production the server writes one JSON object per line to standard output:
 
 ## Retention
 
-Inventory snapshots, recent report ids, and host status events older than the retention window are deleted once a day (03:17 server time) in batches. Each host's newest snapshot and newest status event are always kept. Audit entries are never deleted.
+History older than the retention window is deleted once a day (03:17 server time) in batches: inventory, config, and package snapshots, recent report ids, host status events, CIS result changes, report requests, advisory refresh attempts, and vulnerability findings resolved before the window. Each host's newest snapshot of each type and newest status event are always kept, and so are current CIS results, open and reopened findings, the newest refresh attempt, advisory and triage data, and their imports. Audit entries are never deleted.
 
 ```sh
 bin/rails settings:show                  # shows retention.days (default 90)

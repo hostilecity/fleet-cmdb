@@ -13,7 +13,8 @@ module FleetSimulator
 
     attr_reader :index, :name, :hostname, :machine_id, :boot_id, :started_at, :behaviour
     attr_accessor :credential, :host_id, :last_heartbeat_at, :heartbeat_interval, :inventory_interval, :next_heartbeat_at,
-                  :next_inventory_at, :silent_at, :generation, :busy
+                  :next_inventory_at, :silent_at, :generation, :busy, :report_interval, :next_report_at,
+                  :config_generation, :package_generation
 
     # counts: { stop: 1, hostile: 2, ... }.
     def self.build_all(count, counts: {}, now: Time.current)
@@ -32,6 +33,8 @@ module FleetSimulator
       @started_at = now
       @behaviour = behaviour
       @generation = 0
+    @config_generation = 0
+    @package_generation = 0
       @busy = false
     end
 

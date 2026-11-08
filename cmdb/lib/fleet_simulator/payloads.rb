@@ -18,6 +18,8 @@ module FleetSimulator
       @inventory = self.class.example("inventory.request", "full")
       @onboarding = self.class.example("onboarding.request", "full")
       @enroll = self.class.example("enroll.request", "full")
+      @config = self.class.example("config.request", "typical")
+      @packages = self.class.example("packages.request", "dpkg")
     end
 
     def heartbeat(host, now:)
@@ -39,6 +41,20 @@ module FleetSimulator
       report["disks"].each { |disk| disk["free_bytes"] = disk["size_bytes"] / 2 + rand(1 << 26) }
       hostile!(report) if host.hostile?
       report
+    end
+
+    # A configuration report (P2-S12): the documented typical facts. Each config generation flips the SSH root login
+    # setting, so a host that changes writes a new snapshot and moves a CIS result (AC-2.1's shape).
+    def config(host, now:)
+      report = deep_copy(@config).merge("agent_version" => @agent_version, "report_id" => SecureRandom.uuid, "collected_at" => now.utc.iso8601)
+      report["facts"]["sshd.permitrootlogin"] = { "state" => "ok", "value" => host.config_generation.odd? ? "yes" : "no", "reason" => nil }
+      report
+    end
+
+    # A package report (P2-S12) of Phase2::PACKAGES packages at the host's package generation.
+    def packages(host, now:)
+      @packages.merge("agent_version" => @agent_version, "report_id" => SecureRandom.uuid, "collected_at" => now.utc.iso8601,
+                      "packages" => Phase2.packages(host.package_generation))
     end
 
     # Facts for POST /api/v1/onboarding.

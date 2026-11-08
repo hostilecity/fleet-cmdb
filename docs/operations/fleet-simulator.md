@@ -32,12 +32,16 @@ Credentials are kept in `tmp/fleet_simulator/credentials.json` (mode 0600), so a
 | `--churn N` | N hosts change their kernel version in every report, so a snapshot is written each time. |
 | `--duplicates N` | N hosts resend every report with the same report id; each must be answered `duplicate: true` (AC-1.4). |
 | `--seed-snapshots N` | Before the run, every host sends N reports with a changed stable field, through the API. |
+| `--phase2` | Hosts also send configuration and package reports, at startup and every `--report-seconds` (default 21600, as the agent). Before the run the simulator imports the starter CIS rules (if the server has none) and 150 simulated advisories, and evaluates and matches every host. Part of `--load-check`. |
+| `--seed-reports N` | With `--phase2`, before the run, every host sends N changed configuration and package reports. |
+
+**Phase 2 data** (`lib/fleet_simulator/phase2.rb`). Every host runs the same 800 dpkg packages from 300 source packages (`simpkg-*`, `simsrc-*`), and its configuration report is the documented typical one. The simulated advisories (`SIM-0001` to `SIM-0150`) each affect one of the first 150 sources, fixed in `2.0-1`. These names exist only on simulated hosts, so the advisories never match a real one. Each seeded report flips the SSH root-login setting, which moves a CIS result, and upgrades the next five vulnerable sources, so findings resolve a few at a time. A churning host changes both on every report. The rules and advisories stay on the server after the run, audited as imported by the system; the advisories disappear with the next full OSV import.
 
 Behaviours go to the last hosts in the list, so `sim-001` is always well behaved.
 
 ## The load check
 
-`--load-check` runs 50 hosts for 15 minutes at four times the default rates (a heartbeat every 15 seconds, a report every 3¾ minutes), which is one simulated hour at four times the real request rate. Before the run each host sends 90 reports with a changed stable field, the history one change a day would leave within the default 90-day retention. The fleet list is loaded every 10 seconds, sorted by name and by status, as a signed-in operator.
+`--load-check` runs 50 hosts for 15 minutes at four times the default rates (a heartbeat every 15 seconds, a report every 3¾ minutes), which is one simulated hour at four times the real request rate. Before the run each host sends 90 reports with a changed stable field, the history one change a day would leave within the default 90-day retention. The fleet list is loaded every 10 seconds, sorted by name and by status, as a signed-in operator. Phase 2 is included (P2-S12): each host also seeds 13 configuration and package reports (one change a week over the retention window) and sends both at startup, and every 10 seconds the probe also loads the fleet compliance view, `sim-001`'s vulnerabilities (255 open findings, 195 resolved), and its package comparison.
 
 It passes when:
 
@@ -46,6 +50,8 @@ It passes when:
 | Hosts enrolled and reporting | at least 50 |
 | Simulated time | at least one hour |
 | Fleet list response, every load | under 2 seconds, and every simulated host listed (NFR-3) |
+| Compliance view, host vulnerabilities, package comparison, every load | under 2 seconds, with their content (P2-S12) |
+| Configuration and package reports | at least 50 hosts had both accepted |
 | Heartbeat p95, whole run and last quarter | under 200 ms (NFR-3: no degradation as snapshots accumulate) |
 | Heartbeats and reports | every one accepted, and every resent report recognised |
 

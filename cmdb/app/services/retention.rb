@@ -16,7 +16,7 @@
 # - `dry_run` counts what would be deleted and changes nothing.
 # - A later phase registers its own snapshot type with Retention.register (for example P2-S12).
 module Retention
-  Target = Data.define(:model, :time_column, :keep_newest_per_host, :keep_newest)
+  Target = Data.define(:model, :time_column, :keep_newest_per_host, :keep_newest, :only)
 
   DEFAULT_BATCH_SIZE = 1_000
 
@@ -26,10 +26,11 @@ module Retention
     attr_reader :targets
 
     # Adds a table to prune. `time_column` is the row's age (received_at, occurred_at); `keep_newest_per_host`
-    # needs a host_id column and an index on (host_id, time_column); `keep_newest` keeps the table's newest row.
-    def register(model, time_column:, keep_newest_per_host: false, keep_newest: false)
+    # needs a host_id column and an index on (host_id, time_column); `keep_newest` keeps the table's newest row;
+    # `only` (a where condition) limits pruning to the rows that are history, such as resolved findings.
+    def register(model, time_column:, keep_newest_per_host: false, keep_newest: false, only: nil)
       @targets.reject! { |target| target.model == model }
-      @targets << Target.new(model:, time_column:, keep_newest_per_host:, keep_newest:)
+      @targets << Target.new(model:, time_column:, keep_newest_per_host:, keep_newest:, only:)
     end
 
     # Deletes (or, in a dry run, counts) the expired rows of every target. Returns { "inventory_snapshots" => 12 }.
@@ -60,6 +61,7 @@ module Retention
       table = target.model.quoted_table_name
       column = target.model.connection.quote_column_name(target.time_column)
       scope = target.model.where("#{table}.#{column} < ?", cutoff)
+      scope = scope.where(target.only) if target.only
       if target.keep_newest
         scope = scope.where("EXISTS (SELECT 1 FROM #{table} newer WHERE (newer.#{column}, newer.id) > (#{table}.#{column}, #{table}.id))")
       end
@@ -89,4 +91,8 @@ module Retention
   # When each advisory feed refresh started (P2-S15): only the newest matters, for the cool-down, and it is kept
   # however old, since the cool-down has no upper bound (review of #125).
   register AdvisoryRefreshAttempt, time_column: :started_at, keep_newest: true
+  # Resolved vulnerability findings (P2-S12), by when they were resolved. Open and reopened findings are current state
+  # and never pruned. If the same package and advisory match again after a resolved finding was pruned, the matcher
+  # opens a new finding rather than reopening the old one.
+  register VulnerabilityFinding, time_column: :resolved_at, only: { state: "resolved" }
 end
