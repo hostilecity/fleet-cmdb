@@ -17,6 +17,12 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] Fleet compliance view and fleet list each load in under 2 seconds with 50 hosts (numbers recorded)
 - [ ] Heartbeat p95 remains under 200 ms
 
+### As built and measured
+
+- Retention prunes config, package, and inventory snapshots, CIS result changes, report requests, refresh attempts, and findings resolved before the window (`Retention.register … only: { state: "resolved" }`); the newest snapshot of each type per host, current CIS results, and open and reopened findings are kept (`spec/services/retention_spec.rb`).
+- `bin/simulate-fleet --load-check` includes Phase 2 (`lib/fleet_simulator/phase2.rb`, [fleet-simulator.md](../../operations/fleet-simulator.md)): the 71 starter CIS rules, 150 simulated advisories, and per host 90 seeded inventory snapshots, 13 seeded config and package reports (800 packages), and both reports at startup.
+- **Measured 2026-11-08** (development server, 50 hosts, one simulated hour; 4,500 inventory, 650 config, and 650 package snapshots; 3,550 CIS results; 12,750 open and 8,370 resolved findings): heartbeat p95 76 ms (first quarter 83 ms, last 80 ms); fleet list max 132 ms over 180 loads; compliance view max 98 ms, host vulnerabilities (255 open findings) max 220 ms, package comparison max 105 ms, each over 90 loads; config report p95 116 ms, package report p95 181 ms; every request accepted. No index was needed. Seeding under 16 concurrent requests was slower (package report p95 1.6 s), outside the targets, which cover steady reporting.
+
 ## P2-X01: Phase 2 contract tests and backward compatibility
 
 ### Scope
