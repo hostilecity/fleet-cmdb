@@ -68,18 +68,23 @@ RSpec.describe FleetSimulator::Report do
     stats.record(kind:, host:, status:, ms:, at:, note:)
   end
 
-  # Every host sends one accepted heartbeat and report, so the fleet counts as reporting.
-  def whole_fleet_reports = hosts.each { |h| record(:inventory, 30, host: h.name) }
+  # Every host sends one accepted inventory, configuration, and package report, so the fleet counts as reporting.
+  def whole_fleet_reports = hosts.each { |h| %i[inventory config packages].each { |kind| record(kind, 30, host: h.name) } }
 
   it "passes a load check that meets the NFR-3 targets" do
     whole_fleet_reports
     100.times { |i| record(:heartbeat, 20 + i % 10, at: start + i, host: hosts[i % 50].name) }
     record(:fleet_list, 350)
+    %i[compliance vulnerabilities package_diff].each { |kind| record(kind, 400) }
     record(:duplicate, 10, note: "duplicate")
     expect(report.checks.map(&:passed)).to all(be(true))
     expect(report).to be_passed
     expect(report.markdown).to include("50 hosts (50 enrolled), 900 s real time at 4.0x = 3600 s simulated", "Behaviours: duplicates 1",
-                                       "| heartbeat | 100 | 0 | 24", "- [x] Fleet list complete and under 2000 ms every time")
+                                       "| heartbeat | 100 | 0 | 24", "- [x] Fleet list complete and under 2000 ms every time",
+                                       "Phase 2: config snapshots 0, package snapshots 0, cis results 0, cis failures 0, open findings 0, resolved findings 0.",
+                                       "- [x] At least 50 hosts sent configuration and package reports: 50 of 50",
+                                       "- [x] Fleet compliance view complete and under 2000 ms every time", "- [x] Host vulnerabilities complete",
+                                       "- [x] Package comparison complete", "| packages | 50 | 0 |")
   end
 
   it "fails on a slow or incomplete fleet list, a slow heartbeat p95 or last quarter, too short a run, refusals, and missed duplicates" do
@@ -89,10 +94,14 @@ RSpec.describe FleetSimulator::Report do
     record(:fleet_list, 100, status: "incomplete")
     record(:inventory, 12, status: 422, note: "rejected")
     record(:duplicate, 10, note: "not recognised as a duplicate")
+    record(:compliance, 2_500)
+    record(:vulnerabilities, 100, status: "incomplete")
     failed = report(finish: start + 600).checks.reject(&:passed).map(&:name)
     expect(failed).to contain_exactly("At least 50 hosts reporting", "At least one simulated hour", "Fleet list complete and under 2000 ms every time", "Heartbeat p95 under 200 ms",
                                       "Heartbeat p95 still under 200 ms in the last quarter (no degradation)", "Every heartbeat and report accepted",
-                                      "Every resent report answered duplicate: true (AC-1.4)")
+                                      "Every resent report answered duplicate: true (AC-1.4)", "At least 50 hosts sent configuration and package reports",
+                                      "Fleet compliance view complete and under 2000 ms every time", "Host vulnerabilities complete and under 2000 ms every time")
+    expect(report.checks.map(&:name)).not_to include(a_string_starting_with("Package comparison")) # not timed: no seeded reports
     expect(report.markdown).to include("- [ ] Heartbeat p95 under 200 ms: p95 250 ms over 100 heartbeats")
   end
 
