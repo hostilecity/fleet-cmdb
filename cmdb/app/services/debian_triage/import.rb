@@ -27,6 +27,7 @@ module DebianTriage
     COLUMNS = %w[release package cve_id status urgency urgency_raw fixed_version no_dsa no_dsa_note no_dsa_reason next_point_update scope].freeze
     PACKAGE = /\A[a-z0-9][a-z0-9+.~-]{0,127}\z/
     SCOPES = %w[local remote].freeze
+    NOTE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
     COPY_ENCODER = PG::TextEncoder::CopyRow.new
     NO_HOSTS = "no active host reports a release in the release table (config/triage_releases.yml), so nothing was imported".freeze
 
@@ -43,6 +44,12 @@ module DebianTriage
                      changes: { "origin" => origin, "source" => source, "reason" => import.reason })
         import
       end
+    end
+
+    # Takes the lock imports are serialised by, until the current transaction ends.
+    def self.lock!
+      connection = TriageEntry.connection
+      connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{connection.quote(LOCK_KEY)}))")
     end
 
     # origin: "feed" or "file". source: the feed's host and path, or the file name. releases: the releases to keep;
@@ -64,7 +71,7 @@ module DebianTriage
       @rows = []
 
       TriageImport.transaction do
-        connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{connection.quote(LOCK_KEY)}))")
+        self.class.lock!
         @releases = (@only || Releases.in_use).map(&:to_s).uniq.sort
         outcomes = @releases.empty? ? {} : read_and_replace(reader)
         held = outcomes.select { |_, o| o["outcome"] == "held_back" }.keys
@@ -145,7 +152,7 @@ module DebianTriage
       urgency = raw.to_s.downcase.sub(/\**\z/, "").strip # "low*": the stars are kept in urgency_raw
       no_dsa = data.key?("nodsa")
       [ status, (TriageEntry::URGENCIES.include?(urgency) ? urgency : nil), raw, text(data["fixed_version"], 256, "fixed_version"), no_dsa,
-        no_dsa ? text(data["nodsa"], 512, "nodsa").presence : nil, no_dsa ? text(data["nodsa_reason"], 32, "nodsa_reason").presence : nil,
+        no_dsa ? note(data["nodsa"]) : nil, no_dsa ? text(data["nodsa_reason"], 32, "nodsa_reason").presence : nil,
         data["next_point_update"] == true ]
     end
 
@@ -154,6 +161,16 @@ module DebianTriage
       raise Malformed, "has a #{field} that is not a string of at most #{limit} characters" unless value.is_a?(String) && value.length <= limit
 
       Advisories::Record.clean_text(value, limit) || ""
+    end
+
+    # Debian's no-DSA note, kept as written so the views can quote it (T7, review of #136): only control characters
+    # other than tab and line feed are removed and line ends made line feeds; spaces and lines are left alone.
+    def note(value)
+      return nil if value.nil?
+      raise Malformed, "has a nodsa that is not a string of at most 512 characters" unless value.is_a?(String) && value.length <= 512
+
+      text = value.gsub("\r\n", "\n").gsub(NOTE_CONTROL_CHARACTERS, "")
+      text unless text.strip.empty?
     end
 
     def problem(package, cve_id, message)

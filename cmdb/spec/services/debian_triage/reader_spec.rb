@@ -57,7 +57,20 @@ RSpec.describe DebianTriage::Reader do
     stub_const("#{described_class}::CHUNK", 16)
     message = "json has a source package larger than 0 MiB, so nothing was imported"
     expect { read(%({"a": {"x": "#{'y' * 100}"}})) }.to raise_error(Advisories::Unreadable, message)
-    expect { read(%({"a": {}, #{' ' * 100}"b": {}})) }.to raise_error(Advisories::Unreadable, message)
+    expect { read(%({"a": {}#{' ' * 100}, "b": {}})) }.to raise_error(Advisories::Unreadable, message)
+  end
+
+  it "holds at most a chunk of the space outside packages, however long (review of #135), also when reused" do
+    stub_const("#{described_class}::MAX_PACKAGE_BYTES", 64)
+    stub_const("#{described_class}::CHUNK", 16)
+    pad = " " * 10_000
+    reader = described_class.new(tracker_file(%(#{pad}{#{pad}"a": {"CVE-2026-1": {}},#{pad}"b": {}}#{pad})))
+    buffered = []
+    allow(reader).to receive(:fill).and_wrap_original do |fill|
+      fill.call.tap { buffered << reader.instance_variable_get(:@scanner).string.bytesize }
+    end
+    2.times { expect(reader.map(&:package)).to eq(%w[a b]) }
+    expect(buffered.max).to be <= 2 * 16
   end
 
   it "refuses a file larger than the download limit, or a path that is not a file" do
