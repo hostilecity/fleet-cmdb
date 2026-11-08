@@ -30,7 +30,7 @@ Delivered first, as its own pull request (`Refs` the issue), and approved by the
 - Join a finding to triage by the finding's source package, the host's release, and the advisory's CVE identifiers (its id for `DEBIAN-CVE-*` records, its aliases and upstream ids for `DSA-*` and `DLA-*` records). Expose it for the views in one query per page, with no per-finding lookups.
 - Freshness like OSV's: its own last success, a warning past `FLEET_ADVISORY_MAX_AGE_HOURS`, failures on the failed-jobs page. A failure never blocks OSV refreshes or matching.
 - Audit every import with its outcome and counts. Retention keeps the current data and the import records as the OSV imports are kept.
-- Document the setting in `docs/operations/configuration.md` (and `compose.yaml` and `.env.example`) and the outbound access to `security-tracker.debian.org`.
+- Document the setting in `docs/operations/configuration.md` and the outbound access to `security-tracker.debian.org`.
 
 ### Acceptance criteria
 

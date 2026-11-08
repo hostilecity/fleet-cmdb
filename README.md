@@ -13,12 +13,11 @@ Project structure:
     backlog/        # issues.yml (issue stubs) and specs/ (implementation details, source of truth)
   cmdb/
   agent/
-  ops/              # backup scripts and units; Traefik config for the deployment
-  compose.yaml      # the server deployment (Docker Compose); settings in .env (from .env.example)
+  ops/              # backup, restore, and restore-drill scripts and systemd units
   .github/
 ```
 
-**Install it:** [server](docs/operations/install-server.md), then [agents](docs/operations/install-agent.md). All installation and operations guides, including the [configuration reference](docs/operations/configuration.md) and [troubleshooting](docs/operations/troubleshooting.md): [docs/operations/](docs/operations/README.md).
+**Install it:** [server](docs/operations/install-server.md) (deployed by `.github/workflows/cd.yml`), then [agents](docs/operations/install-agent.md). All installation and operations guides, including the [configuration reference](docs/operations/configuration.md) and [troubleshooting](docs/operations/troubleshooting.md): [docs/operations/](docs/operations/README.md).
 
 - Contributing, branch and commit conventions: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Decisions (ADRs): [docs/decisions/](docs/decisions/README.md)

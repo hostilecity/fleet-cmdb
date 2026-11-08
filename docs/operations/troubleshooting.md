@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with the two logs: the agent's on the VM (`journalctl -u fleet-agent -n 50`) and the server's (`sudo docker compose logs --since 1h app` in `/opt/fleet-cmdb`). Every API error the agent logs carries a `request_id`; search the server log for it to see the server's side of the same request ([health-and-jobs.md](health-and-jobs.md#logs)).
+Start with the two logs: the agent's on the VM (`journalctl -u fleet-agent -n 50`) and the server's (`docker logs --since 1h fleet-cmdb` on the server VM). Every API error the agent logs carries a `request_id`; search the server log for it to see the server's side of the same request ([health-and-jobs.md](health-and-jobs.md#logs)).
 
 ## The agent hostname certificate is not trusted
 
@@ -15,21 +15,17 @@ The installer stops with `presented a certificate this VM does not trust`, or th
    ```
 
    - Issuer `Let's Encrypt` and a future `notAfter`: the certificate is fine; check the VM's trust store (`apt install --reinstall ca-certificates`).
-   - Issuer `TRAEFIK DEFAULT CERT`: Traefik has no certificate for the name. Read `sudo docker compose logs traefik | grep -i acme` on the server. Usual causes: `ACME_EMAIL` left at a placeholder (`invalidContact … forbidden domain`), a DNS token without Zone:Read and DNS:Edit on the right zone, `FLEET_AGENT_HOST` not in that zone, or Let's Encrypt's rate limit after many attempts (use `ACME_CA_SERVER` with the staging URL while testing, then delete `/var/lib/fleet-cmdb/certs/acme.json` and restart Traefik).
-   - Issuer `(STAGING)`: `ACME_CA_SERVER` still points at staging. Comment it out, delete `certs/acme.json`, `sudo docker compose up -d traefik`.
-   - A `notAfter` in the past: renewal has been failing; the Traefik log says why (often a revoked or expired Cloudflare token).
+   - Anything else: the TLS proxy for the agent hostname ([#137](https://github.com/hostilecity/fleet-cmdb/issues/137)) has no valid certificate; its log says why.
 3. **Is the name pointing at the server?** `getent hosts agent.fleet.example.com` on the VM must give the server's LAN address. A different address means the LAN DNS record is missing or the VM uses another resolver.
 
 Only for a private certificate authority (not the default setup): pass `--ca-file ca.pem` to the installer.
 
-## The dashboard does not open through a tunnel on another machine
+## The dashboard does not open through the tunnel
 
-In the layout where `cloudflared` runs on another machine ([install-server.md](install-server.md#existing-postgresql-and-a-tunnel-on-another-machine-deployed-by-github-actions)), Cloudflare shows an error page or the connector logs errors for `fleet.example.com`.
+Cloudflare shows an error page for `fleet.example.com`.
 
-- **`502` and a certificate error in the connector's log:** the dashboard certificate is not issued yet (`docker compose logs traefik | grep -i acme` on the server), or the public hostname lacks **Origin Server Name** `fleet.example.com`. Never turn on **No TLS Verify** instead.
-- **`403` from the server:** Traefik does not see the connector's address in `FLEET_TUNNEL_SOURCE_RANGE`. Check the address the connector's machine uses on the LAN (`ip -br addr` there) and the variable, then deploy again. If the server's Docker publishes ports through its userland proxy for that traffic, Traefik sees a Docker gateway address instead and refuses everything: that fails closed, and needs Docker's default iptables port publishing.
-- **`404` from the server:** the request did not carry the dashboard hostname (leave **HTTP Host Header** empty in the public hostname), or `FLEET_TUNNEL_SOURCE_RANGE` is not set, so nothing is routed on port 8443.
-- **Connection refused or timed out:** port 8443 is blocked between the two machines, or `FLEET_DASHBOARD_BIND_ADDRESS` is an address the connector does not reach.
+- **`502` or `Bad gateway`:** the tunnel VM cannot reach `http://192.0.2.10:80`. From the tunnel VM, `curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: fleet.example.com' http://192.0.2.10/sign_in` should print `200`. If it does not connect, check `docker ps --filter name=fleet-cmdb` on the server and the firewall rule (it must allow the tunnel VM).
+- **An empty `404`:** the request did not carry the dashboard hostname. Leave **HTTP Host Header** empty in the tunnel's public hostname, and check that `FLEET_DASHBOARD_HOST` matches it.
 
 ## The agent gets `401`
 
@@ -45,7 +41,7 @@ The agent logs `this host's clock differs from the server's`. The server always 
 
 1. On the VM: `systemctl status fleet-agent`. If it is not running, `journalctl -u fleet-agent -n 50` says why (often a config error, exit code 78, which names the key at fault).
 2. If it is running, its log shows whether requests fail: `cannot reach the fleet server` is a network, DNS, or certificate problem (above); `401` is a credential problem (above); `429` means rate limiting, which resolves itself.
-3. On the server: `curl -s https://agent.fleet.example.com/health`. If `job_liveness` is `failing`, the liveness evaluation is not running, so no host's status changes: check `sudo docker compose ps` and `sudo docker compose logs app`, and the failed jobs page.
+3. On the server: `curl -s https://agent.fleet.example.com/health`. If `job_liveness` is `failing`, the liveness evaluation is not running, so no host's status changes: check `docker ps --filter name=fleet-cmdb` and `docker logs fleet-cmdb` on the server, and the failed jobs page.
 
 ## The onboarding request expired
 
@@ -74,4 +70,4 @@ The new version's own log lines, before the rollback, say why it did not confirm
 
 ## `/health` is unhealthy
 
-`curl -s https://agent.fleet.example.com/health` names the failing check; [health-and-jobs.md](health-and-jobs.md) explains each. On a new installation, `backup` fails until the first backup runs, and `job_liveness` until a minute or two after a start; both are expected.
+`docker exec fleet-cmdb curl -s http://localhost:3000/health` on the server (or `https://agent.fleet.example.com/health` once [#137](https://github.com/hostilecity/fleet-cmdb/issues/137) serves the agent hostname) names the failing check; [health-and-jobs.md](health-and-jobs.md) explains each. `backup` fails until a backup has run (backups are not set up by the deployment yet, so `/health` stays `503` until then), and `job_liveness` until a minute or two after a start; both are expected.

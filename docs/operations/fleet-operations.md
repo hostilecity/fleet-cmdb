@@ -1,6 +1,6 @@
 # Day-to-day fleet operations
 
-Everything here is done in the dashboard, signed in as an operator, and every action is recorded in the audit log with your account as the actor. Server commands run from `/opt/fleet-cmdb` as `sudo docker compose exec app bin/rails …`.
+Everything here is done in the dashboard, signed in as an operator, and every action is recorded in the audit log with your account as the actor. Server commands run on the server VM, as the deploy user, as `docker exec fleet-cmdb bin/rails …`.
 
 ## Revoke a host's credential
 
@@ -30,8 +30,8 @@ Use it when the VM is gone for good. Uninstall the agent first if the VM still e
 A host is **Online** if it sent a heartbeat within 3 minutes, **Stale** within 15, otherwise **Offline**. Change these on **Settings**, or:
 
 ```sh
-sudo docker compose exec app bin/rails settings:show
-sudo docker compose exec app bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
+docker exec fleet-cmdb bin/rails settings:show
+docker exec fleet-cmdb bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 ```
 
 The next evaluation, within a minute, applies them. Data retention (90 days) is changed the same way: [health-and-jobs.md](health-and-jobs.md#retention).
@@ -39,12 +39,12 @@ The next evaluation, within a minute, applies them. Data retention (90 days) is 
 ## Manage operators
 
 ```sh
-sudo docker compose exec app bin/rails operators:allow EMAIL=someone@example.com
-sudo docker compose exec app bin/rails operators:list
-sudo docker compose exec app bin/rails operators:disallow EMAIL=someone@example.com   # signed out on their next request
+docker exec fleet-cmdb bin/rails operators:allow EMAIL=someone@example.com
+docker exec fleet-cmdb bin/rails operators:list
+docker exec fleet-cmdb bin/rails operators:disallow EMAIL=someone@example.com   # signed out on their next request
 ```
 
-Also add or remove the address in the Cloudflare Access policy ([install-server.md](install-server.md#4-create-the-tunnel-and-the-access-application-for-the-dashboard)): both must allow someone for them to sign in.
+Also add or remove the address in the Cloudflare Access policy ([install-server.md](install-server.md#3-publish-the-dashboard-through-the-tunnel)): both must allow someone for them to sign in.
 
 ## Read the audit log
 

@@ -4,7 +4,7 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 
 | Guide | What it covers |
 |---|---|
-| [install-server.md](install-server.md) | Prerequisites, Cloudflare tunnel and Access, the agent hostname and its certificate, Google sign-in, deploying with Docker Compose (all-in-one, or with an existing PostgreSQL and a tunnel on another machine, deployed by GitHub Actions), the first operator, logs, certificate renewal, upgrading and rolling back, uninstalling |
+| [install-server.md](install-server.md) | Prerequisites, the GitHub environment, the Cloudflare tunnel and Access, deploying with GitHub Actions, the first operator, logs, upgrading and rolling back, security notes, uninstalling |
 | [configuration.md](configuration.md) | Every server setting, its default, and the outbound access the server needs |
 | [backup-and-restore.md](backup-and-restore.md) | What is backed up, scheduling, restore, and the restore drill |
 | [install-agent.md](install-agent.md) | Installing the agent with approval or a one-time token, remote and manual updates, rollback, uninstall |

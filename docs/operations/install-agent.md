@@ -1,6 +1,6 @@
 # Install, update, and remove agents
 
-How to put the agent on a VM, enroll it, keep it updated, roll back, and remove it. The server must be installed with at least one release imported first ([install-server.md](install-server.md)). The agent's own reference (every option, exit code, file, and the update mechanism) is [agent/README.md](../../agent/README.md); this page is the operator's path through it.
+How to put the agent on a VM, enroll it, keep it updated, roll back, and remove it. The server must be installed with at least one release imported first ([install-server.md](install-server.md)). **Agents can be installed only once the agent hostname is served with TLS ([#137](https://github.com/hostilecity/fleet-cmdb/issues/137)); until then this page describes what comes next.** The agent's own reference (every option, exit code, file, and the update mechanism) is [agent/README.md](../../agent/README.md); this page is the operator's path through it.
 
 **VM requirements:** Debian 13 on x86_64 with systemd ([DEC-01](../decisions/0001-fleet-profile.md)), root, `curl`, and HTTPS access to the agent hostname (`agent.fleet.example.com`) on port 443. The VM must resolve the agent hostname through the LAN DNS, and its clock must be right (`timedatectl` shows `System clock synchronized: yes`).
 
@@ -72,8 +72,7 @@ Agents update themselves only to a newer release signed by the release key, veri
 2. Start the rollout. Its dashboard view arrives with [P1-UPDATES](../backlog/specs/p1-updates.md) (issue #59); until then it is started from the server console, and each action is audited with your account as the actor:
 
    ```sh
-   cd /opt/fleet-cmdb
-   sudo docker compose exec app bin/rails console
+   docker exec -it fleet-cmdb bin/rails console
    ```
 
    ```ruby

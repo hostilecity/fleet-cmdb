@@ -367,7 +367,7 @@ Settings and their defaults: [docs/operations/configuration.md](../docs/operatio
 
 ### Docker image
 
-The image needs the agent API schemas and the rule file schema too, so build it from `cmdb/` with `docs/api` as a named build context (`../compose.yaml` does this):
+The image needs the agent API schemas and the rule file schema too, so build it from `cmdb/` with `docs/api` as a named build context (`.github/workflows/cd.yml` does this):
 
 ```sh
 docker build --build-context api=../docs/api -t cmdb .
@@ -378,10 +378,10 @@ It runs Puma directly on port 3000, without Thruster: `HostSeparation` trusts fo
 ## Secrets
 
 - `config/master.key` is generated locally and **never committed** (it is ignored). `config/credentials.yml.enc` is committed but cannot be read without that key. Back the key up with the database backup (NFR-2): a restored database without the key is not enough to run production.
-- A fresh clone does not have the key. Development and test do not need it, and neither does the Compose deployment, which sets `SECRET_KEY_BASE` instead ([configuration.md](../docs/operations/configuration.md#secrets)).
+- A fresh clone does not have the key. Development and test do not need it, and neither does the deployment, which sets `SECRET_KEY_BASE` instead ([configuration.md](../docs/operations/configuration.md#secrets)).
 - Logs filter credentials, tokens, authorization headers, and session material (`config/initializers/filter_parameter_logging.rb`, covered by `spec/config/filter_parameters_spec.rb`).
 
 ## Layout notes
 
-- `Dockerfile` is the Rails production image. The deployment stack is `../compose.yaml` (P1-O03): PostgreSQL, the app, Traefik for the private agent hostname, and the Cloudflare tunnel connector.
+- `Dockerfile` is the Rails production image. `.github/workflows/cd.yml` builds and runs it on the server (P1-O03): one container on the existing PostgreSQL container's network, published on port 80 for the Cloudflare tunnel.
 - Kamal, Action Mailer, Action Mailbox, Action Text, Active Storage, and jbuilder were deliberately not generated.
