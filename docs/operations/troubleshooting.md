@@ -22,6 +22,15 @@ The installer stops with `presented a certificate this VM does not trust`, or th
 
 Only for a private certificate authority (not the default setup): pass `--ca-file ca.pem` to the installer.
 
+## The dashboard does not open through a tunnel on another machine
+
+In the layout where `cloudflared` runs on another machine ([install-server.md](install-server.md#existing-postgresql-and-a-tunnel-on-another-machine-deployed-by-github-actions)), Cloudflare shows an error page or the connector logs errors for `fleet.example.com`.
+
+- **`502` and a certificate error in the connector's log:** the dashboard certificate is not issued yet (`docker compose logs traefik | grep -i acme` on the server), or the public hostname lacks **Origin Server Name** `fleet.example.com`. Never turn on **No TLS Verify** instead.
+- **`403` from the server:** Traefik does not see the connector's address in `FLEET_TUNNEL_SOURCE_RANGE`. Check the address the connector's machine uses on the LAN (`ip -br addr` there) and the variable, then deploy again. If the server's Docker publishes ports through its userland proxy for that traffic, Traefik sees a Docker gateway address instead and refuses everything: that fails closed, and needs Docker's default iptables port publishing.
+- **`404` from the server:** the request did not carry the dashboard hostname (leave **HTTP Host Header** empty in the public hostname), or `FLEET_TUNNEL_SOURCE_RANGE` is not set, so nothing is routed on port 8443.
+- **Connection refused or timed out:** port 8443 is blocked between the two machines, or `FLEET_DASHBOARD_BIND_ADDRESS` is an address the connector does not reach.
+
 ## The agent gets `401`
 
 The agent logs `the server rejected this agent's credential (it may have been revoked, or the host retired)`. The credential is unknown to the server: the host was revoked or retired, it was re-enrolled from another machine, or the config was copied from another VM. The host page shows which. Re-enroll the VM ([fleet-operations.md](fleet-operations.md#re-enroll-a-host-new-credential)); for a retired host, enroll it as a new host instead. The agent retries about every 30 minutes and recovers on its own once re-enrolled with `fleet-agent install --reenroll`.

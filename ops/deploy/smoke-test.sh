@@ -64,7 +64,7 @@ COMPOSE_FILE=compose.yaml:compose.bundled.yaml
 FLEET_DASHBOARD_HOST=$dashboard
 FLEET_AGENT_HOST=$agent
 SECRET_KEY_BASE=$(openssl rand -hex 64)
-CMDB_DATABASE_PASSWORD=$db_password
+DATABASE_PASSWORD=$db_password
 GOOGLE_CLIENT_ID=smoke.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=smoke-not-a-secret
 CLOUDFLARE_DNS_API_TOKEN=smoke-not-a-token
@@ -302,7 +302,7 @@ SQL
   literal_secret='smoke-not-a-secret-$HOME-#x'
   settings() {
     env FLEET_DASHBOARD_HOST="$dashboard" FLEET_AGENT_HOST="$agent" SECRET_KEY_BASE="$(openssl rand -hex 64)" \
-      CMDB_DATABASE_PASSWORD="$db_password" GOOGLE_CLIENT_ID=smoke.apps.googleusercontent.com \
+      DATABASE_PASSWORD="$db_password" GOOGLE_CLIENT_ID=smoke.apps.googleusercontent.com \
       GOOGLE_CLIENT_SECRET="$literal_secret" CLOUDFLARE_DNS_API_TOKEN=smoke-not-a-token \
       ACME_EMAIL=admin@example.com FLEET_DB_NETWORK="$1" FLEET_TUNNEL_SOURCE_RANGE="$tunnel_ip/32" \
       FLEET_DATA_DIR="$data" BACKUP_DIR="$backups" FLEET_AGENT_BIND_ADDRESS=127.0.0.1 \

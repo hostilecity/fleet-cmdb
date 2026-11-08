@@ -127,7 +127,7 @@ jobs:
         env:
           # Secrets
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
-          CMDB_DATABASE_PASSWORD: ${{ secrets.CMDB_DATABASE_PASSWORD }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           CLOUDFLARE_DNS_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}

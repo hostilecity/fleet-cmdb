@@ -51,7 +51,7 @@ x-app-environment: &app-environment
   FLEET_TRUSTED_PROXIES: ${FLEET_PROXY_SUBNET:-172.30.47.0/28}
   # Required.
   SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env}
-  CMDB_DATABASE_PASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}
   FLEET_DASHBOARD_HOST: ${FLEET_DASHBOARD_HOST:?set FLEET_DASHBOARD_HOST in .env}
   FLEET_AGENT_HOST: ${FLEET_AGENT_HOST:?set FLEET_AGENT_HOST in .env}
   GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
@@ -162,7 +162,7 @@ services:
       <<: *app-environment
       BACKUP_DIR: /backups
       PGUSER: cmdb
-      PGPASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
+      PGPASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}
     volumes:
       - ./ops/backup:/ops/backup:ro
       - ${BACKUP_DIR:-/mnt/fleet-cmdb-backups}:/backups:ro

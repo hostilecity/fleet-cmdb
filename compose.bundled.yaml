@@ -17,7 +17,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: cmdb
-      POSTGRES_PASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD in .env}
     volumes:
       - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/postgres:/var/lib/postgresql/data
     ports:

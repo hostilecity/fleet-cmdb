@@ -37,7 +37,7 @@ data_dir="$(env_value FLEET_DATA_DIR)"
 data_dir="${data_dir:-/var/lib/fleet-cmdb}"
 agent_host="$(env_value FLEET_AGENT_HOST)"
 dashboard_host="$(env_value FLEET_DASHBOARD_HOST)"
-[ -n "$agent_host" ] && [ -n "$dashboard_host" ] || die "FLEET_AGENT_HOST and FLEET_DASHBOARD_HOST must be set in .env"
+if [ -z "$agent_host" ] || [ -z "$dashboard_host" ]; then die "FLEET_AGENT_HOST and FLEET_DASHBOARD_HOST must be set in .env"; fi
 # Where this machine reaches its own published ports.
 local_address() { if [ -z "$1" ] || [ "$1" = 0.0.0.0 ]; then echo 127.0.0.1; else echo "$1"; fi; }
 agent_address="$(local_address "$(env_value FLEET_AGENT_BIND_ADDRESS)")"

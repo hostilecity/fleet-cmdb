@@ -111,7 +111,7 @@ production:
     <<: *default
     database: cmdb_production
     username: cmdb
-    password: <%= ENV["CMDB_DATABASE_PASSWORD"] %>
+    password: <%= ENV["DATABASE_PASSWORD"] %>
   cache:
     <<: *primary_production
     database: cmdb_production_cache
