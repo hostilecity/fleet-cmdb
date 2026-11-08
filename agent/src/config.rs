@@ -27,7 +27,14 @@
 //! interval_seconds = 21600
 //! min_seconds = 3600
 //! max_seconds = 86400
+//!
+//! [tasks]                                    # optional (Phase 3); see crate::tasks::settings
+//! enabled = ["refresh_reports"]              # the default; restart_service, apply_package_updates
+//! allowed_services = []                      # units restart_service may restart (DEC-15)
 //! ```
+//!
+//! A mistake in `[tasks]` does not stop the agent: it fails safe with every task off
+//! ([`TaskSettings`]), and `check-config` reports it.
 
 use std::fmt;
 use std::fs;
@@ -37,6 +44,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
+
+use crate::tasks::settings::TaskSettings;
 
 /// Where `fleet-agent install` writes the config (P1-PACKAGING).
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/fleet-agent/config.toml";
@@ -207,6 +216,9 @@ pub struct Config {
     /// How long a newly installed agent version has to get a heartbeat acknowledged by the server
     /// before the update is rolled back, in seconds (P1-AGENT-UPDATE, ADR 0018).
     pub update_confirm_seconds: u64,
+    /// The owner's task settings (P3-A01). After a mistake in `[tasks]` nothing is enabled and
+    /// [`TaskSettings::problem`] says why; the rest of the config still applies.
+    pub tasks: TaskSettings,
 }
 
 /// Why a config could not be loaded. Every message says what to change.
@@ -273,6 +285,8 @@ struct RawConfig {
     heartbeat: Option<RawInterval>,
     inventory: Option<RawInterval>,
     config_report: Option<RawInterval>,
+    /// Checked by [`TaskSettings`], which fails safe instead of refusing the whole file.
+    tasks: Option<toml::Value>,
 }
 
 #[derive(Default, Deserialize)]
@@ -384,6 +398,7 @@ impl Config {
                 &CONFIG_REPORT_LIMITS,
                 raw.config_report.unwrap_or_default(),
             )?,
+            tasks: TaskSettings::from_value(raw.tasks.as_ref()),
         })
     }
 }
@@ -417,7 +432,7 @@ fn parse_error(text: &str, error: &toml::de::Error) -> ConfigError {
 
 /// Replaces the contents of every `"..."` or `'...'` in `message` with `<value>`. Key names, which
 /// serde and toml quote with backticks, are kept so the message still says which key is wrong.
-fn redact_quoted_values(message: &str) -> String {
+pub(crate) fn redact_quoted_values(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     let mut chars = message.chars();
     while let Some(c) = chars.next() {
@@ -868,6 +883,7 @@ pub(crate) mod tests {
             example.update_confirm_seconds,
             defaults.update_confirm_seconds
         );
+        assert_eq!(example.tasks, defaults.tasks);
         assert!(example.server_url.ends_with(".example.lan"));
         assert!(example.credential.expose_secret().contains("EXAMPLE"));
 
@@ -902,5 +918,46 @@ pub(crate) mod tests {
                 "`{key}` is missing from contrib/config.example.toml"
             );
         }
+        // `[tasks]` fails safe instead of refusing the file, so its keys come from its own message.
+        let tasks = Config::from_toml(&format!("{}\n[tasks]\nbogus_option = 1\n", minimal()))
+            .unwrap()
+            .tasks;
+        let message = tasks.problem().expect("an unknown key is refused");
+        let (_, expected) = message.split_once("expected").expect(message);
+        let keys: Vec<&str> = expected.split('`').skip(1).step_by(2).collect();
+        assert_eq!(keys, ["enabled", "allowed_services"], "{message}");
+        for key in keys {
+            assert!(
+                documented(key),
+                "`tasks.{key}` is missing from contrib/config.example.toml"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_tasks_section_turns_tasks_off_but_keeps_the_rest() {
+        // P3-A01: invalid task configuration fails safe (nothing enabled); reporting carries on.
+        let config = Config::from_toml(&format!(
+            "{}[heartbeat]\ninterval_seconds = 120\n[tasks]\nenabled = [\"restart_service\", \"reboot\"]\n",
+            minimal()
+        ))
+        .unwrap();
+        assert_eq!(config.heartbeat.start, Duration::from_secs(120));
+        assert!(config.tasks.enabled().is_empty());
+        assert!(!config.tasks.is_enabled("restart_service"));
+        assert!(config.tasks.problem().unwrap().contains("`reboot`"));
+        // A misspelt section name is still an unknown key of the file.
+        let message = invalid(&format!("{}[task]\nenabled = []\n", minimal()));
+        assert!(message.contains("unknown field `task`"), "{message}");
+    }
+
+    #[test]
+    fn the_default_config_enables_only_refresh_reports() {
+        // P3-A01 acceptance: apply_package_updates and restart_service are off by default (DEC-14).
+        let config = Config::from_toml(&minimal()).unwrap();
+        assert_eq!(config.tasks.enabled(), ["refresh_reports"]);
+        assert!(!config.tasks.is_enabled("apply_package_updates"));
+        assert!(!config.tasks.is_enabled("restart_service"));
+        assert_eq!(config.tasks.problem(), None);
     }
 }

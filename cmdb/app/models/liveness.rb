@@ -16,14 +16,16 @@ module Liveness
   # Records a heartbeat: locks the host row and re-checks the host and credential under that lock
   # (AgentHostLock, raising AgentHostLock::Refused), then reads the server clock and writes one UPDATE, plus
   # a status event only when the host was not already online. Must run inside a transaction (the
-  # request's). Returns the server time it recorded.
-  def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:)
+  # request's). Returns the server time it recorded. task_capabilities is the heartbeat's `tasks` object (P3-A01),
+  # written to the host's capability columns in the same UPDATE (task_capability_columns).
+  def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil)
     host = AgentHostLock.lock!(host_id:, credential_id:)
 
     # Sampled only now, after the lock: a heartbeat that waited for the row cannot write an older time than
     # the one it waited for, so last_seen_at never moves backwards.
     now = [ Time.current, host.last_seen_at ].compact.max
-    updates = { last_seen_at: now, agent_version:, agent_schema_version:, agent_reported_at: agent_time, liveness_status: "online" }
+    updates = { last_seen_at: now, agent_version:, agent_schema_version:, agent_reported_at: agent_time, liveness_status: "online",
+                **task_capability_columns(task_capabilities, now) }
     updates[:first_seen_at] = now if host.first_seen_at.nil?
     Host.where(id: host.id).update_all(updates)
     unless host.liveness_status == "online"
@@ -34,6 +36,22 @@ module Liveness
     FleetBroadcast.hosts_changed([ host.id ]) unless host.liveness_status == "online" && host.agent_version == agent_version
     now
   end
+
+  # The host columns for a heartbeat's `tasks` object (FR-3.1, P3-A01): the catalog version compiled into the agent,
+  # the types it implements, and the types its VM enables, which Host#task_exclusion_reason reads when a task is
+  # created (P3-S02). A local configuration the agent refused enables nothing, whatever the lists say. A heartbeat
+  # without the object, from an agent older than Phase 3, clears them, so its host is excluded with
+  # no_capability_report. Unknown fields inside the object are ignored (DEC-08).
+  def task_capability_columns(tasks, now)
+    if tasks.nil?
+      return { task_catalog_version: nil, task_types_supported: [], task_types_enabled: [], task_capabilities_reported_at: nil }
+    end
+
+    enabled = tasks["local_config"] == "valid" ? tasks["enabled"].sort : []
+    { task_catalog_version: tasks["catalog_version"], task_types_supported: tasks["supported"].sort, task_types_enabled: enabled,
+      task_capabilities_reported_at: now }
+  end
+  private_class_method :task_capability_columns
 
   # Moves every active host to the status its last heartbeat implies. Runs are serialised by a transaction-
   # level advisory lock taken before the clock and thresholds are read, so an older run can never act after

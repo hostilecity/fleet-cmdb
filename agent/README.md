@@ -21,12 +21,12 @@ target/x86_64-unknown-linux-musl/release/fleet-agent --version
 The agent builds and runs only on Linux ([DEC-01](../docs/decisions/0001-fleet-profile.md)): it reads `/proc`, runs under systemd, and some system structures differ elsewhere, so on macOS even `cargo build` stops with an error saying so. On macOS, run the same commands in a Linux container, from the repository root (not yet verified on a Mac; CI is the reference):
 
 ```sh
-docker run --rm -v "$PWD/agent":/src -w /src -e CARGO_TARGET_DIR=/src/target/linux \
+docker run --rm -v "$PWD":/src -w /src/agent -e CARGO_TARGET_DIR=/src/agent/target/linux \
   -v fleet-agent-cargo:/usr/local/cargo/registry rust:1.97-bookworm \
   sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --release'
 ```
 
-The binary lands in `agent/target/linux/release/fleet-agent`, a Linux binary for the container's architecture; `CARGO_TARGET_DIR` keeps it apart from anything built on the Mac itself, and the named volume keeps downloaded crates between runs. CI also uploads the musl binary as a workflow artefact on every push to `main`. Those artefacts are unsigned; signed releases come only from a version tag ([Releases](#releases)).
+The whole repository is mounted because the build compiles in the task catalog from `docs/api/tasks/` and the tests read the API contract in `docs/api/`. The binary lands in `agent/target/linux/release/fleet-agent`, a Linux binary for the container's architecture; `CARGO_TARGET_DIR` keeps it apart from anything built on the Mac itself, and the named volume keeps downloaded crates between runs. CI also uploads the musl binary as a workflow artefact on every push to `main`. Those artefacts are unsigned; signed releases come only from a version tag ([Releases](#releases)).
 
 `--version` prints the agent version (from `Cargo.toml`) and the agent schema version, the integer `schema_version` sent with reports ([DEC-08](../docs/decisions/0008-api-conventions.md)):
 
@@ -118,11 +118,24 @@ max_seconds = 21600
 interval_seconds = 21600
 min_seconds = 3600
 max_seconds = 86400
+
+[tasks]                                          # optional; remote tasks (see Tasks)
+enabled = ["refresh_reports"]                    # default shown; also restart_service, apply_package_updates
+allowed_services = []                            # units restart_service may restart, for example "nginx.service"
 ```
 
 If only `interval_seconds` is set, the default bounds widen to include it. [`contrib/config.example.toml`](contrib/config.example.toml) documents every option.
 
 `state_dir` is created with mode `0700` if it does not exist. Under the systemd unit only `/var/lib/fleet-agent` is writable (`ProtectSystem=strict`): for another `state_dir`, add `ReadWritePaths=<directory>` with `systemctl edit fleet-agent`; the agent checks at startup that it can write the directory and says this if it cannot. An existing directory is never changed: the agent refuses to start if it is a symlink, is owned by another user, or is accessible by group or others, and says how to fix it. Never point `state_dir` at a shared directory. `ca_file` must hold only valid PEM certificates; a malformed entry is an error rather than being skipped. Config errors name the key but never repeat its value, so a misplaced credential does not end up in the logs.
+
+## Tasks
+
+Phase 3 remote tasks (FR-3.1, FR-3.3). This version has the catalog, the local settings, and capability reporting (P3-A01); it does not poll for or run tasks yet (P3-A02 onwards). The module documentation in `src/tasks/` has the details.
+
+- **Catalog.** The shared [`docs/api/tasks/task-catalog.json`](../docs/api/tasks/task-catalog.json) itself is compiled in with `include_str!` (so building needs the repository, not just `agent/`) and parsed with `serde_json` on first use; there is no copy to keep in step. The agent never takes a task definition from the server. The tests check that this is the file compiled in, byte for byte, and that it passes the catalog's schema; a catalog change therefore needs a new agent release (`docs/api/tasks/README.md`).
+- **Local settings** (`[tasks]`). `enabled` lists the task types this VM runs; when it is absent only the catalog's `enabled_by_default` types run, which is `refresh_reports` alone, and only a `read_only` type can be on by default (DEC-14). `restart_service` and `apply_package_updates` need a local edit. `allowed_services` lists full service unit names `restart_service` may restart (at most 64, with the catalog's `service` pattern); it is empty by default, and the agent's own units, `ssh`/`sshd`, `systemd-*`, networking (`networking`, `NetworkManager`), and D-Bus (`dbus`, `dbus-broker`) are refused even when listed, including template instances (DEC-15). `apply_package_updates` has no local settings (DEC-16).
+- **Fail safe.** The section is checked as strictly as the rest of the file (unknown keys, wrong types, unknown task types, malformed, protected, or repeated services), but a mistake in it does not stop the agent: every task type is turned off, heartbeats and reports carry on, the error is logged at startup, the server is told `local_config: invalid`, and `check-config` fails (exit 78) with the message. A misspelt section name (`[task]`) is an unknown key of the file and stops the agent as before. Messages never repeat a configured service name. `install` keeps the section when it rewrites the config; one that was invalid is replaced by `enabled = []` with the old error in a comment.
+- **Capabilities.** Every heartbeat (and the installer's first one) carries `tasks`: the compiled-in `catalog_version`, the types this version `supported` (none yet), the locally `enabled` types, and `local_config` (`valid` or `invalid`). The server offers a type only when it is both supported and enabled. Settings are read at startup, so a change needs `systemctl restart fleet-agent`.
 
 ## HTTP client and retries
 
@@ -204,6 +217,7 @@ An agent older than the server's minimum version still updates: the update path 
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
 | `update` | Updater: download, verify, and stage (`stage`, `fetch`), supervised switch and rollback (`supervise`), the agent's side and the `self-test`, `update-supervise`, and `update-rollback` commands | P1-AGENT-UPDATE |
 | `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL, P1-PACKAGING (unit hardening) |
+| `tasks` | The compiled-in task catalog, the `[tasks]` settings, and the capabilities reported in each heartbeat; see [Tasks](#tasks) | P3-A01 |
 | `release` | Release manifest, the release public keys built in from `release-keys/`, signature and checksum verification, `verify-release` | P1-PACKAGING |
 
 ## Collected facts

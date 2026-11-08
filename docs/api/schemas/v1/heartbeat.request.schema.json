@@ -41,6 +41,53 @@
       "type": "string",
       "maxLength": 35,
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+    },
+    "tasks": {
+      "description": "Remote task capabilities (FR-3.1, P3-A01): what this agent can run and what its VM's own configuration enables. The server offers a host a task type only when it is in both supported and enabled, and the host reports local_config valid. Absent means the host offers nothing, as for an agent older than Phase 3. Sent on every heartbeat; it changes only when the agent restarts with another config or version.",
+      "type": "object",
+      "required": [
+        "catalog_version",
+        "supported",
+        "enabled",
+        "local_config"
+      ],
+      "properties": {
+        "catalog_version": {
+          "description": "The catalog_version of the task catalog compiled into the agent (docs/api/tasks/task-catalog.json).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "supported": {
+          "description": "Catalog task types this agent version can run, each once. Type ids, not an enum: a newer agent may know types this server does not, and the server ignores those.",
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          }
+        },
+        "enabled": {
+          "description": "Catalog task types the VM's local configuration enables ([tasks] enabled; DEC-14), each once. Empty when local_config is invalid. May list a type the agent does not support yet.",
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          }
+        },
+        "local_config": {
+          "description": "valid, or invalid when the agent refused the [tasks] section of its config: then nothing is enabled until the owner fixes it on the VM.",
+          "enum": [
+            "valid",
+            "invalid"
+          ]
+        }
+      }
     }
   }
 }

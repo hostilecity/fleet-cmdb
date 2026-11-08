@@ -121,6 +121,10 @@ fn check_config_validates_without_contacting_the_server() {
     );
     assert!(stdout.contains("heartbeat  = 60 s"), "{stdout}");
     assert!(
+        stdout.contains("tasks      = refresh_reports (the default)"),
+        "{stdout}"
+    );
+    assert!(
         listener.accept().is_err(),
         "check-config contacted the server"
     );
@@ -195,6 +199,73 @@ fn invalid_configs_are_rejected_with_a_reason() {
         }
     }
     assert!(!state.exists());
+}
+
+#[test]
+fn a_bad_tasks_section_fails_check_config_but_run_carries_on_with_tasks_off() {
+    // P3-A01: invalid task configuration fails safe. `run` keeps reporting with every task off and
+    // says why; `check-config` refuses the file so the owner sees the mistake.
+    let scratch = Scratch::new("tasks");
+    let text = format!(
+        "{}[tasks]\nenabled = [\"restart_service\", \"reboot\"]\n",
+        valid_config("https://fleet-agent.example.lan", &scratch.state_dir())
+    );
+    let path = scratch.config(&text, 0o600);
+    let (output, stdout, stderr) = run_with(&["check-config", "--config", path.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(EXIT_CONFIG), "{output:?}");
+    assert!(stdout.contains("tasks      = none enabled"), "{stdout}");
+    assert!(
+        stderr.contains("`tasks.enabled` lists `reboot`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("No task will run"), "{stderr}");
+
+    let good = format!(
+        "{}[tasks]\nenabled = [\"restart_service\"]\nallowed_services = [\"nginx.service\"]\n",
+        valid_config("https://fleet-agent.example.lan", &scratch.state_dir())
+    );
+    let good_path = scratch.config(&good, 0o600);
+    let (output, stdout, _) = run_with(&["check-config", "--config", good_path.to_str().unwrap()]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.contains("tasks      = restart_service; restart_service may restart: nginx.service"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("note: this agent version cannot run restart_service yet"),
+        "{stdout}"
+    );
+
+    let path = scratch.config(&text, 0o600);
+    let mut child = agent()
+        .args(["run", "--config", path.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start fleet-agent");
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stdout).lines() {
+            let line = line.unwrap();
+            if line.contains("task configuration is not valid") {
+                let _ = tx.send(());
+            }
+            all.push_str(&line);
+            all.push('\n');
+        }
+        all
+    });
+    let logged = rx.recv_timeout(Duration::from_secs(20));
+    let _ = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status();
+    let status = child.wait().unwrap();
+    let logs = reader.join().unwrap();
+    assert!(logged.is_ok(), "no task configuration error logged: {logs}");
+    assert!(status.success(), "agent did not run: {status:?} {logs}");
+    assert!(logs.contains("fleet-agent started"), "{logs}");
 }
 
 #[test]
