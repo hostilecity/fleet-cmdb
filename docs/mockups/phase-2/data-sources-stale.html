@@ -70,6 +70,7 @@
   <dl class="facts tight">
     <dt>Source</dt><dd class="mono">security-tracker.debian.org/tracker/data/json</dd>
     <dt>Refresh</dt><dd>With the advisory feed, every 6 hours, right after it; up to 5 attempts with backoff</dd>
+    <dt>Refresh now</dt><dd>Refreshes with the advisory data: the one <strong>Refresh now</strong> above runs OSV and then this source, under the same 5-minute cool-down</dd>
     <dt>Request</dt><dd>One file per refresh, conditional (ETag or Last-Modified), so an unchanged file is not downloaded again</dd>
     <dt>Limits</dt><dd>Download 200 MiB, 10 minutes <span class="muted">(examples; set from the measured file, 84 MiB today)</span></dd>
     <dt>Guard</dt><dd>An import that would remove more than 10% of a release's entries is held back and keeps the previous data</dd>

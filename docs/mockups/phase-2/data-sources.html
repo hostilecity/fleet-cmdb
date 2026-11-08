@@ -68,11 +68,12 @@
   <dl class="facts tight">
     <dt>Source</dt><dd class="mono">security-tracker.debian.org/tracker/data/json</dd>
     <dt>Refresh</dt><dd>With the advisory feed, every 6 hours, right after it; up to 5 attempts with backoff</dd>
+    <dt>Refresh now</dt><dd>Refreshes with the advisory data: the one <strong>Refresh now</strong> above runs OSV and then this source, under the same 5-minute cool-down</dd>
     <dt>Request</dt><dd>One file per refresh, conditional (ETag or Last-Modified), so an unchanged file is not downloaded again</dd>
     <dt>Limits</dt><dd>Download 200 MiB, 10 minutes <span class="muted">(examples; set from the measured file, 84 MiB today)</span></dd>
     <dt>Guard</dt><dd>An import that would remove more than 10% of a release's entries is held back and keeps the previous data</dd>
   </dl>
-  <p style="margin-bottom:0" class="muted">Manual refresh is the <strong>Refresh now</strong> button on the scheduled feed above: it refreshes the advisory data and then this source, under the same 5-minute cool-down (<a href="index.html#t2">T2</a>).</p>
+  <p style="margin-bottom:0" class="muted">Manual refresh is the <strong>Refresh now</strong> button on the scheduled feed above: it refreshes the advisory data and then this source, under the same 5-minute cool-down (decided, <a href="index.html#t2">T2</a>).</p>
 </section>
 <section aria-labelledby="tracker-up">
   <h3 id="tracker-up" style="margin-top:0">No upload</h3>
@@ -89,7 +90,7 @@
 </tbody></table></div>
   <p class="pager"><span>Showing the latest 4 imports.</span><span>Every import is in the audit log.</span></p>
 </section>
-<p class="note"><span class="review-q">P2-D07 review.</span> The Debian Security Tracker is a second source panel below the advisory data, marked "Triage only" so it is not read as a second source of findings. It has its own freshness, release table, and imports, and no upload. Drawn: it shares the advisory schedule (it runs right after the OSV refresh, as the spec says) and shares the one "Refresh now" button and its cool-down (<a href="index.html#t2">T2</a>). If that is chosen, the refresh confirmation (<a href="dialogs.html#refresh">Confirmations</a>) gains one sentence: "Debian's triage data is refreshed right after it." Entry counts are per release and only for releases the fleet uses. A held-back import is a row here with its counts, and the page shows a notice while it is the latest (<a href="data-sources-held.html">held-back state</a>); the stale state is on <a href="data-sources-stale.html#tracker">the stale page</a>.</p>
+<p class="note"><span class="review-q">P2-D07 review.</span> The Debian Security Tracker is a second source panel below the advisory data, marked "Triage only" so it is not read as a second source of findings. It has its own freshness, release table, and imports, and no upload. Drawn: it shares the advisory schedule (it runs right after the OSV refresh, as the spec says) and shares the one "Refresh now" button and its cool-down (decided, <a href="index.html#t2">T2</a>); the refresh confirmation (<a href="dialogs.html#refresh">Confirmations</a>) says so in one sentence. Entry counts are per release and only for releases the fleet uses. A held-back import is a row here with its counts, and the page shows a notice while it is the latest (<a href="data-sources-held.html">held-back state</a>); the stale state is on <a href="data-sources-stale.html#tracker">the stale page</a>.</p>
 <p class="note">Decided in the P2-D01 review (Q14): manual refresh has a cool-down of 5 minutes, like report requests. The button is greyed out with the time left, so no alert is needed after a click. "Refresh now" and the upload form sit beside the scheduled feed, each with a confirmation where it can resolve findings (<a href="dialogs.html">Confirmations</a>). The feed itself can only be changed in the server configuration, since it carries a token.</p>
 <p class="note">Also see <a href="data-sources-stale.html">the stale state of this page</a>, <a href="data-sources-import.html">an upload result with skipped records</a>, and <a href="states-empty.html#freshness">the other freshness indicators</a>.</p>
 </main>
