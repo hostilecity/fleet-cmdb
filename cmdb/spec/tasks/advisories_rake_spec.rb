@@ -41,6 +41,43 @@ RSpec.describe "advisories rake tasks" do
     expect { expect { run("advisories:import", "FILE" => nil) }.to output(/Usage/).to_stderr }.to raise_error(SystemExit)
   end
 
+  # Owner decision on #129: a full import by hand is guarded like the feed, and needs ALLOW_WITHDRAWALS naming the
+  # counts to withdraw more than the thresholds allow.
+  describe "the withdrawal guard" do
+    before { import_advisories(*(1..5).map { |i| osv_record(id: "DSA-#{i}-1") }, full: true) }
+
+    let(:zip) { osv_zip("a.json" => osv_record(id: "DSA-1-1")) }
+
+    it "refuses a full import that would withdraw too many, with the counts and the exact allowance, recording and auditing them" do
+      expect { expect { run("advisories:import", "FILE" => zip.to_s, "FULL" => "1") }.to output(
+        %r{Nothing imported: this full import would mark advisories withdrawn.*\n  Debian:13: 4 of 5 current advisories \(1 records in the import\)\nIf that is right, run it again with ALLOW_WITHDRAWALS=Debian:13:4 bin/rails advisories:import FILE=#{Regexp.escape(zip.to_s)} FULL=1}
+      ).to_stderr }.to raise_error(SystemExit)
+      refused = AdvisoryImport.order(:id).last
+      expect(refused).to have_attributes(state: "held_back", full: true)
+      expect(refused.counts["would_withdraw"]).to eq("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
+      expect(AuditEntry.where(action: "advisory.import_held_back").sole.changeset["would_withdraw"]).to be_present
+      expect(Advisory.current.count).to eq(5)
+    end
+
+    it "imports with an allowance that covers the counts, and refuses one that does not or cannot be read" do
+      expect { expect { run("advisories:import", "FILE" => zip.to_s, "FULL" => "1", "ALLOW_WITHDRAWALS" => "Debian:13:3") }.to output(/ALLOW_WITHDRAWALS=Debian:13:4/).to_stderr }
+        .to raise_error(SystemExit)
+      expect { expect { run("advisories:import", "FILE" => zip.to_s, "FULL" => "1", "ALLOW_WITHDRAWALS" => "Debian:13") }.to output(/must be ecosystem:count pairs/).to_stderr }
+        .to raise_error(SystemExit)
+      expect(Advisory.current.count).to eq(5)
+
+      output = run("advisories:import", "FILE" => zip.to_s, "FULL" => "1", "ALLOW_WITHDRAWALS" => "Debian:13:4, Other:1:2")
+      expect(output).to include("4 withdrawn")
+      expect(Advisory.current.pluck(:advisory_id)).to eq([ "DSA-1-1" ])
+    end
+
+    it "parses an allowance whose ecosystem name has colons in it" do
+      expect(AdvisoriesTask.allowance("Debian:13:41,Some:Distro:9:3")).to eq("Debian:13" => 41, "Some:Distro:9" => 3)
+      expect(AdvisoriesTask.allowance(nil)).to eq({})
+    end
+  end
+
+
   describe "refresh" do
     around do |example|
       saved = Advisories.config.feed_url
@@ -55,6 +92,16 @@ RSpec.describe "advisories rake tasks" do
       expect(run("advisories:refresh")).to include("advisories.example.org/all.zip: 1 records, 1 added")
       stub_request(:get, "https://advisories.example.org/all.zip").to_return(status: 304)
       expect(run("advisories:refresh")).to eq("advisories.example.org/all.zip: not modified since the last refresh.\n")
+    end
+
+    it "refuses a refresh that would withdraw too many advisories with the counts, then imports it with ALLOW_WITHDRAWALS (review of #129)" do
+      import_advisories(*(1..5).map { |i| osv_record(id: "DSA-#{i}-1") }, full: true, origin: "feed", source: "advisories.example.org/all.zip")
+      stub_request(:get, "https://advisories.example.org/all.zip").to_return(status: 200, body: osv_zip("a.json" => osv_record(id: "DSA-1-1")).binread)
+      expect { expect { run("advisories:refresh") }.to output(/Debian:13: 4 of 5 current advisories.*ALLOW_WITHDRAWALS=Debian:13:4 bin\/rails advisories:refresh/m).to_stderr }
+        .to raise_error(SystemExit)
+      expect(Advisory.current.count).to eq(5)
+      expect(run("advisories:refresh", "ALLOW_WITHDRAWALS" => "Debian:13:4")).to include("4 withdrawn")
+      expect(Advisory.current.count).to eq(1)
     end
 
     it "says why a refresh failed, and when no feed is configured" do

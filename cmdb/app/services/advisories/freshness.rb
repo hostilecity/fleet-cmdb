@@ -24,5 +24,15 @@ module Advisories
     end
 
     def stale?(**) = statuses(**).any?(&:stale)
+
+    # The newest feed refresh the withdrawal guard refused, when no feed refresh has succeeded since and no
+    # operator has confirmed it, or nil (review of #129). The data stays as it was, so it may be going stale:
+    # the freshness notice says so on every page that shows it.
+    def held_refresh
+      last_success = AdvisoryImport.succeeded.where(origin: "feed").maximum(:finished_at)
+      refused = AdvisoryImport.where(origin: "feed", state: "held_back").where.not("counts ? 'confirmed_at'")
+      refused = refused.where(AdvisoryImport.arel_table[:finished_at].gt(last_success)) if last_success
+      refused.order(finished_at: :desc, id: :desc).first
+    end
   end
 end

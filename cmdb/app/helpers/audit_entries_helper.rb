@@ -39,6 +39,7 @@ module AuditEntriesHelper
     Audit::Actions::RULE_DISABLED => "Rule disabled",
     Audit::Actions::ADVISORY_IMPORTED => "Advisories imported",
     Audit::Actions::ADVISORY_IMPORT_FAILED => "Advisory import failed",
+    Audit::Actions::ADVISORY_IMPORT_HELD_BACK => "Advisory import held back (would withdraw too many)",
     Audit::Actions::ADVISORY_REFRESH_REQUESTED => "Advisory refresh started",
     Audit::Actions::ADVISORY_REFRESH_REFUSED => "Advisory refresh refused (cool-down)",
     Audit::Actions::ADVISORY_UPLOADED => "Advisory file uploaded",

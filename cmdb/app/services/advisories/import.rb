@@ -15,11 +15,12 @@ module Advisories
   #   for one of them that the import does not contain is marked withdrawn as "absent", because OSV moves
   #   withdrawn records out of the ecosystem's archive. That sweep is skipped when any record was malformed,
   #   since the missing advisory may be the one that could not be read.
-  # - With guard_withdrawals (a full import uploaded on the dashboard, P2-D06, review of #129), the sweep is
-  #   counted per ecosystem before anything is written. If it would withdraw more than WITHDRAW_SHARE of an
-  #   ecosystem's current advisories, or any of them when the file has fewer than SMALL_FILE_RECORDS records for
-  #   it, the import raises WithdrawalsRefused with the counts and the transaction rolls back, unless
-  #   allowed_withdrawals (the operator's second confirmation) names at least that many for the ecosystem.
+  # - Every full import is guarded against mass withdrawal (the feed, the rake task, and uploads; P2-S10, P2-S13,
+  #   review of #129): the sweep is counted per ecosystem before it writes. If it would withdraw more than
+  #   Advisories.config.withdraw_share of an ecosystem's current advisories, or any of them when the import has
+  #   fewer than withdraw_min_records records for it, the import raises WithdrawalsRefused with the counts and the
+  #   transaction rolls back, unless allowed_withdrawals (an operator's confirmation) names at least that many
+  #   for the ecosystem. The rule is the same for every ecosystem; nothing in it is specific to one.
   # - time_limit bounds how long reading and storing may take once the lock is held, and lock_timeout how long
   #   to wait for the lock; past the time limit the import is Unreadable and rolls back.
   #
@@ -32,11 +33,6 @@ module Advisories
     PROBLEM_LIMIT = 100
     COUNTS = %w[records created updated unchanged older withdrawn absent skipped malformed rejected_urls].freeze
     LOCK_KEY = "advisories.import".freeze
-
-    # A guarded full import would withdraw more than WITHDRAW_SHARE of an ecosystem's advisories.
-    WITHDRAW_SHARE = 0.10
-    # A guarded full import with fewer records than this for an ecosystem may withdraw none of it unconfirmed.
-    SMALL_FILE_RECORDS = 1_000
 
     # The queued or importing row this import was to finish has been finished meanwhile (AdvisoryUploadPruneJob
     # failed it): nothing is written.
@@ -51,7 +47,7 @@ module Advisories
       def initialize(withdrawals)
         @withdrawals = withdrawals
         parts = withdrawals.map do |ecosystem, w|
-          "#{w['withdraw']} of #{w['current']} current #{ecosystem} advisories (the file has #{w['records']} #{w['records'] == 1 ? 'record' : 'records'} for it)"
+          "#{w['withdraw']} of #{w['current']} current #{ecosystem} advisories (the import has #{w['records']} #{w['records'] == 1 ? 'record' : 'records'} for it)"
         end
         super("this full import would mark #{parts.to_sentence} withdrawn, which resolves the findings they produced; nothing was imported")
       end
@@ -59,30 +55,41 @@ module Advisories
 
     # Records a failed import (nothing was stored), audited, in its own transaction. import: a queued or
     # importing row to finish as failed (an upload imported in the background, P2-D06) instead of a new one.
-    # counts: what to keep on the failed row (the withdrawals a guarded full import refused).
-    def self.record_failure(reason:, origin: nil, source: nil, operator: nil, full: false, started_at: Time.current, import: nil, counts: {})
+    def self.record_failure(reason:, **)
+      record_unimported(state: "failed", action: Audit::Actions::ADVISORY_IMPORT_FAILED, reason:, counts: {}, **)
+    end
+
+    # Records a full import the withdrawal guard held back (WithdrawalsRefused): nothing was stored, and it is not
+    # a failure (review of #131). Its own state and audit action, advisory.import_held_back, with the counts per
+    # ecosystem, so the audit log, Recent imports, and the failure counts tell it apart from a failed import.
+    def self.record_held_back(refusal, **)
+      record_unimported(state: "held_back", action: Audit::Actions::ADVISORY_IMPORT_HELD_BACK, reason: refusal.message,
+                        counts: { "would_withdraw" => refusal.withdrawals }, **)
+    end
+
+    def self.record_unimported(state:, action:, reason:, counts:, origin: nil, source: nil, operator: nil, full: false, started_at: Time.current, import: nil)
       AdvisoryImport.transaction do
-        failed = { state: "failed", reason: reason.truncate(512), finished_at: Time.current, counts: }
+        outcome = { state:, reason: reason.truncate(512), finished_at: Time.current, counts: }
         if import
           # Locked and checked again: an import finished meanwhile keeps its outcome.
           return import unless import.lock!.in_progress?
 
-          import.update!(failed)
+          import.update!(outcome)
         else
-          import = AdvisoryImport.create!(origin:, source:, full:, operator:, started_at:, **failed)
+          import = AdvisoryImport.create!(origin:, source:, full:, operator:, started_at:, **outcome)
         end
-        Audit.record(actor: import.operator || Audit::SYSTEM, action: Audit::Actions::ADVISORY_IMPORT_FAILED, target: import,
+        Audit.record(actor: import.operator || Audit::SYSTEM, action:, target: import,
                      changes: { "origin" => import.origin, "source" => import.source, "reason" => import.reason, **counts })
         import
       end
     end
+    private_class_method :record_unimported
 
     # origin: "feed" or "file". source: the name to show and store (the feed's host and path, or the file
     # name), never a credential. record: a queued or importing AdvisoryImport to finish with the result (an
     # upload imported in the background, P2-D06); its origin, source, full, and operator are used.
     def initialize(origin: nil, source: nil, full: false, operator: nil, etag: nil, last_modified: nil, record: nil,
-                   guard_withdrawals: false, allowed_withdrawals: {})
-      @guard_withdrawals = guard_withdrawals
+                   allowed_withdrawals: {})
       @allowed_withdrawals = allowed_withdrawals.to_h
       @record = record
       @origin = record&.origin || origin
@@ -107,6 +114,9 @@ module Advisories
         # set_config(..., true) is SET LOCAL: it ends with this transaction.
         connection.execute("SELECT set_config('lock_timeout', #{connection.quote("#{Integer(lock_timeout)}s")}, true)") if lock_timeout
         connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{connection.quote(LOCK_KEY)}))")
+        # Each ecosystem's current advisories before this import stores anything: the withdrawal guard's share is
+        # of these, so advisories the import adds cannot dilute it (review of #131).
+        @current_before = current_by_ecosystem if @full
         @deadline = time_limit && Process.clock_gettime(Process::CLOCK_MONOTONIC) + time_limit
         @time_limit = time_limit
         reader.each_slice(BATCH) do |entries|
@@ -224,7 +234,7 @@ module Advisories
       absent = stored.reject { |_, advisory_id| @seen.include?(advisory_id) }.map(&:first)
       return if absent.empty?
 
-      check_withdrawals!(absent) if @guard_withdrawals
+      check_withdrawals!(absent)
 
       absent.each_slice(BATCH) do |ids|
         AdvisoryPackage.where(advisory_id: ids).pluck(:ecosystem, :package).each { |ecosystem, package| @changed[ecosystem] << package }
@@ -235,18 +245,23 @@ module Advisories
 
     # Refuses a guarded full import that would withdraw too much of an ecosystem (see the class comment), before
     # the sweep writes: raising rolls back the records stored so far too.
+    #
+    # "current" is the ecosystem's current advisories before this import (@current_before). An allowance (an
+    # operator's confirmation) is a ceiling, not a bypass (review of #131): once one is given, each ecosystem may
+    # withdraw at most its allowed count (none for an ecosystem it does not name), whatever the thresholds say.
     def check_withdrawals!(absent)
       withdraw = AdvisoryPackage.where(advisory_id: absent, ecosystem: @ecosystems.to_a).group(:ecosystem).distinct.count(:advisory_id)
-      current = Advisory.current.joins(:packages).where(advisory_packages: { ecosystem: withdraw.keys }).group("advisory_packages.ecosystem").distinct.count(:id)
       withdrawals = withdraw.sort.to_h do |ecosystem, count|
-        [ ecosystem, { "withdraw" => count, "current" => current.fetch(ecosystem, 0), "records" => @ecosystem_records[ecosystem] } ]
+        [ ecosystem, { "withdraw" => count, "current" => @current_before.fetch(ecosystem, 0), "records" => @ecosystem_records[ecosystem] } ]
       end
       too_many = withdrawals.any? do |ecosystem, w|
-        next false if w["withdraw"] <= @allowed_withdrawals[ecosystem].to_i
+        next w["withdraw"] > @allowed_withdrawals.fetch(ecosystem, 0).to_i if @allowed_withdrawals.any?
 
-        w["withdraw"] > w["current"] * WITHDRAW_SHARE || w["records"] < SMALL_FILE_RECORDS
+        w["withdraw"] > w["current"] * Advisories.config.withdraw_share || w["records"] < Advisories.config.withdraw_min_records
       end
       raise WithdrawalsRefused, withdrawals if too_many
     end
+
+    def current_by_ecosystem = Advisory.current.joins(:packages).group("advisory_packages.ecosystem").distinct.count(:id)
   end
 end

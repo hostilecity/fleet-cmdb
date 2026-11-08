@@ -123,7 +123,8 @@ RSpec.describe Advisories::Import do
     expect(result.changed_packages).to eq("Debian:13" => [ "openssl" ])
   end
 
-  describe "full imports" do
+  # The withdrawal guard is off here, for the absence sweep itself; import_bounds_spec.rb covers the guard.
+  describe "full imports", withdrawal_guard: { share: 1.0, min_records: 0 } do
     before { import_advisories(osv_record(id: "DSA-1-1", package: "openssl"), osv_record(id: "DSA-2-1", package: "curl")) }
 
     it "mark advisories missing from the full data set as withdrawn (absent), and restore one that comes back" do

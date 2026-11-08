@@ -77,13 +77,14 @@ class DataSourcesController < ApplicationController
   def import
     @import = AdvisoryImport.includes(:operator).find(params[:id])
     @withdrawals = refused_withdrawals(@import)
-    @upload_kept = @withdrawals.present? && AdvisoryUpload.where(advisory_import_id: @import.id).where("expires_at > ?", Time.current).exists?
+    @confirmable = @withdrawals.present? && confirmable?(@import)
   end
 
   # POST /data-sources/imports/:id/confirm-withdrawals: the second confirmation of a full import that was refused
   # for what it would withdraw (review of #129). The form names the counts per ecosystem; they must be the ones the
-  # refusal recorded, and the box saying so must be ticked. The kept file is then queued again as a new import
-  # that may withdraw at most those counts, audited with the counts.
+  # refusal recorded, and the box saying so must be ticked. An upload's kept file is then queued again as a new
+  # import; a refused feed refresh downloads the feed again (Advisories::ManualRefresh.confirm_withdrawals!).
+  # Either may withdraw at most those counts, and the confirmation is audited with them.
   def confirm_withdrawals
     refused = AdvisoryImport.find(params[:id])
     withdrawals = refused_withdrawals(refused)
@@ -93,6 +94,8 @@ class DataSourcesController < ApplicationController
     unless params[:confirm] == "1" && named == withdrawals.transform_values { |w| w["withdraw"].to_s }
       return redirect_to(advisory_import_path(refused), alert: "Tick the box that names the withdrawals to confirm them.")
     end
+
+    return confirm_feed_withdrawals(refused) if refused.origin == "feed"
 
     import = requeue_confirmed(refused, withdrawals)
     return redirect_to(advisory_import_path(refused), alert: "The file is no longer stored, so it cannot be imported. Upload it again.") unless import
@@ -128,8 +131,30 @@ class DataSourcesController < ApplicationController
 
   # What a refused guarded full import would have withdrawn, per ecosystem, or nil.
   def refused_withdrawals(import)
-    withdrawals = import.counts["would_withdraw"] if import.state == "failed" && import.origin == "file"
+    withdrawals = import.counts["would_withdraw"] if import.state == "held_back"
     withdrawals.presence if withdrawals.is_a?(Hash)
+  end
+
+  # Whether the refusal can still be confirmed: an upload's file is still stored, or a feed refusal was not
+  # confirmed yet and a feed is configured.
+  def confirmable?(import)
+    if import.origin == "feed"
+      !import.counts["confirmed_at"] && sources_feed_configured?
+    else
+      AdvisoryUpload.where(advisory_import_id: import.id).where("expires_at > ?", Time.current).exists?
+    end
+  end
+
+  def sources_feed_configured? = !Advisories.config.feed_url.nil?
+
+  def confirm_feed_withdrawals(refused)
+    attempt = Advisories::ManualRefresh.confirm_withdrawals!(actor: current_operator, refused:)
+    return redirect_to(advisory_import_path(refused), alert: "This refusal was confirmed already.") unless attempt
+
+    redirect_to data_sources_path(anchor: "imps"),
+                notice: "Refresh started with the confirmed withdrawals. The download and import can take several minutes; the result appears under Recent imports."
+  rescue Advisories::ManualRefresh::NotConfigured
+    redirect_to data_sources_path, alert: NOT_CONFIGURED
   end
 
   # The confirmed import, queued with its file moved to it from the refused one; nil when the file is gone.

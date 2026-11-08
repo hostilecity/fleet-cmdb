@@ -243,4 +243,47 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
     described_class.queue_adapter = adapter
     travel_back
   end
+
+  # Review of #129 (owner decision): the scheduled refresh is guarded against mass withdrawal like every full
+  # import. A refusal is not a fault: nothing is written, it is recorded and audited with the counts, and the job
+  # ends normally, so it is neither retried nor a failed job.
+  describe "the withdrawal guard" do
+    before do
+      import_advisories(*(1..5).map { |i| osv_record(id: "DSA-#{i}-1") }, full: true, origin: "feed", source: "advisories.example.org/osv/Debian/all.zip")
+    end
+
+    let(:archive) { osv_zip("DSA-1-1.json" => osv_record(id: "DSA-1-1")).binread }
+
+    it "refuses a refresh that would withdraw too many advisories: no retry, no failed job, counts audited, data unchanged" do
+      stub_feed
+      adapter = described_class.queue_adapter
+      described_class.queue_adapter = :solid_queue
+      described_class.perform_later
+      SolidQueue::ReadyExecution.claim("*", 10, nil).each(&:perform)
+
+      refused = AdvisoryImport.order(:id).last
+      expect(refused).to have_attributes(origin: "feed", state: "held_back", full: true)
+      expect(refused.counts).to eq("would_withdraw" => { "Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 } })
+      expect(refused.reason).to start_with("this full import would mark 4 of 5 current Debian:13 advisories")
+      expect(Advisory.current.count).to eq(5)
+      expect(SolidQueue::FailedExecution.count).to eq(0)
+      expect(SolidQueue::ScheduledExecution.count).to eq(0) # no retry scheduled
+      expect(JobHealth).not_to be_failing
+      audit = AuditEntry.where(action: "advisory.import_held_back").sole
+      expect(audit).to have_attributes(actor_type: "system")
+      expect(audit.changeset["would_withdraw"]).to eq("Debian:13" => { "withdraw" => 4, "current" => 5, "records" => 1 })
+      expect(Advisories::Freshness.held_refresh).to eq(refused)
+      expect(WebMock).to have_requested(:get, url).once
+    ensure
+      described_class.queue_adapter = adapter
+    end
+
+    it "imports the same archive when an operator confirmed those counts" do
+      stub_feed
+      result = described_class.perform_now(allowed_withdrawals: { "Debian:13" => 4 })
+      expect(result.import).to have_attributes(state: "succeeded")
+      expect(result.import.counts["absent"]).to eq(4)
+      expect(Advisories::Freshness.held_refresh).to be_nil
+    end
+  end
 end

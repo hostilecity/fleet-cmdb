@@ -28,3 +28,11 @@
 <% else %>
   <p class="muted" id="advisory_freshness">Advisory data last updated: <%= safe_join(statuses.map { |status| safe_join([ tag.span(status.ecosystem, class: "mono"), " #{seen_ago(status.updated_at)}" ]) }, ", ") %>.</p>
 <% end %>
+<%# A feed refresh the withdrawal guard held back (review of #129): not a failed job, but the data stays as it was and may be going stale. %>
+<% if Advisories.config.feed_url && (held = Advisories::Freshness.held_refresh) %>
+  <% withdraw = held.counts["would_withdraw"] %>
+  <div class="notice" role="alert" id="advisory_held">
+    <strong>The last advisory refresh was held back.</strong>
+    <p>It would have marked <%= safe_join(withdraw.map { |ecosystem, w| safe_join([ number_with_delimiter(w["withdraw"].to_i), " of ", number_with_delimiter(w["current"].to_i), " ", tag.span(ecosystem, class: "mono") ]) }, ", ") %> advisories withdrawn (<%= utc(held.finished_at) %>), so nothing was imported and the data may be going stale. <%= link_to "Review the counts", advisory_import_path(held) %>.</p>
+  </div>
+<% end %>

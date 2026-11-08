@@ -57,6 +57,32 @@ module Advisories
       end
     end
 
+    # An operator's confirmation of a feed refresh the withdrawal guard refused (review of #129): downloads the
+    # feed again, as the same job, allowed to withdraw at most the refused counts per ecosystem. Not limited by
+    # the cool-down, since it answers one refusal and can be used once: the refusal is marked confirmed under the
+    # lock. Records a manual attempt (so the next "Refresh now" waits for the cool-down), audits
+    # advisory.withdrawals_confirmed with the counts, and returns the attempt; nil when it was confirmed already.
+    # The archive is downloaded again rather than kept (a full archive is larger than the upload store holds); the
+    # new download is held to the confirmed counts, so an archive that would withdraw more is refused again.
+    def confirm_withdrawals!(actor:, refused:, now: Time.current)
+      raise NotConfigured, "no advisory feed is configured (FLEET_ADVISORY_FEED_URL)" if Advisories.config.feed_url.nil?
+
+      AdvisoryRefreshAttempt.transaction do
+        lock!
+        refused.lock!
+        withdrawals = refused.counts["would_withdraw"]
+        next nil unless refused.origin == "feed" && refused.state == "held_back" && withdrawals.is_a?(Hash) && withdrawals.any? && !refused.counts["confirmed_at"]
+
+        allowed = withdrawals.transform_values { |w| w["withdraw"].to_i }
+        refused.update!(counts: refused.counts.merge("confirmed_at" => now.utc.iso8601, "confirmed_by" => actor.id))
+        attempt = AdvisoryRefreshAttempt.create!(kind: "manual", operator: actor, started_at: now)
+        Audit.record(actor:, action: Audit::Actions::ADVISORY_WITHDRAWALS_CONFIRMED, target: refused,
+                     changes: { "source" => refused.source, "refused_import_id" => refused.id, "withdrawals" => allowed })
+        ActiveRecord.after_all_transactions_commit { AdvisoryFeedRefreshJob.perform_later(attempt_id: attempt.id, allowed_withdrawals: allowed) }
+        attempt
+      end
+    end
+
     # When a manual refresh is next allowed, or nil when it is allowed now. Reads only.
     def next_allowed_at(now: Time.current)
       last = AdvisoryRefreshAttempt.maximum(:started_at)

@@ -37,6 +37,7 @@ module Audit
     RULE_DISABLED = "rule.disabled"
     ADVISORY_IMPORTED = "advisory.imported"
     ADVISORY_IMPORT_FAILED = "advisory.import_failed"
+    ADVISORY_IMPORT_HELD_BACK = "advisory.import_held_back"
     ADVISORY_REFRESH_REQUESTED = "advisory.refresh_requested"
     ADVISORY_REFRESH_REFUSED = "advisory.refresh_refused"
     ADVISORY_UPLOADED = "advisory.uploaded"
