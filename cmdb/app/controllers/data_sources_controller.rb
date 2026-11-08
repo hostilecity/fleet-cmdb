@@ -1,7 +1,7 @@
 # The Advisory data sources page (P2-D06, FR-2.4; approved mockups data-sources.html, data-sources-stale.html,
 # data-sources-import.html, and the refresh and full import confirmations in dialogs.html): where vulnerability
 # data comes from and how fresh it is, "Refresh now" with its cool-down (P2-S15), and uploading an advisory
-# file (P2-S10). Every change is audited with the signed-in operator as actor, by Advisories::ManualRefresh,
+# file (P2-S10), and the Debian Security Tracker's panel (P2-D08, TriageDataSources). Every change is audited with the signed-in operator as actor, by Advisories::ManualRefresh,
 # this controller (the upload), and Advisories::Import (its outcome).
 #
 # An upload is imported in the background (owner decision on #129): the file, at most MAX_UPLOAD_BYTES (the
@@ -34,6 +34,7 @@ class DataSourcesController < ApplicationController
     return redirect_to(data_sources_path(anchor: "feed")) if sources.refresh_allowed_at
 
     @source = sources.feed.source
+    @triage = !DebianTriage.config.tracker_url.nil?
   end
 
   # POST /data-sources/refresh. The server decides: a second refresh within the cool-down is refused here, with
@@ -42,7 +43,8 @@ class DataSourcesController < ApplicationController
     result = Advisories::ManualRefresh.request!(actor: current_operator)
     if result.accepted?
       redirect_to data_sources_path(anchor: "feed"),
-                  notice: "Refresh started. The download and import can take several minutes; the result appears under Recent imports."
+                  notice: "Refresh started. The download and import can take several minutes; the result appears under Recent imports." \
+                          "#{" Debian's triage is refreshed right after it." if result.triage}"
     else
       redirect_to data_sources_path(anchor: "feed"),
                   alert: "Refresh refused: a refresh started less than #{helpers.cooldown_words} ago. " \
@@ -115,6 +117,7 @@ class DataSourcesController < ApplicationController
     @last_attempt = @sources.last_attempt
     @imports = @sources.imports
     @failed_refreshes = @sources.failed_refreshes
+    @tracker = TriageDataSources.new
   end
 
   def refuse(message, field: :advisory_file)

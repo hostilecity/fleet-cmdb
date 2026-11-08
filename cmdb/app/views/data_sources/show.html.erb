@@ -3,7 +3,8 @@
     confirmation through it (keep-edits, as on the Agents page; review of #129). %>
 <%= turbo_refreshes_with method: :morph, scroll: :preserve %>
 <div class="page-head"><div><h1>Advisory data sources</h1><p>Where vulnerability data comes from, how fresh it is, and what the last imports did. Findings are only as current as this data.</p></div></div>
-<%= render "hosts/advisory_freshness", statuses: @statuses, here: true, failed_refreshes: @failed_refreshes %>
+<% triage_line = safe_join(@tracker.releases.filter_map { |row| triage_freshness_text(row.release, row.status) }.uniq, " ") %>
+<%= render "hosts/advisory_freshness", statuses: @statuses, here: true, failed_refreshes: @failed_refreshes, triage: triage_line.presence %>
 
 <section aria-labelledby="eco">
   <h2 id="eco" class="page-title">Freshness</h2>
@@ -121,3 +122,5 @@
     <p class="pager"><span>Showing the latest <%= pluralize(@imports.size, "import") %>.</span><span>Older imports are kept, and every import is in the <%= link_to "audit log", audit_path %>.</span></p>
   <% end %>
 </section>
+
+<%= render "data_sources/tracker", tracker: @tracker, feed_configured: @feed.source.present? %>

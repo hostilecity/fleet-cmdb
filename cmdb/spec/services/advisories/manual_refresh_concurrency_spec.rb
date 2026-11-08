@@ -50,7 +50,7 @@ RSpec.describe Advisories::ManualRefresh do
     expect(results.map(&:accepted?)).to contain_exactly(true, false)
     expect(results.find(&:refused?).next_allowed_at).to eq(now + 5.minutes)
     attempt = AdvisoryRefreshAttempt.sole
-    expect(AdvisoryFeedRefreshJob).to have_received(:perform_later).once.with(attempt_id: attempt.id)
+    expect(AdvisoryFeedRefreshJob).to have_received(:perform_later).once.with(attempt_id: attempt.id, triage: true)
     expect(AuditEntry.where(action: %w[advisory.refresh_requested advisory.refresh_refused]).pluck(:action))
       .to contain_exactly("advisory.refresh_requested", "advisory.refresh_refused")
   end

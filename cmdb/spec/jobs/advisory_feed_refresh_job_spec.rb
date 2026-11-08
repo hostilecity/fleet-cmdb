@@ -9,14 +9,18 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
   let(:token) { "TOKEN-SECRET-456" }
   let(:archive) { osv_zip("DSA-1-1.json" => osv_record(id: "DSA-1-1"), "DSA-2-1.json" => osv_record(id: "DSA-2-1", package: "curl")).binread }
 
+  # Debian's triage refresh after a manual refresh (P2-D08) is turned off here, except where a spec turns it on.
   around do |example|
     config = Advisories.config
     saved = config.to_h.slice(:feed_url, :feed_token)
+    saved_tracker = DebianTriage.config.tracker_url
     config.feed_url = url
     config.feed_token = token
+    DebianTriage.config.tracker_url = nil
     example.run
   ensure
     config.feed_url, config.feed_token = saved.values_at(:feed_url, :feed_token)
+    DebianTriage.config.tracker_url = saved_tracker
   end
 
   def secrets = [ "QUERY-SECRET-123", "TOKEN-SECRET-456" ]
@@ -284,6 +288,83 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
       expect(result.import).to have_attributes(state: "succeeded")
       expect(result.import.counts["absent"]).to eq(4)
       expect(Advisories::Freshness.held_refresh).to be_nil
+    end
+  end
+
+  # P2-D08, owner decision T2 on #134: the one "Refresh now" refreshes OSV and then Debian's triage, under the same
+  # cool-down and one audit entry; a tracker failure never changes the OSV refresh's outcome.
+  describe "Debian's triage after a manual refresh (P2-D08)" do
+    let(:operator) { create(:operator) }
+    let(:tracker) { "https://security-tracker.example.org/tracker/data/json" }
+    let(:document) { DebianTrackerHelpers::FIXTURES.join("sample.json").read }
+
+    before { DebianTriage.config.tracker_url = tracker }
+
+    def manual_refresh
+      perform_enqueued_jobs { Advisories::ManualRefresh.request!(actor: operator) }
+    rescue Minitest::UnexpectedError => e
+      e.error
+    end
+
+    it "refreshes the tracker right after the advisory data, attributed to the operator, under the one cool-down and audit entry" do
+      stub_feed
+      stub_request(:get, tracker).to_return(status: 200, body: document)
+      manual_refresh
+      osv = AdvisoryImport.sole
+      triage = TriageImport.sole
+      expect(osv).to have_attributes(state: "succeeded", operator:)
+      expect(triage).to have_attributes(state: "succeeded", origin: "feed", operator:)
+      expect(triage.started_at).to be >= osv.finished_at
+      expect(AdvisoryRefreshAttempt.sole).to have_attributes(kind: "manual", operator:)
+      expect(Advisories::ManualRefresh.next_allowed_at).to be_present
+      requested = AuditEntry.where(action: "advisory.refresh_requested").sole
+      expect(requested.changeset).to include("source" => "advisories.example.org/osv/Debian/all.zip", "triage_source" => "security-tracker.example.org/tracker/data/json")
+      expect(AuditEntry.order(:id).pluck(:action)).to eq(%w[advisory.refresh_requested advisory.imported advisory.triage_imported])
+      expect(AuditEntry.where(action: "advisory.triage_imported").sole).to have_attributes(actor_type: "operator", actor_id: operator.id)
+    end
+
+    it "keeps the advisory import's outcome when the tracker refresh fails" do
+      stub_feed
+      stub_request(:get, tracker).to_return(status: 503)
+      expect(manual_refresh).to be_a(Advisories::ManualRefresh::Result) # nothing raised to the OSV refresh
+      expect(a_request(:get, tracker)).to have_been_made.at_least_once
+      expect(AdvisoryImport.sole).to have_attributes(state: "succeeded", operator:)
+      expect(Advisory.count).to eq(2)
+      expect(AuditEntry.where(action: "advisory.import_failed")).to be_empty
+      # The tracker job retries and then fails on its own (debian_triage_refresh_job_spec.rb), as the operator's.
+      job = DebianTriageRefreshJob.new(operator_id: operator.id)
+      expect(job.give_up(Advisories::Feed::Unavailable.new("answered HTTP 503"))).to have_attributes(state: "failed", operator:)
+      expect(AdvisoryImport.sole).to have_attributes(state: "succeeded")
+    end
+
+    it "still refreshes the tracker after the advisory refresh fails for good, and after one that was not modified" do
+      stub_request(:get, url).to_return(status: 500)
+      stub_request(:get, tracker).to_return(status: 200, body: document)
+      manual_refresh
+      expect(AdvisoryImport.sole).to have_attributes(state: "failed", operator:)
+      expect(TriageImport.sole).to have_attributes(state: "succeeded", operator:)
+      expect(a_request(:get, tracker)).to have_been_made.once # once, not once per retry of the advisory refresh
+    end
+
+    it "does not refresh the tracker when it is turned off, after a scheduled run, or when it cannot be started" do
+      stub_feed
+      DebianTriage.config.tracker_url = nil
+      manual_refresh
+      expect(TriageImport.count).to eq(0)
+      expect(AuditEntry.where(action: "advisory.refresh_requested").sole.changeset).to include("triage_source" => nil)
+
+      DebianTriage.config.tracker_url = tracker
+      travel 10.minutes do
+        refresh # the schedule runs the tracker as its own job
+        expect(enqueued_jobs.map { |job| job["job_class"] }).not_to include("DebianTriageRefreshJob")
+        expect(TriageImport.count).to eq(0)
+      end
+
+      travel 20.minutes do
+        allow(DebianTriageRefreshJob).to receive(:perform_later).and_raise(ActiveJob::EnqueueError, "queue unavailable")
+        expect(manual_refresh).to be_a(Advisories::ManualRefresh::Result) # nothing raised
+        expect(AdvisoryImport.order(:id).last).to have_attributes(state: "succeeded", operator:)
+      end
     end
   end
 end

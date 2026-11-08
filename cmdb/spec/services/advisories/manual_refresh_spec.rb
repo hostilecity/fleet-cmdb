@@ -30,10 +30,24 @@ RSpec.describe Advisories::ManualRefresh do
       attempt = AdvisoryRefreshAttempt.sole
       expect(result).to have_attributes(accepted?: true, refused?: false, attempt:, next_allowed_at: now + 5.minutes)
       expect(attempt).to have_attributes(kind: "manual", operator:, started_at: now)
-      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id)
+      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id, triage: true)
       entry = AuditEntry.sole
       expect(entry).to have_attributes(action: "advisory.refresh_requested", actor_type: "operator", actor_id: operator.id, target_type: nil)
-      expect(entry.changeset).to eq("source" => "advisories.example.org/osv/Debian/all.zip", "next_allowed_at" => "2026-11-07T08:06:00Z")
+      expect(entry.changeset).to eq("source" => "advisories.example.org/osv/Debian/all.zip", "triage_source" => "security-tracker.debian.org/tracker/data/json",
+                                    "next_allowed_at" => "2026-11-07T08:06:00Z")
+    end
+
+    it "refreshes Debian's triage right after, under the same cool-down and audit entry, unless the tracker is turned off (P2-D08, T2)" do
+      expect(request).to have_attributes(accepted?: true, triage: true)
+      saved = DebianTriage.config.tracker_url
+      DebianTriage.config.tracker_url = nil
+      later = request(at: now + 5.minutes)
+      expect(later).to have_attributes(accepted?: true, triage: false)
+      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: later.attempt.id, triage: false)
+      expect(AuditEntry.where(action: "advisory.refresh_requested").order(:id).last.changeset).to include("triage_source" => nil)
+      expect(request(at: now + 6.minutes)).to have_attributes(refused?: true, triage: false) # the one cool-down covers both
+    ensure
+      DebianTriage.config.tracker_url = saved
     end
 
     it "refuses a second manual refresh within the cool-down with the time it is next allowed, audited, and starts nothing" do

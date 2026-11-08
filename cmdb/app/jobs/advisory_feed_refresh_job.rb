@@ -21,6 +21,11 @@
 # The Data sources page and the freshness notice warn about it, and an operator can confirm the counts
 # (Advisories::ManualRefresh.confirm_withdrawals!), which downloads the feed again with withdrawals allowed up to
 # them (allowed_withdrawals).
+#
+# A manual refresh with triage: true (Advisories::ManualRefresh, P2-D08, owner decision T2 on #134) then refreshes
+# Debian's triage: once this refresh is done, whatever its outcome (imported, not modified, held back, or failed
+# after its last attempt), it enqueues DebianTriageRefreshJob once, attributed to the same operator. That job's
+# failures are its own: they never change this refresh's outcome, and enqueueing it never fails this job.
 class AdvisoryFeedRefreshJob < ApplicationJob
   queue_as :default
 
@@ -32,7 +37,8 @@ class AdvisoryFeedRefreshJob < ApplicationJob
   # attempt_id: the manual attempt Advisories::ManualRefresh.request! recorded. kind: what to record a run
   # without one as ("scheduled", or "task" from bin/rails advisories:refresh). allowed_withdrawals: per
   # ecosystem, how many advisories an operator confirmed this refresh may withdraw ({ "Debian:13" => 41 }).
-  def perform(attempt_id: nil, kind: "scheduled", allowed_withdrawals: {})
+  def perform(attempt_id: nil, kind: "scheduled", allowed_withdrawals: {}, triage: false)
+    @triage = triage == true
     @allowed_withdrawals = allowed_withdrawals.to_h.transform_keys(&:to_s)
     feed = Advisories::Feed.new
     if feed.url.nil?
@@ -55,10 +61,12 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     download = feed.fetch(etag: last&.etag, last_modified: last&.last_modified)
     result = download.not_modified? ? not_modified(last) : import(download)
     logger.info("[advisories] feed refresh from #{@source} succeeded: #{result.import.counts.to_json}")
+    refresh_triage
     result
   rescue Advisories::Import::WithdrawalsRefused => e
     logger.warn("[advisories] feed refresh from #{@source} refused, nothing imported: #{e.message}")
     import = Advisories::Import.record_held_back(e, origin: "feed", source: @source, full: true, operator: @operator)
+    refresh_triage
     Advisories::Import::Result.new(import:, changed_packages: {})
   rescue Advisories::Feed::Unavailable, Advisories::Unreadable => e
     logger.warn("[advisories] feed refresh failed (attempt #{executions} of #{ATTEMPTS}): #{e.message}")
@@ -85,9 +93,22 @@ class AdvisoryFeedRefreshJob < ApplicationJob
     attempts = [ executions, 1 ].max
     logger.error("[advisories] feed refresh failed after #{attempts} #{'attempt'.pluralize(attempts)}: #{reason}")
     Advisories::Import.record_failure(origin: "feed", source: @source || Advisories::Feed.new.source, reason:, full: true, operator: @operator)
+  ensure
+    refresh_triage
   end
 
   private
+
+  # The tracker refresh after a manual refresh that asked for it, once. Never raises: the OSV refresh's outcome
+  # stands whatever happens here.
+  def refresh_triage
+    return unless @triage && !@triage_enqueued
+
+    @triage_enqueued = true
+    DebianTriageRefreshJob.perform_later(operator_id: @operator&.id)
+  rescue StandardError => e
+    logger.error("[advisories] could not start the Debian triage refresh after the feed refresh: #{e.class.name}: #{e.message}")
+  end
 
   def import(download)
     Advisories::Import.new(origin: "feed", source: @source, full: true, operator: @operator, etag: download.etag, last_modified: download.last_modified,

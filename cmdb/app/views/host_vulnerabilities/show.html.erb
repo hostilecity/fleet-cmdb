@@ -1,7 +1,13 @@
 <%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :vulnerabilities %>
-<%= render "hosts/advisory_freshness", statuses: @freshness %>
+<% triage_line = triage_freshness_text(@triage_release, @triage_status) %>
+<%= render "hosts/advisory_freshness", statuses: @freshness, triage: (safe_join([ triage_line, " ", link_to("Data sources", data_sources_path(anchor: "tracker")) ]) if triage_line) %>
+<%# Debian's triage is out of date (T8): a status, not an alert, since no finding, severity, or count depends on it. %>
+<% if triage_stale?(@triage_status) %>
+  <div class="notice info" role="status" id="triage_stale"><strong>Debian's triage is out of date, so it is not shown.</strong>
+    <p>Tracker data for <span class="mono"><%= @triage_release %></span> was last imported <%= seen_ago(@triage_status.updated_at) %> (<%= utc(@triage_status.updated_at) %>). Findings, severity, and counts come from the advisory data and are not affected. <%= link_to "See the data sources", data_sources_path(anchor: "tracker") %>.</p></div>
+<% end %>
 <% evaluated = @evaluation && !@evaluation.not_evaluated? %>
-<% filtered = @severity || @query.present? %>
+<% filtered = @severity || @query.present? || @debian %>
 <% unless evaluated %>
   <%= render "host_vulnerabilities/not_evaluated", host: @host, evaluation: @evaluation, context: @context, open_count: @state_counts["open"] %>
 <% end %>
@@ -23,8 +29,15 @@
       <li><%= link_to vulnerabilities_host_path(@host, { state: (state unless state == "open"), severity: @severity, q: @query.presence }.compact), "aria-current": (@state == state ? "true" : nil) do %><%= label %> <span class="n"><%= @state_counts[state] %></span><% end %></li>
     <% end %>
   </ul>
+  <% if @state == "open" %>
+    <%# Findings whose tracker entry has a no-DSA note of any reason: none, postponed, or ignored (T3). Counted within the state filter. %>
+    <ul class="chips triage-filter" aria-label="Filter findings by Debian's triage: no-DSA, postponed, or ignored" id="triage_filter">
+      <li><%= link_to vulnerabilities_host_path(@host, { severity: @severity, q: @query.presence, debian: ("no_dsa" unless @debian) }.compact), "aria-current": (@debian ? "true" : nil) do %>Debian: no security update planned <span class="n"><%= @no_dsa_count %></span><% end %></li>
+    </ul>
+  <% end %>
   <%= form_with url: vulnerabilities_host_path(@host), method: :get, class: "filters", role: "search", id: "finding_filters", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
     <% if @state != "open" %><%= hidden_field_tag :state, @state, id: nil %><% end %>
+    <% if @debian %><%= hidden_field_tag :debian, @debian, id: nil %><% end %>
     <label>Severity<%= select_tag :severity, options_for_select([ [ "All severities", "" ] ] + Advisory::SEVERITIES.map { |s| [ s.capitalize, s ] }, @severity) %></label>
     <label>Package or advisory<%= search_field_tag :q, @query, placeholder: "openssl or DSA-1234-1", maxlength: HostVulnerabilitiesController::QUERY_MAX %></label>
     <button class="btn quiet" type="submit">Apply</button>
@@ -34,13 +47,17 @@
       <p class="muted">Evaluated <%= utc(@evaluation.evaluated_at) %>: <%= pluralize(number_with_delimiter(@package_set&.package_count.to_i), "package") %> matched against <%= pluralize(number_with_delimiter(@advisory_count), "#{@evaluation.ecosystem} advisory", plural: "#{@evaluation.ecosystem} advisories") %>. <%= pluralize(@state_counts["resolved"], "resolved finding") %>.</p></div>
   <% end %>
   <% if @state != "resolved" && (@open_groups.any? || @state_counts["open"].positive? || filtered) %>
+    <% if @triage && @triage_release && @open_groups.any? %>
+      <p class="triage-legend" id="triage_legend"><span class="triage"><span class="who">Debian:</span> &hellip;</span> lines are the Debian security team's own note for this host's release (<span class="mono"><%= @triage_release %></span>), from the Debian Security Tracker. They are shown beside the finding and never change its severity, its state, or any count: a finding stays open until the installed version is outside the affected range.</p>
+    <% end %>
     <section aria-labelledby="open_heading" id="open_findings">
       <% open = @open_groups.flat_map(&:findings) %>
       <h2 id="open_heading">Open findings <span class="muted"><%= open.size %><%= ": #{severity_counts(open.map { |f| f.advisory.severity }.tally.sort_by { |s, _| Advisory::SEVERITIES.index(s) })}" if open.any? %></span></h2>
       <% if @open_groups.empty? %>
         <p class="muted">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
       <% else %>
-        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_groups, caption: "Open and reopened vulnerability findings", id: "open_list" %>
+        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_groups, caption: "Open and reopened vulnerability findings", id: "open_list",
+                                                  triage: @triage, triage_status: @triage_status, triage_os: @triage_os %>
       <% end %>
     </section>
   <% end %>
