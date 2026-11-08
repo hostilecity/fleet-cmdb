@@ -35,7 +35,7 @@ Names below are placeholders:
 | The VM: Linux with Docker, port 80 free | `docker version`; `ss -ltn 'sport = :80'` prints only the header |
 | A deploy user on the VM in the `docker` group (equivalent to root on the VM) | `ssh deploy@192.0.2.10 docker ps` works without `sudo` |
 | The existing PostgreSQL container on its Docker network, reachable there as `postgres` (or another name: `FLEET_DB_HOST`), with the role `cmdb` owning `cmdb_production`, `cmdb_production_cache`, `cmdb_production_queue`, and `cmdb_production_cable` | `docker network ls` shows the network; `docker run --rm --network postgres_default postgres:17 pg_isready -h postgres` prints `accepting connections` |
-| A self-hosted GitHub Actions runner on the LAN, registered for this repository, with `bash`, `git`, and `ssh`, that can reach the VM on port 22 | **Settings > Actions > Runners** shows it **Idle** |
+| A self-hosted GitHub Actions runner on the LAN, registered for this repository, with `bash`, `ssh`, and `tar` (`git` is not needed), that can reach the VM on port 22 | **Settings > Actions > Runners** shows it **Idle** |
 | A Cloudflare tunnel with its connector on the tunnel VM, and Cloudflare Access | The tunnel shows **Healthy** in Zero Trust |
 | A Google Cloud project, for the operators' sign-in | |
 
@@ -94,7 +94,7 @@ In **Zero Trust > Access > Applications**, add a **Self-hosted** application for
 
 ## 4. Deploy
 
-Open **Actions > Deploy > Run workflow**, pick branch `main`, and leave **ref** empty. The first run takes a few minutes, because the image builds on the VM. The log shows:
+Open **Actions > Deploy > Run workflow**, pick branch `main` (a run from any other branch is skipped). The first run takes a few minutes, because the image builds on the VM. The log shows:
 1. the commit;
 2. `database network postgres_default exists` and the build;
 3. `wait for /up` (the first start migrates the databases);
@@ -128,7 +128,7 @@ Release files and the backup status file are in the Docker volume `fleet-cmdb_st
 
 - **Upgrade:** merge to `main`. With `DEPLOY_ON_PUSH=true` the push deploys; otherwise run the workflow. Migrations run on start (`db:prepare`).
 - **Change a setting:** change the secret or variable in GitHub, then run the workflow.
-- **Roll back:** run the workflow with **ref** set to an earlier commit of `main` (`git log --oneline origin/main`), or **Re-run all jobs** on that commit's earlier Deploy run. If the newer version migrated the database, the old code may not run on it: that needs a backup (a later issue).
+- **Roll back:** open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: that needs a backup (a later issue).
 - Two deploys never overlap; a second one waits.
 
 ## Security notes

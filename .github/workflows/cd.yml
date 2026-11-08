@@ -1,20 +1,17 @@
 # Deploy (P1-O03): builds and runs the server on its VM (docs/operations/install-server.md). On a self-hosted runner
-# on the LAN it connects to the VM over SSH, ships the commit (git archive), builds the image there, and replaces the
+# on the LAN it connects to the VM over SSH, ships the commit's cmdb/ and docs/api/ (tar), builds the image there, and replaces the
 # fleet-cmdb container, which joins the existing PostgreSQL container's Docker network and publishes port 80 for the
 # Cloudflare tunnel. Settings come from the "production" environment; secret values travel only on SSH standard
 # input into a mode-0600 env file for `docker run --env-file`, never on a command line.
 #
-# Runs when started by hand (Actions > Deploy > Run workflow; give an earlier commit of main to roll back), and on
-# every push to main only once the repository variable DEPLOY_ON_PUSH is "true".
+# Runs when started by hand on main (Actions > Deploy > Run workflow), and on every push to main only once the
+# repository variable DEPLOY_ON_PUSH is "true". It deploys the run's own commit (GITHUB_SHA), so to roll back,
+# re-run an earlier Deploy run (it redeploys its commit) or revert on main. The runner needs bash, ssh and tar, not
+# git: actions/checkout downloads the commit through the API when git is missing.
 name: Deploy
 
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Commit of main to deploy (for a rollback). Empty: the head of the selected branch."
-        required: false
-        default: ""
   push:
     branches: [main]
 
@@ -32,7 +29,8 @@ defaults:
 jobs:
   deploy:
     name: Deploy to the server
-    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_ON_PUSH == 'true'
+    # Only main is ever deployed: a manual run started from another branch is skipped.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.DEPLOY_ON_PUSH == 'true')
     runs-on: self-hosted
     environment: production
     timeout-minutes: 30
@@ -44,19 +42,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # the commit may be older than the branch head, and must be on main
           persist-credentials: false
 
-      - name: Choose the commit and check the deploy settings
-        env:
-          REQUESTED_REF: ${{ inputs.ref }}
+      - name: Check the deploy settings
         run: |
-          ref="${REQUESTED_REF:-HEAD}"
-          [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "::error::not a commit: $ref"; exit 1; }
-          sha="$(git rev-parse --verify --end-of-options "$ref^{commit}")"
-          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$sha is not on main"; exit 1; }
-          echo "DEPLOY_SHA=$sha" >> "$GITHUB_ENV"
-          echo "Deploying $(git log -1 --format='%h %s' "$sha")"
+          echo "DEPLOY_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "Deploying $GITHUB_SHA"
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]] || { echo "::error::set the variable DEPLOY_HOST"; exit 1; }
           [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "::error::set the variable DEPLOY_USER"; exit 1; }
           [[ "$DEPLOY_DIR" =~ ^[A-Za-z0-9._/-]+$ && "$DEPLOY_DIR" != *..* ]] || { echo "::error::DEPLOY_DIR is not a plain path"; exit 1; }
@@ -78,7 +69,7 @@ jobs:
 
       - name: Ship the code
         run: |
-          git archive --format=tar "$DEPLOY_SHA" | ssh -F "$SSH_CONFIG" server \
+          tar -cf - cmdb docs/api | ssh -F "$SSH_CONFIG" server \
             "rm -rf '$DEPLOY_DIR/build-$DEPLOY_SHA' && mkdir -p '$DEPLOY_DIR/build-$DEPLOY_SHA' && tar -xf - -C '$DEPLOY_DIR/build-$DEPLOY_SHA'"
 
       - name: Write the app's env file on the server
