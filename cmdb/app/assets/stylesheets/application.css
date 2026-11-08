@@ -157,6 +157,7 @@ ins { text-decoration: none; background: #dcefdf; color: #1d5a2b; padding: 0 0.1
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .flash { margin: 0 0 1.25rem; }
 .sign-in { max-width: 28rem; margin: 3rem auto; }
+.sign-in-logo { display: block; margin: 0 0 1rem; }
 .empty { padding: 1.5rem 1.25rem; }
 .empty p:first-child { margin-top: 0; }
 form.inline { display: inline; }
