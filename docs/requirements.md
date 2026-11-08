@@ -70,7 +70,7 @@ agent/            # Rust agent
 
 - The Rails server runs in Docker on one homelab machine and is reachable by agents on the local network. (decided, DEC-05)
 - The dashboard is published to the operator through a Cloudflare tunnel, which terminates TLS, with Cloudflare Access in front of it. (decided, DEC-05)
-- The **agent API is private**: it is served only on a separate hostname that resolves to a private address, with its own Let's Encrypt certificate (DNS-01 through Cloudflare), and is never routed through the tunnel. Rails enforces this with host-based route constraints, so dashboard routes answer only on the dashboard hostname and `/api/v1` only on the agent hostname. (decided, DEC-05)
+- The **agent API is private**: it is served only on a separate hostname that resolves to a private address, and is never routed through the tunnel. The server serves HTTPS on that hostname with a Cloudflare Origin CA certificate, which the tunnel also connects to, and agents trust Cloudflare's Origin CA roots compiled into their build (decided, ADR 0024, superseding the Let's Encrypt certificate). Rails enforces this with host-based route constraints, so dashboard routes answer only on the dashboard hostname and `/api/v1` only on the agent hostname. (decided, DEC-05)
 - Each agent runs as a systemd service on a Debian VM; the fleet profile is Debian 13 on x86_64 with systemd and dpkg/apt. Other distributions and architectures are out of scope until the owner adds them. (decided, DEC-01)
 - Time on the server is authoritative for `last_seen_at` and all audit timestamps. Agent-reported times are stored separately and never trusted for liveness.
 
@@ -326,7 +326,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 
 ### NFR-1 Security
 
-- All agent–server traffic uses HTTPS; the agent verifies the server certificate and does not offer a mode that disables verification.
+- All agent–server traffic uses HTTPS; the agent verifies the server certificate against Debian's system store, the certificate authorities compiled into its signed build (Cloudflare's Origin CA roots, ADR 0024), and an optional `ca_file`, and does not offer a mode that disables verification.
 - Dashboard sessions use secure, HTTP-only cookies. The OAuth flow validates `state` and the ID token, and only verified email addresses on the allowlist can sign in. The dashboard sends a restrictive Content Security Policy.
 - All agent input is treated as untrusted and validated before storage or display. Inventory and output text rendered in the dashboard is escaped, so a compromised VM cannot inject markup into an operator's browser.
 - Secrets — agent credentials, enrollment tokens, onboarding device codes, operator credentials, advisory source keys — never appear in logs or error messages. Agent credentials and enrollment tokens are shown to the operator at most once; onboarding shows no secret to any person.

@@ -1,6 +1,6 @@
 # ADR 0005: Hosting, TLS, and deployment
 
-- Status: Accepted (owner, first requirements review)
+- Status: Accepted (owner, first requirements review); deployment superseded by [ADR 0023](0023-deploy-with-github-actions.md), the agent hostname's certificate by [ADR 0024](0024-cloudflare-origin-ca-for-the-server.md)
 - Decision issue: DEC-05
 - Requirements: `docs/requirements.md`
 
