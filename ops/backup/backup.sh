@@ -10,15 +10,7 @@
 # fails part-way therefore leaves the status file alone and /health turns unhealthy once it is old enough.
 #
 # Needs pg_dump, pg_restore, psql, tar, sha256sum. The database is reached with the standard libpq variables
-# (PGHOST, PGPORT, PGUSER, PGPASSWORD or PGPASSFILE, PGDATABASE is ignored: see BACKUP_DB_NAME).
-#
-# A PostgreSQL container that publishes no port (an existing PostgreSQL Compose project): set FLEET_DB_NETWORK to its
-# Docker network and PGHOST to its name there. The script then checks BACKUP_DIR on this machine and runs itself in
-# a throwaway BACKUP_IMAGE container on that network, with the same paths mounted, so this machine needs Docker
-# but no PostgreSQL client, and the PostgreSQL project needs no change. PGPASSFILE is not passed in this mode.
-#
-#   FLEET_DB_NETWORK         optional: the database container's Docker network (see above)
-#   BACKUP_IMAGE             default postgres:17: its pg_dump must be the server's major version or newer
+# (PGHOST, PGUSER, PGPASSWORD or PGPASSFILE, PGDATABASE is ignored: see BACKUP_DB_NAME).
 #
 #   BACKUP_DIR               required: an off-machine location mounted here (NFS, SMB, sshfs, a rclone mount). The
 #                            script refuses a directory that is not a mount point unless BACKUP_ALLOW_LOCAL=1.
@@ -43,24 +35,6 @@ keep_min="${BACKUP_KEEP_MIN:-3}"
 [ -d "$BACKUP_DIR" ] || die "BACKUP_DIR $BACKUP_DIR does not exist"
 if [ "${BACKUP_ALLOW_LOCAL:-}" != 1 ] && ! mountpoint -q "$BACKUP_DIR"; then
   die "BACKUP_DIR $BACKUP_DIR is not a mount point, so it may be on this machine. Mount the off-machine location there (or set BACKUP_ALLOW_LOCAL=1 for a test)"
-fi
-
-# In a container on the database's network (see the top). BACKUP_DIR was checked above, on this machine: inside the
-# container every bind mount is a mount point, so the check is skipped there.
-if [ -n "${FLEET_DB_NETWORK:-}" ] && [ "${BACKUP_IN_CONTAINER:-}" != 1 ]; then
-  ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  status_dir="$(dirname "$FLEET_BACKUP_STATUS_FILE")"
-  mkdir -p "$status_dir"
-  mounts=(-v "$ops:$ops:ro" -v "$BACKUP_DIR:$BACKUP_DIR" -v "$status_dir:$status_dir")
-  # Only an existing release directory: Docker would otherwise create it, owned by root, and the app could not
-  # write to it. Without it the script below fails if the database names releases, as it does on this machine.
-  if [ -d "$FLEET_RELEASES_DIR" ]; then mounts+=(-v "$FLEET_RELEASES_DIR:$FLEET_RELEASES_DIR:ro"); fi
-  log "running in ${BACKUP_IMAGE:-postgres:17} on the Docker network $FLEET_DB_NETWORK"
-  # -e NAME passes a variable only if it is set here, and never puts its value on the command line.
-  exec docker run --rm --network "$FLEET_DB_NETWORK" "${mounts[@]}" \
-    -e BACKUP_IN_CONTAINER=1 -e BACKUP_ALLOW_LOCAL=1 -e BACKUP_DIR -e FLEET_RELEASES_DIR -e FLEET_BACKUP_STATUS_FILE \
-    -e BACKUP_DB_NAME -e BACKUP_RETENTION_DAYS -e BACKUP_KEEP_MIN -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD \
-    -e PGSSLMODE --entrypoint bash "${BACKUP_IMAGE:-postgres:17}" "$ops/backup.sh"
 fi
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"

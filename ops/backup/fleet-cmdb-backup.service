@@ -1,8 +1,6 @@
 [Unit]
 Description=fleet-cmdb backup (P1-O01)
-Wants=network-online.target
-# docker.service matters only when FLEET_DB_NETWORK is set (backup.sh runs pg_dump in a container then).
-After=network-online.target docker.service
+After=network-online.target
 
 [Service]
 Type=oneshot

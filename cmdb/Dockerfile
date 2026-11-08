@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # check=error=true
 
-# This Dockerfile is designed for production, not development. The deployment is ../compose.yaml, which builds
-# it (docs/operations/install-server.md). To build it alone, from cmdb/, with the agent API schemas from docs/api
-# passed in as a named build context (they are read at runtime; P1-API-AUTH):
+# This Dockerfile is designed for production, not development. .github/workflows/cd.yml builds and runs it on the
+# server (docs/operations/install-server.md). Build it from cmdb/ with the agent API schemas from docs/api passed in
+# as a named build context (they are read at runtime; P1-API-AUTH):
 # docker build --build-context api=../docs/api -t cmdb .
 
 # For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
@@ -49,6 +49,9 @@ RUN bundle install && \
 
 # Copy application code
 COPY . .
+# Persistent data (release files, the backup status file) lives under storage/, a volume in the deployment. Created
+# here so a new volume starts owned by the app user.
+RUN mkdir -p storage/releases storage/backup
 
 # Agent API JSON Schemas, the single source of truth in docs/api (named build context "api").
 COPY --from=api schemas ./api-schemas
@@ -82,7 +85,7 @@ ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 
 # Puma directly, not through Thruster (P1-O03): HostSeparation trusts X-Forwarded-* headers only from the proxy
 # that connected, and behind Thruster every request would come from loopback, which is always trusted. TLS is
-# terminated in front of the app (Traefik for the agent hostname, the Cloudflare tunnel for the dashboard).
+# terminated in front of the app (the Cloudflare tunnel for the dashboard).
 ENV PORT="3000"
 EXPOSE 3000
 CMD ["./bin/rails", "server"]
