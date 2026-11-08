@@ -35,7 +35,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - Execute every Phase 2 acceptance criterion on the designated test VM, with evidence.
 - The 72-hour agent soak ([P2-SOAK](p2-soak.md)) is not part of this acceptance: the owner moved it to later testing (2026-11-08). The delivery note lists it as not done, with the soak tooling's checked state from [P1-A09](p1-verify.md).
-- Confirm migrations run forward from the Phase 1 database and the whole suite (Phase 1 included) passes in a clean CI run.
+- Confirm the whole suite (Phase 1 included) passes in a clean CI run and the database builds from empty. Migrating a Phase 1 database forward is not checked: the owner rebuilds the test VM from scratch (2026-11-08).
 - Update documentation: new agent options, rule import, advisory import and refresh, new operator workflows.
 - Confirm nothing out of scope (no remediation) and nothing from Phase 3 was added.
 - Delivery note posted on the Phase 2 acceptance issue: what was built, tested, left incomplete, DEC defaults used, and the AC-to-proof table.

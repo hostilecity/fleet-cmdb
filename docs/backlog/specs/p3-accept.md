@@ -5,7 +5,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 ## Scope
 
 - Execute every Phase 3 acceptance criterion on a **disposable** test VM, with evidence.
-- Confirm Phase 1 and Phase 2 suites still pass and migrations run forward cleanly. Earlier golden fixtures and agents are not checked (NFR-5: backward compatibility starts after Phase 3).
+- Confirm Phase 1 and Phase 2 suites still pass and the database builds from empty. Earlier golden fixtures and agents are not checked (NFR-5: backward compatibility starts after Phase 3).
 - Update documentation: enabling task types on an agent, allowlists, operator workflow, recovery from a half-configured package database, and the privilege model.
 - Confirm no remote shell, arbitrary command path, automatic reboot, or out-of-scope feature exists.
 - Delivery note on the Phase 3 acceptance issue: built, tested, incomplete, DEC defaults used, the AC-to-proof table, the per-task privilege table, and the AC-3.2 review note ([P3-X01](p3-security.md)).
