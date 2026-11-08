@@ -1,8 +1,12 @@
-# Deploy CI (P1-O03, P1-O01): checks the Docker Compose deployment. Lints the deployment and backup scripts, then
-# runs ops/deploy/smoke-test.sh, which follows docs/operations/install-server.md with throwaway settings: build and
-# start the stack, check the agent and dashboard hostname separation, back up, run the restore drill, and rebuild the
-# stack from the backup. The Cloudflare tunnel, Access, and a trusted Let's Encrypt certificate need real accounts and
-# are not covered here.
+# Deploy CI (P1-O03, P1-O01): checks the Docker Compose deployment. Lints the deployment and backup scripts and the
+# workflows, then runs ops/deploy/smoke-test.sh in both layouts of docs/operations/install-server.md, with throwaway
+# settings:
+#   bundled   the all-in-one stack (compose.yaml + compose.bundled.yaml): build and start it, check the agent and
+#             dashboard hostname separation, back up, run the restore drill, and rebuild the stack from the backup;
+#   external  the production layout (compose.yaml alone) against a PostgreSQL container on a Docker network created
+#             on the fly, deployed by ops/deploy/write-env.sh and ops/deploy/deploy.sh as .github/workflows/deploy.yml
+#             does on the server: separation through both Traefik entrypoints, a containerised backup, and the drill.
+# The Cloudflare tunnel, Access, and a trusted Let's Encrypt certificate need real accounts and are not covered here.
 #
 # Branch protection may require the "Deploy CI" job. It always runs and passes when nothing it checks changed.
 name: Deploy CI
@@ -33,19 +37,20 @@ jobs:
         with:
           filters: |
             deploy:
-              - 'compose.yaml'
+              - 'compose*.yaml'
               - '.env.example'
               - 'ops/**'
               - 'cmdb/**'
               - 'docs/api/**'
               - '.github/workflows/deploy-ci.yml'
+              - '.github/workflows/deploy.yml'
 
-  smoke:
-    name: Compose smoke test
+  lint:
+    name: Lint scripts and workflows
     needs: changes
     if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,7 +59,31 @@ jobs:
       - name: shellcheck
         run: shellcheck ops/deploy/*.sh ops/backup/*.sh
 
+      - name: actionlint (also shellchecks the workflows' run scripts)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/deploy.yml .github/workflows/deploy-ci.yml
+
+  smoke:
+    name: Compose smoke test (${{ matrix.layout }})
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        layout: [bundled, external]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Install the PostgreSQL 17 client (backup.sh runs on the host, against PostgreSQL 17)
+        if: matrix.layout == 'bundled'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-common
@@ -63,19 +92,24 @@ jobs:
           /usr/lib/postgresql/17/bin/pg_dump --version
 
       - name: Smoke test
-        run: sudo env "PATH=/usr/lib/postgresql/17/bin:$PATH" DEPLOY_SMOKE_DISPOSABLE=yes ops/deploy/smoke-test.sh
+        env:
+          LAYOUT: ${{ matrix.layout }}
+        run: sudo env "PATH=/usr/lib/postgresql/17/bin:$PATH" DEPLOY_SMOKE_DISPOSABLE=yes ops/deploy/smoke-test.sh "$LAYOUT"
 
   gate:
     name: Deploy CI
-    needs: [changes, smoke]
+    needs: [changes, lint, smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check result
         env:
           CHANGES: ${{ needs.changes.result }}
+          LINT: ${{ needs.lint.result }}
           SMOKE: ${{ needs.smoke.result }}
         run: |
-          echo "changes=$CHANGES smoke=$SMOKE"
+          echo "changes=$CHANGES lint=$LINT smoke=$SMOKE"
           if [ "$CHANGES" != "success" ]; then exit 1; fi
-          if [ "$SMOKE" = "failure" ] || [ "$SMOKE" = "cancelled" ]; then exit 1; fi
+          for result in "$LINT" "$SMOKE"; do
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then exit 1; fi
+          done

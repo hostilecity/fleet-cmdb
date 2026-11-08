@@ -1,0 +1,69 @@
+# The all-in-one layout (P1-O03): adds PostgreSQL and the Cloudflare tunnel connector on this machine to
+# compose.yaml. Selected by COMPOSE_FILE=compose.yaml:compose.bundled.yaml in .env (as in .env.example), so plain
+# `docker compose ...` commands use both files. Install guide: docs/operations/install-server.md (all-in-one).
+#
+# Services added:
+#   db           PostgreSQL 17, reachable as "postgres" on the database network (FLEET_DB_HOST's default). Its port
+#                is published on 127.0.0.1 only, for ops/backup/backup.sh on this machine.
+#   cloudflared  The Cloudflare tunnel connector for the PUBLIC dashboard hostname only. It dials out to Cloudflare;
+#                nothing is published on this machine for it. It reaches the app on its own "tunnel" network, which
+#                Rails does not trust for X-Forwarded-*: cloudflared passes on headers a browser sent.
+#
+# The database network is created by this project here instead of being an existing one.
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cmdb
+      POSTGRES_PASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
+    volumes:
+      - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${FLEET_DB_PORT:-5432}:5432"
+    networks:
+      database:
+        aliases: [postgres]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cmdb", "-d", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  app:
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [database, agent-proxy, tunnel]
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.7
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    networks: [tunnel]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  restore-drill:
+    depends_on:
+      db:
+        condition: service_healthy
+
+networks:
+  database:
+    external: false
+  tunnel:

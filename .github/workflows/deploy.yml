@@ -1,0 +1,193 @@
+# Deploy (P1-O03): deploys the server to its machine, for the layout with an existing PostgreSQL container and a
+# Cloudflare tunnel on another machine (docs/operations/install-server.md, "Existing PostgreSQL, deployed by GitHub
+# Actions"). On a self-hosted runner on the same network, it connects to the server over SSH, ships the commit
+# (git archive, not the runner's workspace), writes .env from the "production" environment's secrets and
+# variables over SSH standard input (mode 0600, never on a command line or in the log), and runs
+# ops/deploy/deploy.sh there, which builds the image on the server, starts the stack, and checks its health.
+#
+# Runs when started by hand (Actions > Deploy > Run workflow; give a commit of main to roll back), and on every push
+# to main only once the repository variable DEPLOY_ON_PUSH is "true". The CI smoke test is deploy-ci.yml.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit to deploy, for a rollback (a SHA on main). Empty: the head of the branch selected above."
+        required: false
+        default: ""
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One deploy at a time; a deploy that has started is never cancelled by a newer one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail
+
+jobs:
+  deploy:
+    name: Deploy to the server
+    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_ON_PUSH == 'true'
+    runs-on: self-hosted
+    environment: production
+    timeout-minutes: 30
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/fleet-cmdb' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the commit to deploy may be older than the branch head, and must be on main
+          persist-credentials: false
+
+      - name: Choose the commit
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: |
+          ref="${REQUESTED_REF:-HEAD}"
+          if [[ ! "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then echo "::error::not a commit or ref: $ref"; exit 1; fi
+          sha="$(git rev-parse --verify --end-of-options "$ref^{commit}")"
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::$sha is not on main: only commits of main are deployed"
+            exit 1
+          fi
+          echo "DEPLOY_SHA=$sha" >> "$GITHUB_ENV"
+          echo "Deploying $(git log -1 --format='%h %s' "$sha")"
+
+      - name: Check the deploy settings
+        run: |
+          missing=()
+          [ -n "$DEPLOY_HOST" ] || missing+=(DEPLOY_HOST)
+          [ -n "$DEPLOY_USER" ] || missing+=(DEPLOY_USER)
+          if [ "${#missing[@]}" -gt 0 ]; then echo "::error::set the variables ${missing[*]} in the production environment"; exit 1; fi
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.:-]*[A-Za-z0-9])?$ ]] || { echo "::error::DEPLOY_HOST is not a hostname or address"; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "::error::DEPLOY_USER is not a user name"; exit 1; }
+          # An absolute path of at least two parts, so a mistake cannot point it at / or a top-level directory.
+          [[ "$DEPLOY_DIR" =~ ^(/[A-Za-z0-9._-]+){2,}$ && "$DEPLOY_DIR" != *..* ]] \
+            || { echo "::error::DEPLOY_DIR must be an absolute path like /opt/fleet-cmdb"; exit 1; }
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [ -n "$SSH_PRIVATE_KEY" ] || { echo "::error::set the secret SSH_PRIVATE_KEY in the production environment"; exit 1; }
+          # In this job's temporary directory, removed at the end: never in the runner user's ~/.ssh.
+          ssh_dir="$RUNNER_TEMP/deploy-ssh"
+          rm -rf "$ssh_dir"
+          (umask 077 && mkdir "$ssh_dir" && printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key")
+          if [ -n "$DEPLOY_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          else
+            echo "::notice::DEPLOY_KNOWN_HOSTS is not set: trusting the host key the server presents now (ssh-keyscan)"
+            ssh-keyscan -H -T 10 "$DEPLOY_HOST" > "$ssh_dir/known_hosts" 2>/dev/null
+          fi
+          [ -s "$ssh_dir/known_hosts" ] || { echo "::error::no host key for DEPLOY_HOST"; exit 1; }
+          cat > "$ssh_dir/config" <<EOF
+          Host fleet-cmdb-server
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            IdentityFile $ssh_dir/key
+            IdentitiesOnly yes
+            UserKnownHostsFile $ssh_dir/known_hosts
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ConnectTimeout 15
+            ServerAliveInterval 30
+          EOF
+          echo "SSH_CONFIG=$ssh_dir/config" >> "$GITHUB_ENV"
+          ssh -F "$ssh_dir/config" fleet-cmdb-server 'docker version --format "Docker {{.Server.Version}} on the server"'
+
+      - name: Prepare the deploy directory
+        run: |
+          # The directory holds the code and .env. A non-empty directory this workflow did not create is refused,
+          # so a wrong DEPLOY_DIR cannot replace other files.
+          ssh -F "$SSH_CONFIG" fleet-cmdb-server "bash -s -- '$DEPLOY_DIR'" <<'REMOTE'
+          set -euo pipefail
+          dir="$1"
+          if [ -d "$dir" ] && [ -n "$(ls -A "$dir")" ] && [ ! -e "$dir/.fleet-cmdb-deploy" ]; then
+            echo "$dir is not empty and was not created by this workflow: empty it, or choose another DEPLOY_DIR" >&2
+            exit 1
+          fi
+          mkdir -p "$dir"
+          touch "$dir/.fleet-cmdb-deploy"
+          rm -rf "$dir/.incoming"
+          mkdir "$dir/.incoming"
+          REMOTE
+
+      - name: Write .env on the server
+        env:
+          # Secrets
+          SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+          CMDB_DATABASE_PASSWORD: ${{ secrets.CMDB_DATABASE_PASSWORD }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          CLOUDFLARE_DNS_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
+          FLEET_ADVISORY_FEED_TOKEN: ${{ secrets.FLEET_ADVISORY_FEED_TOKEN }}
+          # Variables
+          FLEET_DASHBOARD_HOST: ${{ vars.FLEET_DASHBOARD_HOST }}
+          FLEET_AGENT_HOST: ${{ vars.FLEET_AGENT_HOST }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          FLEET_DB_NETWORK: ${{ vars.FLEET_DB_NETWORK }}
+          FLEET_DB_HOST: ${{ vars.FLEET_DB_HOST }}
+          FLEET_TUNNEL_SOURCE_RANGE: ${{ vars.FLEET_TUNNEL_SOURCE_RANGE }}
+          FLEET_RELEASE_KEY_CURRENT: ${{ vars.FLEET_RELEASE_KEY_CURRENT }}
+          FLEET_RELEASE_KEY_NEXT: ${{ vars.FLEET_RELEASE_KEY_NEXT }}
+          FLEET_DATA_DIR: ${{ vars.FLEET_DATA_DIR }}
+          BACKUP_DIR: ${{ vars.BACKUP_DIR }}
+          FLEET_AGENT_BIND_ADDRESS: ${{ vars.FLEET_AGENT_BIND_ADDRESS }}
+          FLEET_DASHBOARD_BIND_ADDRESS: ${{ vars.FLEET_DASHBOARD_BIND_ADDRESS }}
+          FLEET_DASHBOARD_PORT: ${{ vars.FLEET_DASHBOARD_PORT }}
+          FLEET_EXTRA_SETTINGS: ${{ vars.FLEET_EXTRA_SETTINGS }}
+        run: |
+          # Check first, so a missing setting stops the deploy before the server is touched (names only, no values).
+          ops/deploy/write-env.sh > /dev/null
+          # The values travel on SSH standard input. The file replaces .env only if it arrived whole ("# end").
+          ops/deploy/write-env.sh | ssh -F "$SSH_CONFIG" fleet-cmdb-server "cd '$DEPLOY_DIR' && umask 077 &&
+            cat > .env.new && [ \"\$(tail -n 1 .env.new)\" = '# end' ] && chmod 600 .env.new && mv -f .env.new .env"
+          echo "wrote .env on the server (mode 0600)"
+
+      - name: Ship the code
+        run: |
+          git archive --format=tar "$DEPLOY_SHA" | gzip -9 \
+            | ssh -F "$SSH_CONFIG" fleet-cmdb-server "tar -xzf - -C '$DEPLOY_DIR/.incoming'"
+          echo "shipped $DEPLOY_SHA"
+
+      - name: Install the code and deploy
+        run: |
+          # Replace the previous code (everything but .env and the deploy state) with the shipped commit, then run
+          # its deploy script. The data lives under FLEET_DATA_DIR, outside this directory.
+          ssh -F "$SSH_CONFIG" fleet-cmdb-server "bash -s -- '$DEPLOY_DIR' '$DEPLOY_SHA'" <<'REMOTE'
+          set -euo pipefail
+          dir="$1"
+          cd "$dir"
+          find . -mindepth 1 -maxdepth 1 ! -name .env ! -name .incoming ! -name .deploy ! -name .fleet-cmdb-deploy \
+            -exec rm -rf {} +
+          find .incoming -mindepth 1 -maxdepth 1 -exec mv -t . {} +
+          rmdir .incoming
+          mkdir -p .deploy
+          echo "$2" > .deploy/commit
+          exec ops/deploy/deploy.sh
+          REMOTE
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy"
+            echo "- Commit: \`${DEPLOY_SHA:-not chosen}\`"
+            echo "- Server: \`$DEPLOY_HOST:$DEPLOY_DIR\`"
+            echo "- Result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/deploy-ssh"

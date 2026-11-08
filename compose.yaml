@@ -1,25 +1,34 @@
 # The fleet-cmdb server stack (P1-O03, ADR 0005). Install guide: docs/operations/install-server.md.
 #
-#   cp .env.example .env      # then fill it in (docs/operations/configuration.md lists every setting)
-#   docker compose up -d --build
+# This file is the app and Traefik. It runs in one of two layouts, chosen by COMPOSE_FILE in .env:
+#
+#   All-in-one (COMPOSE_FILE=compose.yaml:compose.bundled.yaml, as in .env.example): compose.bundled.yaml adds a
+#   PostgreSQL container and the Cloudflare tunnel connector on this machine.
+#       cp .env.example .env      # then fill it in (docs/operations/configuration.md lists every setting)
+#       docker compose up -d --build
+#
+#   Existing PostgreSQL and a tunnel on another machine (COMPOSE_FILE=compose.yaml, written by
+#   .github/workflows/deploy.yml): the app joins the PostgreSQL container's Docker network (FLEET_DB_NETWORK), and
+#   the tunnel connector elsewhere on the LAN reaches the dashboard through Traefik's port 8443.
 #
 # Services:
-#   db           PostgreSQL 17. Its port is published on 127.0.0.1 only, for ops/backup/backup.sh on this machine.
 #   app          Rails (Puma) with Solid Queue inside Puma. Runs db:prepare (create and migrate) on every start.
-#   traefik      TLS for the PRIVATE agent hostname only (FLEET_AGENT_HOST), with a Let's Encrypt certificate
-#                obtained by the Cloudflare DNS challenge. Listens on port 443 of this machine, for the LAN.
-#   cloudflared  The Cloudflare tunnel connector for the PUBLIC dashboard hostname only (FLEET_DASHBOARD_HOST).
-#                It dials out to Cloudflare; nothing is published on this machine for it.
+#                Reaches PostgreSQL at FLEET_DB_HOST (default "postgres") on the "database" network.
+#   traefik      TLS with Let's Encrypt certificates obtained by the Cloudflare DNS challenge, on two entrypoints:
+#                  :443   the PRIVATE agent hostname (FLEET_AGENT_HOST), for VMs on the LAN;
+#                  :8443  the dashboard hostname (FLEET_DASHBOARD_HOST), only from FLEET_TUNNEL_SOURCE_RANGE (the
+#                         machine running the Cloudflare tunnel connector). Without that setting nothing is routed
+#                         on :8443 (every request gets a 404), which is the all-in-one layout.
 #   restore-drill  Not started by `up` (profile "tools"): `docker compose run --rm restore-drill`
 #                  (docs/operations/backup-and-restore.md).
 #
-# Networks: traefik and cloudflared reach the app over separate networks. Rails trusts X-Forwarded-* headers only
-# from the agent-proxy network (Traefik replaces any a client sent); requests from cloudflared are not trusted, so a
-# client cannot claim the agent hostname through the tunnel with X-Forwarded-Host.
+# Proxy trust: Rails trusts X-Forwarded-* headers only from the agent-proxy network, where only Traefik is. Traefik
+# trusts no client's forwarded headers on either entrypoint (no forwardedHeaders.insecure or trustedIPs), so it
+# replaces any a client sent: a client cannot claim the agent hostname with X-Forwarded-Host through either one.
 #
 # Persistent data lives under FLEET_DATA_DIR on this machine (default /var/lib/fleet-cmdb):
-#   postgres/  the database        releases/  agent release files     backup/  the backup status file /health reads
-#   certs/     Traefik's ACME account and the agent hostname certificate
+#   releases/  agent release files     backup/  the backup status file /health reads
+#   certs/     Traefik's ACME account and certificates          postgres/  the database (all-in-one layout only)
 
 name: fleet-cmdb
 
@@ -36,7 +45,7 @@ x-app-environment: &app-environment
   RAILS_ENV: production
   PORT: "3000"
   SOLID_QUEUE_IN_PUMA: "1"
-  PGHOST: db
+  PGHOST: ${FLEET_DB_HOST:-postgres}
   FLEET_RELEASES_DIR: /rails/storage/releases
   FLEET_BACKUP_STATUS_FILE: /rails/storage/backup/last_success
   FLEET_TRUSTED_PROXIES: ${FLEET_PROXY_SUBNET:-172.30.47.0/28}
@@ -79,24 +88,6 @@ x-app-environment: &app-environment
   JOB_CONCURRENCY:
 
 services:
-  db:
-    image: postgres:17
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: cmdb
-      POSTGRES_PASSWORD: ${CMDB_DATABASE_PASSWORD:?set CMDB_DATABASE_PASSWORD in .env}
-    volumes:
-      - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/postgres:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:${FLEET_DB_PORT:-5432}:5432"
-    networks: [backend]
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "cmdb", "-d", "postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    logging: *logging
-
   app:
     build:
       context: ./cmdb
@@ -105,14 +96,11 @@ services:
     image: fleet-cmdb:local
     command: ["./bin/rails", "server"]
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     environment: *app-environment
     volumes:
       - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/releases:/rails/storage/releases
       - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/backup:/rails/storage/backup:ro
-    networks: [backend, agent-proxy, tunnel]
+    networks: [database, agent-proxy]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:3000/up"]
       interval: 10s
@@ -132,7 +120,9 @@ services:
       - --global.sendanonymoususage=false
       - --log.level=INFO
       - --ping=true
+      # No forwardedHeaders.insecure or trustedIPs on either entrypoint: Traefik replaces X-Forwarded-* from clients.
       - --entrypoints.websecure.address=:443
+      - --entrypoints.dashboard.address=:8443
       - --providers.file.filename=/etc/traefik/dynamic.yml
       - --providers.file.watch=false
       - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL in .env}
@@ -143,12 +133,15 @@ services:
       - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
     environment:
       FLEET_AGENT_HOST: ${FLEET_AGENT_HOST:?set FLEET_AGENT_HOST in .env}
+      FLEET_DASHBOARD_HOST: ${FLEET_DASHBOARD_HOST:?set FLEET_DASHBOARD_HOST in .env}
+      FLEET_TUNNEL_SOURCE_RANGE: ${FLEET_TUNNEL_SOURCE_RANGE:-}
       CF_DNS_API_TOKEN: ${CLOUDFLARE_DNS_API_TOKEN:?set CLOUDFLARE_DNS_API_TOKEN in .env}
     volumes:
       - ./ops/deploy/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
       - ${FLEET_DATA_DIR:-/var/lib/fleet-cmdb}/certs:/certs
     ports:
       - "${FLEET_AGENT_BIND_ADDRESS:-0.0.0.0}:443:443"
+      - "${FLEET_DASHBOARD_BIND_ADDRESS:-0.0.0.0}:${FLEET_DASHBOARD_PORT:-8443}:8443"
     networks:
       agent-proxy:
     healthcheck:
@@ -156,18 +149,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-    logging: *logging
-
-  cloudflared:
-    image: cloudflare/cloudflared:2026.10.7
-    restart: unless-stopped
-    depends_on:
-      app:
-        condition: service_healthy
-    command: ["tunnel", "--no-autoupdate", "run"]
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
-    networks: [tunnel]
     logging: *logging
 
   restore-drill:
@@ -185,12 +166,15 @@ services:
     volumes:
       - ./ops/backup:/ops/backup:ro
       - ${BACKUP_DIR:-/mnt/fleet-cmdb-backups}:/backups:ro
-    networks: [backend]
+    networks: [database]
     logging: *logging
 
 networks:
-  backend:
-  tunnel:
+  # The PostgreSQL server's network. By default an existing network, created by the separate Compose project that
+  # runs PostgreSQL (FLEET_DB_NETWORK); compose.bundled.yaml creates it instead, for its own database container.
+  database:
+    name: ${FLEET_DB_NETWORK:-fleet-cmdb-database}
+    external: true
   # The only network whose clients Rails trusts for X-Forwarded-* (FLEET_TRUSTED_PROXIES): only Traefik is on it
   # besides the app. Change FLEET_PROXY_SUBNET in .env only if this range is already used on this machine.
   agent-proxy:

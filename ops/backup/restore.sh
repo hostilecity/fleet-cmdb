@@ -22,6 +22,12 @@ if psql --no-psqlrc -X -At -d postgres -c "SELECT 1 FROM pg_database WHERE datna
   die "database $db already exists"
 fi
 
+# The restore creates the database, so the role needs CREATEDB (or to be a superuser). A PostgreSQL that was set up
+# with the role owning ready-made databases may not have given it: say what to run, rather than createdb's error.
+role="$(psql --no-psqlrc -X -At -d postgres -c "SELECT current_user || ' ' || (rolcreatedb OR rolsuper)::text FROM pg_roles WHERE rolname = current_user")"
+if [ "${role##* }" != true ]; then
+  die "the PostgreSQL role ${role% *} may not create databases, which a restore and the restore drill need. Run this once as a PostgreSQL superuser: ALTER ROLE ${role% *} CREATEDB;"
+fi
 createdb "$db"
 if ! pg_restore --no-owner --no-privileges --exit-on-error --dbname "$db" "$set_dir/fleet-cmdb.dump"; then
   dropdb --if-exists "$db"
