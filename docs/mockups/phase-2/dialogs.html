@@ -22,7 +22,7 @@
 <p>Every host's latest config snapshot is checked against it now. No agent is contacted. Pass rates and failure counts change when the checks finish, within a minute.</p>
 <div class="actions"><button class="btn" type="button">Enable rule</button><button class="btn quiet" type="button">Cancel</button></div></div>
 <div class="dialog" id="refresh" role="dialog" aria-labelledby="r-t"><h2 id="r-t">Refresh advisory data now?</h2>
-<p>Downloads the configured feed (<span class="mono">feeds.example.lan/osv/Debian/all.zip</span>) and imports it. This can take several minutes. Findings are matched again afterwards for the packages that changed. It is also the scheduled job, so running it now does not skip the next one.</p>
+<p>Downloads the configured feed (<span class="mono">feeds.example.lan/osv/Debian/all.zip</span>) and imports it. This can take several minutes. Findings are matched again afterwards for the packages that changed. It is also the scheduled job, so running it now does not skip the next one. Debian's triage data (the Debian Security Tracker) is refreshed right after it; if that fails, the advisory data is still imported.</p>
 <div class="actions"><button class="btn" type="button">Refresh now</button><button class="btn quiet" type="button">Cancel</button></div></div>
 <div class="dialog" id="full" role="dialog" aria-labelledby="f-t"><h2 id="f-t">Import as a full import?</h2>
 <p>A full import treats the file as the complete advisory list for its ecosystem. Advisories it does not contain are marked withdrawn, and findings that depended on them resolve as withdrawn. Use it only for a complete download, not for a few records.</p>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debian triage: scope and bug options · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="phase2.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="compliance.html">Compliance</a><a href="rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="index.html#t6">&larr; T6 (decided: option A)</a></p>
+<div class="page-head"><div><h1>Debian triage: scope and bug options</h1><p>The same finding, <span class="mono">DEBIAN-CVE-2026-19499</span> on <span class="mono">libc6</span> on <span class="mono">vm-01.example.lan</span> (trixie), drawn three ways for <a href="index.html#t6">T6</a>. The owner chose option A; this page is kept as the record of the options. Each option shows the Vulnerabilities tab row, then the package page row. Everything else on both pages is as approved.</p></div></div>
+<section aria-labelledby="opt-a" id="option-a">
+  <h2 id="opt-a" class="state-title">Option A: scope on the package page only, no bug number <span class="badge">Chosen</span></h2>
+  <p class="muted" style="max-width:70ch">Chosen by the owner. The tab stays as short as approved; the package page adds "Scope: local". The bug is one click away on the tracker's page.</p>
+  <h3 style="font-size:1rem">On the Vulnerabilities tab</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Vulnerabilities tab row</caption><thead><tr><th scope="col" colspan="2">Package and advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">First seen &rarr; resolved</th></tr></thead><tbody>
+<tr class="pkg-group"><th scope="rowgroup" colspan="2"><a class="mono" href="host-vuln-package-libc6.html">libc6:amd64</a> <span class="muted">installed</span> <span class="mono">2.41-12+deb13u4</span></th><td><span class="sev high">High</span> <span class="state-note">worst of 1</span></td><td colspan="3">1 finding</td></tr>
+<tr class="nested"><td></td><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-19499" rel="noopener noreferrer">DEBIAN-CVE-2026-19499</a><span class="state-note">Example: buffer handling flaw in glibc.</span><span class="triage"><span class="who">Debian:</span> no security update planned (<q>Minor issue</q>); fix planned for the next point release</span></td><td><span class="sev high">High</span></td><td><span class="unavailable">No fix available</span></td><td><span class="lamp fail">Open</span></td><td>2026-11-05 18:30 &rarr; <span class="muted">—</span></td></tr>
+</tbody></table></div>
+  <h3 style="font-size:1rem">On the package page</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Package page row</caption><thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">Debian's triage (trixie)</th><th scope="col">History</th></tr></thead><tbody>
+<tr><td><span class="sev high">High</span></td><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-19499" rel="noopener noreferrer">DEBIAN-CVE-2026-19499</a><span class="state-note">Example: buffer handling flaw in glibc.</span></td><td><span class="mono">2.41-12+deb13u4</span></td><td><span class="unavailable">No fix available</span></td><td><span class="lamp fail">Open</span></td><td><span class="triage"><span class="who">Debian:</span> no security update planned (<q>Minor issue</q>); fix planned for the next point release<span class="why">Debian's security team plans no security update (DSA) for this in trixie and expects the fix in the next trixie point release. Until then the installed version is still in the affected range. Scope: local. <a href="https://security-tracker.debian.org/tracker/CVE-2026-19499" rel="noopener noreferrer">Debian's page for CVE-2026-19499</a></span></span></td><td><ul class="change-list"><li>2026-11-05 18:30 first seen at 2.41-12+deb13u4</li></ul></td></tr>
+</tbody></table></div>
+</section>
+<section aria-labelledby="opt-b" id="option-b">
+  <h2 id="opt-b" class="state-title">Option B: scope and the Debian bug link everywhere</h2>
+  <p class="muted" style="max-width:70ch">Every triage line, on the tab and the package page, adds the scope and a link to Debian's bug. The link is built only from the tracker's bug number (an integer), as <code>https://bugs.debian.org/&lt;number&gt;</code>, and left out when there is none.</p>
+  <h3 style="font-size:1rem">On the Vulnerabilities tab</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Vulnerabilities tab row</caption><thead><tr><th scope="col" colspan="2">Package and advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">First seen &rarr; resolved</th></tr></thead><tbody>
+<tr class="pkg-group"><th scope="rowgroup" colspan="2"><a class="mono" href="host-vuln-package-libc6.html">libc6:amd64</a> <span class="muted">installed</span> <span class="mono">2.41-12+deb13u4</span></th><td><span class="sev high">High</span> <span class="state-note">worst of 1</span></td><td colspan="3">1 finding</td></tr>
+<tr class="nested"><td></td><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-19499" rel="noopener noreferrer">DEBIAN-CVE-2026-19499</a><span class="state-note">Example: buffer handling flaw in glibc.</span><span class="triage"><span class="who">Debian:</span> no security update planned (<q>Minor issue</q>); fix planned for the next point release<span class="why">Scope: local. <a href="https://bugs.debian.org/1145891" rel="noopener noreferrer">Debian bug #1145891</a></span></span></td><td><span class="sev high">High</span></td><td><span class="unavailable">No fix available</span></td><td><span class="lamp fail">Open</span></td><td>2026-11-05 18:30 &rarr; <span class="muted">—</span></td></tr>
+</tbody></table></div>
+  <h3 style="font-size:1rem">On the package page</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Package page row</caption><thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">Debian's triage (trixie)</th><th scope="col">History</th></tr></thead><tbody>
+<tr><td><span class="sev high">High</span></td><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-19499" rel="noopener noreferrer">DEBIAN-CVE-2026-19499</a><span class="state-note">Example: buffer handling flaw in glibc.</span></td><td><span class="mono">2.41-12+deb13u4</span></td><td><span class="unavailable">No fix available</span></td><td><span class="lamp fail">Open</span></td><td><span class="triage"><span class="who">Debian:</span> no security update planned (<q>Minor issue</q>); fix planned for the next point release<span class="why">Debian's security team plans no security update (DSA) for this in trixie and expects the fix in the next trixie point release. Until then the installed version is still in the affected range. Scope: local. <a href="https://bugs.debian.org/1145891" rel="noopener noreferrer">Debian bug #1145891</a>. <a href="https://security-tracker.debian.org/tracker/CVE-2026-19499" rel="noopener noreferrer">Debian's page for CVE-2026-19499</a></span></span></td><td><ul class="change-list"><li>2026-11-05 18:30 first seen at 2.41-12+deb13u4</li></ul></td></tr>
+</tbody></table></div>
+</section>
+<section aria-labelledby="opt-c" id="option-c">
+  <h2 id="opt-c" class="state-title">Option C: neither</h2>
+  <p class="muted" style="max-width:70ch">Only the category and Debian's note, on both pages. The package page keeps the link to the tracker's page, which the spec requires and which shows the scope and the bug.</p>
+  <h3 style="font-size:1rem">On the Vulnerabilities tab</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Vulnerabilities tab row</caption><thead><tr><th scope="col" colspan="2">Package and advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">First seen &rarr; resolved</th></tr></thead><tbody>
+<tr class="pkg-group"><th scope="rowgroup" colspan="2"><a class="mono" href="host-vuln-package-libc6.html">libc6:amd64</a> <span class="muted">installed</span> <span class="mono">2.41-12+deb13u4</span></th><td><span class="sev high">High</span> <span class="state-note">worst of 1</span></td><td colspan="3">1 finding</td></tr>
+<tr class="nested"><td></td><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-19499" rel="noopener noreferrer">DEBIAN-CVE-2026-19499</a><span class="state-note">Example: buffer handling flaw in glibc.</span><span class="triage"><span class="who">Debian:</span> no security update planned (<q>Minor issue</q>); fix planned for the next point release</span></td><td><span class="sev high">High</span></td><td><span class="unavailable">No fix available</span></td><td><span class="lamp fail">Open</span></td><td>2026-11-05 18:30 &rarr; <span class="muted">—</span></td></tr>
+</tbody></table></div>
+  <h3 style="font-size:1rem">On the package page</h3>
+<div class="table-wrap"><table><caption class="visually-hidden">Package page row</caption><thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">Debian's triage (trixie)</th><th scope="col">History</th></tr></thead><tbody>
+<tr><td><span class="sev high">High</span></td><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-19499" rel="noopener noreferrer">DEBIAN-CVE-2026-19499</a><span class="state-note">Example: buffer handling flaw in glibc.</span></td><td><span class="mono">2.41-12+deb13u4</span></td><td><span class="unavailable">No fix available</span></td><td><span class="lamp fail">Open</span></td><td><span class="triage"><span class="who">Debian:</span> no security update planned (<q>Minor issue</q>); fix planned for the next point release<span class="why">Debian's security team plans no security update (DSA) for this in trixie and expects the fix in the next trixie point release. Until then the installed version is still in the affected range. <a href="https://security-tracker.debian.org/tracker/CVE-2026-19499" rel="noopener noreferrer">Debian's page for CVE-2026-19499</a></span></span></td><td><ul class="change-list"><li>2026-11-05 18:30 first seen at 2.41-12+deb13u4</li></ul></td></tr>
+</tbody></table></div>
+</section>
+<p class="note"><span class="review-q">T6, decided: option A.</span> Scope (<span class="mono">local</span> or <span class="mono">remote</span>) and the bug number come from the tracker's top-level entry for the CVE, so they are the same for every release. The owner chose option A: scope helps judge a no-DSA note when looking at one package, but on the tab it would lengthen every row, and the bug is linked from the tracker's page.</p>
+</main>
+</body>
+</html>

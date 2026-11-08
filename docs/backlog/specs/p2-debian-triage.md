@@ -8,9 +8,9 @@ Added after Phase 2's dashboards (owner, 2026-11-07): CVE-2026-19499 shows High 
 
 Delivered first, as its own pull request (`Refs` the issue), and approved by the owner before any view is built ([AGENTS.md](../../../AGENTS.md)). Changes to the Phase 2 mockups in `docs/mockups/phase-2/`:
 
-- `host-vulns.html`: each advisory row under a package shows Debian's triage for the host's release when there is one, e.g. "Debian: minor issue, no security update planned" (no-DSA), "Debian: postponed to a point release", "Debian: ignored", "Debian: unimportant", the urgency when assigned, and "Debian triage not available" when the source is off, stale, or has no entry. A filter chip for findings Debian marks no-DSA or postponed. Severity and counts are unchanged.
-- `host-vuln-package.html`: the same per advisory, with a link to the tracker's page for the CVE.
-- `data-sources.html`: a second source, "Debian Security Tracker", with its freshness, last import, entry counts per release, and its own stale state; no upload for it.
+- `host-vulns.html`: each advisory row under a package shows Debian's triage for the host's release when there is one, e.g. "Debian: no security update planned" (no-DSA), "Debian: postponed to a later update or point release", "Debian: ignored, no fix planned for this release", "Debian: unimportant", the urgency when assigned, and "Debian triage not available" when the source is off, stale, or has no entry. Debian's own note text follows the category verbatim (escaped), up to 200 characters. A filter chip, "Debian: no security update planned", for findings whose entry has a no-DSA note of any reason: none, postponed, or ignored (owner, T3 on #134). Severity and counts are unchanged.
+- `host-vuln-package.html`: the same per advisory, with a link to the tracker's page for the CVE and the CVE's scope (local or remote). Scope is shown on the package page only, and Debian's bug number is not shown (owner, T6 on #134).
+- `data-sources.html`: a second source, "Debian Security Tracker", with its freshness, last import, entry counts per release, and its own stale and held-back states; no upload for it. It has no refresh button of its own: the advisory feed's "Refresh now" refreshes OSV and then the tracker, under the same cool-down (owner, T2 on #134).
 - `index.html`: entries for the changed pages and the open design questions.
 
 ### Acceptance criteria
@@ -22,10 +22,10 @@ Delivered first, as its own pull request (`Refs` the issue), and approved by the
 
 ### Scope
 
-- A scheduled refresh (`FLEET_DEBIAN_TRACKER_URL`, default `https://security-tracker.debian.org/tracker/data/json`; empty turns it off) runs on the advisory schedule after the OSV refresh, over HTTPS with the certificate verified, with a conditional request (ETag or Last-Modified), a download limit, and a time limit. It is one document per refresh. `bin/rails advisories:triage_refresh` runs it now, and `bin/rails advisories:triage_import FILE=...` imports a file for a server without internet access.
+- A scheduled refresh (`FLEET_DEBIAN_TRACKER_URL`, default `https://security-tracker.debian.org/tracker/data/json`; empty turns it off) runs on the advisory schedule after the OSV refresh, over HTTPS with the certificate verified, with a conditional request (ETag or Last-Modified), a download limit, and a time limit. It is one document per refresh. The dashboard's "Refresh now" runs the OSV refresh and then this one, under the one manual-refresh cool-down (owner, T2 on #134); a tracker failure does not change the OSV refresh's outcome. `bin/rails advisories:triage_refresh` runs it now, and `bin/rails advisories:triage_import FILE=...` imports a file for a server without internet access.
 - Parse within bounded memory and nesting (the document is keyed by source package, then CVE, then release). Measure the real file's size, entry count, and peak memory, and record them next to the limits, as for the OSV archive.
 - Keep only the releases the fleet uses, through a mapping from the host's inventory (`ID`, `VERSION_ID`) to the tracker's release name (`debian`/`13` is `trixie`) held in one table, so adding a release is a data change. Nothing in the import assumes Debian 13.
-- Store, per release, source package, and CVE: the status (resolved, open, undetermined), urgency, fixed version, and the no-DSA note with its reason (minor issue, postponed, ignored), replacing the previous data in one transaction per release. A malformed entry is skipped and counted, not fatal.
+- Store, per release, source package, and CVE: the status (resolved, open, undetermined), urgency, fixed version, the no-DSA note text with its reason (none, postponed, ignored), and whether a fix is planned for the next point release; and per CVE its scope (local or remote), which the package page shows (T6 on #134), replacing the previous data in one transaction per release. A malformed entry is skipped and counted, not fatal.
 - Guard against a truncated or wrong file: an import that would drop more than 10% of a release's stored entries keeps the previous data, is recorded as held back with the counts (as the OSV withdrawal guard does, review of #131), and is shown on the data sources page. Triage never resolves or reopens a finding, so this protects only what the dashboard shows.
 - Join a finding to triage by the finding's source package, the host's release, and the advisory's CVE identifiers (its id for `DEBIAN-CVE-*` records, its aliases and upstream ids for `DSA-*` and `DLA-*` records). Expose it for the views in one query per page, with no per-finding lookups.
 - Freshness like OSV's: its own last success, a warning past `FLEET_ADVISORY_MAX_AGE_HOURS`, failures on the failed-jobs page. A failure never blocks OSV refreshes or matching.
@@ -49,7 +49,8 @@ Delivered first, as its own pull request (`Refs` the issue), and approved by the
 
 ### Scope
 
-- Build what the approved P2-D07 mockups show: triage beside each finding on the host's vulnerabilities tab and the package page, the filter, and the second source on the data sources page with its freshness and held-back state.
+- Build what the approved P2-D07 mockups show: triage beside each finding on the host's vulnerabilities tab and the package page, the "Debian: no security update planned" filter (no-DSA notes of any reason: none, postponed, or ignored), and the second source on the data sources page with its freshness and held-back state. The one "Refresh now" refreshes OSV and then the tracker under the same cool-down, and its confirmation says so.
+- Show the CVE's scope (local or remote) on the package page only; do not show Debian's bug number (owner, T6 on #134).
 - Escape every value from the tracker; link only to `https://security-tracker.debian.org/tracker/<CVE>` built from a validated CVE id.
 - No change to the compliance page's counts or to severity filters.
 
