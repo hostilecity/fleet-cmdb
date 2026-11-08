@@ -348,6 +348,18 @@
     - "The scheduled refresh is never blocked by a manual one, and both accepted and refused attempts are audited."
   blocked_by: [P2-VULNS]
 
+- key: P2-DEBIAN-TRIAGE
+  title: "Debian's own triage beside each finding"
+  milestone: 2
+  labels: ["area:server", "area:dashboard"]
+  covers: [FR-2.4, FR-2.5]
+  goal: "Each finding shows the Debian Security Tracker's triage for the host's release (no-DSA, postponed, urgency) beside its OSV severity, without changing states, severity, or counts."
+  done:
+    - "The tracker's JSON is imported on the advisory schedule as one file, joined by source package, release, and CVE, with freshness and a guard against truncated files."
+    - "The host vulnerabilities tab, package page, and data sources page show the triage as approved in the P2-D07 mockups, and say when it is not available."
+    - "A finding's state, severity, and every count are unchanged by the triage."
+  blocked_by: [P2-VULNS, P2-DASH-HOST, P2-DASH-FLEET]
+
 - key: P2-DASH-HOST
   title: "Dashboard: host configuration, packages, and vulnerabilities"
   milestone: 2
@@ -413,7 +425,7 @@
   done:
     - "AC-2.1 to AC-2.6 have recorded evidence, and Phase 1 golden fixtures pass unchanged against the Phase 2 server."
     - "The fleet list and compliance view load under 2 s at 50 hosts and heartbeat p95 stays under 200 ms."
-  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET, P2-SOAK, P2-RULE-DRYRUN, P2-REFRESH-LIMIT]
+  blocked_by: [P1-OPERABILITY, P2-CONFIG-REPORTS, P2-CIS-ENGINE, P2-PACKAGES, P2-VULNS, P2-AGENT-FACTS, P2-AGENT-PACKAGES, P1-ACCEPT, P2-CIS-RULES, P2-DASH-HOST, P2-DASH-FLEET, P2-SOAK, P2-RULE-DRYRUN, P2-REFRESH-LIMIT, P2-DEBIAN-TRIAGE]
 
 - key: P3-TASK-MODEL
   title: "Task catalog, task and batch models, state machine"
