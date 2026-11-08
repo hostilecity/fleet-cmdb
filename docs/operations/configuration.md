@@ -53,8 +53,12 @@ The server downloads vulnerability advisories itself and matches them against th
 | `FLEET_ADVISORY_WITHDRAW_SHARE` | `0.10` | A full import that would mark more than this share of an ecosystem's current advisories withdrawn is refused with the counts until an operator allows them. A decimal from 0 to 1; anything else stops the server at boot |
 | `FLEET_ADVISORY_WITHDRAW_MIN_RECORDS` | `1000` | A full import with fewer records than this for an ecosystem is refused if it would withdraw any of its advisories, until an operator allows them. A whole number, 0 or more |
 | `FLEET_ADVISORY_REFRESH_COOLDOWN` | `300` | Seconds after a refresh starts before the dashboard's "Refresh now" may start another. A whole number, at least 1: any other value stops the server at boot with an error naming the setting |
+| `FLEET_DEBIAN_TRACKER_URL` | `https://security-tracker.debian.org/tracker/data/json` | Debian's triage beside each finding (ADR 0022): the one JSON document the scheduled refresh downloads, 15 minutes after the OSV refresh. HTTPS only, or empty to turn the refresh off (import the file with `bin/rails advisories:triage_import FILE=...` instead). Its staleness warning uses `FLEET_ADVISORY_MAX_AGE_HOURS`, and its truncation guard `FLEET_ADVISORY_WITHDRAW_SHARE` per release |
+| `FLEET_DEBIAN_TRACKER_MAX_DOWNLOAD_MB` | `512` | The largest tracker document downloaded or imported. A whole number, at least 1 |
 
-The real OSV Debian archive measured 77.4 MiB zipped, 73,658 records, and 260.9 MiB of JSON (largest record 34.1 KiB) on 2026-11-07, well inside these limits; check again when another distribution's feed is added.
+The real OSV Debian archive measured 77.4 MiB zipped, 73,658 records, and 260.9 MiB of JSON (largest record 34.1 KiB) on 2026-11-07, well inside these limits; check again when another distribution's feed is added. The Debian Security Tracker's document measured 84.2 MiB (4,180 source packages, 79,646 entries) the same day.
+
+The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (OSV) and `security-tracker.debian.org` (Debian triage). Without it, set both URLs empty and import the files by hand (`cmdb/README.md`).
 
 ## Agent API and enrollment
 

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -595,6 +595,47 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "triage_entries", force: :cascade do |t|
+    t.string "tracker", limit: 16, null: false
+    t.string "release", limit: 32, null: false
+    t.string "package", limit: 128, null: false
+    t.string "cve_id", limit: 32, null: false
+    t.string "status", limit: 16, null: false
+    t.string "urgency", limit: 16
+    t.string "urgency_raw", limit: 64
+    t.string "fixed_version", limit: 256
+    t.boolean "no_dsa", default: false, null: false
+    t.string "no_dsa_note", limit: 512
+    t.string "no_dsa_reason", limit: 32
+    t.boolean "next_point_update", default: false, null: false
+    t.string "scope", limit: 8
+    t.index ["tracker", "release", "package", "cve_id"], name: "index_triage_entries_unique", unique: true
+    t.check_constraint "no_dsa OR no_dsa_note IS NULL AND no_dsa_reason IS NULL", name: "triage_entries_no_dsa_consistent"
+    t.check_constraint "status::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'undetermined'::character varying]::text[])", name: "triage_entries_status_valid"
+    t.check_constraint "urgency::text = ANY (ARRAY['unimportant'::character varying, 'low'::character varying, 'medium'::character varying, 'high'::character varying, 'end-of-life'::character varying]::text[])", name: "triage_entries_urgency_valid"
+  end
+
+  create_table "triage_imports", force: :cascade do |t|
+    t.string "tracker", limit: 16, null: false
+    t.string "origin", limit: 8, null: false
+    t.string "source", limit: 256, null: false
+    t.string "state", limit: 16, null: false
+    t.string "releases", default: [], null: false, array: true
+    t.string "removed_releases", default: [], null: false, array: true
+    t.jsonb "counts", default: {}, null: false
+    t.jsonb "problems", default: [], null: false
+    t.string "reason", limit: 512
+    t.string "etag", limit: 256
+    t.string "last_modified", limit: 64
+    t.bigint "operator_id"
+    t.datetime "started_at", null: false
+    t.datetime "finished_at", null: false
+    t.index ["operator_id"], name: "index_triage_imports_on_operator_id"
+    t.index ["tracker", "finished_at"], name: "index_triage_imports_on_tracker_and_finished_at"
+    t.check_constraint "origin::text = ANY (ARRAY['feed'::character varying, 'file'::character varying]::text[])", name: "triage_imports_origin_valid"
+    t.check_constraint "state::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'held_back'::character varying]::text[])", name: "triage_imports_state_valid"
+  end
+
   create_table "vulnerability_findings", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.bigint "advisory_id", null: false
@@ -650,6 +691,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
   add_foreign_key "host_status_events", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
+  add_foreign_key "triage_imports", "operators"
   add_foreign_key "vulnerability_findings", "advisories"
   add_foreign_key "vulnerability_findings", "hosts"
   add_foreign_key "inventory_report_receipts", "hosts"
