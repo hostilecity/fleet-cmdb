@@ -8,6 +8,10 @@
 # agent/release-keys, unsigned). Signed releases are published only by agent-release.yml, on a version
 # tag, after the owner's approval (P1-PACKAGING, ADR 0018); nothing here has access to the release key.
 #
+# Every job runs on ubuntu-24.04, the image agent-release.yml builds releases on, never ubuntu-latest: the
+# reproducibility check is only meaningful on the release's image, and a moving label changed the C
+# compiler under a cached build (ubuntu-latest became 26.04 in November 2026).
+#
 # Branch protection should require the "Agent CI" job only. It always runs and passes when
 # agent/ was not touched, so path filtering never leaves a required check pending.
 name: Agent CI
@@ -32,7 +36,7 @@ env:
 jobs:
   changes:
     name: Detect agent changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       # Pushes to main always run the full check; pull requests only when agent/, docs/api/, or this workflow changed.
       agent: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.agent }}
@@ -58,7 +62,7 @@ jobs:
     name: fmt, clippy, test
     needs: changes
     if: needs.changes.outputs.agent == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
@@ -88,7 +92,7 @@ jobs:
     name: Dependency audit
     needs: changes
     if: needs.changes.outputs.agent == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
@@ -110,7 +114,7 @@ jobs:
     name: Release build (${{ matrix.target }})
     needs: changes
     if: needs.changes.outputs.agent == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       matrix:
@@ -133,10 +137,16 @@ jobs:
         # musl-tools: needed once a dependency compiles C code. minisign: the release dry run below.
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools minisign
 
+      - name: Runner image (part of the build cache key)
+        id: image
+        run: echo "os=$ImageOS" >> "$GITHUB_OUTPUT"
+
       - uses: Swatinem/rust-cache@v2
+        # The image is in the key: dependencies with C code (ring) compiled by another image's compiler
+        # would make the first build differ from the uncached second one below.
         with:
           workspaces: agent
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ steps.image.outputs.os }}
 
       - name: Build the release binary
         # As the release workflow builds it: reproducibly (scripts/build-release.sh).
@@ -208,7 +218,7 @@ jobs:
     name: systemd unit
     needs: changes
     if: needs.changes.outputs.agent == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     defaults:
       run:
@@ -319,7 +329,7 @@ jobs:
     name: Agent CI
     needs: [changes, check, audit, build, unit, sandbox, update]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check result
         env:

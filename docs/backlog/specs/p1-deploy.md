@@ -4,6 +4,8 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ## P1-O03: Server deployment: Docker Compose, Cloudflare tunnel, and private agent TLS
 
+**Changed by the owner's review of #88 ([ADR 0023](../../decisions/0023-deploy-with-github-actions.md)):** the server is one container deployed by GitHub Actions onto the existing PostgreSQL container's network, and the tunnel on another VM reaches it over plain HTTP. The agent hostname's TLS is [#137](https://github.com/hostilecity/fleet-cmdb/issues/137), and backups in the deployment get their own issue; the criteria marked below moved there.
+
 ### Context
 
 [DEC-05](../../decisions/0005-hosting-tls-deployment.md): Docker Compose; the dashboard is published through a Cloudflare tunnel (TLS at Cloudflare) with Cloudflare Access; the agent API is on a private LAN hostname with a Let's Encrypt certificate (DNS-01 through Cloudflare) and is never exposed through the tunnel.
@@ -20,11 +22,20 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Acceptance criteria
 
-- [ ] `docker compose up` from a clean checkout brings up a working dashboard and agent endpoint with the documented configuration
-- [ ] A request to `/api/v1/*` through the public dashboard hostname fails; the same request on the agent hostname succeeds
-- [ ] An agent on a Debian VM verifies the agent hostname certificate using only the system trust store
-- [ ] Certificate renewal is automatic and its failure is visible (log or health)
-- [ ] Rebuilding the stack from backups restores state (ties into [P1-O01](p1-deploy.md))
+- [ ] A deploy by `.github/workflows/cd.yml` brings up a working dashboard with the documented configuration
+- [ ] A request to `/api/v1/*` through the public dashboard hostname fails; the same request on the agent hostname succeeds (the agent hostname part: #137)
+- [ ] An agent on a Debian VM verifies the agent hostname certificate using only the system trust store (moved to #137)
+- [ ] Certificate renewal is automatic and its failure is visible (log or health) (moved to #137)
+- [ ] Rebuilding the stack from backups restores state (ties into [P1-O01](p1-deploy.md); moved to [#138](https://github.com/hostilecity/fleet-cmdb/issues/138))
+
+### As built
+
+- `.github/workflows/cd.yml` (workflow "Deploy"): every push to `main`, and `workflow_dispatch` on `main`; `runs-on: self-hosted`, environment `production`, one deploy at a time. Over SSH (key from `SSH_PRIVATE_KEY`, host key from `DEPLOY_KNOWN_HOSTS` or `ssh-keyscan`) it deploys the run's own commit (`GITHUB_SHA`; rollback is a re-run of an earlier Deploy run, or a revert), ships `cmdb/` and `docs/api/` as a tar of the checkout (the runner needs no `git`: `actions/checkout` downloads through the API), writes the app's settings over SSH standard input into a mode-0600 env file, and on the VM checks the database network (`docker network inspect`), creates the volume `fleet-cmdb_storage` (`/rails/storage`: release files, backup status), builds `fleet-cmdb:<sha>`, replaces the `fleet-cmdb` container (`-p 80:3000`, the database network, `--restart unless-stopped`, `--env-file`, then the file is deleted), waits for `/up`, and prints the status. No secret value is on a command line.
+- The PostgreSQL container, its network, the role `cmdb`, and its four databases exist on the server already (provisioned elsewhere); `PGHOST` is `FLEET_DB_HOST` (default `postgres`). `db:prepare` runs the migrations on every start.
+- **Trusted proxies:** none. The tunnel connector reaches port 80 directly and passes on headers a browser sent, so `FLEET_TRUSTED_PROXIES` stays unset and `HostSeparation` drops every forwarded header; a client cannot claim the agent hostname through the tunnel. Port 80 is plain HTTP on the LAN: the guide recommends a firewall rule allowing it only from the tunnel VM.
+- **No Thruster:** the image runs Puma directly on port 3000. Behind Thruster every request reaches Rails from loopback, which `HostSeparation` always trusts, so a forged `X-Forwarded-Host` would pass (confirmed against the app in production mode).
+- **Release import egress:** the import uses only `github.com` and the download host it redirects to (`release-assets.githubusercontent.com`), not `api.github.com`.
+- **Verification:** `.github/workflows/deploy-ci.yml` builds the image as `cd.yml` does, runs it against a throwaway `postgres:17` with the role `cmdb` owning the four databases (the same env-file mechanism and a published port), waits for `/up`, and checks that the dashboard hostname serves sign-in, refuses `/api/v1` (also with a forged `X-Forwarded-Host` or `Forwarded`) and `/health`, and that `/health` is 503 until a backup exists. It also runs shellcheck and actionlint. The tunnel, Access, and the runner need the owner's accounts and are checked by following [install-server.md](../../operations/install-server.md).
 
 ## P1-O01: Database backup and tested restore procedure
 
@@ -62,3 +73,7 @@ NFR-2 requires a documented, restorable backup procedure before Phase 1 is consi
 - [ ] The owner (or a fresh reader) completes server setup and enrolls a VM from the documents alone
 - [ ] Every command in the docs has been run at least once
 - [ ] Documentation links from the root `README.md`
+
+### As built
+
+[docs/operations/](../../operations/README.md): `install-server.md` (the GitHub Actions deployment; the agent hostname and backups in the deployment come with #137 and the backups issue), `configuration.md` (every environment variable the server reads, checked against every `ENV` use in `cmdb/`), `install-agent.md`, `fleet-operations.md`, `troubleshooting.md`, with the existing `backup-and-restore.md` and `health-and-jobs.md`. The settings tables formerly in `cmdb/README.md` moved to `configuration.md`. Rollouts are started from the Rails console until their dashboard view ([P1-UPDATES](p1-updates.md), P1-D09) arrives; `install-agent.md` says so and should switch to the dashboard then.

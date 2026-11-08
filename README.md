@@ -8,7 +8,7 @@ Project structure:
     requirements.md
     mockups/
     decisions/
-    operations/     # runbooks: backup and restore
+    operations/     # installation and operations guides
     api/            # agent API spec, JSON Schemas, example payloads (issue P0-CONTRACT)
     backlog/        # issues.yml (issue stubs) and specs/ (implementation details, source of truth)
   cmdb/
@@ -16,6 +16,8 @@ Project structure:
   ops/              # backup, restore, and restore-drill scripts and systemd units
   .github/
 ```
+
+**Install it:** [server](docs/operations/install-server.md) (deployed by `.github/workflows/cd.yml`), then [agents](docs/operations/install-agent.md). All installation and operations guides, including the [configuration reference](docs/operations/configuration.md) and [troubleshooting](docs/operations/troubleshooting.md): [docs/operations/](docs/operations/README.md).
 
 - Contributing, branch and commit conventions: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Decisions (ADRs): [docs/decisions/](docs/decisions/README.md)
