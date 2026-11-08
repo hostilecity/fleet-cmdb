@@ -78,9 +78,6 @@ In **Settings > Environments**, create **`production`**. Under **Deployment bran
 | `FLEET_RELEASE_KEY_NEXT` | Variable, optional | `RWQ…` | Second line of `next.pub` |
 | `RAILS_LOG_LEVEL` | Variable, optional | `info` (the default) | |
 | `FLEET_EXTRA_SETTINGS` | Variable, optional | `FLEET_SESSION_IDLE_MINUTES=60` | Any other non-secret setting of [configuration.md](configuration.md), one `NAME=value` per line |
-| `DEPLOY_ON_PUSH` | **Repository** variable | `true` | Deploy every push to `main`. Unset: deploys start only by hand |
-
-`DEPLOY_ON_PUSH` is a repository variable (**Settings > Secrets and variables > Actions > Variables**), because the workflow decides whether to run before it enters the environment.
 
 ## 3. Publish the dashboard through the tunnel
 
@@ -126,7 +123,7 @@ Release files and the backup status file are in the Docker volume `fleet-cmdb_st
 
 ## 7. Upgrade, change a setting, roll back
 
-- **Upgrade:** merge to `main`. With `DEPLOY_ON_PUSH=true` the push deploys; otherwise run the workflow. Migrations run on start (`db:prepare`).
+- **Upgrade:** merge to `main`; every push to `main` deploys. Migrations run on start (`db:prepare`).
 - **Change a setting:** change the secret or variable in GitHub, then run the workflow.
 - **Roll back:** open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: that needs a backup (a later issue).
 - Two deploys never overlap; a second one waits.

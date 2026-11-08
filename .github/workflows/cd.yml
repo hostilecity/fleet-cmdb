@@ -4,8 +4,8 @@
 # Cloudflare tunnel. Settings come from the "production" environment; secret values travel only on SSH standard
 # input into a mode-0600 env file for `docker run --env-file`, never on a command line.
 #
-# Runs when started by hand on main (Actions > Deploy > Run workflow), and on every push to main only once the
-# repository variable DEPLOY_ON_PUSH is "true". It deploys the run's own commit (GITHUB_SHA), so to roll back,
+# Runs on every push to main, and when started by hand on main (Actions > Deploy > Run workflow, e.g. after changing
+# a setting). It deploys the run's own commit (GITHUB_SHA), so to roll back,
 # re-run an earlier Deploy run (it redeploys its commit) or revert on main. The runner needs bash, ssh and tar, not
 # git: actions/checkout downloads the commit through the API when git is missing.
 name: Deploy
@@ -30,7 +30,7 @@ jobs:
   deploy:
     name: Deploy to the server
     # Only main is ever deployed: a manual run started from another branch is skipped.
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.DEPLOY_ON_PUSH == 'true')
+    if: github.ref == 'refs/heads/main'
     runs-on: self-hosted
     environment: production
     timeout-minutes: 30
