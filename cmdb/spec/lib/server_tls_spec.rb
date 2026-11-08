@@ -64,6 +64,8 @@ RSpec.describe ServerTls do
     {
       good.merge("FLEET_TLS_CERT_BASE64" => "not base64!") => "FLEET_TLS_CERT_BASE64 is not base64 (encode the PEM file with base64 -w0)",
       good.merge("FLEET_TLS_CERT_BASE64" => Base64.strict_encode64("hello")) => "FLEET_TLS_CERT_BASE64 holds no PEM certificate (-----BEGIN CERTIFICATE-----)",
+      good.merge("FLEET_TLS_CERT_BASE64" => Base64.strict_encode64("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")) =>
+        "FLEET_TLS_CERT_BASE64 holds a certificate that cannot be read",
       good.merge("FLEET_TLS_KEY_BASE64" => Base64.strict_encode64("hello")) => "FLEET_TLS_KEY_BASE64 is not a PEM private key",
       env(server_cert.to_pem, key.to_pem) => "FLEET_TLS_KEY_BASE64 is not the private key of the certificate in FLEET_TLS_CERT_BASE64"
     }.each do |values, message|
@@ -85,6 +87,7 @@ RSpec.describe ServerTls do
     cloudflare = Rails.root.join("../agent/trust").glob("*.pem").sort.map(&:read)
     expect(tls.issuing_root([ *cloudflare, ca.to_pem ])).to eq(ca.to_pem)
     expect(tls.issuing_root(cloudflare)).to be_nil
+    expect(tls.issuing_root([ "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n", ca.to_pem ])).to eq(ca.to_pem) # an unreadable file is skipped
     expect(described_class.from_env(env(server_cert.to_pem, server_key.to_pem)).issuing_root([ ca.to_pem ])).to be_nil
   end
 
