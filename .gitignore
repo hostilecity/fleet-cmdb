@@ -13,6 +13,8 @@
 .env.*
 !.env.example
 *.pem
+# Public certificate authorities compiled into the agent (ADR 0024); certificates only, never keys.
+!agent/trust/cloudflare-origin-*.pem
 *.key
 *.crt
 *.p12

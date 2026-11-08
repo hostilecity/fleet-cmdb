@@ -100,7 +100,7 @@ TOML, root-owned, mode `0600` ([DEC-03](../docs/decisions/0003-agent-privilege.m
 server_url = "https://fleet-agent.example.lan"   # required; https only, host and optional port
 credential = "EXAMPLEkey01.EXAMPLE-secret-not-a-real-credential-0001"   # required; written by `fleet-agent install`
 log_level = "info"                               # error, warn, info (default), debug, trace
-# ca_file = "/etc/fleet-agent/ca.pem"            # extra CA bundle for a private CA; not needed with Let's Encrypt (DEC-05)
+# ca_file = "/etc/fleet-agent/ca.pem"            # extra CA bundle for a private CA; not needed for a Cloudflare Origin CA certificate (ADR 0024)
 # state_dir = "/var/lib/fleet-agent"             # default shown; created with mode 0700
 # update_confirm_seconds = 300                   # how long a new version has to confirm an update; 10..=3600 (see Updates)
 
@@ -126,7 +126,7 @@ If only `interval_seconds` is set, the default bounds widen to include it. [`con
 
 ## HTTP client and retries
 
-- `rustls` with the Debian trust store (`/etc/ssl/certs/ca-certificates.crt`) plus `ca_file`. Every request sends `Authorization: Bearer <credential>` and `User-Agent: fleet-agent/<version>`. Redirects are not followed and environment proxies are ignored, so the credential only goes to `server_url`. Connect timeout 10 s, request timeout 30 s, response body at most 1 MiB.
+- `rustls` with the Debian trust store (`/etc/ssl/certs/ca-certificates.crt`), Cloudflare's Origin CA roots compiled in from `trust/` (ADR 0024; [trust/README.md](trust/README.md)), plus `ca_file`. Every request sends `Authorization: Bearer <credential>` and `User-Agent: fleet-agent/<version>`. Redirects are not followed and environment proxies are ignored, so the credential only goes to `server_url`. Connect timeout 10 s, request timeout 30 s, response body at most 1 MiB.
 - Errors are mapped from the envelope in [`docs/api`](../docs/api/README.md). Transient failures (unreachable, TLS, timeouts, `5xx`, other `4xx`) back off exponentially from 5 s to a cap of 5 minutes with equal jitter, and reset after a success. `401`, `403` (including `reenrollment_required`), and `426` are logged plainly and wait about 30 minutes. `429` waits at least `Retry-After`, plus up to 10% (at most a minute) so throttled agents do not retry together; only a broken header longer than a day is capped.
 - Logs are `key=value` lines with an RFC 3339 UTC timestamp on stdout, for the journal. The credential is held in a type that prints `<redacted>`; logs carry its non-secret key id.
 

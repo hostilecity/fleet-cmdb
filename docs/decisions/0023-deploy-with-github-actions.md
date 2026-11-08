@@ -1,6 +1,6 @@
 # ADR 0023: Deploy the server with GitHub Actions as one container
 
-- Status: Accepted (owner, review of #88, 2026-11-07)
+- Status: Accepted (owner, review of #88, 2026-11-07); the plain-HTTP tunnel origin on port 80 superseded by [ADR 0024](0024-cloudflare-origin-ca-for-the-server.md)
 - Decision issue: #88
 - Requirements: `NFR-1`, `NFR-4`
 - Supersedes in part: [ADR 0005](0005-hosting-tls-deployment.md), its first decision ("Deployment is Docker Compose on one homelab machine") and its consequence listing the compose stack. The rest of ADR 0005 stands: the dashboard behind the Cloudflare tunnel and Access, and the private agent API with a publicly trusted certificate.

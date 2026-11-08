@@ -1,7 +1,9 @@
 //! HTTPS client for the agent API (`/api/v1`, DEC-08, P1-A02).
 //!
-//! - TLS through `rustls` (no OpenSSL), trusting the Debian system roots plus the optional `ca_file`
-//!   from [`crate::config`]. There is no code path that disables certificate verification (NFR-1).
+//! - TLS through `rustls` (no OpenSSL), trusting the Debian system roots, the certificate authorities
+//!   compiled in from `agent/trust/` ([`EMBEDDED_ROOTS`]: Cloudflare's Origin CA, which signs the
+//!   server's certificate, ADR 0024), and the optional `ca_file` from [`crate::config`]. There is no
+//!   code path that disables certificate verification (NFR-1).
 //! - Sends `Authorization: Bearer <credential>` and `User-Agent: fleet-agent/<version>` on every
 //!   request. Redirects are not followed, so the credential only ever goes to the configured host.
 //! - Maps the documented error envelope (`docs/api/README.md`) to [`ApiError`].
@@ -26,6 +28,21 @@ use crate::config::{Config, Credential};
 /// Debian's system trust store (DEC-01), maintained by the `ca-certificates` package.
 pub const SYSTEM_CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 
+/// Certificate authorities compiled into every agent (ADR 0024): Cloudflare's Origin CA roots, ECC and
+/// RSA, which sign the server's certificate. They are part of each signed release, so a root is added
+/// or retired with an agent release, before the server's certificate changes (`agent/trust/README.md`).
+/// Each file must parse completely; the tests pin their fingerprints.
+pub const EMBEDDED_ROOTS: &[(&str, &str)] = &[
+    (
+        "trust/cloudflare-origin-ecc.pem",
+        include_str!("../trust/cloudflare-origin-ecc.pem"),
+    ),
+    (
+        "trust/cloudflare-origin-rsa.pem",
+        include_str!("../trust/cloudflare-origin-rsa.pem"),
+    ),
+];
+
 /// Largest successful response body the agent reads. Heartbeat and inventory responses are tiny.
 pub const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 /// Largest error body the agent reads; the envelope's message is at most 1024 characters.
@@ -39,26 +56,21 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum TrustError {
     /// The `ca_file` from the config could not be read or holds no certificate.
     CaFile(String),
-    /// Neither the system store nor a `ca_file` provided any certificate.
-    NoRoots,
 }
 
 impl fmt::Display for TrustError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CaFile(message) => f.write_str(message),
-            Self::NoRoots => write!(
-                f,
-                "no trusted certificate authorities: {SYSTEM_CA_BUNDLE} is missing or empty and no `ca_file` is set; install the ca-certificates package"
-            ),
         }
     }
 }
 
 impl std::error::Error for TrustError {}
 
-/// The roots the agent trusts: every certificate in `system_bundle` (if present) plus every
-/// certificate in `ca_file` (if configured, and then required to exist and hold one).
+/// The roots the agent trusts: every certificate in `system_bundle` (if present), the
+/// [`EMBEDDED_ROOTS`], and every certificate in `ca_file` (if configured, and then required to exist
+/// and hold one). Never empty, since the embedded roots are always there.
 pub fn trust_roots(
     system_bundle: &Path,
     ca_file: Option<&Path>,
@@ -68,6 +80,7 @@ pub fn trust_roots(
         Ok(pem) => pem_certificates(&pem).0,
         Err(_) => Vec::new(),
     };
+    roots.extend(embedded_roots());
     if let Some(path) = ca_file {
         let pem = fs::read(path).map_err(|e| {
             TrustError::CaFile(format!("cannot read `ca_file` {}: {e}", path.display()))
@@ -89,10 +102,16 @@ pub fn trust_roots(
         }
         roots.extend(extra);
     }
-    if roots.is_empty() {
-        return Err(TrustError::NoRoots);
-    }
     Ok(roots)
+}
+
+/// The certificates of [`EMBEDDED_ROOTS`]. They are fixed at build time and checked by the tests, so
+/// nothing can be skipped here.
+pub fn embedded_roots() -> Vec<Certificate<'static>> {
+    EMBEDDED_ROOTS
+        .iter()
+        .flat_map(|(_, pem)| pem_certificates(pem.as_bytes()).0)
+        .collect()
 }
 
 /// The certificates in a PEM bundle, and a description of each entry that is malformed or is not a
@@ -672,7 +691,46 @@ pub(crate) mod tests {
             error.to_string().contains("contains no PEM certificate"),
             "{error}"
         );
-        assert_eq!(trust_roots(&absent, None).unwrap_err(), TrustError::NoRoots);
+    }
+
+    #[test]
+    fn the_embedded_roots_are_trusted_even_without_a_system_store_or_ca_file() {
+        let dir = TempDir::new();
+        let roots = trust_roots(&dir.path("absent.pem"), None).unwrap();
+        assert_eq!(roots.len(), EMBEDDED_ROOTS.len());
+        let with_ca = trust_roots(
+            &dir.path("absent.pem"),
+            Some(&dir.write("ca.pem", &TestPki::generate().ca_pem)),
+        )
+        .unwrap();
+        assert_eq!(with_ca.len(), EMBEDDED_ROOTS.len() + 1);
+    }
+
+    #[test]
+    fn the_embedded_roots_are_cloudflares_origin_ca_roots_and_nothing_else() {
+        // ADR 0024. Fingerprints (SHA-256 of the DER) as published by Cloudflare in its docs
+        // repository and in cloudflared (agent/trust/README.md). Changing a file means changing these.
+        let expected = [
+            (
+                "trust/cloudflare-origin-ecc.pem",
+                "aa63697a22764b67b2134ce14cb5690ea336940b93986113f49545917832d80d",
+            ),
+            (
+                "trust/cloudflare-origin-rsa.pem",
+                "d3c7e85c91707fc0a12abc5d88266747aa4fa8e7b162f633ffb3c9d989947620",
+            ),
+        ];
+        assert_eq!(EMBEDDED_ROOTS.len(), expected.len());
+        for ((name, pem), (expected_name, fingerprint)) in EMBEDDED_ROOTS.iter().zip(expected) {
+            assert_eq!(*name, expected_name);
+            let (certificates, problems) = pem_certificates(pem.as_bytes());
+            assert!(problems.is_empty(), "{name}: {problems:?}");
+            assert_eq!(certificates.len(), 1, "{name} holds one certificate");
+            let digest = ring::digest::digest(&ring::digest::SHA256, certificates[0].der());
+            let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(hex, fingerprint, "{name}");
+        }
+        assert_eq!(embedded_roots().len(), EMBEDDED_ROOTS.len());
     }
 
     #[test]
@@ -685,7 +743,7 @@ pub(crate) mod tests {
             trust_roots(&absent, Some(&dir.write("good.pem", &pki.ca_pem)))
                 .unwrap()
                 .len(),
-            1
+            EMBEDDED_ROOTS.len() + 1
         );
         for (name, extra, problem) in [
             (
