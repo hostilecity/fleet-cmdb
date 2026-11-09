@@ -46,6 +46,16 @@ docker exec fleet-cmdb bin/rails operators:disallow EMAIL=someone@example.com   
 
 Also add or remove the address in the Cloudflare Access policy ([install-server.md](install-server.md#3-publish-the-dashboard-through-the-tunnel)): both must allow someone for them to sign in.
 
+## Reset an operator's second factor
+
+Each operator sets up their own authenticator app under **Settings > Your second factor**, and needs it to create or cancel tasks and change task settings (P3-S09). A lost phone with saved recovery codes needs nothing from you: a recovery code works anywhere a 6-digit code is asked for, including moving to a new phone. With neither phone nor recovery code, only the console can reset it, on purpose, so someone who took over an operator's Google session cannot reset it from the dashboard:
+
+```sh
+docker exec fleet-cmdb bin/rails second_factor:reset EMAIL=someone@example.com
+```
+
+It removes their authenticator and recovery codes, ends any step-up window, and records `second_factor.reset` in the audit log with the system as actor. Check that the request really comes from the operator (in person or on a channel other than the dashboard) before running it. They then set up a new one, which asks for a fresh Google sign-in first.
+
 ## Read the audit log
 
 **Audit log** in the top bar lists every entry, newest first: who (an operator, a host, or the system), what, on which host or object, and when (UTC), with the before and after values of edits. Filter by actor, action, host, and date range, or hide sign-ins; the filters are in the URL, so a filtered view can be bookmarked. A host's page shows its own entries, with **All entries for this host**.
