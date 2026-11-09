@@ -21,6 +21,13 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] AC-3.8: expiry works as specified
 - [ ] Jobs are idempotent and safe if run concurrently
 
+### Handed over from P3-TASK-API (#30)
+
+- The claim lease (5 minutes), the running lease (deadline plus 5 minutes' grace), and the output limit (64 KiB) are constants (`AgentTasks::CLAIM_LEASE`, `AgentTasks::RESULT_GRACE`, `TaskOutput::LIMIT_BYTES`). P3-S06 makes them settings.
+- A claimed task past its `expires_at` is no longer delivered, and it blocks its host's poll until this job requeues it and then expires it.
+- The cancel directive goes in `task-poll.response` and `task-progress.response` as an optional field (additive). A start for a task that is not claimed already answers `run: false`.
+- A `start` that arrives after the task was requeued (threat model L2) answers `run: false` with `state: queued`. Decide here whether that stays so.
+
 ## P3-S06: Server-side allowlists and task settings
 
 ### Scope

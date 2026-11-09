@@ -79,8 +79,8 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     expect(writes.first).to match(/UPDATE "hosts"/)
     # credential + host (authentication), host FOR UPDATE and credential re-check (under the lock), UPDATE,
     # then the intervals setting and the host's rollout membership (P1-UPDATES), and its outstanding report
-    # requests (P2-S03): three indexed SELECTs
-    expect(queries.size).to be <= 8, queries.inspect
+    # requests (P2-S03), and whether it has a task waiting (P3-S03): four indexed SELECTs
+    expect(queries.size).to be <= 9, queries.inspect
     expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events/)
   end
 
@@ -171,6 +171,39 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
       expect(rollout.rollout_hosts.sole.state).to eq("updating")
       heartbeat(body(agent_version: "0.3.0")) # now running the release: nothing more to say
       expect(json["directives"]).to eq({})
+    end
+
+    describe "tasks_available (P3-S03)" do
+      def queued(now: Time.current)
+        host.update_columns(task_catalog_version: TaskCatalog.current.version, task_types_supported: %w[refresh_reports],
+                            task_types_enabled: %w[refresh_reports], task_capabilities_reported_at: Time.current)
+        request = { "type" => "refresh_reports", "parameters" => {}, "target" => { "host_ids" => [ host.id ] } }
+        TaskBatches.create!(request, operator:, now:).tasks.sole
+      end
+
+      it "is sent while the host has a queued or unstarted claimed task, so the agent polls at once" do
+        task = queued
+        heartbeat
+        expect(json["directives"]).to eq("tasks_available" => {})
+        expect(ApiContract.errors("heartbeat.response", "v1", json)).to eq([])
+        task.claim!(actor: host, lease_expires_at: 5.minutes.from_now)
+        heartbeat
+        expect(json["directives"]).to eq("tasks_available" => {})
+      end
+
+      it "is not sent while a task is running, or for a task past its expiry" do
+        task = queued
+        waiting = queued
+        task.claim!(actor: host, lease_expires_at: 5.minutes.from_now)
+        task.start!(actor: host, lease_expires_at: 15.minutes.from_now)
+        heartbeat
+        expect(json["directives"]).to eq({}) # one task at a time: the poll would return nothing
+        task.succeed!(actor: host)
+        waiting.cancel!(actor: operator)
+        queued(now: 25.hours.ago) # still queued, but past its expiry by the database clock
+        heartbeat
+        expect(json["directives"]).to eq({})
+      end
     end
 
     it "sends no agent_update to a host outside the rollout" do
