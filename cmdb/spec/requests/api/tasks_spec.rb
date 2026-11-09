@@ -507,6 +507,16 @@ RSpec.describe "Task API", type: :request do
   end
 
   describe "task controls (P3-S05, P3-S06)" do
+    it "expires a claimed task whose start arrives after its expiry, before the job ran, instead of starting it (review of #167)" do
+      task = queued_task(now: 24.hours.ago + 2.seconds)
+      poll
+      sleep 2.1 # the database clock passes the expiry
+      start(task)
+      expect(json).to eq("id" => task.uuid, "state" => "expired", "run" => false)
+      expect(entries(Audit::Actions::TASK_EXPIRED, task).sole).to have_attributes(actor_type: "system")
+      expect(entries(Audit::Actions::TASK_STARTED, task)).to be_empty
+    end
+
     it "sends the poll interval hint from the settings" do
       TaskSettings.update_limits!({ "poll_seconds" => "120" }, actor: operator)
       poll

@@ -20,6 +20,11 @@ class CreateTaskAllowedServices < ActiveRecord::Migration[8.1]
     add_check_constraint :task_allowed_services, "service ~ '^[a-z0-9][a-z0-9_.-]{0,55}\\.service$'", name: "task_allowed_services_service_format"
     add_check_constraint :task_allowed_services, "tag IS NULL OR tag ~ '^[a-z0-9][a-z0-9_-]{0,31}$'", name: "task_allowed_services_tag_format"
 
+    # The expiry job looks for queued and claimed tasks past their expiry (TaskLeases.expire!); the old index covered
+    # queued ones only (review of #167).
+    remove_index :tasks, :expires_at, where: "state = 'queued'", name: "index_tasks_queued_by_expiry"
+    add_index :tasks, :expires_at, where: "state IN ('queued', 'claimed')", name: "index_tasks_waiting_by_expiry"
+
     # CREATE OR REPLACE in place: fx's update_function drops the function first, which its triggers depend on.
     reversible do |direction|
       direction.up { execute Rails.root.join("db/functions/tasks_guard_v02.sql").read }

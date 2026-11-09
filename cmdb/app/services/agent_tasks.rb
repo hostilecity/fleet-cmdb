@@ -17,8 +17,9 @@
 #   (Task#refusal_reason). A task that no longer passes is refused with its reason, the system as actor, and the
 #   next one is tried.
 #
-# Start (start!): claimed becomes running, with a lease to the deadline plus a grace period. Anything else is
-# left as it is and reported, so the agent runs a task only when the server says it is running. A start for a task
+# Start (start!): claimed becomes running, with a lease to the deadline plus a grace period. A claim past its expiry
+# expires instead (requeued and expired, the system as actor), so a task never starts after its expiry. Anything
+# else is left as it is and reported, so the agent runs a task only when the server says it is running. A start for a task
 # that went back to the queue when its claim lapsed (threat model L2) answers run: false with state queued; the
 # agent has not executed it, and the next poll claims it again (P3-S05).
 #
@@ -107,6 +108,8 @@ module AgentTasks
   def start!(host:, task:, agent_started_at:, now: Time.current)
     task.lock!
     return task unless task.state == "claimed"
+    # Past its expiry by the database clock, as the poll checks it: it expires now instead of starting (review of #167).
+    return task.requeue!(actor: Audit::SYSTEM).expire!(actor: Audit::SYSTEM, now:) unless Task.where(id: task.id).where("expires_at > clock_timestamp()").exists?
     return task if refuse_if_invalid(task)
 
     task.start!(actor: host, lease_expires_at: now + task.timeout + RESULT_GRACE, agent_started_at:, now:)
