@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings: second factor · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html" aria-current="page">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Settings</h1><p>Your own second factor. Each operator sets up their own; nobody can see or set up another operator's.</p></div></div>
+<nav class="tabs" aria-label="Settings sections"><a href="../phase-1/settings.html">Liveness</a><a href="settings-tasks.html">Tasks</a><a href="second-factor.html" aria-current="page">Your second factor</a></nav>
+
+<h2 id="none" class="state-title">Not set up</h2>
+<div class="sheet">
+<h2 style="margin-top:0">You have no second factor</h2>
+<p>Creating or cancelling tasks and changing task settings ask for a 6-digit code from an authenticator app on your phone, as well as your Google sign-in. Without one you can read everything but cannot do those things.</p>
+<p>Any app that supports time-based codes (TOTP) works. You will scan a code, type one 6-digit code to check it, and save 10 recovery codes.</p>
+<div class="actions"><a class="btn" href="totp-enrol.html">Set up an authenticator app</a></div>
+</div>
+<p class="note"><span class="review-q">Review Q24.</span> The second factor lives under Settings as "Your second factor", next to the server-wide task settings, because there is no account page yet. The Tasks list and the create flow link here when it is missing. Alternative: a menu under your name in the top bar ("Your account"), which is where people look for personal security settings.</p>
+
+<h2 id="enrolled" class="state-title">Set up</h2>
+<div class="sheet">
+<h2 style="margin-top:0"><span class="lamp online">Authenticator app set up</span></h2>
+<dl class="facts" style="margin-top:.75rem">
+  <dt>Set up</dt><dd>2026-11-08 09:12 UTC</dd>
+  <dt>Last code accepted</dt><dd>2026-11-08 14:16 UTC</dd>
+  <dt>Recovery codes</dt><dd>9 of 10 unused. One was used on 2026-11-08 at 12:40 UTC.</dd>
+</dl>
+<div class="actions" style="margin-top:1rem"><a class="btn quiet" href="totp-recovery-codes.html#replace">Make new recovery codes</a><a class="btn quiet" href="totp-enrol.html#replace">Move to a new phone</a></div>
+<p class="hint" style="margin-bottom:0">Both ask for a code from your current authenticator or a recovery code; moving to a new phone also asks for a fresh Google sign-in. New recovery codes replace the old ones.</p>
+</div>
+
+<h2 id="lost" class="state-title">Lost your authenticator?</h2>
+<div class="sheet">
+<p style="margin-top:0"><strong>If you still have recovery codes</strong>, each one works once in place of a 6-digit code. Use one to <a href="totp-enrol.html#replace">move to a new phone</a>.</p>
+<p><strong>If you have neither your phone nor a recovery code</strong>, it cannot be reset from the dashboard, on purpose: someone who took over your Google session could otherwise reset it too. Ask the server's administrator to run this on the server:</p>
+<pre class="code">bin/rails second_factor:reset[example.operator@example.com]</pre>
+<p style="margin-bottom:0">It removes your authenticator and recovery codes and records an audit entry. You then set up a new one here.</p>
+</div>
+<p class="note"><span class="review-q">Review Q25.</span> Recovery codes: 10 codes, each usable once wherever a 6-digit code is asked for, including moving to a new phone, so a lost phone with saved codes needs no administrator. With neither, only the console reset works (P3-S09), which ADR 0006 asks for. Alternative: recovery codes only pass the step-up for one action and never replace the authenticator, so every lost phone goes through the console. The rake task name is a proposal.</p>
+</main>
+</body>
+</html>

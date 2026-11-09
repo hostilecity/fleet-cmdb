@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task #1201 · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="batch.html">&larr; Batch 87</a> &middot; <a href="tasks.html">Tasks</a></p>
+<div class="host-head">
+  <div>
+    <h1>Task #1201: Apply package updates on sim-021</h1>
+    <div class="sub"><span class="lamp s-succeeded">Succeeded</span><span>Batch <a href="batch.html">87</a> (8 hosts)</span><span>Created by example.operator@example.com</span></div>
+  </div>
+</div>
+<section class="result ok" aria-labelledby="res-h">
+<h2 id="res-h">Succeeded in 4 min 16 s: 14 packages upgraded, 1 held back</h2>
+<p><strong>Reboot required.</strong> The kernel and the C library were upgraded. The task never reboots; reboot sim-021 when it suits you.</p>
+<p class="code-line">Exit status 0 &middot; reboot_required: true</p>
+</section>
+<div class="columns">
+<div>
+<h2 style="margin-top:0">What happened</h2>
+<dl class="facts sheet">
+  <dt>Upgraded</dt><dd>14 packages <details class="fix" style="display:inline-block;margin:0 0 0 .5rem"><summary>List</summary><p class="mono" style="font-size:.8125rem">libc6, libc-bin, libc-l10n, locales, linux-image-6.12.0-9-amd64, linux-libc-dev, libssl3t64, openssl, openssl-provider-legacy, nginx, nginx-common, tzdata, curl, libcurl4t64</p></details></dd>
+  <dt>Held back</dt><dd>1 package: <span class="mono">acme-daemon</span>, because its upgrade would install a new package. Upgrade it by hand if you want it.</dd>
+  <dt>Reboot required</dt><dd>Yes: the installed kernel is newer than the running one, and the C library was upgraded (reported by <span class="mono">needrestart</span> on the VM).</dd>
+  <dt>Services using old libraries</dt><dd><span class="mono">nginx.service</span>, <span class="mono">cron.service</span>. Not restarted; the task never restarts services. <a href="create-params.html">Restart a service</a></dd>
+  <dt>Package report</dt><dd>Received 14:07:05, 8 seconds after the task finished. <a href="../phase-2/host-packages-diff.html">What changed</a></dd>
+</dl>
+</div>
+<div>
+<h2 style="margin-top:0">Task</h2>
+<dl class="facts sheet tight">
+  <dt>Type</dt><dd>Apply package updates <span class="mono muted">apply_package_updates</span></dd>
+  <dt>Parameters</dt><dd>None</dd>
+  <dt>Host</dt><dd><a href="host-tasks.html">sim-021</a> <span class="mono muted">sim-021.example.lan</span></dd>
+  <dt>Time limit</dt><dd>60 minutes</dd>
+  <dt>Can be cancelled</dt><dd>Not once running</dd>
+  <dt>Expiry</dt><dd>Would have expired 2026-11-09 14:02 UTC if not started</dd>
+  <dt>Agent</dt><dd><span class="mono">0.9.0</span>, catalog version 1</dd>
+</dl>
+<p style="font-size:.875rem"><a href="create-confirm.html#updates">What this task runs</a></p>
+</div>
+</div>
+
+<h2 id="timeline">Timeline</h2>
+<div class="table-wrap"><table class="timeline stack">
+<caption class="visually-hidden">State changes of task 1201</caption>
+<thead><tr><th scope="col">Server time (UTC)</th><th scope="col">Agent's time (UTC)</th><th scope="col">What happened</th><th scope="col">By</th></tr></thead>
+<tbody>
+<tr><td data-label="Server time (UTC)" class="when mono">2026-11-08 14:02:11</td><td data-label="Agent's time (UTC)" class="agent mono">&mdash;</td><td data-label="What happened"><span class="lamp s-queued">Queued</span> Created in batch 87.</td><td data-label="By">example.operator@example.com<span class="actor">Operator</span></td></tr>
+<tr><td data-label="Server time (UTC)" class="when mono">14:02:40</td><td data-label="Agent's time (UTC)" class="agent mono">&mdash;</td><td data-label="What happened"><span class="lamp s-claimed">Claimed</span> Delivered to sim-021 on its poll. Lease until 14:07:40.</td><td data-label="By">sim-021<span class="actor">Host</span></td></tr>
+<tr><td data-label="Server time (UTC)" class="when mono">14:02:41</td><td data-label="Agent's time (UTC)" class="agent mono">14:02:41</td><td data-label="What happened"><span class="lamp s-running">Running</span> The agent recorded the task and started it.</td><td data-label="By">sim-021<span class="actor">Host</span></td></tr>
+<tr><td data-label="Server time (UTC)" class="when mono">14:03:10</td><td data-label="Agent's time (UTC)" class="agent mono">14:03:10</td><td data-label="What happened">Progress: package lists refreshed; 15 upgrades available.</td><td data-label="By">sim-021<span class="actor">Host</span></td></tr>
+<tr><td data-label="Server time (UTC)" class="when mono">14:06:58</td><td data-label="Agent's time (UTC)" class="agent mono">14:06:57</td><td data-label="What happened"><span class="lamp s-succeeded">Succeeded</span> Result received: exit status 0, 6.1 KiB of output.</td><td data-label="By">sim-021<span class="actor">Host</span></td></tr>
+</tbody></table></div>
+<p class="note"><span class="review-q">Review Q18.</span> Each row shows the server's time and, where the agent reported one, the agent's own time, side by side (P3-DASH-TASKS). When the two differ by more than a minute the agent's time gets a "clock differs by N" line, so a wrong VM clock is visible rather than silently reordering the timeline. Rows are ordered by server time. The progress row comes from the agent's progress report, not from the audit log.</p>
+
+<div class="output-head"><h2 id="output">Output</h2><span class="muted">6.1 KiB, complete (the limit is 64 KiB). Shown as plain text. <a href="task.html">Download as a text file</a></span></div>
+<pre class="output">$ apt-get update
+Hit:1 http://deb.example.lan/debian trixie InRelease
+Get:2 http://deb.example.lan/debian-security trixie-security InRelease [43.4 kB]
+Get:3 http://deb.example.lan/debian-security trixie-security/main amd64 Packages [61.2 kB]
+Fetched 105 kB in 1s (98.4 kB/s)
+Reading package lists...
+$ apt-get upgrade --yes
+Reading package lists...
+Building dependency tree...
+Calculating upgrade...
+The following packages have been kept back:
+  acme-daemon
+The following packages will be upgraded:
+  curl libc-bin libc-l10n libc6 libcurl4t64 libssl3t64 linux-image-6.12.0-9-amd64 linux-libc-dev locales
+  nginx nginx-common openssl openssl-provider-legacy tzdata
+14 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+Need to get 112 MB of archives.
+&hellip;
+Setting up libc6:amd64 (2.41-12+deb13u1) ...
+Setting up nginx (1.26.3-3+deb13u2) ...
+Processing triggers for man-db (2.13.1-1) ...
+$ needrestart -b
+NEEDRESTART-KSTA: 3
+NEEDRESTART-SVC: nginx.service
+NEEDRESTART-SVC: cron.service</pre>
+<p class="note"><span class="review-q">Review Q19.</span> Output is the agent's captured text, rendered escaped and never as markup, in a scrolling box. The <span class="mono">$</span> lines are written by the agent between steps (not printed by the VM), so the reader can see which step printed what. "Download as a text file" serves the same bytes as <span class="mono">text/plain</span> with a download header, never as a page. Alternative: no download; the page is the only way to read it.</p>
+
+<h2 id="audit">Audit entries</h2>
+<div class="table-wrap"><table class="audit">
+<caption class="visually-hidden">Audit entries for task 1201</caption>
+<thead><tr><th scope="col">When (UTC)</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Details</th></tr></thead>
+<tbody>
+<tr><td class="when mono">2026-11-08 14:02:11</td><td>example.operator@example.com<span class="kind">Operator</span></td><td>Task created</td><td>Batch 87, apply_package_updates, no parameters</td></tr>
+<tr><td class="when mono">14:02:40</td><td>sim-021<span class="kind">Host</span></td><td>Task claimed</td><td>Lease until 14:07:40</td></tr>
+<tr><td class="when mono">14:02:41</td><td>sim-021<span class="kind">Host</span></td><td>Task started</td><td>Agent time 14:02:41</td></tr>
+<tr><td class="when mono">14:06:58</td><td>sim-021<span class="kind">Host</span></td><td>Task result received</td><td>Succeeded, exit status 0, reboot required</td></tr>
+</tbody></table></div>
+<p class="muted" style="font-size:.875rem">Output is never copied into the audit log; entries refer to this task. <a href="audit.html">All task audit entries</a></p>
+</main>
+</body>
+</html>

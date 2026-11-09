@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batch: partial and cancelled · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="tasks.html">&larr; Tasks</a></p>
+<div class="page-head"><div><h1>Batch: partial and cancelled</h1><p>Two finished batches: one where hosts ended differently, and one cancelled while a task was running. The layout is <a href="batch.html">the batch page</a>.</p></div></div>
+
+<h2 class="state-title">Batch 85: Restart <span class="mono">nginx.service</span> on 7 hosts, finished with problems</h2>
+<p class="muted">Created 2026-11-07 11:15:30 UTC by example.operator@example.com &middot; Tag <span class="tag">web</span></p>
+<div class="notice error" role="status"><strong>Finished: 4 succeeded, 3 did not.</strong><p>1 failed, 1 was refused by the VM, and 1 expired before its host came back. Each host's row says why.</p></div>
+<div class="taskstrip" role="group" aria-label="Tasks in batch 85 by state">
+  <a href="#b85"><span class="count zero">0</span><span class="lamp s-queued">Waiting</span></a>
+  <a href="#b85"><span class="count zero">0</span><span class="lamp s-running">Running</span></a>
+  <a href="#b85"><span class="count">4</span><span class="lamp s-succeeded">Succeeded</span></a>
+  <a href="#b85"><span class="count">1</span><span class="lamp s-failed">Failed</span></a>
+  <a href="#b85"><span class="count zero">0</span><span class="lamp s-timed_out">Timed out</span></a>
+  <a href="#b85"><span class="count">1</span><span class="lamp s-refused">Refused</span></a>
+  <a href="#b85"><span class="count">1</span><span class="lamp s-expired">Expired</span></a>
+  <a href="#b85"><span class="count zero">0</span><span class="lamp s-cancelled">Cancelled</span></a>
+</div>
+<div class="bar-stack" aria-hidden="true"><span class="b-succeeded" style="width:57.1%"></span><span class="b-failed" style="width:14.3%"></span><span class="b-refused" style="width:14.3%"></span><span class="b-expired" style="width:14.3%"></span></div>
+<p class="bar-legend">4 succeeded, 1 failed, 1 refused, 1 expired.</p>
+<div class="actions" style="margin-bottom:1rem"><a class="btn quiet" href="create-confirm.html">Run again on the 3 hosts that did not succeed</a></div>
+<div class="table-wrap" id="b85"><table class="stack">
+<caption class="visually-hidden">Tasks in batch 85</caption>
+<thead><tr><th scope="col">Host</th><th scope="col">State</th><th scope="col">Why</th><th scope="col">Task</th></tr></thead>
+<tbody>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-005</a></td><td data-label="State"><span class="lamp s-failed">Failed</span></td><td data-label="Why">nginx.service did not come back: systemd reports it <span class="mono">failed</span> after the restart. The output has systemd's message.</td><td data-label="Task"><a href="task-states.html#failed-service">#1189</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-007</a></td><td data-label="State"><span class="lamp s-refused">Refused</span></td><td data-label="Why">Not in this VM's own allowlist: sim-007's configuration changed after its last heartbeat and no longer lists nginx.service. Nothing ran.</td><td data-label="Task"><a href="task-states.html#refused">#1190</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-004</a></td><td data-label="State"><span class="lamp s-expired">Expired</span></td><td data-label="Why">sim-004 did not poll within 24 hours (offline from 2026-11-07 08:12 until 2026-11-08 11:20). The task was never delivered and will not run when the host returns.</td><td data-label="Task"><a href="task-states.html#expired">#1191</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-001</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Why">Restarted; active again after 1.2 s.</td><td data-label="Task"><a href="task.html">#1185</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-002</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Why">Restarted; active again after 0.9 s.</td><td data-label="Task"><a href="task.html">#1186</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-003</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Why">Restarted; active again after 1.0 s.</td><td data-label="Task"><a href="task.html">#1187</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-008</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Why">Restarted; active again after 1.4 s.</td><td data-label="Task"><a href="task.html">#1188</a></td></tr>
+</tbody></table></div>
+<p class="note"><span class="review-q">Review Q16.</span> "Run again on the hosts that did not succeed" starts the normal create flow at the confirmation with the same type, parameters, and those hosts filled in; it is a new batch, it is checked again from scratch, and it needs the second factor. It is a convenience only. Alternative: no shortcut; the operator starts a new task from scratch.</p>
+<p class="note">The batch outcome sentence is red when anything did not succeed, amber for a batch that only expired or was cancelled, and plain when every task succeeded. The wording, not the colour, carries it.</p>
+
+<h2 id="cancelled" class="state-title">Batch 86: Restart <span class="mono">nginx.service</span> on 7 hosts, cancelled while one was running</h2>
+<p class="muted">Created 2026-11-08 13:40:02 UTC by example.operator@example.com &middot; Cancel requested 13:41:20 UTC by example.reviewer@example.com</p>
+<div class="notice" role="status"><strong>Cancelled. 1 task was already running and is finishing.</strong><p>Restarting a service cannot be stopped safely once it has started, so the restart on sim-003 runs to completion; it stops after 5 minutes at most. The 4 tasks that had not started were cancelled and will never be delivered. Nothing further in this batch will start.</p></div>
+<div class="taskstrip" role="group" aria-label="Tasks in batch 86 by state">
+  <a href="#b86"><span class="count zero">0</span><span class="lamp s-queued">Waiting</span></a>
+  <a href="#b86"><span class="count">1</span><span class="lamp s-cancel-req">Running, cancel requested</span></a>
+  <a href="#b86"><span class="count">2</span><span class="lamp s-succeeded">Succeeded</span></a>
+  <a href="#b86"><span class="count zero">0</span><span class="lamp s-failed">Failed</span></a>
+  <a href="#b86"><span class="count zero">0</span><span class="lamp s-timed_out">Timed out</span></a>
+  <a href="#b86"><span class="count zero">0</span><span class="lamp s-refused">Refused</span></a>
+  <a href="#b86"><span class="count zero">0</span><span class="lamp s-expired">Expired</span></a>
+  <a href="#b86"><span class="count">4</span><span class="lamp s-cancelled">Cancelled</span></a>
+</div>
+<div class="table-wrap" id="b86"><table class="stack">
+<caption class="visually-hidden">Tasks in batch 86</caption>
+<thead><tr><th scope="col">Host</th><th scope="col">State</th><th scope="col">Why</th><th scope="col">Task</th></tr></thead>
+<tbody>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-003</a></td><td data-label="State"><span class="lamp s-cancel-req">Running, cancel requested</span></td><td data-label="Why">Started 13:40:31, before the cancel. Cannot be stopped safely; it finishes, and its result is recorded as usual.</td><td data-label="Task"><a href="task-states.html#cancel-requested">#1199</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-002</a></td><td data-label="State"><span class="lamp s-cancelled">Cancelled</span></td><td data-label="Why">Cancelled before delivery. Never ran.</td><td data-label="Task"><a href="task-states.html#cancelled">#1198</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-004</a></td><td data-label="State"><span class="lamp s-cancelled">Cancelled</span></td><td data-label="Why">Cancelled before delivery. Never ran.</td><td data-label="Task"><a href="task-states.html#cancelled">#1200</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-005</a></td><td data-label="State"><span class="lamp s-cancelled">Cancelled</span></td><td data-label="Why">Picked up by the agent but not started. The server refused its start and told it to drop the task. Never ran.</td><td data-label="Task"><a href="task-states.html#cancelled-claimed">#1196</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-007</a></td><td data-label="State"><span class="lamp s-cancelled">Cancelled</span></td><td data-label="Why">Cancelled before delivery. Never ran.</td><td data-label="Task"><a href="task-states.html#cancelled">#1197</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-001</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Why">Finished 13:40:44, before the cancel.</td><td data-label="Task"><a href="task.html">#1194</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-008</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Why">Finished 13:40:52, before the cancel.</td><td data-label="Task"><a href="task.html">#1195</a></td></tr>
+</tbody></table></div>
+<p class="note"><span class="review-q">Review Q17.</span> Drawn as P3-S05 reads FR-3.2: a running task that cannot be interrupted is not stopped, and no task of the same batch that has not started will start. The running row keeps its real state (running) with "cancel requested" beside it, and when it finishes it ends as succeeded or failed with "cancel requested at 13:41:20" on its page; it is never shown as cancelled, because it was not. Please confirm the reading (the spec asks for it to be recorded in DEC-14).</p>
+</main>
+</body>
+</html>

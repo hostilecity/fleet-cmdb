@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New task: parameters · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="create-type.html">&larr; Task type</a></p>
+<div class="page-head"><div><h1>New task: Restart a service</h1><p>The only parameter is which service. You choose it from the server's allowlist; you cannot type a name here.</p></div></div>
+<ol class="flow" aria-label="New task: step 2 of 4"><li class="done"><a href="create-type.html"><span class="lbl">Task type</span></a></li><li aria-current="step"><span class="lbl">Parameters</span></li><li><span class="lbl">Targets</span></li><li><span class="lbl">Confirm</span></li></ol>
+<form class="form wide" action="create-targets.html" method="get">
+<div class="field"><label for="svc">Service</label>
+<select id="svc" name="service" aria-describedby="svc-hint">
+  <option value="">Choose a service</option>
+  <option selected>nginx.service (tag web only)</option>
+  <option>postgresql.service (tag db only)</option>
+  <option>chrony.service</option>
+</select>
+<p class="hint" id="svc-hint">From the <a href="settings-tasks.html#allowlist">restartable-services allowlist</a>: 3 services. <span class="mono">nginx.service</span> is allowed only on hosts tagged <span class="tag">web</span>, and <span class="mono">postgresql.service</span> only on hosts tagged <span class="tag">db</span>; the next step shows which hosts that leaves.</p></div>
+<div class="actions"><button class="btn" type="submit">Next: targets</button><a class="btn quiet" href="create-type.html">Back</a></div>
+</form>
+<p class="note"><span class="review-q">Review Q5.</span> The service is a list, never a text box: a name can reach a task only by being added to the allowlist first (ADR 0015), which needs the second factor and is audited. The list shows every allowlisted service; a service allowed only for some tags is still listed and the tag is named, and the targets step excludes hosts outside that tag. Alternative: ask for the targets first and list only the services allowed on all of them, which hides services and makes the order of steps matter.</p>
+
+<h2 id="refresh" class="state-title">Collect fresh reports</h2>
+<form class="form wide" action="create-targets.html" method="get">
+<fieldset class="field"><legend>Reports to collect</legend>
+<div class="checks"><label><input type="checkbox" name="reports[]" value="inventory" checked> Inventory</label><label><input type="checkbox" name="reports[]" value="config" checked> Configuration</label><label><input type="checkbox" name="reports[]" value="packages" checked> Packages</label></div>
+<p class="hint">At least one. Each report is sent even if nothing changed; an unchanged report records no new snapshot.</p></fieldset>
+<div class="actions"><button class="btn" type="submit">Next: targets</button><a class="btn quiet" href="create-type.html">Back</a></div>
+</form>
+<p class="note"><span class="review-q">Review Q6.</span> All three reports are ticked by default. The host page keeps its Phase 2 "Request fresh report" buttons, which need no second factor because they only ask for data (DEC-13); this task is for many hosts at once and, being a task, needs the second factor (FR-3.4). Alternative: replace the Phase 2 buttons with this task, so there is one way to ask for reports, at the cost of a second factor for a read-only request.</p>
+
+<h2 id="updates" class="state-title">Apply package updates</h2>
+<div class="form wide"><p style="margin-top:0"><strong>This task has no parameters.</strong> It always does the same thing (ADR 0016): refresh the package lists, upgrade what can be upgraded without removing or adding packages, keep local configuration, respect holds, never reboot. There is no "security updates only" choice.</p>
+<div class="actions"><a class="btn" href="create-targets.html">Next: targets</a><a class="btn quiet" href="create-type.html">Back</a></div></div>
+
+<h2 id="errors" class="state-title">Errors in place</h2>
+<form class="form wide" action="create-targets.html" method="get">
+<div class="notice error" role="alert"><strong>Check the parameters.</strong><p>1 problem: choose at least one report.</p></div>
+<fieldset class="field invalid"><legend>Reports to collect</legend>
+<div class="checks"><label><input type="checkbox" name="reports[]" value="inventory" aria-describedby="rep-err"> Inventory</label><label><input type="checkbox" name="reports[]" value="config"> Configuration</label><label><input type="checkbox" name="reports[]" value="packages"> Packages</label></div>
+<p class="error-text" id="rep-err">Choose at least one report.</p></fieldset>
+<div class="actions"><button class="btn" type="submit">Next: targets</button></div>
+</form>
+<form class="form wide" action="create-targets.html" method="get" style="margin-top:1rem">
+<div class="notice error" role="alert"><strong>Check the parameters.</strong><p>The service you chose is no longer on the allowlist. It was removed at 13:58 UTC by example.reviewer@example.com.</p></div>
+<div class="field invalid"><label for="svc2">Service</label>
+<select id="svc2" name="service" aria-invalid="true" aria-describedby="svc2-err"><option value="">Choose a service</option><option>nginx.service (tag web only)</option><option>chrony.service</option></select>
+<p class="error-text" id="svc2-err"><span class="mono">postgresql.service</span> is not on the allowlist.</p></div>
+<div class="actions"><button class="btn" type="submit">Next: targets</button></div>
+</form>
+<p class="note">The parameter forms are generated from each type's closed schema (P3-S01): a set of tick boxes for an enumerated list, a list for an allowlisted name, and nothing for a type with no parameters. Errors are announced at the top and shown beside the field, as on the Phase 2 rule forms. The server validates every step again and once more at creation, so a forged request gets the same errors.</p>
+</main>
+</body>
+</html>

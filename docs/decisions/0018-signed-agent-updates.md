@@ -13,7 +13,7 @@ Upgrading by hand on every VM does not suit a self-sufficient agent, and will no
 
 **Trust.**
 
-- Releases are signed with an Ed25519 key that never touches the server. The release workflow signs on a version tag inside a protected GitHub environment that requires the owner's approval for each release. The key is held only as that environment's secret.
+- Releases are signed with an Ed25519 key that never touches the server. The release workflow, started by the owner on `main` with the version to release, signs inside a protected GitHub environment that requires the owner's approval for each release, and only then creates the version tag. The version is compiled into the binary by the release run, so a release needs no commit (owner, 2026-11-08: the owner cannot build the agent locally). The key is held only as that environment's secret.
 - The agent embeds the release public keys at build time, the current one and the next one, so the key can be rotated.
 - Each release has a signed manifest: version, target, SHA-256, and size of the binary. The agent installs nothing whose manifest signature and checksum it has not verified itself.
 - The server only says which version to install and where to fetch it. It cannot make an agent run an unsigned binary. It verifies signatures too, but only to refuse bad uploads early; agents do not rely on that check.
@@ -49,7 +49,7 @@ Upgrading by hand on every VM does not suit a self-sufficient agent, and will no
 
 ## Consequences
 
-- The main trust anchor becomes the owner's GitHub account and the protected release environment. Protecting them (two-factor authentication, required approval, tag protection) is part of [P1-RELEASES](../backlog/specs/p1-releases.md).
+- The main trust anchor becomes the owner's GitHub account and the protected release environment. Protecting them (two-factor authentication, required approval, protection of `main` and of published tags) is part of [P1-RELEASES](../backlog/specs/p1-releases.md).
 - ADR 0003 still holds (root under a hardened unit). The update path is the single exception to "the server never causes code to run". It is narrow: only binaries signed by the release key, at the same or a newer version.
 - ADR 0014 rejected signing tasks. That stands: task safety rests on allowlists, and release signing is a separate mechanism that does not make tasks more powerful.
 - New issues: [P1-RELEASES](../backlog/specs/p1-releases.md) (signing and release import), [P1-UPDATES](../backlog/specs/p1-updates.md) (server rollout and dashboard), [P1-AGENT-UPDATE](../backlog/specs/p1-agent-update.md) (updater, supervisor, rollback, failure tests).

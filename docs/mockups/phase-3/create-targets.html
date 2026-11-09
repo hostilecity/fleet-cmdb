@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New task: targets · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="create-params.html">&larr; Parameters</a></p>
+<div class="page-head"><div><h1>New task: Restart <span class="mono" style="font-size:1.5rem">nginx.service</span></h1><p>Choose the hosts. Each host gets its own task, which succeeds or fails on its own.</p></div></div>
+<ol class="flow" aria-label="New task: step 3 of 4"><li class="done"><a href="create-type.html"><span class="lbl">Task type</span></a></li><li class="done"><a href="create-params.html"><span class="lbl">Parameters</span></a></li><li aria-current="step"><span class="lbl">Targets</span></li><li><span class="lbl">Confirm</span></li></ol>
+<form class="form wide" action="create-targets.html" method="get">
+<fieldset class="field"><legend>Choose hosts by</legend>
+<div class="checks"><label><input type="radio" name="by" value="tag" checked> Tag</label><label><input type="radio" name="by" value="hosts"> Picking hosts (<a href="#pick">drawn below</a>)</label></div></fieldset>
+<div class="field"><label for="tag">Tag</label><select id="tag" name="tag" style="max-width:20rem"><option>web (10 hosts)</option><option>db (4 hosts)</option><option>lab (8 hosts)</option><option>media (2 hosts)</option></select><p class="hint">The host list is worked out now and recorded with the batch. A host tagged later is not added.</p></div>
+<div class="actions"><button class="btn quiet" type="submit">Show hosts</button></div>
+</form>
+
+<h2>7 hosts will get this task</h2>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Hosts that will get the task</caption>
+<thead><tr><th scope="col">Host</th><th scope="col">Hostname</th><th scope="col">Status</th><th scope="col">Agent</th></tr></thead>
+<tbody>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-001</a></td><td data-label="Hostname" class="mono">sim-001.example.lan</td><td data-label="Status"><span class="lamp online">Online</span></td><td data-label="Agent" class="mono">0.9.0</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-002</a></td><td data-label="Hostname" class="mono">sim-002.example.lan</td><td data-label="Status"><span class="lamp online">Online</span></td><td data-label="Agent" class="mono">0.9.0</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-003</a></td><td data-label="Hostname" class="mono">sim-003.example.lan</td><td data-label="Status"><span class="lamp online">Online</span></td><td data-label="Agent" class="mono">0.9.0</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-004</a></td><td data-label="Hostname" class="mono">sim-004.example.lan</td><td data-label="Status"><span class="lamp offline">Offline</span><span class="state-sub warn">Last seen 3 hours ago. Its task waits for it and expires after 24 hours.</span></td><td data-label="Agent" class="mono">0.9.0</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-005</a></td><td data-label="Hostname" class="mono">sim-005.example.lan</td><td data-label="Status"><span class="lamp online">Online</span></td><td data-label="Agent" class="mono">0.9.0</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-007</a></td><td data-label="Hostname" class="mono">sim-007.example.lan</td><td data-label="Status"><span class="lamp stale">Stale</span></td><td data-label="Agent" class="mono">0.9.0</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-008</a></td><td data-label="Hostname" class="mono">sim-008.example.lan</td><td data-label="Status"><span class="lamp online">Online</span></td><td data-label="Agent" class="mono">0.9.0</td></tr>
+</tbody></table></div>
+
+<h2 id="excluded">3 hosts tagged web are left out</h2>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Hosts left out, with the reason</caption>
+<thead><tr><th scope="col">Host</th><th scope="col">Why it is left out</th></tr></thead>
+<tbody>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-006</a> <span class="mono muted">sim-006.example.lan</span></td><td data-label="Why it is left out"><strong>Not enabled on this VM.</strong> Its agent reports that <span class="mono">restart_service</span> is not enabled in its configuration. Enabling it is an edit on the VM itself.</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-009</a> <span class="mono muted">sim-009.example.lan</span></td><td data-label="Why it is left out"><strong>Agent does not support this task.</strong> Agent 0.8.3 runs no tasks. Tasks need agent 0.9.0 or later (<a href="../phase-1/agents.html">Agents</a>).</td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-010</a> <span class="mono muted">sim-010.example.lan</span></td><td data-label="Why it is left out"><strong>Not active.</strong> Its credential was revoked. Only active hosts get tasks.</td></tr>
+</tbody></table></div>
+<div class="notice info" role="status" style="margin-top:1rem"><strong>Each VM also has its own list of services it allows.</strong><p>Agents report their list with each heartbeat, so a host whose list does not include <span class="mono">nginx.service</span> is left out here with the reason "Not in this VM's own allowlist", and nothing is sent to it. If a VM's list changed after its last heartbeat, the VM still refuses the task when it arrives, and nothing runs there.</p></div>
+<p class="note"><span class="review-q">Q7, decided (owner, 2026-11-08).</span> Agents report their local service allowlist with the task capabilities (a P3-A01 change), so hosts that do not allow the service are left out here, with that reason, before anything is sent. The agent still checks its own list when the task arrives.</p>
+<p class="note"><span class="review-q">Review Q8.</span> Offline and stale hosts are kept, with a warning, because the task waits for the agent's next poll and expires after 24 hours if it never comes (FR-3.2). Alternative: leave out hosts that are offline now, so a batch only runs where it can run soon.</p>
+<form class="actions" action="create-confirm.html" method="get" style="margin-top:1.5rem"><button class="btn" type="submit">Next: confirm 7 hosts</button><a class="btn quiet" href="create-params.html">Back</a></form>
+
+<h2 id="pick" class="state-title">Picking hosts</h2>
+<form class="form wide" action="create-targets.html" method="get">
+<div class="field"><label for="q">Find hosts</label><input id="q" type="search" name="q" value="sim-0" style="min-width:0;width:100%"></div>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Hosts to pick from</caption>
+<thead><tr><th scope="col"><span class="visually-hidden">Pick</span></th><th scope="col">Host</th><th scope="col">Tags</th><th scope="col">Can it run this task?</th></tr></thead>
+<tbody>
+<tr><td data-label="Pick"><input type="checkbox" checked aria-label="sim-001"></td><td data-label="Host">sim-001</td><td data-label="Tags"><span class="tag">web</span></td><td data-label="Can it run this task?">Yes</td></tr>
+<tr><td data-label="Pick"><input type="checkbox" checked aria-label="sim-011"></td><td data-label="Host">sim-011</td><td data-label="Tags"><span class="tag">db</span></td><td data-label="Can it run this task?"><strong>No:</strong> <span class="mono">nginx.service</span> is allowed only on hosts tagged web.</td></tr>
+<tr><td data-label="Pick"><input type="checkbox" aria-label="sim-006"></td><td data-label="Host">sim-006</td><td data-label="Tags"><span class="tag">web</span></td><td data-label="Can it run this task?"><strong>No:</strong> not enabled on this VM.</td></tr>
+<tr><td data-label="Pick"><input type="checkbox" disabled aria-label="sim-010"></td><td data-label="Host">sim-010</td><td data-label="Tags"><span class="tag">web</span></td><td data-label="Can it run this task?"><strong>No:</strong> not active (credential revoked).</td></tr>
+</tbody></table></div>
+<p class="hint" style="margin-top:.5rem">You can still tick a host that cannot run the task; it is listed as left out, with its reason, on the next step and on the batch.</p>
+<div class="actions" style="margin-top:.75rem"><button class="btn" type="submit">Show hosts</button></div>
+</form>
+
+<h2 id="cap" class="state-title">Too many hosts</h2>
+<div class="notice error" role="alert"><strong>31 hosts is more than one batch can hold.</strong><p>A batch can have at most 25 hosts. Pick fewer hosts or a narrower tag and create a second batch for the rest. The limit is set in <a href="settings-tasks.html#limits">Settings: Tasks</a> and can be lowered, not raised past 25.</p></div>
+<a class="btn" role="button" aria-disabled="true" href="create-targets.html#cap">Next: confirm</a>
+<h2 id="none" class="state-title">No host can run it</h2>
+<div class="notice error" role="alert"><strong>None of the 4 hosts tagged db can run this task.</strong><p>3 do not have <span class="mono">restart_service</span> enabled on the VM, and 1 is not active. Nothing can be created.</p></div>
+</main>
+</body>
+</html>

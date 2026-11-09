@@ -1,5 +1,7 @@
 [package]
 name = "fleet-agent"
+# Development version only: a release compiles in the version it was started with (FLEET_AGENT_VERSION,
+# docs/releases.md), so releasing never changes this line.
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"

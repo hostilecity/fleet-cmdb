@@ -135,7 +135,7 @@ Both CI workflows run when anything under `docs/api/` changes.
 
 1. **Adding an optional field, or loosening a limit**, keeps old payloads valid. Edit the schema in place, then add or extend a `valid/` example that uses the field.
 2. **Anything that could reject a payload an older agent sends**, or change what a field means, is a breaking change and needs a new schema version:
-   1. Copy `schemas/v1/` to `schemas/v2/` and `examples/v1/` to `examples/v2/`, then make the change in `v2`. Never edit or delete files under an older version: they are the golden fixtures that later phases must keep accepting (NFR-5, P1-ACCEPT).
+   1. Copy `schemas/v1/` to `schemas/v2/` and `examples/v1/` to `examples/v2/`, then make the change in `v2`. Never edit or delete files under an older version: they are the golden fixtures that later releases must keep accepting (NFR-5). Until Phase 3 is accepted, backward compatibility is not required (NFR-5), so `v1` may still change in place.
    2. Increase `AGENT_SCHEMA_VERSION` in `agent/src/main.rs`.
    3. Make the server accept both versions, selecting the schema by the `schema_version` in the body. Add a migration note to the PR describing how a v1 payload is read.
    4. Add a line to the change log below.

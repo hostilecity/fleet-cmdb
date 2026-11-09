@@ -23,7 +23,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Parameter: `service` with a strict pattern. The agent refuses unless the name is in **both** the server-supplied allowlist reference (validated by the server) **and** the agent's own local allowlist ([P3-A01](p3-agent-ledger.md)), and is not on the protected list ([DEC-15](../../decisions/0015-restartable-services.md)).
 - Runs the service manager with an absolute path and a fixed argument vector, with the service name as a single validated argument after an end-of-options marker.
 - Verifies the result afterwards (the unit is active) and reports `succeeded` or `failed` with captured output.
-- Never restarts the agent's own unit or the SSH service unless the owner explicitly allowed it ([DEC-15](../../decisions/0015-restartable-services.md)).
+- Never restarts a protected service: the agent's own units, the SSH service, systemd's own units, networking, or D-Bus, even if listed; there is no override ([DEC-15](../../decisions/0015-restartable-services.md), owner 2026-11-08).
 - Timeout per catalog; not interruptible once started.
 
 ### Acceptance criteria

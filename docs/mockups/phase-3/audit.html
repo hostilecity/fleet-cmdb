@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit log: tasks · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html" aria-current="page">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Audit log</h1><p>Every change to hosts, credentials, onboarding, operators, settings, rules, and tasks. Read-only; entries are never edited or deleted, and task entries are never pruned.</p></div></div>
+<form class="filters audit-filters" role="search" method="get" action="audit.html">
+  <label>Actor type<select name="actor_type"><option value="">Anyone</option><option>Operator</option><option>Host</option><option>System</option></select></label>
+  <label>Action<select name="action">
+    <option value="">All actions</option>
+    <optgroup label="Tasks">
+      <option value="task.batch_created">Batch created</option>
+      <option value="task.created">Task created</option>
+      <option value="task.create_refused">Task creation refused</option>
+      <option value="task.claimed">Task claimed</option>
+      <option value="task.lease_lapsed">Claim lapsed, back to queued</option>
+      <option value="task.started">Task started</option>
+      <option value="task.cancel_requested">Cancel requested</option>
+      <option value="task.cancelled">Task cancelled</option>
+      <option value="task.expired">Task expired</option>
+      <option value="task.lease_expired">Lease expired</option>
+      <option value="task.timed_out">Task timed out</option>
+      <option value="task.result_received">Task result received</option>
+      <option value="task.refused">Task refused</option>
+    </optgroup>
+    <optgroup label="Task settings">
+      <option value="task_setting.service_allowed">Service added to the allowlist</option>
+      <option value="task_setting.service_removed">Service removed from the allowlist</option>
+      <option value="task_setting.limit_changed">Task limit changed</option>
+    </optgroup>
+    <optgroup label="Second factor">
+      <option value="second_factor.enrolled">Second factor set up</option>
+      <option value="second_factor.replaced">Moved to a new phone</option>
+      <option value="second_factor.recovery_codes_replaced">Recovery codes replaced</option>
+      <option value="second_factor.step_up_passed">Code accepted</option>
+      <option value="second_factor.step_up_failed">Code refused</option>
+      <option value="second_factor.locked">Locked after wrong codes</option>
+      <option value="second_factor.recovery_code_used">Recovery code used</option>
+      <option value="second_factor.reset">Reset from the console</option>
+    </optgroup>
+  </select></label>
+  <label>Target<input type="search" name="target" placeholder="Host, task, or batch" value="batch 87"></label>
+  <label>From<input type="date" name="from"></label><label>To<input type="date" name="to"></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<p class="note"><span class="review-q">Review Q35.</span> Three new groups in the action filter: Tasks (every transition in P3-S07, plus "task creation refused" for a rejected or forged request), Task settings, and Second factor (every step-up attempt, as P3-S09 asks). The action names are proposals and would be added to <code>Audit::Actions::ALL</code>. "Target" accepts a task or batch number. A batch of 8 writes 9 entries at creation: one for the batch and one per task.</p>
+<div class="table-wrap"><table class="audit">
+<thead><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Before → after</th></tr></thead>
+<tbody>
+<tr><td class="when mono">2026-11-08 14:07:41</td><td>sim-026<span class="kind">Host</span></td><td>Task result received</td><td><a href="task-states.html#failed-exit">Task #1206</a> on sim-026</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">running</del> <ins class="mono">failed</ins></li><li><span class="key">Reason</span><ins class="mono">package_manager_locked</ins></li><li><span class="key">Exit status</span><ins class="mono">100</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 14:06:58</td><td>sim-021<span class="kind">Host</span></td><td>Task result received</td><td><a href="task.html">Task #1201</a> on sim-021</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">running</del> <ins class="mono">succeeded</ins></li><li><span class="key">Exit status</span><ins class="mono">0</ins></li><li><span class="key">Reboot required</span><ins class="mono">true</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 14:02:41</td><td>sim-021<span class="kind">Host</span></td><td>Task started</td><td><a href="task.html">Task #1201</a> on sim-021</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">claimed</del> <ins class="mono">running</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 14:02:40</td><td>sim-021<span class="kind">Host</span></td><td>Task claimed</td><td><a href="task.html">Task #1201</a> on sim-021</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">queued</del> <ins class="mono">claimed</ins></li><li><span class="key">Lease until</span><ins class="mono">14:07:40</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 14:02:11</td><td>example.operator@example.com<span class="kind">Operator</span></td><td>Task created</td><td><a href="task.html">Task #1201</a> on sim-021</td><td><ul class="change-list"><li><span class="key">Batch</span><ins class="mono">87</ins></li><li><span class="key">Type</span><ins class="mono">apply_package_updates</ins></li><li><span class="key">Parameters</span><ins class="mono">{}</ins></li></ul> <span class="muted">and 7 more, one per task</span></td></tr>
+<tr><td class="when mono">2026-11-08 14:02:11</td><td>example.operator@example.com<span class="kind">Operator</span></td><td>Batch created</td><td><a href="batch.html">Batch 87</a></td><td><ul class="change-list"><li><span class="key">Type</span><ins class="mono">apply_package_updates</ins></li><li><span class="key">Selected by</span><ins>tag lab</ins></li><li><span class="key">Hosts</span><ins>8</ins></li><li><span class="key">Left out</span><ins>sim-029 (not_enabled_locally)</ins></li><li><span class="key">Typed count</span><ins class="mono">8</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 14:01:58</td><td>example.operator@example.com<span class="kind">Operator</span></td><td>Code accepted</td><td>Second factor</td><td><ul class="change-list"><li><span class="key">For</span><ins>creating a task</ins></li><li><span class="key">Valid until</span><ins class="mono">14:06:58</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 14:01:40</td><td>example.operator@example.com<span class="kind">Operator</span></td><td>Code refused</td><td>Second factor</td><td><ul class="change-list"><li><span class="key">For</span><ins>creating a task</ins></li><li><span class="key">Attempts left</span><ins class="mono">4</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 13:58:02</td><td>example.reviewer@example.com<span class="kind">Operator</span></td><td>Service removed from the allowlist</td><td>Restartable services</td><td><ul class="change-list"><li><span class="key">Service</span><del class="mono">postgresql.service (tag db)</del> <span class="unavailable">removed</span></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 13:45:31</td><td>sim-003<span class="kind">Host</span></td><td>Task result received</td><td><a href="task-states.html#cancel-requested">Task #1199</a> on sim-003</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">running</del> <ins class="mono">succeeded</ins></li><li><span class="key">Cancel requested</span><ins class="mono">13:41:20</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 13:41:20</td><td>example.reviewer@example.com<span class="kind">Operator</span></td><td>Cancel requested</td><td><a href="task-states.html#cancel-requested">Task #1199</a> on sim-003</td><td><ul class="change-list"><li><span class="key">Cancel requested</span><del class="mono">false</del> <ins class="mono">true</ins></li><li><span class="key">Effect</span><ins>not interruptible: runs to completion</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 13:41:20</td><td>example.reviewer@example.com<span class="kind">Operator</span></td><td>Task cancelled</td><td><a href="task-states.html#cancelled">Task #1198</a> on sim-002</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">queued</del> <ins class="mono">cancelled</ins></li></ul> <span class="muted">and 3 more in batch 86</span></td></tr>
+<tr><td class="when mono">2026-11-08 11:15:30</td><td>System<span class="kind">System</span></td><td>Task expired</td><td><a href="task-states.html#expired">Task #1191</a> on sim-004</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">queued</del> <ins class="mono">expired</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-08 09:12:44</td><td>example.operator@example.com<span class="kind">Operator</span></td><td>Second factor set up</td><td>example.operator@example.com</td><td><ul class="change-list"><li><span class="key">Method</span><ins>authenticator app (TOTP)</ins></li><li><span class="key">Recovery codes</span><ins>10 issued</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-07 18:30:05</td><td>System<span class="kind">System</span></td><td>Reset from the console</td><td>example.reviewer@example.com</td><td><ul class="change-list"><li><span class="key">Second factor</span><del>authenticator app</del> <span class="unavailable">none</span></li><li><span class="key">Run by</span><ins>bin/rails second_factor:reset on the server</ins></li></ul></td></tr>
+<tr><td class="when mono">2026-11-07 11:16:02</td><td>sim-007<span class="kind">Host</span></td><td>Task refused</td><td><a href="task-states.html#refused">Task #1190</a> on sim-007</td><td><ul class="change-list"><li><span class="key">State</span><del class="mono">claimed</del> <ins class="mono">refused</ins></li><li><span class="key">Reason</span><ins class="mono">not_allowed_locally</ins></li></ul></td></tr>
+</tbody></table></div>
+<p class="note">No entry holds task output, a TOTP code or key, or a recovery code. Entries refer to the task, which holds the output. The rows are a sample from several batches, newest first; the filter above is drawn filled in but not applied.</p>
+</main>
+</body>
+</html>

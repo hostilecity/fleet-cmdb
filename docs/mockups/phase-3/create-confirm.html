@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New task: confirm · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="create-targets.html">&larr; Targets</a></p>
+<div class="page-head"><div><h1>Confirm: restart <span class="mono" style="font-size:1.5rem">nginx.service</span> on 7 hosts</h1><p>Nothing has been created yet. Read what will happen, then confirm.</p></div></div>
+<ol class="flow" aria-label="New task: step 4 of 4"><li class="done"><a href="create-type.html"><span class="lbl">Task type</span></a></li><li class="done"><a href="create-params.html"><span class="lbl">Parameters</span></a></li><li class="done"><a href="create-targets.html"><span class="lbl">Targets</span></a></li><li aria-current="step"><span class="lbl">Confirm</span></li></ol>
+<div class="confirm-sum" role="group" aria-label="Summary">
+  <div><span class="label">Task</span><span class="big">Restart a service</span><span class="detail mono">restart_service</span></div>
+  <div><span class="label">Service</span><span class="big mono" style="font-size:1.125rem">nginx.service</span><span class="detail">The only parameter</span></div>
+  <div><span class="label">Hosts</span><span class="big">7</span><span class="detail">Tag web; 3 left out</span></div>
+  <div><span class="label">Expires</span><span class="big">24 hours</span><span class="detail">If not started by 2026-11-09 14:20 UTC</span></div>
+</div>
+<section class="runs" aria-labelledby="runs-h">
+<h2 id="runs-h">What the agent does on each of the 7 hosts</h2>
+<ol>
+<li>Checks the task itself: <span class="mono">restart_service</span> is enabled in the VM's configuration, <span class="param">nginx.service</span> is in the VM's own allowlist, and it is not a protected service. If any check fails, it refuses the task and runs nothing.</li>
+<li>Asks systemd to restart <span class="param">nginx.service</span>. The service stops and starts again; connections it is serving are dropped.</li>
+<li>Checks that <span class="param">nginx.service</span> is running again, then reports Succeeded, or Failed with systemd's output.</li>
+</ol>
+<p class="never"><strong>It does not</strong> restart any other service, change any file, or reboot. It stops after 5 minutes at most. Once started it cannot be cancelled: stopping a restart half-way could leave the service down.</p>
+<details class="fixed"><summary>The exact programs the agent runs (fixed in the agent, not sent by the server)</summary>
+<pre class="code">/usr/bin/systemctl restart -- nginx.service
+/usr/bin/systemctl is-active -- nginx.service</pre>
+<p class="muted" style="font-size:.875rem;margin:.5rem 0 0">Built into agent 0.9.0, catalog version 1. The server sends each agent only the task type and the parameter, which the agent checks again before using:</p>
+<pre class="code">{"type": "restart_service", "params": {"service": "nginx.service"}}</pre></details>
+</section>
+<p class="note"><span class="review-q">Review Q9.</span> "Exactly what will run" is drawn twice: the plain steps, always shown, and the agent's fixed programs and arguments, folded under a disclosure and labelled as built into the agent. The fixed lines are read from the catalog entry, never built from input; they show where the one parameter goes. Alternative: plain steps only, so nobody can mistake the lines for something the server sends.</p>
+<p class="note"><span class="review-q">Review Q10.</span> All 7 hosts restart nginx at about the same time: each agent picks up its task on its next poll (about every 30 seconds), and hosts do not wait for each other. For a service behind a load balancer that can mean every web host restarts at once. Nothing in the spec staggers a batch; say if one should run one host at a time (a new requirement), or if this page should only warn, as drawn here: <em>All hosts run their task within about a minute of each other.</em></p>
+
+<h2>Hosts</h2>
+<p><strong>7 get the task:</strong> <a href="host-tasks.html">sim-001</a>, <a href="host-tasks.html">sim-002</a>, <a href="host-tasks.html">sim-003</a>, <a href="host-tasks.html">sim-004</a> <span class="muted">(offline: runs when it returns, if within 24 hours)</span>, <a href="host-tasks.html">sim-005</a>, <a href="host-tasks.html">sim-007</a>, <a href="host-tasks.html">sim-008</a>.</p>
+<p><strong>3 are left out:</strong> sim-006 (not enabled on this VM), sim-009 (agent does not support tasks), sim-010 (not active). <a href="create-targets.html#excluded">Reasons</a></p>
+<p class="muted">All hosts run their task within about a minute of each other. A VM that does not list <span class="mono">nginx.service</span> in its own allowlist refuses it.</p>
+
+<form class="form wide" action="batch.html" method="get" style="margin-top:1.5rem">
+<div class="field"><label for="count">Type the number of hosts to confirm</label>
+<div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap"><input id="count" class="type-count" name="count" inputmode="numeric" autocomplete="off" aria-describedby="count-hint"><span class="muted" id="count-hint">This batch has <strong>7</strong> hosts. Batches of more than 3 hosts ask for this.</span></div></div>
+<section class="stepup" aria-labelledby="su-h" style="margin:1rem 0">
+<h3 id="su-h">Second factor</h3>
+<p style="margin:0">Creating tasks needs a code from your authenticator app. You will not be asked again for 5 minutes.</p>
+<div class="field"><label for="otp">6-digit code</label><input id="otp" class="totp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}"><p class="hint">Lost your authenticator? <a href="totp-stepup.html#recovery">Use a recovery code</a>.</p></div>
+</section>
+<div class="actions"><button class="btn" type="submit">Create 7 tasks</button><a class="btn quiet" href="create-targets.html">Back</a><a class="btn quiet" href="tasks.html">Cancel</a></div>
+<p class="muted" style="font-size:.875rem;margin-bottom:0">On submit the server checks everything again: the type, the service, the allowlist, each host, the count, and the code. If anything changed since this page was drawn, nothing is created and this page comes back with the reason. Creating the batch records one audit entry for the batch and one for each task, with you as the actor.</p>
+</form>
+<p class="note"><span class="review-q">Review Q11.</span> The second factor sits at the bottom of the confirmation, so one submit checks the typed count and the code together and nothing is created until both pass. When you passed the second factor in the last 5 minutes, the box is replaced by one line (<a href="#recent">drawn below</a>). The same box is used in the cancel dialog and on the task settings. Alternative: a separate step-up page after Confirm that returns here; every state of the prompt is on <a href="totp-stepup.html">Second factor prompt</a>.</p>
+
+<h2 id="recent" class="state-title">Second factor passed in the last 5 minutes</h2>
+<div class="stepup passed"><p style="margin:0"><strong>Second factor checked at 14:16 UTC.</strong> Not asked again until 14:21 UTC in this browser session.</p></div>
+
+<h2 id="errors" class="state-title">Refused on submit</h2>
+<div class="notice error" role="alert"><strong>Nothing was created.</strong><p>2 problems: the number typed (8) is not the number of hosts in this batch (7), and the code was not accepted.</p></div>
+<div class="form wide">
+<div class="field invalid"><label for="count2">Type the number of hosts to confirm</label><input id="count2" class="type-count" value="8" aria-invalid="true" aria-describedby="c2e"><p class="error-text" id="c2e">Type 7, the number of hosts in this batch.</p></div>
+<div class="field invalid"><label for="otp2">6-digit code</label><input id="otp2" class="totp" aria-invalid="true" aria-describedby="o2e"><p class="error-text" id="o2e">That code was not accepted. Check the time on your phone and use the newest code. 4 attempts left in the next 15 minutes.</p></div>
+</div>
+<div class="notice error" role="alert" style="margin-top:1rem"><strong>Nothing was created: the targets changed.</strong><p>sim-005 was retired at 14:18 UTC, after this page was drawn. Check the new list of 6 hosts and confirm again.</p></div>
+
+<h2 id="updates" class="state-title">Apply package updates on 3 hosts</h2>
+<div class="confirm-sum" role="group" aria-label="Summary">
+  <div><span class="label">Task</span><span class="big">Apply package updates</span><span class="detail mono">apply_package_updates</span></div>
+  <div><span class="label">Parameters</span><span class="big">None</span><span class="detail">Always the same (ADR 0016)</span></div>
+  <div><span class="label">Hosts</span><span class="big">3</span><span class="detail">sim-021, sim-022, sim-023</span></div>
+  <div><span class="label">Expires</span><span class="big">24 hours</span><span class="detail">If not started by 2026-11-09 14:20 UTC</span></div>
+</div>
+<section class="runs" aria-labelledby="runs2-h">
+<h3 id="runs2-h">What the agent does on each of the 3 hosts</h3>
+<ol>
+<li>Checks that <span class="mono">apply_package_updates</span> is enabled in the VM's configuration. If not, it refuses and runs nothing.</li>
+<li>Refreshes the package lists from the VM's configured Debian sources.</li>
+<li>Upgrades installed packages to their newest versions. Packages on hold are not touched. An upgrade that would remove a package or install a new one is held back and listed. Changed configuration files keep the local version. If another program holds the package manager, it waits up to 5 minutes, then fails without changing anything.</li>
+<li>Reports which packages were upgraded and held back, whether a reboot is needed, and which services use old libraries, then sends a fresh package report.</li>
+</ol>
+<p class="never"><strong>It does not</strong> reboot, restart services, remove packages, or change the Debian release. It stops after 60 minutes at most; if it is stopped then, the package database may need repair (<span class="mono">dpkg --configure -a</span>), and the task says so. Once started it cannot be cancelled: stopping the package manager part-way can damage the package database.</p>
+<details class="fixed"><summary>The exact programs the agent runs (fixed in the agent, not sent by the server)</summary>
+<pre class="code">/usr/bin/apt-get update
+/usr/bin/apt-get upgrade --yes -o DPkg::Lock::Timeout=300 \
+  -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+/usr/sbin/needrestart -b
+Environment: DEBIAN_FRONTEND=noninteractive, LANG=C, a fixed PATH; nothing else.
+Reboot needed: from needrestart's kernel and library status.</pre>
+<p class="muted" style="font-size:.875rem;margin:.5rem 0 0">The server sends only <span class="mono">{"type": "apply_package_updates", "params": {}}</span>. The lines above are the draft from ADR 0016; P3-AGENT-UPDATES fixes the final ones and this box will show exactly those.</p></details>
+</section>
+<div class="form wide"><p class="muted" style="margin-top:0">3 hosts: no number to type. Batches of more than 3 hosts ask for it.</p>
+<div class="stepup passed" style="margin:0 0 1rem"><p style="margin:0"><strong>Second factor checked at 14:16 UTC.</strong> Not asked again until 14:21 UTC.</p></div>
+<div class="actions"><a class="btn" href="batch.html">Create 3 tasks</a><a class="btn quiet" href="create-targets.html">Back</a></div></div>
+
+<h2 id="refresh" class="state-title">Collect fresh reports on one host</h2>
+<section class="runs" aria-labelledby="runs3-h">
+<h3 id="runs3-h">What the agent does on sim-012</h3>
+<ol><li>Collects <span class="param">inventory</span> <span class="param">config</span> <span class="param">packages</span> with its built-in collectors, the same ones it uses on its schedule.</li><li>Sends the three reports and reports Succeeded with the list of reports sent.</li></ol>
+<p class="never"><strong>It does not</strong> change anything on the VM. It stops after 10 minutes at most, and it can be cancelled while it runs.</p>
+</section>
+</main>
+</body>
+</html>

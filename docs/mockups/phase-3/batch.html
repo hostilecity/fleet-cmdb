@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batch 87 · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="tasks.html">&larr; Tasks</a></p>
+<div class="host-head">
+  <div>
+    <h1>Batch 87: Apply package updates on 8 hosts</h1>
+    <div class="sub"><span>Created 2026-11-08 14:02:11 UTC by example.operator@example.com</span><span>Tag <span class="tag">lab</span></span><span>No parameters</span></div>
+  </div>
+  <div class="actions"><a class="btn danger quiet" href="cancel.html#batch">Cancel the rest of this batch</a></div>
+</div>
+<div class="notice info" role="status"><strong>In progress: 6 of 8 finished.</strong><p>This page updates by itself as hosts report. Queued tasks expire at 2026-11-09 14:02 UTC if their host has not polled by then.</p></div>
+<div class="taskstrip" role="group" aria-label="Tasks in this batch by state">
+  <a href="#hosts"><span class="count">1</span><span class="lamp s-queued">Waiting</span></a>
+  <a href="#hosts"><span class="count">1</span><span class="lamp s-running">Running</span></a>
+  <a href="#hosts"><span class="count">5</span><span class="lamp s-succeeded">Succeeded</span></a>
+  <a href="#hosts"><span class="count">1</span><span class="lamp s-failed">Failed</span></a>
+  <a href="#hosts"><span class="count zero">0</span><span class="lamp s-timed_out">Timed out</span></a>
+  <a href="#hosts"><span class="count zero">0</span><span class="lamp s-refused">Refused</span></a>
+  <a href="#hosts"><span class="count zero">0</span><span class="lamp s-expired">Expired</span></a>
+  <a href="#hosts"><span class="count zero">0</span><span class="lamp s-cancelled">Cancelled</span></a>
+</div>
+<div class="bar-stack" aria-hidden="true"><span class="b-succeeded" style="width:62.5%"></span><span class="b-failed" style="width:12.5%"></span><span class="b-running" style="width:12.5%"></span><span class="b-queued" style="width:12.5%"></span></div>
+<p class="bar-legend">5 succeeded, 1 failed, 1 running, 1 waiting. <strong>3 of the 5 that succeeded need a reboot</strong>; the task never reboots.</p>
+<p class="note"><span class="review-q">Review Q14.</span> The counts strip has a cell for every state, with zeros dimmed, so the eight cells always add up to the batch size and a new state never shifts the layout; "Waiting" is queued and claimed together, as the strip on the fleet list groups statuses. The bar under it repeats the counts as a shape; the sentence under the bar says the same in words. Counts and rows update live over the existing Turbo stream, and the counts are worked out from the task rows on every update, never kept as a separate number. Alternative: show only the states that occur (here four cells).</p>
+
+<h2 id="hosts">Hosts</h2>
+<div class="table-wrap"><table class="stack">
+<caption class="visually-hidden">Tasks in batch 87, problems first</caption>
+<thead><tr><th scope="col">Host</th><th scope="col">State</th><th scope="col">Result</th><th scope="col">Started (UTC)</th><th scope="col">Finished (UTC)</th><th scope="col">Task</th></tr></thead>
+<tbody>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-026</a></td><td data-label="State"><span class="lamp s-failed">Failed</span></td><td data-label="Result">Package manager busy: another program held the lock for 5 minutes. Nothing was upgraded.</td><td data-label="Started (UTC)" class="mono">14:02:35</td><td data-label="Finished (UTC)" class="mono">14:07:41</td><td data-label="Task"><a href="task-states.html#failed-exit">#1206</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-027</a></td><td data-label="State"><span class="lamp s-running">Running</span></td><td data-label="Result">Upgrading: 9 of 22 packages so far.<span class="state-sub">Last progress 14:11:02. Times out at 15:05:40.</span></td><td data-label="Started (UTC)" class="mono">14:05:40</td><td data-label="Finished (UTC)"><span class="muted">&mdash;</span></td><td data-label="Task"><a href="task-states.html#running">#1207</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-028</a></td><td data-label="State"><span class="lamp s-queued">Queued</span></td><td data-label="Result">Waiting for sim-028 to poll. <span class="lamp offline">Offline</span> for 3 hours.<span class="state-sub">Expires 2026-11-09 14:02 if not picked up.</span></td><td data-label="Started (UTC)"><span class="muted">&mdash;</span></td><td data-label="Finished (UTC)"><span class="muted">&mdash;</span></td><td data-label="Task"><a href="task-states.html#queued">#1208</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-021</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Result">14 upgraded, 1 held back. <strong>Reboot required.</strong></td><td data-label="Started (UTC)" class="mono">14:02:41</td><td data-label="Finished (UTC)" class="mono">14:06:57</td><td data-label="Task"><a href="task.html">#1201</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-022</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Result">14 upgraded. <strong>Reboot required.</strong></td><td data-label="Started (UTC)" class="mono">14:02:39</td><td data-label="Finished (UTC)" class="mono">14:06:31</td><td data-label="Task"><a href="task.html">#1202</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-023</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Result">3 upgraded.</td><td data-label="Started (UTC)" class="mono">14:02:52</td><td data-label="Finished (UTC)" class="mono">14:04:10</td><td data-label="Task"><a href="task.html">#1203</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-024</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Result">Nothing to upgrade.</td><td data-label="Started (UTC)" class="mono">14:02:44</td><td data-label="Finished (UTC)" class="mono">14:03:20</td><td data-label="Task"><a href="task.html">#1204</a></td></tr>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-025</a></td><td data-label="State"><span class="lamp s-succeeded">Succeeded</span></td><td data-label="Result">14 upgraded. <strong>Reboot required.</strong> 2 services use old libraries.</td><td data-label="Started (UTC)" class="mono">14:03:01</td><td data-label="Finished (UTC)" class="mono">14:07:12</td><td data-label="Task"><a href="task.html">#1205</a></td></tr>
+</tbody></table></div>
+<p class="note"><span class="review-q">Review Q15.</span> Rows are ordered problems first (failed, timed out, refused, expired), then running, waiting, and succeeded, so a long batch never hides its failure below the fold. Alternative: host name order, which keeps rows still while they update.</p>
+<h2>Left out when the batch was created</h2>
+<div class="table-wrap"><table class="stack"><caption class="visually-hidden">Hosts left out of batch 87</caption><thead><tr><th scope="col">Host</th><th scope="col">Why</th></tr></thead><tbody>
+<tr><td data-label="Host"><a href="host-tasks.html">sim-029</a></td><td data-label="Why">Not enabled on this VM: its agent reports <span class="mono">apply_package_updates</span> as not enabled.</td></tr>
+</tbody></table></div>
+<p class="muted" style="font-size:.875rem">The list of hosts and the reasons are recorded when the batch is created and never change. <a href="audit.html?batch=87">Audit entries for this batch</a></p>
+<h2 id="done" class="state-title">When the last task finishes</h2>
+<div class="notice" role="status"><strong>Finished: 7 succeeded, 1 failed.</strong><p>3 hosts need a reboot (sim-021, sim-022, sim-025). Reboot them yourself; no task reboots a host. sim-026 can be tried again in a new task.</p></div>
+<p class="muted">A finished batch has no Cancel button. Partial outcomes, expiry, and a cancelled batch are on <a href="batch-partial.html">Batch: partial and cancelled</a>.</p>
+</main>
+</body>
+</html>

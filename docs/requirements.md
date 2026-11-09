@@ -279,7 +279,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 - Adding a new task type requires a new agent release and a matching server catalog entry. It is never a dashboard-only change.
 - The agent reports the task types and catalog version it supports, and the server offers only supported types for each host.
 - Initial catalog, at minimum: apply operating system package updates, restart a named service, and re-collect inventory, config, and package reports on demand.
-- The service name for restart validates against a server-configured allowlist **and** an allowlist in the agent's own local configuration; the agent refuses a restart unless both permit it. The agent reports its local allowlist, so the server leaves out a host that would refuse before anything is sent (owner, P3-D01 Q7). The agent's own unit and the SSH service are refused unless the owner explicitly allows them (DEC-15).
+- The service name for restart validates against a server-configured allowlist **and** an allowlist in the agent's own local configuration; the agent refuses a restart unless both permit it. The agent's own units, the SSH service, systemd's own units, networking, and D-Bus are always refused, even if listed; restarting them is a job for the console (DEC-15, owner 2026-11-08).
 
 ### FR-3.2 Task lifecycle
 
@@ -355,6 +355,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 - The agent API is covered by contract-style tests shared in spirit across phases: a payload accepted in Phase 1 stays readable after Phase 2 and 3 changes, or its schema version increments with a migration path. Example payloads and JSON Schemas live in one place that both the server and agent tests consume.
 - Agent and server versions are independent. The server accepts reports from the previous agent release, or returns the minimum-version error from FR-S.2 that the agent logs plainly.
 - The update channel is part of the contract: every released agent must be able to update to any later release, so its directive, manifest format, and signature scheme change only through a new schema version with a migration path.
+- **Not before the end of Phase 3** (owner, 2026-11-08): backward compatibility with earlier agents and payloads is not required while Phases 1 to 3 are built. Schemas, payloads, and the update channel may change without a new schema version or migration path, and no phase's acceptance runs an earlier agent release or checks earlier fixtures. The three bullets above apply from the first release after Phase 3 is accepted.
 
 ## 9. Build order and definition of done
 

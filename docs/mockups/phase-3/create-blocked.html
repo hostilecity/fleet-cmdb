@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create task: refused · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Create task: refused states</h1><p>Every case where a task cannot be created, and what the page says. In each, nothing is created and nothing is sent to any agent.</p></div></div>
+
+<h2 id="no-factor" class="state-title">No second factor set up</h2>
+<div class="page-head" style="margin-bottom:.75rem"><div><h1 style="font-size:1.375rem">New task</h1></div></div>
+<div class="notice" role="alert"><strong>You cannot create or cancel tasks until you set up a second factor.</strong><p>Tasks change hosts, so the dashboard asks for a code from an authenticator app as well as your Google sign-in. You can still read every task, host, and report. Setting it up takes about two minutes and needs your phone.</p><p><a class="btn" href="second-factor.html#none" style="margin-top:.5rem">Set up an authenticator app</a></p></div>
+<p class="note"><span class="review-q">Review Q12.</span> An operator with no second factor still sees the Tasks list, task pages, and batch pages (read-only), and "New task" and every Cancel button are replaced by this explanation and its link. The server refuses the create and cancel requests themselves too, so a forged request gets "second factor required" and an audit entry. Alternative: hide the Tasks item from the top bar entirely until a factor is set up.</p>
+
+<h2 id="empty-allowlist" class="state-title">Restart a service: the allowlist is empty</h2>
+<ol class="flow" aria-label="New task: step 2 of 4"><li class="done"><a href="create-type.html"><span class="lbl">Task type</span></a></li><li aria-current="step"><span class="lbl">Parameters</span></li><li><span class="lbl">Targets</span></li><li><span class="lbl">Confirm</span></li></ol>
+<div class="notice error" role="alert"><strong>There is no service you can restart.</strong><p>The server's allowlist of restartable services is empty, which is how it starts (ADR 0015). Add a service in <a href="settings-tasks.html#allowlist">Settings: Tasks</a>, then add the same service to each VM's own allowlist in <span class="mono">/etc/fleet-agent/config.toml</span>. Until both list it, a restart is refused.</p></div>
+<div class="actions"><a class="btn quiet" href="create-type.html">Choose another task</a></div>
+
+<h2 id="disabled-everywhere" class="state-title">No host has the type enabled</h2>
+<ol class="flow" aria-label="New task: step 3 of 4"><li class="done"><a href="create-type.html"><span class="lbl">Task type</span></a></li><li class="done"><a href="create-params.html"><span class="lbl">Parameters</span></a></li><li aria-current="step"><span class="lbl">Targets</span></li><li><span class="lbl">Confirm</span></li></ol>
+<div class="notice error" role="alert"><strong>No host will run "Apply package updates".</strong><p>It is off by default on every VM, and none of the 41 active hosts has turned it on. To allow it on a VM, add <span class="mono">apply_package_updates</span> to <span class="mono">[tasks] enabled</span> in that VM's <span class="mono">/etc/fleet-agent/config.toml</span> and restart the agent; the host reports it within a minute. This cannot be turned on from the dashboard.</p></div>
+<div class="actions"><a class="btn quiet" href="create-type.html">Choose another task</a></div>
+
+<h2 id="no-support" class="state-title">No agent runs tasks yet</h2>
+<div class="notice error" role="alert"><strong>No host can run tasks yet.</strong><p>Tasks need agent 0.9.0 or later; every active host runs an older agent. <a href="../phase-1/agents.html">Roll out a newer agent</a> first.</p></div>
+
+<h2 id="changed" class="state-title">Something changed before you confirmed</h2>
+<div class="notice error" role="alert"><strong>Nothing was created: <span class="mono">nginx.service</span> is no longer on the allowlist.</strong><p>It was removed at 14:18 UTC by example.reviewer@example.com, after you chose it. <a href="create-params.html">Choose another service</a>.</p></div>
+<div class="notice error" role="alert"><strong>Nothing was created: no host will run this task any more.</strong><p>sim-021 now reports <span class="mono">apply_package_updates</span> as not enabled, and it was the only target. <a href="create-targets.html">Choose targets again</a>.</p></div>
+<div class="notice error" role="alert"><strong>Nothing was created: this page is out of date.</strong><p>More than 30 minutes passed since the targets were worked out. <a href="create-targets.html">Check the host list again</a>; it may have changed.</p></div>
+<p class="note"><span class="review-q">Review Q13.</span> The confirmation carries the host list it showed, and the server refuses to create the batch if the list it works out on submit is different, rather than silently creating tasks for a different set of hosts. It also refuses a confirmation older than 30 minutes. Alternative: create the batch for whatever the list is on submit and show the difference afterwards. The 30 minutes is a proposal.</p>
+
+<h2 id="forged" class="state-title">A request that did not come from this form</h2>
+<p>The server applies every rule on every request, not only in the form: an unknown type, a parameter outside its schema, an extra field such as <span class="mono">command</span>, a service not on the allowlist, more than 25 hosts, a missing typed count above 3 hosts, or a missing or old second factor. Each is refused before anything is stored, with the same message the form would show, and recorded in the audit log as a refused creation (<a href="audit.html">Audit log</a>).</p>
+</main>
+</body>
+</html>

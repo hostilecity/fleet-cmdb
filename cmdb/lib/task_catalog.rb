@@ -9,7 +9,8 @@
 # task-catalog.schema.json, then what a schema cannot say:
 # - every string parameter is bounded and has an enum or a strict pattern: anchored at both ends, built only from
 #   letters, digits, and _ . @ + - (so never a space, a slash, or a shell character), with no `.` wildcard, no
-#   negated class, and no escape but \. \- \+ \d;
+#   negated class, no escape but \. \- \+ \d, ranges only within A-Z, a-z, or 0-9 (so a range cannot reach a
+#   forbidden character), and no | outside a group (so ^ and $ apply to every alternative);
 # - no parameter name suggests a command, a program, its arguments or environment, or a path (repeated from the
 #   schema, so loosening the schema alone does not loosen the lint);
 # - parameter schemas are closed (additionalProperties false) and hold only strings, bounded integers, and booleans;
@@ -35,6 +36,7 @@ module TaskCatalog
   PATTERN_LITERAL = /[A-Za-z0-9_@+-]/
   PATTERN_SYNTAX = /[(){}|*+?,]/
   PATTERN_ESCAPES = %w[. - + d].freeze
+  PATTERN_RANGE_ENDS = [ "a".."z", "A".."Z", "0".."9" ].freeze # a class range must stay inside one of these
   PATTERN_TIMEOUT = 0.1 # seconds; the patterns are short and simple, so this is never reached by a valid value
 
   # One problem: a JSON Pointer into the file ("" for the whole file) and what is wrong there.
@@ -238,7 +240,7 @@ module TaskCatalog
     return [ "must start with ^ and end with $" ] unless source.start_with?("^") && source.end_with?("$") && !source.end_with?("\\$")
 
     problems = []
-    in_class = false
+    depth = 0
     chars = body.chars
     index = 0
     while index < chars.size
@@ -249,26 +251,68 @@ module TaskCatalog
         index += 2
         next
       end
-      if in_class
-        if char == "]" then in_class = false
-        elsif !(char.match?(PATTERN_LITERAL) || char == ".")
-          problems << "a character class may hold only letters, digits, and _ . @ + -, not #{char.inspect}"
-        end
-      elsif char == "["
+      if char == "["
         problems << "uses a negated character class" if chars[index + 1] == "^"
-        in_class = true
+        closing, class_problems = character_class_problems(chars, index + 1)
+        problems.concat(class_problems)
+        return (problems << "has a character class that is not closed").uniq if closing.nil?
+
+        index = closing + 1
+        next
       elsif char == "."
         problems << "uses . outside a character class, which matches any character"
       elsif char == "(" && chars[index + 1] == "?"
         problems << "uses a special group"
+      elsif char == "|" && depth.zero?
+        problems << "uses | outside a group, so ^ and $ would not apply to every alternative; write ^(a|b)$"
       elsif !(char.match?(PATTERN_LITERAL) || char.match?(PATTERN_SYNTAX))
         problems << "may only match letters, digits, and _ . @ + -, not #{char.inspect}"
       end
+      depth += 1 if char == "("
+      depth -= 1 if char == ")"
       index += 1
     end
-    problems << "has a character class that is not closed" if in_class
     problems.concat(compile_problems(source)) if problems.empty?
     problems.uniq
+  end
+
+  # The index of the class's closing ] (nil when it is not closed), and what is wrong inside it. Every character a
+  # class can match must be allowed, so a range is checked by what it spans, not by its two ends: [.-z] would
+  # match / and ;. A - is literal only when escaped, first, or last.
+  def character_class_problems(chars, start)
+    items = []
+    index = start
+    index += 1 if chars[index] == "^" # reported by the caller
+    while index < chars.size && !(chars[index] == "]" && index > start)
+      if chars[index] == "\\"
+        items << [ :escape, chars[index + 1] ]
+        index += 2
+      else
+        items << [ :char, chars[index] ]
+        index += 1
+      end
+    end
+    return [ nil, [] ] if index >= chars.size
+
+    problems = []
+    position = 0
+    while position < items.size
+      kind, char = items[position]
+      if kind == :escape
+        problems << "uses the escape \\#{char}; only \\. \\- \\+ and \\d are allowed" unless PATTERN_ESCAPES.include?(char)
+      elsif char == "-" && position.positive? && position < items.size - 1
+        low, high = items[position - 1], items[position + 1]
+        unless low.first == :char && high.first == :char && PATTERN_RANGE_ENDS.any? { |ends| ends.cover?(low.last) && ends.cover?(high.last) && low.last <= high.last }
+          problems << "has a range that is not within A-Z, a-z, or 0-9; write a literal - as \\- or put it first or last"
+        end
+        position += 2 # the range's high end is checked as part of the range
+        next
+      elsif !(char.match?(PATTERN_LITERAL) || char == ".")
+        problems << "a character class may hold only letters, digits, and _ . @ + -, not #{char.inspect}"
+      end
+      position += 1
+    end
+    [ index, problems ]
   end
 
   def compile_problems(source)
@@ -297,6 +341,6 @@ module TaskCatalog
     Catalog.new(version: data["catalog_version"], entries:, digest:)
   end
 
-  private_class_method :parse_json, :semantic_problems, :task_problems, :parameter_problems, :command_like?, :string_problems,
+  private_class_method :parse_json, :semantic_problems, :task_problems, :parameter_problems, :command_like?, :string_problems, :character_class_problems,
                        :compile_problems, :build
 end

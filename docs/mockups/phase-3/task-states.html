@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task states · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p><a href="tasks.html">&larr; Tasks</a></p>
+<div class="page-head"><div><h1>Task states</h1><p>The top of <a href="task.html">the task page</a> in every state, with the reason in plain words and the code beside it. The rest of the page (task facts, timeline, output, audit entries) is the same in every state.</p></div></div>
+
+<h2 id="queued" class="state-title">Queued</h2>
+<section class="result wait"><h2>Queued: waiting for sim-028 to poll</h2><p>The agent picks up tasks when it polls, about every 30 seconds. sim-028 has been <span class="lamp offline">offline</span> for 3 hours. If it has not picked this up by <strong>2026-11-09 14:02 UTC</strong>, the task expires and is never delivered.</p></section>
+<div class="actions"><a class="btn danger quiet" href="cancel.html#queued">Cancel task</a></div>
+
+<h2 id="claimed" class="state-title">Claimed</h2>
+<section class="result wait"><h2>Claimed: delivered to sim-031, not started yet</h2><p>The agent has the task and will start it when the task it is running now finishes (one task at a time). If it does not start by 14:09:40 (its lease), the task goes back to queued.</p></section>
+<div class="actions"><a class="btn danger quiet" href="cancel.html#claimed">Cancel task</a></div>
+
+<h2 id="running" class="state-title">Running</h2>
+<section class="result wait"><h2>Running for 6 minutes: upgrading, 9 of 22 packages so far</h2><p>Started 14:05:40 UTC. Last progress 14:11:02. It stops after 60 minutes at most (15:05:40 UTC).</p><p class="code-line">Cannot be cancelled once running</p></section>
+<div class="actions"><a class="btn danger quiet" href="cancel.html#running-not-interruptible">Request cancel</a></div>
+<p class="muted" style="font-size:.875rem">Output appears when the task finishes. Progress lines come from the agent's progress reports.</p>
+
+<h2 id="cancel-requested" class="state-title">Running, cancel requested</h2>
+<section class="result amber"><h2>Running, cancel requested at 13:41:20 by example.reviewer@example.com</h2><p>Restarting a service cannot be stopped safely once started, so this restart runs to completion (by 13:45:31 UTC at the latest). Its result is recorded as usual. No other task of batch <a href="batch-partial.html#cancelled">86</a> will start.</p></section>
+<p class="muted" style="font-size:.875rem">After it finishes the state is Succeeded or Failed, and this page keeps the line "Cancel was requested at 13:41:20, after the task had started; it could not be stopped."</p>
+
+<h2 id="succeeded" class="state-title">Succeeded</h2>
+<section class="result ok"><h2>Succeeded in 1.2 s: <span class="mono">nginx.service</span> restarted and active</h2><p class="code-line">Exit status 0</p></section>
+<p class="muted" style="font-size:.875rem">A full succeeded task: <a href="task.html">task #1201</a>.</p>
+
+<h2 id="failed-exit" class="state-title">Failed: the package manager was busy</h2>
+<section class="result bad"><h2>Failed: package manager busy</h2><p>Another program held the package manager lock for 5 minutes, so nothing was upgraded. Often an automatic update is running; wait and try again.</p><p class="code-line">Reason package_manager_locked &middot; exit status 100</p></section>
+
+<h2 id="failed-service" class="state-title">Failed: the service did not come back</h2>
+<section class="result bad"><h2>Failed: <span class="mono">nginx.service</span> is not running after the restart</h2><p>systemd restarted it, and it stopped again; systemd reports it as <span class="mono">failed</span>. The output below has systemd's status. The agent did not try again.</p><p class="code-line">Reason not_active_after_restart &middot; exit status 3</p></section>
+
+<h2 id="interrupted" class="state-title">Failed: interrupted</h2>
+<section class="result bad"><h2>Failed: interrupted</h2><p>The agent stopped while the task was running (the VM rebooted, or the agent was restarted or updated). It reported this when it started again at 08:34:02 UTC. <strong>The task was not run again.</strong> Reports already sent before it stopped were kept.</p><p class="code-line">Reason interrupted</p></section>
+
+<h2 id="lease-expired" class="state-title">Failed: lease expired</h2>
+<section class="result bad"><h2>Failed: the agent stopped reporting</h2><p>The agent said it started this task at 10:02:41 UTC, then sent nothing before its lease ran out at 10:07:41. The task may or may not have finished on the VM; check the host. It will not be run again.</p><p class="code-line">Reason lease_expired &middot; set by the server</p></section>
+
+<h2 id="timed-out" class="state-title">Timed out</h2>
+<section class="result bad"><h2>Timed out after 60 minutes</h2><p>The agent stopped the package manager when the time limit passed and reported it. <strong>The package database may need repair:</strong> on sim-014, run <span class="mono">dpkg --configure -a</span> as root, then <a href="create-confirm.html#updates">apply package updates</a> again. Packages upgraded before the stop stay upgraded.</p><p class="code-line">Stopped by the agent at 23:10:41 &middot; output kept up to the stop</p></section>
+<section class="result bad"><h2>Timed out: no result from the agent</h2><p>No result arrived within the time limit plus 5 minutes' grace. The server marked it timed out; the agent may still report what happened, which is added to the timeline but does not change the state.</p><p class="code-line">Set by the server at 23:15:41</p></section>
+<p class="note"><span class="review-q">Review Q20.</span> The repair guidance names a command for the operator to run on the VM by hand. It is advice in the task's reason, never a button: the dashboard cannot run it. Alternative: say only "the package database may need repair" and link the operations guide. Also: a late result that arrives after the server set timed out is shown in the timeline but never changes a terminal state (states are immutable, P3-S02); confirm.</p>
+
+<h2 id="cancelled" class="state-title">Cancelled</h2>
+<section class="result grey"><h2>Cancelled before it was delivered</h2><p>Cancelled at 13:41:20 UTC by example.reviewer@example.com. sim-002 never received it.</p></section>
+<section class="result grey" id="cancelled-claimed"><h2>Cancelled after it was picked up, before it started</h2><p>sim-005 had picked it up. When it tried to start it, the server refused and told it to drop the task. It never ran.</p></section>
+<section class="result grey" id="cancelled-running"><h2>Cancelled while running</h2><p>Collecting reports can be stopped safely. The agent received the cancel on its next poll (8 s later) and stopped. The inventory report was already sent; the configuration and package reports were not.</p></section>
+
+<h2 id="refused" class="state-title">Refused by the agent</h2>
+<section class="result bad"><h2>Refused: <span class="mono">nginx.service</span> is not in this VM's own allowlist</h2><p>sim-007's agent checked its own configuration and refused before running anything. To allow it, add <span class="mono">nginx.service</span> to <span class="mono">[tasks] allowed_services</span> in <span class="mono">/etc/fleet-agent/config.toml</span> on sim-007, then create the task again.</p><p class="code-line">Reason not_allowed_locally &middot; nothing ran</p></section>
+<div class="table-wrap"><table class="stack">
+<caption>Every refusal reason</caption>
+<thead><tr><th scope="col">Shown as</th><th scope="col">Code</th><th scope="col">Who refuses</th></tr></thead>
+<tbody>
+<tr><td data-label="Shown as">Not enabled on this VM: the task type is not turned on in the VM's agent configuration.</td><td data-label="Code" class="mono">not_enabled_locally</td><td data-label="Who refuses">Agent</td></tr>
+<tr><td data-label="Shown as">Not in this VM's own allowlist: the service is not listed in the VM's configuration.</td><td data-label="Code" class="mono">not_allowed_locally</td><td data-label="Who refuses">Agent</td></tr>
+<tr><td data-label="Shown as">Protected service: the agent itself, SSH, <span class="mono">systemd-*</span>, networking, and D-Bus are never restarted remotely.</td><td data-label="Code" class="mono">protected_service</td><td data-label="Who refuses">Agent</td></tr>
+<tr><td data-label="Shown as">The agent does not know this task type. Its catalog is older than the server's.</td><td data-label="Code" class="mono">unknown_type</td><td data-label="Who refuses">Agent</td></tr>
+<tr><td data-label="Shown as">The parameters did not pass the agent's own checks.</td><td data-label="Code" class="mono">invalid_params</td><td data-label="Who refuses">Agent</td></tr>
+<tr><td data-label="Shown as">No longer allowed: the service was removed from the server's allowlist after the task was created.</td><td data-label="Code" class="mono">no_longer_allowed</td><td data-label="Who refuses">Server, when the agent claims it</td></tr>
+</tbody></table></div>
+<p class="note"><span class="review-q">Review Q21.</span> Codes named in the spec (<span class="mono">interrupted</span>, <span class="mono">lease_expired</span>, <span class="mono">invalid_params</span>, <span class="mono">unknown_type</span>, <span class="mono">not_enabled_locally</span>, <span class="mono">not_allowed_locally</span>) are used as given. <span class="mono">protected_service</span>, <span class="mono">no_longer_allowed</span>, <span class="mono">package_manager_locked</span>, and <span class="mono">not_active_after_restart</span> are proposed here and would be added to P3-S02's list. Each page shows the sentence first and the code small beside it. A refusal by the server at claim time is shown as Refused, the same state the agent uses, with "Server" as who refused.</p>
+
+<h2 id="expired" class="state-title">Expired</h2>
+<section class="result grey"><h2>Expired: sim-004 did not poll within 24 hours</h2><p>Created 2026-11-07 11:15:30 UTC; expired 2026-11-08 11:15:30. It was never delivered and will not run when sim-004 comes back. Create a new task if it is still needed.</p><p class="code-line">Set by the server</p></section>
+
+<h2 id="output-hostile" class="state-title">Output with markup, control characters, and truncation</h2>
+<div class="output-head"><h2 style="font-size:1rem">Output</h2><span class="muted">The first 32 KiB and the last 32 KiB of 1.4 MiB are kept (the limit is 64 KiB). Shown as plain text.</span></div>
+<pre class="output">Setting up acme-daemon (2.4-1) ...
+&lt;script&gt;alert("x")&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;
+\e[31mERROR\e[0m colour codes are shown as text, not applied
+line with a NUL here: \0 and a bell: \a
+<span class="cut">1.3 MiB not kept (1,394,688 bytes)</span>Processing triggers for libc-bin (2.41-12+deb13u1) ...
+done.</pre>
+<p class="note"><span class="review-q">Review Q22.</span> Truncation keeps the start and the end with a marker between them, because the start shows what ran and the end shows how it finished. The marker says how much was dropped and is drawn by the page, outside the agent's text, so output cannot fake one. Control characters are shown as visible escapes (<span class="mono">\e</span>, <span class="mono">\0</span>) and never interpreted. Alternative: keep only the last 64 KiB. FR-3.2 leaves the shape to us; P3-A03 implements it.</p>
+</main>
+</body>
+</html>

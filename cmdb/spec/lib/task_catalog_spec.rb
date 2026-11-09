@@ -109,6 +109,24 @@ RSpec.describe TaskCatalog do
       expect(pattern_problems("^[a-z$")).to eq([ "has a character class that is not closed" ])
       expect(pattern_problems("^(a$")).to match([ a_string_starting_with("does not compile") ])
     end
+
+    it "checks every character a class range spans, not only its ends (review of #154)" do
+      range_problem = "has a range that is not within A-Z, a-z, or 0-9; write a literal - as \\- or put it first or last"
+      %w[^[.-z]+$ ^[.-@]+$ ^[+-a]+$ ^[0-z]+$ ^[A-z]+$ ^[z-a]+$ ^[a-z-0]+$ ^[\d-z]+$].each do |pattern|
+        expect(pattern_problems(pattern)).to include(range_problem), pattern
+      end
+      %w[^[a-zA-Z0-9]+$ ^[-a-z]+$ ^[a-z-]+$ ^[a-z\-.]+$ ^[b-y]+$].each { |pattern| expect(pattern_problems(pattern)).to eq([]), pattern }
+      expect(lint_messages("range-spanning-forbidden-characters")).to include(a_string_matching(/range that is not within A-Z, a-z, or 0-9/))
+    end
+
+    it "refuses | outside a group, where ^ and $ would bind to one alternative only (review of #154)" do
+      problem = "uses | outside a group, so ^ and $ would not apply to every alternative; write ^(a|b)$"
+      %w[^ok|fine$ ^a|b|c$ ^(a)|(b)$].each { |pattern| expect(pattern_problems(pattern)).to eq([ problem ]), pattern }
+      expect(pattern_problems("^(ok|fine)$")).to eq([])
+      expect(pattern_problems("^x(a|(b|c))y$")).to eq([])
+      expect(lint_messages("top-level-alternation")).to include(a_string_matching(/\| outside a group/))
+      expect(TaskCatalog.send(:ruby_pattern, "^(ok|fine)$").match?("ok; reboot")).to be(false)
+    end
   end
 
   describe TaskCatalog::Entry do
