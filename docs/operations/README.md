@@ -13,6 +13,7 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 | [cis-rules.md](cis-rules.md) | The starter CIS-aligned rules, adding and tuning a rule, and the licensing rules for rule text |
 | [config-facts.md](config-facts.md) | The configuration fact manifest and how to add a fact |
 | [agent-config-facts.md](agent-config-facts.md) | What the agent reads for each configuration fact, and how to check a report |
+| [agent-task-privileges.md](agent-task-privileges.md) | What each remote task type may do on a VM, how the agent gets that privilege under its unit, and the transient task units (P3-A05) |
 | [agent-packages.md](agent-packages.md) | Where the agent's package list comes from, `skipped`, `unsupported`, `unreadable`, and checking it against a host (AC-2.3) |
 | [troubleshooting.md](troubleshooting.md) | Certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates |
 

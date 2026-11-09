@@ -45,6 +45,10 @@ The supervisor runs as its own transient unit (`fleet-agent-update`), outside th
 
 `fleet-agent-rollback.service` (`Type=oneshot`) runs `/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop`: the previous version's binary, the one that was known to work. It has no `ProtectSystem=` because it has to change `/usr/lib/fleet-agent` and the state directory and restart the service, but it keeps the other restrictions that do not get in its way. `fleet-agent install` writes both units; `uninstall` removes both. An update does not rewrite them (see the spec's known limit).
 
+### What Phase 3 tasks add
+
+Nothing to this unit ([P3-A05](../../docs/backlog/specs/p3-agent-exec.md)). `read_only` and `service_manager` task programs run as children of the agent inside this sandbox (`systemctl restart` reaches systemd over the `AF_UNIX` socket already allowed); `package_manager` programs run in a transient unit, `fleet-agent-task-<id>-<step>.service`, outside it, with fixed properties. The per-task privilege table and the option-by-option review are in [`docs/operations/agent-task-privileges.md`](../../docs/operations/agent-task-privileges.md). `scripts/task-privilege-smoke.sh` (CI) proves each privilege works under this unit's options.
+
 ### Checking it
 
 `scripts/sandbox-smoke.sh` (run in CI on the runner's systemd) runs the musl release binary as a transient service with every `[Service]` option of this unit, read from the file so the test cannot drift, against a local stand-in for the agent API, and once without them. The sandboxed run must have its heartbeat accepted, write its state (including its task ledger, P3-A02), and report every fact the unsandboxed run reports, with no new warning; a system call the filter blocks (`SystemCallErrorNumber=EPERM`) would otherwise only show as a missing fact.
