@@ -1,11 +1,14 @@
-# Agent release (P1-PACKAGING, ADR 0018). Runs only on a version tag `agent-v<version>`, for example
-# `agent-v1.2.0`: builds the static x86_64 musl binary, writes the signed manifest, and publishes a
-# GitHub release. The process, the formats, and the repository settings it relies on are in
-# docs/releases.md.
+# Agent release (P1-PACKAGING, ADR 0018). Started by the owner from the Actions tab: Agent release > Run
+# workflow on main, with the version to release (for example 1.2.0). Builds the static x86_64 musl binary
+# with that version compiled in, writes the signed manifest, and creates the tag `agent-v<version>` and the
+# GitHub release. No commit is needed: the version comes from the run, not from agent/Cargo.toml, whose
+# version is only the development builds' (owner, 2026-11-08). The process, the formats, and the repository
+# settings it relies on are in docs/releases.md.
 #
 #   test     the test suite, in its own job: test code never runs where the release binary is built
-#   build    no secrets; refuses a tag that is not on main or does not match Cargo.toml; builds the
-#            binary reproducibly (scripts/build-release.sh) and shows its SHA-256 in the job summary
+#   build    no secrets; refuses a run that is not on main, a version that is not SemVer, already released, or
+#            not newer than every earlier release; builds the binary reproducibly with the version compiled in
+#            (FLEET_AGENT_VERSION, scripts/build-release.sh) and shows its SHA-256 in the job summary
 #   rebuild  builds the same commit again on a separate runner, as an independent witness
 #   sign     the only job with the release key: bound to the protected `release` environment, so it
 #            waits for the owner's approval; signs only if both builds produced the identical binary,
@@ -13,24 +16,30 @@
 #            the one minisign command
 #   publish  verifies the signature with the agent's own `verify-release` and with minisign against
 #            the current key in the repository, records build provenance for the binary (SLSA, `gh
-#            attestation verify`), then creates the release
+#            attestation verify`), then creates the tag on the run's commit and the release
 #
 # Why two builds (review of #72): building runs every dependency's build script. A signature only proves
 # the binary came out of our build job; requiring a byte-identical binary from a second, independent
 # runner means a tampered build would have to compromise both identically.
 #
-# There is no other trigger, so untagged builds (Agent CI) are never signed. Actions are pinned to
-# commit SHAs because one of these jobs holds the release key; Dependabot updates them.
+# There is no other trigger, so other builds (Agent CI) are never signed. The tag is created by this workflow
+# only after the owner approved the signature, so an `agent-v*` tag always names a published release. Actions
+# are pinned to commit SHAs because one of these jobs holds the release key; Dependabot updates them.
 name: Agent release
+run-name: Agent release ${{ inputs.version }}
 
 on:
-  push:
-    tags: ['agent-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 1.2.0 (SemVer; must be newer than every earlier release)"
+        required: true
+        type: string
 
 permissions: {}
 
 concurrency:
-  group: agent-release-${{ github.ref }}
+  group: agent-release
   cancel-in-progress: false
 
 env:
@@ -40,7 +49,7 @@ env:
 
 jobs:
   test:
-    name: Test ${{ github.ref_name }}
+    name: Test ${{ inputs.version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -61,7 +70,7 @@ jobs:
         run: cargo test --locked
 
   build:
-    name: Build ${{ github.ref_name }}
+    name: Build ${{ inputs.version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -78,34 +87,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          fetch-depth: 0 # to check the tag is on main
+          fetch-depth: 0 # the earlier release tags, to check the version is newer
 
       - name: Install pinned toolchain and target
         run: |
           rustup toolchain install
           rustup target add "$TARGET"
 
-      - name: Check the tag
+      - name: Check the version
         id: names
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -eu
           semver='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
-          if ! printf '%s\n' "$TAG" | grep -Eqx "agent-v$semver"; then
-            echo "::error::tag $TAG is not agent-v<MAJOR>.<MINOR>.<PATCH>[-<pre-release>]"
+          if ! printf '%s\n' "$VERSION" | grep -Eqx "$semver"; then
+            echo "::error::version '$VERSION' is not <MAJOR>.<MINOR>.<PATCH>[-<pre-release>], for example 1.2.0"
             exit 1
           fi
-          VERSION=${TAG#agent-v}
-          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "fleet-agent") | .version')
-          if [ "$VERSION" != "$CARGO_VERSION" ]; then
-            echo "::error::tag version $VERSION does not match agent/Cargo.toml version $CARGO_VERSION"
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::run this workflow on main; releases are made only from main"
             exit 1
           fi
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::$TAG is not on main; releases are made only from main"
+          if git rev-parse -q --verify "refs/tags/agent-v$VERSION" > /dev/null; then
+            echo "::error::agent-v$VERSION is already released; a release is never replaced, so choose a newer version"
             exit 1
           fi
+          # Newer than every earlier release, by SemVer precedence (pre-releases sort before their release).
+          git tag --list 'agent-v*' | sed 's/^agent-v//' | scripts/check-release-version.py "$VERSION"
           if ! grep -v '^#' release-keys/current.pub | grep -q '^untrusted comment:'; then
             echo "::error::agent/release-keys/current.pub holds no key; see docs/releases.md"
             exit 1
@@ -122,12 +131,14 @@ jobs:
       # No dependency cache: a release is built from a clean state. Tests run in the `test` job.
       - name: Build reproducibly
         id: release
+        env:
+          FLEET_AGENT_VERSION: ${{ steps.names.outputs.version }} # compiled in as the agent's version (src/main.rs)
         run: |
           set -eu
           bin=$(scripts/build-release.sh "$TARGET")
           echo "sha256=$(sha256sum "$bin" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
-      - name: Check the binary is static and has the tag's version
+      - name: Check the binary is static and has the release's version
         env:
           VERSION: ${{ steps.names.outputs.version }}
           BIN: target/${{ env.TARGET }}/release/fleet-agent
@@ -196,7 +207,7 @@ jobs:
           retention-days: 7
 
   rebuild:
-    name: Rebuild ${{ github.ref_name }} independently
+    name: Rebuild ${{ inputs.version }} independently
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -221,6 +232,8 @@ jobs:
 
       - name: Build reproducibly
         id: rebuild
+        env:
+          FLEET_AGENT_VERSION: ${{ inputs.version }} # as the build job; a different value makes a different binary, and nothing is signed
         run: |
           set -eu
           bin=$(scripts/build-release.sh "$TARGET")
@@ -231,8 +244,8 @@ jobs:
   sign:
     name: Sign (needs the owner's approval)
     needs: [test, build, rebuild]
-    # Belt and braces with the trigger: never sign anything but a version tag.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
+    # Belt and braces with the trigger and the build job's check: never sign anything but a run on main.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
@@ -295,7 +308,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      contents: write # create the release
+      contents: write # create the tag and the release
       id-token: write # build provenance: GitHub's signing identity for the attestation
       attestations: write
     steps:
@@ -336,7 +349,7 @@ jobs:
           #    rotation makes it current (docs/releases.md).
           grep -v '^#' ../agent/release-keys/current.pub > "$RUNNER_TEMP/current.pub"
           minisign -V -p "$RUNNER_TEMP/current.pub" -m "$MANIFEST"
-          # 3. The signed manifest names this tag's version and target, and the binary both builds made.
+          # 3. The signed manifest names this release's version and target, and the binary both builds made.
           jq -e --arg v "$VERSION" --arg t "$TARGET" --arg s "$SHA256" \
             '.version == $v and .target == $t and .sha256 == $s' "$MANIFEST"
 
@@ -347,10 +360,12 @@ jobs:
         with:
           subject-path: dist/${{ needs.build.outputs.binary }}
 
-      - name: Publish the GitHub release
+      - name: Create the tag and publish the GitHub release
+        # The tag agent-v<version> is created here, on the run's commit, only now that the signature is
+        # verified; the tag ruleset lets GitHub Actions create it and nothing move or delete it.
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: agent-v${{ needs.build.outputs.version }}
           VERSION: ${{ needs.build.outputs.version }}
           BINARY: ${{ needs.build.outputs.binary }}
           MANIFEST: ${{ needs.build.outputs.manifest }}
@@ -360,6 +375,6 @@ jobs:
           prerelease=
           case "$VERSION" in *-*) prerelease=--prerelease ;; esac
           notes="fleet-agent $VERSION for $TARGET. Check the download with SHA256SUMS; agents verify the manifest signature (minisign, Ed25519) against the release keys built into them before installing (docs/releases.md)."
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag $prerelease \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" $prerelease \
             --title "fleet-agent $VERSION" --notes "$notes" \
             "$BINARY" "$MANIFEST" "$MANIFEST.minisig" SHA256SUMS

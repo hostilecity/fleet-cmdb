@@ -13,7 +13,7 @@ A release is a GitHub release for a tag `agent-v<version>`, for example `agent-v
 | `fleet-agent-<version>-x86_64-unknown-linux-musl.manifest.json.minisig` | The manifest's signature |
 | `SHA256SUMS` | `sha256sum` lines for the binary and the manifest |
 
-`<version>` is strict [SemVer](https://semver.org/) without build metadata (`1.2.0`, `1.3.0-rc.1`), equal to `version` in `agent/Cargo.toml` and to what `fleet-agent --version` prints. A version with a pre-release part is published as a GitHub pre-release.
+`<version>` is strict [SemVer](https://semver.org/) without build metadata (`1.2.0`, `1.3.0-rc.1`), chosen when the release is started and compiled into the binary, so it is what `fleet-agent --version` prints. `version` in `agent/Cargo.toml` is only what development builds report; a release does not change it. A version with a pre-release part is published as a GitHub pre-release.
 
 ### The manifest
 
@@ -122,22 +122,17 @@ Releases are always signed with the key in `current.pub`: the workflow verifies 
 
 ## Making a release
 
-1. In a pull request, set `version` in `agent/Cargo.toml` to the new version and run `cargo build` so `Cargo.lock` follows. Merge it once Agent CI passes.
-2. Tag the merge commit on `main` and push the tag:
+Nothing is committed and nothing needs building locally: a release is started from GitHub and released from the newest commit on `main`.
 
-   ```sh
-   git tag agent-v1.2.0 <commit on main>
-   git push origin agent-v1.2.0
-   ```
-
-3. **Test, build, and rebuild** run in parallel, without secrets:
+1. In **Actions**, choose **Agent release**, then **Run workflow**. Leave the branch on `main`, enter the version (for example `1.2.0`, or `1.3.0-rc.1` for a pre-release), and run it.
+2. **Test, build, and rebuild** run in parallel, without secrets:
    - **Test** runs the test suite in its own job, so test code never runs where the release binary is built.
-   - **Build** refuses the tag unless it is `agent-v<SemVer>`, matches `Cargo.toml`, points at a commit on `main`, and `current.pub` holds a key. It builds the static binary reproducibly (`agent/scripts/build-release.sh`: build paths are remapped out of the binary), checks `--version`, writes the manifest and `SHA256SUMS`, and puts both in the run's summary.
-   - **Rebuild** builds the same commit again on a separate runner.
-4. **Sign** first requires the build and the rebuild to have produced byte-identical binaries, so a tampered build would have to compromise two runners identically. It then waits for approval: in **Actions**, open the run, compare the summary (version, size, SHA-256) with what you meant to release, and approve the `release` environment. The job sees only the manifest, writes the key to a private temporary file for the one `minisign -S` command, and deletes it.
-5. **Publish** verifies the signature twice, with the new binary's own `verify-release` and with minisign against `current.pub`, checks the manifest names the tag's version and the binary both builds made, records build provenance for the binary, and creates the GitHub release.
+   - **Build** refuses the run unless it is on `main`, the version is SemVer, `agent-v<version>` does not exist yet, the version is newer than every earlier release (SemVer order, `agent/scripts/check-release-version.py`), and `current.pub` holds a key. It builds the static binary reproducibly with the version compiled in (`FLEET_AGENT_VERSION`; `agent/scripts/build-release.sh` remaps build paths out of the binary), checks `--version` prints it, writes the manifest and `SHA256SUMS`, and puts both in the run's summary.
+   - **Rebuild** builds the same commit, with the same version, again on a separate runner.
+3. **Sign** first requires the build and the rebuild to have produced byte-identical binaries, so a tampered build would have to compromise two runners identically. It then waits for approval: in **Actions**, open the run, compare the summary (version, size, SHA-256) with what you meant to release, and approve the `release` environment. The job sees only the manifest, writes the key to a private temporary file for the one `minisign -S` command, and deletes it.
+4. **Publish** verifies the signature twice, with the new binary's own `verify-release` and with minisign against `current.pub`, checks the manifest names the release's version and the binary both builds made, and records build provenance for the binary. Only then does it create the tag `agent-v<version>` on the run's commit and the GitHub release, so every `agent-v*` tag names a published, signed release.
 
-A failed run publishes nothing; fix the cause and re-run the failed jobs, or delete the tag and tag again. A published release is never replaced: release a new version instead.
+A failed run publishes nothing and creates no tag; fix the cause and run the workflow again, or re-run the failed jobs (a re-run releases the same commit as before, even if `main` has moved on). If publishing stopped part way, after the release was created, delete that release and its tag before running again. A published release is never replaced: release a new version instead.
 
 ## Getting a release to the fleet
 
@@ -149,13 +144,13 @@ ADR 0018 makes the owner's GitHub account and the `release` environment the trus
 
 - **Account:** two-factor authentication on the owner's account (ideally a security key).
 - **Environment `release`** (Settings > Environments):
-  - Required reviewers: the owner. (Leave "Prevent self-review" off while the owner is the only reviewer, or the owner cannot approve a release they tagged.)
-  - Deployment branches and tags: **Selected branches and tags**, with only the tag pattern `agent-v*`, so no branch can run a job in this environment.
+  - Required reviewers: the owner. (Leave "Prevent self-review" off while the owner is the only reviewer, or the owner cannot approve a release they started.)
+  - Deployment branches and tags: **Selected branches and tags**, with only the branch `main`, so a run on any other branch or tag cannot use the key.
   - Environment secrets: `AGENT_RELEASE_SIGNING_KEY` and `AGENT_RELEASE_SIGNING_KEY_PASSWORD`, and no others.
-- **Tag ruleset** (Settings > Rules > Rulesets > New tag ruleset): target `agent-v*`; restrict creations, restrict updates, restrict deletions, and block force pushes; bypass list: the owner only. Only the owner can then start a release, and a published tag cannot be moved to other code.
-- **Branch protection on `main`:** pull requests required, Agent CI and Server CI required, no force pushes, so the tag check "on main" means "reviewed and tested".
+- **Tag ruleset** (Settings > Rules > Rulesets > New tag ruleset): target `agent-v*`; restrict updates, restrict deletions, and block force pushes; bypass list: the owner only. Leave **restrict creations off**: the release workflow creates the tag itself, as GitHub Actions. A published tag then cannot be moved to other code or deleted, except by the owner. A tag someone else creates by hand only uses up that version number: it has no signed release, so nothing imports it.
+- **Branch protection on `main`:** pull requests required, Agent CI and Server CI required, no force pushes, so "released from `main`" means "reviewed and tested".
 - **Actions:** default workflow permissions read-only (each job asks for what it needs); fork pull requests never get secrets (GitHub's default).
 
-## What CI does without a tag
+## What CI does outside a release
 
-Agent CI (`.github/workflows/agent-ci.yml`) runs on every pull request and push to `main`. It builds the static musl binary, checks it is static and reports the `Cargo.toml` version, and uploads it as an unsigned workflow artefact on `main`. It then runs the whole release pipeline as a dry run with a key pair it generates and discards: embed the throwaway public key, build, write the manifest, sign it with minisign, verify it with `verify-release`, and check a changed manifest is refused. It never sees the release key, so an untagged build is never signed. It builds the binary a second time in another directory and fails if the two differ, so a change that breaks reproducible builds is caught before a release needs one. It also checks the systemd unit with `systemd-analyze` (`agent/scripts/check-unit.sh`), and runs the musl binary under the unit's sandbox on the runner's systemd against a local stand-in for the agent API (`agent/scripts/sandbox-smoke.sh`): the sandboxed run must report every fact an unsandboxed run does, with no new warning.
+Agent CI (`.github/workflows/agent-ci.yml`) runs on every pull request and push to `main`. It builds the static musl binary, checks it is static and reports the `Cargo.toml` (development) version, and uploads it as an unsigned workflow artefact on `main`. It then runs the whole release pipeline as a dry run with a key pair it generates and discards: embed the throwaway public key, build with a release version compiled in (and check `--version` prints it), write the manifest, sign it with minisign, verify it with `verify-release`, and check a changed manifest is refused. It never sees the release key, so a build outside a release is never signed. It builds the binary a second time in another directory and fails if the two differ, so a change that breaks reproducible builds is caught before a release needs one. It also checks the systemd unit with `systemd-analyze` (`agent/scripts/check-unit.sh`), and runs the musl binary under the unit's sandbox on the runner's systemd against a local stand-in for the agent API (`agent/scripts/sandbox-smoke.sh`): the sandboxed run must report every fact an unsandboxed run does, with no new warning.

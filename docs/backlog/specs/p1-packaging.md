@@ -6,7 +6,7 @@ Signing and the side-by-side layout are decided in [ADR 0018](../../decisions/00
 
 ## Scope
 
-- **Release workflow** (`.github/workflows/agent-release.yml`). On a version tag (`agent-v<version>`, on `main`, equal to the `Cargo.toml` version), it builds a static `x86_64-unknown-linux-musl` binary (fleet profile in [DEC-01](../../decisions/0001-fleet-profile.md)) and writes a manifest (version, target, SHA-256, size). It publishes the binary, the manifest, a `SHA256SUMS` file, and the manifest signature as GitHub release assets.
+- **Release workflow** (`.github/workflows/agent-release.yml`). Started by the owner from the Actions tab on `main`, with the version to release (SemVer, newer than every earlier release; compiled into the binary, so `agent/Cargo.toml` is not changed), it builds a static `x86_64-unknown-linux-musl` binary (fleet profile in [DEC-01](../../decisions/0001-fleet-profile.md)) and writes a manifest (version, target, SHA-256, size). After the signature is approved and verified, it creates the tag `agent-v<version>` and publishes the binary, the manifest, a `SHA256SUMS` file, and the manifest signature as GitHub release assets.
 - **Signing.**
   - It happens in a job bound to a protected GitHub environment (`release`) that requires the owner's approval. The Ed25519 private key exists only as that environment's secret.
   - Tag protection and required approvals are documented in this issue's PR.
