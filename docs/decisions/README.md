@@ -28,3 +28,5 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0022](0022-distribution-triage.md) | Show the distribution's own triage beside each finding | DEC-22 |
 | [0023](0023-deploy-with-github-actions.md) | Deploy the server with GitHub Actions as one container (its plain-HTTP tunnel origin superseded by 0024) | #88 |
 | [0024](0024-cloudflare-origin-ca-for-the-server.md) | The server's certificate comes from Cloudflare's Origin CA, and agents trust it from their build | #137 |
+
+Not an ADR: [`phase-3-threat-model.md`](phase-3-threat-model.md) is the Phase 3 threat model ([P3-X01](../backlog/specs/p3-security.md)). It decides nothing by itself; its proposals become binding only through a spec or an ADR.
