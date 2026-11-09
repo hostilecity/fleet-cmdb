@@ -130,13 +130,7 @@ fn run_with(
         let heartbeat = spawn_loop(scope, "heartbeat", || {
             let _stop = StopOnExit(shutdown);
             heartbeat_loop(
-                intervals,
-                &config.state_dir,
-                transport,
-                shutdown,
-                started,
-                updater,
-                requests,
+                intervals, config, transport, shutdown, started, updater, requests,
             );
         });
         let inventory = spawn_loop(scope, "inventory", || {
@@ -232,7 +226,7 @@ impl Drop for StopOnExit<'_> {
 
 fn heartbeat_loop(
     intervals: &Intervals,
-    state_dir: &Path,
+    config: &Config,
     transport: &dyn Transport,
     shutdown: &Shutdown,
     started: Instant,
@@ -245,9 +239,10 @@ fn heartbeat_loop(
         seeded(2),
         started,
     )
-    .record_first_ack_in(state_dir.to_owned())
+    .record_first_ack_in(config.state_dir.clone())
     .with_updater(updater)
-    .with_requests(requests);
+    .with_requests(requests)
+    .with_capabilities(crate::tasks::Capabilities::of(&config.tasks));
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();
         let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());

@@ -139,13 +139,15 @@ class Host < ApplicationRecord
   # TaskBatches::EXCLUSION_REASONS, or nil when it can (FR-3.1, P3-S02). Only active hosts whose agent reports
   # a catalog that has the type, and implements and enables it, are targeted (P3-A01); a host whose credential
   # is in use on another machine (FR-S.1) is not.
-  def task_exclusion_reason(entry)
+  def task_exclusion_reason(entry, parameters = {})
     return "not_active" unless enrollment_state == "active"
     return "machine_id_mismatch" if machine_id_mismatch?
     return "no_capability_report" if task_capabilities_reported_at.nil? || task_catalog_version.nil?
     return "not_supported" unless task_catalog_version >= entry.since && task_types_supported.include?(entry.type)
 
-    "not_enabled" unless task_types_enabled.include?(entry.type)
+    return "not_enabled" unless task_types_enabled.include?(entry.type)
+
+    "not_allowed_locally" if entry.type == "restart_service" && !task_services_allowed.include?(parameters["service"])
   end
 
   # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an

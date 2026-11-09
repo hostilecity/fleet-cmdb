@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use crate::config::{Config, Credential, DEFAULT_STATE_DIR, Interval, LogLevel};
+use crate::tasks::settings::TaskSettings;
 
 /// Settings carried over from an existing config when the credential or server changes.
 #[derive(Debug, Clone)]
@@ -18,6 +19,8 @@ pub struct Carried {
     pub config_report: Option<Interval>,
     /// `update_confirm_seconds` when it is not the default (P1-AGENT-UPDATE).
     pub update_confirm_seconds: Option<u64>,
+    /// The `[tasks]` settings (P3-A01), so re-running the installer never turns a task on or off.
+    pub tasks: TaskSettings,
 }
 
 impl Carried {
@@ -35,6 +38,7 @@ impl Carried {
             update_confirm_seconds: (config.update_confirm_seconds
                 != defaults.update_confirm_seconds)
                 .then_some(config.update_confirm_seconds),
+            tasks: config.tasks.clone(),
         }
     }
 
@@ -46,6 +50,7 @@ impl Carried {
             inventory: None,
             config_report: None,
             update_confirm_seconds: None,
+            tasks: TaskSettings::default(),
         }
     }
 }
@@ -87,6 +92,43 @@ fn interval(name: &str, value: Option<&Interval>, defaults: &Interval, out: &mut
             defaults.min.as_secs(),
             defaults.max.as_secs()
         )),
+    }
+}
+
+/// A TOML array of basic strings.
+fn quoted_list(values: &[String]) -> String {
+    let items: Vec<String> = values.iter().map(|v| quoted(v)).collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// The `[tasks]` section. Settings that were refused are not carried: every task stays off, as it
+/// was, and a comment says why (P3-A01: invalid task configuration fails safe).
+fn tasks(settings: &TaskSettings, out: &mut String) {
+    if let Some(problem) = settings.problem() {
+        let problem: String = problem
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        out.push_str(&format!(
+            "\n# The [tasks] section here before was not valid, so it was not kept and every task stays off:\n# {problem}\n[tasks]\nenabled = []\n"
+        ));
+        return;
+    }
+    if settings.uses_default_types() && settings.allowed_services().is_empty() {
+        out.push_str(
+            "\n# [tasks]                                    # remote tasks (DEC-14, DEC-15); defaults shown\n# enabled = [\"refresh_reports\"]            # also restart_service, apply_package_updates\n# allowed_services = []                      # units restart_service may restart\n",
+        );
+        return;
+    }
+    out.push_str("\n[tasks]\n");
+    if !settings.uses_default_types() {
+        out.push_str(&format!("enabled = {}\n", quoted_list(settings.enabled())));
+    }
+    if !settings.allowed_services().is_empty() {
+        out.push_str(&format!(
+            "allowed_services = {}\n",
+            quoted_list(settings.allowed_services())
+        ));
     }
 }
 
@@ -152,6 +194,7 @@ pub fn render(
         &defaults.config_report,
         &mut out,
     );
+    tasks(&carried.tasks, &mut out);
     // Never write a config the agent would refuse. The parse error never contains the credential.
     Config::from_toml(&out).map_err(|e| format!("the config to be written is not valid: {e}"))?;
     Ok(out)
@@ -211,6 +254,37 @@ mod tests {
             new.ca_file.unwrap(),
             Path::new("/etc/fleet-agent/ca \"x\".pem")
         );
+    }
+
+    #[test]
+    fn task_settings_are_carried_over_and_a_bad_section_stays_off() {
+        let render_from = |tasks: &str| {
+            let old = Config::from_toml(&format!("{}{tasks}", minimal())).unwrap();
+            let text = render(
+                "https://agent.example.lan",
+                &Credential::new(CREDENTIAL),
+                None,
+                &Carried::from(&old),
+            )
+            .unwrap();
+            (old, Config::from_toml(&text).unwrap(), text)
+        };
+        for tasks in [
+            "",
+            "[tasks]\nenabled = []\n",
+            "[tasks]\nenabled = [\"restart_service\", \"apply_package_updates\"]\nallowed_services = [\"nginx.service\", \"app@blue.service\"]\n",
+            "[tasks]\nallowed_services = [\"nginx.service\"]\n",
+        ] {
+            let (old, new, _) = render_from(tasks);
+            assert_eq!(new.tasks, old.tasks, "{tasks}");
+        }
+        let (_, new, text) = render_from("[tasks]\nenabled = [\"reboot\"]\n");
+        assert_eq!(new.tasks.problem(), None);
+        assert!(new.tasks.enabled().is_empty());
+        assert!(text.contains("was not valid"), "{text}");
+        assert!(text.contains("`reboot`"), "{text}");
+        let (_, _, text) = render_from("");
+        assert!(text.contains("# [tasks]"), "{text}");
     }
 
     #[test]

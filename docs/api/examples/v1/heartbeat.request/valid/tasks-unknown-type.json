@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.1.0",
+  "hostname": "vm-01.example.lan",
+  "uptime_seconds": 3600,
+  "agent_time": "2026-01-01T12:00:01.250Z",
+  "tasks": {
+    "catalog_version": 7,
+    "supported": [
+      "refresh_reports",
+      "rotate_logs"
+    ],
+    "enabled": [
+      "refresh_reports",
+      "rotate_logs"
+    ],
+    "allowed_services": [],
+    "local_config": "valid"
+  }
+}

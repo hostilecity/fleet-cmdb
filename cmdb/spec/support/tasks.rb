@@ -1,10 +1,11 @@
 # Helpers for task specs (P3-S02).
 module TaskHelpers
   # An active host whose agent reports that it supports and enables the given task types (P3-A01).
-  def task_host(types: TaskCatalog.current.types, enabled: types, catalog_version: TaskCatalog.current.version, **attributes)
+  def task_host(types: TaskCatalog.current.types, enabled: types, catalog_version: TaskCatalog.current.version,
+                services: %w[nginx.service], **attributes)
     host = create(:host, :active, **attributes)
     host.update_columns(task_catalog_version: catalog_version, task_types_supported: types, task_types_enabled: enabled,
-                        task_capabilities_reported_at: Time.current)
+                        task_services_allowed: services, task_capabilities_reported_at: Time.current)
     host
   end
 

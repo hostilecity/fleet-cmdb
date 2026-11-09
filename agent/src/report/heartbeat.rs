@@ -20,6 +20,7 @@ use super::requests::ReportRequests;
 use super::time::{parse_rfc3339, rfc3339};
 use super::{Notes, Transport, jittered};
 use crate::retry::{Backoff, Rng};
+use crate::tasks::Capabilities;
 use crate::update::Updater;
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
@@ -36,6 +37,10 @@ pub struct HeartbeatRequest {
     pub hostname: Option<String>,
     pub uptime_seconds: u64,
     pub agent_time: String,
+    /// What this host can run and its owner enabled (P3-A01). Absent only if the compiled-in
+    /// catalog cannot be used, which the server reads as "offer nothing".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<Capabilities>,
 }
 
 /// The state record of this process's first accepted heartbeat (in the state directory). `install`
@@ -60,6 +65,8 @@ pub struct Heartbeat<'a, R: Rng> {
     /// Where `report_request` directives go, if anywhere ([`ReportRequests`]).
     requests: Option<&'a ReportRequests>,
     intervals: &'a Intervals,
+    /// Sent as `tasks` in every heartbeat ([`HeartbeatRequest::tasks`]).
+    capabilities: Option<Capabilities>,
     backoff: Backoff<R>,
     rng: R,
     started: Instant,
@@ -76,6 +83,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             updater: None,
             requests: None,
             intervals,
+            capabilities: None,
             backoff,
             rng,
             started,
@@ -103,6 +111,13 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
     /// request has ended.
     pub fn with_requests(mut self, requests: &'a ReportRequests) -> Self {
         self.requests = Some(requests);
+        self
+    }
+
+    /// Reports `capabilities` in every heartbeat (P3-A01). They change only with the config, which
+    /// is read at startup, so they are fixed for the life of the process.
+    pub fn with_capabilities(mut self, capabilities: Option<Capabilities>) -> Self {
+        self.capabilities = capabilities;
         self
     }
 
@@ -137,6 +152,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             hostname,
             uptime_seconds: now.saturating_duration_since(self.started).as_secs(),
             agent_time: rfc3339(wall),
+            tasks: self.capabilities.clone(),
         }
     }
 
@@ -335,6 +351,37 @@ mod tests {
             assert_eq!(value["agent_time"], "2026-01-01T12:00:00.000Z");
             assert_eq!(value["agent_version"], AGENT_VERSION);
         }
+    }
+
+    #[test]
+    fn every_heartbeat_reports_the_task_capabilities() {
+        // P3-A01: the server learns what this host supports and enables from each heartbeat.
+        let intervals = intervals();
+        let started = Instant::now();
+        let caps = crate::tasks::Capabilities::of(&crate::tasks::settings::TaskSettings::default());
+        let mut hb = heartbeat(&intervals, started).with_capabilities(caps.clone());
+        let transport = FakeTransport::new(vec![]);
+        for _ in 0..2 {
+            transport.push(ok(envelope(json!({}))));
+            hb.beat(&transport, None, started, wall());
+        }
+        for (_, body) in transport.sent() {
+            assert_conforms("v1", "heartbeat.request", &body);
+            assert_eq!(
+                body["tasks"],
+                serde_json::to_value(caps.as_ref().unwrap()).unwrap()
+            );
+            assert_eq!(body["tasks"]["enabled"], json!(["refresh_reports"]));
+            assert_eq!(body["tasks"]["local_config"], "valid");
+        }
+        // Without capabilities (the catalog unusable) the field is left out, never sent empty.
+        let request = heartbeat(&intervals, started).request(None, started, wall());
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("tasks")
+                .is_none()
+        );
     }
 
     #[test]

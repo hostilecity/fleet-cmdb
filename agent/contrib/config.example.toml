@@ -56,3 +56,19 @@ max_seconds = 21600
 interval_seconds = 21600
 min_seconds = 3600
 max_seconds = 86400
+
+# Remote tasks (Phase 3, FR-3.1): which maintenance tasks from the agent's built-in catalog this VM
+# runs when an operator asks for them in the dashboard. The server can only ask; this section decides.
+# Only refresh_reports (send fresh reports now; changes nothing) is on unless you list otherwise.
+# restart_service and apply_package_updates are off on every VM until enabled here (DEC-14).
+# A mistake in this section turns every task off; the agent keeps reporting and logs why, and
+# `fleet-agent check-config` fails until it is fixed. Changes apply when the agent restarts.
+[tasks]
+# The task types to run: refresh_reports, restart_service, apply_package_updates. [] turns all off.
+# enabled = ["refresh_reports"]
+# The services restart_service may restart, as full unit names (for example "nginx.service"), at
+# most 64. Empty by default, so every restart is refused. The server keeps its own list too, and a
+# restart needs both. The agent's own unit, ssh and sshd, systemd-* units, networking, and D-Bus are
+# refused even if listed (DEC-15). apply_package_updates has no settings: it always upgrades with
+# apt-get, keeps local configuration files, removes nothing, and never reboots (DEC-16).
+# allowed_services = []

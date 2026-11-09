@@ -13,8 +13,9 @@
 # - The target is explicit host ids or one tag, never both. It is resolved once, under a share lock on the host
 #   rows, and recorded on the batch: later changes to a host's tags or state do not change who the batch targets.
 #   A selection of more than MAX_HOSTS hosts is refused, whether or not they would all be targeted (DEC-14).
-# - Hosts that are not active, or whose agent does not support and enable the type (P3-A01), are excluded and
-#   listed with the reason (EXCLUSION_REASONS). If no host is left, nothing is created.
+# - Hosts that are not active, or whose agent does not support and enable the type (P3-A01), or, for a restart,
+#   whose agent does not list the service in its own allowlist (P3-D01 Q7), are excluded and listed with the
+#   reason (EXCLUSION_REASONS). If no host is left, nothing is created.
 # - Above CONFIRM_ABOVE targeted hosts, confirm_host_count must equal the number of tasks to create (DEC-14),
 #   enforced here so a caller that skips the dashboard's form is held to it too.
 #
@@ -28,7 +29,7 @@ module TaskBatches
 
   REQUEST_KEYS = %w[type parameters target confirm_host_count].freeze
   TARGET_KEYS = %w[host_ids tag].freeze
-  EXCLUSION_REASONS = %w[not_active machine_id_mismatch no_capability_report not_supported not_enabled].freeze
+  EXCLUSION_REASONS = %w[not_active machine_id_mismatch no_capability_report not_supported not_enabled not_allowed_locally].freeze
 
   # The request was refused and nothing was created. errors: [{ "pointer", "problem" }], JSON Pointers into the
   # request; excluded: the Exclusions found before it was refused (empty if it was refused before targeting).
@@ -54,8 +55,8 @@ module TaskBatches
     entry, parameters, target = check_request(request)
     TaskBatch.transaction(requires_new: true) do
       hosts = resolve(target)
-      targeted, excluded = hosts.partition { |host| host.task_exclusion_reason(entry).nil? }
-      excluded = excluded.map { |host| Exclusion.new(host_id: host.id, reason: host.task_exclusion_reason(entry)) }
+      targeted, excluded = hosts.partition { |host| host.task_exclusion_reason(entry, parameters).nil? }
+      excluded = excluded.map { |host| Exclusion.new(host_id: host.id, reason: host.task_exclusion_reason(entry, parameters)) }
       check_targets(targeted, excluded, request["confirm_host_count"])
 
       batch = TaskBatch.create!(operator:, task_type: entry.type, parameters:, selection_method: target.key?("tag") ? "tag" : "explicit",

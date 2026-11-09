@@ -29,6 +29,7 @@ mod report;
 mod retry;
 mod shutdown;
 mod state;
+mod tasks;
 #[cfg(test)]
 mod test_support;
 mod update;
@@ -196,7 +197,34 @@ fn check_config(path: &Path) -> ExitCode {
     println!("  state_dir  = {}", config.state_dir.display());
     println!("  heartbeat  = {}", describe_interval(&config.heartbeat));
     println!("  inventory  = {}", describe_interval(&config.inventory));
+    // P3-A01: a bad [tasks] section does not stop `run` (every task is off), but it fails here.
+    if let Some(problem) = config.tasks.problem() {
+        println!("  tasks      = none enabled");
+        eprintln!("fleet-agent: config file is not valid: {problem}");
+        return ExitCode::from(EXIT_CONFIG);
+    }
+    println!("  tasks      = {}", describe_tasks(&config.tasks));
+    for remark in config.tasks.remarks(tasks::IMPLEMENTED) {
+        println!("  note: {remark}");
+    }
     ExitCode::SUCCESS
+}
+
+/// The `tasks` line of `check-config`, for example
+/// `refresh_reports (the default); restart may restart: nginx.service`.
+fn describe_tasks(settings: &tasks::settings::TaskSettings) -> String {
+    let mut out = match settings.enabled() {
+        [] => "none enabled".to_owned(),
+        enabled => enabled.join(", "),
+    };
+    if settings.uses_default_types() {
+        out.push_str(" (the default)");
+    }
+    if !settings.allowed_services().is_empty() {
+        out.push_str("; restart_service may restart: ");
+        out.push_str(&settings.allowed_services().join(", "));
+    }
+    out
 }
 
 /// `run`: starts the agent and keeps it running until `SIGTERM` or `SIGINT`.
@@ -260,6 +288,19 @@ fn run(path: &Path) -> ExitCode {
         inventory_seconds = config.inventory.start.as_secs(),
         "fleet-agent started"
     );
+    // P3-A01: the task settings fail safe, so say plainly when they turned every task off.
+    match config.tasks.problem() {
+        Some(problem) => tracing::error!("task configuration is not valid: {problem}"),
+        None => {
+            tracing::info!(
+                tasks_enabled = describe_tasks(&config.tasks).as_str(),
+                "task settings loaded"
+            );
+            for remark in config.tasks.remarks(tasks::IMPLEMENTED) {
+                tracing::warn!("task settings: {remark}");
+            }
+        }
+    }
     // Remote updates (P1-AGENT-UPDATE): the heartbeat loop hands the server's directive to this.
     let config_path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
     let updater = update::Updater::from_config(&config, &config_path);

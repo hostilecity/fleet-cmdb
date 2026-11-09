@@ -4,7 +4,7 @@
 #
 #   scripts/update-smoke-build.sh VERSION PUBKEY OUT [TARGET_DIR]      (run from agent/)
 #
-# The sources are copied to a fixed directory first, with the package version and release-keys/current.pub
+# The sources (and the task catalog they compile in) are copied to a fixed directory first, with the package version and release-keys/current.pub
 # changed there, so the working tree is never touched and no key can end up committed. The same directory
 # and RUSTFLAGS are used for every version, so after the first build only the agent itself is compiled.
 set -eu
@@ -20,10 +20,13 @@ if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     exit 2
 fi
 here=$(pwd)
-work=${TMPDIR:-/tmp}/update-smoke-src
-rm -rf "$work"
-mkdir -p "$work"
+root=${TMPDIR:-/tmp}/update-smoke-src
+work=$root/agent
+rm -rf "$root"
+mkdir -p "$work" "$root/docs/api/tasks"
 tar --exclude=./target -cf - . | tar -xf - -C "$work"
+# The build compiles in the shared task catalog from outside the crate (P3-A01).
+cp ../docs/api/tasks/task-catalog.json "$root/docs/api/tasks/"
 
 cp "$pubkey" "$work/release-keys/current.pub"
 sed -i "0,/^version = \"[^\"]*\"/s//version = \"$version\"/" "$work/Cargo.toml"

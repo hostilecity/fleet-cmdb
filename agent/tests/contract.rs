@@ -81,3 +81,53 @@ fn assert_conforms_reports_errors() {
     });
     assert!(result.is_err(), "an invalid heartbeat must not conform");
 }
+
+/// P3-A01, P3-S01: the catalog compiled into the agent is the shared file itself
+/// (`include_str!` in `src/tasks/catalog.rs`), so the agent and the server cannot disagree on what a
+/// task type is. The unit test beside the constant compares the compiled-in bytes with the file.
+#[test]
+fn the_agent_compiles_in_the_shared_task_catalog() {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(crate_dir.join("src/tasks/catalog.rs"))
+        .expect("read src/tasks/catalog.rs");
+    let (_, rest) = source
+        .split_once("include_str!(\"")
+        .expect("src/tasks/catalog.rs compiles the catalog in with include_str!");
+    let (path, _) = rest.split_once('"').unwrap();
+    let included = crate_dir
+        .join("src/tasks")
+        .join(path)
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("{path}: {e}"));
+    let shared = contract::root()
+        .join("tasks/task-catalog.json")
+        .canonicalize()
+        .unwrap();
+    assert_eq!(included, shared);
+    assert_eq!(
+        source.matches("include_str!(").count(),
+        1,
+        "one catalog only"
+    );
+}
+
+/// The shared catalog passes the structural half of the catalog lint (P3-S01) as the agent's
+/// validator reads it, so both sides agree on the schema too.
+#[test]
+fn the_task_catalog_conforms_to_its_schema() {
+    let root = contract::root().join("tasks");
+    let read = |name: &str| -> serde_json::Value {
+        let path = root.join(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    };
+    let schema = read("task-catalog.schema.json");
+    let validator = jsonschema::draft202012::new(&schema).expect("the catalog schema compiles");
+    let catalog = read("task-catalog.json");
+    let errors: Vec<String> = validator
+        .iter_errors(&catalog)
+        .map(|e| e.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}
