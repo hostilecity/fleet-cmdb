@@ -26,6 +26,23 @@
         "refused",
         "expired"
       ]
+    },
+    "cancel": {
+      "description": "Stop this task (P3-S05): sent while the task is running, its type is interruptible, and an operator asked to cancel it. The agent stops it and reports outcome cancelled. Absent or null means no instruction. Additive (DEC-20).",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "description": "The id of the running task to stop.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      }
     }
   }
 }
