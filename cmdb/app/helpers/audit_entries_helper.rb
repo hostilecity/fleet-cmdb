@@ -46,11 +46,22 @@ module AuditEntriesHelper
     Audit::Actions::ADVISORY_WITHDRAWALS_CONFIRMED => "Advisory withdrawals confirmed (full import)",
     Audit::Actions::ADVISORY_TRIAGE_IMPORTED => "Debian triage imported",
     Audit::Actions::ADVISORY_TRIAGE_IMPORT_FAILED => "Debian triage import failed",
-    Audit::Actions::ADVISORY_TRIAGE_IMPORT_HELD_BACK => "Debian triage import held back (would drop too many entries)"
+    Audit::Actions::ADVISORY_TRIAGE_IMPORT_HELD_BACK => "Debian triage import held back (would drop too many entries)",
+    Audit::Actions::TASK_BATCH_CREATED => "Task batch created",
+    Audit::Actions::TASK_CREATED => "Task created",
+    Audit::Actions::TASK_CLAIMED => "Task claimed",
+    Audit::Actions::TASK_REQUEUED => "Task returned to the queue (lease lapsed before start)",
+    Audit::Actions::TASK_STARTED => "Task started",
+    Audit::Actions::TASK_SUCCEEDED => "Task succeeded",
+    Audit::Actions::TASK_FAILED => "Task failed",
+    Audit::Actions::TASK_TIMED_OUT => "Task timed out",
+    Audit::Actions::TASK_CANCELLED => "Task cancelled",
+    Audit::Actions::TASK_REFUSED => "Task refused",
+    Audit::Actions::TASK_EXPIRED => "Task expired"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "task" => "Tasks" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
   INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze

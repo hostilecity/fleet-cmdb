@@ -1,0 +1,31 @@
+{
+  "format_version": 1,
+  "catalog_version": 1,
+  "tasks": [
+    {
+      "type": "example_task",
+      "name": "Example task",
+      "description": "An example task for the catalog lint's tests. It runs nothing.",
+      "since": 1,
+      "privilege": "service_manager",
+      "interruptible": false,
+      "enabled_by_default": false,
+      "timeout_seconds": 60,
+      "expiry_seconds": 86400,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "A value.",
+            "minLength": 9,
+            "maxLength": 8,
+            "pattern": "^[a-z]+$"
+          }
+        },
+        "required": []
+      }
+    }
+  ]
+}

@@ -15,6 +15,7 @@ docs/api/
   examples/v1/<name>/valid/*.json         payloads that must validate
   examples/v1/<name>/invalid/*.json       payloads that must be rejected; the file name says why
   rules/                                  the CIS-aligned rule file format (not part of the agent API; see rules/README.md)
+  tasks/                                  the task catalog the server and the agent both build from (see tasks/README.md)
 ```
 
 `<name>` is `<endpoint>.request` or `<endpoint>.response`. The directory version is the payload `schema_version`: everything under `v1/` is schema version 1.

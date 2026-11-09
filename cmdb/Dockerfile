@@ -30,6 +30,7 @@ ENV RAILS_ENV="production" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so" \
     FLEET_API_SCHEMAS_DIR="/rails/api-schemas" \
     FLEET_RULES_SCHEMA_DIR="/rails/api-rules" \
+    FLEET_TASK_CATALOG_DIR="/rails/api-tasks" \
     FLEET_AGENT_TRUST_DIR="/rails/agent-trust"
 
 # Throw-away build stage to reduce size of final image
@@ -59,6 +60,8 @@ RUN mkdir -p storage/releases storage/backup
 COPY --from=api schemas ./api-schemas
 # The CIS-aligned rule file schema (P2-S04), from the same build context.
 COPY --from=api rules ./api-rules
+# The task catalog (P3-S01), the same file the agent compiles in; loaded and linted at boot.
+COPY --from=api tasks/task-catalog.json tasks/task-catalog.schema.json ./api-tasks/
 # The certificate authorities compiled into the agent (ADR 0024), the same files: the install page gives curl the one
 # that signed the server's certificate (named build context "trust").
 COPY --from=trust *.pem ./agent-trust/

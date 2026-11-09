@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task catalog",
+  "description": "The allowlisted task types (FR-3.1, P3-S01): the one file the server and the agent both build their catalogs from. Format 1. This schema is the structural half of the catalog lint; the server's lint (cmdb/lib/task_catalog.rb) adds the checks a schema cannot express, such as patterns being strict. See README.md beside this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "catalog_version",
+    "tasks"
+  ],
+  "properties": {
+    "format_version": {
+      "description": "The format of this file. Only 1 exists.",
+      "const": 1
+    },
+    "catalog_version": {
+      "description": "Increases by one whenever a task type is added or changed. Agents report the version compiled into them; the highest since in the file equals it.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/task"
+      }
+    }
+  },
+  "$defs": {
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "name",
+        "description",
+        "since",
+        "privilege",
+        "interruptible",
+        "enabled_by_default",
+        "timeout_seconds",
+        "expiry_seconds",
+        "parameters"
+      ],
+      "properties": {
+        "type": {
+          "description": "The stable task type id. Never reused for another task or renamed.",
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "name": {
+          "description": "Plain-language name for the dashboard.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "description": {
+          "description": "Exactly what the task runs and changes, in plain language, as the dashboard shows it before an operator creates the task.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "since": {
+          "description": "The catalog_version that added this type. An agent whose catalog version is lower does not have it.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "privilege": {
+          "description": "What the task needs on the VM (FR-3.3). read_only: reads system state and writes nothing outside the agent's own state. service_manager: asks systemd to restart units. package_manager: installs and upgrades packages, writing to /usr, /etc, /boot, and /var.",
+          "enum": [
+            "read_only",
+            "service_manager",
+            "package_manager"
+          ]
+        },
+        "interruptible": {
+          "description": "Whether a running task of this type can be stopped safely when an operator cancels it (FR-3.2, DEC-14).",
+          "type": "boolean"
+        },
+        "enabled_by_default": {
+          "description": "Whether an agent runs this type without a local configuration change. Only read_only types may be (DEC-14).",
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "description": "The default time a task of this type may run, from start to result. The agent terminates it after this (FR-3.2, FR-3.3).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "expiry_seconds": {
+          "description": "The default time a task of this type may wait to start, from creation. A task still waiting then expires and is never delivered (FR-3.2, AC-3.8; DEC-14: 24 hours).",
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 604800
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        }
+      }
+    },
+    "parameters": {
+      "description": "A closed JSON Schema for the task's parameters: an object with additionalProperties false and at most 16 named, typed parameters. Parameters are strings with an enum or a strict pattern, bounded integers, or booleans; never lists or objects, and never anything that names a command, path, or argument.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "additionalProperties",
+        "properties",
+        "required"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "additionalProperties": {
+          "const": false
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "$ref": "#/$defs/parameter_name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/parameter"
+          }
+        },
+        "required": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/parameter_name"
+          }
+        }
+      }
+    },
+    "parameter_name": {
+      "description": "Lower case words separated by _. Names that suggest a command, a program, its arguments, its environment, or a path are refused.",
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "allOf": [
+        {
+          "not": {
+            "pattern": "(command|cmd|shell|script|exec|eval|sudo|program|binary|executable)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|_)(args?|argv|argument|arguments|options?|flags?|env|environ|environment|paths?|file|files|filename|dir|directory|url|uri)(_|$)"
+          }
+        }
+      ]
+    },
+    "parameter": {
+      "description": "A parameter is a string, an integer, or a boolean, chosen by its type.",
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "string"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/string_parameter"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "integer"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/integer_parameter"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "boolean"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/boolean_parameter"
+          }
+        }
+      ]
+    },
+    "string_parameter": {
+      "description": "A string is never free-form: it has a maximum length and an enum or a pattern anchored at both ends.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "description",
+        "maxLength"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "enum"
+          ]
+        },
+        {
+          "required": [
+            "pattern"
+          ]
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "string"
+        },
+        "description": {
+          "$ref": "#/$defs/parameter_description"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "pattern": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^\\^.+\\$$"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_.@+-]+$"
+          }
+        }
+      }
+    },
+    "integer_parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "description",
+        "minimum",
+        "maximum"
+      ],
+      "properties": {
+        "type": {
+          "const": "integer"
+        },
+        "description": {
+          "$ref": "#/$defs/parameter_description"
+        },
+        "minimum": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "maximum": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "boolean_parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "description"
+      ],
+      "properties": {
+        "type": {
+          "const": "boolean"
+        },
+        "description": {
+          "$ref": "#/$defs/parameter_description"
+        }
+      }
+    },
+    "parameter_description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    }
+  }
+}
