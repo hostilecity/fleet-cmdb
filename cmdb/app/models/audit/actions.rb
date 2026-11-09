@@ -61,6 +61,12 @@ module Audit
     # result refused because it differs from the one already recorded or the task's state cannot take it.
     TASK_LATE_RESULT = "task.late_result"
     TASK_RESULT_CONFLICT = "task.result_conflict"
+    # Task controls (P3-S05, P3-S07): an operator's request to cancel a running task, recorded beside its real state.
+    TASK_CANCEL_REQUESTED = "task.cancel_requested"
+    # Task settings (P3-S06, mockup audit.html): the restart allowlist and the task limits, with before and after.
+    TASK_SETTING_SERVICE_ADDED = "task_setting.service_added"
+    TASK_SETTING_SERVICE_REMOVED = "task_setting.service_removed"
+    TASK_SETTING_LIMITS_CHANGED = "task_setting.limits_changed"
     # Second factor (P3-S09, mockup audit.html): setting up and replacing it, every step-up attempt, and the console reset.
     SECOND_FACTOR_ENROLLED = "second_factor.enrolled"
     SECOND_FACTOR_REPLACED = "second_factor.replaced"

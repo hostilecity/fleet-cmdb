@@ -7,8 +7,9 @@
 # Poll (poll!): at most one task is claimed or running per host.
 # - A running task blocks the host, and is never delivered again: the server knows it started.
 # - A claimed task the agent has not started is delivered again, with a fresh lease, so an agent that restarted
-#   gets it back and finds it in its ledger (P3-A02). Not after its expiry: the lease job (P3-S05, #31) then
-#   returns it to the queue, where it expires.
+#   gets it back and finds it in its ledger (P3-A02). Not after its expiry: it then goes back to the queue and
+#   expires there at once (both audited with the system as actor, as the expiry job would), and the poll moves on,
+#   so an expired claim never blocks its host (P3-S05).
 # - Otherwise the oldest queued task is claimed. It is locked FOR UPDATE SKIP LOCKED in the same statement that
 #   checks expires_at against the database clock (clock_timestamp()), so an expired task is never delivered
 #   (AC-3.8, threat model L1), and expiry (P3-S05) cannot change it once it is locked.
@@ -17,15 +18,22 @@
 #   next one is tried.
 #
 # Start (start!): claimed becomes running, with a lease to the deadline plus a grace period. Anything else is
-# left as it is and reported, so the agent runs a task only when the server says it is running.
+# left as it is and reported, so the agent runs a task only when the server says it is running. A start for a task
+# that went back to the queue when its claim lapsed (threat model L2) answers run: false with state queued; the
+# agent has not executed it, and the next poll claims it again (P3-S05).
+#
+# Cancel (cancel_directive): a running task of an interruptible type that an operator asked to cancel is named in
+# the poll and progress responses until the agent reports its result (P3-S05). A task of any other type is never
+# named: it runs to completion.
 #
 # Result (record_result!): applied to an open task through its transition (audited with the host as actor), or
 # kept as a TaskLateResult when the server had already ended the task. The same result again is a duplicate and
 # changes nothing; a different one, or one the task's state cannot take, is a conflict, audited and logged.
 module AgentTasks
-  # Until the agent starts a claimed task (FR-3.2). The lease job and its setting are P3-S05 and P3-S06 (#31).
+  # Until the agent starts a claimed task (FR-3.2); TaskLeases returns the task to the queue when it lapses.
   CLAIM_LEASE = 5.minutes
-  # After the deadline, how long a running task may take to report before the lease lapses (P3-S05 marks it then).
+  # After the deadline, how long a running task may take to report before the lease lapses (TaskLeases then ends it
+  # as timed_out, or failed with lease_expired if the agent has gone quiet).
   RESULT_GRACE = 5.minutes
   # Claim-time refusals one poll works through before it gives up and returns nothing.
   MAX_REFUSALS_PER_POLL = TaskBatches::MAX_HOSTS
@@ -52,11 +60,13 @@ module AgentTasks
     return nil if host.tasks.exists?(state: "running")
 
     if (claimed = host.tasks.where(state: "claimed").lock.first)
-      return nil unless host.tasks.where(id: claimed.id).where("expires_at > clock_timestamp()").exists?
-
-      unless refuse_if_invalid(claimed)
-        claimed.renew_lease!(lease_expires_at: now + CLAIM_LEASE)
-        return claimed
+      if host.tasks.where(id: claimed.id).where("expires_at > clock_timestamp()").exists?
+        unless refuse_if_invalid(claimed)
+          claimed.renew_lease!(lease_expires_at: now + CLAIM_LEASE)
+          return claimed
+        end
+      else
+        claimed.requeue!(actor: Audit::SYSTEM).expire!(actor: Audit::SYSTEM, now:)
       end
     end
 
@@ -74,6 +84,13 @@ module AgentTasks
   def delivery(task)
     { id: task.uuid, type: task.task_type, parameters: task.parameters, timeout_seconds: task.timeout_seconds,
       catalog_version: TaskCatalog.current.version }
+  end
+
+  # The cancel directive for the poll and progress responses ({ id: }), or nil: the host's running task, if an
+  # operator asked to cancel it and its type is interruptible.
+  def cancel_directive(host)
+    task = host.tasks.where(state: "running").where.not(cancel_requested_at: nil).first
+    task&.interruptible? ? { id: task.uuid } : nil
   end
 
   # Whether this host's next poll would get a task: the heartbeat's tasks_available directive. One query.
@@ -137,7 +154,7 @@ module AgentTasks
   end
 
   def apply!(host, task, payload, digest, now)
-    output = TaskOutput.sanitize(payload["output"])
+    output = TaskOutput.sanitize(payload["output"], limit: TaskSettings.output_limit_bytes)
     result = {
       exit_status: payload["exit_status"], output: output.text, output_truncated: output.truncated || payload["output_truncated"] || false,
       agent_started_at: agent_time(payload["started_at"]), agent_finished_at: agent_time(payload["finished_at"]),
@@ -150,7 +167,7 @@ module AgentTasks
   end
 
   def keep_late!(host, task, payload, digest, now)
-    output = TaskOutput.sanitize(payload["output"])
+    output = TaskOutput.sanitize(payload["output"], limit: TaskSettings.output_limit_bytes)
     task.create_late_result!(
       report_id: payload["report_id"], outcome: payload["outcome"], reason: payload["reason"], exit_status: payload["exit_status"],
       agent_started_at: agent_time(payload["started_at"]), agent_finished_at: agent_time(payload["finished_at"]),

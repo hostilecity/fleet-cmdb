@@ -11,7 +11,8 @@
 #   place of the middle that says how many bytes were cut; truncated is then true. The result is never longer
 #   than the limit, and never splits a character.
 module TaskOutput
-  # The server's output limit (FR-3.2). P3-S06 (#31) makes it a setting, never above Task::MAX_OUTPUT_BYTES.
+  # The default output limit (FR-3.2). The limit in force is the setting (TaskSettings, 4 KiB to 1 MiB), never above
+  # Task::MAX_OUTPUT_BYTES.
   LIMIT_BYTES = 64.kilobytes
   # Room kept for the marker line.
   MARKER_BYTES = 96

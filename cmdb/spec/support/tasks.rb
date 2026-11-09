@@ -25,6 +25,11 @@ module TaskHelpers
   end
 
   def create_task(host = task_host, **options) = create_task_batch([ host ], **options).tasks.sole
+
+  # Puts services on the server's restart allowlist (P3-S06), for every host or for one tag.
+  def allow_restart(*services, tag: nil, by: Operator.first || create(:operator))
+    services.map { |service| TaskAllowedService.create!(service:, tag:, added_by: by, created_at: Time.current) }
+  end
 end
 
 RSpec.configure { |config| config.include TaskHelpers }

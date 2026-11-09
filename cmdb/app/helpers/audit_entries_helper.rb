@@ -60,6 +60,10 @@ module AuditEntriesHelper
     Audit::Actions::TASK_EXPIRED => "Task expired",
     Audit::Actions::TASK_LATE_RESULT => "Late task result kept (task had already ended)",
     Audit::Actions::TASK_RESULT_CONFLICT => "Task result refused (conflicting)",
+    Audit::Actions::TASK_CANCEL_REQUESTED => "Cancel requested",
+    Audit::Actions::TASK_SETTING_SERVICE_ADDED => "Service added to the allowlist",
+    Audit::Actions::TASK_SETTING_SERVICE_REMOVED => "Service removed from the allowlist",
+    Audit::Actions::TASK_SETTING_LIMITS_CHANGED => "Task limits changed",
     Audit::Actions::SECOND_FACTOR_ENROLLED => "Second factor set up",
     Audit::Actions::SECOND_FACTOR_REPLACED => "Moved to a new phone",
     Audit::Actions::SECOND_FACTOR_RECOVERY_CODES_REPLACED => "Recovery codes replaced",
@@ -71,10 +75,16 @@ module AuditEntriesHelper
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "task" => "Tasks", "second_factor" => "Second factor" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "task" => "Tasks", "task_setting" => "Task settings", "second_factor" => "Second factor" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
   INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze
+  # Task limits (P3-S06), as the limits entry records them: key => [label, unit].
+  TASK_LIMIT_NAMES = {
+    "tasks.max_hosts_per_batch" => "Most hosts in one batch", "tasks.output_limit_kib" => "Output kept per task (KiB)",
+    "tasks.poll_seconds" => "Task poll interval hint (seconds)",
+    **TaskCatalog.current.types.to_h { |type| [ "tasks.expiry_hours.#{type}", "Expiry of #{type} (hours)" ] }
+  }.freeze
 
   # Recorded field => [label, monospace]. Shown in this order; fields not listed follow, named as recorded.
   AUDIT_FIELDS = {
@@ -122,6 +132,12 @@ module AuditEntriesHelper
     "attempts_left" => [ "Attempts left", true ],
     "locked_until" => [ "Locked until", true ],
     "second_factor" => [ "Second factor", false ],
+    "cancel_requested" => [ "Cancel requested", true ],
+    "effect" => [ "Effect", true ],
+    "service" => [ "Service", true ],
+    "hosts" => [ "On which hosts", false ],
+    "allowlist" => [ "Restartable services", true ],
+    **TASK_LIMIT_NAMES.transform_values { |label| [ label, true ] },
     **SETTING_NAMES.keys.index_with { [ "Minutes", true ] },
     **INTERVAL_SETTING_NAMES.keys.index_with { [ "Seconds", true ] }
   }.freeze
@@ -179,13 +195,14 @@ module AuditEntriesHelper
     when "AdvisoryImport" then link_to("Advisory import #{id}", advisory_import_path(id))
     when "CisRule" then safe_join([ "Rule", tag.span(records.rules[id] || id.to_s, class: "kind mono") ], " ")
     when "SecondFactor" then "Second factor"
+    when "TaskAllowedService" then safe_join([ "Restartable services", tag.span(entry.changeset.is_a?(Hash) ? entry.changeset["service"].to_s : id.to_s, class: "kind mono") ], " ")
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"
       # A cleared interval deletes its row, so fall back to the key the entry recorded (it is the changeset's key).
       key = records.settings[id]
       key ||= (entry.changeset.keys & SETTING_NAMES.merge(INTERVAL_SETTING_NAMES).keys).first if entry.changeset.is_a?(Hash)
       key ? safe_join([ SETTING_NAMES.merge(INTERVAL_SETTING_NAMES).fetch(key, key), tag.span(key, class: "kind mono") ], " ") : "Setting #{id}"
-    when nil then tag.span("None", class: "muted")
+    when nil then entry.action == Audit::Actions::TASK_SETTING_LIMITS_CHANGED ? "Task limits" : tag.span("None", class: "muted")
     else "#{entry.target_type} #{id}"
     end
   end
