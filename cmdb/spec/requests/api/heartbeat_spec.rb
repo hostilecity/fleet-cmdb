@@ -192,7 +192,8 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
 
   describe "task capabilities (FR-3.1, P3-A01)" do
     let(:tasks) do
-      { catalog_version: 1, supported: %w[restart_service refresh_reports], enabled: %w[refresh_reports restart_service], local_config: "valid" }
+      { catalog_version: 1, supported: %w[restart_service refresh_reports], enabled: %w[refresh_reports restart_service],
+        allowed_services: %w[nginx.service cron.service], local_config: "valid" }
     end
     let(:restart) { TaskCatalog.current.entry("restart_service") }
 
@@ -202,27 +203,36 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
         expect(response).to have_http_status(:ok)
         expect(host.reload).to have_attributes(task_catalog_version: 1, task_types_supported: %w[refresh_reports restart_service],
                                                task_types_enabled: %w[refresh_reports restart_service],
+                                               task_services_allowed: %w[cron.service nginx.service],
                                                task_capabilities_reported_at: Time.current)
       end
-      expect(host.task_exclusion_reason(restart)).to be_nil
+      expect(host.task_exclusion_reason(restart, { "service" => "nginx.service" })).to be_nil
+    end
+
+    it "leaves out a restart of a service the VM's own allowlist does not name (P3-D01 Q7)" do
+      heartbeat(body(tasks:))
+      expect(host.reload.task_exclusion_reason(restart, { "service" => "postgresql.service" })).to eq("not_allowed_locally")
+      heartbeat(body(tasks: tasks.merge(allowed_services: [])))
+      expect(host.reload.task_exclusion_reason(restart, { "service" => "nginx.service" })).to eq("not_allowed_locally")
+      expect(host.task_exclusion_reason(TaskCatalog.current.entry("refresh_reports"), {})).to be_nil
     end
 
     it "stops offering a type the host no longer enables, and everything when it reports none" do
       heartbeat(body(tasks:))
       heartbeat(body(tasks: tasks.merge(enabled: %w[refresh_reports])))
-      expect(host.reload.task_exclusion_reason(restart)).to eq("not_enabled")
+      expect(host.reload.task_exclusion_reason(restart, { "service" => "nginx.service" })).to eq("not_enabled")
       expect(host.task_exclusion_reason(TaskCatalog.current.entry("refresh_reports"))).to be_nil
       heartbeat(body(tasks: tasks.merge(supported: %w[refresh_reports])))
-      expect(host.reload.task_exclusion_reason(restart)).to eq("not_supported")
+      expect(host.reload.task_exclusion_reason(restart, { "service" => "nginx.service" })).to eq("not_supported")
       heartbeat # an agent that sends no capabilities, such as one older than Phase 3
       expect(host.reload).to have_attributes(task_catalog_version: nil, task_types_supported: [], task_types_enabled: [],
-                                             task_capabilities_reported_at: nil)
+                                             task_services_allowed: [], task_capabilities_reported_at: nil)
       expect(host.task_exclusion_reason(restart)).to eq("no_capability_report")
     end
 
     it "enables nothing when the agent refused its local task configuration" do
       heartbeat(body(tasks: tasks.merge(local_config: "invalid")))
-      expect(host.reload.task_types_enabled).to eq([])
+      expect(host.reload).to have_attributes(task_types_enabled: [], task_services_allowed: [])
       expect(host.task_exclusion_reason(TaskCatalog.current.entry("refresh_reports"))).to eq("not_enabled")
     end
 
@@ -235,7 +245,8 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
 
     it "accepts the largest capabilities the contract allows" do
       ids = (1..64).map { |n| "task_type_#{n.to_s.rjust(3, '0')}_#{'x' * 50}" }
-      heartbeat(body(tasks: tasks.merge(catalog_version: 1_000_000, supported: ids, enabled: ids)))
+      services = (1..64).map { |n| "svc-#{n.to_s.rjust(3, '0')}-#{'x' * 240}.service" }
+      heartbeat(body(tasks: tasks.merge(catalog_version: 1_000_000, supported: ids, enabled: ids, allowed_services: services)))
       expect(response).to have_http_status(:ok)
       expect(host.reload.task_types_supported.size).to eq(64)
     end

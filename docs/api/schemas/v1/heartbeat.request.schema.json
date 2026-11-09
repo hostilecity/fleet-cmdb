@@ -49,6 +49,7 @@
         "catalog_version",
         "supported",
         "enabled",
+        "allowed_services",
         "local_config"
       ],
       "properties": {
@@ -78,6 +79,17 @@
             "type": "string",
             "maxLength": 64,
             "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          }
+        },
+        "allowed_services": {
+          "description": "The services the VM's local configuration allows restart_service to restart ([tasks] allowed_services; DEC-15), each once, sorted. Empty when local_config is invalid or none is listed. The server leaves out a host whose list lacks the service before sending anything (owner, P3-D01 Q7); the agent still checks its own list when a task arrives.",
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@-]{0,247}\\.service$"
           }
         },
         "local_config": {

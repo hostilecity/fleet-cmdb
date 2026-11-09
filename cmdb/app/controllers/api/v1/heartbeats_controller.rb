@@ -17,7 +17,7 @@ module Api
     # are created only for hosts that support and enable the type (Host#task_exclusion_reason, P3-S02). It allows up
     # to 64 type ids in each of two lists, hence the larger body limit.
     class HeartbeatsController < AuthenticatedController
-      self.max_body_bytes = 16.kilobytes
+      self.max_body_bytes = 32.kilobytes
       self.records_credential_use = false
       self.enforces_minimum_agent_version = false
 

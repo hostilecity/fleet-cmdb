@@ -38,17 +38,20 @@ module Liveness
   end
 
   # The host columns for a heartbeat's `tasks` object (FR-3.1, P3-A01): the catalog version compiled into the agent,
-  # the types it implements, and the types its VM enables, which Host#task_exclusion_reason reads when a task is
+  # the types it implements, the types its VM enables, and the services its VM allows restarting, which
+  # Host#task_exclusion_reason reads when a task is
   # created (P3-S02). A local configuration the agent refused enables nothing, whatever the lists say. A heartbeat
   # without the object, from an agent older than Phase 3, clears them, so its host is excluded with
   # no_capability_report. Unknown fields inside the object are ignored (DEC-08).
   def task_capability_columns(tasks, now)
     if tasks.nil?
-      return { task_catalog_version: nil, task_types_supported: [], task_types_enabled: [], task_capabilities_reported_at: nil }
+      return { task_catalog_version: nil, task_types_supported: [], task_types_enabled: [], task_services_allowed: [],
+               task_capabilities_reported_at: nil }
     end
 
-    enabled = tasks["local_config"] == "valid" ? tasks["enabled"].sort : []
-    { task_catalog_version: tasks["catalog_version"], task_types_supported: tasks["supported"].sort, task_types_enabled: enabled,
+    valid = tasks["local_config"] == "valid"
+    { task_catalog_version: tasks["catalog_version"], task_types_supported: tasks["supported"].sort,
+      task_types_enabled: valid ? tasks["enabled"].sort : [], task_services_allowed: valid ? tasks["allowed_services"].sort : [],
       task_capabilities_reported_at: now }
   end
   private_class_method :task_capability_columns

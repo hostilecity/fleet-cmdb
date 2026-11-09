@@ -10,6 +10,7 @@
       "refresh_reports"
     ],
     "enabled": [],
+    "allowed_services": [],
     "local_config": "invalid"
   }
 }

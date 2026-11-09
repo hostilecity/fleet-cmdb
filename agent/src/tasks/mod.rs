@@ -7,7 +7,8 @@
 //!   `restart_service` and `apply_package_updates` need a local edit (DEC-14), and restarts need the
 //!   unit in the local allowlist (DEC-15). A bad section turns every task off.
 //! - [`Capabilities`]: sent in every heartbeat as `tasks`, so the server offers a host only the
-//!   types it both supports and has enabled (FR-3.1).
+//!   types it both supports and has enabled (FR-3.1), and a restart only of a service its local
+//!   allowlist names (owner, P3-D01 Q7).
 //!
 //! There is no poller or executor yet (P3-A02, P3-A03): [`IMPLEMENTED`] is empty, so this agent
 //! reports that it supports no task type and the server offers it none.
@@ -35,6 +36,9 @@ pub struct Capabilities {
     pub supported: Vec<String>,
     /// Catalog types the local configuration enables, sorted; empty when it is invalid.
     pub enabled: Vec<String>,
+    /// The local restart allowlist (`[tasks] allowed_services`), sorted; empty when the
+    /// configuration is invalid. The agent still checks it when a task arrives (AC-3.9).
+    pub allowed_services: Vec<String>,
     /// `valid`, or `invalid` when the `[tasks]` section was refused and nothing is enabled.
     pub local_config: &'static str,
 }
@@ -59,6 +63,7 @@ impl Capabilities {
             catalog_version: catalog.catalog_version,
             supported,
             enabled: settings.enabled().to_vec(),
+            allowed_services: settings.allowed_services().to_vec(),
             local_config: if settings.problem().is_some() {
                 "invalid"
             } else {
@@ -95,8 +100,22 @@ mod tests {
         assert_eq!(caps.enabled, ["refresh_reports"]);
         assert_eq!(caps.local_config, "valid");
 
-        let invalid = Capabilities::of(&settings("[tasks]\nenabled = [\"reboot\"]\n")).unwrap();
+        assert!(caps.allowed_services.is_empty());
+
+        // The local restart allowlist is reported, sorted, so the server can leave out hosts that
+        // would refuse (P3-D01 Q7).
+        let listed = Capabilities::of(&settings(
+            "[tasks]\nenabled = [\"restart_service\"]\nallowed_services = [\"nginx.service\", \"cron.service\"]\n",
+        ))
+        .unwrap();
+        assert_eq!(listed.allowed_services, ["cron.service", "nginx.service"]);
+
+        let invalid = Capabilities::of(&settings(
+            "[tasks]\nenabled = [\"reboot\"]\nallowed_services = [\"nginx.service\"]\n",
+        ))
+        .unwrap();
         assert!(invalid.enabled.is_empty());
+        assert!(invalid.allowed_services.is_empty());
         assert_eq!(invalid.local_config, "invalid");
 
         // Only catalog types count as supported, sorted and once each.
@@ -122,7 +141,7 @@ mod tests {
             Capabilities::of(&settings("[tasks]\nenabled = 1\n")).unwrap(),
             Capabilities::with(
                 &settings(
-                    "[tasks]\nenabled = [\"refresh_reports\", \"restart_service\", \"apply_package_updates\"]\n",
+                    "[tasks]\nenabled = [\"refresh_reports\", \"restart_service\", \"apply_package_updates\"]\nallowed_services = [\"nginx.service\", \"postgresql@17-main.service\"]\n",
                 ),
                 catalog,
                 &catalog.ids(),

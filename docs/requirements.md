@@ -279,7 +279,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 - Adding a new task type requires a new agent release and a matching server catalog entry. It is never a dashboard-only change.
 - The agent reports the task types and catalog version it supports, and the server offers only supported types for each host.
 - Initial catalog, at minimum: apply operating system package updates, restart a named service, and re-collect inventory, config, and package reports on demand.
-- The service name for restart validates against a server-configured allowlist **and** an allowlist in the agent's own local configuration; the agent refuses a restart unless both permit it. The agent's own unit and the SSH service are refused unless the owner explicitly allows them (DEC-15).
+- The service name for restart validates against a server-configured allowlist **and** an allowlist in the agent's own local configuration; the agent refuses a restart unless both permit it. The agent reports its local allowlist, so the server leaves out a host that would refuse before anything is sent (owner, P3-D01 Q7). The agent's own unit and the SSH service are refused unless the owner explicitly allows them (DEC-15).
 
 ### FR-3.2 Task lifecycle
 

@@ -11,6 +11,7 @@
       "refresh_reports",
       "restart_service"
     ],
-    "local_config": "valid"
+    "local_config": "valid",
+    "allowed_services": []
   }
 }

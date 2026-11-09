@@ -15,6 +15,9 @@
       "refresh_reports",
       "restart_service"
     ],
+    "allowed_services": [
+      "nginx.service"
+    ],
     "local_config": "valid"
   }
 }
