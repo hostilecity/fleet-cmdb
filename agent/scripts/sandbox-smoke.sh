@@ -16,6 +16,8 @@
 # 4. Both send a package report (P2-AGENT-PACKAGES, gzip): the sandboxed one must list the same
 #    packages as the unsandboxed one, with the same manager and no new warning, so `dpkg-query` works
 #    under the unit (the runner is a dpkg system).
+# 5. The sandboxed agent opened its task ledger (P3-A02) in the state directory: an append-only file it
+#    flushes with fsync, file and directory, before any task step returns, so the sandbox must allow both.
 set -eu
 
 binary=${1:?usage: sudo scripts/sandbox-smoke.sh BINARY [UNIT]}
@@ -107,7 +109,8 @@ for _ in $(seq 1 60); do
         && [ -s "$tmp/sandboxed/packages.json" ] && [ -s "$tmp/baseline/packages.json" ] \
         && [ -s /var/lib/fleet-agent-smoke-sandboxed/heartbeat.json ] \
         && [ -s /var/lib/fleet-agent-smoke-sandboxed/inventory.json ] \
-        && [ -s /var/lib/fleet-agent-smoke-baseline/heartbeat.json ]; then
+        && [ -s /var/lib/fleet-agent-smoke-baseline/heartbeat.json ] \
+        && [ -f /var/lib/fleet-agent-smoke-sandboxed/task-ledger.jsonl ]; then
         ok=1
         break
     fi
@@ -118,7 +121,7 @@ for name in sandboxed baseline; do
     journalctl -u "fleet-agent-smoke-$name" --no-pager -o cat | tail -n 40
 done
 if [ -z "$ok" ]; then
-    echo "sandbox-smoke: the agent did not report and record its state within 60 seconds" >&2
+    echo "sandbox-smoke: the agent did not report and record its state (and open its task ledger) within 60 seconds" >&2
     for name in sandboxed baseline; do
         annotate "sandbox-smoke: $name agent did not report within 60 s" \
             "$(systemctl status "fleet-agent-smoke-$name" --no-pager 2>&1 | head -n 5)

@@ -119,6 +119,11 @@ interval_seconds = 21600
 min_seconds = 3600
 max_seconds = 86400
 
+[task_poll]                                      # optional; seconds; allowed 5..=3600 (see Tasks)
+interval_seconds = 30
+min_seconds = 10                                 # the server's poll hint is clamped to min..=max
+max_seconds = 300
+
 [tasks]                                          # optional; remote tasks (see Tasks)
 enabled = ["refresh_reports"]                    # default shown; also restart_service, apply_package_updates
 allowed_services = []                            # units restart_service may restart, for example "nginx.service"
@@ -130,12 +135,14 @@ If only `interval_seconds` is set, the default bounds widen to include it. [`con
 
 ## Tasks
 
-Phase 3 remote tasks (FR-3.1, FR-3.3). This version has the catalog, the local settings, and capability reporting (P3-A01); it does not poll for or run tasks yet (P3-A02 onwards). The module documentation in `src/tasks/` has the details.
+Phase 3 remote tasks (FR-3.1, FR-3.2, FR-3.3). This version has the catalog, the local settings, and capability reporting (P3-A01), and the poller and its durable ledger (P3-A02). It has no executor yet (P3-A03), so it implements no task type, does not poll, and runs nothing. The module documentation in `src/tasks/` has the details.
 
 - **Catalog.** The shared [`docs/api/tasks/task-catalog.json`](../docs/api/tasks/task-catalog.json) itself is compiled in with `include_str!` (so building needs the repository, not just `agent/`) and parsed with `serde_json` on first use; there is no copy to keep in step. The agent never takes a task definition from the server. The tests check that this is the file compiled in, byte for byte, and that it passes the catalog's schema; a catalog change therefore needs a new agent release (`docs/api/tasks/README.md`).
 - **Local settings** (`[tasks]`). `enabled` lists the task types this VM runs; when it is absent only the catalog's `enabled_by_default` types run, which is `refresh_reports` alone, and only a `read_only` type can be on by default (DEC-14). `restart_service` and `apply_package_updates` need a local edit. `allowed_services` lists full service unit names `restart_service` may restart (at most 64, with the catalog's `service` pattern); it is empty by default, and the agent's own units, `ssh`/`sshd`, `systemd-*`, networking (`networking`, `NetworkManager`), and D-Bus (`dbus`, `dbus-broker`) are refused even when listed, including template instances (DEC-15). `apply_package_updates` has no local settings (DEC-16).
 - **Fail safe.** The section is checked as strictly as the rest of the file (unknown keys, wrong types, unknown task types, malformed, protected, or repeated services), but a mistake in it does not stop the agent: every task type is turned off, heartbeats and reports carry on, the error is logged at startup, the server is told `local_config: invalid`, and `check-config` fails (exit 78) with the message. A misspelt section name (`[task]`) is an unknown key of the file and stops the agent as before. Messages never repeat a configured service name. `install` keeps the section when it rewrites the config; one that was invalid is replaced by `enabled = []` with the old error in a comment.
 - **Capabilities.** Every heartbeat (and the installer's first one) carries `tasks`: the compiled-in `catalog_version`, the types this version `supported` (none yet), the locally `enabled` types, and `local_config` (`valid` or `invalid`). The server offers a type only when it is both supported and enabled. Settings are read at startup, so a change needs `systemctl restart fleet-agent`.
+- **Poller** (`src/tasks/poller.rs`). It polls only when a type is both enabled here and implemented by this version: every `[task_poll]` interval (30 s by default; the server's hint is clamped to the bounds), and at once when a heartbeat carries the `tasks` hint. One task at a time. For each task it records `received`, then refuses with a reason (`unknown_type`, `not_enabled_locally`, `not_supported`, or the executor's own checks) before anything starts, or records `started`, sends `start`, and runs the task only after the server accepts. Every result is sent until the server accepts it. A task id already in the ledger is never run again. While a task is in flight an agent update waits, and while an update is in progress (until confirmed or rolled back) the agent does not poll. P3-A03's executor plugs in at `src/tasks/executor.rs`.
+- **Ledger** (`task-ledger.jsonl` in the state directory, mode `0600`). Append-only lines, each with a SHA-256 checksum, flushed with `fsync` (and the directory when the file is created or replaced) before the step returns. The result of the last task waits in `task-result.json` until the server accepts it. At startup every unreported task is reported, never run: one recorded as started but not finished is reported `failed` with reason `interrupted`. A torn last line (the agent stopped while writing it) is dropped. Damage before the last line keeps the readable records, saves the file as `task-ledger.damaged`, and holds every task for 25 hours (the longest a task can wait plus run), reporting tasks received meanwhile instead of running them. The file is compacted to the last 1,000 task ids once it passes 256 KiB, and it never grows past 1 MiB.
 
 ## HTTP client and retries
 
@@ -217,7 +224,7 @@ An agent older than the server's minimum version still updates: the update path 
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
 | `update` | Updater: download, verify, and stage (`stage`, `fetch`), supervised switch and rollback (`supervise`), the agent's side and the `self-test`, `update-supervise`, and `update-rollback` commands | P1-AGENT-UPDATE |
 | `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL, P1-PACKAGING (unit hardening) |
-| `tasks` | The compiled-in task catalog, the `[tasks]` settings, and the capabilities reported in each heartbeat; see [Tasks](#tasks) | P3-A01 |
+| `tasks` | The compiled-in task catalog, the `[tasks]` settings, the capabilities reported in each heartbeat, the poller, the durable ledger, and the executor seam; see [Tasks](#tasks) | P3-A01, P3-A02 |
 | `release` | Release manifest, the release public keys built in from `release-keys/`, signature and checksum verification, `verify-release` | P1-PACKAGING |
 
 ## Collected facts
@@ -251,7 +258,7 @@ The agent runs as root, so every dependency is attack surface and audit work: ke
 | Randomness | `getrandom` | Report ids and jitter seeds from the kernel (`getrandom(2)`): no file to open, so it works under systemd sandboxing, and hosts booted together do not share jitter. Already linked through `ring`, so it adds no code |
 | Report ids | `std` | `uuid_v4` in `src/report/mod.rs` sets the version 4 and RFC 4122 variant bits on 16 bytes from `getrandom` and writes them as a hyphenated UUID, checked against fixed test vectors. No crate for one format |
 | Timestamps | `humantime` | RFC 3339 for `agent_time`, `collected_at`, and reading `server_time`; no dependencies of its own, so no date arithmetic is maintained here |
-| Hashing | `ring` (SHA-256) | The stable-facts change hash. Already linked as the TLS crypto provider, so it adds no code |
+| Hashing | `ring` (SHA-256) | The stable-facts change hash and the task ledger's line checksums. Already linked as the TLS crypto provider, so it adds no code |
 | Signals | `signal-hook` | Graceful `SIGTERM`/`SIGINT` handling without an async runtime or hand-written `unsafe` |
 | Syscalls | `libc` | `statvfs`, `uname`, and `getifaddrs` for the collectors (and the updater's free-space check), `geteuid` and `open` flags for the ownership checks, and `termios` for the installer's hidden token prompt, none of which `std` exposes. Locks use `std`'s `File::try_lock` (`flock`). No transitive dependencies; `rustix` lacks `getifaddrs` and `nix` brings more code for a few calls. The collectors' unsafe code is confined to `src/collect/sys.rs`, with a safety comment on each block |
 | Arguments | `lexopt` | Splits the command line (`--opt value`, `--opt=value`, `--`, non-UTF-8 arguments without a panic) for `run`, `check-config`, `install`, and `uninstall`. No dependencies of its own. Error messages never repeat an argument that could be a secret (`src/cli.rs`) |
