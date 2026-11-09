@@ -61,6 +61,15 @@ module Audit
     # result refused because it differs from the one already recorded or the task's state cannot take it.
     TASK_LATE_RESULT = "task.late_result"
     TASK_RESULT_CONFLICT = "task.result_conflict"
+    # Second factor (P3-S09, mockup audit.html): setting up and replacing it, every step-up attempt, and the console reset.
+    SECOND_FACTOR_ENROLLED = "second_factor.enrolled"
+    SECOND_FACTOR_REPLACED = "second_factor.replaced"
+    SECOND_FACTOR_RECOVERY_CODES_REPLACED = "second_factor.recovery_codes_replaced"
+    SECOND_FACTOR_STEP_UP_PASSED = "second_factor.step_up_passed"
+    SECOND_FACTOR_STEP_UP_FAILED = "second_factor.step_up_failed"
+    SECOND_FACTOR_LOCKED = "second_factor.locked"
+    SECOND_FACTOR_RECOVERY_CODE_USED = "second_factor.recovery_code_used"
+    SECOND_FACTOR_RESET = "second_factor.reset"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

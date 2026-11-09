@@ -18,6 +18,10 @@ gem "omniauth", "~> 2.1"
 gem "omniauth-google-oauth2", "~> 1.2"
 gem "omniauth-rails_csrf_protection", "~> 2.0"
 
+# QR code matrix for the TOTP key, drawn by the server as inline SVG (P3-S09). rqrcode_core only: no runtime
+# dependencies and no image library; the time-based codes themselves are app/services/second_factors/totp.rb.
+gem "rqrcode_core", "~> 2.1"
+
 # Database functions and triggers in db/schema.rb (append-only audit log guard, P1-HOSTS)
 gem "fx", "~> 0.11"
 # Use the Puma web server [https://github.com/puma/puma]

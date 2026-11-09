@@ -1,0 +1,6 @@
+<%# The three setup steps (mockup totp-enrol.html); current is 1, 2, or 3. %>
+<ol class="flow" aria-label="Set up: step <%= current %> of 3">
+  <% [ "Sign in again", "Scan and check", "Save recovery codes" ].each.with_index(1) do |label, index| %>
+    <%= tag.li(tag.span(label, class: "lbl"), class: ("done" if index < current), "aria-current": ("step" if index == current)) %>
+  <% end %>
+</ol>

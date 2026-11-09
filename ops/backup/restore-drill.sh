@@ -5,7 +5,7 @@
 #   restore-drill.sh [backup set directory]     (default: the newest set in BACKUP_DIR)
 #
 # Run it from the server's app directory (the cmdb/ directory, or /rails in the container) with the same
-# environment as the server (RAILS_ENV=production, SECRET_KEY_BASE or the master key, FLEET_DASHBOARD_HOST,
+# environment as the server (RAILS_ENV=production, SECRET_KEY_BASE or the master key, FLEET_ENCRYPTION_KEY, FLEET_DASHBOARD_HOST,
 # FLEET_AGENT_HOST, the libpq variables, DATABASE_PASSWORD), so the app boots exactly as it does in
 # production. Exit status 0 means the drill passed. Set DRILL_KEEP=1 to keep the scratch database and files.
 set -euo pipefail

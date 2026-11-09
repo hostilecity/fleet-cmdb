@@ -51,6 +51,20 @@ Static HTML mockups in `docs/mockups/phase-3/`:
 - Documented recovery path for a lost authenticator (console or rake) that cannot be performed from the web.
 - Rate limiting and audit entries for step-up attempts (success and failure).
 
+### Owner decisions (2026-11-08, `docs/mockups/phase-3/index.html`)
+
+- Codes: 6 digits, 30-second steps, SHA-1 (Q26); one step of drift either side; each code accepted once (Q30).
+- Setting up: a fresh Google sign-in, meaning a new OAuth round trip for the same account within 10 minutes (Q27); the key shown once, as a server-drawn QR code and as text, uncached; 10 recovery codes, hashed, shown once, with the factor on before they are shown (Q28).
+- A recovery code works anywhere a code is asked for, including moving to a new phone (Q25). Moving to a new phone asks for a current code or a recovery code, then the fresh sign-in.
+- The step-up window is a fixed 5 minutes from the last accepted code, per session, not extended by use (Q29).
+- 5 wrong codes in 15 minutes per operator lock the step-up for 15 minutes, in every browser (Q30). A lock holds inside an open window.
+- "Your second factor" is under Settings (Q24). The console reset is `bin/rails second_factor:reset EMAIL=…`, audited (Q25, Q35).
+- Audit actions as in `audit.html` (Q35): `second_factor.enrolled`, `.replaced`, `.recovery_codes_replaced`, `.step_up_passed`, `.step_up_failed`, `.locked`, `.recovery_code_used`, `.reset`.
+
+### How later work uses it
+
+Controllers declare `require_second_factor "create_task"` (or `"cancel_task"`, `"change_task_settings"`), optionally with `fresh: true` to ask for a code even inside the window (threat model H3, if the owner accepts it). The action's form renders `second_factors/prompt` and posts the code as `second_factor_code` with the rest of the form, so one submit checks the code and does the action (Q11). A refused request runs nothing and gets 403 (429 while locked); a controller may override `second_factor_refused` to show its own confirmation again.
+
 ### Acceptance criteria
 
 - [ ] Creating a task without a recent second factor is rejected, including via a forged POST that skips the UI

@@ -93,7 +93,7 @@ jobs:
       - name: Run the image (as cd.yml does) and wait for /up
         run: |
           (umask 077 && printf '%s\n' SOLID_QUEUE_IN_PUMA=1 PGHOST=postgres "DATABASE_PASSWORD=$DB_PASSWORD" \
-            "SECRET_KEY_BASE=$(openssl rand -hex 64)" GOOGLE_CLIENT_ID=ci.apps.googleusercontent.com \
+            "SECRET_KEY_BASE=$(openssl rand -hex 64)" "FLEET_ENCRYPTION_KEY=$(openssl rand -hex 32)" GOOGLE_CLIENT_ID=ci.apps.googleusercontent.com \
             GOOGLE_CLIENT_SECRET=ci "FLEET_DASHBOARD_HOST=$DASHBOARD" "FLEET_AGENT_HOST=$AGENT" \
             "FLEET_TLS_CERT_BASE64=$(base64 -w0 "$TLS_DIR/server.pem")" "FLEET_TLS_KEY_BASE64=$(base64 -w0 "$TLS_DIR/server.key")" \
             > "$RUNNER_TEMP/fleet-cmdb.env")
