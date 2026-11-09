@@ -14,6 +14,7 @@
 //! reports that it supports no task type and the server offers it none.
 
 pub mod catalog;
+pub mod ledger;
 pub mod settings;
 
 use serde::Serialize;
