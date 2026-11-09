@@ -12,7 +12,7 @@ Implementation details for the GitHub issue with this key. The issue states only
   - `running` and interruptible: a cancel directive is delivered on the agent's next poll or progress response.
   - `running` and not interruptible: the task keeps running; `cancel_requested` is recorded and no further queued task of the same batch is started. The dashboard says this plainly.
 - All state changes by jobs are audited ([P3-S07](p3-task-controls.md)) with the system as actor.
-- **Interpretation to confirm with the owner:** FR-3.2 says that for non-interruptible running tasks "cancellation takes effect before the next task starts". This issue reads that as: the running task is not stopped, and no queued task in the same batch starts. Confirm in [DEC-14](../../decisions/0014-task-trust-model.md).
+- **Confirmed by the owner (2026-11-08, mockup Q17):** FR-3.2 says that for non-interruptible running tasks "cancellation takes effect before the next task starts". This reads as: the running task is not stopped, it keeps its real state with "cancel requested" beside it, and no task of the same batch that has not started will start. Recorded in [DEC-14](../../decisions/0014-task-trust-model.md).
 
 ### Acceptance criteria
 
@@ -58,3 +58,37 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] Every state transition produces exactly one audit entry with the right actor
 - [ ] No secrets or output in audit entries
 - [ ] Retention job leaves task audit entries untouched
+
+## As built
+
+### P3-S05: jobs and cancellation
+
+- **Jobs:** `TaskExpiryJob` and `TaskLeaseJob`, every minute in development and production (`config/recurring.yml`), call `TaskLeases.expire!` and `TaskLeases.lapse!` (`cmdb/app/services/task_leases.rb`). Each task is taken `FOR UPDATE SKIP LOCKED` in its own short transaction, so overlapping runs and polls never handle a task twice (threat model L6); a run handles at most 1000 tasks.
+- **Expiry:** a queued task at its `expires_at` becomes `expired`. A claimed task the agent never started is requeued, then expired (two entries). The expiry is the one the task was created with.
+- **Leases:** a claimed task whose lease lapsed goes back to `queued`. A running task with no result at its deadline plus 5 minutes' grace becomes `timed_out` if the agent was heard from after the deadline (a heartbeat or progress), or `failed` with `lease_expired` if it was not (it stopped reporting). A result that arrives later is kept as a late result (P3-S04). The claim lease (5 minutes) and the grace (5 minutes) stay constants (`AgentTasks::CLAIM_LEASE`, `AgentTasks::RESULT_GRACE`): the approved mockup has no setting for them.
+- **#30 handover fixed:** a claimed task past its expiry no longer blocks its host. The poll requeues and expires it at once (system as actor) and moves on to the next task.
+- **Start after requeue (threat model L2), decided:** it stays `run: false` with `state: queued`, and the server changes nothing. The agent executes only after `run: true`, so it has not run the task. The next poll claims it again and delivers the same id. What the agent then does is P3-A02 (#34): if its ledger shows the start was never acknowledged (the `acknowledged` step proposed in L2), it may send `start` again and run the task; otherwise it reports `failed` with `interrupted`, which a claimed task accepts. Either way the server never runs a task twice, and a claim that is never started ends at its expiry.
+- **Cancellation** (`TaskCancellation`, `POST /tasks/:id/cancel` and `POST /tasks/batches/:id/cancel`, `require_second_factor "cancel_task"`; any operator, Q23):
+  - queued or claimed: `cancelled` now, operator as actor. A claimed task's start is then answered `run: false`.
+  - running and interruptible: `cancel_requested_at` and `cancel_requested_by` are recorded (`task.cancel_requested`), and the poll and progress responses carry `"cancel": {"id": ...}` until the agent reports. The agent's `cancelled` result ends it, host as actor.
+  - running and not interruptible: the request is recorded and the task runs to completion. Every task of its batch that has not started is cancelled now. No directive is sent.
+  - A batch cancel does all of that for each task of the batch. Finished tasks are never changed.
+  - `tasks_guard` v02 keeps a cancel request as recorded: set once, only on a running task, with the operator.
+  - The confirmation dialogs and the task and batch pages are P3-DASH-TASKS (#33). Until then the endpoints redirect back with a notice in the mockup's words.
+- **Revoked, re-enrolling, or retired host (threat model V9):** its queued and claimed tasks are cancelled in the same transaction, with the same actor (`Host::TASK_CANCELLING_EVENTS`), so tasks meant for one machine never reach the next. A running task ends by its result or its lease.
+- **Directive delivery:** the agent polls only between tasks, so for a running task the cancel reaches it through the progress response. An interruptible type that never sends progress gets the directive only if it polls (P3-A02, #34).
+
+### P3-S06: settings
+
+- **Settings: Tasks** (`/settings/tasks`, `TaskSettingsController`, `TaskSettings`), as `settings-tasks.html` draws it. Every change needs `require_second_factor "change_task_settings"`; a refused code shows the page again with what was typed. Removing a service has a confirmation page that counts the queued restarts it would leave without an entry.
+- **Allowlist:** table `task_allowed_services` (service, optional tag, who added it, when). Full `.service` names, lower-case, at most 64 characters, no `@` instances (Q31); at most 64 entries. Protected services are refused, with no override (Q32). Audited as `task_setting.service_added` and `task_setting.service_removed` with the list before and after.
+- **Per tag:** `TaskPolicy.refusal(type, parameters, host:)` counts only the entries for every host or for one of the host's tags. At creation, a request needs an entry for the service; then hosts that no entry covers are excluded as `not_allowed_on_server`. At claim time the host's tags as they are then are used.
+- **Limits** (Q33), stored in `settings`: hosts per batch 1 to 25 (default 25), output kept 4 to 1024 KiB (default 64), poll hint 10 to 300 s (default 30), expiry per type 1 to 168 hours (default the catalog's 24). One `task_setting.limits_changed` entry per save with before and after. Expiry applies to tasks created afterwards. The poll hint is `poll_seconds` in every `task-poll.response`.
+- **Output limit and the agent:** the agent sends at most 131072 characters (`task-result.request`), so a limit above 128 KiB keeps at most what the agent sends.
+
+### P3-S07: audit
+
+- New actions: `task.cancel_requested`, `task_setting.service_added`, `task_setting.service_removed`, `task_setting.limits_changed`, in a "Task settings" group of the audit filter. Lease expiry is `task.failed` with reason `lease_expired`; a result received is the transition it applies (`task.succeeded`, `task.failed`, ...).
+- `spec/services/task_audit_trail_spec.rb` walks every transition through the real code paths and checks exactly one entry with the right actor, no output in any entry, and that retention never prunes task entries or tasks.
+- "Task creation refused" (mockup audit.html) belongs to the create flow (P3-S08, #32).
+

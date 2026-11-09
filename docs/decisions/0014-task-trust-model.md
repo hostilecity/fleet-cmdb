@@ -15,7 +15,7 @@ The catalog limits what can run, but anyone controlling the server or an operato
 - **Task expiry** (default 24 hours) and **claim leases**.
 - **TOTP** to create or cancel tasks and change allowlists (ADR 0006, amended 2026-11-08: TOTP only).
 - **Batch limits:** type the host count to confirm above 3 hosts; hard cap of 25 hosts per batch.
-- Cancelling a running, non-interruptible task lets it finish and stops anything further in the same batch from starting.
+- Cancelling a running, non-interruptible task lets it finish and stops anything further in the same batch from starting. The owner confirmed this reading of FR-3.2 on 2026-11-08 (Phase 3 mockup Q17): the task is not stopped, it keeps its real state with "cancel requested" recorded beside it, and every task of its batch that has not started is cancelled. Any operator may cancel, with the second factor (Q23).
 - Task signing was considered and rejected for now.
 
 ## Consequences
