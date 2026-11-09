@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second factor prompt · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="phase3.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../phase-2/fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="../phase-2/fleet.html">Fleet</a><a href="tasks.html" aria-current="page">Tasks</a><a href="../phase-2/compliance.html">Compliance</a><a href="../phase-2/rules.html">Rules</a><a href="../phase-2/data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="audit.html">Audit log</a><a href="settings-tasks.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<div class="page-head"><div><h1>Second factor prompt</h1><p>The box that asks for a code before creating a task, cancelling one, or changing task settings, in each of its states. It sits at the bottom of the confirmation it protects (<a href="create-confirm.html">create</a>, <a href="cancel.html">cancel</a>, <a href="settings-tasks.html">settings</a>), so one submit checks the code and does the action.</p></div></div>
+
+<h2 id="ask" class="state-title">Asking for a code</h2>
+<section class="stepup" aria-labelledby="a-h">
+<h3 id="a-h">Second factor</h3>
+<p style="margin:0">Creating tasks needs a code from your authenticator app. You will not be asked again for 5 minutes.</p>
+<div class="field"><label for="otp-a">6-digit code</label><input id="otp-a" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}"><p class="hint">Lost your authenticator? <a href="#recovery">Use a recovery code</a>.</p></div>
+<div class="actions"><button class="btn" type="button">Create 7 tasks</button></div>
+</section>
+
+<h2 id="passed" class="state-title">Passed in the last 5 minutes</h2>
+<section class="stepup passed"><p style="margin:0"><strong>Second factor checked at 14:16 UTC.</strong> Not asked again until 14:21 UTC in this browser session.</p><div class="actions" style="margin-top:.75rem"><button class="btn" type="button">Create 7 tasks</button></div></section>
+<p class="note"><span class="review-q">Review Q29.</span> The window is 5 minutes from the last accepted code (P3-S09's default), kept on the server for this session only; using it does not extend it, signing out ends it, and another browser or device asks again. Alternative: a sliding window that each protected action renews, which lets a long session of changes go on with one code but also lets a hijacked session keep it alive.</p>
+
+<h2 id="window-ended" class="state-title">The 5 minutes ran out while the page was open</h2>
+<div class="notice" role="alert"><strong>Nothing was created: your second factor check ran out at 14:21 UTC.</strong><p>Type a new code to create the tasks. Everything else on this page is kept.</p></div>
+<section class="stepup"><div class="field" style="margin-top:0"><label for="otp-e">6-digit code</label><input id="otp-e" class="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div><div class="actions"><button class="btn" type="button">Create 7 tasks</button></div></section>
+
+<h2 id="wrong" class="state-title">Wrong code</h2>
+<section class="stepup"><div class="field invalid" style="margin-top:0"><label for="otp-w">6-digit code</label><input id="otp-w" class="totp" value="118204" aria-invalid="true" aria-describedby="w-e"><p class="error-text" id="w-e">That code was not accepted, and nothing was done. Check that your phone's time is set automatically and type the newest code. 4 attempts left in the next 15 minutes.</p></div><div class="actions"><button class="btn" type="button">Create 7 tasks</button></div></section>
+
+<h2 id="reused" class="state-title">A code that was already used</h2>
+<section class="stepup"><div class="field invalid" style="margin-top:0"><label for="otp-u">6-digit code</label><input id="otp-u" class="totp" value="730561" aria-invalid="true" aria-describedby="u-e"><p class="error-text" id="u-e">That code was already used. Wait for your app to show the next one (up to 30 seconds).</p></div></section>
+
+<h2 id="locked" class="state-title">Too many wrong codes</h2>
+<section class="stepup locked" role="alert"><h3>Second factor locked until 14:39 UTC</h3><p style="margin:0">5 wrong codes in 15 minutes. Until then no code is accepted for your account in any browser, so you cannot create or cancel tasks or change task settings. You can still read everything. Each attempt is in the audit log.</p><p class="hint" style="margin-bottom:0">If these were not your attempts, someone may be using your dashboard session or your Google account: sign out, check your Google account's recent activity, and tell the owner.</p></section>
+<p class="note"><span class="review-q">Review Q30.</span> Rate limit drawn as 5 wrong codes in 15 minutes per operator (not per session, so a second browser does not get fresh attempts), then a 15-minute lock; recovery codes count toward the same limit. Every attempt, right or wrong, is audited (P3-S09). A code is accepted once only and for the current 30-second step plus one step either side for clock drift. The numbers are proposals.</p>
+
+<h2 id="recovery" class="state-title">Using a recovery code</h2>
+<section class="stepup"><div class="field" style="margin-top:0"><label for="otp-r">Recovery code</label><input id="otp-r" class="totp" style="width:14ch;letter-spacing:.08em" autocomplete="off" value="EXMPL-4F7Q2"><p class="hint">Each recovery code works once. You have 9 left. <a href="#ask">Use your authenticator app instead</a>.</p></div><div class="actions"><button class="btn" type="button">Create 7 tasks</button></div></section>
+<div class="notice info" role="status"><strong>Recovery code used. You have 8 left.</strong><p>If your phone is lost, <a href="totp-enrol.html#replace">move your second factor to a new phone</a> now, while you still have codes.</p></div>
+
+<h2 id="none" class="state-title">No second factor set up</h2>
+<section class="stepup locked"><h3>You have no second factor</h3><p style="margin:0">Creating tasks needs one. <a href="second-factor.html#none">Set up an authenticator app</a>; it takes about two minutes.</p></section>
+<p class="muted" style="font-size:.875rem">Shown only if the operator reached a confirmation anyway (for example from an old link); normally the create and cancel buttons are already replaced, as on <a href="create-blocked.html#no-factor">Create task: refused</a>.</p>
+</main>
+</body>
+</html>
