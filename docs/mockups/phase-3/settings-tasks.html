@@ -48,7 +48,7 @@
 <tr class="locked-row"><td class="mono">dbus.service</td><td>The message bus that systemd and other services depend on.</td></tr>
 </tbody></table></div>
 <p class="muted" style="font-size:.875rem">Fixed in the server and the agent (ADR 0015). Adding one of these to the list above is refused, and the agent refuses it even if a VM lists it.</p>
-<p class="note"><span class="review-q">Review Q32.</span> ADR 0015 says these are "always refused, even if listed", while FR-3.1 and P3-A06 say the agent's unit and SSH are refused "unless the owner explicitly allows them". Drawn as ADR 0015: a fixed list with no override in the dashboard. If the owner wants an override, the recommended form is an agent-side setting on that VM only, never a dashboard switch. Please say which, so the requirement and the ADR can be made to agree.</p>
+<p class="note"><span class="review-q">Q32, decided (owner, 2026-11-08).</span> As ADR 0015: protected services are always refused, even if listed, with no override anywhere. Restarting SSH or the agent is a job for the console. FR-3.1 and P3-A06 now say the same.</p>
 
 <h2 id="limits">Limits</h2>
 <form class="form wide" action="settings-tasks.html#saved" method="get">
