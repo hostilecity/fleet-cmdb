@@ -93,6 +93,7 @@ jobs:
       - name: Write the app's env file on the server
         env:
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+          FLEET_ENCRYPTION_KEY: ${{ secrets.FLEET_ENCRYPTION_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
@@ -110,12 +111,12 @@ jobs:
           # One NAME=value per line (docker takes the value literally). Unset optional settings are left out, so the
           # app's defaults apply. Only names are ever printed.
           lines=(SOLID_QUEUE_IN_PUMA=1)
-          for name in SECRET_KEY_BASE DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST \
+          for name in SECRET_KEY_BASE FLEET_ENCRYPTION_KEY DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST \
                       PGHOST RAILS_LOG_LEVEL FLEET_RELEASE_KEY_CURRENT FLEET_RELEASE_KEY_NEXT FLEET_ADVISORY_FEED_TOKEN; do
             [[ "${!name}" != *$'\n'* ]] || { echo "::error::$name holds a line break"; exit 1; }
             if [ -n "${!name}" ]; then lines+=("$name=${!name}"); fi
           done
-          for name in SECRET_KEY_BASE DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST; do
+          for name in SECRET_KEY_BASE FLEET_ENCRYPTION_KEY DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST; do
             [ -n "${!name}" ] || { echo "::error::set $name in the production environment"; exit 1; }
           done
           # The certificate and key are PEM files with line breaks; docker takes one line per value, so they are base64.

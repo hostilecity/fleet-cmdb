@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -464,6 +464,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
     t.datetime "revoked_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.datetime "google_authenticated_at"
+    t.datetime "second_factor_passed_at"
+    t.text "pending_second_factor_secret"
     t.index ["operator_id"], name: "index_operator_sessions_on_operator_id"
     t.index ["token_digest"], name: "index_operator_sessions_on_token_digest", unique: true
   end
@@ -590,6 +593,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
     t.index ["operator_id"], name: "index_rule_import_previews_on_operator_id", unique: true
     t.index ["token"], name: "index_rule_import_previews_on_token", unique: true
     t.check_constraint "octet_length(body) <= 1048576", name: "rule_import_previews_body_size"
+  end
+
+  create_table "second_factor_recovery_codes", force: :cascade do |t|
+    t.bigint "second_factor_id", null: false
+    t.string "code_digest", limit: 64, null: false
+    t.datetime "used_at"
+    t.datetime "created_at", null: false
+    t.index ["second_factor_id", "code_digest"], name: "index_second_factor_recovery_codes_on_digest", unique: true
+  end
+
+  create_table "second_factors", force: :cascade do |t|
+    t.bigint "operator_id", null: false
+    t.text "secret", null: false
+    t.bigint "last_used_step"
+    t.integer "failed_attempts", default: 0, null: false
+    t.datetime "failures_started_at"
+    t.datetime "locked_until"
+    t.datetime "enrolled_at", null: false
+    t.datetime "last_accepted_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["operator_id"], name: "index_second_factors_on_operator_id", unique: true
   end
 
   create_table "settings", force: :cascade do |t|
@@ -774,6 +799,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
   add_foreign_key "rollouts", "operators", column: "halted_by_id"
   add_foreign_key "rollouts", "operators", column: "resumed_by_id"
   add_foreign_key "rollouts", "operators", column: "started_by_id"
+  add_foreign_key "second_factor_recovery_codes", "second_factors", on_delete: :cascade
+  add_foreign_key "second_factors", "operators"
 
   create_function :hosts_guard, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.hosts_guard()

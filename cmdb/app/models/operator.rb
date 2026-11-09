@@ -2,6 +2,7 @@
 # allowlisted, verified Google email; there is no other way to create one and no password anywhere.
 class Operator < ApplicationRecord
   has_many :operator_sessions, dependent: :delete_all
+  has_one :second_factor, dependent: :destroy
 
   # Uniqueness is the database's unique index, so OperatorSignIn's create_or_find_by can resolve races.
   validates :google_uid, presence: true
