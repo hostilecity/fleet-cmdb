@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task start response",
+  "description": "200 response to POST /api/v1/tasks/<id>/start. run is true only when the task is now running on the server: moved from claimed to running by this request, or by an earlier one. Otherwise the agent must not run the task: it records that it did not run it and drops it (for example a task cancelled or refused before it started).",
+  "type": "object",
+  "required": [
+    "id",
+    "state",
+    "run"
+  ],
+  "properties": {
+    "id": {
+      "description": "The task's id.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "state": {
+      "description": "The task's state on the server after this request.",
+      "enum": [
+        "queued",
+        "claimed",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "refused",
+        "expired"
+      ]
+    },
+    "run": {
+      "description": "True when the agent may run the task now (state running).",
+      "type": "boolean"
+    }
+  }
+}

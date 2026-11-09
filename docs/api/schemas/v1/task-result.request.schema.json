@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task result request",
+  "description": "POST /api/v1/tasks/<id>/result (FR-3.2, P3-S04). The task's final result, sent once the agent has recorded it as finished in its ledger and retried until accepted (P3-A02). Sending the same result again is accepted and changes nothing (duplicate: true); a different result for a task that already has one is refused with 409 task_conflict and logged. The host is the credential's host, never a field in the body; a task of another host, or an unknown id, is 404 not_found.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_version",
+    "report_id",
+    "outcome",
+    "finished_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Payload schema version. This directory is version 1.",
+      "const": 1
+    },
+    "agent_version": {
+      "description": "Agent release version (semantic version).",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "report_id": {
+      "description": "UUIDv4, generated once per result and reused on every retry of it.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "outcome": {
+      "description": "succeeded: the task ran and did what it says. failed: it ran, or may have run, and did not succeed (reason says why). timed_out: it ran over its deadline and the agent terminated it. cancelled: the agent stopped an interruptible task the operator cancelled. refused: the agent ran nothing (reason says why; AC-3.1).",
+      "enum": [
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "refused"
+      ]
+    },
+    "reason": {
+      "description": "Why the task failed or was refused: required for those outcomes, and null or absent for the others. failed: nonzero_exit, interrupted (the agent stopped mid-task, or found a started task without a result when it started again), lock_timeout (the package manager's lock stayed held), or agent_error. refused: unknown_type, invalid_params, not_supported, not_enabled_locally, not_allowed_locally, or protected_service.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "nonzero_exit",
+        "interrupted",
+        "lock_timeout",
+        "agent_error",
+        "unknown_type",
+        "invalid_params",
+        "not_supported",
+        "not_enabled_locally",
+        "not_allowed_locally",
+        "protected_service",
+        null
+      ]
+    },
+    "exit_status": {
+      "description": "The task's process exit status, 0 to 255, or null when there is none (refused, killed by a signal, or never started).",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 255
+    },
+    "started_at": {
+      "description": "When the task started (agent clock), RFC 3339 UTC; null when it never started (refused). Stored apart from the server's own times.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 35,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+    },
+    "finished_at": {
+      "description": "When the task finished, or was refused (agent clock), RFC 3339 UTC. Stored apart from the server's own times.",
+      "type": "string",
+      "maxLength": 35,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+    },
+    "details": {
+      "description": "Structured facts about the result, each optional. The server stores those it knows and ignores others.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "reboot_required": {
+          "description": "apply_package_updates: the VM needs a reboot to finish the updates (DEC-16). The agent never reboots.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "services_needing_restart": {
+          "description": "apply_package_updates: services still running old code after the updates, each once. The agent never restarts them (DEC-16).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@-]{0,247}\\.service$"
+          }
+        },
+        "unit_active": {
+          "description": "restart_service: whether the unit was active after the restart.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reports_sent": {
+          "description": "refresh_reports: the report types sent and accepted, each once.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z_]*$"
+          }
+        }
+      }
+    },
+    "output": {
+      "description": "The task's captured output (stdout and stderr), as text; null or empty when there is none. At most 131072 characters: the agent truncates first and says so in output_truncated. The server keeps up to its own limit (64 KiB), cutting the middle out with a marker line when it is longer, replaces invalid UTF-8, removes control characters other than tab and newline (and terminal escape sequences), and stores it as inert text.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 131072
+    },
+    "output_truncated": {
+      "description": "True when the agent cut the output down before sending it.",
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "nonzero_exit",
+              "interrupted",
+              "lock_timeout",
+              "agent_error"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "refused"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "unknown_type",
+              "invalid_params",
+              "not_supported",
+              "not_enabled_locally",
+              "not_allowed_locally",
+              "protected_service"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "succeeded",
+              "timed_out",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

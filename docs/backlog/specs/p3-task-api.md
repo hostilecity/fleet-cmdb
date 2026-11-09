@@ -38,3 +38,32 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] Oversize output is truncated and marked
 - [ ] Reporting on another host's task fails
 - [ ] Output containing markup or control characters is stored safely (rendering covered in [P3-S10](p3-dash-tasks.md))
+
+## As built
+
+### Contract
+
+- Schemas and examples in `docs/api/`: `task-poll.*`, `task-start.*`, `task-progress.*`, `task-result.*`, the `tasks_available` heartbeat directive, and error code `409 task_conflict`. The README's "Tasks" section is the agent's reference. The contract was pushed first, so the agent poller (P3-A02, #34) could build against it.
+- **The deadline is `timeout_seconds`**, relative to the start, so the agent's clock does not matter. The agent uses the lower of it and its own catalog's timeout.
+- **Start answers `run`.** The agent runs a task only after `run: true` (the task is `running` on the server). For any other state it records that it did not run the task and drops it. This is the channel P3-S05 uses to refuse the start of a cancelled task.
+- **409 means stop retrying.** `task_conflict` is answered for a result that differs from the one the server has, and for a result the task's state cannot take (for example `succeeded` for a task that never started, or any result for a queued one).
+
+### P3-S03
+
+- `AgentTasks` (`cmdb/app/services/agent_tasks.rb`) and `Api::V1::TasksController`. Every task request locks the host row (`AgentHostLock`) in one transaction, so one host's polls, starts, and results never interleave. The claim also locks the task `FOR UPDATE SKIP LOCKED`. The concurrency spec runs 8 parallel polls and sees one claim.
+- **One task at a time per host:** a running task makes the poll return `null`. A claimed, unstarted task is returned again with a fresh lease (5 minutes, `AgentTasks::CLAIM_LEASE`), but not after its `expires_at`: then the poll returns `null` until the lease job (P3-S05) requeues and expires it.
+- **Expiry uses the database clock:** the claim query checks `expires_at > clock_timestamp()` in the statement that locks the row (threat model L1).
+- **Claim-time revalidation** is `Task#refusal_reason` (catalog and server policy) on every delivery and again at start. A task that fails is `refused` with its reason and the **system** as actor (the server decided, not the agent), and the poll tries the next, at most 25 per poll. The host's reported capabilities are not checked again: the agent refuses locally, which is how AC-3.1 is observed.
+- **Start** sets the running lease to the deadline plus 5 minutes' grace (`AgentTasks::RESULT_GRACE`). P3-S05 decides what happens when it lapses.
+- **The `tasks_available` directive** is one indexed `SELECT` per heartbeat (a heartbeat is now at most 9 queries, still one write).
+
+### P3-S04
+
+- **Columns:** `tasks` gains `progress_percent`, `progress_reported_at`, `result_report_id`, `result_digest`, `result_received_at`, and `result_details`. New table `task_late_results`: at most one per task, never changed or deleted (`task_late_results_guard`).
+- **Progress** stores `percent` (0 to 100, or null) while the task is running and is ignored otherwise. It does not extend the lease. Any type may send it; the catalog has no "supports progress" flag.
+- **Idempotency:** a result is identified by a SHA-256 digest of everything but its `report_id` and versions (`AgentTasks.result_digest`). The same digest again is `duplicate: true` whatever the `report_id`. A different one is `409`, audited as `task.result_conflict` and logged without output.
+- **Outcomes** (`AgentTasks::AGENT_FROM`, narrower than `Task::TRANSITIONS`, which also serves the operator and the server): `failed` and `refused` from claimed or running, `succeeded` and `timed_out` from running, `cancelled` from running for an interruptible type only. So an agent can never cancel or refuse a queued task, or cancel a claimed one. An applied result writes the transition's audit entry with the host as actor. The agent's reasons are a subset: `lease_expired` and `not_allowed_on_server` are the server's only.
+- **Late results:** a result for a task the server ended itself (no agent result recorded) is kept in `task_late_results`, audited as `task.late_result`, and answered `applied: false`. The task does not change.
+- **Details** kept: `reboot_required`, `services_needing_restart`, `unit_active`, `reports_sent`. Other keys are ignored. Stored details are bounded at 32 KiB as JSON; the largest the schema allows is about 17 KiB.
+- **Output** (`TaskOutput`): invalid UTF-8 replaced, terminal escape sequences removed whole in both their ESC and C1 forms (a string sequence without a terminator on its line loses only its introducer, so it cannot swallow later output), control characters other than tab and newline removed, Unicode bidi overrides and isolates removed. Over 64 KiB (`TaskOutput::LIMIT_BYTES`), the start and end are kept with a marker line in the middle, and `output_truncated` is set. The agent sends at most 131072 characters. A result body may be 1 MiB.
+- **Not here (P3-S05, P3-S06, #31):** the lease and expiry jobs, lease lengths and the output limit as settings, the cancel directive in the poll and progress responses, and what a late `start` for a requeued task (threat model L2) should do.

@@ -1,0 +1,9 @@
+{
+  "task": {
+    "id": "00000000-0000-4000-8000-0000000000a1",
+    "type": "refresh_reports",
+    "parameters": {},
+    "timeout_seconds": 600,
+    "catalog_version": 1
+  }
+}

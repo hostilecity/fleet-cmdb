@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task result response",
+  "description": "200 response to POST /api/v1/tasks/<id>/result. The agent marks the result reported in its ledger and stops retrying.",
+  "type": "object",
+  "required": [
+    "id",
+    "report_id",
+    "duplicate",
+    "applied",
+    "state"
+  ],
+  "properties": {
+    "id": {
+      "description": "The task's id.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "report_id": {
+      "description": "The report_id that was received.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "duplicate": {
+      "description": "True when the server already had this same result, so nothing changed.",
+      "type": "boolean"
+    },
+    "applied": {
+      "description": "True when the result decided the task's state. False when the server had already ended the task itself (for example timed_out, expired, failed with lease_expired, or cancelled): the result is kept as an annotation beside the task and the state does not change.",
+      "type": "boolean"
+    },
+    "state": {
+      "description": "The task's state on the server after this request.",
+      "enum": [
+        "queued",
+        "claimed",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "refused",
+        "expired"
+      ]
+    }
+  }
+}

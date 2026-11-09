@@ -1,0 +1,11 @@
+{
+  "task": {
+    "id": "42",
+    "type": "restart_service",
+    "parameters": {
+      "service": "nginx.service"
+    },
+    "timeout_seconds": 300,
+    "catalog_version": 1
+  }
+}

@@ -112,6 +112,14 @@
               }
             }
           }
+        },
+        "tasks_available": {
+          "description": "The host has a task waiting (FR-3.2, P3-S03): poll POST /api/v1/tasks/poll now rather than at the next poll interval. Sent on every heartbeat while the host has a queued, unexpired task or a claimed one it has not started, and no task running. It carries no task: the poll does. An agent that ignores it still gets the task at its next scheduled poll.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {}
         }
       },
       "additionalProperties": {

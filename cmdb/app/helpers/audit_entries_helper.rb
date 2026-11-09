@@ -57,7 +57,9 @@ module AuditEntriesHelper
     Audit::Actions::TASK_TIMED_OUT => "Task timed out",
     Audit::Actions::TASK_CANCELLED => "Task cancelled",
     Audit::Actions::TASK_REFUSED => "Task refused",
-    Audit::Actions::TASK_EXPIRED => "Task expired"
+    Audit::Actions::TASK_EXPIRED => "Task expired",
+    Audit::Actions::TASK_LATE_RESULT => "Late task result kept (task had already ended)",
+    Audit::Actions::TASK_RESULT_CONFLICT => "Task result refused (conflicting)"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
