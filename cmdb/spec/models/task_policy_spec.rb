@@ -27,7 +27,7 @@ RSpec.describe TaskPolicy do
     expect(described_class.refusal("restart_service", { "service" => "nginx.service" })).to be_nil
     expect(described_class.protected_service?("systemd-resolved.service")).to be(true)
     expect(described_class.protected_service?("my-systemd-app.service")).to be(false)
-    expect(described_class.protected_service?("fleet-agentx.service")).to be(false)
+    expect(described_class.protected_service?("fleet-agentx.service")).to be(true) # a prefix, as on the agent
     expect(described_class.protected_service?("sshguard.service")).to be(false)
   end
 end
