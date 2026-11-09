@@ -381,6 +381,37 @@ RSpec.describe "Task API", type: :request do
       expect(restart.reload.state).to eq("running")
     end
 
+    it "never lets an agent cancel a claimed task, or cancel or refuse a queued one: those are the operator's and the server's" do
+      claimed = restart_task
+      poll
+      report(claimed, result_payload(outcome: "cancelled"))
+      expect_error(:conflict, "task_conflict")
+      expect(claimed.reload.state).to eq("claimed")
+
+      queued = queued_task # waits: the host holds a claimed task
+      report(queued, result_payload(outcome: "refused", reason: "not_enabled_locally"))
+      expect_error(:conflict, "task_conflict")
+      report(queued, result_payload(outcome: "cancelled"))
+      expect_error(:conflict, "task_conflict")
+      expect(queued.reload.state).to eq("queued")
+      expect(entries(Audit::Actions::TASK_RESULT_CONFLICT, queued).count).to eq(2)
+    end
+
+    it "stores the largest details the schema allows, applied or late" do
+      services = Array.new(64) { |i| "#{format('%03d', i)}#{'s' * 244}.service" }
+      details = { "reboot_required" => true, "services_needing_restart" => services, "unit_active" => true, "reports_sent" => %w[config inventory packages] }
+      expect(ApiContract.errors("task-result.request", "v1", result_payload(details:))).to eq([])
+      applied = running_task(type: "apply_package_updates")
+      report(applied, result_payload(details:))
+      expect(response).to have_http_status(:ok)
+      expect(applied.reload.result_details["services_needing_restart"].size).to eq(64)
+      late = running_task(type: "apply_package_updates")
+      late.time_out!(actor: Audit::SYSTEM)
+      report(late, result_payload(details:, report_id: "00000000-0000-4000-8000-000000000002"))
+      expect(response).to have_http_status(:ok)
+      expect(late.reload.late_result.details["services_needing_restart"].size).to eq(64)
+    end
+
     it "keeps a late result for a task the server already ended as an annotation, without changing its state (threat model L4)" do
       task = running_task(type: "apply_package_updates")
       task.time_out!(actor: Audit::SYSTEM)
@@ -427,7 +458,7 @@ RSpec.describe "Task API", type: :request do
 
     it "stores output with markup and control characters as inert text" do
       task = running_task
-      report(task, result_payload(output: "<script>alert(1)</script>\r\n\e[31mred\e[0m\u0000\u0007‮evil\ttab\n"))
+      report(task, result_payload(output: "<script>alert(1)</script>\r\n\e[31mred\e[0m\u0000\u0007\u202Eevil\ttab\n"))
       expect(task.reload.output).to eq("<script>alert(1)</script>\nredevil\ttab\n") # markup stays text; the dashboard escapes it (P3-S10)
     end
 

@@ -33,6 +33,11 @@ module AgentTasks
   OUTCOMES = %w[succeeded failed timed_out cancelled refused].freeze
   # outcome => the Task transition that applies it.
   EVENTS = { "succeeded" => :succeed, "failed" => :fail, "timed_out" => :time_out, "cancelled" => :cancel, "refused" => :refuse }.freeze
+  # outcome => the states an agent's result may end a task from. Narrower than Task::TRANSITIONS, which also
+  # serves the operator and the server: an agent only ever holds a claimed or running task, so it can never
+  # cancel or refuse a queued one, and it cancels only a running task of an interruptible type (DEC-14).
+  AGENT_FROM = { "succeeded" => %w[running], "failed" => %w[claimed running], "timed_out" => %w[running],
+                 "cancelled" => %w[running], "refused" => %w[claimed running] }.freeze
   # The result details the server keeps (task-result.request); others are ignored.
   DETAIL_KEYS = %w[reboot_required services_needing_restart unit_active reports_sent].freeze
 
@@ -126,10 +131,9 @@ module AgentTasks
   end
 
   def takes?(task, outcome)
-    event = EVENTS.fetch(outcome)
-    return false unless Task::TRANSITIONS.fetch(event)[:from].include?(task.state)
+    return false unless AGENT_FROM.fetch(outcome).include?(task.state)
 
-    !(event == :cancel && task.state == "running" && !task.interruptible?)
+    outcome != "cancelled" || task.interruptible?
   end
 
   def apply!(host, task, payload, digest, now)

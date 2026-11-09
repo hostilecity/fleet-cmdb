@@ -636,7 +636,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
     t.datetime "created_at", null: false
     t.index ["task_id"], name: "index_task_late_results_on_task_id", unique: true
     t.check_constraint "details IS NULL OR jsonb_typeof(details) = 'object'::text", name: "task_late_results_details_object"
-    t.check_constraint "octet_length(details::text) <= 16384", name: "task_late_results_details_size"
+    t.check_constraint "octet_length(details::text) <= 32768", name: "task_late_results_details_size"
     t.check_constraint "octet_length(output) <= 1048576", name: "task_late_results_output_size"
     t.check_constraint "outcome::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'timed_out'::character varying, 'cancelled'::character varying, 'refused'::character varying]::text[])", name: "task_late_results_outcome"
   end
@@ -680,7 +680,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
     t.check_constraint "jsonb_typeof(parameters) = 'object'::text", name: "tasks_parameters_object"
     t.check_constraint "octet_length(output) <= 1048576", name: "tasks_output_size"
     t.check_constraint "octet_length(parameters::text) <= 8192", name: "tasks_parameters_size"
-    t.check_constraint "octet_length(result_details::text) <= 16384", name: "tasks_result_details_size"
+    t.check_constraint "octet_length(result_details::text) <= 32768", name: "tasks_result_details_size"
     t.check_constraint "progress_percent >= 0 AND progress_percent <= 100", name: "tasks_progress_percent"
     t.check_constraint "result_details IS NULL OR jsonb_typeof(result_details) = 'object'::text", name: "tasks_result_details_object"
     t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'claimed'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'timed_out'::character varying, 'cancelled'::character varying, 'refused'::character varying, 'expired'::character varying]::text[])", name: "tasks_state"

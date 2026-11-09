@@ -14,16 +14,26 @@ RSpec.describe TaskOutput do
   end
 
   it "replaces invalid UTF-8" do
-    expect(clean("ok \xFF\xFE done".b).text).to eq("ok �� done")
+    expect(clean("ok \xFF\xFE done".b).text).to eq("ok \uFFFD\uFFFD done")
   end
 
   it "removes terminal escape sequences whole, and every control character but tab and newline" do
-    raw = "\e[1;31mred\e[0m \e]0;title\a\e(Bplain\r\n\u0000\u0008\u000B\u000C\u001F\u007F\u0085\u009Bend\r"
+    raw = "\e[1;31mred\e[0m \e]0;title\a\e(Bplain\r\n\u0000\u0008\u000B\u000C\u001F\u007F\u0085\u0080end\r"
     expect(clean(raw).text).to eq("red plain\nend")
   end
 
+  it "removes 8-bit (C1) control and string sequences whole too" do
+    expect(clean("\u009B31mred\u009B0m done").text).to eq("red done")
+    expect(clean("\u009D0;title\u009Cafter \eP1$r\e\\end").text).to eq("after end")
+  end
+
+  it "never lets a string sequence without a terminator swallow the output after it" do
+    expect(clean("\e]0;no terminator\nerror: unit failed\n").text).to eq("0;no terminator\nerror: unit failed\n")
+    expect(clean("\u009Dno terminator\nerror: unit failed").text).to eq("no terminator\nerror: unit failed")
+  end
+
   it "removes bidirectional overrides and isolates" do
-    expect(clean("a‮b⁦c⁩d‪e").text).to eq("abcde")
+    expect(clean("a\u202Eb\u2066c\u2069d\u202Ae").text).to eq("abcde")
   end
 
   it "cuts the middle out of long output, marks it, and never splits a character or passes the limit" do
