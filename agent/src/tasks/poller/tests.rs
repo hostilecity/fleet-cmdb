@@ -67,7 +67,7 @@ fn task(id: &str, task_type: &str, parameters: Value) -> Delivered {
         id: id.into(),
         task_type: task_type.into(),
         parameters,
-        deadline: Some("2026-01-01T12:10:00Z".into()),
+        timeout_seconds: 300,
         catalog_version: 1,
     }
 }
@@ -89,7 +89,6 @@ struct Server {
     fail_results: Cell<u32>,
     reject_start: Cell<bool>,
     reject_result: Cell<bool>,
-    poll_after: Cell<Option<u64>>,
 }
 
 impl Server {
@@ -119,20 +118,21 @@ impl TaskApi for Server {
         if claimed.is_none() {
             *claimed = self.queue.borrow_mut().pop_front();
         }
-        Ok(wire::PollReply {
-            task: claimed.clone(),
-            poll_after_seconds: self.poll_after.get(),
-        })
+        Ok(claimed.clone())
     }
 
-    fn start(&self, id: &str) -> Result<Reply, ApiError> {
+    fn start(&self, id: &str, started_at: &str) -> Result<Reply, ApiError> {
+        assert!(
+            started_at.ends_with('Z') && started_at.len() == 24,
+            "{started_at}"
+        );
         if self.fail_starts.get() > 0 {
             self.fail_starts.set(self.fail_starts.get() - 1);
             return Err(Self::down());
         }
         if self.reject_start.get() {
             *self.claimed.borrow_mut() = None;
-            return Ok(Reply::Rejected("task_cancelled".into()));
+            return Ok(Reply::Rejected("cancelled".into()));
         }
         self.starts.borrow_mut().push(id.into());
         Ok(Reply::Accepted)
@@ -487,7 +487,7 @@ fn this_build_never_polls_and_would_refuse_anything_not_supported() {
     // Should a task arrive anyway, it is refused before anything is recorded as started.
     assert_eq!(
         poller.refusal(&task(A, "refresh_reports", json!({})), wall()),
-        Some(reason::NOT_SUPPORTED)
+        Some((Outcome::Refused, reason::NOT_SUPPORTED))
     );
 }
 
@@ -501,7 +501,17 @@ fn a_refused_start_runs_nothing() {
     let mut poller = rig.poller(&executor, None);
     ticks(&mut poller, &server, 3);
     assert_eq!(executor.total(), 0);
-    assert_eq!(server.results()[0].1["outcome"], "cancelled");
+    // It is recorded as not run and answered; there is no result to send (P3-S03).
+    assert!(server.results().is_empty());
+    assert_eq!(
+        poller.ledger().unwrap().task(A).unwrap().state,
+        State::Reported
+    );
+    // Delivered again, it is still never run.
+    server.reject_start.set(false);
+    server.queue.borrow_mut().push_back(restart(A));
+    ticks(&mut poller, &server, 2);
+    assert_eq!(executor.total(), 0);
 }
 
 #[test]
@@ -556,12 +566,13 @@ fn a_damaged_ledger_holds_every_task() {
     assert_eq!(executor.runs(B), 0);
     let (id, body) = server.results().last().unwrap().clone();
     assert_eq!(id, B);
-    assert_eq!(body["outcome"], "refused");
+    // "Ran, or may have run": the lost records could have been this task's.
+    assert_eq!(body["outcome"], "failed");
     assert_eq!(body["reason"], reason::AGENT_ERROR);
 }
 
 #[test]
-fn polls_on_the_interval_at_once_on_a_hint_and_at_the_servers_clamped_pace() {
+fn polls_on_the_interval_and_at_once_on_a_hint() {
     let rig = Rig::new(all_enabled());
     let executor = Counting::new(&["restart_service"]);
     let server = Server::default();
@@ -576,18 +587,37 @@ fn polls_on_the_interval_at_once_on_a_hint_and_at_the_servers_clamped_pace() {
     rig.hint.raise();
     poller.tick(&server, t0 + Duration::from_secs(11), wall());
     assert_eq!(server.polls.get(), 2);
-    poller.tick(&server, t0 + Duration::from_secs(42), wall());
+    poller.tick(&server, t0 + Duration::from_secs(40), wall());
+    assert_eq!(server.polls.get(), 2);
+    poller.tick(&server, t0 + Duration::from_secs(41), wall());
     assert_eq!(server.polls.get(), 3);
-    // The server's pace is clamped to the configured bounds (here at most 300 s).
-    server.poll_after.set(Some(86_400));
-    poller.tick(&server, t0 + Duration::from_secs(73), wall());
-    assert_eq!(server.polls.get(), 4);
-    poller.tick(&server, t0 + Duration::from_secs(73 + 299), wall());
-    assert_eq!(server.polls.get(), 4);
-    poller.tick(&server, t0 + Duration::from_secs(73 + 300), wall());
-    assert_eq!(server.polls.get(), 5);
     // A wait never exceeds the hint check, so a hint is never missed for long.
-    assert!(poller.tick(&server, t0 + Duration::from_secs(400), wall()) <= HINT_CHECK);
+    assert!(poller.tick(&server, t0 + Duration::from_secs(50), wall()) <= HINT_CHECK);
+}
+
+#[test]
+fn every_body_sent_conforms_to_the_contract() {
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::with(vec![
+        restart(A),
+        task(B, "reboot", json!({})),
+        task(
+            "00000000-0000-4000-8000-000000000003",
+            "refresh_reports",
+            json!({}),
+        ),
+    ]);
+    let mut poller = rig.poller(&executor, None);
+    ticks(&mut poller, &server, 5);
+    let mut bodies: Vec<Value> = server.results().into_iter().map(|(_, b)| b).collect();
+    for point in [Point::Received, Point::Started, Point::Ran, Point::Finished] {
+        bodies.extend(crash_and_restart(point).1.into_iter().map(|(_, b)| b));
+    }
+    assert!(bodies.len() >= 7);
+    for body in bodies {
+        crate::collect::contract::assert_conforms("v1", "task-result.request", &body);
+    }
 }
 
 #[test]

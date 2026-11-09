@@ -3,7 +3,7 @@
 //! One append-only file in the state directory, [`LEDGER_FILE`], records what happened to every task
 //! this agent was given, one line per step:
 //!
-//! - `received`: the poll delivered the task (id, type, catalog version, deadline, parameters);
+//! - `received`: the poll delivered the task (id, type, catalog version, timeout, parameters);
 //! - `started`: the agent is about to run it. **Written and flushed before the server is told and
 //!   before anything runs**, so after a crash the agent knows the task may have run;
 //! - `finished`: the outcome (and reason) the agent decided or observed. The full result body, with
@@ -126,8 +126,7 @@ enum Entry {
         task_id: String,
         task_type: String,
         catalog_version: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        deadline: Option<String>,
+        timeout_seconds: u64,
         parameters: Value,
         at: String,
     },
@@ -475,7 +474,7 @@ impl Ledger {
         id: &str,
         task_type: &str,
         catalog_version: u32,
-        deadline: Option<&str>,
+        timeout_seconds: u64,
         parameters: &Value,
         now: SystemTime,
     ) -> Result<Receipt, LedgerError> {
@@ -500,7 +499,7 @@ impl Ledger {
             task_id: id.to_owned(),
             task_type: task_type.to_owned(),
             catalog_version,
-            deadline: deadline.map(str::to_owned),
+            timeout_seconds,
             parameters: parameters.clone(),
             at: rfc3339(now),
         };

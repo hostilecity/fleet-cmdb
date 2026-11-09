@@ -3,9 +3,8 @@
 //!
 //! **When it polls.** Only when the owner enabled a type that this agent implements ([`Poller::polls`]):
 //! with nothing enabled and supported the server offers this host nothing (P3-A01), so there is nothing
-//! to ask for. Then every poll interval (`[task_poll]` in the config, 30 s by default, the server's
-//! hint clamped to its bounds), and within [`HINT_CHECK`] of a heartbeat that says tasks are
-//! waiting ([`TaskHint`]). After a failure it backs off as every other request does ([`Backoff`],
+//! to ask for. Then every poll interval (`[task_poll]` in the config, 30 s by default), and within
+//! [`HINT_CHECK`] of a heartbeat carrying the `tasks_available` directive ([`TaskHint`]). After a failure it backs off as every other request does ([`Backoff`],
 //! P1-A02). One task at a time: a task is handled to its end before the next poll.
 //!
 //! **What it does with a task.** In this order, stopping at the first that fails:
@@ -13,13 +12,15 @@
 //! 1. The id is not already in the ledger. A known id is never run again (duplicate delivery); if it
 //!    is not reported yet, step 7 reports it.
 //! 2. `received` is recorded.
-//! 3. The local checks ([`Poller::refusal`]): no ledger hold, the type is in the embedded catalog
+//! 3. The local checks ([`Poller::refusal`]): no ledger hold (else `failed`, `agent_error`: the
+//!    lost records could be this task's), the type is in the embedded catalog
 //!    (`unknown_type`), enabled here (`not_enabled_locally`), implemented (`not_supported`), and the
 //!    executor's own checks ([`Executor::check`]). A refusal is recorded `finished` and reported;
 //!    nothing is started.
 //! 4. `started` is recorded and flushed.
-//! 5. `start` is sent; the task runs only once the server accepts it (P3-S03). A refused `start` (the
-//!    task was cancelled) is recorded and nothing runs.
+//! 5. `start` is sent; the task runs only after the server answers `run: true` (P3-S03). Any other
+//!    answer (the task was cancelled, or is gone) is recorded as not run, with no result to send, and
+//!    nothing runs. A failed `start` is retried; nothing runs meanwhile.
 //! 6. The executor runs it ([`Executor::run`]), and the result is recorded `finished`.
 //! 7. The result is sent until the server accepts it (or refuses it for good), then `reported`.
 //!
@@ -30,8 +31,9 @@
 //! **Recovery.** On start, and whenever the ledger is reopened, every unreported task is reported
 //! before anything is polled ([`Poller::reconcile`]):
 //!
-//! - `received` only: it never started, so nothing ran. Reported `failed`, `not_run`... see
-//!   [`recovered_outcome`];
+//! - `received` only: it never started, so nothing ran, but the id is in the ledger, so it is not run
+//!   now either. Reported `failed` with reason `interrupted`, the contract's reason for a task the
+//!   agent stopped on (the threat model's proposed `not_run` reason, L2, is not in the contract);
 //! - `started` without `finished`: it may have run. Reported `failed` with reason `interrupted`, unless
 //!   the stored result shows it finished, which is then sent as it was;
 //! - `finished` without `reported`: the stored result is sent again (idempotent on the server);
@@ -104,8 +106,6 @@ pub struct Poller<'a, R: Rng> {
     shutdown: &'a Shutdown,
     hint: &'a TaskHint,
     interval: Interval,
-    /// The interval the server last asked for, clamped.
-    server_interval: Option<Duration>,
     ledger: Option<Ledger>,
     open_after: Option<Instant>,
     next_poll: Option<Instant>,
@@ -135,7 +135,6 @@ impl<'a, R: Rng> Poller<'a, R> {
             shutdown,
             hint,
             interval,
-            server_interval: None,
             ledger: None,
             open_after: None,
             next_poll: None,
@@ -199,7 +198,7 @@ impl<'a, R: Rng> Poller<'a, R> {
     }
 
     fn interval(&self) -> Duration {
-        self.server_interval.unwrap_or(self.interval.start)
+        self.interval.start
     }
 
     /// Opens the ledger, logging what recovery found. `false` if it cannot be opened yet.
@@ -309,7 +308,7 @@ impl<'a, R: Rng> Poller<'a, R> {
             reason: Some(reason),
             exit_status: None,
             started_at: started_at.clone(),
-            finished_at: Some(rfc3339(wall)),
+            finished_at: rfc3339(wall),
             output: String::new(),
             output_truncated: false,
             details: serde_json::Map::new(),
@@ -409,10 +408,7 @@ impl<'a, R: Rng> Poller<'a, R> {
         };
         self.backoff.on_success();
         self.notes.retain(|n| !n.starts_with("poll "));
-        if let Some(seconds) = reply.poll_after_seconds {
-            self.server_interval = Some(self.interval.clamp_server_value(seconds));
-        }
-        match reply.task {
+        match reply {
             None => self.next_poll = Some(now + self.interval()),
             Some(task) => {
                 self.handle(api, &task, now, wall);
@@ -439,7 +435,7 @@ impl<'a, R: Rng> Poller<'a, R> {
             &task.id,
             &task.task_type,
             task.catalog_version,
-            task.deadline.as_deref(),
+            task.timeout_seconds,
             recorded,
             wall,
         );
@@ -467,7 +463,7 @@ impl<'a, R: Rng> Poller<'a, R> {
         tracing::info!(
             task_id = task.id.as_str(),
             task_type = crate::logging::sanitize(&task.task_type, 64).as_str(),
-            deadline = task.deadline.as_deref().unwrap_or(""),
+            timeout_seconds = task.timeout_seconds,
             "task received"
         );
         #[cfg(test)]
@@ -475,28 +471,29 @@ impl<'a, R: Rng> Poller<'a, R> {
             return;
         }
         let refusal = if oversize {
-            Some(reason::INVALID_PARAMS)
+            Some((Outcome::Refused, reason::INVALID_PARAMS))
         } else {
             self.refusal(task, wall)
         };
-        if let Some(why) = refusal {
+        if let Some((outcome, why)) = refusal {
             tracing::warn!(
                 task_id = task.id.as_str(),
                 task_type = crate::logging::sanitize(&task.task_type, 64).as_str(),
+                outcome = outcome.as_str(),
                 reason = why,
-                "task refused; nothing was run"
+                "task not run: nothing was started"
             );
             let body = wire::result_body(&wire::ResultFields {
-                outcome: Outcome::Refused,
+                outcome,
                 reason: Some(why),
                 exit_status: None,
                 started_at: None,
-                finished_at: Some(rfc3339(wall)),
+                finished_at: rfc3339(wall),
                 output: String::new(),
                 output_truncated: false,
                 details: serde_json::Map::new(),
             });
-            self.finish(&task.id, Outcome::Refused, Some(why), &body, now, wall);
+            self.finish(&task.id, outcome, Some(why), &body, now, wall);
         } else {
             self.execute(api, task, now, wall);
         }
@@ -507,25 +504,28 @@ impl<'a, R: Rng> Poller<'a, R> {
         let _ = self.report(api, &task.id, now, wall);
     }
 
-    /// Why this agent will not run `task`, if it will not; checked with nothing run.
-    pub fn refusal(&self, task: &Delivered, wall: SystemTime) -> Option<&'static str> {
+    /// Why this agent will not run `task`, if it will not, as the outcome and reason to report;
+    /// checked with nothing run. Every reason is `refused` except a ledger hold: the ledger lost
+    /// records, so this may be a task that ran before, which the contract reports `failed` with
+    /// `agent_error` ("ran, or may have run").
+    pub fn refusal(&self, task: &Delivered, wall: SystemTime) -> Option<(Outcome, &'static str)> {
         if self.ledger.as_ref().is_some_and(|l| l.held(wall)) {
-            // The ledger lost records, so this could be a task that ran before.
-            return Some(reason::AGENT_ERROR);
+            return Some((Outcome::Failed, reason::AGENT_ERROR));
         }
+        let refused = |why| Some((Outcome::Refused, why));
         let Some(entry) = Catalog::embedded()
             .ok()
             .and_then(|c| c.get(&task.task_type))
         else {
-            return Some(reason::UNKNOWN_TYPE);
+            return refused(reason::UNKNOWN_TYPE);
         };
         if !self.settings.is_enabled(&entry.id) {
-            return Some(reason::NOT_ENABLED_LOCALLY);
+            return refused(reason::NOT_ENABLED_LOCALLY);
         }
         if !self.executor.implements(&entry.id) {
-            return Some(reason::NOT_SUPPORTED);
+            return refused(reason::NOT_SUPPORTED);
         }
-        self.executor.check(task).err()
+        self.executor.check(task).err().and_then(refused)
     }
 
     /// Records `finished`, dropping the ledger if it cannot be written.
@@ -553,6 +553,29 @@ impl<'a, R: Rng> Poller<'a, R> {
         }
     }
 
+    /// A task the server would not let run: recorded as not run and as answered, so nothing is sent.
+    fn drop_unrun(&mut self, id: &str, now: Instant, wall: SystemTime) {
+        let Some(ledger) = self.ledger.as_mut() else {
+            return;
+        };
+        let body = wire::result_body(&wire::ResultFields {
+            outcome: Outcome::Cancelled,
+            reason: None,
+            exit_status: None,
+            started_at: None,
+            finished_at: rfc3339(wall),
+            output: String::new(),
+            output_truncated: false,
+            details: serde_json::Map::new(),
+        });
+        let written = ledger
+            .finish(id, Outcome::Cancelled, Some("not_run"), &body, wall)
+            .and_then(|()| ledger.reported(id, true, wall));
+        if let Err(e) = written {
+            self.drop_ledger(now, &e);
+        }
+    }
+
     /// Steps 4 to 6: `started`, the server's acceptance of `start`, and the run.
     fn execute(&mut self, api: &dyn TaskApi, task: &Delivered, now: Instant, wall: SystemTime) {
         let Some(ledger) = self.ledger.as_mut() else {
@@ -561,6 +584,7 @@ impl<'a, R: Rng> Poller<'a, R> {
         if let Err(e) = ledger.start(&task.id, wall) {
             return self.drop_ledger(now, &e);
         }
+        let started_at = rfc3339(wall);
         tracing::info!(task_id = task.id.as_str(), "task recorded as started");
         #[cfg(test)]
         if tests::crash_at(tests::Point::Started) {
@@ -569,26 +593,17 @@ impl<'a, R: Rng> Poller<'a, R> {
         // Only the server's acceptance lets the task run. Retried until accepted, refused, or the
         // agent stops (then recovery reports it).
         loop {
-            match api.start(&task.id) {
+            match api.start(&task.id, &started_at) {
                 Ok(Reply::Accepted) => break,
-                Ok(Reply::Rejected(code)) => {
+                Ok(Reply::Rejected(state)) => {
+                    // `run: false` (for example cancelled before it started), or the task is gone:
+                    // record that it did not run and drop it, with no result to send (P3-S03).
                     tracing::warn!(
                         task_id = task.id.as_str(),
-                        code = code.as_str(),
-                        "the server refused to start the task (it may have been cancelled); nothing was run"
+                        server_state = state.as_str(),
+                        "the server did not let the task run (it may have been cancelled); nothing was run"
                     );
-                    let body = wire::result_body(&wire::ResultFields {
-                        outcome: Outcome::Cancelled,
-                        reason: None,
-                        exit_status: None,
-                        started_at: None,
-                        finished_at: Some(rfc3339(SystemTime::now())),
-                        output: String::new(),
-                        output_truncated: false,
-                        details: serde_json::Map::new(),
-                    });
-                    self.finish(&task.id, Outcome::Cancelled, None, &body, now, wall);
-                    return;
+                    return self.drop_unrun(&task.id, now, wall);
                 }
                 Err(error) => {
                     let wait = self.backoff.on_failure(&error);
@@ -619,7 +634,7 @@ impl<'a, R: Rng> Poller<'a, R> {
             reason: ran.reason,
             exit_status: ran.exit_status,
             started_at: Some(rfc3339(ran.started_at)),
-            finished_at: Some(rfc3339(ran.finished_at)),
+            finished_at: rfc3339(ran.finished_at),
             output: ran.output,
             output_truncated: ran.output_truncated,
             details: ran.details,
@@ -658,7 +673,7 @@ fn rebuilt(ledger: &Ledger, id: &str) -> Option<Value> {
         reason: reason.as_deref(),
         exit_status: None,
         started_at: task.started_at.clone(),
-        finished_at: None,
+        finished_at: rfc3339(SystemTime::now()),
         output: String::new(),
         output_truncated: false,
         details: serde_json::Map::new(),

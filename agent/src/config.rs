@@ -29,8 +29,8 @@
 //! max_seconds = 86400
 //!
 //! [task_poll]                                # optional; seconds (P3-A02): polls only when a type
-//! interval_seconds = 30                      # is enabled and supported; the server's hint is
-//! min_seconds = 10                           # clamped to these bounds
+//! interval_seconds = 30                      # is enabled and supported; min and max only bound a
+//! min_seconds = 10                           # future server directive
 //! max_seconds = 300
 //!
 //! [tasks]                                    # optional (Phase 3); see crate::tasks::settings
@@ -103,6 +103,8 @@ const CONFIG_REPORT_LIMITS: IntervalLimits = IntervalLimits {
 };
 
 /// P3-A02: poll for a task every 30 seconds by default (only when a type is enabled and supported).
+/// The server does not direct this interval (it sends the `tasks_available` hint instead); `min` and
+/// `max` are carried, as for `config_report`, so a future directive can clamp to them.
 const TASK_POLL_LIMITS: IntervalLimits = IntervalLimits {
     name: "task_poll",
     floor: 5,
@@ -228,7 +230,7 @@ pub struct Config {
     pub inventory: Interval,
     /// How often the configuration report is sent (FR-2.1, P2-A01), and the package report (FR-2.3).
     pub config_report: Interval,
-    /// How often the task poller polls, and the bounds of the server's hint (P3-A02).
+    /// How often the task poller polls (P3-A02).
     pub task_poll: Interval,
     /// How long a newly installed agent version has to get a heartbeat acknowledged by the server
     /// before the update is rolled back, in seconds (P1-AGENT-UPDATE, ADR 0018).

@@ -400,6 +400,28 @@ mod tests {
     }
 
     #[test]
+    fn a_tasks_available_heartbeat_raises_the_task_hint() {
+        // P3-S03, P3-A02: the poller polls at once instead of at its interval.
+        let intervals = intervals();
+        let hint = TaskHint::default();
+        let mut hb = heartbeat(&intervals, Instant::now()).with_task_hint(&hint);
+        let transport = FakeTransport::new(vec![
+            ok(envelope(json!({}))),
+            ok(envelope(json!({"tasks_available": null}))),
+            ok(envelope(json!({"tasks_available": true}))),
+            Err(ApiError::Transport("down".into())),
+            ok(envelope(json!({"tasks_available": {}}))),
+        ]);
+        for _ in 0..4 {
+            hb.beat(&transport, None, Instant::now(), wall());
+            assert!(!hint.take());
+        }
+        hb.beat(&transport, None, Instant::now(), wall());
+        assert!(hint.take());
+        assert!(!hint.take(), "taken once");
+    }
+
+    #[test]
     fn the_first_accepted_heartbeat_of_a_process_is_recorded_once() {
         // `install` waits for this record (review of #67): written on the first accepted heartbeat only,
         // not on a failure, and not again every interval.

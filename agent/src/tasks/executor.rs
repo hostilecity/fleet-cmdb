@@ -33,8 +33,9 @@ pub struct Delivered {
     pub task_type: String,
     /// Parameters, still to be checked by the type's typed struct ([`Executor::check`]).
     pub parameters: Value,
-    /// When the server stops waiting for the result (RFC 3339), if it sent one.
-    pub deadline: Option<String>,
+    /// The server's deadline: the task must finish within this many seconds of starting. The
+    /// executor uses the lower of this and the catalog's `timeout_seconds` (P3-A03).
+    pub timeout_seconds: u64,
     /// The catalog version the server built the task against.
     pub catalog_version: u32,
 }
@@ -108,7 +109,7 @@ mod tests {
             id: "0b5c8a4e-1d6f-4a3b-9c2d-7e8f9a0b1c2d".into(),
             task_type: "refresh_reports".into(),
             parameters: serde_json::json!({}),
-            deadline: None,
+            timeout_seconds: 600,
             catalog_version: 1,
         };
         for id in super::super::catalog::Catalog::embedded().unwrap().ids() {

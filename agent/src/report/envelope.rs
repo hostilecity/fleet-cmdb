@@ -17,6 +17,8 @@
 //!   ignored and listed, so a type added later is additive. A directive that is not an object, or
 //!   whose `types` is missing, empty, not a list of strings, or repeats a type, is a problem and
 //!   asks for nothing.
+//! - `tasks_available`: `{}`, a task is waiting, so the task poller polls now (P3-S03, P3-A02). Any
+//!   other value but `null` is a problem and asks for nothing.
 //! - any other name is ignored and listed.
 //!
 //! A missing or `null` `directives` is read as `{}`. Any other shape, including the array that ADR 0008
@@ -134,37 +136,28 @@ fn directives(value: &Value, envelope: &mut Envelope) {
 }
 
 /// The task hint directive's name (P3-S03, ADR 0020).
-pub const TASK_HINT: &str = "tasks";
+pub const TASK_HINT: &str = "tasks_available";
 
-/// `{"available": true}`: tasks are waiting, so the poller polls now. Anything else asks for nothing;
-/// the poller still polls on its interval, so a hint lost or misread only delays a task.
+/// `tasks_available: {}`: a task is waiting, so the poller polls now (P3-A02). `null` asks for nothing,
+/// and any field inside is ignored and listed (none is defined). Anything but an object is a problem
+/// and asks for nothing: the poller still polls on its interval, so a hint lost or misread only delays
+/// a task.
 fn task_hint(value: &Value, envelope: &mut Envelope) {
-    let fields = match value {
-        Value::Object(fields) => fields,
-        Value::Null => return,
-        other => {
-            envelope.problems.push(format!(
-                "directive `{TASK_HINT}` is {}, not an object",
-                kind(other)
-            ));
-            return;
+    match value {
+        Value::Object(fields) => {
+            envelope.tasks_available = true;
+            let mut unknown = Names::default();
+            for key in fields.keys() {
+                unknown.push(format!("directive `{TASK_HINT}.{}`", name(key)));
+            }
+            unknown.finish(envelope);
         }
-    };
-    let mut unknown = Names::default();
-    for (key, value) in fields {
-        match key.as_str() {
-            "available" => match value {
-                Value::Bool(available) => envelope.tasks_available = *available,
-                Value::Null => {}
-                other => envelope.problems.push(format!(
-                    "directive `{TASK_HINT}.available` is {}, not a boolean",
-                    kind(other)
-                )),
-            },
-            other => unknown.push(format!("directive `{TASK_HINT}.{}`", name(other))),
-        }
+        Value::Null => {}
+        other => envelope.problems.push(format!(
+            "directive `{TASK_HINT}` is {}, not an object",
+            kind(other)
+        )),
     }
-    unknown.finish(envelope);
 }
 
 /// Most entries of `report_request.types` that are looked at: there are only a few report types.
@@ -400,6 +393,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_tasks_available_directive_raises_the_hint_only_as_an_object() {
+        // P3-S03, P3-A02: `{}` means poll now; `null` or absent means nothing; any other value is a
+        // problem and asks for nothing.
+        let hinted =
+            |directive: Value| parse(&json!({"directives": {"tasks_available": directive}}));
+        let envelope = hinted(json!({}));
+        assert!(envelope.tasks_available);
+        assert!(envelope.problems.is_empty() && envelope.ignored.is_empty());
+        let envelope = hinted(json!({"later_field": 1}));
+        assert!(envelope.tasks_available);
+        assert_eq!(
+            envelope.ignored,
+            ["directive `tasks_available.later_field`"]
+        );
+        assert!(!hinted(Value::Null).tasks_available);
+        assert!(!parse(&json!({"directives": {}})).tasks_available);
+        for bad in [json!(true), json!([]), json!("yes")] {
+            let envelope = hinted(bad.clone());
+            assert!(!envelope.tasks_available, "{bad}");
+            assert_eq!(envelope.problems.len(), 1, "{bad}");
+        }
+        // The contract's own examples.
+        let examples = contract_examples("valid");
+        let example =
+            |file: &str| parse(&examples.iter().find(|(name, _)| name == file).unwrap().1);
+        assert!(example("tasks-available.json").tasks_available);
+        assert!(!example("tasks-available-null.json").tasks_available);
+    }
+
     /// Every `heartbeat.response` example in `docs/api`, by kind (`valid` or `invalid`) and file name.
     fn contract_examples(kind: &str) -> Vec<(String, Value)> {
         let dir = crate::collect::contract::root()
@@ -438,19 +461,6 @@ mod tests {
                         .ignored
                         .iter()
                         .all(|i| i.starts_with("report type `")),
-                    "{name}: {:?}",
-                    envelope.ignored
-                );
-                continue;
-            }
-            if name.starts_with("tasks-available") {
-                // The task poller (P3-A02, #34) reads `tasks_available`; until it does, this build
-                // ignores the directive and logs it, as DEC-20 allows, and nothing else.
-                assert!(
-                    envelope
-                        .ignored
-                        .iter()
-                        .all(|i| i.contains("`tasks_available`")),
                     "{name}: {:?}",
                     envelope.ignored
                 );

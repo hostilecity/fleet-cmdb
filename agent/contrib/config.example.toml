@@ -57,10 +57,10 @@ interval_seconds = 21600
 min_seconds = 3600
 max_seconds = 86400
 
-# How often to ask the server for a task (P3-A02), in seconds, and the bounds within which the
-# server may change it. Each value within 5..=3600. The agent polls only while a task type in
-# [tasks] is enabled and implemented by this agent version, and also polls at once when a
-# heartbeat says a task is waiting.
+# How often to ask the server for a task (P3-A02), in seconds; each value within 5..=3600. The agent
+# polls only while a task type in [tasks] is enabled and implemented by this agent version, and also
+# polls at once when a heartbeat says a task is waiting. The server does not direct this interval
+# yet, so min and max only bound a future directive.
 [task_poll]
 interval_seconds = 30
 min_seconds = 10

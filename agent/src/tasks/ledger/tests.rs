@@ -54,7 +54,7 @@ fn receive(ledger: &mut Ledger, id: &str) -> Receipt {
             id,
             "restart_service",
             1,
-            Some("2026-01-01T12:10:00Z"),
+            300,
             &json!({"service": "nginx.service"}),
             now(),
         )
@@ -169,7 +169,7 @@ fn only_task_ids_and_bounded_parameters_are_recorded() {
     ] {
         assert!(
             matches!(
-                ledger.receive(id, "refresh_reports", 1, None, &json!({}), now()),
+                ledger.receive(id, "refresh_reports", 1, 600, &json!({}), now()),
                 Err(LedgerError::Invalid(_))
             ),
             "{id}"
@@ -177,7 +177,7 @@ fn only_task_ids_and_bounded_parameters_are_recorded() {
     }
     let big = json!({"service": "x".repeat(MAX_PARAMETERS_BYTES)});
     assert!(matches!(
-        ledger.receive(A, "restart_service", 1, None, &big, now()),
+        ledger.receive(A, "restart_service", 1, 300, &big, now()),
         Err(LedgerError::Invalid(_))
     ));
     assert_eq!(ledger.len(), 0);
@@ -390,7 +390,7 @@ fn a_failed_append_poisons_the_ledger_until_it_is_opened_again() {
     assert!(matches!(ledger.start(A, now()), Err(LedgerError::Io(_))));
     assert!(matches!(ledger.start(A, now()), Err(LedgerError::Poisoned)));
     assert!(matches!(
-        ledger.receive(B, "refresh_reports", 1, None, &json!({}), now()),
+        ledger.receive(B, "refresh_reports", 1, 600, &json!({}), now()),
         Err(LedgerError::Poisoned)
     ));
     // The file says what is durable: the start never reached it.
@@ -417,7 +417,7 @@ fn fill(ledger: &mut Ledger, from: usize, count: usize) -> Vec<String> {
     for n in from..from + count {
         let id = format!("00000000-0000-4000-8000-{n:012x}");
         ledger
-            .receive(&id, "refresh_reports", 1, None, &json!({}), now())
+            .receive(&id, "refresh_reports", 1, 600, &json!({}), now())
             .unwrap();
         ledger
             .finish(
@@ -482,7 +482,7 @@ fn compaction_waits_for_an_unreported_task_and_a_full_ledger_takes_nothing_more(
         task_id: A.into(),
         task_type: "refresh_reports".into(),
         catalog_version: 1,
-        deadline: None,
+        timeout_seconds: 600,
         parameters: json!({}),
         at: rfc3339(now()),
     })
@@ -497,7 +497,7 @@ fn compaction_waits_for_an_unreported_task_and_a_full_ledger_takes_nothing_more(
             "2d7e0c6a-3f8b-4c5d-9e4f-9a0b1c2d3e4f",
             "refresh_reports",
             1,
-            None,
+            600,
             &json!({}),
             now()
         ),
@@ -515,7 +515,7 @@ fn compaction_waits_for_an_unreported_task_and_a_full_ledger_takes_nothing_more(
                 "2d7e0c6a-3f8b-4c5d-9e4f-9a0b1c2d3e4f",
                 "refresh_reports",
                 1,
-                None,
+                600,
                 &json!({}),
                 now()
             )
@@ -563,7 +563,7 @@ fn records_are_summed_lines_of_json() {
             "task_id": A,
             "task_type": "restart_service",
             "catalog_version": 1,
-            "deadline": "2026-01-01T12:10:00Z",
+            "timeout_seconds": 300,
             "parameters": {"service": "nginx.service"},
             "at": "2026-01-01T12:00:00.000Z",
         })
