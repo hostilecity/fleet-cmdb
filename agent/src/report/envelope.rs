@@ -56,6 +56,8 @@ pub struct Envelope {
     /// left as it is, rather than ending the episode as an absent directive does (Rust practice review
     /// of #114).
     pub report_request_unreadable: bool,
+    /// The task hint directive said tasks are waiting for this host (P3-S03, P3-A02).
+    pub tasks_available: bool,
     /// Fields and directives present but not understood by this agent, already safe to log.
     pub ignored: Vec<String>,
     /// Values present in a known place but malformed, already safe to log. Each is ignored.
@@ -115,6 +117,7 @@ fn directives(value: &Value, envelope: &mut Envelope) {
                         )),
                     },
                     "report_request" => report_request(value, envelope),
+                    TASK_HINT => task_hint(value, envelope),
                     other => unknown.push(format!("directive `{}`", name(other))),
                 }
             }
@@ -125,6 +128,40 @@ fn directives(value: &Value, envelope: &mut Envelope) {
                 .problems
                 .push(format!("`directives` is {}, not an object", kind(other)));
             envelope.report_request_unreadable = true;
+        }
+    }
+    unknown.finish(envelope);
+}
+
+/// The task hint directive's name (P3-S03, ADR 0020).
+pub const TASK_HINT: &str = "tasks";
+
+/// `{"available": true}`: tasks are waiting, so the poller polls now. Anything else asks for nothing;
+/// the poller still polls on its interval, so a hint lost or misread only delays a task.
+fn task_hint(value: &Value, envelope: &mut Envelope) {
+    let fields = match value {
+        Value::Object(fields) => fields,
+        Value::Null => return,
+        other => {
+            envelope.problems.push(format!(
+                "directive `{TASK_HINT}` is {}, not an object",
+                kind(other)
+            ));
+            return;
+        }
+    };
+    let mut unknown = Names::default();
+    for (key, value) in fields {
+        match key.as_str() {
+            "available" => match value {
+                Value::Bool(available) => envelope.tasks_available = *available,
+                Value::Null => {}
+                other => envelope.problems.push(format!(
+                    "directive `{TASK_HINT}.available` is {}, not a boolean",
+                    kind(other)
+                )),
+            },
+            other => unknown.push(format!("directive `{TASK_HINT}.{}`", name(other))),
         }
     }
     unknown.finish(envelope);

@@ -17,6 +17,7 @@ pub struct Carried {
     pub heartbeat: Option<Interval>,
     pub inventory: Option<Interval>,
     pub config_report: Option<Interval>,
+    pub task_poll: Option<Interval>,
     /// `update_confirm_seconds` when it is not the default (P1-AGENT-UPDATE).
     pub update_confirm_seconds: Option<u64>,
     /// The `[tasks]` settings (P3-A01), so re-running the installer never turns a task on or off.
@@ -35,6 +36,7 @@ impl Carried {
             inventory: (config.inventory != defaults.inventory).then_some(config.inventory),
             config_report: (config.config_report != defaults.config_report)
                 .then_some(config.config_report),
+            task_poll: (config.task_poll != defaults.task_poll).then_some(config.task_poll),
             update_confirm_seconds: (config.update_confirm_seconds
                 != defaults.update_confirm_seconds)
                 .then_some(config.update_confirm_seconds),
@@ -49,6 +51,7 @@ impl Carried {
             heartbeat: None,
             inventory: None,
             config_report: None,
+            task_poll: None,
             update_confirm_seconds: None,
             tasks: TaskSettings::default(),
         }
@@ -194,6 +197,12 @@ pub fn render(
         &defaults.config_report,
         &mut out,
     );
+    interval(
+        "task_poll",
+        carried.task_poll.as_ref(),
+        &defaults.task_poll,
+        &mut out,
+    );
     tasks(&carried.tasks, &mut out);
     // Never write a config the agent would refuse. The parse error never contains the credential.
     Config::from_toml(&out).map_err(|e| format!("the config to be written is not valid: {e}"))?;
@@ -228,7 +237,7 @@ mod tests {
     #[test]
     fn custom_settings_are_carried_over() {
         let old = Config::from_toml(&format!(
-            "{}log_level = \"debug\"\nstate_dir = \"/srv/agent \\\"state\\\"\"\nupdate_confirm_seconds = 120\n[heartbeat]\ninterval_seconds = 120\n",
+            "{}log_level = \"debug\"\nstate_dir = \"/srv/agent \\\"state\\\"\"\nupdate_confirm_seconds = 120\n[heartbeat]\ninterval_seconds = 120\n[task_poll]\ninterval_seconds = 60\n",
             minimal()
         ))
         .unwrap();
@@ -248,6 +257,7 @@ mod tests {
         assert_eq!(new.heartbeat.start, Duration::from_secs(120));
         assert_eq!(new.inventory, old.inventory);
         assert_eq!(new.config_report, old.config_report);
+        assert_eq!(new.task_poll.start, Duration::from_secs(60));
         // Review of the VM tests (P1-AGENT-UPDATE): a re-run of the installer used to drop it.
         assert_eq!(new.update_confirm_seconds, 120);
         assert_eq!(

@@ -447,11 +447,13 @@ impl Ledger {
     }
 
     /// How many task ids the ledger knows.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.tasks.len()
     }
 
     /// Size of the file in bytes.
+    #[cfg(test)]
     pub fn bytes(&self) -> u64 {
         self.len
     }

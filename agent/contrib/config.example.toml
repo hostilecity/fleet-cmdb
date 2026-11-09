@@ -57,6 +57,15 @@ interval_seconds = 21600
 min_seconds = 3600
 max_seconds = 86400
 
+# How often to ask the server for a task (P3-A02), in seconds, and the bounds within which the
+# server may change it. Each value within 5..=3600. The agent polls only while a task type in
+# [tasks] is enabled and implemented by this agent version, and also polls at once when a
+# heartbeat says a task is waiting.
+[task_poll]
+interval_seconds = 30
+min_seconds = 10
+max_seconds = 300
+
 # Remote tasks (Phase 3, FR-3.1): which maintenance tasks from the agent's built-in catalog this VM
 # runs when an operator asks for them in the dashboard. The server can only ask; this section decides.
 # Only refresh_reports (send fresh reports now; changes nothing) is on unless you list otherwise.

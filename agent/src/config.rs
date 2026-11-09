@@ -28,6 +28,11 @@
 //! min_seconds = 3600
 //! max_seconds = 86400
 //!
+//! [task_poll]                                # optional; seconds (P3-A02): polls only when a type
+//! interval_seconds = 30                      # is enabled and supported; the server's hint is
+//! min_seconds = 10                           # clamped to these bounds
+//! max_seconds = 300
+//!
 //! [tasks]                                    # optional (Phase 3); see crate::tasks::settings
 //! enabled = ["refresh_reports"]              # the default; restart_service, apply_package_updates
 //! allowed_services = []                      # units restart_service may restart (DEC-15)
@@ -95,6 +100,16 @@ const CONFIG_REPORT_LIMITS: IntervalLimits = IntervalLimits {
     default_interval: 21_600,
     default_min: 3_600,
     default_max: 86_400,
+};
+
+/// P3-A02: poll for a task every 30 seconds by default (only when a type is enabled and supported).
+const TASK_POLL_LIMITS: IntervalLimits = IntervalLimits {
+    name: "task_poll",
+    floor: 5,
+    ceiling: 3_600,
+    default_interval: 30,
+    default_min: 10,
+    default_max: 300,
 };
 
 /// The per-host agent credential, `<key_id>.<secret>` (DEC-08).
@@ -213,6 +228,8 @@ pub struct Config {
     pub inventory: Interval,
     /// How often the configuration report is sent (FR-2.1, P2-A01), and the package report (FR-2.3).
     pub config_report: Interval,
+    /// How often the task poller polls, and the bounds of the server's hint (P3-A02).
+    pub task_poll: Interval,
     /// How long a newly installed agent version has to get a heartbeat acknowledged by the server
     /// before the update is rolled back, in seconds (P1-AGENT-UPDATE, ADR 0018).
     pub update_confirm_seconds: u64,
@@ -285,6 +302,7 @@ struct RawConfig {
     heartbeat: Option<RawInterval>,
     inventory: Option<RawInterval>,
     config_report: Option<RawInterval>,
+    task_poll: Option<RawInterval>,
     /// Checked by [`TaskSettings`], which fails safe instead of refusing the whole file.
     tasks: Option<toml::Value>,
 }
@@ -398,6 +416,7 @@ impl Config {
                 &CONFIG_REPORT_LIMITS,
                 raw.config_report.unwrap_or_default(),
             )?,
+            task_poll: validate_interval(&TASK_POLL_LIMITS, raw.task_poll.unwrap_or_default())?,
             tasks: TaskSettings::from_value(raw.tasks.as_ref()),
         })
     }
@@ -879,6 +898,7 @@ pub(crate) mod tests {
         assert_eq!(example.heartbeat, defaults.heartbeat);
         assert_eq!(example.inventory, defaults.inventory);
         assert_eq!(example.config_report, defaults.config_report);
+        assert_eq!(example.task_poll, defaults.task_poll);
         assert_eq!(
             example.update_confirm_seconds,
             defaults.update_confirm_seconds

@@ -14,8 +14,11 @@
 //! reports that it supports no task type and the server offers it none.
 
 pub mod catalog;
+pub mod executor;
 pub mod ledger;
+pub mod poller;
 pub mod settings;
+pub mod wire;
 
 use serde::Serialize;
 
