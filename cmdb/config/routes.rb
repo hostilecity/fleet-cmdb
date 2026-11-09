@@ -119,6 +119,18 @@ Rails.application.routes.draw do
       get "recovery-codes/new", action: :new_recovery_codes, as: :new_recovery_codes
       post "recovery-codes", action: :create_recovery_codes, as: :recovery_codes
     end
+    # Settings: Tasks (P3-S06, mockup settings-tasks.html): the restart allowlist and the task limits. Each change is a
+    # CSRF-protected request that needs a recent second factor; removing a service has a confirmation page first.
+    scope "settings/tasks", controller: "task_settings" do
+      get "", action: :show, as: :task_settings
+      post "services", action: :add_service, as: :task_setting_services
+      get "services/:id/remove", action: :confirm_remove, as: :remove_task_setting_service, constraints: { id: /\d+/ }
+      post "services/:id/remove", action: :remove_service, constraints: { id: /\d+/ }
+      patch "limits", action: :update_limits, as: :task_setting_limits
+    end
+    # Cancelling (P3-S05): any operator, with a recent second factor (Q23). The dialogs and pages are P3-DASH-TASKS.
+    post "tasks/:id/cancel", to: "task_cancellations#task", as: :cancel_task, constraints: { id: /\d+/ }
+    post "tasks/batches/:id/cancel", to: "task_cancellations#batch", as: :cancel_task_batch, constraints: { id: /\d+/ }
     # Background jobs that failed every retry (P1-O02). Read-only; the layout banner links here.
     get "jobs/failed", to: "failed_jobs#index", as: :failed_jobs
     # Agent releases and installing (P1-RELEASES). Rollouts join this page with P1-UPDATES.

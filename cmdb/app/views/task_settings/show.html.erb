@@ -1,0 +1,107 @@
+<% content_for :title, "Settings: tasks" %>
+<% turbo_exempts_page_from_cache %>
+<% status_result = SecondFactors.status(Current.operator_session) %>
+<div class="page-head"><div><h1>Settings</h1><p>Server-wide rules for tasks. Every change needs the second factor and is recorded in the audit log with the value before and after.</p></div></div>
+<%= render "settings/tabs" %>
+
+<h2 id="allowlist" style="margin-top:0">Services that can be restarted</h2>
+<p>The "Restart a service" task offers only these. Each VM must also list the service in its own configuration (<span class="mono">[tasks] allowed_services</span> in <span class="mono">/etc/fleet-agent/config.toml</span>); a restart runs only where both lists have it.</p>
+<% if @allowlist.empty? %>
+  <div class="sheet"><p style="margin:0"><strong>No service can be restarted yet.</strong> The list starts empty (ADR 0015), so the "Restart a service" task refuses everything until a service is added here and on each VM.</p></div>
+<% else %>
+  <div class="table-wrap"><table class="stack">
+    <caption class="visually-hidden">Restartable services</caption>
+    <thead><tr><th scope="col">Service</th><th scope="col">On which hosts</th><th scope="col">Added</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+    <tbody>
+      <% @allowlist.each do |entry| %>
+        <tr id="<%= dom_id(entry) %>">
+          <td data-label="Service" class="mono"><%= entry.service %></td>
+          <td data-label="On which hosts"><% if entry.tag %>Hosts tagged <span class="tag"><%= entry.tag %></span><% else %>Every host<% end %></td>
+          <td data-label="Added"><%= entry.created_at.utc.strftime("%Y-%m-%d") %> by <%= entry.added_by.email %></td>
+          <td data-label="Actions"><%= link_to "Remove", remove_task_setting_service_path(entry), class: "btn danger quiet", "aria-label": "Remove #{entry.service} (#{entry.scope})" %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table></div>
+<% end %>
+
+<%= form_with url: task_setting_services_path, method: :post, class: "sheet svc-add", id: "add_service" do %>
+  <% if @service_errors %>
+    <div class="notice error" role="alert" style="flex-basis:100%"><strong>Not added: <%= @service_errors.values.first %></strong></div>
+  <% end %>
+  <% invalid = @service_errors&.key?("service") %>
+  <div class="field<%= " invalid" if invalid %>">
+    <label for="service">Add a service</label>
+    <%= text_field_tag :service, @service, id: "service", placeholder: "name.service", maxlength: TaskAllowedService::MAX_LENGTH, autocomplete: "off", spellcheck: false,
+          required: true, "aria-invalid": (invalid ? "true" : nil), "aria-describedby": (invalid ? "service_error service_hint" : "service_hint") %>
+    <% if invalid %><p class="error-text" id="service_error"><%= @service_errors["service"] %></p><% end %>
+  </div>
+  <% tag_invalid = @service_errors&.key?("tag") %>
+  <div class="field<%= " invalid" if tag_invalid %>">
+    <label for="tag">On which hosts</label>
+    <%= select_tag :tag, options_for_select([ [ "Every host", "" ] ] + (@tags | [ @tag.presence ].compact).map { |tag| [ "Hosts tagged #{tag}", tag ] }, @tag), id: "tag",
+          "aria-invalid": (tag_invalid ? "true" : nil), "aria-describedby": (tag_invalid ? "tag_error" : nil) %>
+    <% if tag_invalid %><p class="error-text" id="tag_error"><%= @service_errors["tag"] %></p><% end %>
+  </div>
+  <button class="btn quiet" type="submit">Add</button>
+  <p class="hint" id="service_hint" style="margin:0">A systemd service unit name as <span class="mono">systemctl</span> shows it, ending in <span class="mono">.service</span>: lower-case letters, digits, and <span class="mono">- _ .</span>, up to <%= TaskAllowedService::MAX_LENGTH %> characters. Instances such as <span class="mono">getty@tty1.service</span> are not accepted.</p>
+  <%= render "second_factors/prompt", result: (@refused_form == "add_service" ? second_factor_result : status_result), id: "add_service_second_factor_code",
+        intro: "Adding a service needs a code from your authenticator app." %>
+<% end %>
+
+<h3 id="protected">Never restarted remotely</h3>
+<div class="table-wrap"><table class="stack">
+  <caption class="visually-hidden">Protected services</caption>
+  <thead><tr><th scope="col">Service</th><th scope="col">Why</th></tr></thead>
+  <tbody>
+    <% TaskPolicy::PROTECTED_SERVICE_NOTES.each do |names, why| %>
+      <tr class="locked-row"><td class="mono"><%= names %></td><td data-label="Why"><%= why %></td></tr>
+    <% end %>
+  </tbody>
+</table></div>
+<p class="muted" style="font-size:.875rem">Fixed in the server and the agent (ADR 0015), template instances included. Adding one of these to the list above is refused, and the agent refuses it even if a VM lists it. Restarting them is a job for the console.</p>
+
+<h2 id="limits">Limits</h2>
+<% values = @limit_values || {} %>
+<% field_value = ->(field) { values.key?(field) ? values[field] : @limits.to_h[field] } %>
+<%= form_with url: task_setting_limits_path, method: :patch, class: "form wide", id: "limits_form" do %>
+  <% if @limit_errors %>
+    <div class="notice error" role="alert"><strong>Limits were not saved.</strong><p>Check the highlighted <%= @limit_errors.size == 1 ? "field" : "fields" %>. Nothing was changed.</p></div>
+  <% end %>
+  <div class="row">
+    <% { "max_hosts_per_batch" => "1 to 25. 25 is the hard cap (ADR 0014).", "output_limit_kib" => "4 to 1024. Longer output is cut in the middle.",
+         "poll_seconds" => "A hint sent to agents; 10 to 300." }.each do |field, hint| %>
+      <% invalid = @limit_errors&.key?(field) %>
+      <% label, _key, unit = TaskSettings::LIMITS.fetch(field).values_at(1, 0, 2) %>
+      <div class="field<%= " invalid" if invalid %>">
+        <label for="<%= field %>"><%= label %><%= " (#{unit})" if unit %></label>
+        <%= number_field_tag field, field_value.(field), id: field, min: TaskSettings.range(field).min, max: (field == "max_hosts_per_batch" ? nil : TaskSettings.range(field).max), required: true,
+              "aria-invalid": (invalid ? "true" : nil), "aria-describedby": (invalid ? "#{field}_error #{field}_hint" : "#{field}_hint") %>
+        <% if invalid %><p class="error-text" id="<%= field %>_error"><%= @limit_errors[field] %></p><% end %>
+        <p class="hint" id="<%= field %>_hint"><%= hint %></p>
+      </div>
+    <% end %>
+  </div>
+  <p class="muted" style="margin-top:0">Batches of more than <%= TaskBatches::CONFIRM_ABOVE %> hosts always ask for the host count to be typed (ADR 0014); that is not a setting.</p>
+  <% expiry_values = values["expiry_hours"] || {} %>
+  <fieldset><legend>Expiry: a task not started within this time expires and is never delivered</legend>
+    <div class="row">
+      <% TaskCatalog.current.entries.each do |entry| %>
+        <% key = "expiry_hours.#{entry.type}" %>
+        <% invalid = @limit_errors&.key?(key) %>
+        <div class="field<%= " invalid" if invalid %>">
+          <label for="expiry_<%= entry.type %>"><%= entry.name %> (hours)</label>
+          <%= number_field_tag "expiry_hours[#{entry.type}]", expiry_values.fetch(entry.type) { @limits.expiry_hours.fetch(entry.type) }, id: "expiry_#{entry.type}",
+                min: TaskSettings.expiry_range.min, max: TaskSettings.expiry_range.max, required: true,
+                "aria-invalid": (invalid ? "true" : nil), "aria-describedby": (invalid ? "expiry_#{entry.type}_error expiry_hint" : "expiry_hint") %>
+          <% if invalid %><p class="error-text" id="expiry_<%= entry.type %>_error"><%= @limit_errors[key] %></p><% end %>
+        </div>
+      <% end %>
+    </div>
+    <p class="hint" id="expiry_hint" style="margin-top:-.5rem"><%= TaskSettings.expiry_range.min %> to <%= TaskSettings.expiry_range.max %> hours (7 days). Default 24. Applies to tasks created after the change.</p>
+  </fieldset>
+  <p class="muted">Time limits per task type (<%= TaskCatalog.current.entries.map { |entry| (entry.timeout / 1.minute).round }.to_sentence %> minutes) are part of the catalog, not settings.</p>
+  <%= render "second_factors/prompt", result: (@refused_form == "update_limits" ? second_factor_result : status_result), id: "limits_second_factor_code",
+        intro: "Changing task settings needs a code from your authenticator app." %>
+  <div class="actions"><button class="btn" type="submit">Save limits</button></div>
+<% end %>

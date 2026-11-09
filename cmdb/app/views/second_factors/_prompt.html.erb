@@ -1,8 +1,10 @@
 <%# The step-up box (P3-S09, mockup totp-stepup.html), placed inside the form of the action it protects, so one submit
     checks the code and does the action (Q11). The code goes in second_factor_code. ask: true always asks for a code
-    (an action with fresh: true); otherwise an open window is shown as passed. %>
-<%# locals: (result:, intro: "This needs a code from your authenticator app.", ask: false, label: "6-digit code") %>
+    (an action with fresh: true); otherwise an open window is shown as passed. id names the code box, for a page with
+    more than one form that asks for a code. %>
+<%# locals: (result:, intro: "This needs a code from your authenticator app.", ask: false, label: "6-digit code", id: "second_factor_code") %>
 <% status = ask && result.status == :passed ? :code_required : result.status %>
+<% base = id.delete_suffix("_code") %>
 <% case status %>
 <% when :not_enrolled %>
   <div class="stepup locked" role="alert">
@@ -29,16 +31,16 @@
     <% end %>
     <p><%= intro %><%= " You will not be asked again for #{SecondFactors::STEP_UP_WINDOW.in_minutes.to_i} minutes." unless ask %></p>
     <div class="field<%= " invalid" if refused %>">
-      <label for="second_factor_code"><%= label %></label>
-      <%= text_field_tag SecondFactorRequired::PARAM, nil, id: "second_factor_code", class: "totp wide", autocomplete: "one-time-code", maxlength: 16,
+      <label for="<%= id %>"><%= label %></label>
+      <%= text_field_tag SecondFactorRequired::PARAM, nil, id:, class: "totp wide", autocomplete: "one-time-code", maxlength: 16,
             required: true, spellcheck: false, autocapitalize: "characters", "aria-invalid": (refused ? "true" : nil),
-            "aria-describedby": (refused ? "second_factor_error second_factor_hint" : "second_factor_hint") %>
+            "aria-describedby": (refused ? "#{base}_error #{base}_hint" : "#{base}_hint") %>
       <% if status == :wrong %>
-        <p class="error-text" id="second_factor_error">That code was not accepted, and nothing was done. Check that your phone's time is set automatically and type the newest code. <%= pluralize(result.attempts_left, "attempt") %> left in the next <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes.</p>
+        <p class="error-text" id="<%= base %>_error">That code was not accepted, and nothing was done. Check that your phone's time is set automatically and type the newest code. <%= pluralize(result.attempts_left, "attempt") %> left in the next <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes.</p>
       <% elsif status == :reused %>
-        <p class="error-text" id="second_factor_error">That code was already used. Wait for your app to show the next one (up to 30 seconds). <%= pluralize(result.attempts_left, "attempt") %> left in the next <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes.</p>
+        <p class="error-text" id="<%= base %>_error">That code was already used. Wait for your app to show the next one (up to 30 seconds). <%= pluralize(result.attempts_left, "attempt") %> left in the next <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes.</p>
       <% end %>
-      <p class="hint" id="second_factor_hint">Lost your authenticator? Type one of your recovery codes instead; each works once.</p>
+      <p class="hint" id="<%= base %>_hint">Lost your authenticator? Type one of your recovery codes instead; each works once.</p>
     </div>
   </div>
 <% end %>
