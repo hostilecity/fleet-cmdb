@@ -9,12 +9,13 @@ module TaskPolicy
   # A refusal: a Task::REFUSED_REASONS reason, and problems as { "pointer", "problem" } for the request.
   Refusal = Data.define(:reason, :errors)
 
-  # Always refused, even when listed (DEC-15): the agent's own unit, SSH, systemd's own units, networking, and
-  # D-Bus. Compared without regard to case.
+  # Always refused, even when listed (DEC-15): the agent's own units, SSH, systemd's own units, networking, and
+  # D-Bus. Each name covers its template instances too (sshd@blue.service), and the agent's covers every unit
+  # named after it (fleet-agent-rollback.service). Compared without regard to case.
   PROTECTED_SERVICES = [
-    /\Afleet-agent\.service\z/, /\Assh\.service\z/, /\Asshd\.service\z/, /\Asystemd-.*\.service\z/,
-    /\Anetworking\.service\z/, /\Anetworkmanager\.service\z/, /\Aifup@.*\.service\z/,
-    /\Adbus\.service\z/, /\Adbus-broker\.service\z/
+    /\Afleet-agent([-@].*)?\.service\z/, /\Asshd?(@.*)?\.service\z/, /\Asystemd-.*\.service\z/,
+    /\Anetworking(@.*)?\.service\z/, /\Anetworkmanager([-@].*)?\.service\z/, /\Aifup@.*\.service\z/,
+    /\Adbus(-broker)?(@.*)?\.service\z/
   ].freeze
 
   module_function

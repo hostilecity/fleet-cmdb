@@ -10,7 +10,7 @@ The restart task takes a service name and must refuse unsafe ones.
 
 ## Decision
 
-The server and agent allowlists are **empty** until services are named. The agent's own unit, `sshd`/`ssh`, and `systemd-*` are always refused, even if listed. Networking and `dbus` are also protected.
+The server and agent allowlists are **empty** until services are named. The agent's own units (`fleet-agent` and any `fleet-agent-*`), `sshd`/`ssh`, and `systemd-*` are always refused, even if listed. Networking and `dbus` are also protected. A protected name covers its template instances too (`sshd@blue.service`).
 
 ## Consequences
 
