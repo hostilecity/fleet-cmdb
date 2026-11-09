@@ -61,7 +61,7 @@ use super::wire::{self, Reply, TaskApi};
 use crate::client::ApiError;
 use crate::config::Interval;
 use crate::report::rfc3339;
-use crate::retry::{Backoff, Rng};
+use crate::retry::{Backoff, RetryClass, Rng};
 use crate::shutdown::Shutdown;
 use crate::update::Updater;
 
@@ -269,10 +269,14 @@ impl<'a, R: Rng> Poller<'a, R> {
         now: Instant,
         wall: SystemTime,
     ) -> Result<(), Duration> {
-        let pending = match &self.ledger {
+        let mut pending = match &self.ledger {
             Some(ledger) => ledger.pending(),
             None => return Err(LEDGER_RETRY),
         };
+        // The task whose result is stored goes first, so recovering another never overwrites it.
+        if let Some(owner) = self.ledger.as_ref().and_then(Ledger::result_owner) {
+            pending.sort_by_key(|t| t.id != owner);
+        }
         for task in pending {
             if !matches!(task.state, State::Finished { .. }) {
                 self.recover(&task, wall).map_err(|e| {
@@ -335,8 +339,21 @@ impl<'a, R: Rng> Poller<'a, R> {
         let Some(ledger) = self.ledger.as_ref() else {
             return Err(LEDGER_RETRY);
         };
-        let Some(body) = ledger.result(id).or_else(|| rebuilt(ledger, id)) else {
-            return Ok(());
+        let body = match ledger.result(id) {
+            Some(body) => body,
+            None => {
+                // The stored result is gone (or unreadable): rebuild it from the ledger once and store
+                // it, so every retry sends the same body and `report_id`.
+                let Some(body) = rebuilt(ledger, id) else {
+                    return Ok(());
+                };
+                let ledger = self.ledger.as_mut().ok_or(LEDGER_RETRY)?;
+                if let Err(e) = ledger.store_result(id, &body) {
+                    self.drop_ledger(now, &e);
+                    return Err(LEDGER_RETRY);
+                }
+                body
+            }
         };
         match api.result(id, &body) {
             Ok(reply) => {
@@ -411,18 +428,30 @@ impl<'a, R: Rng> Poller<'a, R> {
         match reply {
             None => self.next_poll = Some(now + self.interval()),
             Some(task) => {
-                self.handle(api, &task, now, wall);
-                // One at a time: poll again straight away, in case another is waiting.
-                self.next_poll = Some(now);
+                // One at a time: after a new task, poll again straight away, in case another is waiting.
+                // A delivery this agent will not take (an id it already has, or one it cannot record)
+                // waits the interval, so a server that keeps sending it is not polled in a loop.
+                self.next_poll = Some(if self.handle(api, &task, now, wall) {
+                    now
+                } else {
+                    now + self.interval()
+                });
             }
         }
         drop(slot);
     }
 
-    /// Takes one delivered task through the steps in the module documentation.
-    fn handle(&mut self, api: &dyn TaskApi, task: &Delivered, now: Instant, wall: SystemTime) {
+    /// Takes one delivered task through the steps in the module documentation. `false` when it was
+    /// not taken: an id already in the ledger, or a delivery that cannot be recorded.
+    fn handle(
+        &mut self,
+        api: &dyn TaskApi,
+        task: &Delivered,
+        now: Instant,
+        wall: SystemTime,
+    ) -> bool {
         let Some(ledger) = self.ledger.as_mut() else {
-            return;
+            return false;
         };
         let oversize = serde_json::to_vec(&task.parameters)
             .map_or(true, |b| b.len() > ledger::MAX_PARAMETERS_BYTES);
@@ -450,15 +479,18 @@ impl<'a, R: Rng> Poller<'a, R> {
                         "the server delivered a task this agent already has in its ledger; it is not run again"
                     );
                 }
-                return;
+                return false;
             }
             Err(LedgerError::Invalid(why)) => {
                 if self.note(&format!("invalid {why}")) {
                     tracing::error!("ignoring a delivered task that cannot be recorded: {why}");
                 }
-                return;
+                return false;
             }
-            Err(e) => return self.drop_ledger(now, &e),
+            Err(e) => {
+                self.drop_ledger(now, &e);
+                return false;
+            }
         }
         tracing::info!(
             task_id = task.id.as_str(),
@@ -468,7 +500,7 @@ impl<'a, R: Rng> Poller<'a, R> {
         );
         #[cfg(test)]
         if tests::crash_at(tests::Point::Received) {
-            return;
+            return true;
         }
         let refusal = if oversize {
             Some((Outcome::Refused, reason::INVALID_PARAMS))
@@ -499,9 +531,10 @@ impl<'a, R: Rng> Poller<'a, R> {
         }
         #[cfg(test)]
         if tests::crash_at(tests::Point::Finished) {
-            return;
+            return true;
         }
         let _ = self.report(api, &task.id, now, wall);
+        true
     }
 
     /// Why this agent will not run `task`, if it will not, as the outcome and reason to report;
@@ -612,6 +645,18 @@ impl<'a, R: Rng> Poller<'a, R> {
                         status = error.status(),
                         "cannot tell the server the task started; it does not run until the server accepts"
                     );
+                    // A refusal that only an operator or an upgrade can fix (401, 403, 426): give up
+                    // on this task rather than hold the task slot, which would also hold back the
+                    // agent update that a 426 needs (review of #166). It stays `started` without
+                    // `finished`, so recovery reports it `interrupted`, and it never runs.
+                    if RetryClass::of(&error) == RetryClass::Long {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            "giving up on starting the task; it is reported, not run"
+                        );
+                        self.retry_after = Some(now + wait);
+                        return;
+                    }
                     if self.shutdown.wait(wait) {
                         return;
                     }

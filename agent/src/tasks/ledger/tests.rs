@@ -250,7 +250,9 @@ fn a_whole_last_line_without_its_newline_is_believed() {
 }
 
 #[test]
-fn a_garbled_complete_last_line_is_a_torn_tail() {
+fn a_bad_last_line_with_its_newline_is_damage_not_a_torn_tail() {
+    // Review of #166: a whole line was written in one append, or by compaction, so it may have been
+    // acted on.
     let (_tmp, dir) = state();
     let (mut ledger, _) = open(&dir);
     receive(&mut ledger, A);
@@ -260,8 +262,79 @@ fn a_garbled_complete_last_line_is_a_torn_tail() {
     bytes.extend_from_slice(b"\x00\x00\x00garbage\n");
     fs::write(&path, &bytes).unwrap();
     let (ledger, recovery) = open(&dir);
-    assert!(recovery.torn_tail && recovery.damaged.is_none());
+    assert!(!recovery.torn_tail);
+    assert!(recovery.damaged.unwrap().contains("line 2"));
+    assert!(ledger.held(now()));
     assert_eq!(state_of(&ledger, A), State::Received);
+}
+
+#[test]
+fn a_crash_while_setting_a_damaged_ledger_aside_still_holds_and_keeps_the_records() {
+    // Review of #166: stopped after the rename and before the replacement was written.
+    let (_tmp, dir) = state();
+    let (mut ledger, _) = open(&dir);
+    receive(&mut ledger, A);
+    ledger.start(A, now()).unwrap();
+    drop(ledger);
+    fs::rename(dir.join(LEDGER_FILE), dir.join(DAMAGED_FILE)).unwrap();
+    let (mut ledger, recovery) = open(&dir);
+    assert!(
+        recovery
+            .damaged
+            .unwrap()
+            .contains("missing beside a damaged copy")
+    );
+    assert!(ledger.held(now()));
+    assert_eq!(state_of(&ledger, A), State::Started);
+    assert_eq!(receive(&mut ledger, A), Receipt::Known(State::Started));
+    // The copy stays for inspection; the new ledger holds the records and the hold.
+    assert!(dir.join(DAMAGED_FILE).exists());
+    let ledger = open_again(ledger, &dir);
+    assert!(ledger.held(now()));
+    assert_eq!(state_of(&ledger, A), State::Started);
+}
+
+#[test]
+fn another_tasks_stored_result_is_never_overwritten() {
+    // Review of #166: after damage, an older unfinished task must not take a later one's result.
+    let (_tmp, dir) = state();
+    let (mut ledger, _) = open(&dir);
+    receive(&mut ledger, A);
+    receive(&mut ledger, B);
+    ledger
+        .finish(B, Outcome::Succeeded, None, &result("succeeded"), now())
+        .unwrap();
+    assert_eq!(ledger.result_owner().as_deref(), Some(B));
+    assert!(matches!(
+        ledger.finish(
+            A,
+            Outcome::Failed,
+            Some("interrupted"),
+            &result("failed"),
+            now()
+        ),
+        Err(LedgerError::Step(_))
+    ));
+    assert!(matches!(
+        ledger.store_result(A, &result("failed")),
+        Err(LedgerError::Step(_))
+    ));
+    assert_eq!(ledger.result(B), Some(result("succeeded")));
+    ledger.reported(B, false, now()).unwrap();
+    assert_eq!(ledger.result_owner(), None);
+    ledger
+        .finish(
+            A,
+            Outcome::Failed,
+            Some("interrupted"),
+            &result("failed"),
+            now(),
+        )
+        .unwrap();
+    // A result stored for a finished task is the one later reads return.
+    let rebuilt = json!({"outcome": "failed", "report_id": "r"});
+    ledger.store_result(A, &rebuilt).unwrap();
+    assert_eq!(ledger.result(A), Some(rebuilt));
 }
 
 #[test]
@@ -278,7 +351,7 @@ fn damage_before_the_last_line_keeps_what_is_readable_and_holds_every_task() {
     drop(ledger);
     let path = dir.join(LEDGER_FILE);
     let original = fs::read_to_string(&path).unwrap();
-    // Flip one character inside the second line (A's `started`).
+    // Flip one character inside the second line (A's `started`); later lines follow it.
     let mut damaged: Vec<String> = original.lines().map(str::to_owned).collect();
     damaged[1] = damaged[1].replacen("started", "stArted", 1);
     let damaged = damaged.join("\n") + "\n";
@@ -453,6 +526,26 @@ fn compaction_bounds_the_file_and_keeps_the_latest_ids() {
         [LEDGER_FILE, LOCK_FILE],
         "no temporary or result file left"
     );
+}
+
+#[test]
+fn compaction_keeps_every_id_reported_within_the_hold_window() {
+    // Review of #166: an id stays known for as long as the server could still deliver it.
+    let (_tmp, dir) = state();
+    let (mut ledger, _) = open(&dir);
+    let ids = fill(&mut ledger, 0, KEEP_DONE + 200);
+    // All were reported "now", so compaction keeps every one of them.
+    ledger.compact(now()).unwrap();
+    assert_eq!(ledger.len(), KEEP_DONE + 200);
+    // Once they are older than the hold, only the last KEEP_DONE stay.
+    let later = now() + Duration::from_secs(hold_seconds() + 1);
+    ledger.compact(later).unwrap();
+    assert_eq!(ledger.len(), KEEP_DONE);
+    let ledger = open_again(ledger, &dir);
+    assert!(ledger.task(&ids[199]).is_none());
+    assert_eq!(state_of(&ledger, &ids[200]), State::Reported);
+    // Compaction kept each id's own reported time, not the time it ran.
+    assert!(lines(&dir)[0].contains("2026-01-01T12:00:00.000Z"));
 }
 
 #[test]

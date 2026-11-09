@@ -26,13 +26,14 @@
 //!
 //! **Opening ([`Ledger::open`]).**
 //!
-//! - A bad or unterminated **last** line is a torn tail: the write that made it never returned, so
-//!   nothing acted on it. It is dropped (the file is rewritten atomically without it). A complete,
-//!   valid last line that only lacks its newline is kept, which is the safe reading: a `started` kept
-//!   this way is reported `interrupted`, never run.
-//! - A bad line **before** the last one, or a file that cannot be read (too large, not a regular file),
-//!   means a record that was flushed, and maybe acted on, is lost: it could have been the `started` of
-//!   a task the server sends again. The damaged file is kept beside the ledger as [`DAMAGED_FILE`] for
+//! - An **unterminated last** line is a torn tail: the append that made it never returned, so nothing
+//!   acted on it. A bad one is dropped (the file is rewritten atomically without it). A valid one that
+//!   only lacks its newline is kept, which is the safe reading: a `started` kept this way is reported
+//!   `interrupted`, never run.
+//! - A bad line that ends in a newline, anywhere, or a file that cannot be read (too large, not a
+//!   regular file), means a record that was flushed, and maybe acted on, is lost: it could have been
+//!   the `started` of a task the server sends again. So is a missing ledger beside a damaged copy (the
+//!   agent stopped between setting the copy aside and writing the replacement). The damaged file is kept beside the ledger as [`DAMAGED_FILE`] for
 //!   inspection, the readable records are kept, and a `hold` record is added: until it ends the agent
 //!   runs nothing (callers ask [`Ledger::held`]), and tasks it receives are reported, not run. The hold
 //!   lasts [`hold_seconds`], the longest a task may wait to start (the catalog's `expiry_seconds`)
@@ -42,7 +43,10 @@
 //! **Size.** A record is at most [`MAX_RECORD_BYTES`] (parameters at most [`MAX_PARAMETERS_BYTES`] as
 //! JSON) and the file at most [`MAX_LEDGER_BYTES`]. Once the file passes [`COMPACT_AT_BYTES`] and
 //! every task in it is reported, it is rewritten atomically with one `done` line for each of the last
-//! [`KEEP_DONE`] tasks, and an active hold. A ledger that is full and cannot be compacted (a task is
+//! [`KEEP_DONE`] tasks and for every task reported within [`hold_seconds`] (however many), and an
+//! active hold. An id is therefore remembered for at least as long as the server could still deliver
+//! it; a server that mints a new id gains nothing a reused one would not. If what must be kept does
+//! not fit, the ledger stays full and takes no new task (fails closed). A ledger that is full and cannot be compacted (a task is
 //! still unreported) receives nothing more ([`LedgerError::Full`]): the agent stops taking tasks rather
 //! than forget one.
 //!
@@ -212,6 +216,8 @@ pub struct Task {
     pub started: bool,
     /// When the `started` record was written (agent clock, RFC 3339).
     pub started_at: Option<String>,
+    /// When the task was reported (agent clock, RFC 3339), kept through compaction.
+    pub reported_at: Option<String>,
 }
 
 /// What [`Ledger::receive`] found.
@@ -369,18 +375,42 @@ impl Ledger {
         let path = dir.join(LEDGER_FILE);
         let mut recovery = Recovery::default();
 
-        let (good, damage) = match fsx::read_regular(&path, MAX_LEDGER_BYTES, fsx::Symlinks::Refuse)
-        {
-            Ok(bytes) => scan(&bytes, &mut recovery),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (Vec::new(), None),
-            Err(e) => (Vec::new(), Some(format!("it cannot be read ({e})"))),
+        let damaged_copy = dir.join(DAMAGED_FILE);
+        let (good, damage, set_aside) = match fsx::read_regular(
+            &path,
+            MAX_LEDGER_BYTES,
+            fsx::Symlinks::Refuse,
+        ) {
+            Ok(bytes) => {
+                let (good, damage) = scan(&bytes, &mut recovery);
+                (good, damage, false)
+            }
+            // No ledger, but a damaged copy: the agent stopped after setting a damaged ledger aside
+            // and before writing its replacement. Start again from the copy, under a hold, never
+            // from nothing (review of #166).
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    && fs::symlink_metadata(&damaged_copy).is_ok() =>
+            {
+                let good =
+                    fsx::read_regular(&damaged_copy, MAX_LEDGER_BYTES, fsx::Symlinks::Refuse)
+                        .map(|bytes| scan(&bytes, &mut Recovery::default()).0)
+                        .unwrap_or_default();
+                let why = "the ledger is missing beside a damaged copy (the agent stopped while repairing it)";
+                (good, Some(why.to_owned()), true)
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (Vec::new(), None, false),
+            Err(e) => (Vec::new(), Some(format!("it cannot be read ({e})")), false),
         };
         let mut good = good;
         if let Some(why) = &damage {
             // Keep what was there for whoever investigates, then start again from what was readable,
-            // under a hold.
-            fs::rename(&path, dir.join(DAMAGED_FILE))?;
-            fsx::sync_dir(dir)?;
+            // under a hold. A crash between the two steps leaves no ledger beside the copy, which the
+            // next open reads as above.
+            if !set_aside {
+                fs::rename(&path, &damaged_copy)?;
+                fsx::sync_dir(dir)?;
+            }
             let hold = Entry::Hold {
                 until_unix: unix(now) + hold_seconds(),
                 why: why.clone(),
@@ -557,18 +587,13 @@ impl Ledger {
         if self.poisoned {
             return Err(LedgerError::Poisoned);
         }
-        let stored = StoredResult {
-            task_id: id.to_owned(),
-            body: result.clone(),
-        };
-        let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
-        if bytes.len() as u64 > MAX_RESULT_BYTES {
-            return Err(LedgerError::Invalid(format!(
-                "the result of task {id} is {} bytes, more than {MAX_RESULT_BYTES}",
-                bytes.len()
+        // Never over another unreported task's result: the caller reports that one first.
+        if self.result_owner().is_some_and(|owner| owner != id) {
+            return Err(LedgerError::Step(format!(
+                "task {id} cannot finish yet: another task's result is waiting to be reported"
             )));
         }
-        crate::state::write_record(&self.dir, RESULT_FILE, &bytes)?;
+        self.write_result(id, result)?;
         self.write(Entry::Finished {
             task_id: id.to_owned(),
             outcome,
@@ -579,9 +604,50 @@ impl Ledger {
 
     /// The stored result body of `id`, if [`RESULT_FILE`] holds that task's.
     pub fn result(&self, id: &str) -> Option<Value> {
-        let bytes = crate::state::read_record(&self.dir, RESULT_FILE, MAX_RESULT_BYTES).ok()??;
-        let stored: StoredResult = serde_json::from_slice(&bytes).ok()?;
+        let stored = self.stored()?;
         (stored.task_id == id).then_some(stored.body)
+    }
+
+    fn stored(&self) -> Option<StoredResult> {
+        let bytes = crate::state::read_record(&self.dir, RESULT_FILE, MAX_RESULT_BYTES).ok()??;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// The unreported task whose result [`RESULT_FILE`] holds, if any. Reconciliation reports it
+    /// first, so recovering another task never overwrites it (review of #166).
+    pub fn result_owner(&self) -> Option<String> {
+        let owner = self.stored()?.task_id;
+        self.task(&owner)
+            .is_some_and(|t| t.state != State::Reported)
+            .then_some(owner)
+    }
+
+    /// Stores `body` as the result of the finished task `id`, when it has none stored: a result
+    /// rebuilt from the ledger is then sent unchanged on every retry, and keeps its `report_id`
+    /// (review of #166). Refused while another unreported task's result is stored.
+    pub fn store_result(&mut self, id: &str, body: &Value) -> Result<(), LedgerError> {
+        if self.result_owner().is_some_and(|owner| owner != id) {
+            return Err(LedgerError::Step(format!(
+                "task {id}'s result cannot be stored: another task's result is waiting"
+            )));
+        }
+        self.write_result(id, body)
+    }
+
+    fn write_result(&self, id: &str, body: &Value) -> Result<(), LedgerError> {
+        let stored = StoredResult {
+            task_id: id.to_owned(),
+            body: body.clone(),
+        };
+        let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
+        if bytes.len() as u64 > MAX_RESULT_BYTES {
+            return Err(LedgerError::Invalid(format!(
+                "the result of task {id} is {} bytes, more than {MAX_RESULT_BYTES}",
+                bytes.len()
+            )));
+        }
+        crate::state::write_record(&self.dir, RESULT_FILE, &bytes)?;
+        Ok(())
     }
 
     /// Records that the server accepted the result of `id` (or, `rejected`, refused it for good), and
@@ -675,13 +741,24 @@ impl Ledger {
                     self.outcomes.insert(task_id.clone(), outcome);
                     (task_id, State::Finished { outcome, reason }, None)
                 }
-                Entry::Reported { task_id, .. } => (task_id, State::Reported, None),
-                Entry::Done {
-                    task_id, outcome, ..
+                Entry::Reported { task_id, at, .. }
+                | Entry::Done {
+                    task_id,
+                    at,
+                    outcome: None,
                 } => {
-                    if let Some(outcome) = outcome {
-                        self.outcomes.insert(task_id.clone(), outcome);
-                    }
+                    let i = self.slot(&task_id);
+                    self.tasks[i].reported_at.get_or_insert(at);
+                    (task_id, State::Reported, None)
+                }
+                Entry::Done {
+                    task_id,
+                    outcome: Some(outcome),
+                    at,
+                } => {
+                    self.outcomes.insert(task_id.clone(), outcome);
+                    let i = self.slot(&task_id);
+                    self.tasks[i].reported_at.get_or_insert(at);
                     (task_id, State::Reported, None)
                 }
             },
@@ -706,6 +783,7 @@ impl Ledger {
             state: State::Received,
             started: false,
             started_at: None,
+            reported_at: None,
         });
         self.index.insert(id.to_owned(), self.tasks.len() - 1);
         self.tasks.len() - 1
@@ -716,8 +794,12 @@ impl Ledger {
         if self.len < COMPACT_AT_BYTES || !self.pending().is_empty() {
             return Ok(false);
         }
-        self.compact(now)?;
-        Ok(true)
+        match self.compact(now) {
+            Ok(()) => Ok(true),
+            // Nothing could be dropped: the file stays, and fills up until ids age out.
+            Err(LedgerError::Full) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// Rewrites the file with a `done` line for each of the last [`KEEP_DONE`] tasks (all reported)
@@ -735,14 +817,34 @@ impl Ledger {
                 at: at.clone(),
             })?);
         }
-        let keep = self.tasks.len().saturating_sub(KEEP_DONE);
-        let kept: Vec<Task> = self.tasks[keep..].to_vec();
+        // The last KEEP_DONE ids, and every id reported recently enough that the server could still
+        // deliver it (or with a time this agent cannot read: kept, the safe side).
+        let recent = unix(now).saturating_sub(hold_seconds());
+        let oldest_kept = self.tasks.len().saturating_sub(KEEP_DONE);
+        let kept: Vec<Task> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(i, task)| {
+                *i >= oldest_kept
+                    || task
+                        .reported_at
+                        .as_deref()
+                        .and_then(|t| humantime::parse_rfc3339(t).ok())
+                        .is_none_or(|t| unix(t) >= recent)
+            })
+            .map(|(_, task)| task.clone())
+            .collect();
         for task in &kept {
             contents.extend(line(&Entry::Done {
                 task_id: task.id.clone(),
                 outcome: self.outcomes.get(&task.id).copied(),
-                at: at.clone(),
+                at: task.reported_at.clone().unwrap_or_else(|| at.clone()),
             })?);
+        }
+        if contents.len() as u64 + RESERVE_BYTES > MAX_LEDGER_BYTES {
+            // What must be kept does not fit: stay as is, and full, rather than forget an id.
+            return Err(LedgerError::Full);
         }
         let path = self.dir.join(LEDGER_FILE);
         fsx::write_atomic(&path, &contents, FILE_MODE)?;
@@ -787,7 +889,6 @@ fn scan(bytes: &[u8], recovery: &mut Recovery) -> (Vec<(Vec<u8>, Parsed)>, Optio
     let mut pieces: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
     // `split` yields an empty piece after a final newline; anything else there is unterminated.
     let unterminated = pieces.pop().filter(|rest| !rest.is_empty());
-    let last = pieces.len();
     let mut damage = None;
     for (n, piece) in pieces.into_iter().enumerate() {
         match parse_line(piece) {
@@ -799,12 +900,12 @@ fn scan(bytes: &[u8], recovery: &mut Recovery) -> (Vec<(Vec<u8>, Parsed)>, Optio
                 raw.push(b'\n');
                 good.push((raw, parsed));
             }
-            None if n + 1 == last && unterminated.is_none() => recovery.torn_tail = true,
+            // A bad line with its newline, even the last, was written whole (an append writes the line
+            // and its newline together) or replaced atomically by compaction: it may be a record that
+            // was acted on, so it is damage, not a torn append (review of #166).
             None => {
                 // Keep reading: every readable record still counts.
-                damage.get_or_insert_with(|| {
-                    format!("line {} is damaged and later lines follow it", n + 1)
-                });
+                damage.get_or_insert_with(|| format!("line {} is damaged", n + 1));
             }
         }
     }

@@ -86,6 +86,7 @@ struct Server {
     results: RefCell<Vec<(String, Value)>>,
     fail_polls: Cell<u32>,
     fail_starts: Cell<u32>,
+    start_error: RefCell<Option<ApiError>>,
     fail_results: Cell<u32>,
     reject_start: Cell<bool>,
     reject_result: Cell<bool>,
@@ -126,6 +127,9 @@ impl TaskApi for Server {
             started_at.ends_with('Z') && started_at.len() == 24,
             "{started_at}"
         );
+        if let Some(error) = self.start_error.borrow().clone() {
+            return Err(error);
+        }
         if self.fail_starts.get() > 0 {
             self.fail_starts.set(self.fail_starts.get() - 1);
             return Err(Self::down());
@@ -662,4 +666,81 @@ fn an_unusable_state_directory_means_no_poll() {
     let mut poller = rig.poller(&executor, None);
     assert_eq!(poller.tick(&server, Instant::now(), wall()), LEDGER_RETRY);
     assert_eq!(server.polls.get(), 0);
+}
+
+#[test]
+fn a_known_id_delivered_again_waits_the_interval_instead_of_polling_in_a_loop() {
+    // Review of #166.
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::with(vec![restart(A)]);
+    server.reject_result.set(true);
+    let mut poller = rig.poller(&executor, None);
+    let t0 = Instant::now();
+    poller.tick(&server, t0, wall());
+    // The server keeps the claim and redelivers A, which this agent already has.
+    *server.claimed.borrow_mut() = Some(restart(A));
+    poller.tick(&server, t0 + Duration::from_secs(1), wall());
+    let polls = server.polls.get();
+    for s in 2..29 {
+        poller.tick(&server, t0 + Duration::from_secs(s), wall());
+    }
+    assert_eq!(server.polls.get(), polls, "no poll before the interval");
+    poller.tick(&server, t0 + Duration::from_secs(32), wall());
+    assert_eq!(server.polls.get(), polls + 1);
+    assert_eq!(executor.runs(A), 1);
+}
+
+#[test]
+fn a_start_only_an_upgrade_can_fix_releases_the_task_slot_and_runs_nothing() {
+    // Review of #166: a 426 on start must not hold back the update it needs.
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let updater = Updater::inert(&rig.dir);
+    let server = Server::with(vec![restart(A)]);
+    *server.start_error.borrow_mut() = Some(ApiError::AgentVersionUnsupported {
+        message: "upgrade".into(),
+        request_id: None,
+    });
+    let mut poller = rig.poller(&executor, Some(&updater));
+    poller.tick(&server, Instant::now(), wall());
+    assert_eq!(executor.total(), 0);
+    assert!(
+        updater.task_slot().is_ok(),
+        "the slot is free for the update"
+    );
+    // After the upgrade (here: the error goes away), recovery reports it and it never runs.
+    *server.start_error.borrow_mut() = None;
+    let later = Instant::now() + Duration::from_secs(3600);
+    for i in 0..3 {
+        poller.tick(&server, later + Duration::from_secs(31 * i), wall());
+    }
+    assert_eq!(executor.total(), 0);
+    let results = server.results();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1["reason"], "interrupted");
+}
+
+#[test]
+fn a_result_rebuilt_from_the_ledger_is_stored_and_sent_unchanged() {
+    // Review of #166: the same report_id and finished_at on every retry, across restarts.
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::with(vec![restart(A)]);
+    server.fail_results.set(1);
+    let mut poller = rig.poller(&executor, None);
+    poller.tick(&server, Instant::now(), wall());
+    drop(poller);
+    std::fs::remove_file(rig.dir.join(ledger::RESULT_FILE)).unwrap();
+    server.fail_results.set(2);
+    let mut poller = rig.poller(&executor, None);
+    poller.tick(&server, Instant::now(), wall());
+    let stored = poller.ledger().unwrap().result(A).unwrap();
+    drop(poller);
+    let mut poller = rig.poller(&executor, None);
+    ticks(&mut poller, &server, 3);
+    let results = server.results();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1, stored);
+    assert_eq!(executor.runs(A), 1);
 }
