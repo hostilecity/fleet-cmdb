@@ -406,6 +406,19 @@ mod tests {
                 );
                 continue;
             }
+            if name.starts_with("tasks-available") {
+                // The task poller (P3-A02, #34) reads `tasks_available`; until it does, this build
+                // ignores the directive and logs it, as DEC-20 allows, and nothing else.
+                assert!(
+                    envelope
+                        .ignored
+                        .iter()
+                        .all(|i| i.contains("`tasks_available`")),
+                    "{name}: {:?}",
+                    envelope.ignored
+                );
+                continue;
+            }
             // Only `unknown-field-*` examples carry names this agent does not know.
             assert_eq!(
                 envelope.ignored.is_empty(),
