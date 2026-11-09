@@ -706,7 +706,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_140000) do
     t.string "result_digest", limit: 64
     t.datetime "result_received_at"
     t.jsonb "result_details"
-    t.index ["expires_at"], name: "index_tasks_queued_by_expiry", where: "((state)::text = 'queued'::text)"
+    t.index ["expires_at"], name: "index_tasks_waiting_by_expiry", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'claimed'::character varying])::text[]))"
     t.index ["host_id", "state"], name: "index_tasks_on_host_id_and_state"
     t.index ["lease_expires_at"], name: "index_tasks_open_by_lease", where: "((state)::text = ANY ((ARRAY['claimed'::character varying, 'running'::character varying])::text[]))"
     t.index ["task_batch_id"], name: "index_tasks_on_task_batch_id"
@@ -993,6 +993,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_140000) do
             USING ERRCODE = 'check_violation';
         END IF;
 
+        -- A queued task fails only as not_run: its agent closing a task it held and never ran (P3-S05).
+        IF OLD.state = 'queued' AND NEW.state = 'failed' AND NEW.reason IS DISTINCT FROM 'not_run' THEN
+          RAISE EXCEPTION 'a queued task fails only as not_run'
+            USING ERRCODE = 'check_violation';
+        END IF;
+
         -- Only the transitions in Task::TRANSITIONS.
         IF NEW.state IS DISTINCT FROM OLD.state
            AND (OLD.state::text, NEW.state::text) NOT IN (
@@ -1000,6 +1006,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_140000) do
              ('queued', 'cancelled'),
              ('queued', 'refused'),
              ('queued', 'expired'),
+             ('queued', 'failed'),
              ('claimed', 'queued'),
              ('claimed', 'running'),
              ('claimed', 'failed'),

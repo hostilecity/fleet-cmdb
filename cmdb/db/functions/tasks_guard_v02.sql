@@ -48,6 +48,12 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
+  -- A queued task fails only as not_run: its agent closing a task it held and never ran (P3-S05).
+  IF OLD.state = 'queued' AND NEW.state = 'failed' AND NEW.reason IS DISTINCT FROM 'not_run' THEN
+    RAISE EXCEPTION 'a queued task fails only as not_run'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   -- Only the transitions in Task::TRANSITIONS.
   IF NEW.state IS DISTINCT FROM OLD.state
      AND (OLD.state::text, NEW.state::text) NOT IN (
@@ -55,6 +61,7 @@ BEGIN
        ('queued', 'cancelled'),
        ('queued', 'refused'),
        ('queued', 'expired'),
+       ('queued', 'failed'),
        ('claimed', 'queued'),
        ('claimed', 'running'),
        ('claimed', 'failed'),

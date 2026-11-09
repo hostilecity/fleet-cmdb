@@ -507,6 +507,16 @@ RSpec.describe "Task API", type: :request do
   end
 
   describe "task controls (P3-S05, P3-S06)" do
+    it "expires a claimed task whose start arrives after its expiry, before the job ran, instead of starting it (review of #167)" do
+      task = queued_task(now: 24.hours.ago + 2.seconds)
+      poll
+      sleep 2.1 # the database clock passes the expiry
+      start(task)
+      expect(json).to eq("id" => task.uuid, "state" => "expired", "run" => false)
+      expect(entries(Audit::Actions::TASK_EXPIRED, task).sole).to have_attributes(actor_type: "system")
+      expect(entries(Audit::Actions::TASK_STARTED, task)).to be_empty
+    end
+
     it "sends the poll interval hint from the settings" do
       TaskSettings.update_limits!({ "poll_seconds" => "120" }, actor: operator)
       poll
@@ -573,6 +583,52 @@ RSpec.describe "Task API", type: :request do
       poll
       expect(json["task"]).to be_nil
       expect(task.reload).to have_attributes(state: "refused", reason: "not_allowed_on_server")
+    end
+
+    describe "closing a task the agent holds but never ran (failed, not_run; threat model L2)" do
+      def not_run(task, report_id: "00000000-0000-4000-8000-0000000000b1")
+        report(task, result_payload(report_id:, outcome: "failed", reason: "not_run", exit_status: nil, details: nil, output: nil))
+      end
+
+      it "accepts it for a task delivered again after its start was refused, audited with the host as actor" do
+        task = queued_task
+        poll
+        task.reload.requeue!(actor: Audit::SYSTEM) # the claim lapsed before the start arrived
+        start(task)
+        expect(json).to include("state" => "queued", "run" => false)
+        poll
+        expect(json.dig("task", "id")).to eq(task.uuid) # delivered again: the agent has it in its ledger
+        not_run(task)
+        expect(response).to have_http_status(:ok)
+        expect(json).to include("applied" => true, "state" => "failed")
+        conforms("task-result.response")
+        expect(task.reload).to have_attributes(state: "failed", reason: "not_run", started_at: nil)
+        expect(entries(Audit::Actions::TASK_FAILED, task).sole).to have_attributes(actor_type: "host", actor_id: host.id, changeset: { "state" => %w[claimed failed], "reason" => "not_run" })
+        not_run(task)
+        expect(json).to include("duplicate" => true)
+        poll
+        expect(json["task"]).to be_nil # the host is free again
+      end
+
+      it "accepts it for a task back in the queue that this host had claimed, before the next poll" do
+        task = queued_task
+        poll
+        task.reload.requeue!(actor: Audit::SYSTEM)
+        not_run(task)
+        expect(task.reload).to have_attributes(state: "failed", reason: "not_run")
+        expect(entries(Audit::Actions::TASK_FAILED, task).sole.changeset).to eq("state" => %w[queued failed], "reason" => "not_run")
+      end
+
+      it "refuses it for a queued task this host never claimed, and for a running task, which was told to run" do
+        never = queued_task
+        not_run(never)
+        expect(response).to have_http_status(:conflict)
+        expect(never.reload.state).to eq("queued")
+        running = running_task
+        not_run(running, report_id: "00000000-0000-4000-8000-0000000000b2")
+        expect(response).to have_http_status(:conflict)
+        expect(running.reload.state).to eq("running")
+      end
     end
   end
 end
