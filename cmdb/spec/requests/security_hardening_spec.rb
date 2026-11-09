@@ -16,7 +16,20 @@ RSpec.describe "Security hardening", type: :request do
     rule, = define_cis_rules(cis_rule_hash)
     [ "/", "/hosts/new", "/hosts/#{host.id}", "/hosts/#{host.id}/edit", "/hosts/#{host.id}/revoke", "/hosts/#{host.id}/retire",
       "/hosts/#{host.id}/reenroll", "/settings", "/audit", "/agents", "/agents/install", "/onboard", "/onboard/#{request_record.user_code}",
-      "/jobs/failed", "/data-sources", "/rules", "/rules/new", "/rules/import", "/rules/#{rule.id}", "/rules/#{rule.id}/edit", "/rules/#{rule.id}/disable" ]
+      "/jobs/failed", "/data-sources", "/rules", "/rules/new", "/rules/import", "/rules/#{rule.id}", "/rules/#{rule.id}/edit", "/rules/#{rule.id}/disable",
+      "/settings/second-factor", "/settings/second-factor/setup" ]
+  end
+
+  # The response has a CSP nonce on every inline script and style, no inline handler or style attribute, and nothing
+  # from another origin.
+  def expect_page_within_csp(label)
+    nonce = csp[/script-src [^;]*'nonce-([^']+)'/, 1]
+    inline = page.css("script:not([src]), style")
+    expect(inline).not_to be_empty
+    expect(inline.map { |node| node["nonce"] }.uniq).to eq([ nonce ]), "inline code without the nonce on #{label}"
+    expect(page.xpath("//@*[starts-with(name(), 'on')]")).to be_empty, "inline event handler on #{label}"
+    expect(page.css("[style]")).to be_empty, "style attribute on #{label}"
+    expect(page.css("script[src], link[href], img[src], iframe, object, embed, form[action]").flat_map { |node| node.attribute_nodes.map(&:value) }.grep(%r{\A(https?:)?//})).to be_empty, "external resource on #{label}"
   end
 
   describe "Content Security Policy" do
@@ -59,14 +72,26 @@ RSpec.describe "Security hardening", type: :request do
       sign_in_operator
       dashboard_pages.each do |path|
         get path
-        nonce = csp[/script-src [^;]*'nonce-([^']+)'/, 1]
-        inline = page.css("script:not([src]), style")
-        expect(inline).not_to be_empty
-        expect(inline.map { |node| node["nonce"] }.uniq).to eq([ nonce ]), "inline code without the nonce on #{path}"
-        expect(page.xpath("//@*[starts-with(name(), 'on')]")).to be_empty, "inline event handler on #{path}"
-        expect(page.css("[style]")).to be_empty, "style attribute on #{path}"
-        expect(page.css("script[src], link[href], img[src], iframe, object, embed, form[action]").flat_map { |node| node.attribute_nodes.map(&:value) }.grep(%r{\A(https?:)?//})).to be_empty, "external resource on #{path}"
+        expect_page_within_csp(path)
       end
+    end
+
+    it "keeps the second-factor pages that show a key, recovery codes, or the code box within it too (P3-S09)" do
+      sign_in_operator
+      get "/settings/second-factor/setup"
+      expect(page.at_css("svg.qr")).to be_present
+      expect_page_within_csp("the key")
+      post "/settings/second-factor/setup", params: { second_factor_code: totp_code(page.at_css("#totp_key").text.delete(" ")) }
+      expect(page.css("#recovery_codes li").size).to eq(10)
+      expect_page_within_csp("the recovery codes")
+      [ "/settings/second-factor", "/settings/second-factor/recovery-codes/new" ].each do |path|
+        get path
+        expect(response).to have_http_status(:ok)
+        expect_page_within_csp(path)
+      end
+      post "/settings/second-factor/verify", params: { second_factor_code: "000000" }
+      expect(page.at_css(".stepup input[name=second_factor_code]")).to be_present
+      expect_page_within_csp("the code box")
     end
 
     it "keeps Turbo and Stimulus loadable: the importmap pins only this site's own files" do

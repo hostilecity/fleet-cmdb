@@ -1,0 +1,17 @@
+<% content_for :title, "Second factor needed" %>
+<% turbo_exempts_page_from_cache %>
+<% result = second_factor_result %>
+<div class="page-head"><div><h1>Nothing was done</h1><p>This needs a recent second factor, and the server checks it on every request, whatever page it came from.</p></div></div>
+<div class="sheet">
+  <% case result.status %>
+  <% when :not_enrolled %>
+    <p>You have no second factor. <%= link_to "Set up an authenticator app", second_factor_path %>; it takes about two minutes.</p>
+  <% when :locked %>
+    <p><strong>Your second factor is locked until <%= utc(result.locked_until) %></strong> after <%= SecondFactors::MAX_FAILURES %> wrong codes. No code is accepted until then, in any browser. Each attempt is in the audit log.</p>
+  <% when :wrong, :reused %>
+    <p>That code was not accepted. <%= pluralize(result.attempts_left, "attempt") %> left in the next <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes. Go back and type the newest code from your authenticator app.</p>
+  <% else %>
+    <p>Go back to the page and type a code from your authenticator app with the request.</p>
+  <% end %>
+  <p class="hint"><%= link_to "Your second factor", second_factor_path %></p>
+</div>

@@ -101,6 +101,17 @@ Rails.application.routes.draw do
     # The audit log is read-only (FR-S.3, P1-AUDIT-PAGE): no create, update, or destroy routes.
     get "audit", to: "audit_entries#index", as: :audit
     get "settings", to: "settings#edit", as: :settings
+    # Your second factor (P3-S09, owner decision Q24): under Settings. Setting up shows a key once, after a fresh
+    # Google sign-in; moving to a new phone and new recovery codes each ask for a code first. There is no route that
+    # removes a second factor: a lost authenticator without recovery codes is reset from the console (ADR 0006).
+    scope "settings/second-factor", controller: "second_factors" do
+      get "", action: :show, as: :second_factor
+      get "setup", action: :setup, as: :setup_second_factor
+      post "setup", action: :enrol
+      post "verify", action: :verify, as: :verify_second_factor
+      get "recovery-codes/new", action: :new_recovery_codes, as: :new_recovery_codes
+      post "recovery-codes", action: :create_recovery_codes, as: :recovery_codes
+    end
     # Background jobs that failed every retry (P1-O02). Read-only; the layout banner links here.
     get "jobs/failed", to: "failed_jobs#index", as: :failed_jobs
     # Agent releases and installing (P1-RELEASES). Rollouts join this page with P1-UPDATES.

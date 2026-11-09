@@ -57,11 +57,19 @@ module AuditEntriesHelper
     Audit::Actions::TASK_TIMED_OUT => "Task timed out",
     Audit::Actions::TASK_CANCELLED => "Task cancelled",
     Audit::Actions::TASK_REFUSED => "Task refused",
-    Audit::Actions::TASK_EXPIRED => "Task expired"
+    Audit::Actions::TASK_EXPIRED => "Task expired",
+    Audit::Actions::SECOND_FACTOR_ENROLLED => "Second factor set up",
+    Audit::Actions::SECOND_FACTOR_REPLACED => "Moved to a new phone",
+    Audit::Actions::SECOND_FACTOR_RECOVERY_CODES_REPLACED => "Recovery codes replaced",
+    Audit::Actions::SECOND_FACTOR_STEP_UP_PASSED => "Code accepted",
+    Audit::Actions::SECOND_FACTOR_STEP_UP_FAILED => "Code refused",
+    Audit::Actions::SECOND_FACTOR_LOCKED => "Locked after wrong codes",
+    Audit::Actions::SECOND_FACTOR_RECOVERY_CODE_USED => "Recovery code used",
+    Audit::Actions::SECOND_FACTOR_RESET => "Reset from the console"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "task" => "Tasks" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "task" => "Tasks", "second_factor" => "Second factor" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
   INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze
@@ -104,12 +112,20 @@ module AuditEntriesHelper
     "ecosystems" => [ "Ecosystems", true ],
     "counts" => [ "Counts", true ],
     "next_allowed_at" => [ "Next refresh allowed", true ],
+    "purpose" => [ "For", false ],
+    "method" => [ "Method", false ],
+    "codes_issued" => [ "Recovery codes issued", true ],
+    "codes_left" => [ "Recovery codes left", true ],
+    "valid_until" => [ "Valid until", true ],
+    "attempts_left" => [ "Attempts left", true ],
+    "locked_until" => [ "Locked until", true ],
+    "second_factor" => [ "Second factor", false ],
     **SETTING_NAMES.keys.index_with { [ "Minutes", true ] },
     **INTERVAL_SETTING_NAMES.keys.index_with { [ "Seconds", true ] }
   }.freeze
 
   # Recorded as ISO 8601 and shown like every other time on the page.
-  TIME_FIELDS = %w[expires_at next_allowed_at].freeze
+  TIME_FIELDS = %w[expires_at next_allowed_at valid_until locked_until].freeze
 
   # /audit with these query parameters. Built by hand because url_for treats an :action key as the route's
   # action, and the filter is called action.
@@ -160,6 +176,7 @@ module AuditEntriesHelper
     when "AgentRelease" then link_to("Agent release #{Array(entry.changeset['version']).compact.last || id}", agents_path)
     when "AdvisoryImport" then link_to("Advisory import #{id}", advisory_import_path(id))
     when "CisRule" then safe_join([ "Rule", tag.span(records.rules[id] || id.to_s, class: "kind mono") ], " ")
+    when "SecondFactor" then "Second factor"
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"
       # A cleared interval deletes its row, so fall back to the key the entry recorded (it is the changeset's key).
@@ -247,7 +264,11 @@ module AuditEntriesHelper
     when false then "no"
     when Array then value.map { |item| audit_text(key, item) }.join(", ")
     when Hash then value.to_json
-    else TIME_FIELDS.include?(key) ? audit_recorded_time(value.to_s) : value.to_s
+    else
+      if TIME_FIELDS.include?(key) then audit_recorded_time(value.to_s)
+      elsif key == "purpose" then SecondFactors::PURPOSES.fetch(value.to_s, value.to_s)
+      else value.to_s
+      end
     end
   end
 

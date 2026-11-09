@@ -1,5 +1,6 @@
 <% content_for :title, "Settings" %>
 <div class="page-head"><div><h1>Settings</h1><p>Changes apply from the next liveness check, within a minute, and are recorded in the audit log.</p></div></div>
+<%= render "settings/tabs" %>
 <%= form_with url: settings_path, method: :patch, class: "form" do %>
   <h2>Liveness</h2>
   <p class="muted">A host is online while its last heartbeat is newer than the first threshold, stale until the second, and offline after that.</p>

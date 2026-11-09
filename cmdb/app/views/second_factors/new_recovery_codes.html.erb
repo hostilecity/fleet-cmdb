@@ -1,0 +1,11 @@
+<% content_for :title, "Make new recovery codes" %>
+<% turbo_exempts_page_from_cache %>
+<p><%= link_to "← Your second factor", second_factor_path %></p>
+<div class="page-head"><div><h1>Make <%= SecondFactors::RecoveryCodes::COUNT %> new recovery codes?</h1>
+  <p>Your <%= pluralize(@factor.recovery_codes.unused.count, "unused code") %> stop working now. The new ones are shown once, on the next page.</p></div></div>
+<section class="sheet">
+  <%= form_with url: recovery_codes_path, method: :post, class: "form", data: { turbo: false } do %>
+    <%= render "second_factors/prompt", result: second_factor_result, ask: true, intro: "Making new recovery codes needs a code first.", label: "Code from your authenticator app, or a recovery code" %>
+    <div class="actions"><button class="btn" type="submit">Make new codes</button><%= link_to "Cancel", second_factor_path, class: "btn quiet" %></div>
+  <% end %>
+</section>

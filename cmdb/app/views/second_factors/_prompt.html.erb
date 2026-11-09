@@ -1,0 +1,44 @@
+<%# The step-up box (P3-S09, mockup totp-stepup.html), placed inside the form of the action it protects, so one submit
+    checks the code and does the action (Q11). The code goes in second_factor_code. ask: true always asks for a code
+    (an action with fresh: true); otherwise an open window is shown as passed. %>
+<%# locals: (result:, intro: "This needs a code from your authenticator app.", ask: false, label: "6-digit code") %>
+<% status = ask && result.status == :passed ? :code_required : result.status %>
+<% case status %>
+<% when :not_enrolled %>
+  <div class="stepup locked" role="alert">
+    <h3>You have no second factor</h3>
+    <p>This needs one. <%= link_to "Set up an authenticator app", second_factor_path %>; it takes about two minutes.</p>
+  </div>
+<% when :locked %>
+  <div class="stepup locked" role="alert">
+    <h3>Second factor locked until <%= utc(result.locked_until) %></h3>
+    <p><%= SecondFactors::MAX_FAILURES %> wrong codes in <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes. Until then no code is accepted for your account in any browser, so you cannot create or cancel tasks or change task settings. You can still read everything. Each attempt is in the audit log.</p>
+    <p>If these were not your attempts, someone may be using your dashboard session or your Google account: sign out, check your Google account's recent activity, and tell the owner.</p>
+  </div>
+<% when :passed %>
+  <div class="stepup passed" role="status">
+    <h3>Second factor</h3>
+    <p>Checked. Not asked again until <%= utc(result.valid_until) %> in this browser session.</p>
+  </div>
+<% else %>
+  <% refused = status.in?(%i[wrong reused]) %>
+  <div class="stepup">
+    <h3>Second factor</h3>
+    <% if status == :expired && request.post? %>
+      <div class="notice error" role="alert"><strong>Nothing was done: your second factor check ran out.</strong><p>Type a new code. Everything else on this page is kept.</p></div>
+    <% end %>
+    <p><%= intro %><%= " You will not be asked again for #{SecondFactors::STEP_UP_WINDOW.in_minutes.to_i} minutes." unless ask %></p>
+    <div class="field<%= " invalid" if refused %>">
+      <label for="second_factor_code"><%= label %></label>
+      <%= text_field_tag SecondFactorRequired::PARAM, nil, id: "second_factor_code", class: "totp wide", autocomplete: "one-time-code", maxlength: 16,
+            required: true, spellcheck: false, autocapitalize: "characters", "aria-invalid": (refused ? "true" : nil),
+            "aria-describedby": (refused ? "second_factor_error second_factor_hint" : "second_factor_hint") %>
+      <% if status == :wrong %>
+        <p class="error-text" id="second_factor_error">That code was not accepted, and nothing was done. Check that your phone's time is set automatically and type the newest code. <%= pluralize(result.attempts_left, "attempt") %> left in the next <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes.</p>
+      <% elsif status == :reused %>
+        <p class="error-text" id="second_factor_error">That code was already used. Wait for your app to show the next one (up to 30 seconds). <%= pluralize(result.attempts_left, "attempt") %> left in the next <%= SecondFactors::FAILURE_PERIOD.in_minutes.to_i %> minutes.</p>
+      <% end %>
+      <p class="hint" id="second_factor_hint">Lost your authenticator? Type one of your recovery codes instead; each works once.</p>
+    </div>
+  </div>
+<% end %>

@@ -19,11 +19,14 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
   def expect_no_injected_markup(path)
     doc = page
     expect(doc.css("script").reject { |script| script["nonce"] }).to be_empty, "unnonced script on #{path}"
-    expect(doc.css("svg, iframe, object, embed, img[src='x']")).to be_empty, "injected element on #{path}"
+    # The one SVG the dashboard draws is the second factor's QR code (P3-S09): a rect and a path, nothing else.
+    qr = doc.css("svg.qr")
+    expect(qr.flat_map { |svg| svg.element_children.map(&:name) }.uniq - %w[rect path]).to be_empty, "unexpected content in the QR code on #{path}"
+    expect(doc.css("svg:not(.qr), svg svg, iframe, object, embed, img[src='x']")).to be_empty, "injected element on #{path}"
     expect(doc.xpath("//@*[starts-with(name(), 'on')]").map(&:name)).to be_empty, "event handler attribute on #{path}"
     expect(doc.css("[href], [src], [action]").flat_map { |node| node.attribute_nodes.map(&:value) }.grep(/\A\s*(javascript|data|vbscript):/i)).to be_empty, "script URL on #{path}"
     expect(doc.css("[autofocus]")).to be_empty, "autofocus attribute on #{path}"
-    expect(response.body).not_to match(/<script>alert|<svg|<iframe|<img src=x/i), "raw hostile markup in #{path}"
+    expect(response.body).not_to match(/<script>alert|<svg(?! class="qr" xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 \d+ \d+" role="img")|<iframe|<img src=x/i), "raw hostile markup in #{path}"
   end
 
   # Text from the VM or operator appears as text, character for character (so nothing is silently rewritten and
@@ -219,6 +222,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
           [ "/data-sources", true ], [ "/data-sources/refresh", false ],
           *advisory_imports.map { |import| [ "/data-sources/imports/#{import.id}", true ] },
           [ "/jobs/failed", true ], [ "/settings", false ], [ "/sign_in?return_to=#{CGI.escape(text.first(100))}", false ],
+          [ "/settings/second-factor", false ], [ "/settings/second-factor/setup", false ], [ "/settings/second-factor/recovery-codes/new", false ],
           *rule_pages
         ]
       end
@@ -338,6 +342,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                host_vulnerabilities#show host_vulnerabilities#package
                host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
+               second_factors#show second_factors#setup second_factors#new_recovery_codes
                rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel
                data_sources#show data_sources#confirm_refresh data_sources#import
                rules#index rules#show rules#new rules#edit rules#confirm_disable rules#confirm_enable rule_versions#show rule_imports#new rule_imports#show]

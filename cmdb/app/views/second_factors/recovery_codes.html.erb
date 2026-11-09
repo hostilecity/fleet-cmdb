@@ -1,0 +1,30 @@
+<% content_for :title, "Save your recovery codes" %>
+<%# The codes exist in plaintext only in this response: no-store, and out of Turbo's snapshot cache. %>
+<% turbo_exempts_page_from_cache %>
+<div class="page-head"><div>
+  <h1>Save your recovery codes</h1>
+  <p><%= if @new_codes then "Your old recovery codes no longer work. These codes are shown once."
+         elsif @replaced then "Your new phone is set up and the old one no longer works. These codes are shown once."
+         else "Your authenticator app is set up. These codes are shown once."
+         end %></p>
+</div></div>
+<%= render "second_factors/flow", current: 3 unless @new_codes %>
+<section class="sheet" aria-labelledby="codes_heading">
+  <h2 id="codes_heading">Save these now. They will not be shown again.</h2>
+  <p>Each code works once in place of a 6-digit code, if your phone is lost or broken. Keep them somewhere other than your phone, such as a password manager.</p>
+  <% shown = @codes.map { |code| SecondFactors::RecoveryCodes.display(code) } %>
+  <ul class="codes" id="recovery_codes" aria-label="Recovery codes">
+    <% shown.each do |code| %><li><%= code %></li><% end %>
+  </ul>
+  <% text = "Fleet CMDB recovery codes for #{current_operator.email}\nEach works once in place of a 6-digit code.\n\n#{shown.join("\n")}\n" %>
+  <div class="actions">
+    <%= link_to "Download as a text file", "data:text/plain;charset=utf-8,#{ERB::Util.url_encode(text)}", download: "fleet-cmdb-recovery-codes.txt", class: "btn quiet" %>
+    <button class="btn quiet" type="button" data-controller="print" data-action="print#print">Print</button>
+  </div>
+  <%= form_with url: second_factor_path, method: :get, class: "form spaced" do %>
+    <div class="field check">
+      <label><input type="checkbox" name="saved" value="1" required> I have saved these <%= pluralize(@codes.size, "code") %> somewhere other than my phone</label>
+    </div>
+    <div class="actions"><button class="btn" type="submit">Done</button></div>
+  <% end %>
+</section>
