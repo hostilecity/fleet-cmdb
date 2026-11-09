@@ -91,8 +91,11 @@ jobs:
 
       - name: No shell in the task module
         # P3-A03, threat model section 8: every task process goes through src/tasks/executor/spawn.rs,
-        # and no shell or string-built command line appears in the task module's non-test code.
-        run: scripts/check-task-spawns.sh
+        # and no shell or string-built command line appears in the task module's non-test code. The
+        # self-test first proves the check catches the bypasses it is meant to (review of #168).
+        run: |
+          scripts/check-task-spawns.sh --self-test
+          scripts/check-task-spawns.sh
 
   audit:
     name: Dependency audit
