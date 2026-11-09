@@ -90,8 +90,9 @@ class Task < ApplicationRecord
 
   # Why this task should be refused if it were delivered now, as a Task reason, or nil when it may run: it is
   # checked against the current catalog and server policy, so a catalog or allowlist change since creation is
-  # caught at claim time (P3-S01, P3-S03, P3-S06).
-  def refusal_reason = TaskPolicy.refusal(task_type, parameters)&.reason
+  # caught at claim time (P3-S01, P3-S03, P3-S06). A restart is checked against the allowlist entries for this
+  # host's tags as they are now.
+  def refusal_reason = TaskPolicy.refusal(task_type, parameters, host:)&.reason
 
   # queued -> claimed: an agent's poll claimed the task until lease_expires_at.
   def claim!(actor:, lease_expires_at:, now: Time.current)
@@ -127,6 +128,26 @@ class Task < ApplicationRecord
   # Whether an agent's result decided how this task ended (P3-S04). A terminal task without one was ended by the
   # server: expired, timed out, lease expired, cancelled, or refused at claim.
   def agent_result? = result_digest.present?
+
+  # Whether an operator asked to cancel this task while it was running (P3-S05). The task keeps its real state: an
+  # interruptible one is stopped by its agent, which then reports cancelled; any other runs to completion.
+  def cancel_requested? = cancel_requested_at.present?
+
+  # Records an operator's request to cancel a running task (P3-S05, mockup cancel.html), audited as
+  # task.cancel_requested. Not a state transition: the state changes only when the agent reports the result. Returns
+  # false, recording nothing, when a request was already recorded or the task is not running (a queued or claimed task
+  # is cancelled at once instead). tasks_guard keeps the request as recorded.
+  def request_cancel!(operator:, now: Time.current)
+    transaction(requires_new: true) do
+      lock!
+      next false unless state == "running" && !cancel_requested?
+
+      update!(cancel_requested_at: now, cancel_requested_by: operator)
+      Audit.record(actor: operator, action: Audit::Actions::TASK_CANCEL_REQUESTED, target: self,
+                   changes: { "cancel_requested" => [ false, true ], "effect" => interruptible? ? "stop" : "runs_to_completion" })
+      true
+    end
+  end
 
   # A running task's progress as the agent reports it (P3-S04): ignored once the task is not running.
   def record_progress!(percent:, now: Time.current)

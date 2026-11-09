@@ -1,0 +1,14 @@
+<% content_for :title, "Remove #{@entry.service}" %>
+<% turbo_exempts_page_from_cache %>
+<div class="page-head"><div><h1>Settings</h1><p>Server-wide rules for tasks.</p></div></div>
+<%= render "settings/tabs" %>
+<%= form_with url: remove_task_setting_service_path(@entry), method: :post, class: "dialog", "aria-labelledby": "remove_title" do %>
+  <h2 id="remove_title">Remove <span class="mono"><%= @entry.service %></span> from the allowlist<%= " for hosts tagged #{@entry.tag}" if @entry.tag %>?</h2>
+  <p>It can no longer be chosen for a new task<%= " on hosts tagged #{@entry.tag}" if @entry.tag %>.
+    <% if @refused.any? %>
+      <strong><%= pluralize(@refused.size, "queued task") %></strong> that would restart it (<%= "batch".pluralize(@refused.map(&:task_batch_id).uniq.size) %> <%= @refused.map(&:task_batch_id).uniq.sort.to_sentence %>) will be refused when their agent picks them up, and nothing runs.
+    <% end %>
+    A restart already running finishes.</p>
+  <%= render "second_factors/prompt", result: second_factor_result, label: "Code from your authenticator app", intro: "Removing a service needs a code from your authenticator app." %>
+  <div class="actions"><button class="btn danger" type="submit">Remove</button><%= link_to "Keep it", task_settings_path(anchor: "allowlist"), class: "btn quiet" %></div>
+<% end %>

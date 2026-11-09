@@ -62,6 +62,29 @@
           "maximum": 1000000
         }
       }
+    },
+    "poll_seconds": {
+      "description": "The poll interval the server wants, in whole seconds (Settings: Tasks, P3-S06; default 30). A hint: the agent clamps it to its own bounds, and an absent value leaves it at its configured interval. Additive (DEC-20).",
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 300
+    },
+    "cancel": {
+      "description": "Stop a running task (P3-S05): sent while the host's running task is of an interruptible type and an operator asked to cancel it, until the agent reports its result. The agent stops the task if it is still running and reports outcome cancelled; if the task has already ended, it reports the real outcome. Absent or null means no instruction. Never sent for a task whose type cannot be interrupted: that task runs to completion. Additive (DEC-20).",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "description": "The id of the running task to stop.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      }
     }
   }
 }

@@ -1,0 +1,39 @@
+<% content_for :title, "Your second factor" %>
+<div class="page-head"><div><h1>Settings</h1><p>Your own second factor. Each operator sets up their own; nobody can see or set up another operator's.</p></div></div>
+<%= render "settings/tabs" %>
+
+<% if @factor %>
+  <section class="sheet" aria-labelledby="factor_heading">
+    <h2 id="factor_heading"><span class="lamp online">Authenticator app set up</span></h2>
+    <dl class="facts spaced-below">
+      <dt>Set up</dt><dd><%= utc(@factor.enrolled_at) %></dd>
+      <dt>Last code accepted</dt><dd><%= utc(@factor.last_accepted_at) || "Never" %></dd>
+      <% unused = @codes.count { |code| code.used_at.nil? } %>
+      <dt>Recovery codes</dt>
+      <dd><%= unused %> of <%= @codes.size %> unused.<% if @last_recovery_use %> Last one used <%= utc(@last_recovery_use) %>.<% end %></dd>
+      <% if @factor.locked? %>
+        <dt>Second factor</dt><dd><span class="lamp offline">Locked until <%= utc(@factor.locked_until) %></span> after 5 wrong codes.</dd>
+      <% end %>
+    </dl>
+    <div class="actions">
+      <%= link_to "Make new recovery codes", new_recovery_codes_path, class: "btn quiet" %>
+      <%= link_to "Move to a new phone", setup_second_factor_path, class: "btn quiet", data: { turbo: false } %>
+    </div>
+    <p class="hint">Both ask for a code from your current authenticator or a recovery code; moving to a new phone also asks for a fresh Google sign-in. New recovery codes replace the old ones.</p>
+  </section>
+<% else %>
+  <section class="sheet" aria-labelledby="factor_heading">
+    <h2 id="factor_heading">You have no second factor</h2>
+    <p>Creating or cancelling tasks and changing task settings ask for a 6-digit code from an authenticator app on your phone, as well as your Google sign-in. Without one you can read everything but cannot do those things.</p>
+    <p>Any app that supports time-based codes (TOTP) works. You will scan a code, type one 6-digit code to check it, and save 10 recovery codes.</p>
+    <div class="actions"><%= link_to "Set up an authenticator app", setup_second_factor_path, class: "btn", data: { turbo: false } %></div>
+  </section>
+<% end %>
+
+<section class="sheet" aria-labelledby="lost_heading">
+  <h2 id="lost_heading">Lost your authenticator?</h2>
+  <p><strong>If you still have recovery codes</strong>, each one works once in place of a 6-digit code. Use one to <%= link_to "move to a new phone", setup_second_factor_path, data: { turbo: false } %>.</p>
+  <p><strong>If you have neither your phone nor a recovery code</strong>, it cannot be reset from the dashboard, on purpose: someone who took over your Google session could otherwise reset it too. Ask the server's administrator to run this on the server:</p>
+  <pre class="code">bin/rails second_factor:reset EMAIL=<%= current_operator.email %></pre>
+  <p>It removes your authenticator and recovery codes and records an audit entry. You then set up a new one here.</p>
+</section>

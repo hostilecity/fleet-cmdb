@@ -1,7 +1,7 @@
 # Google sign-in in tests (P1-S01): OmniAuth test mode, so no request leaves the test process.
 module OmniAuthHelpers
   def google_auth(email: "operator@example.com", uid: "1000000000001", verified: true, sub: uid, id_info: true, name: "Example Operator")
-    claims = { "iss" => "https://accounts.google.com", "aud" => "EXAMPLE-client-id", "sub" => sub, "email" => email, "email_verified" => verified }
+    claims = { "iss" => "https://accounts.google.com", "aud" => "EXAMPLE-client-id", "sub" => sub, "email" => email, "email_verified" => verified, "iat" => Time.now.to_i }
     OmniAuth::AuthHash.new(
       provider: "google_oauth2", uid:,
       info: { email:, name: },

@@ -46,6 +46,25 @@ docker exec fleet-cmdb bin/rails operators:disallow EMAIL=someone@example.com   
 
 Also add or remove the address in the Cloudflare Access policy ([install-server.md](install-server.md#3-publish-the-dashboard-through-the-tunnel)): both must allow someone for them to sign in.
 
+## Reset an operator's second factor
+
+Each operator sets up their own authenticator app under **Settings > Your second factor**, and needs it to create or cancel tasks and change task settings (P3-S09). A lost phone with saved recovery codes needs nothing from you: a recovery code works anywhere a 6-digit code is asked for, including moving to a new phone. With neither phone nor recovery code, only the console can reset it, on purpose, so someone who took over an operator's Google session cannot reset it from the dashboard:
+
+```sh
+docker exec fleet-cmdb bin/rails second_factor:reset EMAIL=someone@example.com
+```
+
+It removes their authenticator and recovery codes, ends any step-up window, and records `second_factor.reset` in the audit log with the system as actor. Check that the request really comes from the operator (in person or on a channel other than the dashboard) before running it. They then set up a new one, which asks for a fresh Google sign-in first.
+
+## Task settings
+
+**Settings > Tasks** holds the server's side of what tasks may do (P3-S06). Every change asks for a code from your authenticator app and is recorded in the audit log with the values before and after.
+
+- **Services that can be restarted:** empty at first, so the "Restart a service" task refuses everything (ADR 0015). Add a full unit name such as `nginx.service`, for every host or for the hosts with one tag. Each VM must also list it in `[tasks] allowed_services` in `/etc/fleet-agent/config.toml`. The agent's own units, SSH, `systemd-*`, networking, and D-Bus are refused, here and on every VM; restart them from the console.
+- **Limits:** the most hosts in one batch (up to 25), the output kept per task (4 KiB to 1 MiB), the poll interval agents are asked to use, and how long each task type may wait before it expires (1 hour to 7 days, 24 hours by default). Changes apply to what happens next; tasks already queued keep their expiry.
+
+Removing a service, revoking a host's credential, re-enrolling it, or retiring it never runs anything: queued restarts of a removed service are refused when their agent picks them up, and a host's queued tasks are cancelled when it is revoked, re-enrolled, or retired.
+
 ## Read the audit log
 
 **Audit log** in the top bar lists every entry, newest first: who (an operator, a host, or the system), what, on which host or object, and when (UTC), with the before and after values of edits. Filter by actor, action, host, and date range, or hide sign-ins; the filters are in the URL, so a filtered view can be bookmarked. A host's page shows its own entries, with **All entries for this host**.

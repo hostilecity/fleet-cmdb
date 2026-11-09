@@ -197,6 +197,47 @@ RSpec.describe Task do
     end
   end
 
+  describe "cancel requests (P3-S05)" do
+    it "records one request on a running task, audited with the operator, and keeps the real state" do
+      task = task_in("running", type: "apply_package_updates")
+      expect(task.request_cancel!(operator:)).to be(true)
+      expect(task.reload).to have_attributes(state: "running", cancel_requested_by: operator, cancel_requested?: true)
+      entry = AuditEntry.where(action: Audit::Actions::TASK_CANCEL_REQUESTED, target_id: task.id).sole
+      expect(entry).to have_attributes(actor_type: "operator", actor_id: operator.id)
+      expect(entry.changeset).to eq("cancel_requested" => [ false, true ], "effect" => "runs_to_completion")
+      expect(task.request_cancel!(operator: create(:operator))).to be(false) # once
+      expect(task.reload.cancel_requested_by).to eq(operator)
+      interruptible = task_in("running")
+      interruptible.request_cancel!(operator:)
+      expect(AuditEntry.where(action: Audit::Actions::TASK_CANCEL_REQUESTED, target_id: interruptible.id).sole.changeset["effect"]).to eq("stop")
+    end
+
+    it "records nothing for a task that is not running" do
+      %w[queued claimed succeeded].each do |state|
+        task = task_in(state)
+        expect(task.request_cancel!(operator:)).to be(false)
+        expect(task.reload.cancel_requested_at).to be_nil
+      end
+      expect(AuditEntry.where(action: Audit::Actions::TASK_CANCEL_REQUESTED)).to be_empty
+    end
+
+    it "is kept as recorded by tasks_guard: once, only while running, with the operator" do
+      queued = task_in("queued")
+      expect { in_savepoint { Task.where(id: queued.id).update_all(cancel_requested_at: Time.current, cancel_requested_by_id: operator.id) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /recorded only on a running task/)
+      running = task_in("running")
+      expect { in_savepoint { Task.where(id: running.id).update_all(cancel_requested_at: Time.current) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /with the operator who made it/)
+      running.request_cancel!(operator:)
+      expect { in_savepoint { Task.where(id: running.id).update_all(cancel_requested_at: nil, cancel_requested_by_id: nil) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /never changes once recorded/)
+      expect { in_savepoint { Task.where(id: running.id).update_all(cancel_requested_by_id: create(:operator).id) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /never changes once recorded/)
+      running.reload.cancel!(actor: host) # the agent's cancelled result still applies
+      expect(running.reload).to have_attributes(state: "cancelled", cancel_requested_by: operator)
+    end
+  end
+
   describe "helpers" do
     it "answers timeout, expiry, and claim-time refusal" do
       task = task_in("queued")

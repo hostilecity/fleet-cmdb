@@ -25,6 +25,13 @@ development:
   report_request_expiry:
     class: ReportRequestExpiryJob
     schedule: every minute
+  # P3-S05: tasks still waiting at their expiry are expired (AC-3.8); task leases that ran out are ended (AC-3.5).
+  task_expiry:
+    class: TaskExpiryJob
+    schedule: every minute
+  task_leases:
+    class: TaskLeaseJob
+    schedule: every minute
   # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
   rule_import_preview_pruning:
     class: RuleImportPreviewPruneJob
@@ -56,6 +63,13 @@ production:
   # P2-S03: report requests no report satisfied within an hour become expired (kept, not deleted).
   report_request_expiry:
     class: ReportRequestExpiryJob
+    schedule: every minute
+  # P3-S05: tasks still waiting at their expiry are expired (AC-3.8); task leases that ran out are ended (AC-3.5).
+  task_expiry:
+    class: TaskExpiryJob
+    schedule: every minute
+  task_leases:
+    class: TaskLeaseJob
     schedule: every minute
   # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
   rule_import_preview_pruning:

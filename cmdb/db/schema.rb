@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_08_140000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -464,6 +464,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
     t.datetime "revoked_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.datetime "google_authenticated_at"
+    t.datetime "second_factor_passed_at"
+    t.text "pending_second_factor_secret"
+    t.datetime "second_factor_replacement_approved_at"
     t.index ["operator_id"], name: "index_operator_sessions_on_operator_id"
     t.index ["token_digest"], name: "index_operator_sessions_on_token_digest", unique: true
   end
@@ -592,12 +596,44 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
     t.check_constraint "octet_length(body) <= 1048576", name: "rule_import_previews_body_size"
   end
 
+  create_table "second_factor_recovery_codes", force: :cascade do |t|
+    t.bigint "second_factor_id", null: false
+    t.string "code_digest", limit: 64, null: false
+    t.datetime "used_at"
+    t.datetime "created_at", null: false
+    t.index ["second_factor_id", "code_digest"], name: "index_second_factor_recovery_codes_on_digest", unique: true
+  end
+
+  create_table "second_factors", force: :cascade do |t|
+    t.bigint "operator_id", null: false
+    t.text "secret", null: false
+    t.bigint "last_used_step"
+    t.integer "failed_attempts", default: 0, null: false
+    t.datetime "failures_started_at"
+    t.datetime "locked_until"
+    t.datetime "enrolled_at", null: false
+    t.datetime "last_accepted_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["operator_id"], name: "index_second_factors_on_operator_id", unique: true
+  end
+
   create_table "settings", force: :cascade do |t|
     t.string "key", limit: 100, null: false
     t.jsonb "value", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["key"], name: "index_settings_on_key", unique: true
+  end
+
+  create_table "task_allowed_services", force: :cascade do |t|
+    t.string "service", limit: 64, null: false
+    t.string "tag", limit: 32
+    t.bigint "added_by_id", null: false
+    t.datetime "created_at", null: false
+    t.index ["service", "tag"], name: "index_task_allowed_services_on_service_and_tag", unique: true, nulls_not_distinct: true
+    t.check_constraint "service::text ~ '^[a-z0-9][a-z0-9_.-]{0,55}\\.service$'::text", name: "task_allowed_services_service_format"
+    t.check_constraint "tag IS NULL OR tag::text ~ '^[a-z0-9][a-z0-9_-]{0,31}$'::text", name: "task_allowed_services_tag_format"
   end
 
   create_table "task_batches", force: :cascade do |t|
@@ -783,6 +819,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
   add_foreign_key "host_status_events", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
+  add_foreign_key "task_allowed_services", "operators", column: "added_by_id"
   add_foreign_key "task_batches", "operators"
   add_foreign_key "task_late_results", "tasks"
   add_foreign_key "tasks", "hosts"
@@ -806,6 +843,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
   add_foreign_key "rollouts", "operators", column: "halted_by_id"
   add_foreign_key "rollouts", "operators", column: "resumed_by_id"
   add_foreign_key "rollouts", "operators", column: "started_by_id"
+  add_foreign_key "second_factor_recovery_codes", "second_factors", on_delete: :cascade
+  add_foreign_key "second_factors", "operators"
 
   create_function :hosts_guard, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.hosts_guard()
@@ -938,6 +977,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
            OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR NEW.timeout_seconds IS DISTINCT FROM OLD.timeout_seconds
            OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
           RAISE EXCEPTION 'a task''s id, batch, host, type, parameters, expiry, and timeout never change'
+            USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- A cancel request (P3-S05) is recorded once, on a running task, and never changed or withdrawn afterwards.
+        IF OLD.cancel_requested_at IS NOT NULL
+           AND (NEW.cancel_requested_at IS DISTINCT FROM OLD.cancel_requested_at
+                OR NEW.cancel_requested_by_id IS DISTINCT FROM OLD.cancel_requested_by_id) THEN
+          RAISE EXCEPTION 'a task''s cancel request never changes once recorded'
+            USING ERRCODE = 'check_violation';
+        END IF;
+        IF OLD.cancel_requested_at IS NULL AND NEW.cancel_requested_at IS NOT NULL
+           AND (OLD.state <> 'running' OR NEW.cancel_requested_by_id IS NULL) THEN
+          RAISE EXCEPTION 'a cancel request is recorded only on a running task, with the operator who made it'
             USING ERRCODE = 'check_violation';
         END IF;
 
