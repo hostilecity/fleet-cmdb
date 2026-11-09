@@ -257,7 +257,8 @@ pub fn is_service_unit(name: &str) -> bool {
 
 /// Why `unit` is protected (DEC-15), if it is: refused even when listed. The agent's own units,
 /// the SSH server, systemd's own units, networking, and D-Bus. A template instance
-/// (`sshd@x.service`) counts as its template; `fleet-agent*` and `systemd-*` match by prefix.
+/// (`sshd@x.service`) counts as its template; `fleet-agent*`, `systemd-*`, and `NetworkManager-*`
+/// match by prefix. The server refuses the same units (`cmdb/app/models/task_policy.rb`).
 pub fn protected(unit: &str) -> Option<&'static str> {
     let stem = unit.strip_suffix(".service").unwrap_or(unit);
     let base = stem.split_once('@').map_or(stem, |(base, _)| base);
@@ -265,10 +266,12 @@ pub fn protected(unit: &str) -> Option<&'static str> {
         Some("it is this agent's own unit")
     } else if base == "systemd" || base.starts_with("systemd-") {
         Some("it is part of systemd")
+    } else if base.starts_with("NetworkManager-") {
+        Some("it runs networking")
     } else {
         match base {
             "ssh" | "sshd" => Some("it is the SSH server"),
-            "networking" | "NetworkManager" => Some("it runs networking"),
+            "networking" | "NetworkManager" | "ifup" => Some("it runs networking"),
             "dbus" | "dbus-broker" => Some("it is D-Bus"),
             _ => None,
         }
@@ -439,7 +442,10 @@ mod tests {
             "systemd-udevd.service",
             "networking.service",
             "NetworkManager.service",
+            "NetworkManager-dispatcher.service",
+            "ifup@eth0.service",
             "dbus.service",
+            "dbus@user.service",
             "dbus-broker.service",
         ] {
             assert!(protected(unit).is_some(), "{unit}");
