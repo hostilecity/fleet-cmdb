@@ -305,7 +305,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 ### FR-3.4 Dashboard and audit — Phase 3
 
 - Create-task flow: choose task type, see exactly what it will do in plain language, set validated parameters, choose target hosts, confirm.
-- Creating or cancelling a task, and changing task allowlists, requires a recent second factor (a passkey or TOTP code enrolled in the application, independent of Google, because Google sign-in cannot be forced to re-authenticate). The check is enforced on the server for every relevant endpoint, and a hijacked operator session is otherwise one click from fleet-wide execution. (decided, DEC-06, DEC-14)
+- Creating or cancelling a task, and changing task allowlists, requires a recent second factor (a TOTP code enrolled in the application, independent of Google, because Google sign-in cannot be forced to re-authenticate). The check is enforced on the server for every relevant endpoint, and a hijacked operator session is otherwise one click from fleet-wide execution. (decided, DEC-06, DEC-14)
 - Task list and task detail: state, target host, parameters, timeline, output, and result, filterable by host, type, and state.
 - Every task creation, claim, cancellation, expiry, and result is written to the audit log with the operator who created it.
 - Fleet-wide task actions show per-host progress counts — for example, 6 succeeded, 1 running, 1 failed — not just a single aggregate state.

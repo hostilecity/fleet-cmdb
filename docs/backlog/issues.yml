@@ -464,7 +464,7 @@
   milestone: 3
   labels: ["area:dashboard", "area:server", "security", "risk:high"]
   covers: [FR-3.4, FR-3.1, FR-S.4, AC-3.1, NFR-1]
-  goal: "Operators create tasks through a guided flow that shows exactly what will run and requires a passkey or TOTP."
+  goal: "Operators create tasks through a guided flow that shows exactly what will run and requires a TOTP code."
   done:
     - "There is no free-text field sent as a command, and batches above 3 hosts require typing the host count, capped at 25."
     - "Creating or cancelling a task or changing an allowlist is rejected without a recent second factor, including through forged POSTs."

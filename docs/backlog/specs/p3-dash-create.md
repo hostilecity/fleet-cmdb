@@ -37,7 +37,7 @@ Static HTML mockups in `docs/mockups/phase-3/`:
 - [ ] A forged POST that bypasses the UI is rejected with the same validation (AC-3.1 via the dashboard endpoints)
 - [ ] Confirmation requirements for large batches are enforced server-side
 
-## P3-S09: Second factor (passkey or TOTP) for task creation, cancellation, and allowlist changes
+## P3-S09: Second factor (TOTP) for task creation, cancellation, and allowlist changes
 
 ### Context
 
@@ -45,7 +45,7 @@ Static HTML mockups in `docs/mockups/phase-3/`:
 
 ### Scope
 
-- Enrolment of a passkey (WebAuthn) and/or TOTP per operator, with recovery codes shown once, and enrolment itself protected by a fresh Google sign-in plus the existing session.
+- Enrolment of TOTP per operator (owner decision 2026-11-08: TOTP only, no passkeys), with recovery codes shown once, and enrolment itself protected by a fresh Google sign-in plus the existing session.
 - A step-up check required before creating a task or batch, cancelling a task, and changing allowlists or limits: the operator must have passed the second factor within a short window (default 5 minutes), tracked server-side per session.
 - Enforced on the server for **every** relevant endpoint, not only in the UI. Operators without an enrolled factor cannot create tasks; the UI says why.
 - Documented recovery path for a lost authenticator (console or rake) that cannot be performed from the web.
