@@ -41,8 +41,12 @@ use client::Client;
 use config::{Config, DEFAULT_CONFIG_PATH, Interval};
 use shutdown::Shutdown;
 
-/// Agent release version, taken from `Cargo.toml`.
-pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Agent version. A release build gets it from the release run (`FLEET_AGENT_VERSION`, set by the Agent release
+/// workflow, ADR 0018); any other build reports `Cargo.toml`'s, which is only the development version.
+pub const AGENT_VERSION: &str = match option_env!("FLEET_AGENT_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// Version of the report payloads this agent sends (`schema_version`, an integer; DEC-08).
 /// Increment it, with a migration path on the server, whenever a payload changes incompatibly (NFR-5).
@@ -379,7 +383,15 @@ mod tests {
     fn version_line_names_both_versions() {
         assert_eq!(
             version_line(),
-            format!("fleet-agent {} (agent schema 1)", env!("CARGO_PKG_VERSION"))
+            format!("fleet-agent {AGENT_VERSION} (agent schema 1)")
         );
+    }
+
+    #[test]
+    fn the_version_is_the_release_runs_or_else_cargo_tomls() {
+        // The release workflow compiles its version in; every other build reports Cargo.toml's.
+        let expected = option_env!("FLEET_AGENT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+        assert_eq!(AGENT_VERSION, expected);
+        assert!(!AGENT_VERSION.is_empty());
     }
 }

@@ -190,9 +190,9 @@ jobs:
 
       - name: Release dry run with a throwaway key
         # The release pipeline end to end, as agent-release.yml runs it, but with a key pair generated
-        # here and discarded: embed the public key, build, write the manifest, sign it with minisign,
-        # and verify it with the agent's own `verify-release`. Runs after the upload, so the published
-        # artefact never contains this key; the key file is restored at the end.
+        # here and discarded: embed the public key, build with a release version compiled in, write the
+        # manifest, sign it with minisign, and verify it with the agent's own `verify-release`. Runs after
+        # the upload, so the published artefact never contains this key; the key file is restored at the end.
         env:
           TARGET: ${{ matrix.target }}
           BIN: target/${{ matrix.target }}/release/fleet-agent
@@ -202,8 +202,10 @@ jobs:
           trap 'rm -rf "$tmp"; git checkout -- release-keys/current.pub' EXIT
           minisign -G -W -p "$tmp/test.pub" -s "$tmp/test.key" > /dev/null
           cp "$tmp/test.pub" release-keys/current.pub
-          scripts/build-release.sh "$TARGET" > /dev/null
-          VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "fleet-agent") | .version')
+          # The version is compiled in from the release run, as agent-release.yml does (FLEET_AGENT_VERSION).
+          VERSION=0.0.0-dry-run
+          FLEET_AGENT_VERSION=$VERSION scripts/build-release.sh "$TARGET" > /dev/null
+          "$BIN" --version | grep -Eqx "fleet-agent $VERSION \(agent schema [0-9]+\)"
           scripts/release-manifest.sh "$VERSION" "$TARGET" "$BIN" > "$tmp/manifest.json"
           minisign -S -s "$tmp/test.key" -m "$tmp/manifest.json" -t "fleet-agent $VERSION $TARGET dry run" > /dev/null
           "$BIN" verify-release --manifest "$tmp/manifest.json" --signature "$tmp/manifest.json.minisig" --binary "$BIN"
