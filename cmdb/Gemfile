@@ -19,7 +19,7 @@ gem "omniauth-google-oauth2", "~> 1.2"
 gem "omniauth-rails_csrf_protection", "~> 2.0"
 
 # Database functions and triggers in db/schema.rb (append-only audit log guard, P1-HOSTS)
-gem "fx", "~> 0.11"
+gem "fx", "~> 0.12"
 # Use the Puma web server [https://github.com/puma/puma]
 gem "puma", ">= 5.0"
 # Use JavaScript with ESM import maps [https://github.com/rails/importmap-rails]
