@@ -31,7 +31,11 @@ RSpec.describe Task do
     }
   end
 
-  def fire(task, event, actor: host) = task.public_send(:"#{event}!", actor:, **event_arguments(event))
+  def fire(task, event, actor: host)
+    arguments = event_arguments(event)
+    arguments = arguments.merge(reason: "not_run") if event == :fail && task.state == "queued" # the only way a queued task fails
+    task.public_send(:"#{event}!", actor:, **arguments)
+  end
 
   def task_in(state, type: "refresh_reports")
     task = create_task(host, type:, operator:)
@@ -189,6 +193,14 @@ RSpec.describe Task do
       expect { in_savepoint { Task.insert_all!([ row ]) } }.to raise_error(ActiveRecord::StatementInvalid, /new tasks start queued/)
       expect { in_savepoint { Task.where(id: task.id).delete_all } }.to raise_error(ActiveRecord::StatementInvalid, /tasks are never deleted/)
       expect { in_savepoint { Task.connection.execute("TRUNCATE tasks CASCADE") } }.to raise_error(ActiveRecord::StatementInvalid)
+    end
+
+    it "lets a queued task fail only as not_run, in the model and in the database (P3-S05)" do
+      expect { task_in("queued").fail!(actor: host, reason: "interrupted") }.to raise_error(Task::InvalidTransition, /only as not_run/)
+      expect { task_in("running").fail!(actor: host, reason: "not_run") }.to raise_error(Task::InvalidTransition, /told to run/)
+      task = task_in("queued")
+      expect { in_savepoint { Task.where(id: task.id).update_all(state: "failed", reason: "interrupted") } }.to raise_error(ActiveRecord::StatementInvalid, /only as not_run/)
+      expect(task.reload.fail!(actor: host, reason: "not_run")).to have_attributes(state: "failed", reason: "not_run")
     end
 
     it "checks the reason and state in the database too" do

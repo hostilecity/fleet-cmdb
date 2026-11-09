@@ -6,7 +6,8 @@
 # and refused again when a task is created and claimed (TaskPolicy).
 #
 # tasks_guard v02 also keeps a cancel request (cancel_requested_at, cancel_requested_by_id) as recorded: set once,
-# only on a running task and with the operator, never changed afterwards.
+# only on a running task and with the operator, never changed afterwards. And it allows queued -> failed, only with
+# reason not_run: an agent closing a task it held and never ran, after its claim lapsed (P3-S05).
 class CreateTaskAllowedServices < ActiveRecord::Migration[8.1]
   def change
     create_table :task_allowed_services do |t|

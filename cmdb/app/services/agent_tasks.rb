@@ -46,6 +46,10 @@ module AgentTasks
   # cancel or refuse a queued one, and it cancels only a running task of an interruptible type (DEC-14).
   AGENT_FROM = { "succeeded" => %w[running], "failed" => %w[claimed running], "timed_out" => %w[running],
                  "cancelled" => %w[running], "refused" => %w[claimed running] }.freeze
+  # failed with not_run (P3-S05, threat model L2): the agent closes a task it holds in its ledger but never ran. Only
+  # for a task that was never told to run: claimed, or queued again after this host's claim lapsed. Never for a
+  # running one, which the server told to run.
+  NOT_RUN_FROM = %w[queued claimed].freeze
   # The result details the server keeps (task-result.request); others are ignored.
   DETAIL_KEYS = %w[reboot_required services_needing_restart unit_active reports_sent].freeze
 
@@ -119,7 +123,7 @@ module AgentTasks
       return Outcome.new(task:, duplicate: true, applied: task.agent_result?, conflict: nil)
     end
     return keep_late!(host, task, payload, digest, now) if task.terminal?
-    return conflict!(host, task, payload, "state") unless takes?(task, payload["outcome"])
+    return conflict!(host, task, payload, "state") unless takes?(task, payload)
 
     apply!(host, task, payload, digest, now)
   end
@@ -147,10 +151,19 @@ module AgentTasks
     true
   end
 
-  def takes?(task, outcome)
+  def takes?(task, payload)
+    outcome = payload["outcome"]
+    if outcome == "failed" && payload["reason"] == "not_run"
+      return NOT_RUN_FROM.include?(task.state) && (task.state == "claimed" || claimed_by?(task, task.host))
+    end
     return false unless AGENT_FROM.fetch(outcome).include?(task.state)
 
     outcome != "cancelled" || task.interruptible?
+  end
+
+  # Whether this host ever claimed the task: a queued task it may close as not_run went back to the queue from it.
+  def claimed_by?(task, host)
+    AuditEntry.where(action: Audit::Actions::TASK_CLAIMED, target_type: "Task", target_id: task.id, actor_type: "host", actor_id: host.id).exists?
   end
 
   def apply!(host, task, payload, digest, now)
@@ -189,5 +202,5 @@ module AgentTasks
 
   def agent_time(value) = value && Time.iso8601(value)
 
-  private_class_method :refuse_if_invalid, :takes?, :apply!, :keep_late!, :conflict!, :agent_time, :details
+  private_class_method :refuse_if_invalid, :takes?, :claimed_by?, :apply!, :keep_late!, :conflict!, :agent_time, :details
 end
