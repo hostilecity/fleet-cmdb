@@ -19,7 +19,7 @@ class SecondFactorsController < ApplicationController
   # again makes a new one, so a key is shown only once.
   def setup
     now = Time.current
-    @step = if @factor && !SecondFactors.window_open?(Current.operator_session, now:) then :replace
+    @step = if @factor && (@factor.locked?(now) || !SecondFactors.replacement_approved?(Current.operator_session, now:)) then :replace
     elsif !SecondFactors.fresh_sign_in?(Current.operator_session, now:) then :reauth
     else :scan
     end
@@ -33,6 +33,7 @@ class SecondFactorsController < ApplicationController
     result = require_second_factor!(purpose: "replace_second_factor", fresh: true)
     return unless result.passed?
 
+    SecondFactors.approve_replacement!(Current.operator_session)
     flash[:notice] = "Recovery code used. You have #{result.codes_left} left." if result.recovery
     redirect_to setup_second_factor_path
   end
@@ -47,6 +48,9 @@ class SecondFactorsController < ApplicationController
       render :setup, status: :unprocessable_content
     when :expired
       redirect_to setup_second_factor_path, alert: "That setup page ran out (10 minutes after the Google sign-in). Nothing was set up. Start again."
+    when :locked
+      @step = :replace
+      render :setup, status: :too_many_requests
     else
       @replaced = status == :replaced
       render :recovery_codes

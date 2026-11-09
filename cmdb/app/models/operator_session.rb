@@ -4,7 +4,8 @@
 #
 # The second factor's per-session state lives here too (P3-S09): when this session last signed in with Google
 # (google_authenticated_at), when it last passed the step-up check (second_factor_passed_at, the start of its
-# fixed 5-minute window), and a key shown for setting up an authenticator that has not been checked yet.
+# fixed 5-minute window), a key shown for setting up an authenticator that has not been checked yet, and when moving
+# to a new phone was approved with a code.
 class OperatorSession < ApplicationRecord
   # last_seen_at is written at most this often, so idle timeouts are accurate to about a minute.
   LAST_SEEN_RESOLUTION = 1.minute

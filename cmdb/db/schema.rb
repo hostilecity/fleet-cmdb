@@ -467,6 +467,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
     t.datetime "google_authenticated_at"
     t.datetime "second_factor_passed_at"
     t.text "pending_second_factor_secret"
+    t.datetime "second_factor_replacement_approved_at"
     t.index ["operator_id"], name: "index_operator_sessions_on_operator_id"
     t.index ["token_digest"], name: "index_operator_sessions_on_token_digest", unique: true
   end

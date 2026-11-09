@@ -175,12 +175,17 @@ RSpec.describe SecondFactors do
   end
 
   describe "moving to a new phone" do
-    it "needs an open window as well as the fresh sign-in, then replaces the key and codes and ends other windows" do
-      expect(described_class.begin_enrolment!(operator_session, now:)).to be_nil
+    def approve_with_code(at:)
+      result = step_up(totp_code(secret, at:), at:, purpose: "replace_second_factor", fresh: true)
+      described_class.approve_replacement!(operator_session, now: at) if result.passed?
+      result
+    end
+
+    it "needs its own approved code as well as the fresh sign-in, then replaces the key and codes and ends other sessions' state" do
       other = OperatorSession.start!(operator, now:).first
       described_class.step_up(operator_session: other, code: totp_code(secret, at: now), purpose: "create_task", now:)
 
-      step_up(totp_code(secret, at: now + 30.seconds), at: now + 30.seconds, purpose: "replace_second_factor", fresh: true)
+      approve_with_code(at: now + 30.seconds)
       key = described_class.begin_enrolment!(operator_session, now: now + 1.minute)
       status, codes = described_class.complete_enrolment!(operator_session, totp_code(key, at: now + 2.minutes), now: now + 2.minutes)
 
@@ -189,8 +194,48 @@ RSpec.describe SecondFactors do
       expect(SecondFactors::RecoveryCodes.find_unused(factor, recovery_codes.first)).to be_nil
       expect(SecondFactors::RecoveryCodes.find_unused(factor, codes.first)).to be_present
       expect(other.reload.second_factor_passed_at).to be_nil
+      expect(operator_session.reload).to have_attributes(second_factor_replacement_approved_at: nil, pending_second_factor_secret: nil, second_factor_passed_at: now + 2.minutes)
       expect(second_factor_audits.last).to have_attributes(action: "second_factor.replaced", target_id: operator.id)
       expect(step_up(totp_code(secret, at: now + 3.minutes), at: now + 3.minutes, fresh: true).status).to eq(:wrong) # the old app stops working
+    end
+
+    it "is not started by an ordinary open window, or by an approval older than 5 minutes (review of #165)" do
+      step_up(totp_code(secret, at: now))
+      expect(described_class.window_open?(operator_session, now: now + 1.minute)).to be(true)
+      expect(described_class.begin_enrolment!(operator_session, now: now + 1.minute)).to be_nil
+
+      approve_with_code(at: now + 30.seconds)
+      expect(described_class.begin_enrolment!(operator_session, now: now + 5.minutes + 30.seconds)).to be_nil
+    end
+
+    it "cannot be completed without an approval, so a pending key from before the factor existed does not replace it" do
+      described_class.reset!(operator.email)
+      key = described_class.begin_enrolment!(operator_session, now:)
+      enrol_second_factor(operator, now:) # another session set one up meanwhile
+      expect(described_class.complete_enrolment!(operator_session, totp_code(key, at: now), now:)).to eq([ :expired, nil ])
+    end
+
+    it "is refused while the step-up is locked, even after it started, and changes nothing (review of #165)" do
+      approve_with_code(at: now)
+      key = described_class.begin_enrolment!(operator_session, now: now + 1.minute)
+      5.times { |i| step_up("00000#{i}", at: now + 1.minute, fresh: true) } # from another browser, say
+      expect(described_class.begin_enrolment!(operator_session, now: now + 2.minutes)).to be_nil
+      expect(described_class.complete_enrolment!(operator_session, totp_code(key, at: now + 2.minutes), now: now + 2.minutes)).to eq([ :locked, nil ])
+      expect(factor).to have_attributes(secret:, failed_attempts: 5)
+      expect(SecondFactors::RecoveryCodes.find_unused(factor, recovery_codes.first)).to be_present
+    end
+
+    it "makes a window that was cleared by a replacement unusable, even for a request that read it before (review of #165)" do
+      other = OperatorSession.start!(operator, now:).first
+      described_class.step_up(operator_session: other, code: totp_code(secret, at: now), purpose: "create_task", now:)
+      stale = OperatorSession.find(other.id) # loaded while the window was open
+      expect(stale.second_factor_passed_at).to be_present
+
+      approve_with_code(at: now + 30.seconds)
+      key = described_class.begin_enrolment!(operator_session, now: now + 1.minute)
+      described_class.complete_enrolment!(operator_session, totp_code(key, at: now + 1.minute), now: now + 1.minute)
+
+      expect(described_class.step_up(operator_session: stale, code: nil, purpose: "create_task", now: now + 2.minutes).status).to eq(:code_required)
     end
   end
 

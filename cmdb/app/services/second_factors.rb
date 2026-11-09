@@ -23,6 +23,9 @@ module SecondFactors
 
   class NotEnrolled < StandardError; end
 
+  # A session's step-up window, pending key, and replacement approval, as a replacement or reset leaves them.
+  CLEARED_SESSION_STATE = { second_factor_passed_at: nil, pending_second_factor_secret: nil, second_factor_replacement_approved_at: nil }.freeze
+
   # The outcome of a step-up check. status is one of:
   #   :passed         the window is open, or the code was accepted (recovery: true if it was a recovery code)
   #   :not_enrolled   the operator has no second factor
@@ -51,6 +54,18 @@ module SecondFactors
     signed_in_at.present? && signed_in_at > now - FRESH_SIGN_IN_WINDOW
   end
 
+  # Moving to a new phone needs its own code (purpose replace_second_factor, always asked for), not just any open
+  # window (review of #165): approve_replacement! records it after that check passes, and starting the replacement
+  # needs it within the step-up window.
+  def approve_replacement!(operator_session, now: Time.current)
+    operator_session.update!(second_factor_replacement_approved_at: now)
+  end
+
+  def replacement_approved?(operator_session, now: Time.current)
+    approved_at = operator_session&.second_factor_replacement_approved_at
+    approved_at.present? && approved_at > now - STEP_UP_WINDOW
+  end
+
   # The step-up check (see SecondFactorRequired). Without fresh:, an open window passes without a code. With
   # fresh: true a code is always needed (making new recovery codes and moving to a new phone ask for one).
   def step_up(operator_session:, code:, purpose:, fresh: false, now: Time.current)
@@ -65,10 +80,12 @@ module SecondFactors
   # Starts setting up (or moving to a new phone): a new key for this session only, shown once by the caller and
   # usable until FRESH_SIGN_IN_WINDOW after the Google sign-in. Showing the page again makes a new key. Returns nil
   # if the session may not set up now: it needs a fresh Google sign-in and, to replace an existing factor, an
-  # open step-up window.
+  # approved replacement and no lock.
   def begin_enrolment!(operator_session, now: Time.current)
     return nil unless fresh_sign_in?(operator_session, now:)
-    return nil if SecondFactor.exists?(operator_id: operator_session.operator_id) && !window_open?(operator_session, now:)
+
+    factor = SecondFactor.find_by(operator_id: operator_session.operator_id)
+    return nil if factor && (factor.locked?(now) || !replacement_approved?(operator_session, now:))
 
     secret = Totp.generate_secret
     operator_session.update!(pending_second_factor_secret: secret)
@@ -77,24 +94,33 @@ module SecondFactors
 
   # Checks the first code from the new authenticator against this session's pending key. On a match the factor is
   # on (or replaced) before the recovery codes are shown (Q28). Returns [status, codes]: :enrolled or :replaced with
-  # the 10 new plaintext codes, or :wrong (the key stays pending) or :expired (start again) with nil.
+  # the 10 new plaintext codes, or with nil :wrong (the key stays pending), :expired (start again), or :locked (a
+  # replacement while the step-up is locked).
+  #
+  # Everything is read and decided under locks taken in one order, operator, then factor, then session, as the
+  # step-up check and the reset do (review of #165): two submits of one key cannot both succeed, and a lock or a
+  # reset that lands after the page was shown is seen here.
   def complete_enrolment!(operator_session, code, now: Time.current)
-    secret = operator_session.pending_second_factor_secret
-    return [ :expired, nil ] unless secret.present? && fresh_sign_in?(operator_session, now:)
-
-    step = Totp.matching_step(secret, code.to_s.gsub(/\s/, "").first(16), now:)
-    return [ :wrong, nil ] unless step
-
     operator = operator_session.operator
     Operator.transaction do
-      operator.lock! # serialises two sessions setting up at once
-      factor = SecondFactor.find_or_initialize_by(operator:)
+      operator.lock!
+      factor = SecondFactor.lock.find_by(operator:)
+      operator_session.lock!
+      secret = operator_session.pending_second_factor_secret
+      next [ :expired, nil ] unless secret.present? && fresh_sign_in?(operator_session, now:)
+      next [ :locked, nil ] if factor&.locked?(now)
+      next [ :expired, nil ] if factor && !operator_session.second_factor_replacement_approved_at
+
+      step = Totp.matching_step(secret, code.to_s.gsub(/\s/, "").first(16), now:)
+      next [ :wrong, nil ] unless step
+
+      factor ||= SecondFactor.new(operator:)
       replacing = factor.persisted?
       factor.update!(secret:, last_used_step: step, enrolled_at: now, last_accepted_at: now, failed_attempts: 0, failures_started_at: nil)
       codes = RecoveryCodes.issue!(factor, now:)
       # Windows opened with the old authenticator end, in every session; this one starts its own with the code just checked.
-      operator.operator_sessions.where.not(id: operator_session.id).update_all(second_factor_passed_at: nil, pending_second_factor_secret: nil)
-      operator_session.update!(pending_second_factor_secret: nil, second_factor_passed_at: now)
+      operator.operator_sessions.where.not(id: operator_session.id).update_all(CLEARED_SESSION_STATE)
+      operator_session.update!(**CLEARED_SESSION_STATE, second_factor_passed_at: now)
       Audit.record(actor: operator, action: replacing ? Audit::Actions::SECOND_FACTOR_REPLACED : Audit::Actions::SECOND_FACTOR_ENROLLED,
                    target: operator, changes: { "method" => METHOD, "codes_issued" => codes.size })
       [ replacing ? :replaced : :enrolled, codes ]
@@ -119,9 +145,9 @@ module SecondFactors
 
     Operator.transaction do
       operator.lock!
-      factor = SecondFactor.find_by(operator:) or raise NotEnrolled, "#{operator.email} has no second factor"
+      factor = SecondFactor.lock.find_by(operator:) or raise NotEnrolled, "#{operator.email} has no second factor"
       factor.destroy!
-      operator.operator_sessions.update_all(second_factor_passed_at: nil, pending_second_factor_secret: nil)
+      operator.operator_sessions.update_all(CLEARED_SESSION_STATE)
       Audit.record(actor: Audit::SYSTEM, action: Audit::Actions::SECOND_FACTOR_RESET, target: operator,
                    changes: { "second_factor" => [ METHOD, nil ], "source" => "bin/rails second_factor:reset on the server" })
     end

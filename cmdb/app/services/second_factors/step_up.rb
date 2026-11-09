@@ -21,16 +21,20 @@ module SecondFactors
     end
 
     def call
-      factor = SecondFactor.find_by(operator_id: @session.operator_id)
-      return result(:not_enrolled) unless factor
-      # A lock holds even inside an open window: wrong codes may mean someone else is using the session (Q30).
-      return result(:locked, locked_until: factor.locked_until) if @code.empty? && factor.locked?(@now)
-      return result(:passed, valid_until: SecondFactors.window_ends_at(@session)) if !@fresh && !factor.locked?(@now) && SecondFactors.window_open?(@session, now: @now)
-      return result(@session.second_factor_passed_at && !SecondFactors.window_open?(@session, now: @now) ? :expired : :code_required) if @code.empty?
-
       SecondFactor.transaction do
-        factor.lock!
-        next refuse(factor, :locked) if factor.locked?(@now)
+        # The factor row lock is shared with setting up, replacing, and resetting, which all take it before they clear
+        # session windows; the session is read again under it, so a window cleared a moment ago is not used (review of
+        # #165).
+        factor = SecondFactor.lock.find_by(operator_id: @session.operator_id)
+        next result(:not_enrolled) unless factor
+
+        @session.reload
+        locked = factor.locked?(@now)
+        # A lock holds even inside an open window: wrong codes may mean someone else is using the session (Q30).
+        next result(:locked, locked_until: factor.locked_until) if @code.empty? && locked
+        next result(:passed, valid_until: SecondFactors.window_ends_at(@session)) if !@fresh && !locked && SecondFactors.window_open?(@session, now: @now)
+        next result(@session.second_factor_passed_at && !SecondFactors.window_open?(@session, now: @now) ? :expired : :code_required) if @code.empty?
+        next refuse(factor, :locked) if locked
 
         kind, match = check(factor)
         kind == :wrong || kind == :reused ? refuse(factor, kind) : accept(factor, kind, match)

@@ -26,6 +26,7 @@ class CreateSecondFactors < ActiveRecord::Migration[8.1]
       t.datetime :google_authenticated_at # the session's sign-in, or a later fresh Google sign-in
       t.datetime :second_factor_passed_at # the step-up window starts here
       t.text :pending_second_factor_secret # a key shown for setting up, encrypted, until checked or replaced
+      t.datetime :second_factor_replacement_approved_at # moving to a new phone: when its own code was accepted
     end
   end
 end

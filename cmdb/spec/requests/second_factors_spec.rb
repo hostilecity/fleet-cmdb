@@ -153,6 +153,24 @@ RSpec.describe "Your second factor", :signed_in, type: :request do
       expect(second_factor_audits.second.changeset["purpose"]).to eq("replace_second_factor")
     end
 
+    it "asks for its own code to move to a new phone, even inside an ordinary window (review of #165)" do
+      SecondFactors.step_up(operator_session: OperatorSession.sole, code: totp_code(secret), purpose: "create_task")
+      get setup_second_factor_path
+      expect(page.at_css("#totp_key")).to be_nil
+      expect(page.at_css("label[for=second_factor_code]").text).to eq("Code from your current app, or a recovery code")
+    end
+
+    it "refuses to finish moving to a new phone if the step-up locked after the key was shown" do
+      post verify_second_factor_path, params: { second_factor_code: totp_code(secret) }
+      get setup_second_factor_path
+      key = shown_key
+      operator.second_factor.update!(locked_until: 15.minutes.from_now)
+      post setup_second_factor_path, params: { second_factor_code: totp_code(key) }
+      expect(response).to have_http_status(:too_many_requests)
+      expect(page.text).to include("Second factor locked until")
+      expect(operator.second_factor.reload.secret).to eq(secret)
+    end
+
     it "asks for a code to move to a new phone even inside the window, and refuses while locked" do
       5.times { |i| post verify_second_factor_path, params: { second_factor_code: "00000#{i}" } }
       expect(response).to have_http_status(:too_many_requests)
