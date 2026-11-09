@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task poll response",
+  "description": "200 response to POST /api/v1/tasks/poll. At most one task, and only a catalog type with schema-valid parameters: never a command, script, path, or executable name (FR-3.1). The same task is returned again while the agent holds it claimed and has not started it (for example after a restart), so the agent must check its ledger before running anything (P3-A02); a task the server knows has started is never returned. An expired task is never returned (AC-3.8).",
+  "type": "object",
+  "required": [
+    "task"
+  ],
+  "properties": {
+    "task": {
+      "description": "The task to run, or null when there is nothing to do.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id",
+        "type",
+        "parameters",
+        "timeout_seconds",
+        "catalog_version"
+      ],
+      "properties": {
+        "id": {
+          "description": "The task's id (a UUID). The agent records it in its ledger before running anything, never runs an id twice, and uses it in the start, progress, and result paths.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "type": {
+          "description": "A catalog task type id. The agent refuses a type it does not implement or has not enabled locally (result outcome refused).",
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "parameters": {
+          "description": "The task's parameters, valid against the type's closed schema in the server's catalog. The agent validates them again against its own embedded catalog and refuses them if they fail (invalid_params).",
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "description": "A parameter value, valid against the catalog type's closed schema (docs/api/tasks/task-catalog.json): a string, integer, or boolean, never a list or an object.",
+            "type": [
+              "string",
+              "integer",
+              "boolean"
+            ],
+            "maxLength": 256
+          }
+        },
+        "timeout_seconds": {
+          "description": "The deadline: the task must finish within this many seconds of starting. Relative, so the agent's clock does not matter. The agent uses the lower of this and its catalog's timeout_seconds, terminates its own task when it runs over, and reports timed_out.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "catalog_version": {
+          "description": "The catalog_version of the server's task catalog, which the parameters were validated against when the task was claimed.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    }
+  }
+}

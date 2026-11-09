@@ -1,0 +1,14 @@
+{
+  "task": {
+    "id": "00000000-0000-4000-8000-0000000000a1",
+    "type": "restart_service",
+    "parameters": {
+      "service": [
+        "a.service",
+        "b.service"
+      ]
+    },
+    "timeout_seconds": 300,
+    "catalog_version": 1
+  }
+}
