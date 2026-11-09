@@ -1,7 +1,8 @@
 # Agent CI (issue P0-AGENT, FR-1.6, NFR-4).
 # Runs cargo fmt, clippy, tests, a dependency audit, the systemd unit check, the static musl release
 # build for each target in DEC-01 (x86_64-unknown-linux-musl only) with a reproducibility check, a release
-# dry run with a throwaway key, the sandbox smoke test (the musl binary under the unit, on systemd), and
+# dry run with a throwaway key, the sandbox smoke test (the musl binary under the unit, on systemd) and the
+# task privilege smoke test (P3-A05), the no-shell check for the task module (P3-A03), and
 # the update smoke test (a supervised agent update and its rollbacks on systemd, P1-AGENT-UPDATE; agent
 # changes and pushes to main only, in three parallel groups).
 # Pushes to main upload the binary as a workflow artefact (built with the release keys in
@@ -87,6 +88,11 @@ jobs:
 
       - name: cargo test
         run: cargo test --locked
+
+      - name: No shell in the task module
+        # P3-A03, threat model section 8: every task process goes through src/tasks/executor/spawn.rs,
+        # and no shell or string-built command line appears in the task module's non-test code.
+        run: scripts/check-task-spawns.sh
 
   audit:
     name: Dependency audit
@@ -270,6 +276,17 @@ jobs:
       - name: Run it under the unit's sandbox
         # sudo resets the environment; GITHUB_ACTIONS turns on the script's annotations.
         run: sudo GITHUB_ACTIONS=true scripts/sandbox-smoke.sh target/x86_64-unknown-linux-musl/release/fleet-agent src/install/fleet-agent.service
+
+      - name: Task privileges under the unit
+        # P3-A05: the read_only, service_manager, and package_manager mechanisms, each from inside the
+        # unit's sandbox (scripts/task-privilege-smoke.sh), using the unit-test binary's ignored
+        # privilege_smoke tests. Test code only: the release binary has no test task types.
+        run: |
+          set -eu
+          bin=$(cargo test --locked --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .target.kind == ["bin"]) | .executable')
+          [ -n "$bin" ] || { echo "::error::no unit-test binary was built"; exit 1; }
+          sudo GITHUB_ACTIONS=true scripts/task-privilege-smoke.sh "$bin" src/install/fleet-agent.service
 
   update:
     name: Update smoke test (${{ matrix.group }})

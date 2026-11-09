@@ -29,8 +29,8 @@
 //! max_seconds = 86400
 //!
 //! [task_poll]                                # optional; seconds (P3-A02): polls only when a type
-//! interval_seconds = 30                      # is enabled and supported; min and max only bound a
-//! min_seconds = 10                           # future server directive
+//! interval_seconds = 30                      # is enabled and supported; min and max bound the
+//! min_seconds = 10                           # server's poll_seconds (P3-S06)
 //! max_seconds = 300
 //!
 //! [tasks]                                    # optional (Phase 3); see crate::tasks::settings

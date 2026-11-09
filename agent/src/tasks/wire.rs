@@ -1,12 +1,13 @@
-//! The task API as the agent speaks it (P3-S03, P3-S04, `docs/api/README.md` "Tasks"):
-//! `POST /api/v1/tasks/poll` (`task-poll.*`), `POST /api/v1/tasks/<id>/start` (`task-start.*`), and
-//! `POST /api/v1/tasks/<id>/result` (`task-result.*`). The tests check every request this module builds
-//! against the schemas and read every example response.
+//! The task API as the agent speaks it (P3-S03, P3-S04, P3-S05, `docs/api/README.md` "Tasks"):
+//! `POST /api/v1/tasks/poll` (`task-poll.*`), `POST /api/v1/tasks/<id>/start` (`task-start.*`),
+//! `POST /api/v1/tasks/<id>/progress` (`task-progress.*`), and `POST /api/v1/tasks/<id>/result`
+//! (`task-result.*`). The tests check every request this module builds against the schemas and read
+//! every example response.
 //!
 //! The poller sees only [`TaskApi`]. A response this agent cannot read is never a task: a poll reply
 //! whose task is malformed, or a start reply without a readable `run`, is a failed request, so nothing
-//! malformed is recorded or run. Progress (`task-progress.*`) is optional and left to the executor
-//! (P3-A03).
+//! malformed is recorded or run. The poll's `poll_seconds` and `cancel` (#31) are hints: one that cannot
+//! be read is ignored, never a reason to drop the task beside it.
 
 use serde_json::{Map, Value, json};
 
@@ -26,8 +27,38 @@ pub fn result_path(id: &str) -> String {
     format!("/api/v1/tasks/{id}/result")
 }
 
-/// What a poll returned: the task, or none.
-pub type PollReply = Option<Delivered>;
+pub fn progress_path(id: &str) -> String {
+    format!("/api/v1/tasks/{id}/progress")
+}
+
+/// What a poll returned.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PollReply {
+    /// The task, or none.
+    pub task: Option<Delivered>,
+    /// The poll interval the server wants (10 to 300 s), to be clamped to the configured bounds.
+    pub poll_seconds: Option<u64>,
+    /// The id of a running task the server asks the agent to stop (P3-S05).
+    pub cancel: Option<String>,
+}
+
+impl From<Option<Delivered>> for PollReply {
+    fn from(task: Option<Delivered>) -> Self {
+        Self {
+            task,
+            ..Self::default()
+        }
+    }
+}
+
+/// What a progress report returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressReply {
+    /// The task's state on the server.
+    pub state: String,
+    /// Whether the server asks the agent to stop this task.
+    pub cancel: bool,
+}
 
 /// What `start` or `result` returned, when the request itself got an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +76,8 @@ pub trait TaskApi {
     /// `started_at` is the `started` record's time (RFC 3339 UTC).
     fn start(&self, id: &str, started_at: &str) -> Result<Reply, ApiError>;
     fn result(&self, id: &str, body: &Value) -> Result<Reply, ApiError>;
+    /// Reports a running task's progress (`percent`, if known) and reads the server's answer.
+    fn progress(&self, id: &str, percent: Option<u8>) -> Result<ProgressReply, ApiError>;
 }
 
 /// [`TaskApi`] over a [`Transport`].
@@ -68,6 +101,11 @@ impl TaskApi for Api<'_> {
             Ok(_) => Reply::Accepted,
             Err(rejected) => rejected,
         })
+    }
+
+    fn progress(&self, id: &str, percent: Option<u8>) -> Result<ProgressReply, ApiError> {
+        let response = self.0.post(&progress_path(id), &progress_body(percent))?;
+        parse_progress(id, &response.body).map_err(ApiError::InvalidResponse)
     }
 }
 
@@ -100,16 +138,55 @@ pub fn start_body(started_at: &str) -> Value {
     })
 }
 
+/// `task-progress.request`.
+pub fn progress_body(percent: Option<u8>) -> Value {
+    json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "agent_version": AGENT_VERSION,
+        "percent": percent.map(|p| p.min(100)),
+    })
+}
+
 /// Reads `task-poll.response`.
 pub fn parse_poll(body: &Value) -> Result<PollReply, String> {
     let object = body
         .as_object()
         .ok_or("the poll response is not an object")?;
-    match object.get("task") {
-        Some(Value::Null) => Ok(None),
-        Some(task) => parse_task(task).map(Some),
-        None => Err("the poll response has no task".into()),
-    }
+    let task = match object.get("task") {
+        Some(Value::Null) => None,
+        Some(task) => Some(parse_task(task)?),
+        None => return Err("the poll response has no task".into()),
+    };
+    let poll_seconds = object
+        .get("poll_seconds")
+        .and_then(Value::as_u64)
+        .filter(|s| (10..=300).contains(s));
+    Ok(PollReply {
+        task,
+        poll_seconds,
+        cancel: cancel_id(object.get("cancel")),
+    })
+}
+
+/// The id in a `cancel` directive, if it is one.
+fn cancel_id(cancel: Option<&Value>) -> Option<String> {
+    cancel?
+        .get("id")?
+        .as_str()
+        .filter(|id| super::ledger::is_task_id(id))
+        .map(str::to_owned)
+}
+
+/// Reads `task-progress.response` for task `id`.
+pub fn parse_progress(id: &str, body: &Value) -> Result<ProgressReply, String> {
+    let state = body
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or("the progress response has no state")?;
+    Ok(ProgressReply {
+        state: crate::logging::sanitize(state, 32),
+        cancel: cancel_id(body.get("cancel")).is_some_and(|c| c == id),
+    })
 }
 
 fn parse_task(task: &Value) -> Result<Delivered, String> {
@@ -318,8 +395,21 @@ mod tests {
     fn every_poll_example_reads_as_the_contract_says() {
         for (name, body) in example("task-poll.response", "valid") {
             let reply = parse_poll(&body).unwrap_or_else(|e| panic!("{name}: {e}"));
-            match &reply {
-                None => assert_eq!(name, "no-task.json"),
+            assert_eq!(
+                reply.poll_seconds,
+                body.get("poll_seconds").and_then(Value::as_u64),
+                "{name}"
+            );
+            assert_eq!(
+                reply.cancel.as_deref(),
+                body.pointer("/cancel/id").and_then(Value::as_str),
+                "{name}"
+            );
+            match &reply.task {
+                None => assert!(
+                    ["no-task.json", "cancel-running-task.json"].contains(&name.as_str()),
+                    "{name}"
+                ),
                 Some(task) => {
                     assert_eq!(task.id, body["task"]["id"], "{name}");
                     assert_eq!(task.task_type, body["task"]["type"], "{name}");
@@ -339,12 +429,57 @@ mod tests {
             "parameter-list.json",
             "parameter-object.json",
         ];
+        // A hint the agent cannot read is ignored, never a reason to drop a task beside it.
+        let ignored_hints = ["cancel-without-id.json", "poll-seconds-below-ten.json"];
+        for name in ignored_hints {
+            let body = example("task-poll.response", "invalid")
+                .into_iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is missing"))
+                .1;
+            let reply = parse_poll(&body).unwrap();
+            assert_eq!((reply.poll_seconds, reply.cancel), (None, None), "{name}");
+        }
         for (name, body) in example("task-poll.response", "invalid") {
-            if caught_by_executor.contains(&name.as_str()) {
+            if caught_by_executor.contains(&name.as_str()) || ignored_hints.contains(&name.as_str())
+            {
                 continue;
             }
             assert!(parse_poll(&body).is_err(), "{name} was read as a task");
         }
+    }
+
+    #[test]
+    fn progress_requests_conform_and_replies_carry_the_cancel() {
+        for percent in [None, Some(0), Some(50), Some(100), Some(250)] {
+            assert_conforms("v1", "task-progress.request", &progress_body(percent));
+        }
+        let id = "00000000-0000-4000-8000-0000000000a1";
+        for (name, body) in example("task-progress.response", "valid") {
+            let reply = parse_progress(id, &body).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(reply.state, body["state"], "{name}");
+            assert_eq!(
+                reply.cancel,
+                body.get("cancel").is_some_and(|c| !c.is_null()),
+                "{name}"
+            );
+        }
+        // A cancel for another task is not one for this task.
+        let other = json!({"id": id, "state": "running", "cancel": {"id": "1c6d9b5f-2e7a-4b4c-8d3e-8f9a0b1c2d3e"}});
+        assert!(!parse_progress(id, &other).unwrap().cancel);
+        assert!(parse_progress(id, &json!({"id": id})).is_err());
+        let transport = FakeTransport::new(vec![ok(json!({"id": id, "state": "running"}))]);
+        assert_eq!(
+            Api(&transport).progress(id, Some(40)).unwrap(),
+            ProgressReply {
+                state: "running".into(),
+                cancel: false
+            }
+        );
+        assert_eq!(
+            transport.sent()[0].0,
+            format!("/api/v1/tasks/{id}/progress")
+        );
     }
 
     #[test]
@@ -379,7 +514,7 @@ mod tests {
             ok(json!({"task": {"id": "x"}})),
         ]);
         let api = Api(&transport);
-        assert_eq!(api.poll().unwrap(), None);
+        assert_eq!(api.poll().unwrap(), PollReply::default());
         assert_eq!(
             api.start(id, "2026-01-01T12:00:00.000Z").unwrap(),
             Reply::Accepted

@@ -10,7 +10,13 @@
 //! **What it does with a task.** In this order, stopping at the first that fails:
 //!
 //! 1. The id is not already in the ledger. A known id is never run again (duplicate delivery); if it
-//!    is not reported yet, step 7 reports it.
+//!    is not reported yet, step 7 reports it. If it was reported (or dropped) and the server still
+//!    delivers it, the server holds it as claimed, for example after a `start` that came too late and
+//!    found the task back in the queue (P3-S05, threat model L2), and the result sent then was lost
+//!    or refused. The agent closes it again with `failed`, which a claimed task accepts: reason
+//!    `not_run` if the ledger shows it never ran (no `executing` record), `agent_error` ("ran, or may
+//!    have run") otherwise. Without this the task would hold the host's single task slot until it
+//!    expired.
 //! 2. `received` is recorded.
 //! 3. The local checks ([`Poller::refusal`]): no ledger hold (else `failed`, `agent_error`: the
 //!    lost records could be this task's), the type is in the embedded catalog
@@ -19,23 +25,36 @@
 //!    nothing is started.
 //! 4. `started` is recorded and flushed.
 //! 5. `start` is sent; the task runs only after the server answers `run: true` (P3-S03). Any other
-//!    answer (the task was cancelled, or is gone) is recorded as not run, with no result to send, and
-//!    nothing runs. A failed `start` is retried; nothing runs meanwhile.
-//! 6. The executor runs it ([`Executor::run`]), and the result is recorded `finished`.
+//!    answer is recorded as not run, and nothing runs. When the task went back to the queue (the claim
+//!    lapsed before `start` arrived, P3-S05), the agent reports it `failed` with `not_run` at once,
+//!    which the server accepts for a task this host claimed, so the host is not blocked until the task
+//!    expires; otherwise (cancelled, gone) there is no result to send. A failed `start` is retried;
+//!    nothing runs meanwhile.
+//! 6. `executing` is recorded and flushed, the executor runs it ([`Executor::run`]) with a
+//!    [`Control`] that sends progress every [`PROGRESS_EVERY`] and passes on the server's `cancel`
+//!    (P3-S05), and the result is recorded `finished`. If the agent stops while a task that cannot be
+//!    interrupted still runs in its own unit, nothing is recorded: the task stays `started`, and
+//!    recovery deals with it.
 //! 7. The result is sent until the server accepts it (or refuses it for good), then `reported`.
 //!
-//! In this build there is no executor ([`super::executor::NoExecutor`], P3-A03): no type is
-//! implemented, so the poller does not poll at all by default, and any task that does arrive stops at
-//! step 3 with `not_supported`. Steps 4 to 6 are exercised by the tests with a fake executor.
+//! In this build the executor ([`super::executor::Registry`], P3-A03) implements no type, so the poller
+//! does not poll at all by default, and any task that does arrive stops at step 3 with
+//! `not_supported`. Steps 4 to 6 are exercised by the tests with test executors.
+//!
+//! **Poll interval.** The poll response's `poll_seconds` (Settings: Tasks, #31) replaces the
+//! configured interval, clamped to the configured `min_seconds` and `max_seconds`. A `cancel` in a
+//! poll response names a running task; the poller polls only between tasks, so it has none, and the
+//! directive is only logged (a running task gets it through progress).
 //!
 //! **Recovery.** On start, and whenever the ledger is reopened, every unreported task is reported
 //! before anything is polled ([`Poller::reconcile`]):
 //!
 //! - `received` only: it never started, so nothing ran, but the id is in the ledger, so it is not run
-//!   now either. Reported `failed` with reason `interrupted`, the contract's reason for a task the
-//!   agent stopped on (the threat model's proposed `not_run` reason, L2, is not in the contract);
+//!   now either. Reported `failed` with reason `not_run`;
 //! - `started` without `finished`: it may have run. Reported `failed` with reason `interrupted`, unless
-//!   the stored result shows it finished, which is then sent as it was;
+//!   the stored result shows it finished, which is then sent as it was, or the executor finds part of
+//!   it still running in its own unit ([`Executor::recover`], threat model L8): then nothing is polled
+//!   until it ends, and what it did is reported;
 //! - `finished` without `reported`: the stored result is sent again (idempotent on the server);
 //! - an unknown state (a record this version cannot read): reported `failed`, `agent_error`, never run.
 //!
@@ -54,7 +73,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::Value;
 
 use super::catalog::Catalog;
-use super::executor::{Delivered, Executor};
+use super::executor::{Control, Delivered, Executor, Recovered};
 use super::ledger::{self, Ledger, LedgerError, Outcome, Receipt, State, Task};
 use super::settings::TaskSettings;
 use super::wire::{self, Reply, TaskApi};
@@ -71,6 +90,10 @@ pub const HINT_CHECK: Duration = Duration::from_secs(5);
 pub const LEDGER_RETRY: Duration = Duration::from_secs(60);
 /// How long the poller sleeps when it has nothing to poll for (no type enabled and supported).
 pub const IDLE: Duration = Duration::from_secs(60);
+/// How often a running task's progress is sent, which is also how soon a cancel reaches it.
+pub const PROGRESS_EVERY: Duration = Duration::from_secs(15);
+/// How often recovery looks again at a task still running in its own unit.
+pub const RECOVERY_CHECK: Duration = Duration::from_secs(5);
 
 /// Reasons this module reports (P3-S02's codes).
 pub mod reason {
@@ -79,7 +102,73 @@ pub mod reason {
     pub const NOT_SUPPORTED: &str = "not_supported";
     pub const INVALID_PARAMS: &str = "invalid_params";
     pub const INTERRUPTED: &str = "interrupted";
+    /// The agent holds the task but never ran it (P3-S05, #31).
+    pub const NOT_RUN: &str = "not_run";
     pub const AGENT_ERROR: &str = "agent_error";
+}
+
+/// What recovering one task did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recovery {
+    /// Its outcome is recorded `finished`, ready to report.
+    Recorded,
+    /// Part of it still runs in its own unit; nothing was recorded.
+    Running,
+}
+
+/// The [`Control`] of a running task: progress to the server, and the server's cancel (P3-S05).
+struct Progress<'a> {
+    api: &'a dyn TaskApi,
+    id: &'a str,
+    shutdown: &'a Shutdown,
+    every: Duration,
+    next: std::cell::Cell<Option<Instant>>,
+    cancel: std::cell::Cell<bool>,
+    ended: std::cell::Cell<bool>,
+    failed: std::cell::Cell<bool>,
+}
+
+impl Control for Progress<'_> {
+    fn shutdown(&self) -> &Shutdown {
+        self.shutdown
+    }
+
+    fn cancel_requested(&self) -> bool {
+        let now = Instant::now();
+        if self.cancel.get() || self.next.get().is_some_and(|at| now < at) {
+            return self.cancel.get();
+        }
+        self.next.set(Some(now + self.every));
+        match self.api.progress(self.id, None) {
+            Ok(reply) => {
+                self.failed.set(false);
+                if reply.cancel {
+                    tracing::warn!(
+                        task_id = self.id,
+                        "the server asked to cancel the running task"
+                    );
+                    self.cancel.set(true);
+                }
+                if reply.state != "running" && !self.ended.replace(true) {
+                    tracing::warn!(
+                        task_id = self.id,
+                        server_state = reply.state.as_str(),
+                        "the server has already ended this task; its result will be kept as a late result"
+                    );
+                }
+            }
+            Err(error) => {
+                if !self.failed.replace(true) {
+                    tracing::warn!(
+                        task_id = self.id,
+                        status = error.status(),
+                        "cannot send the running task's progress; the task goes on"
+                    );
+                }
+            }
+        }
+        self.cancel.get()
+    }
 }
 
 /// The heartbeat's "tasks are waiting" directive, raised by the heartbeat loop and taken by the poller.
@@ -113,6 +202,9 @@ pub struct Poller<'a, R: Rng> {
     retry_after: Option<Instant>,
     backoff: Backoff<R>,
     notes: std::collections::HashSet<String>,
+    /// The poll interval the server last asked for (`poll_seconds`), clamped.
+    server_interval: Option<Duration>,
+    progress_every: Duration,
 }
 
 impl<'a, R: Rng> Poller<'a, R> {
@@ -141,7 +233,15 @@ impl<'a, R: Rng> Poller<'a, R> {
             retry_after: None,
             backoff,
             notes: Default::default(),
+            server_interval: None,
+            progress_every: PROGRESS_EVERY,
         }
+    }
+
+    /// Sends progress this often while a task runs (tests).
+    #[cfg(test)]
+    pub fn set_progress_every(&mut self, every: Duration) {
+        self.progress_every = every;
     }
 
     /// Whether this agent polls at all: some type is both enabled here and implemented.
@@ -198,7 +298,7 @@ impl<'a, R: Rng> Poller<'a, R> {
     }
 
     fn interval(&self) -> Duration {
-        self.interval.start
+        self.server_interval.unwrap_or(self.interval.start)
     }
 
     /// Opens the ledger, logging what recovery found. `false` if it cannot be opened yet.
@@ -279,18 +379,28 @@ impl<'a, R: Rng> Poller<'a, R> {
         }
         for task in pending {
             if !matches!(task.state, State::Finished { .. }) {
-                self.recover(&task, wall).map_err(|e| {
+                let recovery = self.recover(&task, wall).map_err(|e| {
                     self.drop_ledger(now, &e);
                     LEDGER_RETRY
                 })?;
+                if recovery == Recovery::Running {
+                    if self.note(&format!("running {}", task.id)) {
+                        tracing::info!(
+                            task_id = task.id.as_str(),
+                            "a task the agent started before it stopped still runs in its own unit; waiting for it before polling for another"
+                        );
+                    }
+                    return Err(RECOVERY_CHECK);
+                }
             }
             self.report(api, &task.id, now, wall)?;
         }
         Ok(())
     }
 
-    /// Records the outcome of a task the agent did not see to its end, from what the ledger says.
-    fn recover(&mut self, task: &Task, wall: SystemTime) -> Result<(), LedgerError> {
+    /// Records the outcome of a task the agent did not see to its end, from what the ledger says (and,
+    /// for a task that ran, what the executor finds of it).
+    fn recover(&mut self, task: &Task, wall: SystemTime) -> Result<Recovery, LedgerError> {
         let Some(ledger) = self.ledger.as_mut() else {
             return Err(LedgerError::Poisoned);
         };
@@ -303,10 +413,40 @@ impl<'a, R: Rng> Poller<'a, R> {
                 outcome = outcome.as_str(),
                 "recovered a task that finished before the agent stopped; reporting its result"
             );
-            return ledger.finish(&task.id, outcome, reason.as_deref(), &body, wall);
+            ledger.finish(&task.id, outcome, reason.as_deref(), &body, wall)?;
+            return Ok(Recovery::Recorded);
         }
         let (outcome, reason) = recovered_outcome(&task.state);
         let started_at = task.started_at.clone();
+        if task.state == State::Started && task.executed {
+            match self.executor.recover(task) {
+                Recovered::Nothing => {}
+                Recovered::Running => return Ok(Recovery::Running),
+                Recovered::Ended(ran) => {
+                    tracing::warn!(
+                        task_id = task.id.as_str(),
+                        outcome = ran.outcome.as_str(),
+                        "a task that ran on in its own unit while the agent was stopped has ended; reporting what it did"
+                    );
+                    let body = wire::result_body(&wire::ResultFields {
+                        outcome: ran.outcome,
+                        reason: ran.reason,
+                        exit_status: ran.exit_status,
+                        started_at: Some(rfc3339(ran.started_at)),
+                        finished_at: rfc3339(ran.finished_at),
+                        output: ran.output,
+                        output_truncated: ran.output_truncated,
+                        details: ran.details,
+                    });
+                    let ledger = self.ledger.as_mut().ok_or(LedgerError::Poisoned)?;
+                    ledger.finish(&task.id, ran.outcome, ran.reason, &body, wall)?;
+                    return Ok(Recovery::Recorded);
+                }
+            }
+        }
+        let Some(ledger) = self.ledger.as_mut() else {
+            return Err(LedgerError::Poisoned);
+        };
         let body = wire::result_body(&wire::ResultFields {
             outcome,
             reason: Some(reason),
@@ -321,11 +461,13 @@ impl<'a, R: Rng> Poller<'a, R> {
             task_id = task.id.as_str(),
             task_type = task.task_type.as_deref().unwrap_or(""),
             ledger_state = task.state.name(),
+            executed = task.executed,
             outcome = outcome.as_str(),
             reason,
             "a task was left unfinished when the agent stopped; reporting it, not running it"
         );
-        ledger.finish(&task.id, outcome, Some(reason), &body, wall)
+        ledger.finish(&task.id, outcome, Some(reason), &body, wall)?;
+        Ok(Recovery::Recorded)
     }
 
     /// Sends the stored result of `id` once. `Err` is how long to wait when it could not be sent.
@@ -425,7 +567,26 @@ impl<'a, R: Rng> Poller<'a, R> {
         };
         self.backoff.on_success();
         self.notes.retain(|n| !n.starts_with("poll "));
-        match reply {
+        if let Some(seconds) = reply.poll_seconds {
+            let wanted = self.interval.clamp_server_value(seconds);
+            if self.server_interval != Some(wanted) {
+                tracing::info!(
+                    seconds = wanted.as_secs(),
+                    "polling for tasks at the interval the server asks for"
+                );
+                self.server_interval = Some(wanted);
+            }
+        }
+        if let Some(id) = &reply.cancel {
+            // The poller polls only between tasks, so nothing is running here to stop.
+            if self.note(&format!("cancel {id}")) {
+                tracing::info!(
+                    task_id = id.as_str(),
+                    "the server asked to cancel a task that is not running here; nothing to stop"
+                );
+            }
+        }
+        match reply.task {
             None => self.next_poll = Some(now + self.interval()),
             Some(task) => {
                 // One at a time: after a new task, poll again straight away, in case another is waiting.
@@ -471,6 +632,7 @@ impl<'a, R: Rng> Poller<'a, R> {
         match receipt {
             Ok(Receipt::New) => {}
             Ok(Receipt::Known(state)) => {
+                let executed = ledger.task(&task.id).is_none_or(|t| t.executed);
                 if self.note(&format!("known {}", task.id)) {
                     tracing::warn!(
                         task_id = task.id.as_str(),
@@ -478,6 +640,9 @@ impl<'a, R: Rng> Poller<'a, R> {
                         ledger_state = state.name(),
                         "the server delivered a task this agent already has in its ledger; it is not run again"
                     );
+                }
+                if state == State::Reported {
+                    self.close_known(api, &task.id, executed, now, wall);
                 }
                 return false;
             }
@@ -586,6 +751,57 @@ impl<'a, R: Rng> Poller<'a, R> {
         }
     }
 
+    /// Closes a task the server delivered again although the ledger has it reported (or dropped): the
+    /// server holds it as claimed, and would deliver it until it expired. `failed` is the result a
+    /// claimed task accepts; nothing is run and nothing is written to the ledger.
+    fn close_known(
+        &mut self,
+        api: &dyn TaskApi,
+        id: &str,
+        executed: bool,
+        now: Instant,
+        wall: SystemTime,
+    ) {
+        let reason = if executed {
+            reason::AGENT_ERROR
+        } else {
+            reason::NOT_RUN
+        };
+        let body = wire::result_body(&wire::ResultFields {
+            outcome: Outcome::Failed,
+            reason: Some(reason),
+            exit_status: None,
+            started_at: None,
+            finished_at: rfc3339(wall),
+            output: String::new(),
+            output_truncated: false,
+            details: serde_json::Map::new(),
+        });
+        match api.result(id, &body) {
+            Ok(Reply::Accepted) => {
+                self.backoff.on_success();
+                tracing::warn!(
+                    task_id = id,
+                    reason,
+                    "closed a task the server delivered again: reported failed, not run"
+                );
+            }
+            Ok(Reply::Rejected(code)) => tracing::warn!(
+                task_id = id,
+                code = code.as_str(),
+                "the server refused to close a task it delivered again; it is still not run"
+            ),
+            Err(error) => {
+                tracing::warn!(
+                    task_id = id,
+                    status = error.status(),
+                    "cannot close a task the server delivered again; trying when it is delivered next"
+                );
+                self.failed(now, &error);
+            }
+        }
+    }
+
     /// A task the server would not let run: recorded as not run and as answered, so nothing is sent.
     fn drop_unrun(&mut self, id: &str, now: Instant, wall: SystemTime) {
         let Some(ledger) = self.ledger.as_mut() else {
@@ -631,11 +847,38 @@ impl<'a, R: Rng> Poller<'a, R> {
                 Ok(Reply::Rejected(state)) => {
                     // `run: false` (for example cancelled before it started), or the task is gone:
                     // record that it did not run and drop it, with no result to send (P3-S03).
-                    tracing::warn!(
-                        task_id = task.id.as_str(),
-                        server_state = state.as_str(),
-                        "the server did not let the task run (it may have been cancelled); nothing was run"
-                    );
+                    if state == "queued" {
+                        // The claim lapsed before `start` arrived (P3-S05, threat model L2). It is
+                        // this host's to close: `failed`/`not_run`, reported by the caller.
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            "the server put the task back in its queue before it could start; nothing was run, and it is reported failed (not_run)"
+                        );
+                        let body = wire::result_body(&wire::ResultFields {
+                            outcome: Outcome::Failed,
+                            reason: Some(reason::NOT_RUN),
+                            exit_status: None,
+                            started_at: None,
+                            finished_at: rfc3339(wall),
+                            output: String::new(),
+                            output_truncated: false,
+                            details: serde_json::Map::new(),
+                        });
+                        return self.finish(
+                            &task.id,
+                            Outcome::Failed,
+                            Some(reason::NOT_RUN),
+                            &body,
+                            now,
+                            wall,
+                        );
+                    } else {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            server_state = state.as_str(),
+                            "the server did not let the task run (it may have been cancelled); nothing was run"
+                        );
+                    }
                     return self.drop_unrun(&task.id, now, wall);
                 }
                 Err(error) => {
@@ -668,8 +911,31 @@ impl<'a, R: Rng> Poller<'a, R> {
         if tests::crash_at(tests::Point::Acknowledged) {
             return;
         }
+        let Some(ledger) = self.ledger.as_mut() else {
+            return;
+        };
+        if let Err(e) = ledger.executing(&task.id, SystemTime::now()) {
+            // Not recorded, so not run: it stays `started`, and recovery reports it.
+            return self.drop_ledger(now, &e);
+        }
         tracing::info!(task_id = task.id.as_str(), "task running");
-        let ran = self.executor.run(task, self.shutdown);
+        let control = Progress {
+            api,
+            id: &task.id,
+            shutdown: self.shutdown,
+            every: self.progress_every,
+            next: Default::default(),
+            cancel: Default::default(),
+            ended: Default::default(),
+            failed: Default::default(),
+        };
+        let Some(ran) = self.executor.run(task, &control) else {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                "the agent is stopping while the task runs on in its own unit; it stays recorded as started, and its outcome is reported when the agent starts again"
+            );
+            return;
+        };
         #[cfg(test)]
         if tests::crash_at(tests::Point::Ran) {
             return;
@@ -698,9 +964,11 @@ impl<'a, R: Rng> Poller<'a, R> {
 /// The outcome recovery reports for a task in `state` with no stored result.
 pub fn recovered_outcome(state: &State) -> (Outcome, &'static str) {
     match state {
-        // Recorded but never started: nothing ran. Still never run now (it is in the ledger), so it is
-        // reported as interrupted, which is what it was.
-        State::Received | State::Started => (Outcome::Failed, reason::INTERRUPTED),
+        // Recorded but never started: nothing ran, and `start` was never sent, so the server holds it
+        // claimed and accepts `not_run`. Never run now either (it is in the ledger).
+        State::Received => (Outcome::Failed, reason::NOT_RUN),
+        // `start` was sent: the server may have it running, so `interrupted`, which it accepts then.
+        State::Started => (Outcome::Failed, reason::INTERRUPTED),
         State::Unknown | State::Finished { .. } | State::Reported => {
             (Outcome::Failed, reason::AGENT_ERROR)
         }
