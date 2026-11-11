@@ -24,6 +24,12 @@
 # Then, in one transaction, it creates the batch and one queued task per targeted host, each with its own expiry
 # (the type's setting, by default the catalog's 24 hours to start, DEC-14) and timeout from the catalog, audited as task.batch_created and task.created with
 # the operator as actor. Each task is independent: one failing, being cancelled, or expiring never changes another.
+#
+# The dashboard's create flow (P3-S08) adds two keywords. expected_host_ids: the hosts its confirmation page showed;
+# if the hosts the request resolves to now differ, it is refused (Q13) and the operator confirms again.
+# confirmation_token: the confirmation's one-time id, stored on the batch, so a second submit of the same page
+# cannot create a second batch (threat model H10). TaskBatches.preview does the same checks as create! up to the
+# typed count and writes nothing, for drawing the targets and confirmation pages.
 module TaskBatches
   # DEC-14: a hard cap of 25 hosts per batch (the setting may lower it), and the host count typed to confirm above 3.
   MAX_HOSTS = 25
@@ -52,23 +58,26 @@ module TaskBatches
 
   Result = Data.define(:batch, :tasks, :excluded)
 
+  # What a request would do now: the catalog entry, the validated parameters, the target as given, every host the
+  # target selects (id order), the hosts it would run on, and the Exclusions.
+  Preview = Data.define(:entry, :parameters, :target, :hosts, :targeted, :excluded) do
+    def targeted_ids = targeted.map(&:id)
+  end
+
   module_function
 
-  def create!(request, operator:, now: Time.current)
-    limits = TaskSettings.limits
-    entry, parameters, target = check_request(request, limits.max_hosts_per_batch)
+  def create!(request, operator:, now: Time.current, expected_host_ids: nil, confirmation_token: nil)
     TaskBatch.transaction(requires_new: true) do
-      hosts = resolve(target, limits.max_hosts_per_batch)
-      allowlist = TaskPolicy.restart_allowlist if entry.type == "restart_service"
-      reasons = hosts.to_h { |host| [ host, exclusion_reason(host, entry, parameters, allowlist) ] }
-      targeted, excluded = hosts.partition { |host| reasons[host].nil? }
-      excluded = excluded.map { |host| Exclusion.new(host_id: host.id, reason: reasons[host]) }
+      preview = preview(request, lock: true)
+      entry, parameters, target, hosts, targeted, excluded = preview.deconstruct
+      check_expected(preview, expected_host_ids) if expected_host_ids
       check_targets(targeted, excluded, request["confirm_host_count"])
 
+      limits = TaskSettings.limits
       batch = TaskBatch.create!(operator:, task_type: entry.type, parameters:, selection_method: target.key?("tag") ? "tag" : "explicit",
                                 selection_tag: target["tag"], selected_host_ids: hosts.map(&:id), excluded_hosts: excluded.map(&:as_json),
                                 confirmed_host_count: request["confirm_host_count"], catalog_version: TaskCatalog.current.version,
-                                catalog_digest: TaskCatalog.current.digest, created_at: now)
+                                catalog_digest: TaskCatalog.current.digest, confirmation_token:, created_at: now)
       Audit.record(actor: operator, action: Audit::Actions::TASK_BATCH_CREATED, target: batch, changes: {
         "task_type" => entry.type, "parameters" => parameters, "selection_method" => batch.selection_method, "tag" => batch.selection_tag,
         "host_ids" => targeted.map(&:id), "excluded" => excluded.map(&:as_json)
@@ -84,8 +93,22 @@ module TaskBatches
     end
   end
 
-  # Why the host is left out, or nil. A restart the server's allowlist does not allow on this host (an entry for
-  # another tag) is not_allowed_on_server, ahead of the agent's own allowlist.
+  # The checks of create! up to the typed count, with nothing written: a Preview, or Refused with every problem. A
+  # target that leaves no host is not refused here; its Preview has no targeted hosts. lock: true share-locks the
+  # selected host rows (create! uses it, inside its transaction).
+  def preview(request, lock: false)
+    max_hosts = TaskSettings.max_hosts_per_batch
+    entry, parameters, target = check_request(request, max_hosts)
+    hosts = resolve(target, max_hosts, lock:)
+    allowlist = TaskPolicy.restart_allowlist if entry.type == "restart_service"
+    reasons = hosts.to_h { |host| [ host, exclusion_reason(host, entry, parameters, allowlist) ] }
+    targeted, excluded = hosts.partition { |host| reasons[host].nil? }
+    Preview.new(entry:, parameters:, target:, hosts:, targeted:, excluded: excluded.map { |host| Exclusion.new(host_id: host.id, reason: reasons[host]) })
+  end
+
+  # Why the host is left out, or nil; allowlist is TaskPolicy.restart_allowlist for a restart. A restart the server's
+  # allowlist does not allow on this host (an entry for another tag) is not_allowed_on_server, ahead of the agent's
+  # own allowlist.
   def exclusion_reason(host, entry, parameters, allowlist)
     reason = host.task_exclusion_reason(entry, parameters)
     return reason unless allowlist && (reason.nil? || reason == "not_allowed_locally")
@@ -138,18 +161,27 @@ module TaskBatches
 
   # The hosts the target selects, share-locked so their state cannot change until the batch is written, in id
   # order. Retired hosts are never selected by tag; an explicit id of one is listed as excluded (not_active).
-  def resolve(target, max_hosts)
+  def resolve(target, max_hosts, lock:)
     if target.key?("tag")
-      hosts = Host.in_fleet.tagged(target["tag"]).order(:id).limit(max_hosts + 1).lock("FOR SHARE").to_a
+      hosts = locked(Host.in_fleet.tagged(target["tag"]).order(:id).limit(max_hosts + 1), lock).to_a
       raise Refused, [ problem("/target/tag", "selects no host") ] if hosts.empty?
       raise Refused, [ problem("/target/tag", "selects more than #{max_hosts} hosts; a batch may target at most #{max_hosts}") ] if hosts.size > max_hosts
     else
       ids = target["host_ids"]
-      hosts = Host.where(id: ids).order(:id).lock("FOR SHARE").to_a
+      hosts = locked(Host.where(id: ids).order(:id), lock).to_a
       missing = ids - hosts.map(&:id)
       raise Refused, missing.map { |id| problem("/target/host_ids/#{ids.index(id)}", "is not a host") } if missing.any?
     end
     hosts
+  end
+
+  def locked(scope, lock) = lock ? scope.lock("FOR SHARE") : scope
+
+  # Q13: the hosts the batch would run on must be the ones the operator confirmed.
+  def check_expected(preview, expected_host_ids)
+    return if preview.targeted_ids.sort == Array(expected_host_ids).sort
+
+    raise Refused.new([ problem("/target", "now resolves to different hosts than the ones you confirmed") ], excluded: preview.excluded)
   end
 
   def check_targets(targeted, excluded, confirmed)
@@ -163,5 +195,5 @@ module TaskBatches
 
   def escape(key) = key.to_s.truncate(64).gsub("~", "~0").gsub("/", "~1")
 
-  private_class_method :exclusion_reason, :check_request, :target_errors, :resolve, :check_targets, :problem, :escape
+  private_class_method :check_request, :target_errors, :resolve, :locked, :check_expected, :check_targets, :problem, :escape
 end
