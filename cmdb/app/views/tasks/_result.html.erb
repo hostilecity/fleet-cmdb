@@ -1,0 +1,92 @@
+<%# The top of the task page in every state (P3-DASH-TASKS, mockups task.html and task-states.html, owner decisions Q17,
+    Q20, Q21): the state and reason in plain words, with the code small beside them. %>
+<%# locals: (task:, batch_size:, cancel_entry:) %>
+<% host = task.host.name %>
+<% entry = task.catalog_entry %>
+<% batch_words = batch_size > 1 ? safe_join([ "batch ", link_to(task.task_batch_id, task_batch_path(task.task_batch_id)) ]) : nil %>
+<% case task.state %>
+<% when "queued" %>
+  <section class="result wait" aria-labelledby="result_title" id="result">
+    <h2 id="result_title">Queued: waiting for <%= host %> to poll</h2>
+    <p>The agent picks up tasks when it polls, about every <%= pluralize(TaskSettings.poll_seconds, "second") %>.<% if task.host.liveness_status.in?(%w[offline stale]) %> <%= host %> has been <%= status_lamp(task.host) %> since <%= task_time(task.host.last_seen_at) %>.<% end %> If it has not picked this up by <strong><%= task_time(task.expires_at) %></strong>, the task expires and is never delivered.</p>
+  </section>
+<% when "claimed" %>
+  <section class="result wait" aria-labelledby="result_title" id="result">
+    <h2 id="result_title">Claimed: delivered to <%= host %>, not started yet</h2>
+    <p>The agent has the task and starts it when it is free (one task at a time). If it does not start by <%= task_time(task.lease_expires_at) %> (its lease), the task goes back to the queue.</p>
+  </section>
+<% when "running" %>
+  <% if task.cancel_requested? %>
+    <section class="result amber" aria-labelledby="result_title" id="result">
+      <h2 id="result_title">Running, cancel requested at <%= task_time(task.cancel_requested_at) %> by <%= task.cancel_requested_by&.email || "an operator" %></h2>
+      <% if task.interruptible? %>
+        <p><%= entry.name %> can be stopped safely. The agent gets the cancel on its next poll or progress report and stops; the task then ends as cancelled.</p>
+      <% else %>
+        <p><%= entry&.name || task.task_type %> cannot be stopped safely once started, so it runs to completion (by <%= task_time(task_deadline(task)) %> at the latest). Its result is recorded as usual.<% if batch_words %> No other task of <%= batch_words %> will start.<% end %></p>
+      <% end %>
+    </section>
+  <% else %>
+    <section class="result wait" aria-labelledby="result_title" id="result">
+      <h2 id="result_title">Running for <%= time_ago_in_words(task.started_at) %><%= ": #{task.progress_percent}% done, as the agent last reported" if task.progress_percent %></h2>
+      <p>Started <%= task_time(task.started_at) %>.<% if task.progress_reported_at %> Last progress <%= task_time(task.progress_reported_at) %>.<% end %> It stops after <%= task_duration(task.timeout) %> at most (<%= task_time(task_deadline(task)) %>).</p>
+      <p class="code-line"><%= task.interruptible? ? "Can be stopped while running" : "Cannot be cancelled once running" %></p>
+    </section>
+  <% end %>
+<% when "succeeded" %>
+  <section class="result ok" aria-labelledby="result_title" id="result">
+    <h2 id="result_title">Succeeded<%= " in #{task_run_time(task)}" if task_run_time(task) %><%= ": #{task_success_summary(task)}" if task_success_summary(task) %></h2>
+    <% if task.result_details.to_h["reboot_required"] %>
+      <p><strong>Reboot required.</strong> The task never reboots; reboot <%= host %> when it suits you.</p>
+    <% end %>
+    <p class="code-line">Exit status <%= task.exit_status.nil? ? "not reported" : task.exit_status %><%= " · reboot_required: true" if task.result_details.to_h["reboot_required"] %></p>
+  </section>
+<% when "failed" %>
+  <% headline, sentence = task_reason(task.reason) %>
+  <section class="result bad" aria-labelledby="result_title" id="result">
+    <h2 id="result_title">Failed: <%= headline %></h2>
+    <p><%= sentence %></p>
+    <p class="code-line">Reason <%= task.reason %><%= " · exit status #{task.exit_status}" unless task.exit_status.nil? %><%= " · set by the server" unless task.agent_result? %></p>
+  </section>
+<% when "refused" %>
+  <% headline, sentence = task_reason(task.reason) %>
+  <section class="result bad" aria-labelledby="result_title" id="result">
+    <h2 id="result_title">Refused: <%= headline %></h2>
+    <p><%= sentence %></p>
+    <p class="code-line">Reason <%= task.reason %> · <%= task.agent_result? ? "refused by the agent" : "refused by the server when the agent claimed it" %> · nothing ran</p>
+  </section>
+<% when "timed_out" %>
+  <section class="result bad" aria-labelledby="result_title" id="result">
+    <% if task.agent_result? %>
+      <h2 id="result_title">Timed out after <%= task_duration(task.timeout) %></h2>
+      <p>The agent stopped the task when its time limit passed and reported it.<% if task.task_type == "apply_package_updates" %> <strong>The package database may need repair:</strong> on <%= host %>, run <span class="mono">dpkg --configure -a</span> as root, then apply package updates again. Packages upgraded before the stop stay upgraded.<% end %></p>
+      <p class="code-line">Stopped by the agent<%= " at #{task_time(task.agent_finished_at)}" if task.agent_finished_at %> · output kept up to the stop</p>
+    <% else %>
+      <h2 id="result_title">Timed out: no result from the agent</h2>
+      <p>No result arrived within the time limit plus <%= task_duration(AgentTasks::RESULT_GRACE) %>' grace. The server marked it timed out; the agent may still report what happened, which is added to the timeline but does not change the state.</p>
+      <p class="code-line">Set by the server at <%= task_time(task.finished_at) %></p>
+    <% end %>
+  </section>
+<% when "cancelled" %>
+  <% by = cancel_entry && cancel_entry.actor_type == "operator" ? Operator.find_by(id: cancel_entry.actor_id)&.email : nil %>
+  <section class="result grey" aria-labelledby="result_title" id="result">
+    <% if task.agent_result? %>
+      <h2 id="result_title">Cancelled while running</h2>
+      <p><%= entry&.name || task.task_type %> can be stopped safely. The agent received the cancel and stopped<%= " at #{task_time(task.agent_finished_at)}" if task.agent_finished_at %>. Anything it had already sent was kept.</p>
+    <% elsif task.claimed_at %>
+      <h2 id="result_title">Cancelled after it was picked up, before it started</h2>
+      <p><%= host %> had picked it up. If it tries to start it, the server refuses and tells it to drop the task, so it never runs.</p>
+    <% else %>
+      <h2 id="result_title">Cancelled before it was delivered</h2>
+      <p>Cancelled at <%= task_time(task.finished_at) %><%= " by #{by}" if by %>. <%= host %> never received it.</p>
+    <% end %>
+  </section>
+<% when "expired" %>
+  <section class="result grey" aria-labelledby="result_title" id="result">
+    <h2 id="result_title">Expired: <%= host %> did not poll within <%= task_duration(task.expires_at - task.created_at) %></h2>
+    <p>Created <%= task_time(task.created_at) %>; expired <%= task_time(task.finished_at) %>. It was never delivered and will not run when <%= host %> comes back. Create a new task if it is still needed.</p>
+    <p class="code-line">Set by the server</p>
+  </section>
+<% end %>
+<% if task.cancel_requested? && task.state != "running" && task.state != "cancelled" %>
+  <p class="state-sub warn" id="cancel_was_requested">Cancel was requested at <%= task_time(task.cancel_requested_at) %> by <%= task.cancel_requested_by&.email || "an operator" %>, after the task had started; it could not be stopped.</p>
+<% end %>

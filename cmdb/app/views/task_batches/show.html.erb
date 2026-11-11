@@ -1,35 +1,88 @@
 <% content_for :title, "Batch #{@batch.id}" %>
-<%# Minimal until P3-DASH-TASKS (#33) draws batch progress here (mockups batch.html, batch-partial.html). %>
-<% entry = TaskCatalog.current.type?(@batch.task_type) ? TaskCatalog.current.entry(@batch.task_type) : nil %>
+<%# Batch progress (P3-DASH-TASKS, mockups batch.html and batch-partial.html, owner decisions Q14 to Q17). The counts
+    are worked out from the task rows on every render, and the page refreshes itself when a task changes. %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from TaskBroadcast::STREAM, id: "tasks_stream", data: { turbo_permanent: true } %>
+<% total = @tasks.size %>
+<% open = @tasks.reject(&:terminal?) %>
+<% waiting = open.select { |task| TaskCancellation::UNSTARTED.include?(task.state) } %>
+<% requested = @tasks.select(&:cancel_requested?) %>
+<% cancellable = open.any? { |task| !(task.state == "running" && task.cancel_requested?) } %>
+<% reboot = task_reboot_hosts(@tasks) %>
 <p><%= link_to "← Tasks", tasks_path %></p>
-<div class="page-head"><div><h1>Batch <%= @batch.id %>: <%= entry&.name || @batch.task_type %></h1>
-  <p>Created <%= utc(@batch.created_at) %> by <%= @batch.operator.email %>, <%= @batch.selection_method == "tag" ? "for hosts tagged #{@batch.selection_tag}" : "for picked hosts" %>.</p></div></div>
-<dl class="facts">
-  <dt>Type</dt><dd class="mono"><%= @batch.task_type %></dd>
-  <dt>Parameters</dt><dd class="mono"><%= @batch.parameters.empty? ? "none" : @batch.parameters.to_json %></dd>
-  <dt>Tasks</dt><dd><%= @batch.state_counts.reject { |_, count| count.zero? }.map { |state, count| "#{count} #{state.humanize(capitalize: false)}" }.to_sentence.presence || "none" %></dd>
-</dl>
-<h2>Tasks</h2>
-<div class="table-wrap"><table class="stack">
-  <caption class="visually-hidden">The batch's tasks</caption>
-  <thead><tr><th scope="col">Task</th><th scope="col">Host</th><th scope="col">State</th><th scope="col">Expires if not started (UTC)</th></tr></thead>
+<div class="host-head">
+  <div>
+    <h1>Batch <%= @batch.id %>: <%= task_what(@batch) %> on <%= pluralize(total, "host") %></h1>
+    <div class="sub"><span>Created <%= task_time(@batch.created_at) %> by <%= @batch.operator.email %></span>
+      <span><% if @batch.selection_method == "tag" %>Tag <span class="tag"><%= @batch.selection_tag %></span><% else %>Picked hosts<% end %></span>
+      <% if @batch.parameters.empty? %><span>No parameters</span><% end %>
+      <% if (first = requested.min_by(&:cancel_requested_at)) %><span>Cancel requested <%= task_time(first.cancel_requested_at) %> by <%= first.cancel_requested_by&.email || "an operator" %></span><% end %></div>
+  </div>
+  <% if cancellable && second_factor_result.status != :not_enrolled %>
+    <div class="actions"><%= link_to "Cancel the rest of this batch", cancel_task_batch_path(@batch), class: "btn danger quiet", id: "cancel_link" %></div>
+  <% end %>
+</div>
+<% if cancellable && second_factor_result.status == :not_enrolled %>
+  <p class="muted small" id="no_second_factor">Cancelling needs a second factor, and you have not set one up. <%= link_to "Set up an authenticator app", second_factor_path %></p>
+<% end %>
+
+<% if open.any? %>
+  <% if waiting.empty? && open.all?(&:cancel_requested?) %>
+    <div class="notice" role="status" id="batch_outcome"><strong>Cancel requested. <%= pluralize(open.size, "task") %> <%= open.one? ? "was" : "were" %> already running and <%= open.one? ? "is" : "are" %> finishing.</strong>
+      <p><% if open.all?(&:interruptible?) %>The agent is told to stop, and the task ends as cancelled.<% else %>A task that cannot be stopped safely once it has started runs to completion, at the latest by <%= task_time(open.filter_map { |task| task_deadline(task) }.max) %>.<% end %> Nothing further in this batch will start.</p></div>
+  <% else %>
+    <div class="notice info" role="status" id="batch_outcome"><strong>In progress: <%= total - open.size %> of <%= total %> finished.</strong>
+      <p>This page updates by itself as hosts report.<% if waiting.any? %> Queued tasks expire at <%= task_time(waiting.map(&:expires_at).min) %> if their host has not polled by then.<% end %></p></div>
+  <% end %>
+<% else %>
+  <% css, headline, sentence = task_batch_outcome(@counts) %>
+  <div class="notice <%= css %>" role="status" id="batch_outcome"><strong><%= headline %></strong>
+    <% if sentence %><p><%= sentence %></p><% end %>
+    <% if reboot.any? %><p><%= pluralize(reboot.size, "host") %> <%= reboot.one? ? "needs" : "need" %> a reboot (<%= reboot.join(", ") %>). Reboot them yourself; no task reboots a host.</p><% end %></div>
+<% end %>
+
+<div class="taskstrip" role="group" aria-label="Tasks in this batch by state" id="batch_counts">
+  <% task_strip_cells(@counts, @tasks).each do |label, count, lamp| %>
+    <a href="#hosts"><span class="count<%= " zero" if count.zero? %>"><%= count %></span><span class="lamp <%= lamp %>"><%= label %></span></a>
+  <% end %>
+</div>
+<div class="bar-stack" aria-hidden="true"><% task_bar_segments(@counts).each do |state, count| %><span class="b-<%= state %> g-<%= count %>"></span><% end %></div>
+<p class="bar-legend"><%= task_bar_sentence(@counts) %><% if reboot.any? %> <strong><%= reboot.size %> of the <%= @counts["succeeded"] %> that succeeded <%= reboot.one? ? "needs" : "need" %> a reboot</strong>; the task never reboots.<% end %></p>
+
+<% if open.empty? && @counts["succeeded"] < total && TaskCatalog.current.type?(@batch.task_type) %>
+  <% again = @tasks.reject { |task| task.state == "succeeded" } %>
+  <div class="actions spaced-below"><%= link_to "Run again on the #{pluralize(again.size, 'host')} that did not succeed", new_task_confirm_path(task_request_query(type: @batch.task_type, parameters: @batch.parameters, target: { host_ids: again.map(&:host_id) })), class: "btn quiet", id: "run_again" %></div>
+<% end %>
+
+<h2 id="hosts">Hosts</h2>
+<div class="table-wrap"><table class="stack" id="batch_tasks">
+  <caption class="visually-hidden">Tasks in batch <%= @batch.id %>, problems first</caption>
+  <thead><tr><th scope="col">Host</th><th scope="col">State</th><th scope="col">Result</th><th scope="col">Started (UTC)</th><th scope="col">Finished (UTC)</th><th scope="col">Task</th></tr></thead>
   <tbody>
-    <% @tasks.each do |task| %>
+    <% task_batch_rows(@tasks).each do |task| %>
       <tr>
-        <td data-label="Task">#<%= task.id %></td>
-        <td data-label="Host"><%= link_to task.host.name, host_path(task.host) %></td>
-        <td data-label="State"><%= task.state.humanize %></td>
-        <td data-label="Expires if not started (UTC)"><%= utc(task.expires_at) %></td>
+        <td data-label="Host"><%= link_to task.host.name, tasks_host_path(task.host) %></td>
+        <td data-label="State"><%= task_state_lamp(task) %></td>
+        <td data-label="Result"><%= task_state_note(task, batch_size: total) || "Finished." %><% if task.state == "queued" && task.host.liveness_status.in?(%w[offline stale]) %><span class="state-sub"><%= status_lamp(task.host) %> since <%= task_time(task.host.last_seen_at) %></span><% end %></td>
+        <td data-label="Started (UTC)" class="mono"><%= task.started_at ? task_clock(task.started_at) : tag.span("—", class: "muted") %></td>
+        <td data-label="Finished (UTC)" class="mono"><%= task.finished_at ? task_clock(task.finished_at) : tag.span("—", class: "muted") %></td>
+        <td data-label="Task"><%= link_to "##{task.id}", task_path(task) %></td>
       </tr>
     <% end %>
   </tbody>
 </table></div>
+
 <% if @batch.excluded_hosts.any? %>
-  <h2 id="excluded">Left out</h2>
-  <ul>
-    <% @batch.excluded_hosts.each do |exclusion| %>
-      <% host = @excluded_hosts.fetch(exclusion["host_id"]) %><%# hosts are never deleted %>
-      <li><%= link_to host.name, host_path(host) %>: <%= task_exclusion_short(exclusion["reason"]) %><%# as recorded, not the host's state now %></li>
-    <% end %>
-  </ul>
+  <h2 id="excluded">Left out when the batch was created</h2>
+  <div class="table-wrap"><table class="stack" id="batch_excluded">
+    <caption class="visually-hidden">Hosts left out of batch <%= @batch.id %></caption>
+    <thead><tr><th scope="col">Host</th><th scope="col">Why</th></tr></thead>
+    <tbody>
+      <% @batch.excluded_hosts.each do |exclusion| %>
+        <% host = @excluded_hosts.fetch(exclusion["host_id"]) %><%# hosts are never deleted %>
+        <tr><td data-label="Host"><%= link_to host.name, host_path(host) %></td><td data-label="Why"><%= task_exclusion_short(exclusion["reason"]).upcase_first %>.<%# as recorded, not the host's state now %></td></tr>
+      <% end %>
+    </tbody>
+  </table></div>
+  <p class="muted small">The hosts and the reasons were recorded when the batch was created and never change.</p>
 <% end %>

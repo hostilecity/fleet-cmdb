@@ -74,6 +74,8 @@ Rails.application.routes.draw do
         get :vulnerabilities, to: "host_vulnerabilities#show"
         # The package name is a query parameter (?package=), as in the mockup, so no stored name can break a path.
         get "vulnerabilities/package", to: "host_vulnerabilities#package", as: :package_vulnerabilities
+        # The host's Tasks tab (P3-DASH-TASKS, mockup host-tasks.html, owner decision Q34): read-only.
+        get :tasks, to: "host_tasks#show"
       end
     end
     # Fleet compliance (P2-D05): read-only; filters, sort, and page are in the URL.
@@ -129,8 +131,9 @@ Rails.application.routes.draw do
       patch "limits", action: :update_limits, as: :task_setting_limits
     end
     # Creating tasks (P3-S08, mockups create-*.html): four GET steps that write nothing (type, parameters, targets,
-    # confirm), then one CSRF-protected POST that needs a recent second factor and the confirmation page's token. The
-    # task list, batch progress, and task pages are P3-DASH-TASKS (#33); /tasks and the batch page are minimal until then.
+    # confirm), then one CSRF-protected POST that needs a recent second factor and the confirmation page's token.
+    # The task list, a task, its output as a text file, and batch progress (P3-DASH-TASKS, mockups tasks.html, task.html,
+    # batch.html) are read-only; filters and the page position are in the URL.
     get "tasks", to: "tasks#index", as: :tasks
     scope "tasks/new", controller: "task_creations" do
       get "", action: :type, as: :new_task
@@ -140,8 +143,13 @@ Rails.application.routes.draw do
     end
     post "tasks", to: "task_creations#create", format: false
     get "tasks/batches/:id", to: "task_batches#show", as: :task_batch, constraints: { id: /\d+/ }
-    # Cancelling (P3-S05): any operator, with a recent second factor (Q23). The dialogs and pages are P3-DASH-TASKS.
+    get "tasks/:id", to: "tasks#show", as: :task, constraints: { id: /\d+/ }
+    get "tasks/:id/output", to: "tasks#output", as: :task_output, constraints: { id: /\d+/ }, format: false
+    # Cancelling (P3-S05, P3-DASH-TASKS, mockup cancel.html): any operator, with a recent second factor (Q23). Each is a
+    # confirmation page (GET) that says what the cancel can and cannot do, and a CSRF-protected POST.
+    get "tasks/:id/cancel", to: "task_cancellations#confirm_task", constraints: { id: /\d+/ }
     post "tasks/:id/cancel", to: "task_cancellations#task", as: :cancel_task, constraints: { id: /\d+/ }
+    get "tasks/batches/:id/cancel", to: "task_cancellations#confirm_batch", constraints: { id: /\d+/ }
     post "tasks/batches/:id/cancel", to: "task_cancellations#batch", as: :cancel_task_batch, constraints: { id: /\d+/ }
     # Background jobs that failed every retry (P1-O02). Read-only; the layout banner links here.
     get "jobs/failed", to: "failed_jobs#index", as: :failed_jobs

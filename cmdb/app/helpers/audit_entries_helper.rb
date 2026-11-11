@@ -198,6 +198,9 @@ module AuditEntriesHelper
     when "AdvisoryImport" then link_to("Advisory import #{id}", advisory_import_path(id))
     when "CisRule" then safe_join([ "Rule", tag.span(records.rules[id] || id.to_s, class: "kind mono") ], " ")
     when "SecondFactor" then "Second factor"
+    # Tasks and batches are never deleted, so their pages always exist (P3-DASH-TASKS, #33).
+    when "Task" then link_to("Task ##{id}", task_path(id))
+    when "TaskBatch" then link_to("Batch #{id}", task_batch_path(id))
     when "TaskAllowedService" then safe_join([ "Restartable services", tag.span(entry.changeset.is_a?(Hash) ? entry.changeset["service"].to_s : id.to_s, class: "kind mono") ], " ")
     when "OperatorAllowlistEntry" then records.allowlist[id] || Array(entry.changeset["email"]).compact.first || "Allowlist entry #{id}"
     when "Setting"

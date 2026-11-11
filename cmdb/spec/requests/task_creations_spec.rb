@@ -338,9 +338,9 @@ RSpec.describe "Creating a task", type: :request do
       expect(AuditEntry.where(action: [ Audit::Actions::TASK_BATCH_CREATED, Audit::Actions::TASK_CREATED ]).pluck(:actor_id).uniq).to eq([ operator.id ])
       follow_redirect!
       expect(page.at_css(".notice.flash").text).to include("Created 4 tasks in batch #{batch.id}.")
-      expect(page.at_css("h1").text).to eq("Batch #{batch.id}: Refresh reports")
-      expect(page.css("table.stack tbody tr").size).to eq(4)
-      expect(page.text).to include("4 queued")
+      expect(page.at_css("h1").text).to eq("Batch #{batch.id}: Refresh reports on 4 hosts")
+      expect(page.css("#batch_tasks tbody tr").size).to eq(4)
+      expect(page.at_css(".bar-legend").text).to eq("4 waiting.")
       expect(refusals).to be_empty
 
       # The same page submitted again (a double click, a retry) creates nothing new (threat model H10).
@@ -350,7 +350,8 @@ RSpec.describe "Creating a task", type: :request do
       expect(TaskBatch.count).to eq(1)
 
       get "/tasks"
-      expect(page.css("table.stack tbody tr td").map(&:text).first(3)).to eq([ "Batch #{batch.id}", "refresh_reports", "4" ])
+      expect(page.css("#task_list tbody tr").size).to eq(4)
+      expect(page.css("#task_list tbody tr td[data-label=Batch]").map(&:text).uniq).to eq([ "#{batch.id} (4 hosts)" ])
     end
 
     it "lists the hosts left out on the batch page" do
@@ -358,11 +359,11 @@ RSpec.describe "Creating a task", type: :request do
       left_out = create(:host, :revoked, name: "sim-020")
       submit(confirm(type: "refresh_reports", target: { host_ids: [ host.id, left_out.id ] }), second_factor_code: code)
       follow_redirect!
-      expect(page.at_css("#excluded + ul").text.squish).to eq("sim-020: not active when the batch was created")
+      expect(page.css("#batch_excluded td").map(&:text)).to eq([ "sim-020", "Not active when the batch was created." ])
       left_out.begin_reenrollment!(actor: operator) # the page keeps the reason as recorded, not the host's state now
       get response.request.path
-      expect(page.at_css("#excluded + ul").text.squish).to eq("sim-020: not active when the batch was created")
-      expect(page.text).to include("for picked hosts")
+      expect(page.css("#batch_excluded td").map(&:text)).to eq([ "sim-020", "Not active when the batch was created." ])
+      expect(page.at_css(".host-head .sub").text).to include("Picked hosts")
     end
 
     it "treats two submits of one confirmation at once as one batch" do
