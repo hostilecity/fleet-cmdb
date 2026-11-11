@@ -75,10 +75,11 @@ module TaskCreationsHelper
     end
   end
 
-  # The short form, for the picking table and the confirmation: "not enabled on this VM".
-  def task_exclusion_short(reason, host)
+  # The short form, for the picking table and the confirmation: "not enabled on this VM". Without host (a reason
+  # recorded on a batch earlier), nothing is said about the host as it is now.
+  def task_exclusion_short(reason, host = nil)
     {
-      "not_active" => "not active (#{host_state_words(host).delete_suffix('.').downcase_first})", "machine_id_mismatch" => "credential in use on another machine",
+      "not_active" => host ? "not active (#{host_state_words(host).delete_suffix('.').downcase_first})" : "not active when the batch was created", "machine_id_mismatch" => "credential in use on another machine",
       "no_capability_report" => "agent does not support tasks", "not_supported" => "agent does not support this task", "not_enabled" => "not enabled on this VM",
       "not_allowed_on_server" => "service not allowed for this host", "not_allowed_locally" => "not in this VM's own allowlist"
     }.fetch(reason)

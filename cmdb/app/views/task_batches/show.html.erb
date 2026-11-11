@@ -29,7 +29,7 @@
   <ul>
     <% @batch.excluded_hosts.each do |exclusion| %>
       <% host = @excluded_hosts.fetch(exclusion["host_id"]) %><%# hosts are never deleted %>
-      <li><%= link_to host.name, host_path(host) %>: <%= task_exclusion_short(exclusion["reason"], host) %></li>
+      <li><%= link_to host.name, host_path(host) %>: <%= task_exclusion_short(exclusion["reason"]) %><%# as recorded, not the host's state now %></li>
     <% end %>
   </ul>
 <% end %>

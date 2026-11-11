@@ -358,7 +358,10 @@ RSpec.describe "Creating a task", type: :request do
       left_out = create(:host, :revoked, name: "sim-020")
       submit(confirm(type: "refresh_reports", target: { host_ids: [ host.id, left_out.id ] }), second_factor_code: code)
       follow_redirect!
-      expect(page.at_css("#excluded + ul").text.squish).to eq("sim-020: not active (its credential was revoked)")
+      expect(page.at_css("#excluded + ul").text.squish).to eq("sim-020: not active when the batch was created")
+      left_out.begin_reenrollment!(actor: operator) # the page keeps the reason as recorded, not the host's state now
+      get response.request.path
+      expect(page.at_css("#excluded + ul").text.squish).to eq("sim-020: not active when the batch was created")
       expect(page.text).to include("for picked hosts")
     end
 

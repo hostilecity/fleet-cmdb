@@ -530,6 +530,13 @@ dialog.dialog::backdrop { background: rgb(29 42 46 / 0.45); }
 
 /* Create a task (P3-S08, mockups phase-3/create-*.html): the catalog, what the agent runs, and the confirmation */
 .flow a { color: inherit; }
+/* At phone width the labels are hidden from sight but keep naming the links, and a link back covers its whole step,
+   tick included, so it stays an easy target (review of #171). */
+@media (max-width: 34rem) {
+  .flow li { position: relative; }
+  .flow li a .lbl { display: inline; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .flow li a::after { content: ""; position: absolute; inset: 0; }
+}
 .catalog { display: grid; gap: 0.75rem; margin: 0 0 1.25rem; }
 .catalog .choice { margin: 0; padding: 1rem 1.25rem; }
 .catalog .choice .type-id { font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); margin-left: 0.375rem; }
