@@ -180,6 +180,25 @@ RSpec.describe "Your second factor", :signed_in, type: :request do
       expect(page.at_css("#totp_key")).to be_nil
     end
 
+    it "checks the code and acts on it in one transaction holding the factor lock (review of #168)" do
+      transactions = []
+      record = ->(original, *args, **kwargs) { transactions << ActiveRecord::Base.connection.current_transaction; original.call(*args, **kwargs) }
+      allow(SecondFactors).to receive(:step_up).and_wrap_original(&record)
+      allow(SecondFactors).to receive(:approve_replacement!).and_wrap_original(&record)
+      allow(SecondFactors).to receive(:replace_recovery_codes!).and_wrap_original(&record)
+
+      post verify_second_factor_path, params: { second_factor_code: totp_code(secret) }
+      travel 31.seconds
+      post recovery_codes_path, params: { second_factor_code: totp_code(secret) }
+      expect(response).to have_http_status(:ok)
+      expect(transactions.size).to eq(4)
+      # The check and the approval share the controller's transaction, opened before the step-up takes its locks;
+      # outside it they would each run directly under the test's own (not joinable) transaction.
+      expect(transactions).to all(be_joinable)
+      expect(transactions[0]).to equal(transactions[1])
+      expect(transactions[2]).to equal(transactions[3])
+    end
+
     it "makes new recovery codes after a code, and shows them once" do
       get new_recovery_codes_path
       expect(page.text).to include("Make 10 new recovery codes?", "Your 10 unused codes stop working now.")

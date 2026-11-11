@@ -30,10 +30,13 @@ class SecondFactorsController < ApplicationController
   def verify
     return redirect_to(setup_second_factor_path) unless @factor
 
-    result = require_second_factor!(purpose: "replace_second_factor", fresh: true)
+    result = with_factor_locked do
+      require_second_factor!(purpose: "replace_second_factor", fresh: true).tap do |checked|
+        SecondFactors.approve_replacement!(Current.operator_session) if checked.passed?
+      end
+    end
     return unless result.passed?
 
-    SecondFactors.approve_replacement!(Current.operator_session)
     flash[:notice] = "Recovery code used. You have #{result.codes_left} left." if result.recovery
     redirect_to setup_second_factor_path
   end
@@ -64,15 +67,28 @@ class SecondFactorsController < ApplicationController
   def create_recovery_codes
     return redirect_to(second_factor_path) unless @factor
 
-    result = require_second_factor!(purpose: "replace_recovery_codes", fresh: true)
-    return unless result.passed?
+    @codes = with_factor_locked do
+      result = require_second_factor!(purpose: "replace_recovery_codes", fresh: true)
+      SecondFactors.replace_recovery_codes!(current_operator) if result.passed?
+    end
+    return unless @codes
 
-    @codes = SecondFactors.replace_recovery_codes!(current_operator)
     @new_codes = true
     render :recovery_codes
   end
 
   private
+
+  # The code check and what it allows happen in one transaction that holds the operator and factor locks, taken in
+  # the same order as setting up, replacing, and resetting (review of #168): a replacement or reset in another
+  # session cannot land between them, so a code checked against the old factor never approves anything for a new one.
+  def with_factor_locked(&)
+    Operator.transaction do
+      current_operator.lock!
+      SecondFactor.lock.find_by(operator: current_operator)
+      yield
+    end
+  end
 
   def load_factor
     @factor = SecondFactor.find_by(operator: current_operator)
