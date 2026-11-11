@@ -264,7 +264,9 @@ impl TaskImpl for ApplyUpdates {
             } else {
                 "nonzero_exit"
             };
-            if *step == UPGRADE_STEP || self.manager.needs_repair(output) {
+            if (*step == UPGRADE_STEP && reason != "lock_timeout")
+                || self.manager.needs_repair(output)
+            {
                 notes.push(self.repair_note());
             }
             return Some(Finish {
@@ -339,7 +341,9 @@ impl UpdateJob {
         if lock {
             run.note("another program held the package manager's lock; nothing more was run. Often an automatic update is running: wait and try again");
         }
-        if upgrading || self.manager.needs_repair(output) {
+        // An upgrade refused for a lock changed nothing; any other failed upgrade may have left dpkg
+        // half done.
+        if (upgrading && !lock) || self.manager.needs_repair(output) {
             run.note(&self.repair_note);
         }
         let mut finish = Finish::from_exit(exit);

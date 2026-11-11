@@ -547,6 +547,8 @@ fn a_lock_taken_by_another_program_during_a_step_is_lock_timeout() {
             ran.output
                 .contains("another program held the package manager's lock")
         );
+        // Refused for a lock, nothing was changed: no repair is needed.
+        assert!(!ran.output.contains("dpkg --configure -a"), "{step}");
         // A package report only once the upgrade began.
         assert_eq!(rig.reports(), u32::from(step == UPGRADE));
     }
@@ -787,7 +789,7 @@ fn a_recovered_failure_keeps_its_reason() {
         (ran.outcome, ran.reason, ran.exit_status),
         (Outcome::Failed, Some("lock_timeout"), Some(100))
     );
-    assert!(ran.output.contains("dpkg --configure -a"));
+    assert!(!ran.output.contains("dpkg --configure -a"));
 
     let rig = debian();
     rig.apt.reply(
