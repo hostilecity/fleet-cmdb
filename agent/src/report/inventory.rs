@@ -265,7 +265,13 @@ impl<'a, R: Rng> Reporter<'a, R> {
             let hash = StableHash::of(&inventory);
             let reference = self.pending.as_ref().map(|p| p.hash).or(self.baseline);
             if reference != Some(hash) {
-                self.build(Reason::Changed, inventory, now);
+                // A report built for a request stays one when a stable change replaces it while it
+                // waits for its retry, so its acceptance still answers the request (review of #169).
+                let reason = match self.pending.as_ref().map(|p| p.reason) {
+                    Some(Reason::Requested) => Reason::Requested,
+                    _ => Reason::Changed,
+                };
+                self.build(reason, inventory, now);
             } else {
                 tracing::trace!("stable facts unchanged");
             }
