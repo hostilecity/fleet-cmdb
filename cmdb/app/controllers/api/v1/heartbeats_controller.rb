@@ -10,8 +10,8 @@ module Api
     # agent_update directive for a host in an open rollout stage that runs an older version. Heartbeats are
     # exempt from the minimum agent version, so an agent that is too old for the other endpoints still learns
     # of the release that updates it (FR-S.5). The report_request directive lists the report types an operator
-    # asked for that no report has answered yet (P2-S03, ReportRequests). A host with nothing pending costs
-    # three extra SELECTs, no writes.
+    # asked for that no report has answered yet (P2-S03, ReportRequests). tasks_available tells the agent to poll
+    # for a task now (P3-S03, AgentTasks.available?). A host with nothing pending costs four extra SELECTs, no writes.
     #
     # The request's `tasks` object, the agent's task capabilities (P3-A01), is stored in the same UPDATE, so tasks
     # are created only for hosts that support and enable the type (Host#task_exclusion_reason, P3-S02). It allows up
@@ -40,7 +40,8 @@ module Api
         intervals = Setting.agent_intervals
         update = Rollouts.directive_for(host_id: current_host.id, agent_version: payload["agent_version"], now:)
         report_request = ReportRequests.directive_for(host_id: current_host.id, agent_time:, now:)
-        { intervals: intervals.presence, agent_update: update, report_request: }.compact
+        tasks_available = AgentTasks.available?(host_id: current_host.id) ? {} : nil
+        { intervals: intervals.presence, agent_update: update, report_request:, tasks_available: }.compact
       end
     end
   end

@@ -32,6 +32,13 @@ Rails.application.routes.draw do
         get "manifest/config", to: "config_manifests#show"
         # Update outcomes (P1-UPDATES): exempt from the minimum version, like heartbeats and release downloads.
         post "update-results", to: "update_results#create"
+        # Tasks (P3-S03, P3-S04): :id is the task's uuid; anything else falls through to not_found.
+        post "tasks/poll", to: "tasks#poll"
+        constraints(id: /\h{8}-\h{4}-\h{4}-\h{4}-\h{12}/) do
+          post "tasks/:id/start", to: "tasks#start", format: false
+          post "tasks/:id/progress", to: "tasks#progress", format: false
+          post "tasks/:id/result", to: "tasks#result", format: false
+        end
         # Release downloads (P1-S16): unauthenticated, limited per address, exempt from the minimum version.
         constraints(version: %r{[^/]+}) do
           get "releases/:version/manifest", to: "releases#manifest", format: false, as: :release_manifest

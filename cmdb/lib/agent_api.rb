@@ -36,6 +36,10 @@ module AgentApi
   ReenrollmentRequired = error(:forbidden, "reenrollment_required",
                                "This host is being re-enrolled. On the VM, run `fleet-agent install --reenroll`, or `fleet-agent install --token` with the new token.")
   NotFound = error(:not_found, "not_found", "No such endpoint.")
+  # A task id that does not exist or belongs to another host: one response for both (FR-S.2, P3-S03).
+  TaskNotFound = error(:not_found, "not_found", "No such task.")
+  # A task result that differs from the one already recorded, or that the task's state cannot take (P3-S04).
+  TaskConflict = error(:conflict, "task_conflict", "This task cannot take that result.")
   EnrollmentTokenInvalid = error(:gone, "enrollment_token_invalid", "The enrollment token is invalid, expired, or already used.")
   # Onboarding (DEC-17, P1-ONBOARD): an operator rejected the request.
   OnboardingRejected = error(:forbidden, "onboarding_rejected", "An operator rejected this onboarding request.")

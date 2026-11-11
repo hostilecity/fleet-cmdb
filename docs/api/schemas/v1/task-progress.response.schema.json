@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task progress response",
+  "description": "200 response to POST /api/v1/tasks/<id>/progress. Progress is recorded only while the task is running; for a task the server has already finished (for example timed out) it is ignored, and state says so.",
+  "type": "object",
+  "required": [
+    "id",
+    "state"
+  ],
+  "properties": {
+    "id": {
+      "description": "The task's id.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "state": {
+      "description": "The task's state on the server.",
+      "enum": [
+        "queued",
+        "claimed",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "refused",
+        "expired"
+      ]
+    }
+  }
+}

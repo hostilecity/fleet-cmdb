@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_08_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -620,6 +620,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
     t.check_constraint "selection_method::text = ANY (ARRAY['explicit'::character varying, 'tag'::character varying]::text[])", name: "task_batches_selection_method"
   end
 
+  create_table "task_late_results", force: :cascade do |t|
+    t.bigint "task_id", null: false
+    t.uuid "report_id", null: false
+    t.string "outcome", limit: 16, null: false
+    t.string "reason", limit: 32
+    t.integer "exit_status"
+    t.datetime "agent_started_at"
+    t.datetime "agent_finished_at", null: false
+    t.jsonb "details"
+    t.text "output"
+    t.boolean "output_truncated", default: false, null: false
+    t.string "digest", limit: 64, null: false
+    t.datetime "received_at", null: false
+    t.datetime "created_at", null: false
+    t.index ["task_id"], name: "index_task_late_results_on_task_id", unique: true
+    t.check_constraint "details IS NULL OR jsonb_typeof(details) = 'object'::text", name: "task_late_results_details_object"
+    t.check_constraint "octet_length(details::text) <= 32768", name: "task_late_results_details_size"
+    t.check_constraint "octet_length(output) <= 1048576", name: "task_late_results_output_size"
+    t.check_constraint "outcome::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'timed_out'::character varying, 'cancelled'::character varying, 'refused'::character varying]::text[])", name: "task_late_results_outcome"
+  end
+
   create_table "tasks", force: :cascade do |t|
     t.uuid "uuid", default: -> { "gen_random_uuid()" }, null: false
     t.bigint "task_batch_id", null: false
@@ -643,15 +664,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
     t.datetime "agent_finished_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.integer "progress_percent"
+    t.datetime "progress_reported_at"
+    t.uuid "result_report_id"
+    t.string "result_digest", limit: 64
+    t.datetime "result_received_at"
+    t.jsonb "result_details"
     t.index ["expires_at"], name: "index_tasks_queued_by_expiry", where: "((state)::text = 'queued'::text)"
     t.index ["host_id", "state"], name: "index_tasks_on_host_id_and_state"
     t.index ["lease_expires_at"], name: "index_tasks_open_by_lease", where: "((state)::text = ANY ((ARRAY['claimed'::character varying, 'running'::character varying])::text[]))"
     t.index ["task_batch_id"], name: "index_tasks_on_task_batch_id"
     t.index ["uuid"], name: "index_tasks_on_uuid", unique: true
+    t.check_constraint "(result_digest IS NULL) = (result_received_at IS NULL)", name: "tasks_result_received"
     t.check_constraint "(state::text = ANY (ARRAY['failed'::character varying, 'refused'::character varying]::text[])) = (reason IS NOT NULL)", name: "tasks_reason_for_failed_and_refused"
     t.check_constraint "jsonb_typeof(parameters) = 'object'::text", name: "tasks_parameters_object"
     t.check_constraint "octet_length(output) <= 1048576", name: "tasks_output_size"
     t.check_constraint "octet_length(parameters::text) <= 8192", name: "tasks_parameters_size"
+    t.check_constraint "octet_length(result_details::text) <= 32768", name: "tasks_result_details_size"
+    t.check_constraint "progress_percent >= 0 AND progress_percent <= 100", name: "tasks_progress_percent"
+    t.check_constraint "result_details IS NULL OR jsonb_typeof(result_details) = 'object'::text", name: "tasks_result_details_object"
     t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'claimed'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'timed_out'::character varying, 'cancelled'::character varying, 'refused'::character varying, 'expired'::character varying]::text[])", name: "tasks_state"
     t.check_constraint "timeout_seconds >= 1 AND timeout_seconds <= 86400", name: "tasks_timeout"
   end
@@ -753,6 +784,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
   add_foreign_key "task_batches", "operators"
+  add_foreign_key "task_late_results", "tasks"
   add_foreign_key "tasks", "hosts"
   add_foreign_key "tasks", "operators", column: "cancel_requested_by_id"
   add_foreign_key "tasks", "task_batches"
@@ -935,6 +967,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
       $function$
   SQL
 
+  create_function :task_late_results_guard, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.task_late_results_guard()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- A late result is kept as the agent sent it, beside a task that had already ended (P3-S04): never changed or deleted.
+        RAISE EXCEPTION 'late task results are never changed or deleted: % is not allowed', TG_OP
+          USING ERRCODE = 'insufficient_privilege';
+      END;
+      $function$
+  SQL
+
   create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
       CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
   SQL
@@ -977,5 +1022,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_100200) do
 
   create_trigger :tasks_no_truncate, sql_definition: <<-SQL
       CREATE TRIGGER tasks_no_truncate BEFORE TRUNCATE ON public.tasks FOR EACH STATEMENT EXECUTE FUNCTION tasks_guard()
+  SQL
+
+  create_trigger :task_late_results_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER task_late_results_no_truncate BEFORE TRUNCATE ON public.task_late_results FOR EACH STATEMENT EXECUTE FUNCTION task_late_results_guard()
+  SQL
+
+  create_trigger :task_late_results_immutable, sql_definition: <<-SQL
+      CREATE TRIGGER task_late_results_immutable BEFORE DELETE OR UPDATE ON public.task_late_results FOR EACH ROW EXECUTE FUNCTION task_late_results_guard()
   SQL
 end
