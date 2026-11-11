@@ -10,11 +10,19 @@
 //!   types it both supports and has enabled (FR-3.1), and a restart only of a service its local
 //!   allowlist names (owner, P3-D01 Q7).
 //!
-//! There is no poller or executor yet (P3-A02, P3-A03): [`IMPLEMENTED`] is empty, so this agent
-//! reports that it supports no task type and the server offers it none.
+//! - [`poller`] and [`ledger`]: polling, the durable record of every task's steps, refusals, recovery
+//!   after a crash, and result reporting (P3-A02). [`wire`] is the task API's JSON.
+//! - [`executor`]: the seam where P3-A03's executor plugs in.
+//!
+//! There is no executor yet (P3-A03): [`IMPLEMENTED`] is empty, so this agent reports that it supports
+//! no task type, the server offers it none, and the poller does not poll.
 
 pub mod catalog;
+pub mod executor;
+pub mod ledger;
+pub mod poller;
 pub mod settings;
+pub mod wire;
 
 use serde::Serialize;
 

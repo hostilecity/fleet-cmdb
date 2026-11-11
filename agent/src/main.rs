@@ -197,6 +197,7 @@ fn check_config(path: &Path) -> ExitCode {
     println!("  state_dir  = {}", config.state_dir.display());
     println!("  heartbeat  = {}", describe_interval(&config.heartbeat));
     println!("  inventory  = {}", describe_interval(&config.inventory));
+    println!("  task_poll  = {}", describe_interval(&config.task_poll));
     // P3-A01: a bad [tasks] section does not stop `run` (every task is off), but it fails here.
     if let Some(problem) = config.tasks.problem() {
         println!("  tasks      = none enabled");

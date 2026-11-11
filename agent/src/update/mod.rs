@@ -151,6 +151,8 @@ struct Inner {
     /// The kernel's id of this boot.
     boot_id: Option<String>,
     busy: AtomicBool,
+    /// The task poller holds a task (P3-A02): an update offer waits until it is reported.
+    task_in_flight: AtomicBool,
     memory: Mutex<Memory>,
 }
 
@@ -158,6 +160,17 @@ struct Inner {
 #[derive(Clone)]
 pub struct Updater {
     inner: Arc<Inner>,
+}
+
+/// Held by the task poller from the poll that may claim a task until that task is reported
+/// ([`Updater::task_slot`]). Dropping it lets update offers through again.
+#[derive(Debug)]
+pub struct TaskSlot<'a>(&'a AtomicBool);
+
+impl Drop for TaskSlot<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 struct BusyGuard<'a>(&'a AtomicBool);
@@ -256,6 +269,7 @@ impl Updater {
                 running: semver::Version::parse(AGENT_VERSION).expect("a SemVer package version"),
                 boot_id,
                 busy: AtomicBool::new(false),
+                task_in_flight: AtomicBool::new(false),
                 memory: Mutex::new(Memory::default()),
             }),
         }
@@ -271,6 +285,22 @@ impl Updater {
         if self.inner.busy.swap(true, Ordering::SeqCst) {
             return;
         }
+        // A task in flight defers the update (P3-A02, L7): the offer comes again with every heartbeat.
+        // `busy` is set before the check and the poller sets its flag before checking `busy`, both
+        // sequentially consistent, so at least one of the two sees the other.
+        if self.inner.task_in_flight.load(Ordering::SeqCst) {
+            self.inner.busy.store(false, Ordering::SeqCst);
+            if self
+                .inner
+                .note_once(&format!("deferred {}", directive.version))
+            {
+                tracing::info!(
+                    offered_version = %directive.version,
+                    "deferring the agent update: a task is in flight; it starts once the task is reported"
+                );
+            }
+            return;
+        }
         let inner = Arc::clone(&self.inner);
         let spawned = std::thread::Builder::new()
             .name("fleet-agent-update".into())
@@ -281,6 +311,25 @@ impl Updater {
         if let Err(e) = spawned {
             self.inner.busy.store(false, Ordering::SeqCst);
             tracing::error!("cannot start the update thread: {e}");
+        }
+    }
+
+    /// The task poller is about to claim a task (P3-A02, L7): while the returned slot is held, update
+    /// offers are deferred. `Err` says why no task may be claimed now: an update is being prepared, or
+    /// one is in progress until it is confirmed or rolled back (its record exists).
+    pub fn task_slot(&self) -> Result<TaskSlot<'_>, &'static str> {
+        let flag = &self.inner.task_in_flight;
+        flag.store(true, Ordering::SeqCst);
+        let slot = TaskSlot(flag);
+        if self.inner.busy.load(Ordering::SeqCst) {
+            return Err("an agent update is being prepared");
+        }
+        match Record::read(&self.inner.state_dir) {
+            Ok(None) => Ok(slot),
+            Ok(Some(_)) => {
+                Err("an agent update is in progress until it is confirmed or rolled back")
+            }
+            Err(_) => Err("the agent update record is unreadable"),
         }
     }
 

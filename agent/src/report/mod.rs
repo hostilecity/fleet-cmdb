@@ -55,6 +55,9 @@ use crate::config::Config;
 use crate::facts::host::{Host, RealHost};
 use crate::retry::{Backoff, RetryPolicy, Rng, SplitMix64};
 use crate::shutdown::Shutdown;
+use crate::tasks::executor::NoExecutor;
+use crate::tasks::poller::{Poller, TaskHint};
+use crate::tasks::wire::Api as TasksApi;
 use crate::update::Updater;
 
 pub use heartbeat::{ACK_RECORD, Ack, HEARTBEAT_PATH, Heartbeat, HeartbeatRequest};
@@ -126,11 +129,13 @@ fn run_with(
     let intervals = &intervals;
     let requests = ReportRequests::new();
     let requests = &requests;
+    let hint = TaskHint::default();
+    let hint = &hint;
     thread::scope(|scope| {
         let heartbeat = spawn_loop(scope, "heartbeat", || {
             let _stop = StopOnExit(shutdown);
             heartbeat_loop(
-                intervals, config, transport, shutdown, started, updater, requests,
+                intervals, config, transport, shutdown, started, updater, requests, hint,
             );
         });
         let inventory = spawn_loop(scope, "inventory", || {
@@ -165,11 +170,18 @@ fn run_with(
                 requests,
             );
         });
+        // P3-A02: the task poller. It opens the ledger and reports any task left unreported, and
+        // polls only when a type is enabled and supported (none in this build: no executor yet).
+        let tasks = spawn_loop(scope, "tasks", || {
+            let _stop = StopOnExit(shutdown);
+            tasks_loop(config, transport, shutdown, updater, hint);
+        });
         let handles = [
             ("heartbeat", heartbeat),
             ("inventory", inventory),
             ("config", config_report),
             ("packages", packages_report),
+            ("tasks", tasks),
         ];
         // A loop that could not start never runs its StopOnExit, and the others (the heartbeat loop
         // above all) run until shutdown: stop them now, before waiting on any of them, so the agent
@@ -224,6 +236,7 @@ impl Drop for StopOnExit<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn heartbeat_loop(
     intervals: &Intervals,
     config: &Config,
@@ -232,6 +245,7 @@ fn heartbeat_loop(
     started: Instant,
     updater: &Updater,
     requests: &ReportRequests,
+    hint: &TaskHint,
 ) {
     let mut heartbeat = Heartbeat::new(
         intervals,
@@ -242,13 +256,42 @@ fn heartbeat_loop(
     .record_first_ack_in(config.state_dir.clone())
     .with_updater(updater)
     .with_requests(requests)
-    .with_capabilities(crate::tasks::Capabilities::of(&config.tasks));
+    .with_capabilities(crate::tasks::Capabilities::of(&config.tasks))
+    .with_task_hint(hint);
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();
         let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());
         // Outcomes of updates wait on disk until the server accepts them; an update in progress with
         // no supervisor gets one. Both are cheap when there is nothing to do.
         updater.tick(transport);
+        if shutdown.wait(wait) {
+            break;
+        }
+    }
+}
+
+fn tasks_loop(
+    config: &Config,
+    transport: &dyn Transport,
+    shutdown: &Shutdown,
+    updater: &Updater,
+    hint: &TaskHint,
+) {
+    // P3-A03 replaces this with the registry of implemented types.
+    let executor = NoExecutor;
+    let api = TasksApi(transport);
+    let mut poller = Poller::new(
+        &config.state_dir,
+        &config.tasks,
+        &executor,
+        Some(updater),
+        shutdown,
+        hint,
+        config.task_poll,
+        Backoff::new(RetryPolicy::default(), seeded(9)),
+    );
+    while !shutdown.is_requested() {
+        let wait = poller.tick(&api, Instant::now(), SystemTime::now());
         if shutdown.wait(wait) {
             break;
         }

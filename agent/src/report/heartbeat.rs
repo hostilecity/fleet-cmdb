@@ -21,6 +21,7 @@ use super::time::{parse_rfc3339, rfc3339};
 use super::{Notes, Transport, jittered};
 use crate::retry::{Backoff, Rng};
 use crate::tasks::Capabilities;
+use crate::tasks::poller::TaskHint;
 use crate::update::Updater;
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
@@ -67,6 +68,8 @@ pub struct Heartbeat<'a, R: Rng> {
     intervals: &'a Intervals,
     /// Sent as `tasks` in every heartbeat ([`HeartbeatRequest::tasks`]).
     capabilities: Option<Capabilities>,
+    /// Where the task hint goes, if anywhere (P3-A02).
+    task_hint: Option<&'a TaskHint>,
     backoff: Backoff<R>,
     rng: R,
     started: Instant,
@@ -84,6 +87,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             requests: None,
             intervals,
             capabilities: None,
+            task_hint: None,
             backoff,
             rng,
             started,
@@ -118,6 +122,13 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
     /// is read at startup, so they are fixed for the life of the process.
     pub fn with_capabilities(mut self, capabilities: Option<Capabilities>) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// Raises `hint` when a heartbeat response says tasks are waiting, so the poller polls at once
+    /// rather than at its next interval (P3-S03, P3-A02).
+    pub fn with_task_hint(mut self, hint: &'a TaskHint) -> Self {
+        self.task_hint = Some(hint);
         self
     }
 
@@ -222,6 +233,10 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             }
         }
         self.intervals.apply(envelope.intervals);
+        if let Some(hint) = self.task_hint.filter(|_| envelope.tasks_available) {
+            tracing::debug!("the server says tasks are waiting; polling now");
+            hint.raise();
+        }
         // A `report_request` that was there but unreadable says nothing about the request: ending the
         // episode would make the next readable heartbeat raise it a second time.
         if let Some(requests) = self
@@ -382,6 +397,28 @@ mod tests {
                 .get("tasks")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_tasks_available_heartbeat_raises_the_task_hint() {
+        // P3-S03, P3-A02: the poller polls at once instead of at its interval.
+        let intervals = intervals();
+        let hint = TaskHint::default();
+        let mut hb = heartbeat(&intervals, Instant::now()).with_task_hint(&hint);
+        let transport = FakeTransport::new(vec![
+            ok(envelope(json!({}))),
+            ok(envelope(json!({"tasks_available": null}))),
+            ok(envelope(json!({"tasks_available": true}))),
+            Err(ApiError::Transport("down".into())),
+            ok(envelope(json!({"tasks_available": {}}))),
+        ]);
+        for _ in 0..4 {
+            hb.beat(&transport, None, Instant::now(), wall());
+            assert!(!hint.take());
+        }
+        hb.beat(&transport, None, Instant::now(), wall());
+        assert!(hint.take());
+        assert!(!hint.take(), "taken once");
     }
 
     #[test]

@@ -326,6 +326,9 @@ expect_one_version() {
     since=$t
     wait_until "a heartbeat from $version acknowledged by the server" 90 heartbeat_from "$version"
     [ "$(vm 'sha256sum /etc/fleet-agent/config.toml')" = "$config_sum" ] || fail "the configuration (and credential) changed"
+    for file in $empty_state_files; do
+        vm_ok "test -f $STATE/$file" || fail "$STATE/$file is gone"
+    done
     for file in $state_files; do
         vm_ok "test -s $STATE/$file" || fail "$STATE/$file is gone"
     done
@@ -366,8 +369,11 @@ vm "printf '%s\n' '$ENROLL_TOKEN' | /tmp/fleet-agent install --server https://$S
 vm "printf '%s\n' '' 'update_confirm_seconds = 60' '' '[heartbeat]' 'interval_seconds = 10' 'min_seconds = 10' 'max_seconds = 60' \
     >> /etc/fleet-agent/config.toml && $LIB/current/fleet-agent check-config > /dev/null && systemctl restart fleet-agent"
 config_sum=$(vm 'sha256sum /etc/fleet-agent/config.toml')
-state_files=$(vm "cd $STATE && ls -p | grep -v / | grep -v '^update' | tr '\n' ' '")
-echo "vm-test: installed; state files: $state_files"
+# Files with content must keep it; empty ones (the task ledger and its lock with no task yet, P3-A02)
+# must still be there.
+state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -size +0 ! -name 'update*' -printf '%f '")
+empty_state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -empty ! -name 'update*' -printf '%f '")
+echo "vm-test: installed; state files: $state_files; empty: $empty_state_files"
 
 # --- Scenarios ----------------------------------------------------------------------------------------
 

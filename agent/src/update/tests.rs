@@ -1000,3 +1000,30 @@ fn the_directive_helper_matches_the_contract_fields() {
     assert_conforms("v1", "heartbeat.response", &envelope);
     assert!(Directive::parse(&value).is_some());
 }
+
+#[test]
+fn a_task_in_flight_defers_an_update_and_an_update_in_progress_blocks_tasks() {
+    // P3-A02 (L7): the offer waits while the poller holds a task, and comes again with a heartbeat.
+    let rig = Rig::new();
+    let offer = rig.offer(NEW, 5);
+    let slot = rig.updater.task_slot().unwrap();
+    rig.updater.on_directive(&offer);
+    assert!(Record::read(rig.world.state()).unwrap().is_none());
+    assert!(rig.launcher.started.lock().unwrap().is_empty());
+    drop(slot);
+    rig.updater.on_directive(&offer);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    // Until the worker has handed over and finished.
+    while (rig.launcher.started.lock().unwrap().is_empty()
+        || rig.updater.inner.busy.load(Ordering::SeqCst))
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(rig.launcher.started.lock().unwrap().len(), 1);
+    // The update is in progress until it is confirmed or rolled back: no task may be claimed.
+    let error = rig.updater.task_slot().unwrap_err();
+    assert!(error.contains("confirmed or rolled back"), "{error}");
+    Record::remove(rig.world.state()).unwrap();
+    assert!(rig.updater.task_slot().is_ok());
+}
