@@ -16,12 +16,13 @@
 //!   checks, and the one way a task runs a program (fixed argument vector, no shell, clean
 //!   environment, process group, deadline, bounded output, transient units for package managers).
 //!
-//! No task type is implemented yet (P3-A04, P3-A06, P3-AGENT-UPDATES): [`IMPLEMENTED`] is empty, so this agent reports
-//! that it supports no task type, the server offers it none, and the poller does not poll.
+//! - The task types ([`IMPLEMENTED`]): [`refresh_reports`] (P3-A04) and [`restart_service`] (P3-A06).
+//!   This agent reports them as supported, so the server offers them where they are enabled and the
+//!   poller polls.
 
 pub mod catalog;
-// The executor's task-facing API (`Run`, `Program`, `parse`, `Finish`, ...) is used by the task types,
-// which come in P3-A04, P3-A06, and P3-AGENT-UPDATES, and by the tests; this build registers none (`IMPLEMENTED`).
+// Parts of the executor's API (transient units, recovery) are used only by package_manager types,
+// which come with P3-AGENT-UPDATES (#37), and by the tests.
 #[allow(dead_code)]
 pub mod executor;
 pub mod ledger;
@@ -29,15 +30,22 @@ pub mod poller;
 pub mod settings;
 pub mod wire;
 
+// P3-A04, P3-A06 (#36): the task types refresh_reports and restart_service.
+pub mod refresh_reports;
+pub mod restart_service;
+
 use serde::Serialize;
 
 use catalog::Catalog;
 use settings::TaskSettings;
 
 /// The task types this agent version has an implementation for: exactly the types in
-/// [`executor::Registry::production`] (checked by the tests), each in the catalog. Empty until the
-/// tasks are built (P3-A04, P3-A06, P3-AGENT-UPDATES).
-pub const IMPLEMENTED: &[&str] = &[];
+/// [`executor::Registry::production`] (checked by the tests), each in the catalog.
+pub const IMPLEMENTED: &[&str] = &[
+    // P3-A04, P3-A06 (#36).
+    refresh_reports::TYPE_ID,
+    restart_service::TYPE_ID,
+];
 
 /// `tasks` in `heartbeat.request` (docs/api/schemas/v1): what this host can run, and what its owner
 /// allowed. The server offers a type only when it is in both `supported` and `enabled`.
@@ -102,7 +110,10 @@ mod tests {
         for id in IMPLEMENTED {
             assert!(catalog.get(id).is_some(), "{id} is not in the catalog");
         }
-        let registry = executor::Registry::production(TaskSettings::default());
+        let registry = executor::Registry::production(
+            TaskSettings::default(),
+            std::sync::Arc::new(crate::report::Refresh::new()),
+        );
         let mut implemented = IMPLEMENTED.to_vec();
         implemented.sort_unstable();
         assert_eq!(registry.ids(), implemented);
@@ -113,7 +124,11 @@ mod tests {
         let catalog = Catalog::embedded().unwrap();
         let caps = Capabilities::of(&TaskSettings::default()).unwrap();
         assert_eq!(caps.catalog_version, catalog.catalog_version);
-        assert_eq!(caps.supported, IMPLEMENTED);
+        let mut implemented = IMPLEMENTED.to_vec();
+        implemented.sort_unstable();
+        assert_eq!(caps.supported, implemented);
+        assert!(caps.supported.contains(&"refresh_reports".to_owned()));
+        assert!(caps.supported.contains(&"restart_service".to_owned()));
         assert_eq!(caps.enabled, ["refresh_reports"]);
         assert_eq!(caps.local_config, "valid");
 

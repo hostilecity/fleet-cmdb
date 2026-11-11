@@ -848,12 +848,26 @@ fn recovery_waits_for_a_running_unit_and_then_reports_what_it_did() {
 }
 
 #[test]
-fn the_production_registry_implements_nothing_and_runs_nothing() {
-    let registry = Registry::production(TaskSettings::default());
+fn the_production_registry_implements_only_the_built_types() {
+    // #36: refresh_reports and restart_service; anything else is refused with nothing run.
+    let registry = Registry::production(
+        TaskSettings::default(),
+        Arc::new(crate::report::Refresh::new()),
+    );
+    let mut implemented = crate::tasks::IMPLEMENTED.to_vec();
+    implemented.sort_unstable();
+    assert_eq!(registry.ids(), implemented);
     for id in Catalog::embedded().unwrap().ids() {
-        assert!(!registry.implements(id), "{id}");
+        assert_eq!(registry.implements(id), implemented.contains(&id), "{id}");
     }
-    let task = delivered("refresh_reports", json!({}), 600);
+    assert!(registry.implements("refresh_reports"));
+    assert!(registry.implements("restart_service"));
+    assert!(
+        registry
+            .check(&delivered("refresh_reports", json!({}), 600))
+            .is_ok()
+    );
+    let task = delivered("reboot", json!({}), 600);
     assert_eq!(registry.check(&task), Err("not_supported"));
     let ran = registry.run(&task, &TestControl::default()).unwrap();
     assert_eq!(
@@ -861,10 +875,33 @@ fn the_production_registry_implements_nothing_and_runs_nothing() {
         (Outcome::Failed, Some("agent_error"))
     );
     assert!(ran.output.is_empty());
+    // Neither type runs in a transient unit, so recovery asks systemd nothing about them.
+    for id in ["refresh_reports", "restart_service"] {
+        assert_eq!(registry.recover(&ledger_task(id)), Recovered::Nothing);
+    }
+}
+
+#[test]
+fn recovery_asks_about_units_only_for_a_package_manager_type() {
+    let units = fake_units();
+    *units.last.lock().unwrap() = status("active", "running", None, None);
+    let registry = registry(
+        vec![
+            Fixed::new("refresh_reports", vec![]),
+            Fixed::new("apply_package_updates", vec![]),
+        ],
+        units,
+    );
     assert_eq!(
         registry.recover(&ledger_task("refresh_reports")),
         Recovered::Nothing
     );
+    assert!(units.calls().is_empty());
+    assert_eq!(
+        registry.recover(&ledger_task("apply_package_updates")),
+        Recovered::Running
+    );
+    assert!(!units.calls().is_empty());
 }
 
 // --- Privilege smoke (P3-A05): run as root on systemd, inside the agent unit's sandbox, by

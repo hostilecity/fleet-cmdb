@@ -543,26 +543,28 @@ fn every_local_refusal_is_reported_with_its_reason_and_nothing_starts() {
 }
 
 #[test]
-fn this_build_never_polls_and_would_refuse_anything_not_supported() {
-    // The registry is empty (P3-A03, `tasks::IMPLEMENTED`): no type is implemented, so there is
-    // nothing to poll for.
+fn this_build_polls_for_refresh_reports_by_default_and_refuses_what_it_lacks() {
+    // #36: refresh_reports is implemented and on by default (DEC-14), so a default agent polls.
     let rig = Rig::new(TaskSettings::default());
-    let executor = super::super::executor::Registry::production(TaskSettings::default());
-    let server = Server::with(vec![task(A, "refresh_reports", json!({}))]);
-    let mut poller = rig.poller(&executor, None);
-    assert!(!poller.polls());
-    rig.hint.raise();
-    let wait = poller.tick(&server, Instant::now(), wall());
-    assert_eq!(wait, IDLE);
-    assert_eq!(server.polls.get(), 0);
-    // The ledger is open (and the hint used up) all the same, so earlier tasks would be reported.
-    assert!(rig.dir.join(LEDGER_FILE).exists());
-    assert!(!rig.hint.take());
-    // Should a task arrive anyway, it is refused before anything is recorded as started.
+    let executor = super::super::executor::Registry::production(
+        TaskSettings::default(),
+        std::sync::Arc::new(crate::report::Refresh::new()),
+    );
+    let poller = rig.poller(&executor, None);
+    assert!(poller.polls());
+    // A type enabled here that this version lacks is refused before anything is recorded started.
+    let rig = Rig::new(settings(
+        "[tasks]\nenabled = [\"refresh_reports\", \"apply_package_updates\"]\n",
+    ));
+    let poller = rig.poller(&executor, None);
     assert_eq!(
-        poller.refusal(&task(A, "refresh_reports", json!({})), wall()),
+        poller.refusal(&task(A, "apply_package_updates", json!({})), wall()),
         Some((Outcome::Refused, reason::NOT_SUPPORTED))
     );
+    // And with nothing enabled there is nothing to poll for.
+    let rig = Rig::new(settings("[tasks]\nenabled = []\n"));
+    let poller = rig.poller(&executor, None);
+    assert!(!poller.polls());
 }
 
 #[test]

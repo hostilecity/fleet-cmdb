@@ -42,10 +42,10 @@
 //! running, [`Executor::run`] returns `None`, the ledger keeps the task `started`, and the next start
 //! waits for the unit and reports it ([`Executor::recover`]).
 //!
-//! This build implements no task type ([`super::IMPLEMENTED`] is empty: `refresh_reports` and
-//! `restart_service` are P3-A04 and P3-A06 (#36), `apply_package_updates` is P3-AGENT-UPDATES (#37)),
-//! so every task is refused `not_supported` before anything is started. The tests exercise the
-//! framework with test-only types.
+//! This build implements `refresh_reports` ([`super::refresh_reports`], P3-A04) and `restart_service`
+//! ([`super::restart_service`], P3-A06), both #36 ([`super::IMPLEMENTED`]); `apply_package_updates`
+//! (P3-AGENT-UPDATES, #37) is refused `not_supported` before anything is started. The framework's tests
+//! use test-only types.
 
 pub mod output;
 pub mod spawn;
@@ -265,6 +265,33 @@ impl Run<'_> {
             .deadline
             .saturating_duration_since(Instant::now())
     }
+
+    // --- P3-A04, P3-A06 (#36): for a job that waits between programs, or without one.
+
+    /// Why a job that is waiting must stop now, if it must: the deadline passed (`TimedOut`), or, for
+    /// an interruptible type, the agent is stopping (`Interrupted`) or the server cancelled it
+    /// (`Cancelled`). Call it often while waiting: it also keeps the server's progress up to date. A
+    /// type that cannot be interrupted is stopped only by its deadline here; a program it runs keeps
+    /// the shutdown rules of [`spawn::run`].
+    pub fn stopped(&self) -> Option<Stop> {
+        if Instant::now() >= self.limits.deadline {
+            return Some(Stop::TimedOut);
+        }
+        if !self.limits.interruptible {
+            // Progress only: a cancel never stops this task (DEC-14).
+            self.control.cancel_requested();
+            return None;
+        }
+        if self.control.shutdown().is_requested() {
+            return Some(Stop::Interrupted);
+        }
+        self.control.cancel_requested().then_some(Stop::Cancelled)
+    }
+
+    /// Whether the agent is stopping.
+    pub fn stopping(&self) -> bool {
+        self.control.shutdown().is_requested()
+    }
 }
 
 fn rank(privilege: Privilege) -> u8 {
@@ -283,9 +310,15 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// The task types this agent version implements ([`super::IMPLEMENTED`]): none yet.
-    pub fn production(settings: TaskSettings) -> Self {
-        Self::new(Vec::new(), settings, Box::new(unit::Systemd))
+    /// The task types this agent version implements ([`super::IMPLEMENTED`]). `reports` is how
+    /// `refresh_reports` asks the report loops for fresh reports ([`crate::report::refresh`]).
+    pub fn production(settings: TaskSettings, reports: Arc<crate::report::Refresh>) -> Self {
+        let tasks: Vec<Box<dyn TaskImpl>> = vec![
+            // P3-A04, P3-A06 (#36): refresh_reports and restart_service.
+            Box::new(super::refresh_reports::RefreshReports::new(reports)),
+            Box::new(super::restart_service::RestartService::production()),
+        ];
+        Self::new(tasks, settings, Box::new(unit::Systemd))
     }
 
     pub fn new(
@@ -400,12 +433,14 @@ impl Executor for Registry {
     }
 
     fn recover(&self, task: &ledger::Task) -> Recovered {
-        // Only a type this version runs can have left a unit; this build has none, so nothing is asked.
-        if !task
-            .task_type
-            .as_deref()
-            .is_some_and(|t| self.implements(t))
-        {
+        // Only a type this version runs, and only one whose programs run in transient units (a
+        // `package_manager` type), can have left a unit. Any other started a child of the agent,
+        // which ended with it, so systemd is not asked (#36: an unreadable unit state would otherwise
+        // hold polling for a refresh_reports or restart_service task that cannot have left one).
+        if !task.task_type.as_deref().is_some_and(|t| {
+            self.implements(t)
+                && Self::entry(t).is_some_and(|e| e.privilege == Privilege::PackageManager)
+        }) {
             return Recovered::Nothing;
         }
         let capture = Arc::new(Mutex::new(Capture::default()));
