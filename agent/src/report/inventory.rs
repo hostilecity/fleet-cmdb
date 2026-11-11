@@ -169,6 +169,9 @@ pub struct Reporter<'a, R: Rng> {
     requested: bool,
     /// A report built for a request was accepted ([`Reporter::take_answered`]).
     answered: bool,
+    /// How the last report built for a request ended, for the `refresh_reports` task (P3-A04, #36;
+    /// [`Reporter::take_requested_done`]).
+    requested_done: Option<super::refresh::Done>,
     /// The real time the current tick began, so a delay after a failure counts from the failure, not
     /// from the tick's (simulated) `now` ([`super::failed_at`], review of #117).
     tick_started: Instant,
@@ -196,6 +199,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             new_id: new_report_id,
             requested: false,
             answered: false,
+            requested_done: None,
             tick_started: Instant::now(),
         }
     }
@@ -203,6 +207,12 @@ impl<'a, R: Rng> Reporter<'a, R> {
     /// Whether a report built for a request has been accepted since the last call.
     pub fn take_answered(&mut self) -> bool {
         std::mem::take(&mut self.answered)
+    }
+
+    /// How the last report built for a request ended since the last call: accepted, or rejected for
+    /// its content, and when it was built (P3-A04, [`super::refresh`]).
+    pub fn take_requested_done(&mut self) -> Option<super::refresh::Done> {
+        self.requested_done.take()
     }
 
     /// Asks for one extra report at the next [`Reporter::tick`], built from facts collected then, which
@@ -365,6 +375,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
         let _entered = span.enter();
         let reason = pending.reason.as_str();
         let requested = pending.reason == Reason::Requested;
+        let built_at = pending.built_at;
         let attempt = self.backoff.failures() + 1;
         match transport.post(INVENTORY_PATH, &pending.body) {
             Ok(response) => {
@@ -394,6 +405,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
                     tracing::info!(reason, attempt, request_id, "inventory report sent");
                 }
                 self.answered |= requested;
+                self.settle_requested(requested, built_at, true);
                 self.accepted(now);
             }
             Err(error) if rejected_for_content(&error) => {
@@ -409,6 +421,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
                     request_id = error.request_id().unwrap_or(""),
                     "the server rejected the inventory report; it will not be retried, and the next report follows the normal schedule"
                 );
+                self.settle_requested(requested, built_at, false);
                 self.finished(now);
             }
             Err(error) => {
@@ -442,6 +455,13 @@ impl<'a, R: Rng> Reporter<'a, R> {
         }
         self.record = Some(record);
         self.finished(now);
+    }
+
+    /// Records how a report built for a request ended, for the `refresh_reports` task (P3-A04).
+    fn settle_requested(&mut self, requested: bool, built_at: Instant, accepted: bool) {
+        if requested {
+            self.requested_done = Some(super::refresh::Done { built_at, accepted });
+        }
     }
 
     /// The pending report is done with (accepted or rejected): schedule the next one.
