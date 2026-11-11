@@ -66,7 +66,7 @@ RSpec.describe TaskBatches do
     end
 
     it "stores only the validated parameters" do
-      allow(TaskPolicy).to receive(:restart_allowlist).and_return([ "nginx.service" ])
+      allow_restart("nginx.service")
       task = described_class.create!(request(task_host, type: "restart_service", parameters: { "service" => "nginx.service" }), operator:).tasks.sole
       expect(task.reload.parameters).to eq("service" => "nginx.service")
       expect(task.timeout_seconds).to eq(300)
@@ -84,7 +84,7 @@ RSpec.describe TaskBatches do
       disabled = task_host(enabled: %w[refresh_reports])
       cloned = task_host
       cloned.update_columns(machine_id_mismatch_at: Time.current)
-      allow(TaskPolicy).to receive(:restart_allowlist).and_return([ "nginx.service" ])
+      allow_restart("nginx.service")
 
       hosts = [ eligible, pending, revoked, unreported, old_catalog, unsupported, disabled, cloned ]
       result = described_class.create!(request(hosts, type: "restart_service", parameters: { "service" => "nginx.service" }, confirm_host_count: 1), operator:)
@@ -141,7 +141,7 @@ RSpec.describe TaskBatches do
     it "refuses what the server's policy does not allow (DEC-15)" do
       expect(problems(request(host, type: "restart_service", parameters: { "service" => "nginx.service" })))
         .to eq([ [ "/parameters/service", "is not on the server's restart allowlist" ] ])
-      allow(TaskPolicy).to receive(:restart_allowlist).and_return([ "ssh.service" ])
+      allow(TaskPolicy).to receive(:restart_allowlist).and_return([ TaskAllowedService.new(service: "ssh.service") ]) # as if listed anyway
       expect(problems(request(host, type: "restart_service", parameters: { "service" => "ssh.service" })))
         .to eq([ [ "/parameters/service", "is a protected service, which is never restarted remotely" ] ])
     end
@@ -183,6 +183,35 @@ RSpec.describe TaskBatches do
     it "creates up to 25 tasks" do
       hosts = Array.new(25) { task_host }
       expect(described_class.create!(request(hosts, confirm_host_count: 25), operator:).tasks.size).to eq(25)
+    end
+  end
+
+  describe "task settings (P3-S06)" do
+    it "excludes hosts that no allowlist entry covers, ahead of the agent's own list (Q31)" do
+      web = task_host(tags: %w[web])
+      db = task_host(tags: %w[db], services: [])
+      local = task_host(tags: %w[web], services: [])
+      allow_restart("nginx.service", tag: "web")
+      result = described_class.create!(request([ web, db, local ], type: "restart_service", parameters: { "service" => "nginx.service" }), operator:)
+      expect(result.tasks.map(&:host)).to eq([ web ])
+      expect(result.excluded.map { |e| [ e.host_id, e.reason ] }).to eq([ [ db.id, "not_allowed_on_server" ], [ local.id, "not_allowed_locally" ] ])
+      expect(problems(request([ db ], type: "restart_service", parameters: { "service" => "nginx.service" })))
+        .to eq([ [ "/target", "selects no host that can run this task type" ] ])
+    end
+
+    it "holds a batch to the configured limit, never above the hard cap" do
+      TaskSettings.update_limits!({ "max_hosts_per_batch" => "2" }, actor: operator)
+      hosts = Array.new(3) { task_host(tags: %w[small]) }
+      expect(problems(request(hosts))).to eq([ [ "/target/host_ids", "has 3 hosts; a batch may target at most 2" ] ])
+      expect(problems(request([], "target" => { "tag" => "small" }))).to eq([ [ "/target/tag", "selects more than 2 hosts; a batch may target at most 2" ] ])
+      expect(described_class.create!(request(hosts.first(2)), operator:).tasks.size).to eq(2)
+    end
+
+    it "gives new tasks the type's configured expiry" do
+      TaskSettings.update_limits!({ "expiry_hours" => { "refresh_reports" => "2" } }, actor: operator)
+      freeze_time do
+        expect(described_class.create!(request(task_host), operator:).tasks.sole.expires_at).to eq(2.hours.from_now)
+      end
     end
   end
 end

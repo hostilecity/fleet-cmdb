@@ -37,7 +37,7 @@
       ]
     },
     "reason": {
-      "description": "Why the task failed or was refused: required for those outcomes, and null or absent for the others. failed: nonzero_exit, interrupted (the agent stopped mid-task, or found a started task without a result when it started again), lock_timeout (the package manager's lock stayed held), or agent_error. refused: unknown_type, invalid_params, not_supported, not_enabled_locally, not_allowed_locally, or protected_service.",
+      "description": "Why the task failed or was refused: required for those outcomes, and null or absent for the others. failed: nonzero_exit, interrupted (the agent stopped mid-task, or found a started task without a result when it started again), lock_timeout (the package manager's lock stayed held), agent_error, or not_run (the agent holds the task in its ledger but never ran it, because the server never answered its start with run: true; it sends this when the server delivers that id again, so the task is closed instead of waiting for its expiry; P3-S05). refused: unknown_type, invalid_params, not_supported, not_enabled_locally, not_allowed_locally, or protected_service.",
       "type": [
         "string",
         "null"
@@ -47,6 +47,7 @@
         "interrupted",
         "lock_timeout",
         "agent_error",
+        "not_run",
         "unknown_type",
         "invalid_params",
         "not_supported",
@@ -167,7 +168,8 @@
               "nonzero_exit",
               "interrupted",
               "lock_timeout",
-              "agent_error"
+              "agent_error",
+              "not_run"
             ]
           }
         }

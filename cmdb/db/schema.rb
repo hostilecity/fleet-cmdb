@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_08_121000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_08_140000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -626,6 +626,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_121000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "task_allowed_services", force: :cascade do |t|
+    t.string "service", limit: 64, null: false
+    t.string "tag", limit: 32
+    t.bigint "added_by_id", null: false
+    t.datetime "created_at", null: false
+    t.index ["service", "tag"], name: "index_task_allowed_services_on_service_and_tag", unique: true, nulls_not_distinct: true
+    t.check_constraint "service::text ~ '^[a-z0-9][a-z0-9_.-]{0,55}\\.service$'::text", name: "task_allowed_services_service_format"
+    t.check_constraint "tag IS NULL OR tag::text ~ '^[a-z0-9][a-z0-9_-]{0,31}$'::text", name: "task_allowed_services_tag_format"
+  end
+
   create_table "task_batches", force: :cascade do |t|
     t.bigint "operator_id", null: false
     t.string "task_type", limit: 64, null: false
@@ -696,7 +706,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_121000) do
     t.string "result_digest", limit: 64
     t.datetime "result_received_at"
     t.jsonb "result_details"
-    t.index ["expires_at"], name: "index_tasks_queued_by_expiry", where: "((state)::text = 'queued'::text)"
+    t.index ["expires_at"], name: "index_tasks_waiting_by_expiry", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'claimed'::character varying])::text[]))"
     t.index ["host_id", "state"], name: "index_tasks_on_host_id_and_state"
     t.index ["lease_expires_at"], name: "index_tasks_open_by_lease", where: "((state)::text = ANY ((ARRAY['claimed'::character varying, 'running'::character varying])::text[]))"
     t.index ["task_batch_id"], name: "index_tasks_on_task_batch_id"
@@ -809,6 +819,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_121000) do
   add_foreign_key "host_status_events", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
+  add_foreign_key "task_allowed_services", "operators", column: "added_by_id"
   add_foreign_key "task_batches", "operators"
   add_foreign_key "task_late_results", "tasks"
   add_foreign_key "tasks", "hosts"
@@ -969,6 +980,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_121000) do
             USING ERRCODE = 'check_violation';
         END IF;
 
+        -- A cancel request (P3-S05) is recorded once, on a running task, and never changed or withdrawn afterwards.
+        IF OLD.cancel_requested_at IS NOT NULL
+           AND (NEW.cancel_requested_at IS DISTINCT FROM OLD.cancel_requested_at
+                OR NEW.cancel_requested_by_id IS DISTINCT FROM OLD.cancel_requested_by_id) THEN
+          RAISE EXCEPTION 'a task''s cancel request never changes once recorded'
+            USING ERRCODE = 'check_violation';
+        END IF;
+        IF OLD.cancel_requested_at IS NULL AND NEW.cancel_requested_at IS NOT NULL
+           AND (OLD.state <> 'running' OR NEW.cancel_requested_by_id IS NULL) THEN
+          RAISE EXCEPTION 'a cancel request is recorded only on a running task, with the operator who made it'
+            USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- A queued task fails only as not_run: its agent closing a task it held and never ran (P3-S05).
+        IF OLD.state = 'queued' AND NEW.state = 'failed' AND NEW.reason IS DISTINCT FROM 'not_run' THEN
+          RAISE EXCEPTION 'a queued task fails only as not_run'
+            USING ERRCODE = 'check_violation';
+        END IF;
+
         -- Only the transitions in Task::TRANSITIONS.
         IF NEW.state IS DISTINCT FROM OLD.state
            AND (OLD.state::text, NEW.state::text) NOT IN (
@@ -976,6 +1006,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_121000) do
              ('queued', 'cancelled'),
              ('queued', 'refused'),
              ('queued', 'expired'),
+             ('queued', 'failed'),
              ('claimed', 'queued'),
              ('claimed', 'running'),
              ('claimed', 'failed'),

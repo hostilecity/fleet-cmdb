@@ -191,6 +191,10 @@ class Host < ApplicationRecord
 
   # Transitions that end the host's current credential.
   REVOKING_EVENTS = %i[revoke retire].freeze
+  # A host whose credential is revoked, that starts re-enrolling, or that is retired gets none of the tasks queued
+  # for it: they were meant for the machine it was (threat model V9, P3-S05). Its queued and claimed tasks are
+  # cancelled, with the same actor; a running one ends by its result or its lease.
+  TASK_CANCELLING_EVENTS = %i[revoke begin_reenrollment retire].freeze
 
   def transition!(event, actor:, details: {})
     rule = TRANSITIONS.fetch(event)
@@ -208,6 +212,7 @@ class Host < ApplicationRecord
       revoked = REVOKING_EVENTS.include?(event) ? revoke_active_credentials : {}
       Audit.record(actor:, action: rule[:action], target: self,
                    changes: { "enrollment_state" => [ before, rule[:to] ] }.merge(revoked, details))
+      tasks.where(state: TaskCancellation::UNSTARTED).order(:id).lock.each { |task| task.cancel!(actor:) } if TASK_CANCELLING_EVENTS.include?(event)
       FleetBroadcast.hosts_changed([ id ])
     ensure
       @transitioning = false

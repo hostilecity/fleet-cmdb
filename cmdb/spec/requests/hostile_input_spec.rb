@@ -320,6 +320,31 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         end
       end
 
+      it "escapes Settings: Tasks, its removal confirmation, and task settings entries in the audit log (P3-S06)" do
+        entry = TaskAllowedService.create!(service: "nginx.service", tag: "web", added_by: hostile_operator, created_at: Time.current)
+        AuditEntry.create!(actor_type: "operator", actor_id: hostile_operator.id, action: Audit::Actions::TASK_SETTING_SERVICE_ADDED, target_type: "TaskAllowedService",
+                           target_id: entry.id, changeset: { "service" => text, "hosts" => text, "allowlist" => [ [ text ], [ text, text ] ] }, occurred_at: Time.current)
+        AuditEntry.create!(actor_type: "operator", actor_id: hostile_operator.id, action: Audit::Actions::TASK_SETTING_LIMITS_CHANGED,
+                           changeset: { "tasks.poll_seconds" => [ text, text ] }, occurred_at: Time.current)
+
+        get "/settings/tasks"
+        expect(response).to have_http_status(:ok)
+        expect_no_injected_markup("/settings/tasks")
+        expect(page.css("#tag option").map(&:text).join).to include(fit(32)[/\A[^[:cntrl:]]+/].to_s) # the host's tags, as text
+
+        post "/settings/tasks/services", params: { service: text, tag: text }
+        expect(response).to have_http_status(:forbidden)
+        expect_no_injected_markup("POST /settings/tasks/services")
+
+        get "/settings/tasks/services/#{entry.id}/remove"
+        expect_no_injected_markup("/settings/tasks/services/:id/remove")
+
+        get "/audit"
+        expect_no_injected_markup("/audit (task settings)")
+        expect_shown_as_text(text, "/audit (task settings)")
+        expect(page.text).to include("Restartable services", "Task limits")
+      end
+
       it "escapes a retired host's name and the retirement notice" do
         Host.where(id: host.id).update_all(enrollment_state: "retired") # the transition methods validate; a stored row may not pass them
 
@@ -342,7 +367,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                host_vulnerabilities#show host_vulnerabilities#package
                host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
-               second_factors#show second_factors#setup second_factors#new_recovery_codes
+               second_factors#show second_factors#setup second_factors#new_recovery_codes task_settings#show task_settings#confirm_remove
                rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel
                data_sources#show data_sources#confirm_refresh data_sources#import
                rules#index rules#show rules#new rules#edit rules#confirm_disable rules#confirm_enable rule_versions#show rule_imports#new rule_imports#show]

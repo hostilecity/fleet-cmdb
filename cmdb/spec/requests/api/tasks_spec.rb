@@ -43,7 +43,7 @@ RSpec.describe "Task API", type: :request do
   end
 
   def restart_task(**options)
-    allow(TaskPolicy).to receive(:restart_allowlist).and_return(%w[nginx.service])
+    allow_restart("nginx.service") unless TaskAllowedService.exists?(service: "nginx.service")
     queued_task(type: "restart_service", parameters: { "service" => "nginx.service" }, **options)
   end
 
@@ -59,7 +59,7 @@ RSpec.describe "Task API", type: :request do
     it "answers with no task when there is nothing to do (task-poll.response)" do
       poll
       expect(response).to have_http_status(:ok)
-      expect(json).to eq("task" => nil)
+      expect(json).to eq("task" => nil, "poll_seconds" => 30)
       conforms("task-poll.response")
     end
 
@@ -71,7 +71,7 @@ RSpec.describe "Task API", type: :request do
         expect(response).to have_http_status(:ok)
         conforms("task-poll.response")
         expect(json).to eq("task" => { "id" => older.uuid, "type" => "restart_service", "parameters" => { "service" => "nginx.service" },
-                                       "timeout_seconds" => 300, "catalog_version" => TaskCatalog.current.version })
+                                       "timeout_seconds" => 300, "catalog_version" => TaskCatalog.current.version }, "poll_seconds" => 30)
         expect(older.reload).to have_attributes(state: "claimed", claimed_at: Time.current, lease_expires_at: Time.current + AgentTasks::CLAIM_LEASE)
       end
       entry = entries(Audit::Actions::TASK_CLAIMED, older).sole
@@ -104,7 +104,7 @@ RSpec.describe "Task API", type: :request do
       poll
       start(task)
       poll
-      expect(json).to eq("task" => nil)
+      expect(json).to eq("task" => nil, "poll_seconds" => 30)
       expect(task.reload.state).to eq("running")
       expect(host.tasks.where(state: "claimed")).to be_empty
     end
@@ -112,7 +112,7 @@ RSpec.describe "Task API", type: :request do
     it "never delivers a queued task past its expiry, by the database clock (AC-3.8)" do
       expired = queued_task(now: 24.hours.ago - 1.second)
       poll
-      expect(json).to eq("task" => nil)
+      expect(json).to eq("task" => nil, "poll_seconds" => 30)
       expect(expired.reload.state).to eq("queued") # the expiry job (P3-S05) marks it expired; the poll only skips it
     end
 
@@ -123,20 +123,25 @@ RSpec.describe "Task API", type: :request do
       expect(json.dig("task", "id")).to eq(fresh.uuid)
     end
 
-    it "does not deliver a claimed task again after its expiry" do
+    it "expires a claimed task past its expiry instead of delivering it again, and moves on to the next (P3-S05)" do
       task = queued_task(now: 24.hours.ago + 2.seconds)
       poll
       expect(json.dig("task", "id")).to eq(task.uuid)
+      fresh = queued_task
       sleep 2.1 # the database clock passes the expiry
       poll
-      expect(json).to eq("task" => nil)
-      expect(task.reload.state).to eq("claimed") # the lease job (P3-S05) returns it to the queue, where it expires
+      expect(json.dig("task", "id")).to eq(fresh.uuid) # the expired claim no longer blocks the host
+      expect(task.reload.state).to eq("expired")
+      expect(entries(Audit::Actions::TASK_REQUEUED, task).sole).to have_attributes(actor_type: "system")
+      expect(entries(Audit::Actions::TASK_EXPIRED, task).sole).to have_attributes(actor_type: "system")
+      start(task)
+      expect(json).to eq("id" => task.uuid, "state" => "expired", "run" => false)
     end
 
     it "refuses at claim time a task that no longer passes the server's policy, and delivers the next one (P3-S06, threat model C14)" do
       restart = restart_task(now: 1.minute.ago)
       refresh = queued_task
-      allow(TaskPolicy).to receive(:restart_allowlist).and_return([]) # removed from the allowlist while queued
+      TaskAllowedService.delete_all # removed from the allowlist while queued
       poll
       expect(json.dig("task", "id")).to eq(refresh.uuid)
       expect(restart.reload).to have_attributes(state: "refused", reason: "not_allowed_on_server")
@@ -147,9 +152,9 @@ RSpec.describe "Task API", type: :request do
     it "refuses a claimed task that no longer passes when it would be delivered again" do
       task = restart_task
       poll
-      allow(TaskPolicy).to receive(:restart_allowlist).and_return([])
+      TaskAllowedService.delete_all
       poll
-      expect(json).to eq("task" => nil)
+      expect(json).to eq("task" => nil, "poll_seconds" => 30)
       expect(task.reload).to have_attributes(state: "refused", reason: "not_allowed_on_server")
     end
 
@@ -157,7 +162,7 @@ RSpec.describe "Task API", type: :request do
       task = queued_task
       stub_catalog_without("refresh_reports")
       poll
-      expect(json).to eq("task" => nil)
+      expect(json).to eq("task" => nil, "poll_seconds" => 30)
       expect(task.reload).to have_attributes(state: "refused", reason: "unknown_type")
     end
 
@@ -166,7 +171,7 @@ RSpec.describe "Task API", type: :request do
       2.times { queued_task }
       stub_catalog_without("refresh_reports")
       poll
-      expect(json).to eq("task" => nil)
+      expect(json).to eq("task" => nil, "poll_seconds" => 30)
       expect(host.tasks.pluck(:state).tally).to eq("refused" => 1, "queued" => 1)
     end
 
@@ -174,7 +179,7 @@ RSpec.describe "Task API", type: :request do
       other, = task_agent(hostname: "vm-02.example.lan")
       task = queued_task(for_host: other)
       poll
-      expect(json).to eq("task" => nil)
+      expect(json).to eq("task" => nil, "poll_seconds" => 30)
       expect(task.reload.state).to eq("queued")
     end
 
@@ -224,10 +229,14 @@ RSpec.describe "Task API", type: :request do
       conforms("task-start.response")
     end
 
-    it "tells the agent not to run a task that is back in the queue" do
+    it "tells the agent not to run a task that is back in the queue, and lets it start once the next poll claims it again (threat model L2, P3-S05)" do
       task.reload.requeue!(actor: Audit::SYSTEM)
       start(task)
       expect(json).to include("state" => "queued", "run" => false)
+      poll
+      expect(json.dig("task", "id")).to eq(task.uuid) # the same id: the agent finds it in its ledger, never executed
+      start(task)
+      expect(json).to include("state" => "running", "run" => true)
     end
 
     it "refuses, and tells the agent not to run, a task that stopped passing the server's policy after it was claimed" do
@@ -494,6 +503,132 @@ RSpec.describe "Task API", type: :request do
       expect(response).to have_http_status(:ok)
       report(running_task, result_payload(output: "x" * 1.megabyte))
       expect_error(:content_too_large, "payload_too_large")
+    end
+  end
+
+  describe "task controls (P3-S05, P3-S06)" do
+    it "expires a claimed task whose start arrives after its expiry, before the job ran, instead of starting it (review of #167)" do
+      task = queued_task(now: 24.hours.ago + 2.seconds)
+      poll
+      sleep 2.1 # the database clock passes the expiry
+      start(task)
+      expect(json).to eq("id" => task.uuid, "state" => "expired", "run" => false)
+      expect(entries(Audit::Actions::TASK_EXPIRED, task).sole).to have_attributes(actor_type: "system")
+      expect(entries(Audit::Actions::TASK_STARTED, task)).to be_empty
+    end
+
+    it "sends the poll interval hint from the settings" do
+      TaskSettings.update_limits!({ "poll_seconds" => "120" }, actor: operator)
+      poll
+      expect(json).to eq("task" => nil, "poll_seconds" => 120)
+      conforms("task-poll.response")
+    end
+
+    it "names a running interruptible task the operator asked to cancel, in the poll and progress responses, until its result" do
+      task = running_task
+      poll
+      expect(json).not_to have_key("cancel")
+      progress(task)
+      expect(json).to eq("id" => task.uuid, "state" => "running")
+      TaskCancellation.cancel_task!(task, operator:)
+      poll
+      expect(json).to eq("task" => nil, "poll_seconds" => 30, "cancel" => { "id" => task.uuid })
+      conforms("task-poll.response")
+      progress(task)
+      expect(json).to eq("id" => task.uuid, "state" => "running", "cancel" => { "id" => task.uuid })
+      conforms("task-progress.response")
+      report(task, result_payload(outcome: "cancelled", exit_status: nil, details: nil))
+      expect(task.reload.state).to eq("cancelled")
+      expect(entries(Audit::Actions::TASK_CANCELLED, task).sole).to have_attributes(actor_type: "host")
+      poll
+      expect(json).not_to have_key("cancel")
+      progress(task)
+      expect(json).to eq("id" => task.uuid, "state" => "cancelled")
+    end
+
+    it "never names a non-interruptible task: it runs to completion (Q17)" do
+      task = running_task(type: "restart_service")
+      TaskCancellation.cancel_task!(task, operator:)
+      poll
+      expect(json).not_to have_key("cancel")
+      progress(task)
+      expect(json).not_to have_key("cancel")
+      report(task)
+      expect(task.reload).to have_attributes(state: "succeeded", cancel_requested?: true)
+    end
+
+    it "never delivers a cancelled queued task (AC-3.6)" do
+      task = queued_task
+      TaskCancellation.cancel_task!(task, operator:)
+      poll
+      expect(json["task"]).to be_nil
+      start(task)
+      expect(json).to eq("id" => task.uuid, "state" => "cancelled", "run" => false)
+    end
+
+    it "keeps output to the configured limit" do
+      TaskSettings.update_limits!({ "output_limit_kib" => "4" }, actor: operator)
+      task = running_task
+      report(task, result_payload(output: "x" * 10_000))
+      expect(task.reload).to have_attributes(output_truncated: true)
+      expect(task.output.bytesize).to be <= 4.kilobytes
+    end
+
+    it "refuses at claim time a restart whose only allowlist entry is for a tag the host no longer has (Q31)" do
+      TaskAllowedService.delete_all
+      allow_restart("nginx.service", tag: "web")
+      host.update!(tags: %w[web])
+      task = restart_task
+      host.update!(tags: %w[db])
+      poll
+      expect(json["task"]).to be_nil
+      expect(task.reload).to have_attributes(state: "refused", reason: "not_allowed_on_server")
+    end
+
+    describe "closing a task the agent holds but never ran (failed, not_run; threat model L2)" do
+      def not_run(task, report_id: "00000000-0000-4000-8000-0000000000b1")
+        report(task, result_payload(report_id:, outcome: "failed", reason: "not_run", exit_status: nil, details: nil, output: nil))
+      end
+
+      it "accepts it for a task delivered again after its start was refused, audited with the host as actor" do
+        task = queued_task
+        poll
+        task.reload.requeue!(actor: Audit::SYSTEM) # the claim lapsed before the start arrived
+        start(task)
+        expect(json).to include("state" => "queued", "run" => false)
+        poll
+        expect(json.dig("task", "id")).to eq(task.uuid) # delivered again: the agent has it in its ledger
+        not_run(task)
+        expect(response).to have_http_status(:ok)
+        expect(json).to include("applied" => true, "state" => "failed")
+        conforms("task-result.response")
+        expect(task.reload).to have_attributes(state: "failed", reason: "not_run", started_at: nil)
+        expect(entries(Audit::Actions::TASK_FAILED, task).sole).to have_attributes(actor_type: "host", actor_id: host.id, changeset: { "state" => %w[claimed failed], "reason" => "not_run" })
+        not_run(task)
+        expect(json).to include("duplicate" => true)
+        poll
+        expect(json["task"]).to be_nil # the host is free again
+      end
+
+      it "accepts it for a task back in the queue that this host had claimed, before the next poll" do
+        task = queued_task
+        poll
+        task.reload.requeue!(actor: Audit::SYSTEM)
+        not_run(task)
+        expect(task.reload).to have_attributes(state: "failed", reason: "not_run")
+        expect(entries(Audit::Actions::TASK_FAILED, task).sole.changeset).to eq("state" => %w[queued failed], "reason" => "not_run")
+      end
+
+      it "refuses it for a queued task this host never claimed, and for a running task, which was told to run" do
+        never = queued_task
+        not_run(never)
+        expect(response).to have_http_status(:conflict)
+        expect(never.reload.state).to eq("queued")
+        running = running_task
+        not_run(running, report_id: "00000000-0000-4000-8000-0000000000b2")
+        expect(response).to have_http_status(:conflict)
+        expect(running.reload.state).to eq("running")
+      end
     end
   end
 end

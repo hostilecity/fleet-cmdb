@@ -31,7 +31,11 @@ RSpec.describe Task do
     }
   end
 
-  def fire(task, event, actor: host) = task.public_send(:"#{event}!", actor:, **event_arguments(event))
+  def fire(task, event, actor: host)
+    arguments = event_arguments(event)
+    arguments = arguments.merge(reason: "not_run") if event == :fail && task.state == "queued" # the only way a queued task fails
+    task.public_send(:"#{event}!", actor:, **arguments)
+  end
 
   def task_in(state, type: "refresh_reports")
     task = create_task(host, type:, operator:)
@@ -191,9 +195,58 @@ RSpec.describe Task do
       expect { in_savepoint { Task.connection.execute("TRUNCATE tasks CASCADE") } }.to raise_error(ActiveRecord::StatementInvalid)
     end
 
+    it "lets a queued task fail only as not_run, in the model and in the database (P3-S05)" do
+      expect { task_in("queued").fail!(actor: host, reason: "interrupted") }.to raise_error(Task::InvalidTransition, /only as not_run/)
+      expect { task_in("running").fail!(actor: host, reason: "not_run") }.to raise_error(Task::InvalidTransition, /told to run/)
+      task = task_in("queued")
+      expect { in_savepoint { Task.where(id: task.id).update_all(state: "failed", reason: "interrupted") } }.to raise_error(ActiveRecord::StatementInvalid, /only as not_run/)
+      expect(task.reload.fail!(actor: host, reason: "not_run")).to have_attributes(state: "failed", reason: "not_run")
+    end
+
     it "checks the reason and state in the database too" do
       task = task_in("queued")
       expect { in_savepoint { Task.where(id: task.id).update_all(state: "refused") } }.to raise_error(ActiveRecord::StatementInvalid, /tasks_reason_for_failed_and_refused/)
+    end
+  end
+
+  describe "cancel requests (P3-S05)" do
+    it "records one request on a running task, audited with the operator, and keeps the real state" do
+      task = task_in("running", type: "apply_package_updates")
+      expect(task.request_cancel!(operator:)).to be(true)
+      expect(task.reload).to have_attributes(state: "running", cancel_requested_by: operator, cancel_requested?: true)
+      entry = AuditEntry.where(action: Audit::Actions::TASK_CANCEL_REQUESTED, target_id: task.id).sole
+      expect(entry).to have_attributes(actor_type: "operator", actor_id: operator.id)
+      expect(entry.changeset).to eq("cancel_requested" => [ false, true ], "effect" => "runs_to_completion")
+      expect(task.request_cancel!(operator: create(:operator))).to be(false) # once
+      expect(task.reload.cancel_requested_by).to eq(operator)
+      interruptible = task_in("running")
+      interruptible.request_cancel!(operator:)
+      expect(AuditEntry.where(action: Audit::Actions::TASK_CANCEL_REQUESTED, target_id: interruptible.id).sole.changeset["effect"]).to eq("stop")
+    end
+
+    it "records nothing for a task that is not running" do
+      %w[queued claimed succeeded].each do |state|
+        task = task_in(state)
+        expect(task.request_cancel!(operator:)).to be(false)
+        expect(task.reload.cancel_requested_at).to be_nil
+      end
+      expect(AuditEntry.where(action: Audit::Actions::TASK_CANCEL_REQUESTED)).to be_empty
+    end
+
+    it "is kept as recorded by tasks_guard: once, only while running, with the operator" do
+      queued = task_in("queued")
+      expect { in_savepoint { Task.where(id: queued.id).update_all(cancel_requested_at: Time.current, cancel_requested_by_id: operator.id) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /recorded only on a running task/)
+      running = task_in("running")
+      expect { in_savepoint { Task.where(id: running.id).update_all(cancel_requested_at: Time.current) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /with the operator who made it/)
+      running.request_cancel!(operator:)
+      expect { in_savepoint { Task.where(id: running.id).update_all(cancel_requested_at: nil, cancel_requested_by_id: nil) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /never changes once recorded/)
+      expect { in_savepoint { Task.where(id: running.id).update_all(cancel_requested_by_id: create(:operator).id) } }
+        .to raise_error(ActiveRecord::StatementInvalid, /never changes once recorded/)
+      running.reload.cancel!(actor: host) # the agent's cancelled result still applies
+      expect(running.reload).to have_attributes(state: "cancelled", cancel_requested_by: operator)
     end
   end
 

@@ -19,7 +19,14 @@ class Setting < ApplicationRecord
     "agent.heartbeat_seconds" => { default: nil, range: 10..3_600 },
     "agent.inventory_seconds" => { default: nil, range: 60..86_400 },
     # How long inventory snapshots, recent report ids, and host status events are kept (DEC-07, P1-S10).
-    "retention.days" => { default: 90, range: 7..3_650 }
+    "retention.days" => { default: 90, range: 7..3_650 },
+    # Task limits (P3-S06, owner decision Q33). Read and changed only through TaskSettings, which needs the second
+    # factor and audits every change. The batch cap can be lowered, never raised past 25 (DEC-14).
+    "tasks.max_hosts_per_batch" => { default: 25, range: 1..25 },
+    "tasks.output_limit_kib" => { default: 64, range: 4..1_024 },
+    "tasks.poll_seconds" => { default: 30, range: 10..300 },
+    # { task type => hours } for the types whose expiry was changed; the others keep the catalog's (24 hours).
+    "tasks.expiry_hours" => { default: {}.freeze, range: 1..168 }
   }.freeze
 
   AGENT_INTERVAL_KEYS = { heartbeat_seconds: "agent.heartbeat_seconds", inventory_seconds: "agent.inventory_seconds" }.freeze

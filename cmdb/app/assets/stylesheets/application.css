@@ -502,3 +502,27 @@ dialog.dialog::backdrop { background: rgb(29 42 46 / 0.45); }
   header.bar, .flow, .actions, form { display: none; }
   .codes { background: none; color: #000; border: 1px solid #000; }
 }
+
+/* Settings: Tasks (P3-S06, mockup phase-3/settings-tasks.html) */
+.svc-add { display: flex; gap: 0.5rem 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-top: 0.75rem; }
+.svc-add .field { margin: 0; }
+.svc-add input[type="text"] { min-width: 16rem; }
+.svc-add .hint, .svc-add .stepup { flex-basis: 100%; }
+.svc-add .stepup { margin: 0.25rem 0 0; }
+.locked-row td { color: var(--ink-soft); }
+@media (max-width: 52rem) {
+  .svc-add input[type="text"] { min-width: 0; width: 100%; }
+  .svc-add .field { width: 100%; }
+}
+/* Phone width: the settings tables become one card per row, each value under its column name. */
+@media (max-width: 34rem) {
+  table.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; width: 100%; }
+  table.stack tr { border-bottom: 1px solid var(--rule); padding: 0.5rem 0; }
+  table.stack tbody tr:last-child { border-bottom: 0; }
+  table.stack td { border: 0; padding: 0.1875rem 0.875rem; }
+  table.stack td[data-label]:not([data-label=""])::before { content: attr(data-label); display: block; font-size: 0.75rem; font-weight: 700; color: var(--ink-soft); font-family: var(--sans); letter-spacing: 0; }
+  table.stack td.mono { white-space: normal; }
+  table.stack td[data-label]:first-child::before { display: none; }
+  table.stack td:first-child { font-weight: 700; }
+}

@@ -19,8 +19,10 @@ class Task < ApplicationRecord
   # Why a task failed. nonzero_exit: the task ran and exited unsuccessfully (exit_status says how); interrupted:
   # the agent stopped mid-task, for example on shutdown, and reports it on its next start (FR-3.2, FR-3.3);
   # lease_expired: the agent said it had started and then stopped reporting (FR-3.2); lock_timeout: the package
-  # manager's lock stayed held (DEC-16); agent_error: the agent could not run the task for a reason of its own.
-  FAILED_REASONS = %w[nonzero_exit interrupted lease_expired lock_timeout agent_error].freeze
+  # manager's lock stayed held (DEC-16); agent_error: the agent could not run the task for a reason of its own;
+  # not_run: the agent recorded the task but never ran it, because its start was never answered run: true (for
+  # example the claim lapsed first, threat model L2), and it closes the task when the server delivers it again (P3-S05).
+  FAILED_REASONS = %w[nonzero_exit interrupted lease_expired lock_timeout agent_error not_run].freeze
   # Why a task was refused, with nothing run (AC-3.1, AC-3.9). The server refuses at claim time when the task no
   # longer validates or is no longer allowed; the agent refuses with its own checks.
   # unknown_type, invalid_params: the type or parameters fail the catalog, on either side;
@@ -41,13 +43,14 @@ class Task < ApplicationRecord
   # The transition table: event => allowed source states, target state, audit action. tasks_guard holds the
   # same pairs. A claimed task the agent never started goes back to the queue when its lease lapses (requeue);
   # a started one fails with lease_expired instead (FR-3.2). A running task is cancelled only if its type is
-  # interruptible (DEC-14); otherwise it runs to the end.
+  # interruptible (DEC-14); otherwise it runs to the end. A queued task fails only as not_run: its agent closing a
+  # task it held and never ran after the claim lapsed (P3-S05).
   TRANSITIONS = {
     claim: { from: %w[queued], to: "claimed", action: Audit::Actions::TASK_CLAIMED },
     requeue: { from: %w[claimed], to: "queued", action: Audit::Actions::TASK_REQUEUED },
     start: { from: %w[claimed], to: "running", action: Audit::Actions::TASK_STARTED },
     succeed: { from: %w[running], to: "succeeded", action: Audit::Actions::TASK_SUCCEEDED },
-    fail: { from: %w[claimed running], to: "failed", action: Audit::Actions::TASK_FAILED },
+    fail: { from: %w[queued claimed running], to: "failed", action: Audit::Actions::TASK_FAILED },
     time_out: { from: %w[running], to: "timed_out", action: Audit::Actions::TASK_TIMED_OUT },
     cancel: { from: %w[queued claimed running], to: "cancelled", action: Audit::Actions::TASK_CANCELLED },
     refuse: { from: %w[queued claimed running], to: "refused", action: Audit::Actions::TASK_REFUSED },
@@ -90,8 +93,9 @@ class Task < ApplicationRecord
 
   # Why this task should be refused if it were delivered now, as a Task reason, or nil when it may run: it is
   # checked against the current catalog and server policy, so a catalog or allowlist change since creation is
-  # caught at claim time (P3-S01, P3-S03, P3-S06).
-  def refusal_reason = TaskPolicy.refusal(task_type, parameters)&.reason
+  # caught at claim time (P3-S01, P3-S03, P3-S06). A restart is checked against the allowlist entries for this
+  # host's tags as they are now.
+  def refusal_reason = TaskPolicy.refusal(task_type, parameters, host:)&.reason
 
   # queued -> claimed: an agent's poll claimed the task until lease_expires_at.
   def claim!(actor:, lease_expires_at:, now: Time.current)
@@ -127,6 +131,26 @@ class Task < ApplicationRecord
   # Whether an agent's result decided how this task ended (P3-S04). A terminal task without one was ended by the
   # server: expired, timed out, lease expired, cancelled, or refused at claim.
   def agent_result? = result_digest.present?
+
+  # Whether an operator asked to cancel this task while it was running (P3-S05). The task keeps its real state: an
+  # interruptible one is stopped by its agent, which then reports cancelled; any other runs to completion.
+  def cancel_requested? = cancel_requested_at.present?
+
+  # Records an operator's request to cancel a running task (P3-S05, mockup cancel.html), audited as
+  # task.cancel_requested. Not a state transition: the state changes only when the agent reports the result. Returns
+  # false, recording nothing, when a request was already recorded or the task is not running (a queued or claimed task
+  # is cancelled at once instead). tasks_guard keeps the request as recorded.
+  def request_cancel!(operator:, now: Time.current)
+    transaction(requires_new: true) do
+      lock!
+      next false unless state == "running" && !cancel_requested?
+
+      update!(cancel_requested_at: now, cancel_requested_by: operator)
+      Audit.record(actor: operator, action: Audit::Actions::TASK_CANCEL_REQUESTED, target: self,
+                   changes: { "cancel_requested" => [ false, true ], "effect" => interruptible? ? "stop" : "runs_to_completion" })
+      true
+    end
+  end
 
   # A running task's progress as the agent reports it (P3-S04): ignored once the task is not running.
   def record_progress!(percent:, now: Time.current)
@@ -174,6 +198,8 @@ class Task < ApplicationRecord
       if event == :cancel && state == "running" && !interruptible?
         raise InvalidTransition, "cannot cancel a running #{task_type} task: its type is not interruptible"
       end
+      raise InvalidTransition, "a queued task fails only as not_run" if event == :fail && state == "queued" && attributes[:reason] != "not_run"
+      raise InvalidTransition, "a running task cannot fail as not_run: it was told to run" if event == :fail && state == "running" && attributes[:reason] == "not_run"
 
       before = state
       @transitioning = true

@@ -1,5 +1,6 @@
-<%# Settings sections (P3-S09, mockup second-factor.html). Task settings join with P3-S06. %>
+<%# Settings sections (P3-S06, P3-S09, mockups settings-tasks.html and second-factor.html). %>
 <nav class="tabs" aria-label="Settings sections">
   <%= link_to "Liveness", settings_path, "aria-current": (controller_name == "settings" ? "page" : nil) %>
+  <%= link_to "Tasks", task_settings_path, "aria-current": (controller_name == "task_settings" ? "page" : nil) %>
   <%= link_to "Your second factor", second_factor_path, "aria-current": (controller_name == "second_factors" ? "page" : nil) %>
 </nav>
