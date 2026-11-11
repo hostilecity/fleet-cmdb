@@ -586,12 +586,14 @@ package_report_since() {
 packages_upgraded() {
     updates_setup
     vm 'bash /tmp/vm-test-packages.sh publish fvt-demo_1.1_all.deb fvt-held_1.1_all.deb'
-    local boot invocation finished
+    local boot invocation started
     boot=$(boot_id)
     invocation=$(vm 'systemctl show -p InvocationID --value fvt-demo')
+    # The task asks for the package report as soon as the upgrade has ended, before its last steps, so
+    # the report may arrive before the result: it is looked for from the task's start.
+    started=$(date +%s.%N)
     run_task "$1" 3600
     expect_task succeeded
-    finished=$(date +%s.%N)
     [ "$(version_of fvt-demo)" = 1.1 ] || fail "fvt-demo is $(version_of fvt-demo), expected 1.1"
     [ "$(version_of fvt-held)" = 1.0 ] || fail "the held fvt-held was upgraded to $(version_of fvt-held)"
     task_result | jq -e '.details.reboot_required == true' > /dev/null || fail "reboot_required is not true"
@@ -607,7 +609,7 @@ packages_upgraded() {
     [ "$(boot_id)" = "$boot" ] || fail "the VM rebooted"
     [ "$(vm 'systemctl show -p InvocationID --value fvt-demo')" = "$invocation" ] || fail "fvt-demo.service was restarted"
     no_task_units || fail "a task unit is left: $(vm "systemctl list-units --all --plain --no-legend 'fleet-agent-task-*'")"
-    wait_until "a package report with fvt-demo 1.1" 120 package_report_since "$finished" 1.1
+    wait_until "a package report with fvt-demo 1.1" 120 package_report_since "$started" 1.1
     vm 'rm -f /run/reboot-required'
     echo "fvt-demo 1.0 -> 1.1, fvt-held held back, reboot required and not done, fvt-demo.service named and not restarted, package report sent"
     printf '%s' "succeeded: 1 upgraded, 1 held back, reboot_required" > "$tmp/last-result"
