@@ -52,7 +52,7 @@ module AgentTasks
   # running one, which the server told to run.
   NOT_RUN_FROM = %w[queued claimed].freeze
   # The result details the server keeps (task-result.request); others are ignored.
-  DETAIL_KEYS = %w[reboot_required services_needing_restart unit_active reports_sent].freeze
+  DETAIL_KEYS = %w[reboot_required services_needing_restart packages_upgraded packages_held_back unit_active reports_sent].freeze
 
   # duplicate: the server already had this result; applied: it decided the task's state; conflict: refused, with
   # why ("different_result" or "state").
