@@ -9,11 +9,12 @@
 //!    path, or shell syntax ([`ValidatedArg::service_unit`]). A template instance
 //!    (`postgresql@17-main.service`) is a full name and is allowed when listed exactly.
 //! 2. `protected_service`: the name is protected (DEC-15, [`protected`]: the agent's own units, SSH,
-//!    systemd's units, networking, D-Bus, and their template instances), **or** it is an alias of one:
-//!    a symbolic link in a systemd unit directory ([`UNIT_DIRS`]) whose target, at any step of the
-//!    chain, is a protected unit (`messagebus.service` pointing at `dbus.service`). There is no
-//!    override (owner, 2026-11-08); listing such a name locally does not help. The alias check reads
-//!    the file system only.
+//!    systemd's units, networking, D-Bus, and their template instances), **or** it names the same
+//!    unit as a protected name through symbolic links in a systemd unit directory ([`UNIT_DIRS`]):
+//!    the name is a link whose chain reaches a protected unit (`messagebus.service` pointing at
+//!    `dbus.service`), or a link with a protected name leads to it (`ssh.service` pointing at
+//!    `remote-shell.service`) ([`aliased_protected`]). There is no override (owner, 2026-11-08);
+//!    listing such a name locally does not help. The alias check reads the file system only.
 //! 3. `not_allowed_locally` (AC-3.9): the type is enabled and the exact name is in the local
 //!    `[tasks] allowed_services` ([`TaskSettings::allows_restart_of`]). The server checks its own
 //!    allowlist before it creates the task; the agent checks this one whatever the server says.
@@ -37,6 +38,7 @@
 //! does, and when the agent stops it gets [`super::executor::spawn::SHUTDOWN_WAIT`] to finish its
 //! current program, and waits no longer between programs.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -145,18 +147,44 @@ impl TaskImpl for RestartService {
     }
 }
 
-/// Why `unit` is an alias of a protected unit, if it is: a symbolic link named `unit` (or, for a
-/// template instance, its template) in one of `dirs` that leads, at any step, to a protected name.
+/// Why `unit` shares a unit with a protected name, if it does, reading symbolic links in `dirs` only.
+/// The unit's names are `unit` (and, for a template instance, its template) and every name their
+/// links lead to; it is protected if any of them is, or if a link anywhere in `dirs` whose chain
+/// reaches one of them has a protected name on its chain (`ssh.service -> remote-shell.service`
+/// makes `remote-shell.service` the SSH server too; review of #169).
 pub fn aliased_protected(unit: &str, dirs: &[PathBuf]) -> Option<&'static str> {
-    let mut names = vec![unit.to_owned()];
+    let mut own = vec![unit.to_owned()];
     if let Some((base, instance)) = unit.split_once('@')
         && instance != ".service"
     {
-        names.push(format!("{base}@.service"));
+        own.push(format!("{base}@.service"));
+    }
+    let mut group: BTreeSet<String> = own.iter().cloned().collect();
+    for dir in dirs {
+        for name in &own {
+            group.extend(chain(&dir.join(name)));
+        }
+    }
+    if let Some(why) = group.iter().find_map(|name| protected(name)) {
+        return Some(why);
     }
     for dir in dirs {
-        for name in &names {
-            if let Some(why) = follow(&dir.join(name)) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_symlink()) {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let links = chain(&entry.path());
+            if links.iter().any(|link| group.contains(link))
+                && let Some(why) = std::iter::once(&name)
+                    .chain(&links)
+                    .find_map(|n| protected(n))
+            {
                 return Some(why);
             }
         }
@@ -164,21 +192,24 @@ pub fn aliased_protected(unit: &str, dirs: &[PathBuf]) -> Option<&'static str> {
     None
 }
 
-/// Follows the symbolic links from `path`, returning why the first protected name met is protected.
-fn follow(path: &Path) -> Option<&'static str> {
+/// The names the symbolic links from `path` lead to, in order (at most [`MAX_LINKS`]).
+fn chain(path: &Path) -> Vec<String> {
+    let mut names = Vec::new();
     let mut path = path.to_owned();
     for _ in 0..MAX_LINKS {
-        let target = std::fs::read_link(&path).ok()?;
-        let name = target.file_name()?.to_str()?;
-        if let Some(why) = protected(name) {
-            return Some(why);
-        }
+        let Ok(target) = std::fs::read_link(&path) else {
+            break;
+        };
+        let Some(name) = target.file_name().and_then(|n| n.to_str()) else {
+            break;
+        };
+        names.push(name.to_owned());
         path = match path.parent() {
             Some(parent) if target.is_relative() => parent.join(&target),
             _ => target,
         };
     }
-    None
+    names
 }
 
 struct RestartJob {
@@ -480,6 +511,14 @@ mod tests {
         symlink("systemd-journald.service", dir.join("hop.service")).unwrap();
         symlink("sshd@.service", dir.join("console@.service")).unwrap();
         symlink("/dev/null", dir.join("masked.service")).unwrap();
+        // Reverse aliases (review of #169): a protected name pointing at a listed, regular unit.
+        std::fs::write(dir.join("remote-login.service"), "[Service]\n").unwrap();
+        symlink("remote-login.service", dir.join("ssh.service")).unwrap();
+        symlink("bus-relay.service", dir.join("dbus.service")).unwrap();
+        symlink("bus-relay-real.service", dir.join("bus-relay.service")).unwrap();
+        symlink("/somewhere/terminal@.service", dir.join("sshd@.service")).unwrap();
+        // An unrelated link, and one that is not protected, change nothing.
+        symlink("rsyslog.service", dir.join("syslog.service")).unwrap();
         let listed = [
             "nginx.service",
             "messagebus.service",
@@ -487,6 +526,10 @@ mod tests {
             "chain.service",
             "console@tty1.service",
             "masked.service",
+            "remote-login.service",
+            "bus-relay-real.service",
+            "terminal@tty2.service",
+            "rsyslog.service",
         ];
         let registry = registry(systemctl.task(vec![dir]), allowing(&listed));
         let cases: &[(Value, &str)] = &[
@@ -555,6 +598,19 @@ mod tests {
                 json!({"service": "console@tty1.service"}),
                 "protected_service",
             ),
+            // Listed, but a protected name is an alias of it.
+            (
+                json!({"service": "remote-login.service"}),
+                "protected_service",
+            ),
+            (
+                json!({"service": "bus-relay-real.service"}),
+                "protected_service",
+            ),
+            (
+                json!({"service": "terminal@tty2.service"}),
+                "protected_service",
+            ),
             // On the server's allowlist, maybe, but not on this VM's (AC-3.9).
             (
                 json!({"service": "postgresql.service"}),
@@ -573,6 +629,7 @@ mod tests {
         // A masked unit is not an alias of anything protected; the listed name passes.
         assert!(registry.check(&restart("masked.service")).is_ok());
         assert!(registry.check(&restart("nginx.service")).is_ok());
+        assert!(registry.check(&restart("rsyslog.service")).is_ok());
         assert!(systemctl.calls().is_empty());
     }
 
