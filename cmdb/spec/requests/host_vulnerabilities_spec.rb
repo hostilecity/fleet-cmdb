@@ -59,7 +59,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect([ link.text, link["href"], link["rel"], link["target"] ]).to eq([ "DSA-9100-1", "https://security.example.lan/advisories/DSA-9100-1", "noopener noreferrer", "_blank" ])
       expect(page.at_css("#open_list tr.pkg-group a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities/package?package=acme-daemon")
       expect(page.at_css("#resolved_findings")).to be_nil
-      expect(page.css("nav.tabs a").map { |a| words(a) }.last).to eq("Vulnerabilities 5 open")
+      expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 5 open")
       expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities 5 2 high, 1 medium, 2 low")
       expect(page.at_css("#glance_vulns")["href"]).to eq("/hosts/#{host.id}/vulnerabilities")
       expect(page.at_css("#advisory_freshness").text.squish).to start_with("Advisory data last updated: Debian:13")
@@ -153,7 +153,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     get "/hosts/#{host.id}/vulnerabilities"
     expect(words(page.at_css("#no_open_findings"))).to eq("No open vulnerability findings. Evaluated 2026-11-06 09:00 UTC: 1 package matched against 1 Debian:13 advisory. 0 resolved findings.")
     expect(page.at_css("#not_evaluated")).to be_nil
-    expect(page.css("nav.tabs a").map { |a| words(a) }.last).to eq("Vulnerabilities 0 open")
+    expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 0 open")
     expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities None open Evaluated less than 5 seconds ago")
   end
 
@@ -183,7 +183,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       report_packages(apk, [], manager: "unsupported", unsupported_reason: "apk is not supported by this agent version")
       match(apk)
       expect(notice(apk)).to include("The host's package manager is not supported: apk is not supported by this agent version", "Reason unsupported_package_manager .")
-      expect(page.css("nav.tabs a").map { |a| words(a) }.last).to eq("Vulnerabilities Not evaluated")
+      expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities Not evaluated")
       expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities Not evaluated The host's package manager is not supported: apk is not supported by this agent version")
     end
 
@@ -196,7 +196,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(words(page.at_css("#not_evaluated"))).to include("The host's package database could not be read, so its packages are not matched: dpkg-query exited with status 2",
                                                               "Reason unreadable_packages . Its findings are matched again after the next package report that can be read")
       expect(groups("open_list").map(&:first)).to eq([ "acme:amd64 installed 1.0-1 High worst of 1 1 finding" ])
-      expect(page.css("nav.tabs a").map { |a| words(a) }.last).to eq("Vulnerabilities 1 open")
+      expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 1 open")
     end
 
     it "before matching has run, and when no advisory data has been imported" do
@@ -220,7 +220,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(words(page.at_css("#not_evaluated"))).to start_with("Not evaluated now. The open findings below are from an earlier evaluation.")
       expect(page.at_css("#not_evaluated").text).to include("They may be out of date")
       expect(groups("open_list").map(&:first)).to eq([ "acme:amd64 installed 1.0-1 High worst of 1 1 finding" ])
-      expect(page.css("nav.tabs a").map { |a| words(a) }.last).to eq("Vulnerabilities 1 open")
+      expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 1 open")
     end
   end
 

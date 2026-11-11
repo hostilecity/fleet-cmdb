@@ -74,7 +74,7 @@ Implementation details for the GitHub issue with this key. The issue states only
   - running and not interruptible: the request is recorded and the task runs to completion. Every task of its batch that has not started is cancelled now. No directive is sent.
   - A batch cancel does all of that for each task of the batch. Finished tasks are never changed.
   - `tasks_guard` v02 keeps a cancel request as recorded: set once, only on a running task, with the operator.
-  - The confirmation dialogs and the task and batch pages are P3-DASH-TASKS (#33). Until then the endpoints redirect back with a notice in the mockup's words.
+  - The confirmation dialogs and the task and batch pages are P3-DASH-TASKS (#33): each cancel has a confirmation page, and the answer goes to the task's or the batch's page with a notice in the mockup's words.
 - **Revoked, re-enrolling, or retired host (threat model V9):** its queued and claimed tasks are cancelled in the same transaction, with the same actor (`Host::TASK_CANCELLING_EVENTS`), so tasks meant for one machine never reach the next. A running task ends by its result or its lease.
 - **Directive delivery:** the agent polls only between tasks, so for a running task the cancel reaches it through the progress response. An interruptible type that never sends progress gets the directive only if it polls (P3-A02, #34).
 

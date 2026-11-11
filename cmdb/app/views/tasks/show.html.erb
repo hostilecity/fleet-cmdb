@@ -1,0 +1,106 @@
+<% content_for :title, "Task ##{@task.id}" %>
+<%# One task (P3-DASH-TASKS, mockups task.html and task-states.html, owner decisions Q18, Q19, Q22). Everything the
+    agent reported (output, details, times) is shown as escaped text. %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from TaskBroadcast::STREAM, id: "tasks_stream", data: { turbo_permanent: true } %>
+<% task = @task %>
+<% cancel_entry = @entries.reverse.find { |e| e.action == Audit::Actions::TASK_CANCELLED } %>
+<p><% if @batch_size > 1 %><%= link_to "← Batch #{@batch.id}", task_batch_path(@batch) %> &middot; <% end %><%= link_to "Tasks", tasks_path %></p>
+<div class="host-head">
+  <div>
+    <h1>Task #<%= task.id %>: <%= task_type_name(task.task_type) %> on <%= task.host.name %></h1>
+    <div class="sub"><%= task_state_lamp(task) %><span><% if @batch_size > 1 %>Batch <%= link_to @batch.id, task_batch_path(@batch) %> (<%= pluralize(@batch_size, "host") %>)<% else %>Single task<% end %></span><span>Created by <%= @batch.operator.email %></span></div>
+  </div>
+  <% unless task.terminal? || (task.state == "running" && task.cancel_requested?) || second_factor_result.status == :not_enrolled %>
+    <div class="actions">
+      <% label = if TaskCancellation::UNSTARTED.include?(task.state) then "Cancel task" elsif task.interruptible? then "Stop task" else "Request cancel" end %>
+      <%= link_to label, cancel_task_path(task), class: "btn danger quiet", id: "cancel_link" %>
+    </div>
+  <% end %>
+</div>
+<% if !task.terminal? && second_factor_result.status == :not_enrolled %>
+  <p class="muted small" id="no_second_factor">Cancelling needs a second factor, and you have not set one up. <%= link_to "Set up an authenticator app", second_factor_path %></p>
+<% end %>
+<%= render "tasks/result", task:, batch_size: @batch_size, cancel_entry: %>
+
+<div class="columns">
+<div>
+  <h2 class="flush-top">What happened</h2>
+  <% details = task.result_details.to_h %>
+  <% if details.any? || task.terminal? %>
+    <dl class="facts sheet" id="task_details">
+      <%= render "tasks/details", details: %>
+      <dt>Finished</dt><dd><%= task.finished_at ? task_time(task.finished_at) : "Not yet" %></dd>
+      <% unless task.exit_status.nil? %><dt>Exit status</dt><dd class="mono"><%= task.exit_status %></dd><% end %>
+      <dt>Result from</dt><dd><%= task.agent_result? ? "The agent, received #{task_time(task.result_received_at)}" : "The server (no result from the agent)" %></dd>
+    </dl>
+  <% else %>
+    <p class="muted">Nothing yet: the task has not finished.</p>
+  <% end %>
+</div>
+<div>
+  <h2 class="flush-top">Task</h2>
+  <dl class="facts sheet tight" id="task_facts">
+    <dt>Type</dt><dd><%= task_type_name(task.task_type) %> <span class="mono muted"><%= task.task_type %></span></dd>
+    <dt>Parameters</dt><dd><% if task.parameters.empty? %>None<% else %><%= safe_join(task.parameters.map { |name, value| safe_join([ tag.span(name, class: "mono muted"), " ", tag.span(value.is_a?(String) ? value : value.to_json, class: "param") ]) }, tag.br) %><% end %></dd>
+    <dt>Host</dt><dd><%= link_to task.host.name, tasks_host_path(task.host) %> <span class="mono muted"><%= task.host.hostname %></span></dd>
+    <dt>Time limit</dt><dd><%= task_duration(task.timeout) %></dd>
+    <dt>Can be cancelled</dt><dd><%= task.interruptible? ? "Yes, also while running" : "Not once running" %></dd>
+    <dt>Expiry</dt><dd><%= task.state == "queued" ? "Expires" : "Would have expired" %> <%= task_time(task.expires_at) %> if not started</dd>
+    <dt>Catalog</dt><dd>Version <%= @batch.catalog_version %><% if task.host.agent_version %>; agent <span class="mono"><%= task.host.agent_version %></span> now<% end %></dd>
+  </dl>
+</div>
+</div>
+
+<h2 id="timeline">Timeline</h2>
+<div class="table-wrap"><table class="timeline stack" id="task_timeline">
+  <caption class="visually-hidden">State changes of task <%= task.id %></caption>
+  <thead><tr><th scope="col">Server time (UTC)</th><th scope="col">Agent's time (UTC)</th><th scope="col">What happened</th><th scope="col">By</th></tr></thead>
+  <tbody>
+    <% task_timeline(task, @entries).each do |row| %>
+      <tr>
+        <td data-label="Server time (UTC)" class="when mono"><%= task_clock(row.at) %></td>
+        <td data-label="Agent's time (UTC)" class="agent mono"><% if row.agent_at %><%= task_clock(row.agent_at) %><% if (skew = task_clock_skew(row.at, row.agent_at)) %><span class="state-sub warn">Clock differs by <%= skew %></span><% end %><% else %>&mdash;<% end %></td>
+        <td data-label="What happened"><% if row.state %><span class="lamp s-<%= row.state %>"><%= task_state_label(row.state) %></span> <% end %><%= row.words %></td>
+        <td data-label="By"><%= row.entry ? audit_actor(row.entry, @records) : safe_join([ link_to(task.host.name, host_path(task.host)), " ", tag.span("Host", class: "kind") ]) %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table></div>
+
+<div class="output-head"><h2 id="output">Output</h2>
+  <span class="muted"><% if task.output %><%= human_bytes(task.output.bytesize) %><%= task.output_truncated ? ", cut in the middle to keep within the limit" : ", complete" %> (the limit is now <%= human_bytes(TaskSettings.output_limit_bytes) %>). Shown as plain text. <%= link_to "Download as a text file", task_output_path(task) %><% end %></span></div>
+<% if task.output %>
+  <% if task.output_truncated %><p class="state-sub warn" id="output_cut">The start and the end are kept. The server put a line where it cut the middle; text from the VM cannot add to this note.</p><% end %>
+  <pre class="output" id="task_output"><%= task.output %></pre>
+<% elsif task.terminal? %>
+  <p class="muted" id="no_output">No output was recorded.</p>
+<% else %>
+  <p class="muted" id="no_output">Output appears when the task finishes.</p>
+<% end %>
+<% if (late = task.late_result) %>
+  <h2 id="late_result">A result that arrived late</h2>
+  <p>The agent reported <strong><%= task_state_label(late.outcome).downcase %></strong><%= " (#{late.reason})" if late.reason %> at <%= task_time(late.received_at) %>, after the server had ended the task as <%= task_state_label(task.state).downcase %>. It is kept here and does not change the state.</p>
+  <% if late.details.to_h.any? || !late.exit_status.nil? %>
+    <dl class="facts sheet" id="late_details">
+      <%= render "tasks/details", details: late.details.to_h %>
+      <% unless late.exit_status.nil? %><dt>Exit status</dt><dd class="mono"><%= late.exit_status %></dd><% end %>
+    </dl>
+  <% end %>
+  <% if late.output %>
+    <% if late.output_truncated %><p class="state-sub warn" id="late_output_cut">This output was cut to keep within the limit; part of it is missing.</p><% end %>
+    <pre class="output" id="late_output"><%= late.output %></pre>
+  <% end %>
+<% end %>
+
+<h2 id="audit">Audit entries</h2>
+<div class="table-wrap"><table class="audit" id="task_audit">
+  <caption class="visually-hidden">Audit entries for task <%= task.id %></caption>
+  <thead><tr><th scope="col">When (UTC)</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Details</th></tr></thead>
+  <tbody>
+    <% @entries.each do |audit| %>
+      <tr><td class="when mono"><%= audit_time(audit.occurred_at) %></td><td><%= audit_actor(audit, @records) %></td><td><%= audit_label(audit.action) %></td><td><%= audit_changes(audit, @records) %></td></tr>
+    <% end %>
+  </tbody>
+</table></div>
+<p class="muted small">Output is never copied into the audit log; entries refer to this task. <%= link_to "Audit entries for #{task.host.name}", audit_page_path(host_id: task.host_id) %></p>

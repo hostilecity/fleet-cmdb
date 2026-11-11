@@ -1,10 +1,11 @@
 # What the summary tiles under a host's header show on every tab (P2-D02 to P2-D04, owner decision Q1 on the
 # P2-D01 review): the host's CIS-aligned pass rate, its open vulnerability findings by severity (or why it was not
-# evaluated), its package count and manager, and when each report type last arrived. A fixed number of queries.
+# evaluated), its package count and manager, when each report type last arrived, and its open tasks by state for the
+# Tasks tab (P3-DASH-TASKS). A fixed number of queries.
 class HostSummary
   REPORT_TYPES = %w[config packages inventory].freeze
 
-  attr_reader :cis, :package_set, :packages_changed_at, :vulnerability_evaluation, :open_by_severity, :received
+  attr_reader :cis, :package_set, :packages_changed_at, :vulnerability_evaluation, :open_by_severity, :received, :open_tasks
 
   def initialize(host)
     @cis = CisCompliance.for_host(host.id)
@@ -14,6 +15,7 @@ class HostSummary
     @open_by_severity = VulnerabilityFinding.active.where(host_id: host.id).joins(:advisory).group("advisories.severity").count
     @received = { "config" => HostConfig.where(host_id: host.id).pick(:received_at), "packages" => @package_set&.received_at,
                   "inventory" => HostInventory.where(host_id: host.id).pick(:received_at) }
+    @open_tasks = Task.open_now.where(host_id: host.id).group(:state).count
   end
 
   # Findings that are open or reopened.

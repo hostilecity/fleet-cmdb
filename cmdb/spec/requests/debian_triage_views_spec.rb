@@ -468,7 +468,8 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
   # The tab and the package page stay within their query bound plus the triage lookup, whatever the number of
   # findings (P2-D08 acceptance: measured at a host with 500 findings). Before P2-D08 both took 24 queries at 500
   # findings; the triage adds the host release's freshness and FindingTriage (inventories, freshness, entries;
-  # the advisories are loaded already), and the chip's count reloads the open findings when a filter is set.
+  # the advisories are loaded already), and the chip's count reloads the open findings when a filter is set. The
+  # host summary counts the host's open tasks for the Tasks tab (P3-DASH-TASKS): one query.
   it "renders the tab and the package page for a host with 500 findings in a fixed number of queries" do
     packages = (1..50).flat_map { |i| [ [ "acme#{i}", "1.0-1", "src#{i}" ], [ "libacme#{i}", "1.0-1", "src#{i}" ] ] }
     large = debian_host(packages:)
@@ -488,7 +489,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 200")
     queries = tab.call(large)
     expect(queries).to eq(tab.call(small))
-    expect(queries).to be <= 24 + 4
+    expect(queries).to be <= 24 + 5
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
     expect(filtered).to be <= queries + 2 # the open findings again, for the chip's count
@@ -497,7 +498,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
 
     package = ->(host) { count_queries { get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "acme1" } } }
     expect(package.call(large)).to eq(package.call(small))
-    expect(package.call(large)).to be <= 24 + 4
+    expect(package.call(large)).to be <= 24 + 5
     puts format("\n  500 findings: tab %d queries, %.0f ms (best of 3); package page %d queries", queries, timings.min * 1000, package.call(large)) if ENV["SHOW_TIMINGS"]
   end
 end

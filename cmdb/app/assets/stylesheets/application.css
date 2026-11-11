@@ -580,3 +580,101 @@ h1 .mono { font-size: 1.5rem; }
 @media (max-width: 34rem) {
   .confirm-sum { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Tasks, task pages, and batch progress (P3-DASH-TASKS, mockups phase-3/tasks.html, task.html, task-states.html,
+   batch.html, batch-partial.html, cancel.html, host-tasks.html; phase3.css). Task states are a word plus a lamp shape,
+   never colour alone: waiting is hollow, running solid blue, succeeded green, failed and timed out red (timed out a
+   diamond), refused a red square, cancelled and expired grey (expired a square). */
+.lamp.s-queued::before { background: transparent; box-shadow: inset 0 0 0 2px var(--lamp-off); }
+.lamp.s-claimed::before { background: transparent; box-shadow: inset 0 0 0 2px var(--lamp-pending); }
+.lamp.s-running::before { background: var(--lamp-pending); box-shadow: 0 0 0 3px rgb(74 91 168 / 0.2); }
+.lamp.s-succeeded::before { background: var(--lamp-online); box-shadow: 0 0 0 3px rgb(46 133 64 / 0.18); }
+.lamp.s-failed::before { background: var(--lamp-offline); box-shadow: 0 0 0 3px rgb(180 35 24 / 0.18); }
+.lamp.s-timed_out::before { background: var(--lamp-offline); border-radius: 1px; transform: rotate(45deg); box-shadow: none; }
+.lamp.s-refused::before { background: var(--lamp-offline); border-radius: 1px; box-shadow: none; }
+.lamp.s-cancelled::before { background: var(--lamp-off); }
+.lamp.s-expired::before { background: var(--lamp-off); border-radius: 1px; }
+.lamp.s-cancel-req::before { background: var(--lamp-pending); box-shadow: 0 0 0 2px var(--sheet), 0 0 0 4px var(--lamp-stale); }
+td .lamp { white-space: normal; align-items: baseline; }
+.filters input.narrow { min-width: 8rem; width: 8rem; }
+.flush-top { margin-top: 0; }
+.spaced-below { margin-bottom: 1rem; }
+/* Batch progress: per-host counts, the one bold element */
+.taskstrip { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); background: var(--ink); color: var(--panel); border-radius: 6px; overflow: hidden; margin-bottom: 0.75rem; }
+.taskstrip a { color: inherit; text-decoration: none; padding: 0.875rem 0.875rem 0.75rem; border-right: 1px solid #33443f; display: block; }
+.taskstrip a:last-child { border-right: 0; }
+.taskstrip a:hover { background: #2a3a3e; }
+.taskstrip .count { display: block; font-size: 2rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; margin-bottom: 0.3125rem; }
+.taskstrip .count.zero { color: #7e8f8a; }
+.taskstrip .lamp { font-size: 0.875rem; color: #c9d5d1; white-space: normal; align-items: baseline; }
+.bar-stack { display: flex; height: 0.75rem; border-radius: 3px; overflow: hidden; background: #dfe5e1; margin: 0 0 0.375rem; }
+.bar-stack span { display: block; height: 100%; flex-basis: 0; }
+.bar-stack .b-succeeded { background: var(--lamp-online); }
+.bar-stack .b-running { background: var(--lamp-pending); }
+.bar-stack .b-failed, .bar-stack .b-timed_out { background: var(--lamp-offline); }
+.bar-stack .b-refused { background: repeating-linear-gradient(135deg, var(--lamp-offline) 0 4px, #e9a39c 4px 8px); }
+.bar-stack .b-expired, .bar-stack .b-cancelled { background: var(--lamp-off); }
+.bar-stack .b-queued, .bar-stack .b-claimed { background: transparent; }
+/* Widths as grow classes, not inline styles (the CSP forbids them); a batch has at most 25 tasks. */
+.bar-stack .g-1 { flex-grow: 1; }
+.bar-stack .g-2 { flex-grow: 2; }
+.bar-stack .g-3 { flex-grow: 3; }
+.bar-stack .g-4 { flex-grow: 4; }
+.bar-stack .g-5 { flex-grow: 5; }
+.bar-stack .g-6 { flex-grow: 6; }
+.bar-stack .g-7 { flex-grow: 7; }
+.bar-stack .g-8 { flex-grow: 8; }
+.bar-stack .g-9 { flex-grow: 9; }
+.bar-stack .g-10 { flex-grow: 10; }
+.bar-stack .g-11 { flex-grow: 11; }
+.bar-stack .g-12 { flex-grow: 12; }
+.bar-stack .g-13 { flex-grow: 13; }
+.bar-stack .g-14 { flex-grow: 14; }
+.bar-stack .g-15 { flex-grow: 15; }
+.bar-stack .g-16 { flex-grow: 16; }
+.bar-stack .g-17 { flex-grow: 17; }
+.bar-stack .g-18 { flex-grow: 18; }
+.bar-stack .g-19 { flex-grow: 19; }
+.bar-stack .g-20 { flex-grow: 20; }
+.bar-stack .g-21 { flex-grow: 21; }
+.bar-stack .g-22 { flex-grow: 22; }
+.bar-stack .g-23 { flex-grow: 23; }
+.bar-stack .g-24 { flex-grow: 24; }
+.bar-stack .g-25 { flex-grow: 25; }
+.bar-legend { font-size: 0.875rem; color: var(--ink-soft); margin: 0 0 1.25rem; }
+/* Timeline of state changes: server time and agent time kept apart */
+.timeline td.when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.timeline td.agent { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.timeline .kind { display: block; font-size: 0.8125rem; color: var(--ink-soft); }
+.timeline td .lamp { display: flex; font-weight: 700; }
+/* Task output: untrusted text, escaped, bounded */
+pre.output { margin: 0; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.55; background: var(--ink); color: #e3ebe7; border-radius: 6px; padding: 0.75rem 1rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.output-head { display: flex; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap; align-items: baseline; margin: 1.5rem 0 0.5rem; }
+.output-head h2 { margin: 0; }
+.output-head .muted { font-size: 0.875rem; }
+/* The result panel on the task page */
+.result { background: var(--sheet); border: 1px solid var(--rule); border-left-width: 4px; border-radius: 0 6px 6px 0; padding: 0.875rem 1.25rem; margin: 0 0 1.25rem; }
+.result.ok { border-left-color: var(--lamp-online); }
+.result.bad { border-left-color: var(--lamp-offline); }
+.result.wait { border-left-color: var(--lamp-pending); }
+.result.grey { border-left-color: var(--lamp-off); }
+.result.amber { border-left-color: var(--lamp-stale); }
+.result h2 { margin: 0 0 0.25rem; font-size: 1.125rem; }
+.result p { margin: 0.25rem 0 0; }
+.result .code-line { font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); overflow-wrap: anywhere; }
+.dialog .stepup { margin: 1rem 0; }
+@media (max-width: 52rem) {
+  .taskstrip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .taskstrip a { border-bottom: 1px solid #33443f; }
+}
+@media (max-width: 34rem) {
+  .taskstrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .taskstrip .count { font-size: 1.5rem; }
+  .taskstrip .lamp { font-size: 0.9375rem; }
+  table.stack td.when, table.stack td.agent { white-space: normal; }
+}
+/* Host names and batch numbers stay on one line in the task tables, except at phone width, where rows are cards. */
+@media (min-width: 34.0625rem) {
+  :is(#task_list, #batch_tasks, #host_task_history) td:is([data-label="Host"], [data-label="Batch"]) { white-space: nowrap; }
+}
+.cols-2 > #now { margin-top: 0; }

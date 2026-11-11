@@ -15,6 +15,7 @@
   </div>
   <% unless host.retired? %>
     <div class="actions">
+      <% if host.enrollment_state == "active" %><%= link_to "Run a task on this host", new_task_path(target: { host_ids: [ host.id ] }), class: "btn", id: "run_task" %><% end %>
       <%= link_to "Edit", edit_host_path(host), class: "btn quiet" %>
       <%= link_to "Re-enroll", reenroll_host_path(host), class: "btn quiet" %>
       <% if host.can_transition?(:revoke) %><%= link_to "Revoke credential", revoke_host_path(host), class: "btn danger quiet" %><% end %>

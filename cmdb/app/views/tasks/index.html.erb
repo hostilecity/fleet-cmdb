@@ -1,29 +1,61 @@
 <% content_for :title, "Tasks" %>
-<%# Minimal until P3-DASH-TASKS (#33) draws the task list (mockup tasks.html). Q12: without a second factor, "New
-    task" is replaced by an explanation. %>
-<div class="page-head"><div><h1>Tasks</h1><p>Maintenance the agents run from a fixed catalog built into them. Each task is one host's; a batch is one request for several hosts.</p></div>
-  <% unless second_factor_result.status == :not_enrolled %><div class="actions"><%= link_to "New task", new_task_path, class: "btn" %></div><% end %></div>
-<% if second_factor_result.status == :not_enrolled %>
+<%# The task list (P3-DASH-TASKS, mockup tasks.html, owner decisions Q2 and Q12): one row per task, newest first, with
+    the state chips and a plain GET filter form. Without a second factor "New task" is replaced by an explanation. %>
+<%= turbo_refreshes_with method: :morph, scroll: :preserve %>
+<%= turbo_stream_from TaskBroadcast::STREAM, id: "tasks_stream", data: { turbo_permanent: true } %>
+<% no_factor = second_factor_result.status == :not_enrolled %>
+<% counts = @list.chip_counts %>
+<% page = @list.page %>
+<div class="page-head"><div><h1>Tasks</h1><p>Every task, newest first. A task is one catalog action on one host; a batch is the tasks created together.</p></div>
+  <% unless no_factor %><div class="actions"><%= link_to "New task", new_task_path, class: "btn" %></div><% end %></div>
+<% if no_factor %>
   <div class="notice" role="status" id="no_second_factor"><strong>You cannot create or cancel tasks until you set up a second factor.</strong>
     <p>You can still read every task, host, and report. <%= link_to "Set up an authenticator app", second_factor_path %>; it takes about two minutes.</p></div>
 <% end %>
-<h2>Recent batches</h2>
-<% if @batches.empty? %>
-  <p class="muted">No task has been created yet.</p>
+<% chip_base = @list.filter_params.except(:state) %>
+<ul class="chips" aria-label="State">
+  <li><%= link_to task_list_path(chip_base), "aria-current": (@list.state.nil? ? "true" : nil) do %>All <span class="n"><%= number_with_delimiter(counts["all"]) %></span><% end %></li>
+  <% TaskList::GROUPS.each do |key, (label, _)| %>
+    <li><%= link_to task_list_path(chip_base.merge(state: key)), "aria-current": (@list.state == key ? "true" : nil) do %><%= label %> <span class="n"><%= number_with_delimiter(counts[key]) %></span><% end %></li>
+  <% end %>
+</ul>
+<%= form_with url: tasks_path, method: :get, class: "filters", role: "search", id: "task_filters", local: true do %>
+  <label>Host<%= search_field_tag :host, @list.host, id: "filter_host", placeholder: "Host name or hostname", maxlength: TaskList::HOST_MAX %></label>
+  <label>Type<%= select_tag :type, options_for_select(TaskCatalog.current.types.map { |type| [ task_type_name(type), type ] }, @list.type), include_blank: "All types", id: "filter_type" %></label>
+  <label>State<%= select_tag :state, options_for_select(TaskList::GROUPS.map { |key, (label, _)| [ label, key ] } + Task::STATES.map { |state| [ task_state_label(state), state ] }, @list.state), include_blank: "All states", id: "filter_state" %></label>
+  <label>Batch<%= search_field_tag :batch, @list.batch, id: "filter_batch", placeholder: "Batch number", inputmode: "numeric", class: "narrow" %></label>
+  <button class="btn quiet" type="submit">Apply</button>
+<% end %>
+<% if page.tasks.empty? %>
+  <% if @list.cursor? %>
+    <%# An older page whose tasks changed state (a live refresh) can come back empty while others still match. %>
+    <div class="sheet" id="page_empty"><p class="flush"><strong>No tasks on this page any more.</strong> <%= link_to "Newest matching tasks", task_list_path(@list.filter_params) %></p></div>
+  <% elsif @list.filtered? || counts["all"].positive? %>
+    <div class="sheet" id="no_matches"><p class="flush"><strong>No tasks match these filters.</strong> <%= link_to "Clear filters", tasks_path %></p></div>
+  <% else %>
+    <div class="sheet" id="no_tasks"><p class="flush"><strong>No tasks yet.</strong> A task runs one action from the catalog on a host: collect fresh reports, restart an allowed service, or apply package updates.<% unless no_factor %> <%= link_to "New task", new_task_path %><% end %></p></div>
+  <% end %>
 <% else %>
-  <div class="table-wrap"><table class="stack">
-    <caption class="visually-hidden">Recent batches, newest first</caption>
-    <thead><tr><th scope="col">Batch</th><th scope="col">Task</th><th scope="col">Hosts</th><th scope="col">Created (UTC)</th><th scope="col">By</th></tr></thead>
+  <div class="table-wrap"><table class="stack" id="task_list">
+    <caption class="visually-hidden">Tasks, newest first</caption>
+    <thead><tr><th scope="col">Task</th><th scope="col">Host</th><th scope="col">What</th><th scope="col">State</th><th scope="col">Batch</th><th scope="col">Created (UTC)</th></tr></thead>
     <tbody>
-      <% @batches.each do |batch| %>
+      <% page.tasks.each do |task| %>
+        <% size = @list.batch_sizes.fetch(task.task_batch_id, 1) %>
         <tr>
-          <td data-label="Batch"><%= link_to "Batch #{batch.id}", task_batch_path(batch) %></td>
-          <td data-label="Task" class="mono"><%= batch.task_type %></td>
-          <td data-label="Hosts"><%= @counts.fetch(batch.id, 0) %></td>
-          <td data-label="Created (UTC)"><%= utc(batch.created_at) %></td>
-          <td data-label="By"><%= batch.operator.email %></td>
+          <td data-label="Task"><%= link_to "##{task.id}", task_path(task) %></td>
+          <td data-label="Host"><%= link_to task.host.name, tasks_host_path(task.host) %></td>
+          <td data-label="What"><%= task_what(task) %></td>
+          <td data-label="State"><%= task_state_lamp(task) %><% if (note = task_state_note(task, batch_size: size)) %><span class="state-sub<%= " warn" if task.cancel_requested? && task.state == "running" %>"><%= note %></span><% end %></td>
+          <td data-label="Batch"><% if size > 1 %><%= link_to task.task_batch_id, task_batch_path(task.task_batch_id) %> <span class="muted">(<%= pluralize(size, "host") %>)</span><% else %><span class="muted">Single</span><% end %></td>
+          <td data-label="Created (UTC)" class="mono"><%= task_clock(task.created_at) %><span class="state-sub"><%= task.task_batch.operator.email %></span></td>
         </tr>
       <% end %>
     </tbody>
   </table></div>
+  <div class="pager">
+    <% if page.newer %><%= link_to "Newer", task_list_path(@list.filter_params.merge(page.newer)), rel: "prev" %><% else %><span class="off">Newer</span><% end %>
+    <span class="muted"><%= pluralize(number_with_delimiter(page.tasks.size), "task") %> shown of <%= number_with_delimiter(@list.state ? counts.fetch(@list.state) { @list.state_counts[@list.state] } : counts["all"]) %></span>
+    <% if page.older %><%= link_to "Older", task_list_path(@list.filter_params.merge(page.older)), rel: "next" %><% else %><span class="off">Older</span><% end %>
+  </div>
 <% end %>

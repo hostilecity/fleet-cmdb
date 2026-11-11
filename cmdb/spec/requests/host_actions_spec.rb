@@ -131,7 +131,7 @@ RSpec.describe "Host actions", :signed_in, type: :request do
     it "offers the actions that apply to the host's state" do
       active = enrolled_host.first
       get "/hosts/#{active.id}"
-      expect(page.css(".host-head .actions a").map(&:text)).to eq([ "Edit", "Re-enroll", "Revoke credential", "Retire" ])
+      expect(page.css(".host-head .actions a").map(&:text)).to eq([ "Run a task on this host", "Edit", "Re-enroll", "Revoke credential", "Retire" ])
       pending = create(:host)
       get "/hosts/#{pending.id}"
       expect(page.css(".host-head .actions a").map(&:text)).to eq([ "Edit", "Re-enroll", "Retire" ])

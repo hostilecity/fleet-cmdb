@@ -1,0 +1,10 @@
+<%# What an agent's result reported (task-result.request details), as definition list rows: for the task, or for a
+    late result kept beside it (P3-S04). Values are text from the VM, escaped. %>
+<%# locals: (details:) %>
+<% if details.key?("reboot_required") %><dt>Reboot required</dt><dd><%= details["reboot_required"] ? "Yes. The task never reboots." : "No" %></dd><% end %>
+<% if details.key?("services_needing_restart") %>
+  <dt>Services using old libraries</dt>
+  <dd><% services = Array(details["services_needing_restart"]) %><% if services.any? %><%= safe_join(services.map { |name| tag.span(name, class: "mono") }, ", ") %>. Not restarted; the task never restarts services.<% else %>None<% end %></dd>
+<% end %>
+<% if details.key?("unit_active") %><dt>Active after the restart</dt><dd><%= details["unit_active"] ? "Yes" : "No" %></dd><% end %>
+<% if details.key?("reports_sent") %><dt>Reports sent</dt><dd><%= Array(details["reports_sent"]).join(", ").presence || "None" %></dd><% end %>

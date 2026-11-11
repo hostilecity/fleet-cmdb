@@ -1,7 +1,7 @@
 # The host tab bar and summary tiles (P2-D02 to P2-D04, approved mockups, owner decision Q1): real links, so the
 # current tab is aria-current, never a script-driven tab widget.
 module HostTabsHelper
-  TABS = { overview: "Overview", config: "Configuration", packages: "Packages", vulnerabilities: "Vulnerabilities" }.freeze
+  TABS = { overview: "Overview", config: "Configuration", packages: "Packages", vulnerabilities: "Vulnerabilities", tasks: "Tasks" }.freeze
 
   def host_tab_path(host, tab, **params)
     case tab
@@ -9,6 +9,7 @@ module HostTabsHelper
     when :config then config_host_path(host, **params)
     when :packages then packages_host_path(host, **params)
     when :vulnerabilities then vulnerabilities_host_path(host, **params)
+    when :tasks then tasks_host_path(host, **params)
     end
   end
 
@@ -22,7 +23,7 @@ module HostTabsHelper
   end
 
   # The count beside a tab's name: packages installed ("Unsupported" when unknown), open findings ("Not evaluated"
-  # when the host is not, unless findings from an earlier evaluation are still open).
+  # when the host is not, unless findings from an earlier evaluation are still open), and tasks running or waiting.
   def tab_count(summary, tab)
     case tab
     when :packages
@@ -34,6 +35,12 @@ module HostTabsHelper
       number_with_delimiter(set.package_count)
     when :vulnerabilities
       summary.vulnerabilities_evaluated? || summary.open_findings.positive? ? "#{number_with_delimiter(summary.open_findings)} open" : "Not evaluated"
+    when :tasks
+      running = summary.open_tasks["running"].to_i
+      waiting = summary.open_tasks.values_at("queued", "claimed").sum(&:to_i)
+      if running.positive? then "#{running} running"
+      elsif waiting.positive? then "#{waiting} waiting"
+      end
     end
   end
 

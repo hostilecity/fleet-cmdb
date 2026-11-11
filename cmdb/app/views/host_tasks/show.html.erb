@@ -1,0 +1,73 @@
+<%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :tasks %>
+<%# A host's Tasks tab (P3-DASH-TASKS, mockup host-tasks.html, owner decision Q34). %>
+<%= turbo_stream_from TaskBroadcast::STREAM, id: "tasks_stream", data: { turbo_permanent: true } %>
+<% catalog = TaskCatalog.current %>
+<div class="cols-2">
+<section class="sheet" aria-labelledby="capabilities_title" id="capabilities">
+  <h2 id="capabilities_title">What this host will run</h2>
+  <% if @host.task_capabilities_reported_at %>
+    <p class="muted intro">As its agent last reported, <%= seen_ago(@host.task_capabilities_reported_at) %>.<% if @host.agent_version %> Agent <span class="mono"><%= @host.agent_version %></span>,<% end %> catalog version <%= @host.task_catalog_version %>.</p>
+    <div class="table-wrap"><table class="stack">
+      <caption class="visually-hidden">Task types on this host</caption>
+      <thead><tr><th scope="col">Task</th><th scope="col">On this VM</th></tr></thead>
+      <tbody>
+        <% catalog.types.each do |type| %>
+          <% entry = catalog.entry(type) %>
+          <tr>
+            <td data-label="Task"><%= entry.name %></td>
+            <td data-label="On this VM">
+              <% if !@host.task_types_supported.to_a.include?(type) || @host.task_catalog_version.to_i < entry.since %>
+                <span class="lamp na">Not supported</span><span class="state-sub">This agent does not run <%= type %>. A newer agent may.</span>
+              <% elsif @host.task_types_enabled.to_a.include?(type) %>
+                <span class="lamp online">Enabled</span><% if type == "restart_service" %><span class="state-sub">Services in its own allowlist: <%= @host.task_services_allowed.to_a.join(", ").presence || "none" %>.</span><% end %>
+              <% else %>
+                <span class="lamp na">Not enabled</span><span class="state-sub">Turned off in the VM's configuration<%= " (the default)" unless entry.enabled_by_default %>.</span>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table></div>
+  <% else %>
+    <p class="muted intro">Its agent has not reported which tasks it runs<%= " (agent #{@host.agent_version})" if @host.agent_version %>. Tasks need an agent that does.</p>
+  <% end %>
+  <p class="hint tail">Task types are turned on or off only in <span class="mono">/etc/fleet-agent/config.toml</span> on the VM, never from the dashboard.</p>
+</section>
+<section class="sheet" aria-labelledby="now_title" id="now">
+  <h2 id="now_title">Now</h2>
+  <% if @open_tasks.empty? %>
+    <p class="muted intro">Nothing is waiting or running.</p>
+  <% else %>
+    <% @open_tasks.each do |task| %>
+      <p class="intro"><%= task_state_lamp(task) %> <%= link_to "##{task.id} #{task_type_name(task.task_type)}", task_path(task) %>. <%= task_state_note(task, batch_size: 1) %></p>
+    <% end %>
+    <% if @open_tasks.size > 1 %><p class="muted small">The agent runs one task at a time.</p><% end %>
+  <% end %>
+  <% if @reboot_task&.result_details.to_h["reboot_required"] %>
+    <p class="muted tail" id="reboot_required">Task <%= link_to "##{@reboot_task.id}", task_path(@reboot_task) %> (<%= task_time(@reboot_task.finished_at) %>), the latest package update that reported it, said a reboot is required.</p>
+  <% end %>
+</section>
+</div>
+
+<h2>History</h2>
+<% if @history.empty? %>
+  <p class="muted" id="no_history">No task has run on this host yet.</p>
+<% else %>
+  <div class="table-wrap"><table class="stack" id="host_task_history">
+    <caption class="visually-hidden">Tasks on <%= @host.name %>, newest first</caption>
+    <thead><tr><th scope="col">Task</th><th scope="col">What</th><th scope="col">State</th><th scope="col">Batch</th><th scope="col">Created (UTC)</th></tr></thead>
+    <tbody>
+      <% @history.each do |task| %>
+        <% size = @batch_sizes.fetch(task.task_batch_id, 1) %>
+        <tr>
+          <td data-label="Task"><%= link_to "##{task.id}", task_path(task) %></td>
+          <td data-label="What"><%= task_what(task) %></td>
+          <td data-label="State"><%= task_state_lamp(task) %><% if (note = task_state_note(task, batch_size: size)) %><span class="state-sub"><%= note %></span><% end %></td>
+          <td data-label="Batch"><% if size > 1 %><%= link_to task.task_batch_id, task_batch_path(task.task_batch_id) %><% else %><span class="muted">Single</span><% end %></td>
+          <td data-label="Created (UTC)" class="mono"><%= task_clock(task.created_at) %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table></div>
+<% end %>
+<p class="muted small"><%= link_to "All tasks for #{@host.name}", task_list_path(host: @host.hostname.presence || @host.name) %> on the Tasks page.</p>
