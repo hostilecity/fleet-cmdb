@@ -10,7 +10,9 @@
 //! - the packages loop ([`packages`]): a package report at once, then on the config report's interval.
 //!
 //! The server's `report_request` directive reaches the report loops through [`requests`]: the heartbeat
-//! loop raises one request per episode and the report loops poll for it every [`REQUEST_POLL`].
+//! loop raises one request per episode and the report loops poll for it every [`REQUEST_POLL`]. The
+//! `refresh_reports` task (P3-A04) reaches them the same way, through [`refresh`]: each loop takes the
+//! task's ask with the directive's, so both are answered by the one report its reporter builds next.
 //!
 //! All wait with [`Shutdown::wait`], so `SIGTERM` ends them between requests; what is in flight
 //! finishes first. The loops stop in parallel, so stopping takes as long as the slowest of them
@@ -40,12 +42,14 @@ mod heartbeat;
 mod intervals;
 mod inventory;
 mod packages;
+pub mod refresh;
 mod requests;
 mod time;
 
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -63,7 +67,9 @@ use crate::update::Updater;
 pub use heartbeat::{ACK_RECORD, Ack, HEARTBEAT_PATH, Heartbeat, HeartbeatRequest};
 pub use intervals::Intervals;
 pub use inventory::Reporter;
-use requests::{ReportRequests, ReportType};
+pub use refresh::Refresh;
+use requests::ReportRequests;
+pub use requests::ReportType;
 pub use time::rfc3339;
 
 /// How often a report loop looks for a `report_request` the heartbeat loop raised.
@@ -131,6 +137,9 @@ fn run_with(
     let requests = &requests;
     let hint = TaskHint::default();
     let hint = &hint;
+    // P3-A04: the refresh_reports task asks the report loops through this.
+    let refresh = Arc::new(Refresh::new());
+    let refresh = &refresh;
     thread::scope(|scope| {
         let heartbeat = spawn_loop(scope, "heartbeat", || {
             let _stop = StopOnExit(shutdown);
@@ -147,6 +156,7 @@ fn run_with(
                 transport,
                 shutdown,
                 requests,
+                refresh,
             );
         });
         let config_report = spawn_loop(scope, "config", || {
@@ -157,6 +167,7 @@ fn run_with(
                 transport,
                 shutdown,
                 requests,
+                refresh,
             );
         });
         // FR-2.3: packages on the same cadence as the configuration report.
@@ -168,14 +179,14 @@ fn run_with(
                 transport,
                 shutdown,
                 requests,
+                refresh,
             );
         });
         // P3-A02: the task poller. It opens the ledger and reports any task left unreported, and
-        // polls only when a type is enabled and supported (none in this build: P3-A03's registry is
-        // empty until the task types are built).
+        // polls only when a type is enabled here and implemented (`tasks::IMPLEMENTED`).
         let tasks = spawn_loop(scope, "tasks", || {
             let _stop = StopOnExit(shutdown);
-            tasks_loop(config, transport, shutdown, updater, hint);
+            tasks_loop(config, transport, shutdown, updater, hint, refresh);
         });
         let handles = [
             ("heartbeat", heartbeat),
@@ -277,9 +288,10 @@ fn tasks_loop(
     shutdown: &Shutdown,
     updater: &Updater,
     hint: &TaskHint,
+    refresh: &Arc<Refresh>,
 ) {
-    // P3-A03: the registry of implemented task types (none in this build, `tasks::IMPLEMENTED`).
-    let executor = Registry::production(config.tasks.clone());
+    // P3-A03: the registry of implemented task types (`tasks::IMPLEMENTED`).
+    let executor = Registry::production(config.tasks.clone(), Arc::clone(refresh));
     let api = TasksApi(transport);
     let mut poller = Poller::new(
         &config.state_dir,
@@ -306,6 +318,7 @@ fn inventory_loop(
     transport: &dyn Transport,
     shutdown: &Shutdown,
     requests: &ReportRequests,
+    refresh: &Refresh,
 ) {
     let mut reporter = Reporter::new(
         intervals,
@@ -314,12 +327,17 @@ fn inventory_loop(
         seeded(4),
     );
     while !shutdown.is_requested() {
-        if requests.take(ReportType::Inventory).is_some() {
+        // Both are taken: one report answers the directive and the task (P3-A04).
+        let directive = requests.take(ReportType::Inventory).is_some();
+        if refresh.take(ReportType::Inventory) | directive {
             reporter.request();
         }
         let wake = reporter.tick(Instant::now(), &mut || collector.collect(), transport);
         if reporter.take_answered() {
             requests.answered(ReportType::Inventory, Instant::now());
+        }
+        if let Some(done) = reporter.take_requested_done() {
+            refresh.settle(ReportType::Inventory, done);
         }
         let wait = wake
             .saturating_duration_since(Instant::now())
@@ -336,6 +354,7 @@ fn config_loop(
     transport: &dyn Transport,
     shutdown: &Shutdown,
     requests: &ReportRequests,
+    refresh: &Refresh,
 ) {
     let mut reporter = config::Reporter::new(
         host,
@@ -345,12 +364,17 @@ fn config_loop(
     )
     .stopping_on(shutdown);
     while !shutdown.is_requested() {
-        if requests.take(ReportType::Config).is_some() {
+        // Both are taken: one report answers the directive and the task (P3-A04).
+        let directive = requests.take(ReportType::Config).is_some();
+        if refresh.take(ReportType::Config) | directive {
             reporter.request();
         }
         let wake = reporter.tick(Instant::now(), transport);
         if reporter.take_answered() {
             requests.answered(ReportType::Config, Instant::now());
+        }
+        if let Some(done) = reporter.take_requested_done() {
+            refresh.settle(ReportType::Config, done);
         }
         let wait = wake
             .saturating_duration_since(Instant::now())
@@ -367,6 +391,7 @@ fn packages_loop(
     transport: &dyn Transport,
     shutdown: &Shutdown,
     requests: &ReportRequests,
+    refresh: &Refresh,
 ) {
     let mut reporter = packages::Reporter::new(
         host,
@@ -376,12 +401,17 @@ fn packages_loop(
     )
     .stopping_on(shutdown);
     while !shutdown.is_requested() {
-        if requests.take(ReportType::Packages).is_some() {
+        // Both are taken: one report answers the directive and the task (P3-A04).
+        let directive = requests.take(ReportType::Packages).is_some();
+        if refresh.take(ReportType::Packages) | directive {
             reporter.request();
         }
         let wake = reporter.tick(Instant::now(), transport);
         if reporter.take_answered() {
             requests.answered(ReportType::Packages, Instant::now());
+        }
+        if let Some(done) = reporter.take_requested_done() {
+            refresh.settle(ReportType::Packages, done);
         }
         let wait = wake
             .saturating_duration_since(Instant::now())
@@ -691,9 +721,11 @@ pub(crate) mod tests {
         let client = trusting_client(&server, &pki, &dir);
         let state_dir = dir.path("state");
         crate::state::ensure_dir(&state_dir).unwrap();
+        // No task type enabled, so the poller sends nothing to this five-request server (the
+        // refresh_reports task has its own test below).
         let config = Config {
             state_dir: state_dir.clone(),
-            ..Config::from_toml(&cfg::minimal()).unwrap()
+            ..Config::from_toml(&format!("{}[tasks]\nenabled = []\n", cfg::minimal())).unwrap()
         };
         let shutdown = Shutdown::default();
         let started = Instant::now();
@@ -762,6 +794,165 @@ pub(crate) mod tests {
             serde_json::from_slice(&std::fs::read(state_dir.join(inventory::RECORD_NAME)).unwrap())
                 .unwrap();
         assert_eq!(record.agent_version, crate::AGENT_VERSION);
+    }
+
+    /// The whole agent API in memory, for the refresh_reports task end to end: accepts every report,
+    /// and delivers one refresh_reports task once the three startup reports are in.
+    #[derive(Default)]
+    struct AgentApi {
+        /// Every POST, as (path, body), in order.
+        posts: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+        delivered: std::sync::atomic::AtomicBool,
+        /// When the task was delivered.
+        delivered_at: std::sync::Mutex<Option<Instant>>,
+    }
+
+    const TASK_ID: &str = "00000000-0000-4000-8000-0000000000a1";
+
+    impl AgentApi {
+        fn reports(&self, path: &str) -> Vec<serde_json::Value> {
+            let posts = self.posts.lock().unwrap();
+            posts
+                .iter()
+                .filter(|(p, _)| p == path)
+                .map(|(_, b)| b.clone())
+                .collect()
+        }
+
+        fn result(&self) -> Option<serde_json::Value> {
+            self.reports(&crate::tasks::wire::result_path(TASK_ID))
+                .pop()
+        }
+    }
+
+    impl Transport for AgentApi {
+        fn post(&self, path: &str, body: &serde_json::Value) -> Result<ApiResponse, ApiError> {
+            self.posts
+                .lock()
+                .unwrap()
+                .push((path.to_owned(), body.clone()));
+            let id = serde_json::json!(TASK_ID);
+            if path == heartbeat::HEARTBEAT_PATH {
+                return ok(
+                    serde_json::json!({"server_time": "2026-01-01T12:00:00Z", "directives": {}}),
+                );
+            }
+            if path == crate::tasks::wire::POLL_PATH {
+                let startup_done = [
+                    inventory::INVENTORY_PATH,
+                    config::CONFIG_PATH,
+                    packages::PACKAGES_PATH,
+                ]
+                .iter()
+                .all(|p| !self.reports(p).is_empty());
+                if startup_done
+                    && !self
+                        .delivered
+                        .swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    *self.delivered_at.lock().unwrap() = Some(Instant::now());
+                    return ok(serde_json::json!({"task": {
+                        "id": TASK_ID, "type": "refresh_reports", "parameters": {},
+                        "timeout_seconds": 600, "catalog_version": 1,
+                    }}));
+                }
+                return ok(serde_json::json!({"task": null}));
+            }
+            if path == crate::tasks::wire::start_path(TASK_ID) {
+                return ok(serde_json::json!({"id": id, "state": "running", "run": true}));
+            }
+            if path == crate::tasks::wire::progress_path(TASK_ID) {
+                return ok(serde_json::json!({"id": id, "state": "running"}));
+            }
+            if path == crate::tasks::wire::result_path(TASK_ID) {
+                return ok(serde_json::json!({
+                    "id": id, "report_id": body["report_id"], "duplicate": false,
+                    "applied": true, "state": body["outcome"],
+                }));
+            }
+            if path == config::CONFIG_PATH {
+                return ok(serde_json::json!({
+                    "report_id": body["report_id"],
+                    "duplicate": false,
+                    "manifest_version": body["manifest_version"],
+                }));
+            }
+            ok(serde_json::json!({"report_id": body["report_id"], "duplicate": false}))
+        }
+
+        fn post_gzip(&self, path: &str, gzipped: &[u8]) -> Result<ApiResponse, ApiError> {
+            use std::io::Read;
+            let mut json = Vec::new();
+            flate2::read::GzDecoder::new(gzipped)
+                .read_to_end(&mut json)
+                .expect("a gzip body");
+            self.post(path, &serde_json::from_slice(&json).expect("gzip of JSON"))
+        }
+
+        fn get_conditional(&self, _: &str, etag: Option<&str>) -> Result<Conditional, ApiError> {
+            Ok(match etag {
+                Some(_) => Conditional::NotModified,
+                None => Conditional::Modified {
+                    body: crate::facts::fake::server_manifest(),
+                    etag: Some("\"m1\"".into()),
+                },
+            })
+        }
+    }
+
+    #[test]
+    fn a_refresh_reports_task_sends_one_fresh_report_of_each_type_through_the_report_loops() {
+        // P3-A04 AC: fresh reports at the server and a succeeded result, and no second report beside
+        // the one each loop sends anyway (one startup report and one for the task, per type).
+        let dir = TempDir::new();
+        let state_dir = dir.path("state");
+        crate::state::ensure_dir(&state_dir).unwrap();
+        let config = Config {
+            state_dir: state_dir.clone(),
+            ..Config::from_toml(&format!(
+                "{}[task_poll]\ninterval_seconds = 5\nmin_seconds = 5\n",
+                cfg::minimal()
+            ))
+            .unwrap()
+        };
+        let api = AgentApi::default();
+        let shutdown = Shutdown::default();
+        let clean = thread::scope(|scope| {
+            let runner = scope.spawn(|| {
+                run_with(
+                    &config,
+                    &api,
+                    &shutdown,
+                    Instant::now(),
+                    &Collector::new(),
+                    &crate::facts::fake::FakeHost::debian13(),
+                    &Updater::inert(&state_dir),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while api.result().is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(50));
+            }
+            shutdown.request();
+            runner.join().unwrap()
+        });
+        assert!(clean);
+        let result = api.result().expect("the task's result was sent");
+        crate::collect::contract::assert_conforms("v1", "task-result.request", &result);
+        assert_eq!(result["outcome"], "succeeded", "{result}");
+        assert_eq!(
+            result["details"]["reports_sent"],
+            serde_json::json!(["config", "inventory", "packages"])
+        );
+        for path in [
+            inventory::INVENTORY_PATH,
+            config::CONFIG_PATH,
+            packages::PACKAGES_PATH,
+        ] {
+            let reports = api.reports(path);
+            assert_eq!(reports.len(), 2, "{path}: {reports:?}");
+            assert_ne!(reports[0]["report_id"], reports[1]["report_id"], "{path}");
+        }
     }
 
     #[test]

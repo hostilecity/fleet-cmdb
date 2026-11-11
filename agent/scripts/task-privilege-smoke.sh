@@ -13,7 +13,9 @@
 # - read_only: a task program runs as a child of the agent, inside the sandbox, with the fixed
 #   environment, and cannot write /usr (ProtectSystem=strict);
 # - service_manager: `systemctl restart` of a unit, from inside the sandbox, restarts it (a throwaway
-#   fleet-agent-privsmoke-dummy.service started here);
+#   fleet-agent-privsmoke-dummy.service started here); and the real restart_service type (P3-A06, #36)
+#   restarts an allowed throwaway cmdb-privsmoke-restart.service, reports it active, reports a missing
+#   unit failed, and refuses the agent's own unit;
 # - package_manager: a program runs in a transient unit outside the sandbox, can write /usr, gets the
 #   fixed environment, cannot read /etc/fleet-agent (InaccessiblePaths=), and is stopped at its deadline.
 set -eu
@@ -25,8 +27,10 @@ unit=${2:-src/install/fleet-agent.service}
 
 created_etc=
 cleanup() {
-    systemctl stop fleet-agent-privsmoke-dummy.service fleet-agent-privsmoke.service 2>/dev/null || true
-    systemctl reset-failed fleet-agent-privsmoke-dummy.service fleet-agent-privsmoke.service 2>/dev/null || true
+    systemctl stop fleet-agent-privsmoke-dummy.service cmdb-privsmoke-restart.service \
+        fleet-agent-privsmoke.service 2>/dev/null || true
+    systemctl reset-failed fleet-agent-privsmoke-dummy.service cmdb-privsmoke-restart.service \
+        fleet-agent-privsmoke.service 2>/dev/null || true
     for id in a501 a502 a503; do
         name="fleet-agent-task-00000000-0000-4000-8000-00000000$id-1.service"
         systemctl stop "$name" 2>/dev/null || true
@@ -50,6 +54,8 @@ umask 022
 
 # The unit restart_service-style tasks restart.
 systemd-run --quiet --unit=fleet-agent-privsmoke-dummy --property=Type=exec /bin/sleep 3600
+# The unit the real restart_service type restarts: not protected (DEC-15), unlike the one above.
+systemd-run --quiet --unit=cmdb-privsmoke-restart --property=Type=exec /bin/sleep 3600
 
 # The unit's [Service] options, minus how the service starts and restarts.
 properties=$(sed -n '/^\[Service\]/,/^\[/p' "$unit" | grep -E '^[A-Za-z]+=' \

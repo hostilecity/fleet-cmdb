@@ -812,6 +812,53 @@ fn a_requested_report_is_sent_at_once_even_while_the_old_one_waits_for_its_retry
 }
 
 #[test]
+fn a_requested_report_replaced_by_a_stable_change_still_answers_the_request() {
+    // Review of #169: the replacement was built as `Changed`, so its acceptance answered nothing and
+    // the refresh_reports task waited for its deadline although fresh inventory had reached the server.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![]);
+    transport.set_accepting(true);
+    let now = h.at(Duration::ZERO);
+    h.tick(&mut reporter, &transport, now);
+    assert_eq!(ids(&transport).len(), 1);
+
+    // The requested report fails to send, and keeps failing for a while.
+    reporter.request();
+    for _ in 0..4 {
+        transport.push(Err(ApiError::Transport("down".into())));
+    }
+    let asked = now + secs(10);
+    h.tick(&mut reporter, &transport, asked);
+    let requested = reporter.pending_report_id().unwrap().to_owned();
+    assert!(reporter.take_requested_done().is_none());
+
+    // A stable fact changes before a retry gets through; the change check replaces the report.
+    h.facts.borrow_mut().network_interfaces.as_mut().unwrap()[0]
+        .addresses
+        .push("2001:db8::10/64".into());
+    let mut at = asked;
+    while reporter.pending_report_id().is_some() && at < asked + secs(600) {
+        at = h.tick(&mut reporter, &transport, at);
+    }
+    let sent = transport.sent();
+    let (_, last) = sent.last().unwrap();
+    assert_ne!(
+        last["report_id"],
+        requested.as_str(),
+        "the replacement has its own id"
+    );
+    assert_eq!(
+        last["network_interfaces"][0]["addresses"][1],
+        "2001:db8::10/64"
+    );
+    assert!(reporter.take_answered(), "the request was answered");
+    let done = reporter.take_requested_done().expect("the request ended");
+    assert!(done.accepted);
+    assert!(done.built_at > asked);
+}
+
+#[test]
 fn the_backoff_starts_when_the_failed_send_ends() {
     // Review of #117: the retry time was the tick's `now` plus the backoff, so a request that took its
     // 30 s timeout (after a collection of up to 10 s) had used up the backoff and was retried at once.
