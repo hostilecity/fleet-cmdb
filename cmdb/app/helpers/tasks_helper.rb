@@ -95,7 +95,8 @@ module TasksHelper
       words << "#{pluralize(services.size, 'service')} #{services.one? ? 'uses' : 'use'} old libraries." if services.any?
       words.compact.join(" ").presence
     when "restart_service"
-      details["unit_active"] == false ? "Restarted, but not active afterwards." : "Restarted and active."
+      # unit_active is optional: claim "active" only when the agent said so.
+      { true => "Restarted and active.", false => "Restarted, but not active afterwards." }.fetch(details["unit_active"], "Restarted.")
     when "refresh_reports"
       sent = Array(details["reports_sent"])
       "Sent: #{sent.join(', ')}." if sent.any?

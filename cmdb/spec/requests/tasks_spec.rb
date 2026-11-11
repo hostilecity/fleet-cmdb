@@ -68,6 +68,16 @@ RSpec.describe "Tasks pages", type: :request do
       expect(page.at_css(".pager a[rel=prev]")).to be_nil
     end
 
+    it "offers the newest page, with the filters, when an older page has emptied" do
+      host = task_host
+      task = create_task(host)
+      get "/tasks", params: { state: "active", before: (task.id + 1).to_s }
+      expect(rows("#task_list").size).to eq(1)
+      task.cancel!(actor: operator) # a live refresh of the same page
+      get "/tasks", params: { state: "active", before: (task.id + 1).to_s }
+      expect(page.at_css("#page_empty a")["href"]).to eq("/tasks?state=active")
+    end
+
     it "has empty states, and explains create and cancel without a second factor (Q12)" do
       get "/tasks"
       expect(page.at_css("#no_tasks").text).to include("No tasks yet.")
@@ -211,14 +221,17 @@ RSpec.describe "Tasks pages", type: :request do
       expect(page.at_css("#result h2").text).to eq("Cancelled while running")
       expect(rows("#task_timeline").map(&:text).join).to include("Cancel requested: the agent is told to stop.")
 
-      late = run(create_task(task_host))
+      late = run(create_task(task_host, type: "apply_package_updates"))
       late.time_out!(actor: Audit::SYSTEM)
-      payload = { "report_id" => SecureRandom.uuid, "outcome" => "succeeded", "exit_status" => 0, "started_at" => Time.current.iso8601, "finished_at" => Time.current.iso8601, "output" => "<b>late</b>" }
+      payload = { "report_id" => SecureRandom.uuid, "outcome" => "succeeded", "exit_status" => 0, "started_at" => Time.current.iso8601, "finished_at" => Time.current.iso8601,
+                  "output" => "<b>late</b>", "output_truncated" => true, "details" => { "reboot_required" => true, "services_needing_restart" => [ "cron.service" ] } }
       AgentTasks.record_result!(host: late.host, task: late, payload:)
       AgentTasks.record_result!(host: late.host, task: late, payload: payload.merge("report_id" => SecureRandom.uuid, "outcome" => "failed", "reason" => "agent_error"))
       get "/tasks/#{late.id}"
       expect(page.at_css("#late_result + p").text).to include("The agent reported succeeded", "after the server had ended the task as timed out")
       expect(page.at_css("#late_output").inner_html).to eq("&lt;b&gt;late&lt;/b&gt;")
+      expect(page.at_css("#late_output_cut").text).to include("part of it is missing")
+      expect(page.at_css("#late_details").text).to include("Yes. The task never reboots.", "cron.service", "Exit status0")
       expect(rows("#task_timeline").map(&:text).join).to include("A result arrived after the server had ended the task: succeeded.", "A result that did not match was refused")
     end
 
@@ -269,6 +282,16 @@ RSpec.describe "Tasks pages", type: :request do
       expect(Rack::Utils.parse_nested_query(URI(again["href"]).query)).to eq("type" => "apply_package_updates", "target" => { "host_ids" => [ failed.host_id, result.tasks.last.host_id ].map(&:to_s) })
     end
 
+    it "claims a restarted service is active only when the agent said so" do
+      allow_restart("nginx.service")
+      result = create_task_batch(Array.new(3) { task_host }, type: "restart_service", parameters: { "service" => "nginx.service" })
+      result.tasks.zip([ { "unit_active" => true }, { "unit_active" => false }, nil ]).each do |task, details|
+        run(task).succeed!(actor: task.host, exit_status: 0, report: report(details))
+      end
+      get "/tasks/batches/#{result.batch.id}"
+      expect(rows("#batch_tasks").map { |row| row.at_css("td[data-label=Result]").text }).to eq([ "Restarted and active.", "Restarted, but not active afterwards.", "Restarted." ])
+    end
+
     it "says plainly when every task succeeded" do
       result = create_task_batch([ task_host ])
       run(result.tasks.sole).succeed!(actor: result.tasks.sole.host, exit_status: 0, report: report("reports_sent" => %w[inventory]))
@@ -282,7 +305,12 @@ RSpec.describe "Tasks pages", type: :request do
     it "shows what the agent will run, what is open now, and its history" do
       host = task_host(name: "sim-021", types: %w[refresh_reports restart_service apply_package_updates], enabled: %w[refresh_reports apply_package_updates])
       done = run(create_task(host, type: "apply_package_updates"))
-      done.succeed!(actor: host, exit_status: 0, report: report("reboot_required" => true))
+      done.succeed!(actor: host, exit_status: 0, report: report("reboot_required" => false))
+      later = run(create_task(host, type: "apply_package_updates")) # a newer update that failed part-way still reports it
+      later.fail!(actor: host, reason: "nonzero_exit", exit_status: 1, report: report("reboot_required" => true))
+      unreported = run(create_task(host, type: "apply_package_updates"))
+      unreported.time_out!(actor: Audit::SYSTEM)
+      done = later
       running = run(create_task(host))
       create_task(host)
 
@@ -293,7 +321,7 @@ RSpec.describe "Tasks pages", type: :request do
       expect(page.css("#now p.intro").size).to eq(2)
       expect(page.at_css("#now").text).to include("##{running.id}", "The agent runs one task at a time.")
       expect(page.at_css("#reboot_required").text).to include("##{done.id}")
-      expect(rows("#host_task_history").size).to eq(3)
+      expect(rows("#host_task_history").size).to eq(5)
       expect(page.at_css("#run_task")["href"]).to eq("/tasks/new?target%5Bhost_ids%5D%5B%5D=#{host.id}")
       expect(page.at_css("a[href^='/tasks?host=']")["href"]).to eq("/tasks?host=#{host.hostname}")
     end

@@ -29,13 +29,7 @@
   <% details = task.result_details.to_h %>
   <% if details.any? || task.terminal? %>
     <dl class="facts sheet" id="task_details">
-      <% if details.key?("reboot_required") %><dt>Reboot required</dt><dd><%= details["reboot_required"] ? "Yes. The task never reboots." : "No" %></dd><% end %>
-      <% if details.key?("services_needing_restart") %>
-        <dt>Services using old libraries</dt>
-        <dd><% services = Array(details["services_needing_restart"]) %><% if services.any? %><%= safe_join(services.map { |name| tag.span(name, class: "mono") }, ", ") %>. Not restarted; the task never restarts services.<% else %>None<% end %></dd>
-      <% end %>
-      <% if details.key?("unit_active") %><dt>Active after the restart</dt><dd><%= details["unit_active"] ? "Yes" : "No" %></dd><% end %>
-      <% if details.key?("reports_sent") %><dt>Reports sent</dt><dd><%= Array(details["reports_sent"]).join(", ").presence || "None" %></dd><% end %>
+      <%= render "tasks/details", details: %>
       <dt>Finished</dt><dd><%= task.finished_at ? task_time(task.finished_at) : "Not yet" %></dd>
       <% unless task.exit_status.nil? %><dt>Exit status</dt><dd class="mono"><%= task.exit_status %></dd><% end %>
       <dt>Result from</dt><dd><%= task.agent_result? ? "The agent, received #{task_time(task.result_received_at)}" : "The server (no result from the agent)" %></dd>
@@ -87,7 +81,16 @@
 <% if (late = task.late_result) %>
   <h2 id="late_result">A result that arrived late</h2>
   <p>The agent reported <strong><%= task_state_label(late.outcome).downcase %></strong><%= " (#{late.reason})" if late.reason %> at <%= task_time(late.received_at) %>, after the server had ended the task as <%= task_state_label(task.state).downcase %>. It is kept here and does not change the state.</p>
-  <% if late.output %><pre class="output" id="late_output"><%= late.output %></pre><% end %>
+  <% if late.details.to_h.any? || !late.exit_status.nil? %>
+    <dl class="facts sheet" id="late_details">
+      <%= render "tasks/details", details: late.details.to_h %>
+      <% unless late.exit_status.nil? %><dt>Exit status</dt><dd class="mono"><%= late.exit_status %></dd><% end %>
+    </dl>
+  <% end %>
+  <% if late.output %>
+    <% if late.output_truncated %><p class="state-sub warn" id="late_output_cut">This output was cut to keep within the limit; part of it is missing.</p><% end %>
+    <pre class="output" id="late_output"><%= late.output %></pre>
+  <% end %>
 <% end %>
 
 <h2 id="audit">Audit entries</h2>

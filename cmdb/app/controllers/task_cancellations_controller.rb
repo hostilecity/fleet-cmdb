@@ -19,8 +19,13 @@ class TaskCancellationsController < ApplicationController
 
   def task
     task = Task.includes(:host, :task_batch).find(params[:id])
-    result = TaskCancellation.cancel_task!(task, operator: current_operator)
-    if result.outcome == :finished
+    seen = params[:seen].presence_in(%w[unstarted running])
+    result = TaskCancellation.cancel_task!(task, operator: current_operator, seen:)
+    if result.outcome == :changed
+      load_task
+      flash.now[:alert] = "Nothing was done: task ##{task.id} is #{task.reload.state.humanize(capitalize: false)} now, not as this confirmation described it. Read what a cancel does now, then confirm again."
+      render :confirm_task, status: :conflict
+    elsif result.outcome == :finished
       redirect_to task_path(task), alert: "Not cancelled: task ##{task.id} already finished. It ended #{task.state.humanize(capitalize: false)} at #{utc(task.finished_at)}, before your request. A finished task cannot be cancelled."
     else
       redirect_to task_path(task), notice: task_notice(task, result)

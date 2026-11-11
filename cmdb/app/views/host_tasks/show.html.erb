@@ -44,7 +44,7 @@
     <% if @open_tasks.size > 1 %><p class="muted small">The agent runs one task at a time.</p><% end %>
   <% end %>
   <% if @reboot_task&.result_details.to_h["reboot_required"] %>
-    <p class="muted tail" id="reboot_required">Task <%= link_to "##{@reboot_task.id}", task_path(@reboot_task) %> (<%= task_time(@reboot_task.finished_at) %>), its latest package update, reported that a reboot is required.</p>
+    <p class="muted tail" id="reboot_required">Task <%= link_to "##{@reboot_task.id}", task_path(@reboot_task) %> (<%= task_time(@reboot_task.finished_at) %>), the latest package update that reported it, said a reboot is required.</p>
   <% end %>
 </section>
 </div>

@@ -31,6 +31,9 @@ class TaskList
 
   def filtered? = filter_params.any?
 
+  # Whether the page was asked for by a cursor (Newer or Older), so an empty page may only mean its tasks moved on.
+  def cursor? = !(@before || @after).nil?
+
   # The filters, without blanks, for links that keep them (pages, chips).
   def filter_params = { host:, type:, state:, batch: }.compact
 

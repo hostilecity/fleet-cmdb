@@ -147,6 +147,24 @@ RSpec.describe "Task cancellation", type: :request do
       expect(dialog.css("form")).to be_empty
     end
 
+    it "does nothing when the task started after its confirmation was drawn, so the cancel never reaches the rest of the batch" do
+      hosts = [ task_host(name: "sim-027"), task_host(name: "sim-028") ]
+      batch = create_task_batch(hosts, type: "apply_package_updates", operator: creator)
+      task, sibling = batch.tasks
+      get "/tasks/#{task.id}/cancel"
+      seen = page.at_css("#cancel_form input[name=seen]")["value"]
+      expect(seen).to eq("unstarted")
+      run(task) # the agent starts it before the operator submits
+      post "/tasks/#{task.id}/cancel", params: code.merge(seen:)
+      expect(response).to have_http_status(:conflict)
+      expect(page.at_css(".notice.flash").text).to start_with("Nothing was done: task ##{task.id} is running now")
+      expect(page.at_css("#dialog_title").text).to eq("Task ##{task.id} on sim-027 cannot be stopped")
+      expect([ task.reload.cancel_requested?, sibling.reload.state ]).to eq([ false, "queued" ])
+      post "/tasks/#{task.id}/cancel", params: { seen: page.at_css("#cancel_form input[name=seen]")["value"] }
+      expect(response).to redirect_to("/tasks/#{task.id}")
+      expect([ task.reload.cancel_requested?, sibling.reload.state ]).to eq([ true, "cancelled" ])
+    end
+
     it "counts what a batch cancel will and will not change" do
       hosts = %w[sim-024 sim-025 sim-026 sim-027 sim-028].map { |name| task_host(name:) }
       result = create_task_batch(hosts, type: "apply_package_updates", operator: creator)

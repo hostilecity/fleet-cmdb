@@ -1,6 +1,8 @@
 <%# The form under a task's cancel confirmation: the code box and the button named by what the cancel can do. %>
 <%# locals: (task:, label:, button_class:) %>
 <%= form_with url: cancel_task_path(task), method: :post, id: "cancel_form", local: true do %>
+  <%# What this confirmation described: the server does nothing if the task has moved on since (TaskCancellation). %>
+  <%= hidden_field_tag :seen, TaskCancellation::UNSTARTED.include?(task.state) ? "unstarted" : "running", id: nil %>
   <%= render "second_factors/prompt", result: second_factor_result, intro: "Cancelling needs a code from your authenticator app." %>
   <div class="actions">
     <button class="<%= button_class %>" type="submit"><%= label %></button>

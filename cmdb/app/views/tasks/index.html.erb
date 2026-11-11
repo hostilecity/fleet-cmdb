@@ -27,7 +27,10 @@
   <button class="btn quiet" type="submit">Apply</button>
 <% end %>
 <% if page.tasks.empty? %>
-  <% if @list.filtered? || counts["all"].positive? %>
+  <% if @list.cursor? %>
+    <%# An older page whose tasks changed state (a live refresh) can come back empty while others still match. %>
+    <div class="sheet" id="page_empty"><p class="flush"><strong>No tasks on this page any more.</strong> <%= link_to "Newest matching tasks", task_list_path(@list.filter_params) %></p></div>
+  <% elsif @list.filtered? || counts["all"].positive? %>
     <div class="sheet" id="no_matches"><p class="flush"><strong>No tasks match these filters.</strong> <%= link_to "Clear filters", tasks_path %></p></div>
   <% else %>
     <div class="sheet" id="no_tasks"><p class="flush"><strong>No tasks yet.</strong> A task runs one action from the catalog on a host: collect fresh reports, restart an allowed service, or apply package updates.<% unless no_factor %> <%= link_to "New task", new_task_path %><% end %></p></div>
