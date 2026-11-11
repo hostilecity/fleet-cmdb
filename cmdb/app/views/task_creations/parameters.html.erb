@@ -1,0 +1,46 @@
+<% content_for :title, "New task: parameters" %>
+<%# Step 2 (mockup create-params.html, Q5): parameters as choices from fixed lists, never typed. The restart service
+    comes from the server's allowlist, with the tags it is allowed for named; hosts outside them are left out at the
+    targets step. Errors are announced at the top and shown beside the field. %>
+<% target = task_request["target"] if task_request["target"].is_a?(Hash) %>
+<p><%= link_to "← Task type", new_task_path(task_request_query(type: @entry.type, target:)) %></p>
+<div class="page-head"><div><h1>New task: <%= @entry.name %></h1>
+  <p><%= @entry.parameters.empty? ? "This task has no parameters." : "The only parameter is which service. You choose it from the server's allowlist; you cannot type a name here." %></p></div></div>
+<%= task_flow(2, 1 => new_task_path(task_request_query(type: @entry.type, target:))) %>
+
+<% if @choice.unavailable == "empty_allowlist" %>
+  <div class="notice error" role="alert" id="empty_allowlist"><strong>There is no service you can restart.</strong>
+    <p>The server's allowlist of restartable services is empty, which is how it starts (ADR 0015). Add a service in <%= link_to "Settings: Tasks", task_settings_path(anchor: "allowlist") %>, then add the same service to each VM's own allowlist in <span class="mono">/etc/fleet-agent/config.toml</span>. Until both list it, a restart is refused.</p></div>
+  <div class="actions"><%= link_to "Choose another task", new_task_path, class: "btn quiet" %></div>
+<% elsif @choice.unavailable == "no_form" %>
+  <div class="notice error" role="alert" id="no_form"><strong>This dashboard cannot set this task's parameters.</strong>
+    <p>It offers parameters only as choices from fixed lists, and has no list for this type's parameters yet. Nothing can be created for it here.</p></div>
+  <div class="actions"><%= link_to "Choose another task", new_task_path, class: "btn quiet" %></div>
+<% else %>
+  <%= form_with url: new_task_targets_path, method: :get, class: "form wide", local: true do %>
+    <%= task_request_fields(type: @entry.type, target:) %>
+    <% if @parameter_errors %>
+      <div class="notice error" role="alert" id="parameter_errors"><strong>Check the parameters.</strong>
+        <p><%= pluralize(@parameter_errors.size, "problem") %>: <%= @parameter_errors.map { |problem| task_problem_sentence(problem).downcase_first.delete_suffix(".") }.join("; ") %>.</p></div>
+    <% end %>
+    <% if @services %>
+      <% chosen = @chosen["service"] if @chosen["service"].is_a?(String) %>
+      <% service_error = @parameter_errors&.find { |problem| problem["pointer"] == "/parameters/service" } %>
+      <div class="field<%= " invalid" if service_error %>">
+        <label for="service">Service</label>
+        <%= select_tag "parameters[service]", options_for_select([ [ "Choose a service", "" ] ] + @services.map { |item| [ item.tags ? "#{item.service} (#{'tag'.pluralize(item.tags.size)} #{item.tags.join(', ')} only)" : item.service, item.service ] }, chosen),
+              id: "service", required: true, "aria-invalid": (service_error ? "true" : nil), "aria-describedby": (service_error ? "service_error service_hint" : "service_hint") %>
+        <% if service_error %>
+          <p class="error-text" id="service_error"><%= chosen.present? ? "#{chosen.first(64)} #{service_error['problem']}." : "Choose a service." %></p>
+        <% end %>
+        <p class="hint" id="service_hint">From the <%= link_to "restartable-services allowlist", task_settings_path(anchor: "allowlist") %>: <%= pluralize(@services.size, "service") %>.
+          <% @services.select(&:tags).each do |item| %><span class="mono"><%= item.service %></span> is allowed only on hosts tagged <%= safe_join(item.tags.map { |tag_name| tag.span(tag_name, class: "tag") }, " or ") %>. <% end %>The next step shows which hosts that leaves.</p>
+      </div>
+    <% else %>
+      <% if @parameter_errors.nil? %>
+        <p><strong>This task has no parameters.</strong> It always does the same thing, described on the confirmation before anything is created.</p>
+      <% end %>
+    <% end %>
+    <div class="actions"><button class="btn" type="submit">Next: targets</button><%= link_to "Back", new_task_path(task_request_query(type: @entry.type, target:)), class: "btn quiet" %></div>
+  <% end %>
+<% end %>

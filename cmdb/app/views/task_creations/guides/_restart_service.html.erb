@@ -1,0 +1,16 @@
+<%# What restart_service does, step by step, and the programs it runs (mockup create-confirm.html, Q9). The lines
+    are fixed in the agent and only show where the one parameter goes; the agent's implementation is P3-AGENT-TASKS,
+    which updates them here if they change. %>
+<%# locals: (parameters:, entry:) %>
+<% service = parameters.fetch("service") %>
+<ol>
+  <li>Checks the task itself: <span class="mono">restart_service</span> is enabled in the VM's configuration, <span class="param"><%= service %></span> is in the VM's own allowlist, and it is not a protected service. If any check fails, it refuses the task and runs nothing.</li>
+  <li>Asks systemd to restart <span class="param"><%= service %></span>. The service stops and starts again; connections it is serving are dropped.</li>
+  <li>Checks that <span class="param"><%= service %></span> is running again, then reports Succeeded, or Failed with systemd's output.</li>
+</ol>
+<p class="never"><strong>It does not</strong> restart any other service, change any file, or reboot. It stops after <%= task_duration(entry.timeout) %> at most. Once started it cannot be cancelled: stopping a restart half-way could leave the service down.</p>
+<details class="fixed"><summary>The exact programs the agent runs (fixed in the agent, not sent by the server)</summary>
+<pre class="code">/usr/bin/systemctl restart -- <%= service %>
+/usr/bin/systemctl is-active -- <%= service %></pre>
+<p class="muted">These lines are the draft from ADR 0015. The agent's implementation (P3-AGENT-TASKS) fixes the final ones, and this box will show exactly those.</p>
+</details>

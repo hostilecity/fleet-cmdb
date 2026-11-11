@@ -17,7 +17,7 @@ RSpec.describe "Security hardening", type: :request do
     [ "/", "/hosts/new", "/hosts/#{host.id}", "/hosts/#{host.id}/edit", "/hosts/#{host.id}/revoke", "/hosts/#{host.id}/retire",
       "/hosts/#{host.id}/reenroll", "/settings", "/audit", "/agents", "/agents/install", "/onboard", "/onboard/#{request_record.user_code}",
       "/jobs/failed", "/data-sources", "/rules", "/rules/new", "/rules/import", "/rules/#{rule.id}", "/rules/#{rule.id}/edit", "/rules/#{rule.id}/disable",
-      "/settings/second-factor", "/settings/second-factor/setup" ]
+      "/settings/second-factor", "/settings/second-factor/setup", "/tasks", "/tasks/new" ]
   end
 
   # The response has a CSP nonce on every inline script and style, no inline handler or style attribute, and nothing
@@ -92,6 +92,28 @@ RSpec.describe "Security hardening", type: :request do
       post "/settings/second-factor/verify", params: { second_factor_code: "000000" }
       expect(page.at_css(".stepup input[name=second_factor_code]")).to be_present
       expect_page_within_csp("the code box")
+    end
+
+    it "keeps every step of the create-task flow, its refusals, and the batch page within it too (P3-S08)" do
+      sign_in_operator
+      operator = Operator.find_by!(email: "operator@example.com")
+      enrol_second_factor(operator)
+      allow_restart("nginx.service")
+      hosts = Array.new(4) { task_host(tags: %w[web]) }
+      [ "/tasks/new", "/tasks/new/parameters?type=restart_service", "/tasks/new/targets?type=restart_service&parameters[service]=nginx.service&by=tag&tag=web",
+        "/tasks/new/targets?type=restart_service&parameters[service]=nginx.service&by=hosts", "/tasks/new/confirm?type=restart_service&parameters[service]=nginx.service&target[tag]=web",
+        "/tasks/new/targets?type=restart_service&parameters[service]=nothing.service" ].each do |path|
+        get path
+        expect(response.status).to eq(200).or(eq(422)), "GET #{path}"
+        expect_page_within_csp(path)
+      end
+      post "/tasks", params: { type: "restart_service", parameters: { service: "nginx.service" }, target: { tag: "web" }, second_factor_code: "000000" }
+      expect(page.at_css("#create_task input[name=confirmation]")).to be_present
+      expect_page_within_csp("the confirmation, refused")
+      post "/tasks", params: { type: "run_shell" }
+      expect_page_within_csp("a refused creation")
+      get "/tasks/batches/#{create_task_batch(hosts).batch.id}"
+      expect_page_within_csp("the batch page")
     end
 
     it "keeps Turbo and Stimulus loadable: the importmap pins only this site's own files" do

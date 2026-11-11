@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_08_140000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -648,6 +648,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_140000) do
     t.integer "catalog_version", null: false
     t.string "catalog_digest", limit: 64, null: false
     t.datetime "created_at", null: false
+    t.uuid "confirmation_token"
+    t.index ["confirmation_token"], name: "index_task_batches_on_confirmation_token", unique: true
     t.index ["operator_id"], name: "index_task_batches_on_operator_id"
     t.check_constraint "(selection_method::text = 'tag'::text) = (selection_tag IS NOT NULL)", name: "task_batches_selection_tag"
     t.check_constraint "cardinality(selected_host_ids) >= 1 AND cardinality(selected_host_ids) <= 25", name: "task_batches_selection_size"

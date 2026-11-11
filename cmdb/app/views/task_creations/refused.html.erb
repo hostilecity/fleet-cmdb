@@ -1,0 +1,11 @@
+<% content_for :title, "Task creation refused" %>
+<% turbo_exempts_page_from_cache %>
+<%# A refused create request that the confirmation page cannot draw again (mockup create-blocked.html#forged): an
+    unknown type, parameters outside the schema, a target that selects nothing that can run it. Nothing was stored
+    but the audit entry. %>
+<div class="page-head"><div><h1>Nothing was created</h1><p>The server checks every rule on every request, whatever page it came from, and refused this one before anything was stored. The refusal is in the <%= link_to "audit log", audit_page_path(action: Audit::Actions::TASK_CREATION_REFUSED) %>.</p></div></div>
+<div class="notice error" role="alert" id="refused">
+  <strong><%= pluralize(@errors.size, "problem") %></strong>
+  <ul class="problem-list"><% @errors.each do |problem| %><li><%= task_problem_sentence(problem) %></li><% end %></ul>
+</div>
+<div class="actions"><%= link_to "Start a new task", new_task_path, class: "btn" %></div>

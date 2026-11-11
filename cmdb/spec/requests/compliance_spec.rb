@@ -16,11 +16,11 @@ RSpec.describe "Compliance", :signed_in, type: :request do
 
   def strip(id) = page.css("##{id} .sevstrip a").map { |a| [ words(a.at_css(".sev")), a.at_css(".count").text.to_i ] }.to_h
 
-  it "is a top-level navigation item after Fleet, current on its page (Q10)" do
+  it "is a top-level navigation item after Fleet and Tasks (Phase 3 Q1), current on its page (Q10)" do
     get "/compliance"
     expect(response).to have_http_status(:ok)
     nav = page.css("nav[aria-label=Main] a")
-    expect(nav.map(&:text).first(2)).to eq(%w[Fleet Compliance])
+    expect(nav.map(&:text).first(3)).to eq(%w[Fleet Tasks Compliance])
     expect(page.at_css("nav[aria-label=Main] a[aria-current=page]").text).to eq("Compliance")
     get "/"
     expect(page.at_css("nav[aria-label=Main] a[aria-current=page]").text).to eq("Fleet")
@@ -30,7 +30,7 @@ RSpec.describe "Compliance", :signed_in, type: :request do
     get "/compliance"
     expect(page.at_css(".page-head #data_sources_link")).to have_attributes(text: "Data sources")
     expect(page.at_css(".page-head #data_sources_link")["href"]).to eq("/data-sources")
-    expect(page.css("nav[aria-label=Main] a").map(&:text).first(4)).to eq([ "Fleet", "Compliance", "Rules", "Data sources" ])
+    expect(page.css("nav[aria-label=Main] a").map(&:text).first(5)).to eq([ "Fleet", "Tasks", "Compliance", "Rules", "Data sources" ])
   end
 
   it "says there are no active hosts, with the way to add one, and draws no counts" do

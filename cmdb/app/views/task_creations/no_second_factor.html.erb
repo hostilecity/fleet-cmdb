@@ -1,0 +1,10 @@
+<% content_for :title, "New task" %>
+<%# Q12 (mockup create-blocked.html#no-factor): an operator without a second factor reads every task page, but the
+    create flow is replaced by this explanation. The server refuses a create request on its own too. %>
+<p><%= link_to "← Tasks", tasks_path %></p>
+<div class="page-head"><div><h1>New task</h1></div></div>
+<div class="notice" role="alert">
+  <strong>You cannot create or cancel tasks until you set up a second factor.</strong>
+  <p>Tasks change hosts, so the dashboard asks for a code from an authenticator app as well as your Google sign-in. You can still read every task, host, and report. Setting it up takes about two minutes and needs your phone.</p>
+  <p><%= link_to "Set up an authenticator app", second_factor_path, class: "btn" %></p>
+</div>

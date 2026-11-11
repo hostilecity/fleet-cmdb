@@ -1,0 +1,98 @@
+<% content_for :title, "New task: confirm" %>
+<% turbo_exempts_page_from_cache %>
+<%# Step 4 (mockup create-confirm.html, Q9 to Q11, Q13): exactly what the agent does on which hosts, the typed host
+    count above TaskBatches::CONFIRM_ABOVE hosts (DEC-14), and the second factor, all in one form, so one submit checks
+    everything. The form carries the signed confirmation (TaskConfirmation); a refused submit comes back here with
+    the reasons, the current host list, and a new confirmation. %>
+<% parameters = @preview.parameters %>
+<% target = @preview.target %>
+<% count = @preview.targeted.size %>
+<% restart = @entry.type == "restart_service" %>
+<% expiry = TaskSettings.limits.expiry(@entry.type) %>
+<% hosts_by_id = @preview.hosts.index_by(&:id) %>
+<% errors = @errors || [] %>
+<% count_error = errors.find { |problem| problem["pointer"] == "/confirm_host_count" } %>
+<% targets_link = new_task_targets_path(task_request_query(type: @entry.type, parameters:, target:)) %>
+<p><%= link_to "← Targets", targets_link %></p>
+<div class="page-head"><div><h1>Confirm: <% if restart %>restart <span class="mono"><%= parameters["service"] %></span><% else %><%= @entry.name.downcase_first %><% end %> on <%= pluralize(count, "host") %></h1>
+  <p>Nothing has been created yet. Read what will happen, then confirm.</p></div></div>
+<%= task_flow(4, 1 => new_task_path(task_request_query(type: @entry.type, target:)), 2 => new_task_parameters_path(task_request_query(type: @entry.type, parameters:, target:)), 3 => targets_link) %>
+
+<% if errors.any? %>
+  <% changed = errors.any? { |problem| problem["pointer"] == "/target" && problem["problem"].include?("different hosts") } %>
+  <% expired = @verified&.status == :expired %>
+  <div class="notice error" role="alert" id="refused">
+    <% if changed %>
+      <% before = Array(@verified.host_ids) %>
+      <% gone = Host.where(id: before - @preview.targeted_ids).order(:name).pluck(:name) %>
+      <% added = @preview.targeted.reject { |host| before.include?(host.id) }.map(&:name) %>
+      <strong>Nothing was created: the targets changed.</strong>
+      <p><%= [ ("#{gone.to_sentence} #{gone.size == 1 ? 'is' : 'are'} no longer in the list" if gone.any?), ("#{added.to_sentence} #{added.size == 1 ? 'is' : 'are'} now in it" if added.any?) ].compact.join(", and ") %>, since the page was drawn. Check the new list of <%= pluralize(count, "host") %> below and confirm again.</p>
+    <% elsif expired %>
+      <strong>Nothing was created: this page was out of date.</strong>
+      <p>More than <%= TaskConfirmation::MAX_AGE.in_minutes.to_i %> minutes passed since the targets were worked out. The list below is the current one; check it, as it may have changed, and confirm again.</p>
+    <% else %>
+      <strong>Nothing was created.</strong>
+      <p><%= pluralize(errors.size, "problem") %>:</p>
+      <ul class="problem-list"><% errors.each do |problem| %><li><%= task_problem_sentence(problem) %></li><% end %></ul>
+    <% end %>
+  </div>
+<% end %>
+
+<div class="confirm-sum" role="group" aria-label="Summary">
+  <div><span class="label">Task</span><span class="big"><%= @entry.name %></span><span class="detail mono"><%= @entry.type %></span></div>
+  <% if restart %>
+    <div><span class="label">Service</span><span class="big mono"><%= parameters["service"] %></span><span class="detail">The only parameter</span></div>
+  <% else %>
+    <div><span class="label">Parameters</span><span class="big">None</span><span class="detail">Always the same</span></div>
+  <% end %>
+  <div><span class="label">Hosts</span><span class="big"><%= count %></span>
+    <span class="detail"><%= target["tag"] ? "Tag #{target['tag']}" : "Picked" %><%= "; #{@preview.excluded.size} left out" if @preview.excluded.any? %></span></div>
+  <div><span class="label">Expires</span><span class="big"><%= task_duration(expiry) %></span><span class="detail">If not started by <%= utc(Time.current + expiry) %></span></div>
+</div>
+
+<section class="runs" aria-labelledby="runs_heading">
+  <h2 id="runs_heading">What the agent does on <%= count == 1 ? @preview.targeted.first.name : "each of the #{count} hosts" %></h2>
+  <%= render "task_creations/guides/#{@entry.type}", parameters:, entry: @entry %>
+  <details class="fixed"><summary>What the server sends each agent</summary>
+    <pre class="code"><%= JSON.pretty_generate("type" => @entry.type, "parameters" => parameters, "timeout_seconds" => @entry.timeout.to_i, "catalog_version" => TaskCatalog.current.version) %></pre>
+    <p class="muted">Only the task type and its parameters, plus a time limit and the catalog version, never a command. The agent checks them again against the catalog built into it before running anything.</p>
+  </details>
+</section>
+
+<h2>Hosts</h2>
+<p id="confirm_targeted"><strong><%= count %> <%= count == 1 ? "gets" : "get" %> the task:</strong>
+  <% @preview.targeted.each_with_index do |host, index| %><%= ", " if index.positive? %><%= link_to host.name, host_path(host) %><% if host.liveness_status.in?(%w[offline stale]) %> <span class="muted">(<%= host.liveness_status %>: runs when it returns, if within <%= task_duration(expiry) %>)</span><% end %><% end %>.</p>
+<% if @preview.excluded.any? %>
+  <p id="confirm_excluded"><strong><%= @preview.excluded.size %> <%= @preview.excluded.size == 1 ? "is" : "are" %> left out:</strong>
+    <%= @preview.excluded.map { |exclusion| host = hosts_by_id.fetch(exclusion.host_id); "#{host.name} (#{task_exclusion_short(exclusion.reason, host)})" }.join(", ") %>. <%= link_to "Reasons", targets_link + "#excluded" %></p>
+<% end %>
+<p class="muted">
+  <% if count > 1 %>All hosts run their task within about a minute of each other: each agent picks up its task when it next asks for work, and hosts do not wait for each other.<% end %>
+  <% if restart %>A VM that does not list <span class="mono"><%= parameters["service"] %></span> in its own allowlist refuses it.<% end %>
+</p>
+
+<%= form_with url: tasks_path, method: :post, class: "form wide spaced-top", id: "create_task", local: true do %>
+  <%= task_request_fields(type: @entry.type, parameters:, target:) %>
+  <%= hidden_field_tag :confirmation, @token, id: nil %>
+  <% if count > TaskBatches::CONFIRM_ABOVE %>
+    <div class="field<%= " invalid" if count_error %>">
+      <label for="confirm_host_count">Type the number of hosts to confirm</label>
+      <div class="count-row">
+        <%= text_field_tag :confirm_host_count, @typed_count, id: "confirm_host_count", class: "type-count", inputmode: "numeric", autocomplete: "off", required: true, maxlength: 3,
+              "aria-invalid": (count_error ? "true" : nil), "aria-describedby": (count_error ? "confirm_host_count_error confirm_host_count_hint" : "confirm_host_count_hint") %>
+        <span class="muted" id="confirm_host_count_hint">This batch has <strong><%= count %></strong> hosts. Batches of more than <%= TaskBatches::CONFIRM_ABOVE %> hosts ask for this.</span>
+      </div>
+      <% if count_error %><p class="error-text" id="confirm_host_count_error">Type <%= count %>, the number of hosts in this batch.</p><% end %>
+    </div>
+  <% else %>
+    <p class="muted"><%= pluralize(count, "host") %>: no number to type. Batches of more than <%= TaskBatches::CONFIRM_ABOVE %> hosts ask for it.</p>
+  <% end %>
+  <%= render "second_factors/prompt", result: second_factor_result, intro: "Creating tasks needs a code from your authenticator app." %>
+  <div class="actions">
+    <button class="btn" type="submit">Create <%= pluralize(count, "task") %></button>
+    <%= link_to "Back", targets_link, class: "btn quiet" %>
+    <%= link_to "Cancel", tasks_path, class: "btn quiet" %>
+  </div>
+  <p class="muted fine">On submit the server checks everything again: the type, the parameters, the allowlist, each host, the count, and the code. If anything changed since this page was drawn, or it is over <%= TaskConfirmation::MAX_AGE.in_minutes.to_i %> minutes old, nothing is created and this page comes back with the reason. Creating the batch records one audit entry for the batch and one for each task, with you as the actor.</p>
+<% end %>

@@ -49,6 +49,7 @@ module AuditEntriesHelper
     Audit::Actions::ADVISORY_TRIAGE_IMPORT_HELD_BACK => "Debian triage import held back (would drop too many entries)",
     Audit::Actions::TASK_BATCH_CREATED => "Task batch created",
     Audit::Actions::TASK_CREATED => "Task created",
+    Audit::Actions::TASK_CREATION_REFUSED => "Task creation refused", # create-task flow (P3-S08, #32)
     Audit::Actions::TASK_CLAIMED => "Task claimed",
     Audit::Actions::TASK_REQUEUED => "Task returned to the queue (lease lapsed before start)",
     Audit::Actions::TASK_STARTED => "Task started",
@@ -137,6 +138,8 @@ module AuditEntriesHelper
     "service" => [ "Service", true ],
     "hosts" => [ "On which hosts", false ],
     "allowlist" => [ "Restartable services", true ],
+    # Create-task flow (P3-S08, #32): a refused creation.
+    "problems" => [ "Why refused", false ],
     **TASK_LIMIT_NAMES.transform_values { |label| [ label, true ] },
     **SETTING_NAMES.keys.index_with { [ "Minutes", true ] },
     **INTERVAL_SETTING_NAMES.keys.index_with { [ "Seconds", true ] }
@@ -202,7 +205,12 @@ module AuditEntriesHelper
       key = records.settings[id]
       key ||= (entry.changeset.keys & SETTING_NAMES.merge(INTERVAL_SETTING_NAMES).keys).first if entry.changeset.is_a?(Hash)
       key ? safe_join([ SETTING_NAMES.merge(INTERVAL_SETTING_NAMES).fetch(key, key), tag.span(key, class: "kind mono") ], " ") : "Setting #{id}"
-    when nil then entry.action == Audit::Actions::TASK_SETTING_LIMITS_CHANGED ? "Task limits" : tag.span("None", class: "muted")
+    when nil
+      case entry.action
+      when Audit::Actions::TASK_SETTING_LIMITS_CHANGED then "Task limits"
+      when Audit::Actions::TASK_CREATION_REFUSED then "New task (nothing created)"
+      else tag.span("None", class: "muted")
+      end
     else "#{entry.target_type} #{id}"
     end
   end

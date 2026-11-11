@@ -345,6 +345,42 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         expect(page.text).to include("Restartable services", "Task limits")
       end
 
+      it "escapes the create-task flow, its refusals, the batch page, and refused creations in the audit log (P3-S08)" do
+        secret, = enrol_second_factor(operator)
+        capable = task_host
+        capable.update_columns(name: fit(100), hostname: fit(253), tags: [ fit(32) ], agent_version: fit(64), liveness_status: "offline", last_seen_at: 1.hour.ago)
+        ids = [ capable.id, host.id ] # host's credential is in use on another machine, so it is left out with its name shown
+        steps = [
+          [ "/tasks/new", { type: text.first(30), target: { host_ids: [ text.first(30) ] } } ],
+          [ "/tasks/new/parameters", { type: "refresh_reports", target: { tag: text.first(30) } } ],
+          [ "/tasks/new/targets", { type: "refresh_reports", by: "tag", tag: text.first(32) } ],
+          [ "/tasks/new/targets", { type: "refresh_reports", by: "hosts", q: text.first(100), host_ids: ids } ],
+          [ "/tasks/new/targets", { type: "refresh_reports", parameters: { text.first(30) => text.first(30) } } ],
+          [ "/tasks/new/confirm", { type: "refresh_reports", target: { host_ids: ids } } ]
+        ]
+        steps.each do |path, params|
+          get path, params: params
+          expect(response.status).to be_between(200, 499), "GET #{path} -> #{response.status}"
+          expect_no_injected_markup(path)
+        end
+        expect_shown_as_text(text, "/tasks/new/confirm")
+
+        post "/tasks", params: { type: "refresh_reports", target: { host_ids: ids }, confirm_host_count: text.first(30), confirmation: text.first(100), second_factor_code: totp_code(secret) }
+        expect(response).to have_http_status(:unprocessable_content)
+        expect_no_injected_markup("POST /tasks (confirmation drawn again)")
+        post "/tasks", params: { type: text.first(30), parameters: { text.first(30) => text.first(30) }, target: { tag: text.first(30) }, text.first(64) => text.first(64) }
+        expect(response).to have_http_status(:unprocessable_content)
+        expect_no_injected_markup("POST /tasks (refused)")
+
+        batch = create_task_batch([ capable, host ], operator: hostile_operator).batch
+        [ [ "/tasks", false ], [ "/tasks/batches/#{batch.id}", true ], [ "/audit", true ] ].each do |path, shown|
+          get path
+          expect_no_injected_markup(path)
+          expect_shown_as_text(text, path) if shown
+        end
+        expect(page.text).to include("Task creation refused")
+      end
+
       it "escapes a retired host's name and the retirement notice" do
         Host.where(id: host.id).update_all(enrollment_state: "retired") # the transition methods validate; a stored row may not pass them
 
@@ -368,6 +404,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
                second_factors#show second_factors#setup second_factors#new_recovery_codes task_settings#show task_settings#confirm_remove
+               tasks#index task_creations#type task_creations#parameters task_creations#targets task_creations#confirm task_batches#show
                rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel
                data_sources#show data_sources#confirm_refresh data_sources#import
                rules#index rules#show rules#new rules#edit rules#confirm_disable rules#confirm_enable rule_versions#show rule_imports#new rule_imports#show]

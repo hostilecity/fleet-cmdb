@@ -42,7 +42,7 @@ p { max-width: 70ch; }
 .bar { display: flex; align-items: center; gap: 1.5rem; padding: 0.625rem 1.5rem; background: var(--ink); color: var(--panel); flex-wrap: wrap; }
 .bar a { color: var(--panel); text-decoration: none; }
 .bar .brand { font-weight: 700; font-size: 1.0625rem; display: flex; align-items: center; gap: 0.5rem; }
-.bar nav { display: flex; gap: 1.25rem; }
+.bar nav { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
 .bar nav a { padding: 0.25rem 0; border-bottom: 2px solid transparent; }
 .bar nav a[aria-current="page"] { border-bottom-color: var(--focus); }
 .bar .who { margin-left: auto; display: flex; align-items: center; gap: 1rem; font-size: 0.9375rem; }
@@ -397,6 +397,7 @@ th.num { text-align: right; }
 @media (max-width: 52rem) {
   .sevstrip, .sevstrip.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sevstrip a { border-bottom: 1px solid #33443f; }
+}
 /* P2-D06 (#25): rules list, rule detail and versions, add and edit with preview, rules file import (approved mockups
    docs/mockups/phase-2/rules*.html, rule*.html, dialogs.html; phase2.css "Rules") */
 .badge.old { border-color: var(--rule); color: var(--ink-soft); background: var(--panel); }
@@ -525,4 +526,57 @@ dialog.dialog::backdrop { background: rgb(29 42 46 / 0.45); }
   table.stack td.mono { white-space: normal; }
   table.stack td[data-label]:first-child::before { display: none; }
   table.stack td:first-child { font-weight: 700; }
+}
+
+/* Create a task (P3-S08, mockups phase-3/create-*.html): the catalog, what the agent runs, and the confirmation */
+.flow a { color: inherit; }
+/* At phone width the labels are hidden from sight but keep naming the links, and a link back covers its whole step,
+   tick included, so it stays an easy target (review of #171). */
+@media (max-width: 34rem) {
+  .flow li { position: relative; }
+  .flow li a .lbl { display: inline; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .flow li a::after { content: ""; position: absolute; inset: 0; }
+}
+.catalog { display: grid; gap: 0.75rem; margin: 0 0 1.25rem; }
+.catalog .choice { margin: 0; padding: 1rem 1.25rem; }
+.catalog .choice .type-id { font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); margin-left: 0.375rem; }
+.catalog .choice p { margin-left: 1.5rem; }
+.catalog .choice.off { background: var(--panel); cursor: not-allowed; border-style: dashed; }
+.catalog .choice.off strong { color: var(--ink-soft); }
+.props { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0.5rem 0 0 1.5rem; padding: 0; list-style: none; font-size: 0.875rem; color: var(--ink-soft); }
+.props li strong { color: var(--ink); font-weight: 700; }
+.why-off { display: block; margin: 0.5rem 0 0 1.5rem; font-size: 0.9375rem; color: #7a5410; }
+.checks { display: flex; gap: 0.5rem 1.25rem; flex-wrap: wrap; }
+.checks label { font-weight: 400; display: inline-flex; gap: 0.375rem; align-items: center; }
+.runs { background: var(--sheet); border: 1px solid var(--rule); border-left: 4px solid var(--ink); border-radius: 0 6px 6px 0; padding: 0.875rem 1.25rem; margin: 0 0 1.25rem; }
+.runs h2, .runs h3 { margin: 0 0 0.375rem; }
+.runs ol, .runs ul { margin: 0.25rem 0 0.5rem; padding-left: 1.25rem; }
+.runs li { margin-bottom: 0.25rem; }
+.runs .fixed { margin: 0.5rem 0 0; }
+.runs .fixed summary { cursor: pointer; color: var(--petrol); font-size: 0.9375rem; }
+.runs .fixed pre.code { margin-top: 0.5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runs .fixed p { font-size: 0.875rem; margin: 0.5rem 0 0; }
+.runs .never { margin: 0.5rem 0 0; font-size: 0.9375rem; }
+.param { font-family: var(--mono); font-size: 0.875rem; background: #e6f0f2; border: 1px solid #b9d2d8; border-radius: 3px; padding: 0 0.3125rem; overflow-wrap: anywhere; }
+.confirm-sum { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin: 0 0 1.25rem; }
+.confirm-sum div { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 0.75rem 1rem; }
+.confirm-sum .label { display: block; font-size: 0.875rem; color: var(--ink-soft); }
+.confirm-sum .big { display: block; font-size: 1.375rem; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.confirm-sum .big.mono { font-size: 1.125rem; }
+.confirm-sum .detail { display: block; font-size: 0.875rem; color: var(--ink-soft); }
+.type-count, .field input.type-count { font-family: var(--mono); font-size: 1.25rem; width: 6ch; text-align: center; }
+.count-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.state-sub { display: block; font-size: 0.8125rem; color: var(--ink-soft); }
+.state-sub.warn { color: #7a5410; }
+h1 .mono { font-size: 1.5rem; }
+.spaced-top { margin-top: 1.5rem; }
+.form .stepup { margin: 1rem 0; }
+.fine { font-size: 0.875rem; }
+.form > p.fine:last-child { margin-bottom: 0; }
+.search-field input[type="search"] { min-width: 0; width: 100%; }
+@media (max-width: 52rem) {
+  .confirm-sum { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 34rem) {
+  .confirm-sum { grid-template-columns: minmax(0, 1fr); }
 }

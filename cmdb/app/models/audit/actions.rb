@@ -63,6 +63,9 @@ module Audit
     TASK_RESULT_CONFLICT = "task.result_conflict"
     # Task controls (P3-S05, P3-S07): an operator's request to cancel a running task, recorded beside its real state.
     TASK_CANCEL_REQUESTED = "task.cancel_requested"
+    # Create-task flow (P3-S08, #32, mockup audit.html): a dashboard request to create a batch that was refused, with
+    # why. Nothing was created, so the entry has no target.
+    TASK_CREATION_REFUSED = "task.creation_refused"
     # Task settings (P3-S06, mockup audit.html): the restart allowlist and the task limits, with before and after.
     TASK_SETTING_SERVICE_ADDED = "task_setting.service_added"
     TASK_SETTING_SERVICE_REMOVED = "task_setting.service_removed"

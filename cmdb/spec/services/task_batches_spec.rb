@@ -214,4 +214,38 @@ RSpec.describe TaskBatches do
       end
     end
   end
+
+  # The create flow (P3-S08): drawing a page without writing, and holding the submit to what the page showed (Q13, H10).
+  describe "the dashboard's confirmation" do
+    it "previews what a request would do, with the same checks and nothing written" do
+      hosts = [ task_host, task_host(enabled: []) ]
+      preview = described_class.preview(request(hosts))
+      expect(preview.targeted).to eq([ hosts.first ])
+      expect(preview.targeted_ids).to eq([ hosts.first.id ])
+      expect(preview.excluded).to eq([ TaskBatches::Exclusion.new(host_id: hosts.last.id, reason: "not_enabled") ])
+      expect(preview.entry.type).to eq("refresh_reports")
+      expect(described_class.preview(request([ hosts.last ])).targeted).to be_empty # not refused here
+      expect { described_class.preview(request(hosts, "command" => "x")) }.to raise_error(TaskBatches::Refused, /command is not accepted/)
+      expect(records).to eq([ 0, 0, 0 ])
+    end
+
+    it "refuses a request whose hosts differ from the ones confirmed, and stores the confirmation's id" do
+      hosts = Array.new(2) { task_host(tags: %w[lab]) }
+      lab = request([], "target" => { "tag" => "lab" })
+      expect(refused_with(lab, expected_host_ids: [ hosts.first.id ]).errors).to eq([ { "pointer" => "/target", "problem" => "now resolves to different hosts than the ones you confirmed" } ])
+      expect(records).to eq([ 0, 0, 0 ])
+      token = SecureRandom.uuid
+      batch = described_class.create!(lab, operator:, expected_host_ids: hosts.map(&:id).reverse, confirmation_token: token).batch
+      expect(batch.reload.confirmation_token).to eq(token)
+      expect { described_class.create!(lab, operator:, confirmation_token: token) }.to raise_error(ActiveRecord::RecordNotUnique)
+      expect(TaskBatch.count).to eq(1)
+    end
+  end
+
+  def refused_with(request, **options)
+    described_class.create!(request, operator:, **options)
+    raise "expected TaskBatches::Refused"
+  rescue TaskBatches::Refused => e
+    e
+  end
 end

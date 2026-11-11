@@ -1,0 +1,29 @@
+<% content_for :title, "Tasks" %>
+<%# Minimal until P3-DASH-TASKS (#33) draws the task list (mockup tasks.html). Q12: without a second factor, "New
+    task" is replaced by an explanation. %>
+<div class="page-head"><div><h1>Tasks</h1><p>Maintenance the agents run from a fixed catalog built into them. Each task is one host's; a batch is one request for several hosts.</p></div>
+  <% unless second_factor_result.status == :not_enrolled %><div class="actions"><%= link_to "New task", new_task_path, class: "btn" %></div><% end %></div>
+<% if second_factor_result.status == :not_enrolled %>
+  <div class="notice" role="status" id="no_second_factor"><strong>You cannot create or cancel tasks until you set up a second factor.</strong>
+    <p>You can still read every task, host, and report. <%= link_to "Set up an authenticator app", second_factor_path %>; it takes about two minutes.</p></div>
+<% end %>
+<h2>Recent batches</h2>
+<% if @batches.empty? %>
+  <p class="muted">No task has been created yet.</p>
+<% else %>
+  <div class="table-wrap"><table class="stack">
+    <caption class="visually-hidden">Recent batches, newest first</caption>
+    <thead><tr><th scope="col">Batch</th><th scope="col">Task</th><th scope="col">Hosts</th><th scope="col">Created (UTC)</th><th scope="col">By</th></tr></thead>
+    <tbody>
+      <% @batches.each do |batch| %>
+        <tr>
+          <td data-label="Batch"><%= link_to "Batch #{batch.id}", task_batch_path(batch) %></td>
+          <td data-label="Task" class="mono"><%= batch.task_type %></td>
+          <td data-label="Hosts"><%= @counts.fetch(batch.id, 0) %></td>
+          <td data-label="Created (UTC)"><%= utc(batch.created_at) %></td>
+          <td data-label="By"><%= batch.operator.email %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table></div>
+<% end %>
