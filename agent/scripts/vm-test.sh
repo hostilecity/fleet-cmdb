@@ -36,6 +36,20 @@
 # Before them, one check of the package report (P2-AGENT-PACKAGES, AC-2.3): the report the agent sends
 # at startup, under the real unit on the real image, lists exactly the VM's own dpkg listing, with the
 # source package of each.
+#
+# After them, the apply_package_updates task (P3-AGENT-UPDATES, AC-3.4, AC-3.5), delivered by the stub
+# acting as the task API, against a local repository of tiny packages built in the guest
+# (scripts/vm-test-packages.sh), with Debian's own sources set aside so the run is the same every time:
+#
+#   packages upgraded        a real apt-get upgrade: fvt-demo moves from 1.0 to 1.1, the held fvt-held
+#                            stays and is reported held back, reboot_required is reported and the VM is
+#                            not rebooted, needrestart names the service running the old executable and
+#                            it is not restarted, and a package report with the new version follows
+#   lock contention          another process holds the dpkg frontend lock: lock_timeout, nothing run
+#   agent restarted          the agent restarts during the upgrade: the upgrade runs on in its unit, and
+#                            the restarted agent reports it succeeded (threat model L8)
+#   forced timeout           a maintainer script that hangs, with a 60 s deadline: timed_out, the whole
+#                            process tree ended, the repair guidance in the output
 set -euo pipefail
 
 dir=${1:?usage: scripts/vm-test.sh DIR IMAGE OUT}
@@ -499,6 +513,150 @@ package_report_matches_dpkg() {
     printf '%s' "$count packages, equal to dpkg-query" > "$tmp/last-result"
 }
 
+# --- apply_package_updates (P3-AGENT-UPDATES) ---------------------------------------------------------
+
+task_id=
+# run_task SCENARIO_ID TIMEOUT_SECONDS: the stub offers one new apply_package_updates task with that
+# deadline (each scenario runs in a subshell, so its id names the task).
+run_task() {
+    task_id=$(printf '00000000-0000-4000-8000-%012d' "$1")
+    shift
+    rm -f "$stub/task-result-$task_id.json"
+    set_plan "$(jq -nc --arg id "$task_id" --argjson timeout "$1" \
+        '{task: {id: $id, type: "apply_package_updates", parameters: {}, timeout_seconds: $timeout, catalog_version: 1}}')"
+}
+task_result() { cat "$stub/task-result-$task_id.json"; }
+task_done() { test -s "$stub/task-result-$task_id.json"; }
+# expect_task OUTCOME [REASON] [SECONDS]: waits for the result and checks its outcome and reason.
+expect_task() {
+    local outcome reason
+    wait_until "the result of task $task_id" "${3:-300}" task_done
+    set_plan '{}'
+    outcome=$(task_result | jq -r .outcome)
+    reason=$(task_result | jq -r '.reason // ""')
+    echo "task $task_id: $outcome${reason:+ ($reason)}; details $(task_result | jq -c .details)"
+    printf '%s' "$outcome${reason:+: $reason}" > "$tmp/last-result"
+    if [ "$outcome" != "$1" ] || [ "$reason" != "${2:-}" ]; then
+        task_result | jq -r .output | tail -n 40 >&2
+        fail "the task ended $outcome${reason:+ ($reason)}, expected $1${2:+ ($2)}"
+    fi
+}
+output_has() {
+    task_result | jq -r .output | grep -qF -- "$1" || { task_result | jq -r .output | tail -n 40 >&2; fail "the task output lacks: $1"; }
+}
+version_of() { vm "dpkg-query -W -f '\${Version}' $1" 2> /dev/null; }
+no_task_units() {
+    [ -z "$(vm "systemctl list-units --all --plain --no-legend 'fleet-agent-task-*' | awk '{print \$1}'")" ]
+}
+
+updates_setup() {
+    vm 'systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true'
+    # needrestart from Debian, before Debian's sources are set aside.
+    vm 'DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -q update > /dev/null && DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -q install -y --no-install-recommends needrestart > /dev/null'
+    vm 'mkdir -p /root/vm-test-sources && find /etc/apt/sources.list.d -maxdepth 1 -type f -exec mv {} /root/vm-test-sources/ \; ;
+        [ ! -s /etc/apt/sources.list ] || mv /etc/apt/sources.list /root/vm-test-sources/sources.list
+        echo "deb [trusted=yes] file:/srv/fvt/repo ./" > /etc/apt/sources.list.d/fvt.list'
+    put "$here/vm-test-packages.sh" /tmp/vm-test-packages.sh
+    local p='bash /tmp/vm-test-packages.sh'
+    vm "$p build fvt-demo 1.0 && $p build fvt-demo 1.1 'touch /run/reboot-required'
+        $p build fvt-held 1.0 && $p build fvt-held 1.1
+        $p build fvt-slow 1.0 && $p build fvt-slow 1.1 'sleep 45'
+        $p build fvt-hang 1.0 && $p build fvt-hang 1.1 'sleep 900'
+        dpkg -i /srv/fvt/debs/fvt-demo_1.0_all.deb /srv/fvt/debs/fvt-held_1.0_all.deb \
+            /srv/fvt/debs/fvt-slow_1.0_all.deb /srv/fvt/debs/fvt-hang_1.0_all.deb > /dev/null
+        apt-mark hold fvt-held > /dev/null
+        rm -f /run/reboot-required
+        systemd-run --quiet --unit=fvt-demo /usr/libexec/fvt-demo infinity"
+    # The owner's opt-in (DEC-14), and polls often enough for a test.
+    vm "printf '%s\n' '' '[tasks]' 'enabled = [\"apply_package_updates\"]' '' '[task_poll]' 'interval_seconds = 10' 'min_seconds = 5' \
+        >> /etc/fleet-agent/config.toml && $LIB/current/fleet-agent check-config > /dev/null && systemctl restart fleet-agent"
+    since=$(date +%s.%N)
+    wait_until "a heartbeat after enabling the task" 90 event_exists "[.[] | select(.kind == \"heartbeat\" and .status == 200 and .at > $since)] | length > 0"
+    jq -e '.tasks.supported | index("apply_package_updates")' "$stub/heartbeat.json" > /dev/null \
+        || fail "the agent does not report apply_package_updates as supported: $(jq -c .tasks "$stub/heartbeat.json")"
+    jq -e '.tasks.enabled | index("apply_package_updates")' "$stub/heartbeat.json" > /dev/null \
+        || fail "the agent does not report apply_package_updates as enabled: $(jq -c .tasks "$stub/heartbeat.json")"
+}
+
+package_report_since() {
+    event_exists "[.[] | select(.kind == \"packages\" and .status == 200 and .at > $1)] | length > 0" \
+        && jq -e --arg v "$2" '[.packages[] | select(.name == "fvt-demo" and .version == $v)] | length == 1' "$stub/packages.json" > /dev/null
+}
+
+packages_upgraded() {
+    updates_setup
+    vm 'bash /tmp/vm-test-packages.sh publish fvt-demo_1.1_all.deb fvt-held_1.1_all.deb'
+    local boot invocation finished
+    boot=$(boot_id)
+    invocation=$(vm 'systemctl show -p InvocationID --value fvt-demo')
+    run_task "$1" 3600
+    expect_task succeeded
+    finished=$(date +%s.%N)
+    [ "$(version_of fvt-demo)" = 1.1 ] || fail "fvt-demo is $(version_of fvt-demo), expected 1.1"
+    [ "$(version_of fvt-held)" = 1.0 ] || fail "the held fvt-held was upgraded to $(version_of fvt-held)"
+    task_result | jq -e '.details.reboot_required == true' > /dev/null || fail "reboot_required is not true"
+    task_result | jq -e '.details.packages_upgraded == 1' > /dev/null || fail "packages_upgraded is not 1"
+    task_result | jq -e '.details.packages_held_back == ["fvt-held"]' > /dev/null || fail "packages_held_back is not [fvt-held]"
+    task_result | jq -e '.details.services_needing_restart | index("fvt-demo.service")' > /dev/null \
+        || fail "needrestart did not name fvt-demo.service: $(task_result | jq -c .details.services_needing_restart)"
+    output_has '$ /usr/bin/apt-get -q --error-on=any -o DPkg::Lock::Timeout=300 update'
+    output_has 'Unpacking fvt-demo (1.1) over (1.0)'
+    output_has '$ /usr/sbin/needrestart -b -r l'
+    output_has '1 package upgraded: fvt-demo'
+    output_has 'the task never reboots'
+    [ "$(boot_id)" = "$boot" ] || fail "the VM rebooted"
+    [ "$(vm 'systemctl show -p InvocationID --value fvt-demo')" = "$invocation" ] || fail "fvt-demo.service was restarted"
+    no_task_units || fail "a task unit is left: $(vm "systemctl list-units --all --plain --no-legend 'fleet-agent-task-*'")"
+    wait_until "a package report with fvt-demo 1.1" 120 package_report_since "$finished" 1.1
+    vm 'rm -f /run/reboot-required'
+    echo "fvt-demo 1.0 -> 1.1, fvt-held held back, reboot required and not done, fvt-demo.service named and not restarted, package report sent"
+    printf '%s' "succeeded: 1 upgraded, 1 held back, reboot_required" > "$tmp/last-result"
+}
+
+lock_contention() {
+    vm 'bash /tmp/vm-test-packages.sh publish fvt-slow_1.1_all.deb'
+    vm "systemd-run --quiet --unit=fvt-locker python3 -c 'import fcntl, os, time
+fd = os.open(\"/var/lib/dpkg/lock-frontend\", os.O_RDWR | os.O_CREAT, 0o640)
+fcntl.lockf(fd, fcntl.LOCK_EX)
+time.sleep(1800)'"
+    sleep 2
+    run_task "$1" 3600
+    # The agent waits 300 s for the lock, then fails.
+    expect_task failed lock_timeout 480
+    vm 'systemctl stop fvt-locker'
+    [ "$(version_of fvt-slow)" = 1.0 ] || fail "fvt-slow was upgraded although the lock was held"
+    output_has 'the package manager is busy'
+    no_task_units || fail "a task unit is left"
+    task_result | jq -e '.output | test("\\$ /usr/bin/apt-get") | not' > /dev/null || fail "apt-get ran although the lock was held"
+}
+
+agent_restart_mid_upgrade() {
+    vm 'bash /tmp/vm-test-packages.sh publish fvt-slow_1.1_all.deb'
+    run_task "$1" 3600
+    wait_until "the upgrade's unit to run" 180 vm_ok "systemctl is-active --quiet fleet-agent-task-$task_id-2.service"
+    sleep 3
+    vm 'systemctl restart fleet-agent'
+    vm_ok "systemctl is-active --quiet fleet-agent-task-$task_id-2.service" || fail "the upgrade stopped with the agent"
+    expect_task succeeded "" 300
+    [ "$(version_of fvt-slow)" = 1.1 ] || fail "fvt-slow is $(version_of fvt-slow), expected 1.1"
+    output_has 'the upgrade finished while the agent was restarting'
+    no_task_units || fail "a task unit is left"
+}
+
+forced_timeout() {
+    vm 'bash /tmp/vm-test-packages.sh publish fvt-hang_1.1_all.deb'
+    run_task "$1" 60
+    expect_task timed_out "" 300
+    output_has 'dpkg --configure -a'
+    output_has 'ran past its deadline of 60 seconds'
+    vm_ok '! pgrep -f "^sleep 900"' || fail "the hanging maintainer script outlived the task: $(vm 'pgrep -af "sleep 900"')"
+    no_task_units || fail "a task unit is left"
+    local status
+    status=$(vm "dpkg-query -W -f '\${db:Status-Abbrev}' fvt-hang")
+    [ "$status" != "ii " ] || fail "fvt-hang is fully installed: the upgrade was not stopped"
+    echo "stopped at the deadline; fvt-hang left as '$status', as the repair guidance says"
+}
+
 # --- Running and recording (vm-test-record.sh) -------------------------------------------------------
 
 diagnostics() {
@@ -508,6 +666,8 @@ diagnostics() {
     for b in -1 0; do
         vm "journalctl -b $b --no-pager -o short-iso -u fleet-agent -u fleet-agent-update -u fleet-agent-rollback | tail -n 80" 2>&1 || true
     done
+    echo "--- task units"
+    vm "systemctl list-units --all --plain --no-legend 'fleet-agent-task-*'; journalctl --no-pager -o cat -u 'fleet-agent-task-*' | tail -n 60" 2>&1 || true
     echo "--- what the stub saw (last 30)"
     tail -n 30 "$events"
 }
@@ -518,6 +678,7 @@ record_header() {
     echo
     echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with \`fleet-agent install\`."
     echo "The package report check (AC-2.3) compares the agent's startup package report with \`dpkg-query --show\` on the VM."
+    echo "The package update scenarios (P3-AGENT-UPDATES) run the real apply_package_updates task against a local repository of test packages built in the guest."
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
@@ -528,6 +689,10 @@ scenario 303 "Hard reset after the switch, before confirmation" reset_after_swit
 scenario 304 "Reboot after confirmation" reboot_after_confirmation
 scenario 305 "Reboot before the switch" reboot_before_switch
 scenario 306 "Crash-looping release across a reboot" crash_loop_and_reboot
+scenario 370 "Package updates applied, no reboot (AC-3.4, AC-3.5)" packages_upgraded
+scenario 371 "Package manager lock held: lock_timeout" lock_contention
+scenario 372 "Agent restarted during the upgrade (L8)" agent_restart_mid_upgrade
+scenario 373 "Forced timeout ends the process tree" forced_timeout
 
 # shellcheck disable=SC2016 # expanded in the guest
 os=$(vm '. /etc/os-release; echo "$PRETTY_NAME"' 2> /dev/null || echo "Debian 13")

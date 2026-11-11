@@ -1,7 +1,8 @@
 # Agent update failure tests on a disposable Debian 13 VM (P1-AGENT-UPDATE, P1-A12, ADR 0018).
 # Boots Debian's official genericcloud image under QEMU (KVM when the runner allows it, TCG otherwise),
 # installs the agent with the real installer, and kills the update supervisor and restarts the VM in
-# the middle of updates (agent/scripts/vm-test.sh). The results are uploaded as the "vm-test-results"
+# the middle of updates (agent/scripts/vm-test.sh); then runs the apply_package_updates task for real
+# against a local repository of test packages (P3-AGENT-UPDATES). The results are uploaded as the "vm-test-results"
 # artifact (JUnit and Markdown) and shown in the job summary.
 #
 # Separate from Agent CI because it takes several minutes; it runs on every change to agent/ and by
