@@ -1,0 +1,9 @@
+<%# What refresh_reports does, step by step (mockup create-confirm.html#refresh). The steps follow the catalog's
+    description; the agent's implementation is P3-AGENT-TASKS, which keeps these words true. %>
+<%# locals: (parameters:, entry:) %>
+<ol>
+  <li>Checks the task itself: <span class="mono">refresh_reports</span> is enabled in the VM's configuration. If not, it refuses the task and runs nothing.</li>
+  <li>Collects <span class="param">inventory</span> <span class="param">config</span> <span class="param">packages</span> with its built-in collectors, the same ones it uses on its schedule.</li>
+  <li>Sends the three reports through the same checks as the scheduled ones, and reports Succeeded with the list of reports sent. An unchanged report records no new snapshot.</li>
+</ol>
+<p class="never"><strong>It does not</strong> change anything on the VM, or run a package manager or service manager command. It stops after <%= task_duration(entry.timeout) %> at most, and it can be cancelled while it runs.</p>

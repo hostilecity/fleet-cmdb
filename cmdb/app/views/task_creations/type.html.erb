@@ -1,0 +1,59 @@
+<% content_for :title, "New task: task type" %>
+<%# Step 1 (mockup create-type.html, Q3, Q4): the catalog's own names and descriptions, so the dashboard never says
+    something the agent does not do. A type nobody can run now is drawn unavailable with why. %>
+<p><%= link_to "← Tasks", tasks_path %></p>
+<div class="page-head"><div><h1>New task</h1><p>Tasks come only from this catalog, which is built into the agent. The dashboard cannot send a command, a script, or a program name, and no step of this form has a field for one.</p></div></div>
+<%= task_flow(1) %>
+<% unless TaskCreation.any_agent_runs_tasks? %>
+  <div class="notice error" role="alert" id="no_agent_runs_tasks"><strong>No host can run tasks yet.</strong>
+    <p>No active host's agent has reported that it runs tasks. <%= link_to "Roll out a newer agent", agents_path %> first.</p></div>
+<% end %>
+<% available = @choices.select(&:available?) %>
+<% if available.any? %>
+  <%= form_with url: new_task_parameters_path, method: :get, class: "form wide", local: true do %>
+    <%= task_request_fields(target: @carried["target"]) %>
+    <fieldset><legend>Choose what to run</legend>
+      <div class="catalog">
+        <% available.each_with_index do |choice, index| %>
+          <% entry = choice.entry %>
+          <label class="choice">
+            <%= radio_button_tag :type, entry.type, params[:type] == entry.type || (params[:type].blank? && index.zero?), id: "type_#{entry.type}" %><strong><%= entry.name %></strong><span class="type-id"><%= entry.type %></span>
+            <p><%= entry.description %></p>
+            <ul class="props">
+              <li><strong>Can be cancelled while running:</strong> <%= entry.interruptible ? "yes" : "no" %></li>
+              <li><strong>Time limit:</strong> <%= task_duration(entry.timeout) %></li>
+              <li><strong>Enabled on agents by default:</strong> <%= entry.enabled_by_default ? "yes" : "no" %></li>
+              <li><strong>Hosts that will run it:</strong> <%= choice.hosts_running %> of <%= choice.active_hosts %></li>
+            </ul>
+          </label>
+        <% end %>
+      </div>
+    </fieldset>
+    <div class="actions"><button class="btn" type="submit">Next: parameters</button><%= link_to "Cancel", tasks_path, class: "btn quiet" %></div>
+  <% end %>
+<% else %>
+  <div class="notice error" role="alert"><strong>No task can be created now.</strong><p>Every task type is unavailable, for the reasons below. Nothing can be sent to any agent.</p></div>
+<% end %>
+<% unavailable = @choices.reject(&:available?) %>
+<% if unavailable.any? %>
+  <h2 id="unavailable">Not available now</h2>
+  <div class="catalog">
+    <% unavailable.each do |choice| %>
+      <% entry = choice.entry %>
+      <div class="choice off" aria-disabled="true" id="unavailable_<%= entry.type %>">
+        <strong><%= entry.name %></strong><span class="type-id"><%= entry.type %></span>
+        <p><%= entry.description %></p>
+        <span class="why-off">
+          <% case choice.unavailable %>
+          <% when "empty_allowlist" %>
+            The server's allowlist of restartable services is empty, so there is nothing to restart. An operator adds services in <%= link_to "Settings: Tasks", task_settings_path(anchor: "allowlist") %>, and each VM must list them too.
+          <% when "no_host" %>
+            No host will run this yet: no active host's agent supports it and has it enabled in its configuration<%= " (it is off by default on every VM)" unless entry.enabled_by_default %>. Turning it on is a deliberate edit on that VM (<span class="mono">[tasks] enabled</span> in <span class="mono">/etc/fleet-agent/config.toml</span>).
+          <% else %>
+            This dashboard has no control for this type's parameters yet, and it never offers a free-text field for one.
+          <% end %>
+        </span>
+      </div>
+    <% end %>
+  </div>
+<% end %>

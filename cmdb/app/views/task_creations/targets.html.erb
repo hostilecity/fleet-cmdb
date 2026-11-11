@@ -1,0 +1,126 @@
+<% content_for :title, "New task: targets" %>
+<%# Step 3 (mockup create-targets.html, Q7, Q8): choose hosts by tag or by picking them, then the hosts that get the
+    task and the hosts left out, with why. Hosts are named by their operator-set name and hostname (threat model
+    H11). Offline and stale hosts stay in, with a warning (Q8). %>
+<% type_query = task_request_query(type: @entry.type, parameters: @parameters) %>
+<% restart = @entry.type == "restart_service" %>
+<% service = @parameters["service"] %>
+<% expiry = TaskSettings.limits.expiry(@entry.type) %>
+<p><%= link_to "← Parameters", new_task_parameters_path(type_query.merge(target: @target)) %></p>
+<div class="page-head"><div><h1>New task: <% if restart %>Restart <span class="mono"><%= service %></span><% else %><%= @entry.name %><% end %></h1>
+  <p>Choose the hosts. Each host gets its own task, which succeeds or fails on its own.</p></div></div>
+<%= task_flow(3, 1 => new_task_path(task_request_query(type: @entry.type, target: @target)), 2 => new_task_parameters_path(type_query.merge(target: @target))) %>
+
+<% if !@capable %>
+  <div class="notice error" role="alert" id="no_host_runs_type"><strong>No host will run "<%= @entry.name %>".</strong>
+    <p><%= @entry.enabled_by_default ? "No active host's agent supports it and has it enabled." : "It is off by default on every VM, and no active host's agent supports it and has turned it on." %> To allow it on a VM, add <span class="mono"><%= @entry.type %></span> to <span class="mono">[tasks] enabled</span> in that VM's <span class="mono">/etc/fleet-agent/config.toml</span> and restart the agent; the host reports it within a minute. This cannot be turned on from the dashboard.</p></div>
+  <div class="actions"><%= link_to "Choose another task", new_task_path, class: "btn quiet" %></div>
+<% else %>
+  <%= form_with url: new_task_targets_path, method: :get, class: "form wide", id: "selection", local: true do %>
+    <%= task_request_fields(type: @entry.type, parameters: @parameters) %>
+    <%= hidden_field_tag :by, @by, id: nil %>
+    <% if @by == "tag" %>
+      <div class="field">
+        <label for="tag">Tag</label>
+        <%= select_tag :tag, options_for_select([ [ "Choose a tag", "" ] ] + @tags.map { |name, count| [ "#{name} (#{pluralize(count, 'host')})", name ] }, @tag), id: "tag", required: true, "aria-describedby": "tag_hint" %>
+        <p class="hint" id="tag_hint">The host list is worked out now and recorded with the batch. A host tagged later is not added. Or <%= link_to "pick hosts instead", new_task_targets_path(type_query.merge(by: "hosts")) %>.</p>
+      </div>
+      <div class="actions"><button class="btn quiet" type="submit">Show hosts</button></div>
+    <% else %>
+      <div class="field search-field">
+        <label for="q">Find hosts</label>
+        <%= search_field_tag :q, @query, id: "q", maxlength: 100, "aria-describedby": "q_hint" %>
+        <p class="hint" id="q_hint">By name or hostname. Or <%= link_to "choose by tag instead", new_task_targets_path(type_query.merge(by: "tag")) %>.</p>
+      </div>
+      <div class="actions"><button class="btn quiet" type="submit" name="search" value="1">Search</button></div>
+      <% if @pickable.empty? %>
+        <p class="muted">No host in the fleet matches.</p>
+      <% else %>
+        <div class="table-wrap spaced-top"><table class="stack" id="pick">
+          <caption class="visually-hidden">Hosts to pick from</caption>
+          <thead><tr><th scope="col"><span class="visually-hidden">Pick</span></th><th scope="col">Host</th><th scope="col">Tags</th><th scope="col">Can it run this task?</th></tr></thead>
+          <tbody>
+            <% @pickable.each do |host| %>
+              <% reason = TaskBatches.exclusion_reason(host, @entry, @parameters, @allowlist) %>
+              <tr>
+                <td data-label="Pick"><%= check_box_tag "host_ids[]", host.id, @picked_ids.include?(host.id), id: "pick_#{host.id}", "aria-label": host.name %></td>
+                <td data-label="Host"><%= host.name %> <span class="mono muted"><%= host.hostname %></span></td>
+                <td data-label="Tags"><% host.tags.each do |name| %><span class="tag"><%= name %></span><% end %></td>
+                <td data-label="Can it run this task?"><% if reason %><strong>No:</strong> <%= task_exclusion_short(reason, host) %>.<% else %>Yes<% end %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table></div>
+        <p class="hint">You can tick a host that cannot run the task; it is listed as left out, with its reason, below and on the batch. At most <%= TaskCreationsController::PICK_LIMIT %> hosts are listed; search to narrow them.</p>
+      <% end %>
+      <div class="actions"><button class="btn" type="submit">Show hosts</button></div>
+    <% end %>
+  <% end %>
+
+  <% if @target_errors %>
+    <% cap = @target_errors.find { |problem| problem["problem"].include?("at most") } %>
+    <div class="notice error spaced-top" role="alert" id="target_errors">
+      <% if cap %>
+        <strong>That is more hosts than one batch can hold.</strong>
+        <p>A batch can have at most <%= TaskSettings.max_hosts_per_batch %> hosts. Pick fewer hosts or a narrower tag and create a second batch for the rest. The limit is set in <%= link_to "Settings: Tasks", task_settings_path(anchor: "limits") %> and can be lowered, not raised past <%= TaskBatches::MAX_HOSTS %>.</p>
+      <% else %>
+        <strong>Check the targets.</strong>
+        <ul class="problem-list"><% @target_errors.each do |problem| %><li><%= task_problem_sentence(problem) %></li><% end %></ul>
+      <% end %>
+    </div>
+  <% end %>
+
+  <% if @preview %>
+    <% hosts_by_id = @preview.hosts.index_by(&:id) %>
+    <% scope_words = @target["tag"] ? "tagged #{@target['tag']}" : "you picked" %>
+    <% if @preview.targeted.empty? %>
+      <div class="notice error spaced-top" role="alert" id="no_target"><strong>None of the <%= pluralize(@preview.hosts.size, "host") %> <%= scope_words %> can run this task.</strong>
+        <p><%= @preview.excluded.group_by(&:reason).map { |reason, items| "#{items.size} #{task_exclusion_short(reason, hosts_by_id.fetch(items.first.host_id))}" }.to_sentence %>. Nothing can be created.</p></div>
+    <% else %>
+      <h2 id="targeted"><%= pluralize(@preview.targeted.size, "host") %> will get this task</h2>
+      <div class="table-wrap"><table class="stack">
+        <caption class="visually-hidden">Hosts that will get the task</caption>
+        <thead><tr><th scope="col">Host</th><th scope="col">Hostname</th><th scope="col">Status</th><th scope="col">Agent</th></tr></thead>
+        <tbody>
+          <% @preview.targeted.each do |host| %>
+            <tr>
+              <td data-label="Host"><%= link_to host.name, host_path(host) %></td>
+              <td data-label="Hostname" class="mono"><%= host.hostname %></td>
+              <td data-label="Status"><%= status_lamp(host) %><% if (warning = task_liveness_warning(host, expiry)) %><span class="state-sub warn"><%= warning %></span><% end %></td>
+              <td data-label="Agent" class="mono"><%= host.agent_version %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table></div>
+    <% end %>
+
+    <% if @preview.excluded.any? %>
+      <h2 id="excluded"><%= pluralize(@preview.excluded.size, "host") %> <%= scope_words %> <%= @preview.excluded.size == 1 ? "is" : "are" %> left out</h2>
+      <div class="table-wrap"><table class="stack">
+        <caption class="visually-hidden">Hosts left out, with the reason</caption>
+        <thead><tr><th scope="col">Host</th><th scope="col">Why it is left out</th></tr></thead>
+        <tbody>
+          <% @preview.excluded.each do |exclusion| %>
+            <% host = hosts_by_id.fetch(exclusion.host_id) %>
+            <% headline, detail = task_exclusion_text(exclusion.reason, host, @entry, @parameters, @allowlist) %>
+            <tr><td data-label="Host"><%= link_to host.name, host_path(host) %> <span class="mono muted"><%= host.hostname %></span></td>
+              <td data-label="Why it is left out"><strong><%= headline %></strong> <%= detail %></td></tr>
+          <% end %>
+        </tbody>
+      </table></div>
+    <% end %>
+
+    <% if restart %>
+      <div class="notice info spaced-top" role="status"><strong>Each VM also has its own list of services it allows.</strong>
+        <p>Agents report their list with their task capabilities, so a host whose list does not include <span class="mono"><%= service %></span> is left out here with the reason "Not in this VM's own allowlist", and nothing is sent to it. If a VM's list changed since it last reported, the VM still refuses the task when it arrives, and nothing runs there.</p></div>
+    <% end %>
+
+    <% if @preview.targeted.any? %>
+      <%= form_with url: new_task_confirm_path, method: :get, class: "actions spaced-top", local: true do %>
+        <%= task_request_fields(type: @entry.type, parameters: @parameters, target: @target) %>
+        <button class="btn" type="submit">Next: confirm <%= pluralize(@preview.targeted.size, "host") %></button>
+        <%= link_to "Back", new_task_parameters_path(type_query.merge(target: @target)), class: "btn quiet" %>
+      <% end %>
+    <% end %>
+  <% end %>
+<% end %>

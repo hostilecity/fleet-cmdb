@@ -128,6 +128,18 @@ Rails.application.routes.draw do
       post "services/:id/remove", action: :remove_service, constraints: { id: /\d+/ }
       patch "limits", action: :update_limits, as: :task_setting_limits
     end
+    # Creating tasks (P3-S08, mockups create-*.html): four GET steps that write nothing (type, parameters, targets,
+    # confirm), then one CSRF-protected POST that needs a recent second factor and the confirmation page's token. The
+    # task list, batch progress, and task pages are P3-DASH-TASKS (#33); /tasks and the batch page are minimal until then.
+    get "tasks", to: "tasks#index", as: :tasks
+    scope "tasks/new", controller: "task_creations" do
+      get "", action: :type, as: :new_task
+      get "parameters", action: :parameters, as: :new_task_parameters
+      get "targets", action: :targets, as: :new_task_targets
+      get "confirm", action: :confirm, as: :new_task_confirm
+    end
+    post "tasks", to: "task_creations#create", format: false
+    get "tasks/batches/:id", to: "task_batches#show", as: :task_batch, constraints: { id: /\d+/ }
     # Cancelling (P3-S05): any operator, with a recent second factor (Q23). The dialogs and pages are P3-DASH-TASKS.
     post "tasks/:id/cancel", to: "task_cancellations#task", as: :cancel_task, constraints: { id: /\d+/ }
     post "tasks/batches/:id/cancel", to: "task_cancellations#batch", as: :cancel_task_batch, constraints: { id: /\d+/ }

@@ -147,7 +147,7 @@ Columns: **Mitigation** is what stops or limits the threat; **Source** is the AD
 
 | ID | Threat (STRIDE) | Mitigation | Source | Status | Proven by |
 |---|---|---|---|---|---|
-| H1 | Thief with a live session creates a fleet-wide task (E) | TOTP step-up within 5 minutes, checked server-side on every create, cancel, allowlist, and limit endpoint, including forged POSTs | FR-3.4, ADR 0006, P3-S09 | Built (step-up check, P3-S09); the create, cancel, and allowlist endpoints call it as they are built (#31, #32) | P3-S09 AC "forged POST rejected"; P3-X02 direct-API case without step-up |
+| H1 | Thief with a live session creates a fleet-wide task (E) | TOTP step-up within 5 minutes, checked server-side on every create, cancel, allowlist, and limit endpoint, including forged POSTs | FR-3.4, ADR 0006, P3-S09 | Built (step-up check, P3-S09; called by the cancel and allowlist endpoints, #31, and by `POST /tasks`, #32) | P3-S09 AC "forged POST rejected"; P3-X02 direct-API case without step-up |
 | H2 | Thief rides a step-up the real operator just completed (window reuse) (E) | Window tied to the server-side session record, not the cookie alone; short default (5 min) | P3-S09 | Built (P3-S09) | P3-S09 spec: step-up on session A does not authorise session B |
 | H3 | Same, within the window, for a large batch | **Proposed:** require a fresh TOTP code (not the window) for any batch above the typed-count threshold (3 hosts) and for allowlist widening | — | Proposed | P3-S09 request spec |
 | H4 | Operator has no TOTP enrolled; thief enrols their own authenticator and then has full task rights (E) | P3-S09 protects enrolment with "a fresh Google sign-in plus the existing session", but Google cannot be forced to re-authenticate (ADR 0006), so a hijacked browser can usually complete that. **Proposed:** first enrolment needs a one-time enrolment code issued from the server console (`bin/rails` task), like the first operator; re-enrolment needs the current factor or a recovery code | ADR 0006 | Proposed (open question Q1) | P3-S09: enrolment without the console code is refused |
@@ -156,8 +156,8 @@ Columns: **Mitigation** is what stops or limits the threat; **Source** is the AD
 | H7 | Recovery codes stolen or reused (S) | Shown once, stored as digests, single use; lost-authenticator recovery only from the console, audited | P3-S09, ADR 0006 | Built (P3-S09; HMACs keyed from `FLEET_ENCRYPTION_KEY`) | P3-S09 recovery AC |
 | H8 | CSRF: a page the operator visits submits a create-task form (T) | Rails authenticity token; `SameSite=Lax` cookie (Built); step-up still required | NFR-1 | Built / Decided | P3-X02: POST without token rejected |
 | H9 | XSS in the dashboard steals the session or drives the create form (E) | Strict CSP: `script-src 'self'` with nonces, no inline (Built); all output escaped (H/O rows) | NFR-1 | Built | O1 tests |
-| H10 | Double submit or browser retry creates two batches (T) | **Proposed:** a one-time form token (idempotency key) per rendered confirmation step; a second POST with the same token returns the first batch | — | Proposed | P3-S08 request spec |
-| H11 | Operator selects the wrong hosts because a VM reports a misleading hostname (S, from a compromised VM) | **Proposed:** target selection and the confirmation list use the operator-set host name and tags (FR-1.1), with the agent-reported hostname shown as secondary and marked as reported | — | Proposed | P3-S08 view spec |
+| H10 | Double submit or browser retry creates two batches (T) | A one-time id in each confirmation page's signed token, stored on the batch with a unique index; a second POST with the same token creates nothing and goes to the first batch | P3-S08 | Built (#32) | `spec/requests/task_creations_spec.rb` "creates one task per host" and "two submits of one confirmation at once" |
+| H11 | Operator selects the wrong hosts because a VM reports a misleading hostname (S, from a compromised VM) | Target selection and the confirmation list use the operator-set host name, hostname, and tags (FR-1.1); nothing the agent reports names a host there | P3-S08 | Built (#32) | `spec/requests/task_creations_spec.rb` targets and confirm examples |
 
 Residual: someone holding both a live session and the authenticator (or relaying both) can run any enabled task, within the batch cap, on hosts that enabled it. Agent-side opt-in (C1–C3) bounds what that achieves.
 
@@ -207,7 +207,7 @@ Residual: a compromised server can run any enabled catalog task, with any parame
 | R2 | Agent restarts and receives the same task again (T) | Unstarted claims are redelivered on purpose, with a fresh lease; the ledger stops a second run; a running task blocks the poll and is never redelivered (`AgentTasks.poll!`) | FR-3.2, P3-S03, P3-A02 | Built (server) / Decided (agent) | `spec/requests/api/tasks_spec.rb` (AC-3.3); P3-X03 matrix (≥100 runs) |
 | R3 | Network replay of agent requests (S, T) | TLS (B6); `start` and `result` idempotent on the server | NFR-1, P3-S03, P3-S04 | Built (TLS) / Decided | P3-S04 "re-sending changes nothing" |
 | R4 | Conflicting second result (for example `succeeded` then `failed`) (T, R) | Rejected and logged; terminal states immutable | P3-S04 | Decided | P3-S04 AC |
-| R5 | Replayed operator POST (H10), replayed TOTP code (H5) | See H5, H10 | — | Proposed | — |
+| R5 | Replayed operator POST (H10), replayed TOTP code (H5) | See H5, H10 | P3-S08, P3-S09 | Built (H5 in P3-S09, H10 in #32) | See H5, H10 |
 
 ### 6.5 Leases, expiry, timeouts: races
 

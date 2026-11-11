@@ -1,0 +1,35 @@
+<% content_for :title, "Batch #{@batch.id}" %>
+<%# Minimal until P3-DASH-TASKS (#33) draws batch progress here (mockups batch.html, batch-partial.html). %>
+<% entry = TaskCatalog.current.type?(@batch.task_type) ? TaskCatalog.current.entry(@batch.task_type) : nil %>
+<p><%= link_to "← Tasks", tasks_path %></p>
+<div class="page-head"><div><h1>Batch <%= @batch.id %>: <%= entry&.name || @batch.task_type %></h1>
+  <p>Created <%= utc(@batch.created_at) %> by <%= @batch.operator.email %>, <%= @batch.selection_method == "tag" ? "for hosts tagged #{@batch.selection_tag}" : "for picked hosts" %>.</p></div></div>
+<dl class="facts">
+  <dt>Type</dt><dd class="mono"><%= @batch.task_type %></dd>
+  <dt>Parameters</dt><dd class="mono"><%= @batch.parameters.empty? ? "none" : @batch.parameters.to_json %></dd>
+  <dt>Tasks</dt><dd><%= @batch.state_counts.reject { |_, count| count.zero? }.map { |state, count| "#{count} #{state.humanize(capitalize: false)}" }.to_sentence.presence || "none" %></dd>
+</dl>
+<h2>Tasks</h2>
+<div class="table-wrap"><table class="stack">
+  <caption class="visually-hidden">The batch's tasks</caption>
+  <thead><tr><th scope="col">Task</th><th scope="col">Host</th><th scope="col">State</th><th scope="col">Expires if not started (UTC)</th></tr></thead>
+  <tbody>
+    <% @tasks.each do |task| %>
+      <tr>
+        <td data-label="Task">#<%= task.id %></td>
+        <td data-label="Host"><%= link_to task.host.name, host_path(task.host) %></td>
+        <td data-label="State"><%= task.state.humanize %></td>
+        <td data-label="Expires if not started (UTC)"><%= utc(task.expires_at) %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table></div>
+<% if @batch.excluded_hosts.any? %>
+  <h2 id="excluded">Left out</h2>
+  <ul>
+    <% @batch.excluded_hosts.each do |exclusion| %>
+      <% host = @excluded_hosts.fetch(exclusion["host_id"]) %><%# hosts are never deleted %>
+      <li><%= link_to host.name, host_path(host) %>: <%= task_exclusion_short(exclusion["reason"], host) %></li>
+    <% end %>
+  </ul>
+<% end %>

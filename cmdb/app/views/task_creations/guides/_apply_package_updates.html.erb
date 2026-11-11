@@ -1,0 +1,19 @@
+<%# What apply_package_updates does, step by step, and the programs it runs (mockup create-confirm.html#updates, Q9,
+    ADR 0016). The lines are the draft from ADR 0016; P3-AGENT-UPDATES fixes the final ones and updates them here. %>
+<%# locals: (parameters:, entry:) %>
+<ol>
+  <li>Checks that <span class="mono">apply_package_updates</span> is enabled in the VM's configuration. If not, it refuses and runs nothing.</li>
+  <li>Refreshes the package lists from the VM's configured Debian sources.</li>
+  <li>Upgrades installed packages to their newest versions. Packages on hold are not touched. An upgrade that would remove a package or install a new one is held back and listed. Changed configuration files keep the local version. If another program holds the package manager, it waits a bounded time, then fails without changing anything.</li>
+  <li>Reports which packages were upgraded and held back, whether a reboot is needed, and which services use old libraries, then sends a fresh package report.</li>
+</ol>
+<p class="never"><strong>It does not</strong> reboot, restart services, remove packages, or change the Debian release. It stops after <%= task_duration(entry.timeout) %> at most; if it is stopped then, the package database may need repair (<span class="mono">dpkg --configure -a</span>), and the task says so. Once started it cannot be cancelled: stopping the package manager part-way can damage the package database.</p>
+<details class="fixed"><summary>The exact programs the agent runs (fixed in the agent, not sent by the server)</summary>
+<pre class="code">/usr/bin/apt-get update
+/usr/bin/apt-get upgrade --yes -o DPkg::Lock::Timeout=300 \
+  -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+/usr/sbin/needrestart -b
+Environment: DEBIAN_FRONTEND=noninteractive, LANG=C, a fixed PATH; nothing else.
+Reboot needed: from needrestart's kernel and library status.</pre>
+<p class="muted">These lines are the draft from ADR 0016. The agent's implementation (P3-AGENT-UPDATES) fixes the final ones, and this box will show exactly those.</p>
+</details>
