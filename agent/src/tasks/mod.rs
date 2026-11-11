@@ -16,12 +16,15 @@
 //!   checks, and the one way a task runs a program (fixed argument vector, no shell, clean
 //!   environment, process group, deadline, bounded output, transient units for package managers).
 //!
-//! No task type is implemented yet (P3-A04, P3-A06, P3-AGENT-UPDATES): [`IMPLEMENTED`] is empty, so this agent reports
-//! that it supports no task type, the server offers it none, and the poller does not poll.
+//! - [`apply_updates`]: `apply_package_updates` (P3-AGENT-UPDATES), apt under DEC-16.
+//!
+//! [`IMPLEMENTED`] lists the types this build runs; the poller polls only when one of them is also
+//! enabled locally.
 
+pub mod apply_updates;
 pub mod catalog;
 // The executor's task-facing API (`Run`, `Program`, `parse`, `Finish`, ...) is used by the task types,
-// which come in P3-A04, P3-A06, and P3-AGENT-UPDATES, and by the tests; this build registers none (`IMPLEMENTED`).
+// and by the tests; some of it only by the framework's tests until every type is built (P3-A04, P3-A06).
 #[allow(dead_code)]
 pub mod executor;
 pub mod ledger;
@@ -35,9 +38,13 @@ use catalog::Catalog;
 use settings::TaskSettings;
 
 /// The task types this agent version has an implementation for: exactly the types in
-/// [`executor::Registry::production`] (checked by the tests), each in the catalog. Empty until the
-/// tasks are built (P3-A04, P3-A06, P3-AGENT-UPDATES).
-pub const IMPLEMENTED: &[&str] = &[];
+/// [`executor::Registry::production`] (checked by the tests), each in the catalog. Each type's issue
+/// adds its own entry.
+pub const IMPLEMENTED: &[&str] = &[
+    // --- P3-AGENT-UPDATES (#37) ---
+    "apply_package_updates",
+    // --- end of #37's block ---
+];
 
 /// `tasks` in `heartbeat.request` (docs/api/schemas/v1): what this host can run, and what its owner
 /// allowed. The server offers a type only when it is in both `supported` and `enabled`.
@@ -88,6 +95,8 @@ impl Capabilities {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::collect::contract::assert_conforms;
 
@@ -102,7 +111,10 @@ mod tests {
         for id in IMPLEMENTED {
             assert!(catalog.get(id).is_some(), "{id} is not in the catalog");
         }
-        let registry = executor::Registry::production(TaskSettings::default());
+        let registry = executor::Registry::production(
+            TaskSettings::default(),
+            Arc::new(apply_updates::Ignored),
+        );
         let mut implemented = IMPLEMENTED.to_vec();
         implemented.sort_unstable();
         assert_eq!(registry.ids(), implemented);

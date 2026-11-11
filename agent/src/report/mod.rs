@@ -46,6 +46,7 @@ mod time;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -127,8 +128,10 @@ fn run_with(
 ) -> bool {
     let intervals = Intervals::new(config.heartbeat, config.inventory);
     let intervals = &intervals;
-    let requests = ReportRequests::new();
-    let requests = &requests;
+    // Shared with the task registry too, which asks for a package report after package updates
+    // (P3-AGENT-UPDATES).
+    let shared_requests = Arc::new(ReportRequests::new());
+    let requests = &*shared_requests;
     let hint = TaskHint::default();
     let hint = &hint;
     thread::scope(|scope| {
@@ -171,11 +174,18 @@ fn run_with(
             );
         });
         // P3-A02: the task poller. It opens the ledger and reports any task left unreported, and
-        // polls only when a type is enabled and supported (none in this build: P3-A03's registry is
-        // empty until the task types are built).
+        // polls only when a type is enabled and supported (`tasks::IMPLEMENTED`). It shares the
+        // report requests, so a package upgrade can ask for a package report.
         let tasks = spawn_loop(scope, "tasks", || {
             let _stop = StopOnExit(shutdown);
-            tasks_loop(config, transport, shutdown, updater, hint);
+            tasks_loop(
+                config,
+                transport,
+                shutdown,
+                updater,
+                hint,
+                Arc::clone(&shared_requests),
+            );
         });
         let handles = [
             ("heartbeat", heartbeat),
@@ -277,9 +287,10 @@ fn tasks_loop(
     shutdown: &Shutdown,
     updater: &Updater,
     hint: &TaskHint,
+    requests: Arc<ReportRequests>,
 ) {
-    // P3-A03: the registry of implemented task types (none in this build, `tasks::IMPLEMENTED`).
-    let executor = Registry::production(config.tasks.clone());
+    // P3-A03: the registry of implemented task types (`tasks::IMPLEMENTED`).
+    let executor = Registry::production(config.tasks.clone(), requests);
     let api = TasksApi(transport);
     let mut poller = Poller::new(
         &config.state_dir,
@@ -389,6 +400,14 @@ fn packages_loop(
         if shutdown.wait(wait) {
             break;
         }
+    }
+}
+
+/// `apply_package_updates` asks for a package report through the same pending request as the server's
+/// on-demand one (DEC-13), so the package loop sends it within [`REQUEST_POLL`].
+impl crate::tasks::apply_updates::PackageReport for ReportRequests {
+    fn request_package_report(&self) {
+        self.raise(ReportType::Packages, Instant::now());
     }
 }
 

@@ -543,11 +543,14 @@ fn every_local_refusal_is_reported_with_its_reason_and_nothing_starts() {
 }
 
 #[test]
-fn this_build_never_polls_and_would_refuse_anything_not_supported() {
-    // The registry is empty (P3-A03, `tasks::IMPLEMENTED`): no type is implemented, so there is
-    // nothing to poll for.
+fn by_default_this_build_never_polls_and_would_refuse_anything_not_supported() {
+    // This build implements only apply_package_updates (`tasks::IMPLEMENTED`), which is off unless
+    // enabled locally (DEC-14), and refresh_reports, on by default, is not built yet: nothing to poll for.
     let rig = Rig::new(TaskSettings::default());
-    let executor = super::super::executor::Registry::production(TaskSettings::default());
+    let executor = super::super::executor::Registry::production(
+        TaskSettings::default(),
+        std::sync::Arc::new(crate::tasks::apply_updates::Ignored),
+    );
     let server = Server::with(vec![task(A, "refresh_reports", json!({}))]);
     let mut poller = rig.poller(&executor, None);
     assert!(!poller.polls());
@@ -563,6 +566,19 @@ fn this_build_never_polls_and_would_refuse_anything_not_supported() {
         poller.refusal(&task(A, "refresh_reports", json!({})), wall()),
         Some((Outcome::Refused, reason::NOT_SUPPORTED))
     );
+    // An update the owner has not enabled here is refused before anything is checked or run.
+    assert_eq!(
+        poller.refusal(&task(A, "apply_package_updates", json!({})), wall()),
+        Some((Outcome::Refused, reason::NOT_ENABLED_LOCALLY))
+    );
+    // Once enabled, the agent polls.
+    let enabled = settings("[tasks]\nenabled = [\"apply_package_updates\"]\n");
+    let rig = Rig::new(enabled.clone());
+    let executor = super::super::executor::Registry::production(
+        enabled,
+        std::sync::Arc::new(crate::tasks::apply_updates::Ignored),
+    );
+    assert!(rig.poller(&executor, None).polls());
 }
 
 #[test]

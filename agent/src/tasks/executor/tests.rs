@@ -848,23 +848,33 @@ fn recovery_waits_for_a_running_unit_and_then_reports_what_it_did() {
 }
 
 #[test]
-fn the_production_registry_implements_nothing_and_runs_nothing() {
-    let registry = Registry::production(TaskSettings::default());
+fn the_production_registry_implements_exactly_the_built_types() {
+    let registry = Registry::production(
+        TaskSettings::default(),
+        Arc::new(crate::tasks::apply_updates::Ignored),
+    );
     for id in Catalog::embedded().unwrap().ids() {
-        assert!(!registry.implements(id), "{id}");
+        assert_eq!(
+            registry.implements(id),
+            crate::tasks::IMPLEMENTED.contains(&id),
+            "{id}"
+        );
     }
-    let task = delivered("refresh_reports", json!({}), 600);
-    assert_eq!(registry.check(&task), Err("not_supported"));
-    let ran = registry.run(&task, &TestControl::default()).unwrap();
-    assert_eq!(
-        (ran.outcome, ran.reason),
-        (Outcome::Failed, Some("agent_error"))
-    );
-    assert!(ran.output.is_empty());
-    assert_eq!(
-        registry.recover(&ledger_task("refresh_reports")),
-        Recovered::Nothing
-    );
+    // A type it lacks is refused and runs nothing.
+    for id in Catalog::embedded().unwrap().ids() {
+        if crate::tasks::IMPLEMENTED.contains(&id) {
+            continue;
+        }
+        let task = delivered(id, json!({}), 600);
+        assert_eq!(registry.check(&task), Err("not_supported"));
+        let ran = registry.run(&task, &TestControl::default()).unwrap();
+        assert_eq!(
+            (ran.outcome, ran.reason),
+            (Outcome::Failed, Some("agent_error"))
+        );
+        assert!(ran.output.is_empty());
+        assert_eq!(registry.recover(&ledger_task(id)), Recovered::Nothing);
+    }
 }
 
 // --- Privilege smoke (P3-A05): run as root on systemd, inside the agent unit's sandbox, by

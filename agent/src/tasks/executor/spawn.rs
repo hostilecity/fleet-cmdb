@@ -35,11 +35,19 @@ use crate::tasks::catalog::Privilege;
 /// `PATH` for every task process.
 pub const PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
 
-/// The whole environment of every task process, and nothing else (FR-3.3, P3-A03).
+/// The whole environment of every task process, and nothing else (FR-3.3, P3-A03). The last three are
+/// for package upgrades (P3-AGENT-UPDATES, DEC-16), and mean nothing to other programs:
+/// `NEEDRESTART_MODE=l` keeps needrestart's apt hook to listing services, never restarting them
+/// (threat model D7); `APT_LISTCHANGES_FRONTEND=none` stops apt-listchanges from waiting on a pager
+/// or sending mail; `UCF_FORCE_CONFFOLD=1` keeps local configuration files managed by ucf, as
+/// `--force-confold` does for dpkg's.
 pub const ENVIRONMENT: &[(&str, &str)] = &[
     ("PATH", PATH),
     ("LANG", "C"),
     ("DEBIAN_FRONTEND", "noninteractive"),
+    ("NEEDRESTART_MODE", "l"),
+    ("APT_LISTCHANGES_FRONTEND", "none"),
+    ("UCF_FORCE_CONFFOLD", "1"),
 ];
 
 /// The working directory of every task process.
@@ -136,7 +144,7 @@ pub enum Arg<'a> {
 }
 
 impl Arg<'_> {
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Fixed(s) => s,
             Self::Operand(v) => v.as_str(),

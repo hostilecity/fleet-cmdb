@@ -42,10 +42,9 @@
 //! running, [`Executor::run`] returns `None`, the ledger keeps the task `started`, and the next start
 //! waits for the unit and reports it ([`Executor::recover`]).
 //!
-//! This build implements no task type ([`super::IMPLEMENTED`] is empty: `refresh_reports` and
-//! `restart_service` are P3-A04 and P3-A06 (#36), `apply_package_updates` is P3-AGENT-UPDATES (#37)),
-//! so every task is refused `not_supported` before anything is started. The tests exercise the
-//! framework with test-only types.
+//! The registered types are [`super::IMPLEMENTED`]: `apply_package_updates` (P3-AGENT-UPDATES, #37,
+//! [`super::apply_updates`]); any other type is refused `not_supported` before anything is started.
+//! The framework's own tests use test-only types.
 
 pub mod output;
 pub mod spawn;
@@ -190,6 +189,21 @@ pub trait TaskImpl: Send + Sync {
         parameters: &Value,
         settings: &TaskSettings,
     ) -> Result<Box<dyn Job>, &'static str>;
+
+    /// How the task ended, decided from its transient units after the agent restarted while they ran
+    /// (threat model L8): `steps` are the units found, as (step number, exit), in step order, and
+    /// `output` is their output. Lines pushed to `notes` are added to the output. `None` keeps the
+    /// framework's reading, which knows nothing of the job: `timed_out` if a unit reached its limit,
+    /// `nonzero_exit` if one failed, otherwise `interrupted` (the job never saw its programs end).
+    fn recovered(
+        &self,
+        _steps: &[(u32, Exit)],
+        _timed_out: bool,
+        _output: &str,
+        _notes: &mut Vec<String>,
+    ) -> Option<Finish> {
+        None
+    }
 }
 
 /// A prepared task, ready to run.
@@ -254,9 +268,66 @@ impl Run<'_> {
         }
     }
 
+    /// Runs `program` like [`Run::program`], and also returns its own output (bounded like the task's),
+    /// for a job that decides from what a program printed. The output is added to the task's as well.
+    pub fn program_output(&mut self, program: &Program) -> Result<(Exit, String), Stop> {
+        let task = std::mem::replace(&mut self.capture, Arc::new(Mutex::new(Capture::default())));
+        let ran = self.program(program);
+        let own = std::mem::replace(&mut self.capture, task);
+        let (text, _) = spawn::lock(&own).finish();
+        spawn::lock(&self.capture).push(text.as_bytes());
+        ran.map(|exit| (exit, text))
+    }
+
     /// Adds a line from the agent to the task's output.
     pub fn note(&mut self, line: &str) {
         spawn::lock(&self.capture).note(line);
+    }
+
+    /// Adds `$ <program and its arguments>` to the output where the program's own output will follow,
+    /// so a reader can tell which step printed what (P3-D01 Q19). Written by the agent, not the VM.
+    pub fn heading(&mut self, program: &Program) {
+        let mut line = format!("$ {}", program.path);
+        for arg in program.argv() {
+            line.push(' ');
+            line.push_str(arg.as_str());
+        }
+        self.print(&line);
+    }
+
+    /// Adds one line written by the agent to the output, where it is now (not at the end, as
+    /// [`Run::note`] does), as one sanitized line.
+    pub fn print(&mut self, line: &str) {
+        let mut line = crate::logging::sanitize(line, 500).trim_end().to_owned();
+        line.push('\n');
+        spawn::lock(&self.capture).push(line.as_bytes());
+    }
+
+    /// The agent's shutdown flag, for work the job does itself (listing packages).
+    pub fn shutdown(&self) -> &Shutdown {
+        self.control.shutdown()
+    }
+
+    /// Waits up to `pause` with no program running, keeping the server informed (progress). `Err` when
+    /// the deadline passes (`TimedOut`), or when the agent stops (`Interrupted`: nothing runs, so even
+    /// a task that cannot be interrupted can stop here), or the server cancels an interruptible task.
+    pub fn pause(&mut self, pause: Duration) -> Result<(), Stop> {
+        let until = Instant::now() + pause.min(self.remaining());
+        loop {
+            if Instant::now() >= self.limits.deadline {
+                return Err(Stop::TimedOut);
+            }
+            if self.control.cancel_requested() && self.limits.interruptible {
+                return Err(Stop::Cancelled);
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            if self.control.shutdown().wait(left.min(PAUSE_TICK)) {
+                return Err(Stop::Interrupted);
+            }
+        }
     }
 
     /// Time left before the deadline.
@@ -266,6 +337,9 @@ impl Run<'_> {
             .saturating_duration_since(Instant::now())
     }
 }
+
+/// How often [`Run::pause`] looks at the deadline, the cancel, and the shutdown.
+const PAUSE_TICK: Duration = Duration::from_secs(1);
 
 fn rank(privilege: Privilege) -> u8 {
     match privilege {
@@ -283,9 +357,20 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// The task types this agent version implements ([`super::IMPLEMENTED`]): none yet.
-    pub fn production(settings: TaskSettings) -> Self {
-        Self::new(Vec::new(), settings, Box::new(unit::Systemd))
+    /// The task types this agent version implements ([`super::IMPLEMENTED`]). `package_report` asks the
+    /// agent's package report loop for a report (`apply_package_updates`).
+    pub fn production(
+        settings: TaskSettings,
+        package_report: Arc<dyn super::apply_updates::PackageReport>,
+    ) -> Self {
+        let tasks: Vec<Box<dyn TaskImpl>> = vec![
+            // --- P3-AGENT-UPDATES (#37): apply_package_updates (DEC-16), apt on Debian. ---
+            Box::new(super::apply_updates::ApplyUpdates::production(
+                package_report,
+            )),
+            // --- end of #37's block ---
+        ];
+        Self::new(tasks, settings, Box::new(unit::Systemd))
     }
 
     pub fn new(
@@ -418,6 +503,19 @@ impl Executor for Registry {
         capture.note(
             "the agent restarted while this task ran in its own unit; this is what the unit reported",
         );
+        // The type may know what its units' exits mean (P3-AGENT-UPDATES); otherwise the job never saw
+        // its programs end, so it decided nothing after them (a later step, its details): even a clean
+        // exit of every unit is only "it ran, and the agent was not there".
+        let (text, _) = capture.finish();
+        let mut notes = Vec::new();
+        let decided = task
+            .task_type
+            .as_deref()
+            .and_then(|t| self.get(t))
+            .and_then(|t| t.recovered(&exits, timed_out, &text, &mut notes));
+        for note in &notes {
+            capture.note(note);
+        }
         let (output, output_truncated) = capture.finish();
         let finished_at = SystemTime::now();
         let started_at = task
@@ -425,24 +523,31 @@ impl Executor for Registry {
             .as_deref()
             .and_then(|t| humantime::parse_rfc3339(t).ok())
             .unwrap_or(finished_at);
-        // The job never saw its programs end, so it decided nothing after them (a later step, its
-        // details): even a clean exit of every unit is only "it ran, and the agent was not there".
-        let (outcome, reason) = if timed_out {
-            (Outcome::TimedOut, None)
-        } else if exits.iter().all(Exit::success) {
-            (Outcome::Failed, Some("interrupted"))
-        } else {
-            (Outcome::Failed, Some("nonzero_exit"))
-        };
+        let exit_status = exits.last().and_then(|(_, e)| e.code);
+        let finish = decided.unwrap_or_else(|| {
+            let (outcome, reason) = if timed_out {
+                (Outcome::TimedOut, None)
+            } else if exits.iter().all(|(_, e)| e.success()) {
+                (Outcome::Failed, Some("interrupted"))
+            } else {
+                (Outcome::Failed, Some("nonzero_exit"))
+            };
+            Finish {
+                outcome,
+                reason,
+                exit_status,
+                details: Map::new(),
+            }
+        });
         Recovered::Ended(Execution {
-            outcome,
-            reason,
-            exit_status: exits.last().and_then(|e| e.code),
+            outcome: finish.outcome,
+            reason: finish.reason,
+            exit_status: finish.exit_status,
             started_at,
             finished_at,
             output,
             output_truncated,
-            details: Map::new(),
+            details: finish.details,
         })
     }
 }

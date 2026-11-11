@@ -120,6 +120,14 @@ impl ReportRequests {
         }
     }
 
+    /// A request from the agent itself, not the server: a task that changed the packages
+    /// (`apply_package_updates`, P3-AGENT-UPDATES) asks for one report of `ty` now. It starts no
+    /// episode, so the server's own requests are read as before; one already pending is kept.
+    pub fn raise(&self, ty: ReportType, at: Instant) {
+        let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        inner.pending[ty.index()].get_or_insert(at);
+    }
+
     /// Takes the pending request of `ty`, if any: when it was raised.
     pub fn take(&self, ty: ReportType) -> Option<Instant> {
         self.0
@@ -147,6 +155,21 @@ mod tests {
             assert!(requests.observe(&[Config], now).is_empty());
             assert_eq!(requests.take(Config), None);
         }
+    }
+
+    #[test]
+    fn the_agent_can_ask_for_a_report_without_starting_an_episode() {
+        // apply_package_updates (P3-AGENT-UPDATES) asks for a package report after an upgrade.
+        let requests = ReportRequests::new();
+        let first = Instant::now();
+        requests.raise(Packages, first);
+        requests.raise(Packages, first + Duration::from_secs(1));
+        assert_eq!(requests.take(Packages), Some(first));
+        assert_eq!(requests.take(Packages), None);
+        assert_eq!(requests.take(Config), None);
+        // A server request that arrives later still starts its own episode.
+        assert_eq!(requests.observe(&[Packages], Instant::now()), [Packages]);
+        assert!(requests.take(Packages).is_some());
     }
 
     #[test]
