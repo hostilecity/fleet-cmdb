@@ -153,17 +153,38 @@ fn package_manager(path: &'static str, args: &'static [&'static str]) -> Program
     }
 }
 
-/// The packages a simulated upgrade would still upgrade: `Inst name [installed] (candidate ...)`.
-/// A line without `[installed]` is a new package, not an upgrade. Sorted, each once, only names a
-/// package name can be.
+/// The headers of apt's list of packages an upgrade leaves as they are, in apt 2 and in apt 3. With
+/// new packages allowed in the simulation, what is listed is an upgrade that would need a removal.
+const KEPT_BACK: &[&str] = &[
+    "The following packages have been kept back:",
+    "Not upgrading:",
+];
+
+/// The packages a simulated upgrade would still upgrade, `Inst name [installed] (candidate ...)`
+/// (a line without `[installed]` is a new package, not an upgrade), and those it keeps back (an
+/// upgrade that would need a removal: the indented names under [`KEPT_BACK`]). Sorted, each once,
+/// only names a package name can be.
 pub fn read_pending(output: &str) -> Vec<String> {
-    let mut names: Vec<String> = output
+    let mut names: Vec<&str> = output
         .lines()
         .filter_map(|line| line.strip_prefix("Inst "))
         .filter_map(|rest| {
             let (name, rest) = rest.split_once(' ')?;
             rest.starts_with('[').then_some(name)
         })
+        .collect();
+    let mut in_kept_back = false;
+    for line in output.lines() {
+        if KEPT_BACK.contains(&line.trim_end()) {
+            in_kept_back = true;
+        } else if in_kept_back && line.starts_with(' ') {
+            names.extend(line.split_whitespace());
+        } else {
+            in_kept_back = false;
+        }
+    }
+    let mut names: Vec<String> = names
+        .into_iter()
         .filter(|name| is_package_name(name))
         .map(str::to_owned)
         .collect();
@@ -195,16 +216,23 @@ pub fn read_needrestart(output: &str) -> RestartCheck {
     check
 }
 
-/// Whether apt or dpkg failed because another program held a lock.
+/// Whether apt or dpkg failed because another program held a lock: an error line (`E: `) saying so.
+/// apt's `Waiting for cache lock: Could not get lock ...` lines while it waits are not errors: a run
+/// that then got the lock and failed in dpkg is not a lock failure.
 pub fn lock_failure(output: &str) -> bool {
-    [
-        "Could not get lock",
-        "Unable to acquire the dpkg frontend lock",
-        "Unable to lock directory",
-        "Unable to lock the administration directory",
-    ]
-    .iter()
-    .any(|message| output.contains(message))
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix("E: "))
+        .any(|error| {
+            [
+                "Could not get lock",
+                "Unable to acquire the dpkg frontend lock",
+                "Unable to lock directory",
+                "Unable to lock the administration directory",
+            ]
+            .iter()
+            .any(|message| error.starts_with(message))
+        })
 }
 
 /// A Debian package name (policy 5.6.1), optionally with `:architecture`, at most 128 characters.
@@ -296,6 +324,15 @@ Conf linux-image-amd64 (6.12.38-1 Debian-Security:13/stable-security [amd64])
             read_pending(output),
             ["acme-daemon", "libfoo1:i386", "linux-image-amd64"]
         );
+        // Upgrades that would need a removal are kept back even with new packages allowed: apt 2's
+        // and apt 3's lists of them.
+        let apt2 = "Calculating upgrade...\nThe following packages have been kept back:\n  acme-conflicts libbar2\n  zed-tool\nThe following packages will be upgraded:\n  curl\nInst curl [8.14.1-2] (8.14.1-3 example.lan [amd64])\n";
+        assert_eq!(
+            read_pending(apt2),
+            ["acme-conflicts", "curl", "libbar2", "zed-tool"]
+        );
+        let apt3 = "Calculating upgrade...\nNot upgrading:\n  acme-conflicts  libbar2\n\nSummary:\n  Upgrading: 0, Installing: 0, Removing: 0, Not Upgrading: 2\n";
+        assert_eq!(read_pending(apt3), ["acme-conflicts", "libbar2"]);
         assert!(
             read_pending("0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n")
                 .is_empty()
@@ -332,6 +369,10 @@ Conf linux-image-amd64 (6.12.38-1 Debian-Security:13/stable-security [amd64])
         }
         assert!(!lock_failure(
             "E: Failed to fetch http://deb.example.lan/debian/dists/trixie/InRelease"
+        ));
+        // apt waited for the lock, got it, and then dpkg failed: not a lock failure.
+        assert!(!lock_failure(
+            "Waiting for cache lock: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4242 (apt-get)...\ndpkg: error processing package acme (--configure):\nE: Sub-process /usr/bin/dpkg returned an error code (1)\n"
         ));
         assert!(Apt.needs_repair(
             "E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem."

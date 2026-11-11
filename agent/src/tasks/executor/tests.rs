@@ -772,6 +772,50 @@ fn a_unit_that_cannot_start_is_an_agent_error() {
     assert!(ran.output.contains("could not start fleet-agent-task-"));
 }
 
+/// A job that works in the agent past its deadline, then tries to start a program.
+struct LateJob;
+
+impl Job for LateJob {
+    fn run(&self, run: &mut Run<'_>) -> Result<Finish, Stop> {
+        std::thread::sleep(Duration::from_millis(1200));
+        run.program(&program("/usr/bin/true", &[], Privilege::PackageManager))?;
+        Ok(Finish::from_exit(Exit {
+            code: Some(0),
+            signal: None,
+        }))
+    }
+}
+
+struct Late;
+
+impl TaskImpl for Late {
+    fn type_id(&self) -> &'static str {
+        "apply_package_updates"
+    }
+
+    fn prepare(&self, _: &Value, _: &TaskSettings) -> Result<Box<dyn Job>, &'static str> {
+        Ok(Box::new(LateJob))
+    }
+}
+
+#[test]
+fn no_program_starts_once_the_deadline_has_passed() {
+    let units = fake_units();
+    let registry = Registry::new(
+        vec![Box::new(Late)],
+        TaskSettings::default(),
+        Box::new(Shared(units)),
+    );
+    let ran = registry
+        .run(
+            &delivered("apply_package_updates", json!({}), 1),
+            &TestControl::default(),
+        )
+        .unwrap();
+    assert_eq!(ran.outcome, Outcome::TimedOut);
+    assert!(units.calls().is_empty(), "{:?}", units.calls());
+}
+
 fn ledger_task(task_type: &str) -> ledger::Task {
     ledger::Task {
         id: A.into(),

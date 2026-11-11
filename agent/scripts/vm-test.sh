@@ -42,7 +42,8 @@
 # (scripts/vm-test-packages.sh), with Debian's own sources set aside so the run is the same every time:
 #
 #   packages upgraded        a real apt-get upgrade: fvt-demo moves from 1.0 to 1.1, the held fvt-held
-#                            stays and is reported held back, reboot_required is reported and the VM is
+#                            and fvt-rm (whose upgrade would remove another package) stay and are
+#                            reported held back, reboot_required is reported and the VM is
 #                            not rebooted, needrestart names the service running the old executable and
 #                            it is not restarted, and a package report with the new version follows
 #   lock contention          another process holds the dpkg frontend lock: lock_timeout, nothing run
@@ -560,10 +561,12 @@ updates_setup() {
     local p='bash /tmp/vm-test-packages.sh'
     vm "$p build fvt-demo 1.0 && $p build fvt-demo 1.1 'touch /run/reboot-required'
         $p build fvt-held 1.0 && $p build fvt-held 1.1
+        $p build fvt-victim 1.0 && $p build fvt-rm 1.0 && $p build fvt-rm 1.1 '' 'Conflicts: fvt-victim'
         $p build fvt-slow 1.0 && $p build fvt-slow 1.1 'sleep 45'
         $p build fvt-hang 1.0 && $p build fvt-hang 1.1 'sleep 900'
         dpkg -i /srv/fvt/debs/fvt-demo_1.0_all.deb /srv/fvt/debs/fvt-held_1.0_all.deb \
-            /srv/fvt/debs/fvt-slow_1.0_all.deb /srv/fvt/debs/fvt-hang_1.0_all.deb > /dev/null
+            /srv/fvt/debs/fvt-slow_1.0_all.deb /srv/fvt/debs/fvt-hang_1.0_all.deb \
+            /srv/fvt/debs/fvt-victim_1.0_all.deb /srv/fvt/debs/fvt-rm_1.0_all.deb > /dev/null
         apt-mark hold fvt-held > /dev/null
         rm -f /run/reboot-required
         systemd-run --quiet --unit=fvt-demo /usr/libexec/fvt-demo infinity"
@@ -585,7 +588,9 @@ package_report_since() {
 
 packages_upgraded() {
     updates_setup
-    vm 'bash /tmp/vm-test-packages.sh publish fvt-demo_1.1_all.deb fvt-held_1.1_all.deb'
+    # fvt-rm 1.1 conflicts with the installed fvt-victim: its upgrade would need a removal, so it is
+    # kept back, and reported held back.
+    vm 'bash /tmp/vm-test-packages.sh publish fvt-demo_1.1_all.deb fvt-held_1.1_all.deb fvt-rm_1.1_all.deb'
     local boot invocation started
     boot=$(boot_id)
     invocation=$(vm 'systemctl show -p InvocationID --value fvt-demo')
@@ -598,7 +603,12 @@ packages_upgraded() {
     [ "$(version_of fvt-held)" = 1.0 ] || fail "the held fvt-held was upgraded to $(version_of fvt-held)"
     task_result | jq -e '.details.reboot_required == true' > /dev/null || fail "reboot_required is not true"
     task_result | jq -e '.details.packages_upgraded == 1' > /dev/null || fail "packages_upgraded is not 1"
-    task_result | jq -e '.details.packages_held_back == ["fvt-held"]' > /dev/null || fail "packages_held_back is not [fvt-held]"
+    [ "$(version_of fvt-rm)" = 1.0 ] || fail "fvt-rm was upgraded, removing fvt-victim"
+    vm_ok 'dpkg-query -W fvt-victim' || fail "fvt-victim was removed"
+    if ! task_result | jq -e '.details.packages_held_back == ["fvt-held", "fvt-rm"]' > /dev/null; then
+        task_result | jq -r .output | sed -n '/--simulate/,/needrestart -b/p' >&2
+        fail "packages_held_back is not [fvt-held, fvt-rm]"
+    fi
     task_result | jq -e '.details.services_needing_restart | index("fvt-demo.service")' > /dev/null \
         || fail "needrestart did not name fvt-demo.service: $(task_result | jq -c .details.services_needing_restart)"
     output_has '$ /usr/bin/apt-get -q --error-on=any -o DPkg::Lock::Timeout=300 update'
@@ -611,8 +621,8 @@ packages_upgraded() {
     no_task_units || fail "a task unit is left: $(vm "systemctl list-units --all --plain --no-legend 'fleet-agent-task-*'")"
     wait_until "a package report with fvt-demo 1.1" 120 package_report_since "$started" 1.1
     vm 'rm -f /run/reboot-required'
-    echo "fvt-demo 1.0 -> 1.1, fvt-held held back, reboot required and not done, fvt-demo.service named and not restarted, package report sent"
-    printf '%s' "succeeded: 1 upgraded, 1 held back, reboot_required" > "$tmp/last-result"
+    echo "fvt-demo 1.0 -> 1.1, fvt-held and fvt-rm held back, reboot required and not done, fvt-demo.service named and not restarted, package report sent"
+    printf '%s' "succeeded: 1 upgraded, 2 held back, reboot_required" > "$tmp/last-result"
 }
 
 lock_contention() {

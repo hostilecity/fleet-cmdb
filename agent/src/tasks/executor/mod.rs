@@ -234,6 +234,11 @@ pub struct Run<'a> {
 impl Run<'_> {
     /// Runs `program` to its end, adding its output to the task's. `Err` stops the job: return it.
     pub fn program(&mut self, program: &Program) -> Result<Exit, Stop> {
+        // Work the job did in the agent (a package listing) may have used up the time: start nothing
+        // after the deadline.
+        if Instant::now() >= self.limits.deadline {
+            return Err(Stop::TimedOut);
+        }
         if rank(program.privilege) > rank(self.privilege) {
             tracing::error!(
                 program = program.path,
@@ -268,15 +273,18 @@ impl Run<'_> {
         }
     }
 
-    /// Runs `program` like [`Run::program`], and also returns its own output (bounded like the task's),
-    /// for a job that decides from what a program printed. The output is added to the task's as well.
-    pub fn program_output(&mut self, program: &Program) -> Result<(Exit, String), Stop> {
+    /// Runs `program` like [`Run::program`], and also returns its own output (bounded like the task's)
+    /// and whether part of it was cut, for a job that decides from what a program printed: output that
+    /// was cut may lack what the job looks for. The output is added to the task's as well, with its
+    /// count of dropped bytes.
+    pub fn program_output(&mut self, program: &Program) -> Result<(Exit, String, bool), Stop> {
         let task = std::mem::replace(&mut self.capture, Arc::new(Mutex::new(Capture::default())));
         let ran = self.program(program);
         let own = std::mem::replace(&mut self.capture, task);
-        let (text, _) = spawn::lock(&own).finish();
-        spawn::lock(&self.capture).push(text.as_bytes());
-        ran.map(|exit| (exit, text))
+        let own = std::mem::take(&mut *spawn::lock(&own));
+        let (text, truncated) = own.finish();
+        spawn::lock(&self.capture).absorb(own);
+        ran.map(|exit| (exit, text, truncated))
     }
 
     /// Adds a line from the agent to the task's output.

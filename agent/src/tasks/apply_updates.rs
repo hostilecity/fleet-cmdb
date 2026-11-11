@@ -354,6 +354,11 @@ impl UpdateJob {
     }
 
     fn installed(&self, run: &mut Run<'_>) -> Option<BTreeMap<String, String>> {
+        // A listing may take up to its own limit; it never runs past the task's deadline.
+        if run.remaining() < crate::packages::TIMEOUT {
+            run.note("the installed packages were not listed: too little time was left before the deadline");
+            return None;
+        }
         match self.system.installed(run.shutdown()) {
             Ok(packages) => Some(packages),
             Err(why) => {
@@ -385,7 +390,7 @@ impl Job for UpdateJob {
 
         let refresh = self.manager.refresh();
         run.heading(&refresh);
-        let (exit, output) = run.program_output(&refresh)?;
+        let (exit, output, _) = run.program_output(&refresh)?;
         if !exit.success() {
             return Ok(self.failed(run, exit, &output, false));
         }
@@ -395,7 +400,7 @@ impl Job for UpdateJob {
         let upgraded = run.program_output(&upgrade);
         // From here packages may have changed, however the step ended.
         self.reports.request_package_report();
-        let (exit, output) = match upgraded {
+        let (exit, output, _) = match upgraded {
             Ok(ran) => ran,
             Err(Stop::TimedOut) => {
                 run.note(&self.repair_note);
@@ -418,8 +423,9 @@ impl Job for UpdateJob {
         // What was held back: a simulation, changing nothing. Its failure fails nothing.
         let pending = self.manager.pending();
         run.heading(&pending);
+        // Output that was cut may lack some of the packages: then the list is not known.
         let held_back = match run.program_output(&pending) {
-            Ok((exit, output)) if exit.success() => Some(self.manager.read_pending(&output)),
+            Ok((exit, output, false)) if exit.success() => Some(self.manager.read_pending(&output)),
             Ok(_) => None,
             Err(Stop::Failed(_)) => None,
             Err(stop) => return Err(stop),
@@ -429,7 +435,7 @@ impl Job for UpdateJob {
             Some(program) => {
                 run.heading(&program);
                 match run.program_output(&program) {
-                    Ok((exit, output)) if exit.success() => {
+                    Ok((exit, output, false)) if exit.success() => {
                         Some(self.manager.read_restart_check(&output))
                     }
                     Ok(_) | Err(Stop::Failed(_)) => None,
@@ -480,7 +486,9 @@ impl Job for UpdateJob {
                 count(names.len(), "package"),
                 listed(names)
             )),
-            None => run.note("which packages were held back is not known: the simulation failed"),
+            None => run.note(
+                "which packages were held back is not known: the simulation failed or printed too much",
+            ),
         }
         let mut why = Vec::new();
         if flag {
@@ -507,7 +515,7 @@ impl Job for UpdateJob {
                 listed(&check.services)
             )),
             None if self.manager.restart_check(&*self.system).is_some() => {
-                run.note("the restart check failed, so services using old code are not known")
+                run.note("the restart check failed or printed too much, so services using old code are not known")
             }
             None => {
                 run.note("needrestart is not installed, so services using old code are not known")

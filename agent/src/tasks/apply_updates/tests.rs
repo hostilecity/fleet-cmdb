@@ -555,6 +555,62 @@ fn a_lock_taken_by_another_program_during_a_step_is_lock_timeout() {
 }
 
 #[test]
+fn a_lock_waited_for_and_then_a_dpkg_failure_is_nonzero_exit_with_the_repair_guidance() {
+    let rig = debian();
+    rig.apt.reply(
+        UPGRADE,
+        100,
+        "Waiting for cache lock: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4242 (unattended-upgr)...\nSetting up acme (1.1) ...\ndpkg: error processing package acme (--configure):\nE: Sub-process /usr/bin/dpkg returned an error code (1)\n",
+    );
+    let ran = rig.run(3600, &TestControl::default()).unwrap();
+    assert_eq!(
+        (ran.outcome, ran.reason, ran.exit_status),
+        (Outcome::Failed, Some("nonzero_exit"), Some(100))
+    );
+    assert!(ran.output.contains("run dpkg --configure -a as root"));
+}
+
+#[test]
+fn output_that_was_cut_leaves_the_details_read_from_it_out() {
+    let rig = debian();
+    let huge = format!(
+        "{}Inst acme [1] (2 x [amd64])\n",
+        "Inst filler [1] (2 x [amd64])\n".repeat(10_000)
+    );
+    rig.apt.reply(SIMULATE, 0, &huge);
+    rig.apt.reply(
+        NEEDRESTART,
+        0,
+        &"NEEDRESTART-SVC: a.service\n".repeat(20_000),
+    );
+    let ran = rig.run(3600, &TestControl::default()).unwrap();
+    assert_eq!(ran.outcome, Outcome::Succeeded, "{}", &ran.output[..200]);
+    assert!(!ran.details.contains_key("packages_held_back"));
+    assert!(!ran.details.contains_key("services_needing_restart"));
+    // The task's output says how much of it was cut.
+    assert!(ran.output_truncated);
+    assert!(ran.output.contains("bytes of output were cut here]"));
+}
+
+#[test]
+fn no_program_starts_after_the_deadline_and_listings_never_run_past_it() {
+    let rig = debian();
+    rig.host.listing(&[("a:amd64", "1")]);
+    rig.host.listing(&[("a:amd64", "2")]);
+    // A 1-second deadline leaves too little time for a listing (20 s), so none is made; the steps
+    // stop at the deadline.
+    rig.apt.hang.lock().unwrap().insert(UPDATE);
+    let ran = rig.run(1, &TestControl::default()).unwrap();
+    assert_eq!(ran.outcome, Outcome::TimedOut, "{}", ran.output);
+    assert!(
+        ran.output
+            .contains("too little time was left before the deadline")
+    );
+    assert_eq!(rig.host.listings.lock().unwrap().len(), 2);
+    assert_eq!(rig.apt.started(), [UPDATE]);
+}
+
+#[test]
 fn a_failed_upgrade_is_nonzero_exit_with_the_repair_guidance() {
     let rig = debian();
     rig.apt.reply(

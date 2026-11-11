@@ -3,7 +3,9 @@
 # (P3-AGENT-UPDATES). Test scaffolding only: it builds tiny packages and a local repository, so the
 # real upgrade needs no Debian mirror and changes nothing but these packages.
 #
-#   vm-test-packages.sh build NAME VERSION [POSTINST]   /srv/fvt/debs/NAME_VERSION_all.deb
+#   vm-test-packages.sh build NAME VERSION [POSTINST [CONTROL]]
+#                                                       /srv/fvt/debs/NAME_VERSION_all.deb; CONTROL is
+#                                                       one more control field, e.g. "Conflicts: x"
 #   vm-test-packages.sh publish DEB...                  the local repository lists exactly these
 #
 # fvt-demo ships /usr/libexec/fvt-demo, a copy of sleep(1) whose bytes differ per version, so a
@@ -12,11 +14,12 @@ set -euo pipefail
 
 case ${1:?} in
     build)
-        name=${2:?} version=${3:?} postinst=${4:-}
+        name=${2:?} version=${3:?} postinst=${4:-} control=${5:-}
         d=$(mktemp -d)
         mkdir -p "$d/DEBIAN"
         printf 'Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: vm-test <vm-test@example.com>\nDescription: fleet-agent VM test package\n' \
             "$name" "$version" > "$d/DEBIAN/control"
+        [ -z "$control" ] || printf '%s\n' "$control" >> "$d/DEBIAN/control"
         if [ "$name" = fvt-demo ]; then
             mkdir -p "$d/usr/libexec"
             cp /usr/bin/sleep "$d/usr/libexec/fvt-demo"
