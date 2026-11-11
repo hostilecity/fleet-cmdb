@@ -23,7 +23,7 @@
           <%= link_to "Data sources", data_sources_path, "aria-current": (controller_name == "data_sources" ? "page" : nil) %>
           <%= link_to "Agents", agents_path, "aria-current": (controller_name.in?(%w[agent_releases agent_installs rollouts]) ? "page" : nil) %>
           <%= link_to "Audit log", audit_path, "aria-current": (controller_name == "audit_entries" ? "page" : nil) %>
-          <%= link_to "Settings", settings_path, "aria-current": (controller_name == "settings" ? "page" : nil) %>
+          <%= link_to "Settings", settings_path, "aria-current": (controller_name.in?(%w[settings second_factors]) ? "page" : nil) %>
         </nav>
         <div class="who">
           <span class="live" data-live-status-target="indicator" hidden><span class="lamp awaiting" data-live-status-target="lamp"></span><span data-live-status-target="label">Connecting</span></span>

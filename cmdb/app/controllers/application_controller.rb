@@ -2,6 +2,9 @@
 # must be public opts out with allow_unauthenticated_access. The allowlist is re-checked on every request,
 # and sessions end after an idle timeout and an absolute timeout.
 class ApplicationController < ActionController::Base
+  # require_second_factor, for the actions that need a recent second factor (P3-S09).
+  include SecondFactorRequired
+
   # Only allow modern browsers supporting webp images, web push, badges, import maps, CSS nesting, and CSS :has.
   allow_browser versions: :modern
 
@@ -59,6 +62,7 @@ class ApplicationController < ActionController::Base
     end
 
     operator_session.record_activity!
+    Current.operator_session = operator_session
     operator_session.operator
   end
 

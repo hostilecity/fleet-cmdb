@@ -1,17 +1,24 @@
 # A signed-in dashboard session (P1-S01, NFR-1). The browser holds a random token in the encrypted session
 # cookie; only its SHA-256 digest is stored. A session is valid until it is revoked (sign-out), goes idle,
 # reaches its absolute lifetime, or its operator leaves the allowlist.
+#
+# The second factor's per-session state lives here too (P3-S09): when this session last signed in with Google
+# (google_authenticated_at), when it last passed the step-up check (second_factor_passed_at, the start of its
+# fixed 5-minute window), a key shown for setting up an authenticator that has not been checked yet, and when moving
+# to a new phone was approved with a code.
 class OperatorSession < ApplicationRecord
   # last_seen_at is written at most this often, so idle timeouts are accurate to about a minute.
   LAST_SEEN_RESOLUTION = 1.minute
 
   belongs_to :operator
 
+  encrypts :pending_second_factor_secret
+
   # Returns [session, plaintext_token]. Also clears this operator's sessions that can no longer be used.
   def self.start!(operator, now: Time.current)
     where(operator:).where("revoked_at IS NOT NULL OR created_at < ?", now - absolute_timeout).delete_all
     token = SecureRandom.urlsafe_base64(32)
-    [ create!(operator:, token_digest: AgentApi.digest(token), last_seen_at: now), token ]
+    [ create!(operator:, token_digest: AgentApi.digest(token), last_seen_at: now, google_authenticated_at: now), token ]
   end
 
   # The live session for a token, or nil.

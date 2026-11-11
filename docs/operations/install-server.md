@@ -74,6 +74,7 @@ In **Settings > Environments**, create **`production`**. Under **Deployment bran
 |---|---|---|---|
 | `SSH_PRIVATE_KEY` | Secret | the `fleet-cmdb-deploy` file | The key the runner logs in to the VM with |
 | `SECRET_KEY_BASE` | Secret | output of `openssl rand -hex 64` | Signs and encrypts session cookies; changing it signs everyone out |
+| `FLEET_ENCRYPTION_KEY` | Secret | output of `openssl rand -hex 32` | Encrypts operators' second-factor keys at rest; keep a copy, since losing it means every operator sets up their second factor again |
 | `DATABASE_PASSWORD` | Secret | | Password of the PostgreSQL role `cmdb` |
 | `GOOGLE_CLIENT_ID` | Secret | `123456789012-abc.apps.googleusercontent.com` | The OAuth client (step 1) |
 | `GOOGLE_CLIENT_SECRET` | Secret | `GOCSPX-…` | Its secret |

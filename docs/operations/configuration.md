@@ -20,6 +20,7 @@ Keep a copy of each with your other secrets (GitHub never shows a secret again),
 | Setting | Default | |
 |---|---|---|
 | `SECRET_KEY_BASE` | required | Signs and encrypts the session cookie. `openssl rand -hex 64`. Changing it signs every operator out |
+| `FLEET_ENCRYPTION_KEY` | required | Encrypts each operator's second-factor key in the database (Active Record encryption) and keys the HMACs of their recovery codes (P3-S09), so a database dump or backup alone reveals neither. At least 32 characters: `openssl rand -hex 32`. Not `SECRET_KEY_BASE`, so signing everyone out does not touch second factors. Back it up with the other secrets ([backup-and-restore.md](backup-and-restore.md)): a lost or changed key makes every stored second factor unusable, and each operator is then reset with `bin/rails second_factor:reset EMAIL=…` and sets up again |
 | `RAILS_MASTER_KEY` | not used | The repository's `cmdb/config/credentials.yml.enc` belongs to its owner and holds nothing a deployment needs; `SECRET_KEY_BASE` replaces it. Not passed by the workflow |
 | `DATABASE_PASSWORD` | required | Password of the existing PostgreSQL role `cmdb`. To change it, change it in PostgreSQL (`ALTER ROLE cmdb PASSWORD '…'`) and in GitHub, then deploy |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | required | Google OAuth web client for operator sign-in. Redirect URI `https://$FLEET_DASHBOARD_HOST/auth/google_oauth2/callback` |
@@ -84,6 +85,8 @@ The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (O
 | `FLEET_SESSION_ABSOLUTE_HOURS` | `12` | Sign out this long after signing in, however active |
 
 The operator allowlist is not a setting: `bin/rails operators:allow EMAIL=…` ([install-server.md](install-server.md#5-add-the-first-operator)).
+
+The second factor's numbers are fixed by the owner's decisions (P3-S09) and are not settings either: a step-up passed with a code lasts 5 minutes for that session; setting up needs a Google sign-in within the last 10 minutes; 5 wrong codes in 15 minutes lock the operator's step-up for 15 minutes. A lost authenticator without recovery codes is reset from the console ([fleet-operations.md](fleet-operations.md#reset-an-operators-second-factor)).
 
 ## Backups and health
 

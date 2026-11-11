@@ -1,0 +1,57 @@
+<% content_for :title, @factor ? "Move to a new phone" : "Set up an authenticator app" %>
+<%# The key is on this page only: no-store keeps it out of the HTTP cache, this keeps it out of Turbo's snapshot cache. %>
+<% turbo_exempts_page_from_cache %>
+<p><%= link_to "← Your second factor", second_factor_path %></p>
+<div class="page-head"><div>
+  <h1><%= @factor ? "Move your second factor to a new phone" : "Set up an authenticator app" %></h1>
+  <p>Three steps: sign in with Google again, scan a code with your phone, and type the 6-digit code it shows.</p>
+</div></div>
+
+<% case @step %>
+<% when :replace %>
+  <section class="sheet" aria-labelledby="replace_heading">
+    <h2 id="replace_heading">First, a code from your current authenticator</h2>
+    <p>Type a code from your current authenticator app, or a recovery code. After a fresh Google sign-in you get a new key to scan; the old app stops working as soon as the new one is checked, and you get 10 new recovery codes.</p>
+    <%= form_with url: verify_second_factor_path, method: :post, class: "form", data: { turbo: false } do %>
+      <%= render "second_factors/prompt", result: second_factor_result, ask: true, intro: "Moving to a new phone needs a code first.", label: "Code from your current app, or a recovery code" %>
+      <div class="actions"><button class="btn" type="submit">Continue</button><%= link_to "Cancel", second_factor_path, class: "btn quiet" %></div>
+    <% end %>
+  </section>
+<% when :reauth %>
+  <%= render "second_factors/flow", current: 1 %>
+  <section class="sheet" aria-labelledby="reauth_heading">
+    <h2 id="reauth_heading">First, sign in with Google again as <%= current_operator.email %></h2>
+    <p>This shows the person setting up the second factor still controls the Google account, not just this browser session.</p>
+    <div class="actions">
+      <%= button_to "Continue with Google", "/auth/google_oauth2", method: :post, params: { intent: "second_factor", login_hint: current_operator.email }, class: "btn", form_class: "inline", data: { turbo: false } %>
+      <%= link_to "Cancel", second_factor_path, class: "btn quiet" %>
+    </div>
+    <p class="hint">Google may sign you in without asking for your password; it cannot be made to ask (ADR 0006). The sign-in must be for the same account, within the last <%= SecondFactors::FRESH_SIGN_IN_WINDOW.in_minutes.to_i %> minutes.</p>
+  </section>
+<% else %>
+  <%= render "second_factors/flow", current: 2 %>
+  <section class="sheet" aria-labelledby="scan_heading">
+    <div class="enrol">
+      <%= SecondFactors::QrCode.svg(SecondFactors::Totp.provisioning_uri(@secret, account: current_operator.email), label: "QR code of the key shown as text beside it") %>
+      <div>
+        <h2 id="scan_heading">Scan this with your authenticator app</h2>
+        <p>In the app, add an account and scan the code. It appears as <strong>Fleet CMDB (<%= current_operator.email %>)</strong>.</p>
+        <p>Cannot scan? Type this key instead (time-based, 6 digits, 30 seconds):</p>
+        <span class="secret" id="totp_key"><%= SecondFactors::Totp.display_secret(@secret) %></span>
+        <p class="hint">The key is shown only on this page, only now. It is stored encrypted on the server and never shown again; if you leave without finishing, it is thrown away. This page runs out <%= SecondFactors::FRESH_SIGN_IN_WINDOW.in_minutes.to_i %> minutes after the Google sign-in.</p>
+      </div>
+    </div>
+    <%= form_with url: setup_second_factor_path, method: :post, class: "form spaced", data: { turbo: false } do %>
+      <div class="field<%= " invalid" if @wrong_code %>">
+        <label for="second_factor_code">Type the 6-digit code the app shows</label>
+        <%= text_field_tag SecondFactorRequired::PARAM, nil, id: "second_factor_code", class: "totp", inputmode: "numeric", autocomplete: "one-time-code",
+              maxlength: 6, pattern: "[0-9]{6}", required: true, "aria-invalid": (@wrong_code ? "true" : nil), "aria-describedby": (@wrong_code ? "enrol_error enrol_hint" : "enrol_hint") %>
+        <% if @wrong_code %>
+          <p class="error-text" id="enrol_error">That code does not match. Check that the time on your phone is set automatically, then type the newest code. Nothing is set up until a code matches.</p>
+        <% end %>
+        <p class="hint" id="enrol_hint">This checks that your phone and the server agree before the second factor is turned on.</p>
+      </div>
+      <div class="actions"><button class="btn" type="submit">Check code and continue</button><%= link_to "Cancel", second_factor_path, class: "btn quiet" %></div>
+    <% end %>
+  </section>
+<% end %>
