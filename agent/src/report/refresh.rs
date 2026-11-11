@@ -107,6 +107,14 @@ impl Refresh {
     }
 }
 
+/// `apply_package_updates` (P3-AGENT-UPDATES, #37) asks for a package report the same way, once the
+/// upgrade has ended, so the dashboard shows the new versions; it does not wait for the outcome.
+impl crate::tasks::apply_updates::PackageReport for Refresh {
+    fn request_package_report(&self) {
+        self.ask(&[ReportType::Packages]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

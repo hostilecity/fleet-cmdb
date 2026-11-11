@@ -16,13 +16,13 @@
 //!   checks, and the one way a task runs a program (fixed argument vector, no shell, clean
 //!   environment, process group, deadline, bounded output, transient units for package managers).
 //!
-//! - The task types ([`IMPLEMENTED`]): [`refresh_reports`] (P3-A04) and [`restart_service`] (P3-A06).
-//!   This agent reports them as supported, so the server offers them where they are enabled and the
-//!   poller polls.
+//! - The task types ([`IMPLEMENTED`]): [`refresh_reports`] (P3-A04), [`restart_service`] (P3-A06),
+//!   and [`apply_updates`] (`apply_package_updates`, P3-AGENT-UPDATES: apt under DEC-16). This agent
+//!   reports them as supported, so the server offers them where they are enabled and the poller polls.
 
+pub mod apply_updates;
 pub mod catalog;
-// Parts of the executor's API (transient units, recovery) are used only by package_manager types,
-// which come with P3-AGENT-UPDATES (#37), and by the tests.
+// Parts of the executor's API are used only by the tests (test-only task types).
 #[allow(dead_code)]
 pub mod executor;
 pub mod ledger;
@@ -45,6 +45,9 @@ pub const IMPLEMENTED: &[&str] = &[
     // P3-A04, P3-A06 (#36).
     refresh_reports::TYPE_ID,
     restart_service::TYPE_ID,
+    // --- P3-AGENT-UPDATES (#37) ---
+    apply_updates::TYPE_ID,
+    // --- end of #37's block ---
 ];
 
 /// `tasks` in `heartbeat.request` (docs/api/schemas/v1): what this host can run, and what its owner

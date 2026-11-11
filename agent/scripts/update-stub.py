@@ -35,6 +35,11 @@ accepted with empty directives; package reports may be gzip, as the server allow
     "slow_heartbeat": {"version": "1.0.1", "seconds": 6}
                                     heartbeats from that version are answered late
     "results_503": 2                the first N posts of each update result get 503
+    "task": {"id": "<uuid>", "type": "apply_package_updates", "parameters": {}, "timeout_seconds": 3600,
+             "catalog_version": 1}
+                  A task for the task API (P3-S03): heartbeats carry `tasks_available` and polls deliver it
+                  until the agent starts it; start answers `run: true`; progress answers `running`; the
+                  result is saved as task-result-<id>.json and accepted (P3-AGENT-UPDATES)
 
 Without STUB_CREDENTIAL it checks no credential: the smoke tests are about the update, not about
 authentication.
@@ -59,6 +64,8 @@ LOCK = threading.Lock()
 ACCEPTED = set()  # report_ids of update results already accepted
 RESULT_POSTS = {}  # report_id -> posts so far
 DONE_ROLLOUTS = set()
+
+STARTED_TASKS = set()
 
 FILES = {"manifest": "manifest.json", "signature": "manifest.json.minisig", "binary": "fleet-agent"}
 
@@ -147,7 +154,32 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"report_id": body.get("report_id"), "duplicate": False})
         if self.path == "/api/v1/update-results":
             return self.update_result(current, agent, body)
+        if self.path == "/api/v1/tasks/poll":
+            return self.task_poll(current, agent)
+        match = re.fullmatch(r"/api/v1/tasks/([0-9a-f-]{36})/(start|progress|result)", self.path)
+        if match:
+            return self.task_call(match.group(1), match.group(2), agent, body)
         return self.error(404, "not_found", "Not found.")
+
+    def task_poll(self, current, agent):
+        task = current.get("task")
+        deliver = task if task and task["id"] not in STARTED_TASKS else None
+        log(kind="task_poll", agent_version=agent, status=200, delivered=(deliver or {}).get("id"))
+        self.send(200, {"task": deliver, "poll_seconds": 10})
+
+    def task_call(self, task_id, call, agent, body):
+        if call == "start":
+            STARTED_TASKS.add(task_id)
+            log(kind="task_start", agent_version=agent, status=200, id=task_id)
+            return self.send(200, {"id": task_id, "state": "running", "run": True})
+        if call == "progress":
+            log(kind="task_progress", agent_version=agent, status=200, id=task_id)
+            return self.send(200, {"id": task_id, "state": "running"})
+        STARTED_TASKS.add(task_id)
+        log(kind="task_result", agent_version=agent, status=200, id=task_id, body=body)
+        save(f"task-result-{task_id}.json", body)
+        self.send(200, {"id": task_id, "report_id": body.get("report_id"), "duplicate": False, "applied": True,
+                        "state": body.get("outcome")})
 
     def heartbeat(self, current, agent, now, body):
         slow = current.get("slow_heartbeat") or {}
@@ -157,6 +189,9 @@ class Handler(BaseHTTPRequestHandler):
             log(kind="heartbeat", agent_version=agent, status=401)
             return self.error(401, "unauthorized", "Credential rejected.")
         directives = {}
+        task = current.get("task")
+        if task and task["id"] not in STARTED_TASKS:
+            directives["tasks_available"] = {}
         offer = current.get("directive")
         if offer and offer["rollout_id"] not in DONE_ROLLOUTS:
             base = f"{PUBLIC_URL}/api/v1/releases/{offer['release']}"

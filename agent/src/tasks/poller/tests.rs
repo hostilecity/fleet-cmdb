@@ -543,7 +543,7 @@ fn every_local_refusal_is_reported_with_its_reason_and_nothing_starts() {
 }
 
 #[test]
-fn this_build_polls_for_refresh_reports_by_default_and_refuses_what_it_lacks() {
+fn this_build_polls_for_refresh_reports_by_default_and_refuses_what_is_not_enabled() {
     // #36: refresh_reports is implemented and on by default (DEC-14), so a default agent polls.
     let rig = Rig::new(TaskSettings::default());
     let executor = super::super::executor::Registry::production(
@@ -552,14 +552,21 @@ fn this_build_polls_for_refresh_reports_by_default_and_refuses_what_it_lacks() {
     );
     let poller = rig.poller(&executor, None);
     assert!(poller.polls());
-    // A type enabled here that this version lacks is refused before anything is recorded started.
+    // #37: apply_package_updates is implemented but off unless enabled here (DEC-14): refused before
+    // anything is recorded started.
+    assert_eq!(
+        poller.refusal(&task(A, "apply_package_updates", json!({})), wall()),
+        Some((Outcome::Refused, reason::NOT_ENABLED_LOCALLY))
+    );
+    // Enabled here, it is accepted for its own checks.
     let rig = Rig::new(settings(
         "[tasks]\nenabled = [\"refresh_reports\", \"apply_package_updates\"]\n",
     ));
     let poller = rig.poller(&executor, None);
-    assert_eq!(
+    assert!(poller.polls());
+    assert_ne!(
         poller.refusal(&task(A, "apply_package_updates", json!({})), wall()),
-        Some((Outcome::Refused, reason::NOT_SUPPORTED))
+        Some((Outcome::Refused, reason::NOT_ENABLED_LOCALLY))
     );
     // And with nothing enabled there is nothing to poll for.
     let rig = Rig::new(settings("[tasks]\nenabled = []\n"));

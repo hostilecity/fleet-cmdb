@@ -109,6 +109,29 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@-]{0,247}\\.service$"
           }
         },
+        "packages_upgraded": {
+          "description": "apply_package_updates: how many installed packages have a new version after the upgrade, from dpkg's database before and after. Absent when either listing could not be read, or the agent restarted during the upgrade (the next package report shows the versions).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "packages_held_back": {
+          "description": "apply_package_updates: packages with a newer version available that the upgrade left as they were (on hold, or the upgrade would need a new package or a removal), each once, sorted. Absent when not known.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9+.-]+(:[a-z0-9-]+)?$"
+          }
+        },
         "unit_active": {
           "description": "restart_service: whether the unit was active after the restart.",
           "type": [

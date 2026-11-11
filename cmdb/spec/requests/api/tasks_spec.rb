@@ -408,12 +408,16 @@ RSpec.describe "Task API", type: :request do
 
     it "stores the largest details the schema allows, applied or late" do
       services = Array.new(64) { |i| "#{format('%03d', i)}#{'s' * 244}.service" }
-      details = { "reboot_required" => true, "services_needing_restart" => services, "unit_active" => true, "reports_sent" => %w[config inventory packages] }
+      held_back = Array.new(64) { |i| "#{format('%03d', i)}#{'p' * 100}:#{'a' * 24}" }
+      details = { "reboot_required" => true, "services_needing_restart" => services, "packages_upgraded" => 20_000,
+                  "packages_held_back" => held_back, "unit_active" => true, "reports_sent" => %w[config inventory packages] }
       expect(ApiContract.errors("task-result.request", "v1", result_payload(details:))).to eq([])
       applied = running_task(type: "apply_package_updates")
       report(applied, result_payload(details:))
       expect(response).to have_http_status(:ok)
       expect(applied.reload.result_details["services_needing_restart"].size).to eq(64)
+      expect(applied.result_details["packages_held_back"].size).to eq(64)
+      expect(applied.result_details["packages_upgraded"]).to eq(20_000)
       late = running_task(type: "apply_package_updates")
       late.time_out!(actor: Audit::SYSTEM)
       report(late, result_payload(details:, report_id: "00000000-0000-4000-8000-000000000002"))

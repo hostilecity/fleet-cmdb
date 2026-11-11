@@ -17,7 +17,10 @@
 #   restarts an allowed throwaway cmdb-privsmoke-restart.service, reports it active, reports a missing
 #   unit failed, and refuses the agent's own unit;
 # - package_manager: a program runs in a transient unit outside the sandbox, can write /usr, gets the
-#   fixed environment, cannot read /etc/fleet-agent (InaccessiblePaths=), and is stopped at its deadline.
+#   fixed environment, cannot read /etc/fleet-agent (InaccessiblePaths=), and is stopped at its deadline;
+# - apply_package_updates (P3-AGENT-UPDATES): the task's apt-get simulation runs in a task unit, and from
+#   inside the sandbox the agent sees the dpkg frontend lock this script holds from another process (as
+#   apt or unattended-upgrades would) and can list the installed packages.
 set -eu
 
 binary=${1:?usage: sudo scripts/task-privilege-smoke.sh TEST_BINARY [UNIT]}
@@ -26,12 +29,14 @@ unit=${2:-src/install/fleet-agent.service}
 [ -d /run/systemd/system ] || { echo "task-privilege-smoke: needs a host running systemd" >&2; exit 2; }
 
 created_etc=
+locker=
 cleanup() {
+    [ -z "$locker" ] || kill "$locker" 2>/dev/null || true
     systemctl stop fleet-agent-privsmoke-dummy.service cmdb-privsmoke-restart.service \
         fleet-agent-privsmoke.service 2>/dev/null || true
     systemctl reset-failed fleet-agent-privsmoke-dummy.service cmdb-privsmoke-restart.service \
         fleet-agent-privsmoke.service 2>/dev/null || true
-    for id in a501 a502 a503; do
+    for id in a501 a502 a503 a504; do
         name="fleet-agent-task-00000000-0000-4000-8000-00000000$id-1.service"
         systemctl stop "$name" 2>/dev/null || true
         systemctl reset-failed "$name" 2>/dev/null || true
@@ -51,6 +56,21 @@ if [ ! -d /etc/fleet-agent ]; then created_etc=1; install -d -m 0700 /etc/fleet-
 umask 077
 echo privsmoke-secret > /etc/fleet-agent/privsmoke-probe
 umask 022
+
+# A process holding the dpkg frontend lock with an fcntl write lock, as apt does, until the cleanup.
+lockready=$(mktemp)
+rm -f "$lockready"
+python3 -c '
+import fcntl, os, sys, time
+fd = os.open("/var/lib/dpkg/lock-frontend", os.O_RDWR | os.O_CREAT, 0o640)
+fcntl.lockf(fd, fcntl.LOCK_EX)
+open(sys.argv[1], "w").close()
+time.sleep(1800)
+' "$lockready" &
+locker=$!
+for _ in $(seq 50); do [ -e "$lockready" ] && break; sleep 0.1; done
+[ -e "$lockready" ] || { echo "task-privilege-smoke: could not take the dpkg frontend lock" >&2; exit 1; }
+rm -f "$lockready"
 
 # The unit restart_service-style tasks restart.
 systemd-run --quiet --unit=fleet-agent-privsmoke-dummy --property=Type=exec /bin/sleep 3600
@@ -77,4 +97,4 @@ if [ "$status" -ne 0 ]; then
     fi
     exit 1
 fi
-echo "task-privilege-smoke: read_only, service_manager, and package_manager all work under $unit"
+echo "task-privilege-smoke: read_only, service_manager, package_manager, and the apt task's checks all work under $unit"

@@ -51,7 +51,8 @@ const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
 /// cannot break a package upgrade: dpkg and maintainer scripts write `/usr`, `/etc`, `/boot`,
 /// `/var`, and `/root`, install setuid programs, probe devices, and rebuild initramfs images, so
 /// `ProtectSystem=`, `ProtectHome=`, `RestrictSUIDSGID=`, `PrivateDevices=`, `NoNewPrivileges=`,
-/// `ProtectKernelModules=`, and a capability bound are deliberately not set.
+/// `ProtectKernelModules=`, `SystemCallArchitectures=`, and a capability bound are deliberately not set
+/// (reviewed against real upgrades in P3-AGENT-UPDATES: `docs/operations/agent-task-privileges.md`).
 pub const PROPERTIES: &[&str] = &[
     "--property=Type=exec",
     "--property=RemainAfterExit=yes",
@@ -67,10 +68,14 @@ pub const PROPERTIES: &[&str] = &[
     "--property=ProtectKernelLogs=yes",
     "--property=LockPersonality=yes",
     "--property=RestrictRealtime=yes",
-    "--property=SystemCallArchitectures=native",
+    // Not SystemCallArchitectures=native (P3-AGENT-UPDATES): on a multiarch host (i386 packages on
+    // amd64) dpkg triggers run the foreign architecture's own programs, which that filter kills.
     "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin",
     "--setenv=LANG=C",
     "--setenv=DEBIAN_FRONTEND=noninteractive",
+    "--setenv=NEEDRESTART_MODE=l",
+    "--setenv=APT_LISTCHANGES_FRONTEND=none",
+    "--setenv=UCF_FORCE_CONFFOLD=1",
 ];
 
 /// A transient unit's state, as `systemctl show` reports it.
@@ -404,8 +409,10 @@ pub enum Found {
     None,
     /// A unit of this task is still running.
     Running,
-    /// Every unit of this task has ended; their exits, in step order, with their output captured.
-    Ended(Vec<Exit>, bool),
+    /// Every unit of this task has ended: (step, exit) of each, in step order, with their output
+    /// captured, and whether one reached its time limit. A unit the agent collected before it stopped
+    /// is gone, so the first step found is not always step 1.
+    Ended(Vec<(u32, Exit)>, bool),
 }
 
 /// Looks for the units of `task_id`, and collects those that ended. Called on start-up for a task the
@@ -417,7 +424,7 @@ pub fn recover(units: &dyn Units, task_id: &str, capture: &Arc<Mutex<Capture>>) 
             return Found::None;
         };
         match units.status(&name) {
-            Ok(status) if !status.missing() => statuses.push((name, status)),
+            Ok(status) if !status.missing() => statuses.push((step, name, status)),
             Ok(_) => {}
             // Unknown: wait rather than report a task that may still be running.
             Err(_) => return Found::Running,
@@ -426,13 +433,13 @@ pub fn recover(units: &dyn Units, task_id: &str, capture: &Arc<Mutex<Capture>>) 
     if statuses.is_empty() {
         return Found::None;
     }
-    if statuses.iter().any(|(_, s)| s.running()) {
+    if statuses.iter().any(|(_, _, s)| s.running()) {
         return Found::Running;
     }
-    let timed_out = statuses.iter().any(|(_, s)| s.timed_out());
+    let timed_out = statuses.iter().any(|(_, _, s)| s.timed_out());
     let exits = statuses
         .iter()
-        .map(|(name, status)| collect(units, name, status, capture))
+        .map(|(step, name, status)| (*step, collect(units, name, status, capture)))
         .collect();
     Found::Ended(exits, timed_out)
 }
@@ -520,6 +527,27 @@ mod tests {
             .collect();
         assert_eq!(setenv, fixed);
         assert_eq!(STOP_GRACE.as_secs().to_string(), "60");
+        // Reviewed for real upgrades (P3-AGENT-UPDATES): nothing that breaks dpkg or its maintainer
+        // scripts, and needrestart's hook only lists (threat model D7).
+        for breaks_upgrades in [
+            "ProtectSystem",
+            "ProtectHome",
+            "RestrictSUIDSGID",
+            "PrivateDevices",
+            "NoNewPrivileges",
+            "ProtectKernelModules",
+            "SystemCallArchitectures",
+            "CapabilityBoundingSet",
+            "SystemCallFilter",
+        ] {
+            assert!(
+                !PROPERTIES
+                    .iter()
+                    .any(|p| p.starts_with(&format!("--property={breaks_upgrades}="))),
+                "{breaks_upgrades}"
+            );
+        }
+        assert!(PROPERTIES.contains(&"--setenv=NEEDRESTART_MODE=l"));
         assert!(PROPERTIES.contains(&"--property=TimeoutStopSec=60"));
     }
 }

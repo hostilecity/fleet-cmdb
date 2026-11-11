@@ -22,6 +22,9 @@ pub struct Capture {
     head: Vec<u8>,
     tail: Vec<u8>,
     dropped: u64,
+    /// Set once bytes were dropped by [`Capture::absorb`]: later bytes come after the cut, so they
+    /// never go into the head.
+    head_closed: bool,
     /// Lines the agent itself added (deadline passed, task left running, ...), kept whole.
     notes: Vec<String>,
 }
@@ -29,7 +32,7 @@ pub struct Capture {
 impl Capture {
     /// Adds bytes read from the task, keeping at most the head and the tail.
     pub fn push(&mut self, mut bytes: &[u8]) {
-        if self.head.len() < HEAD_BYTES {
+        if !self.head_closed && self.head.len() < HEAD_BYTES {
             let take = bytes.len().min(HEAD_BYTES - self.head.len());
             self.head.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
@@ -50,6 +53,26 @@ impl Capture {
             self.dropped += excess as u64;
             self.tail.drain(..excess);
         }
+    }
+
+    /// Adds what another capture kept, in order, keeping its count of dropped bytes: its head, then
+    /// (if it dropped any) the cut, which also drops this capture's tail, then its tail and its notes.
+    pub fn absorb(&mut self, other: Capture) {
+        self.push(&other.head);
+        if other.dropped > 0 {
+            self.dropped += other.dropped + self.tail.len() as u64;
+            self.tail.clear();
+            self.head_closed = true;
+        }
+        self.push(&other.tail);
+        for note in &other.notes {
+            self.note(note);
+        }
+    }
+
+    /// Whether bytes were dropped.
+    pub fn truncated(&self) -> bool {
+        self.dropped > 0
     }
 
     /// Adds a line written by the agent, not the task, shown after the task's output.
@@ -131,6 +154,49 @@ mod tests {
             many.push(&[b'x'; 1000]);
         }
         assert_eq!(one.finish(), many.finish());
+    }
+
+    #[test]
+    fn an_absorbed_capture_keeps_its_order_and_its_count_of_dropped_bytes() {
+        let mut step = Capture::default();
+        step.push(b"step start\n");
+        step.push(&vec![b'x'; HEAD_BYTES + TAIL_BYTES + 1000]);
+        step.push(b"step end\n");
+        assert!(step.truncated());
+        let step_dropped = step.dropped;
+
+        let mut task = Capture::default();
+        task.push(b"before\n");
+        task.absorb(step);
+        task.push(b"after\n");
+        let (text, truncated) = task.finish();
+        assert!(truncated);
+        assert!(text.starts_with("before\nstep start\n"));
+        assert!(text.ends_with("step end\nafter\n"));
+        // Every byte not shown is counted in the one marker: the step's own cut, and whatever of this
+        // capture's tail the cut came after.
+        let start = text.find("[fleet-agent: ").unwrap();
+        let line_end = start + text[start..].find('\n').unwrap();
+        let count: u64 = text[start + 14..line_end]
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(count >= step_dropped);
+        // The marker line, and the line break finish() puts before it (the head ends mid-line).
+        let shown = text.len() - (line_end + 1 - start) - 1;
+        assert_eq!(
+            shown as u64 + count,
+            (7 + 11 + HEAD_BYTES + TAIL_BYTES + 1000 + 9 + 6) as u64
+        );
+
+        // A capture with nothing dropped is the same as pushing its bytes.
+        let mut small = Capture::default();
+        small.push(b"a\n");
+        let mut task = Capture::default();
+        task.absorb(small);
+        assert_eq!(task.finish(), ("a\n".to_owned(), false));
     }
 
     #[test]
