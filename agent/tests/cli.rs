@@ -231,10 +231,8 @@ fn a_bad_tasks_section_fails_check_config_but_run_carries_on_with_tasks_off() {
         stdout.contains("tasks      = restart_service; restart_service may restart: nginx.service"),
         "{stdout}"
     );
-    assert!(
-        stdout.contains("note: this agent version cannot run restart_service yet"),
-        "{stdout}"
-    );
+    // #36: this version runs restart_service, so there is no "cannot run" note for it.
+    assert!(!stdout.contains("cannot run restart_service"), "{stdout}");
 
     let path = scratch.config(&text, 0o600);
     let mut child = agent()

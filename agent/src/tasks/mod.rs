@@ -16,15 +16,13 @@
 //!   checks, and the one way a task runs a program (fixed argument vector, no shell, clean
 //!   environment, process group, deadline, bounded output, transient units for package managers).
 //!
-//! - [`apply_updates`]: `apply_package_updates` (P3-AGENT-UPDATES), apt under DEC-16.
-//!
-//! [`IMPLEMENTED`] lists the types this build runs; the poller polls only when one of them is also
-//! enabled locally.
+//! - The task types ([`IMPLEMENTED`]): [`refresh_reports`] (P3-A04), [`restart_service`] (P3-A06),
+//!   and [`apply_updates`] (`apply_package_updates`, P3-AGENT-UPDATES: apt under DEC-16). This agent
+//!   reports them as supported, so the server offers them where they are enabled and the poller polls.
 
 pub mod apply_updates;
 pub mod catalog;
-// The executor's task-facing API (`Run`, `Program`, `parse`, `Finish`, ...) is used by the task types,
-// and by the tests; some of it only by the framework's tests until every type is built (P3-A04, P3-A06).
+// Parts of the executor's API are used only by the tests (test-only task types).
 #[allow(dead_code)]
 pub mod executor;
 pub mod ledger;
@@ -32,17 +30,23 @@ pub mod poller;
 pub mod settings;
 pub mod wire;
 
+// P3-A04, P3-A06 (#36): the task types refresh_reports and restart_service.
+pub mod refresh_reports;
+pub mod restart_service;
+
 use serde::Serialize;
 
 use catalog::Catalog;
 use settings::TaskSettings;
 
 /// The task types this agent version has an implementation for: exactly the types in
-/// [`executor::Registry::production`] (checked by the tests), each in the catalog. Each type's issue
-/// adds its own entry.
+/// [`executor::Registry::production`] (checked by the tests), each in the catalog.
 pub const IMPLEMENTED: &[&str] = &[
+    // P3-A04, P3-A06 (#36).
+    refresh_reports::TYPE_ID,
+    restart_service::TYPE_ID,
     // --- P3-AGENT-UPDATES (#37) ---
-    "apply_package_updates",
+    apply_updates::TYPE_ID,
     // --- end of #37's block ---
 ];
 
@@ -95,8 +99,6 @@ impl Capabilities {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
     use crate::collect::contract::assert_conforms;
 
@@ -113,7 +115,7 @@ mod tests {
         }
         let registry = executor::Registry::production(
             TaskSettings::default(),
-            Arc::new(apply_updates::Ignored),
+            std::sync::Arc::new(crate::report::Refresh::new()),
         );
         let mut implemented = IMPLEMENTED.to_vec();
         implemented.sort_unstable();
@@ -125,7 +127,11 @@ mod tests {
         let catalog = Catalog::embedded().unwrap();
         let caps = Capabilities::of(&TaskSettings::default()).unwrap();
         assert_eq!(caps.catalog_version, catalog.catalog_version);
-        assert_eq!(caps.supported, IMPLEMENTED);
+        let mut implemented = IMPLEMENTED.to_vec();
+        implemented.sort_unstable();
+        assert_eq!(caps.supported, implemented);
+        assert!(caps.supported.contains(&"refresh_reports".to_owned()));
+        assert!(caps.supported.contains(&"restart_service".to_owned()));
         assert_eq!(caps.enabled, ["refresh_reports"]);
         assert_eq!(caps.local_config, "valid");
 

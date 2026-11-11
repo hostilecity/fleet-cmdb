@@ -96,6 +96,9 @@ pub struct Reporter<'a, R: Rng> {
     wanted: Option<Reason>,
     /// A report built for a request was accepted ([`Reporter::take_answered`]).
     answered: bool,
+    /// How the last report built for a request ended, for the `refresh_reports` task (P3-A04, #36;
+    /// [`Reporter::take_requested_done`]).
+    requested_done: Option<super::refresh::Done>,
     /// Once requested, nothing new starts: no listing, no send ([`Reporter::stopping_on`]).
     stop: Option<&'a Shutdown>,
     new_id: fn() -> io::Result<String>,
@@ -118,6 +121,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             hold_until: None,
             wanted: None,
             answered: false,
+            requested_done: None,
             stop: None,
             new_id: new_report_id,
             tick_started: Instant::now(),
@@ -144,6 +148,12 @@ impl<'a, R: Rng> Reporter<'a, R> {
     /// ([`super::requests::ReportRequests::answered`]).
     pub fn take_answered(&mut self) -> bool {
         std::mem::take(&mut self.answered)
+    }
+
+    /// How the last report built for a request ended since the last call: accepted, or rejected for
+    /// its content, and when it was built (P3-A04, [`super::refresh`]).
+    pub fn take_requested_done(&mut self) -> Option<super::refresh::Done> {
+        self.requested_done.take()
     }
 
     #[cfg(test)]
@@ -289,6 +299,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
         let _entered = span.enter();
         let reason = pending.reason.as_str();
         let requested = pending.reason == Reason::Requested;
+        let built_at = pending.built_at;
         let attempt = self.backoff.failures() + 1;
         match transport.post_gzip(PACKAGES_PATH, &pending.body) {
             Ok(response) => {
@@ -310,6 +321,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
                     "package report sent"
                 );
                 self.answered |= requested;
+                self.settle_requested(requested, built_at, true);
                 self.finished(now);
             }
             Err(error) if rejected_for_content(&error) => {
@@ -325,6 +337,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
                     request_id = error.request_id().unwrap_or(""),
                     "the server rejected the package report; it will not be retried, and the next report follows the normal schedule"
                 );
+                self.settle_requested(requested, built_at, false);
                 self.finished(now);
             }
             Err(error) => {
@@ -332,6 +345,13 @@ impl<'a, R: Rng> Reporter<'a, R> {
                 let failed = super::failed_at(now, self.tick_started);
                 self.retry_at = Some(failed + self.backoff.on_failure(&error));
             }
+        }
+    }
+
+    /// Records how a report built for a request ended, for the `refresh_reports` task (P3-A04).
+    fn settle_requested(&mut self, requested: bool, built_at: Instant, accepted: bool) {
+        if requested {
+            self.requested_done = Some(super::refresh::Done { built_at, accepted });
         }
     }
 

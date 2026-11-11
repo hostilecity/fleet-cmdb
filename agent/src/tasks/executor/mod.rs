@@ -42,9 +42,10 @@
 //! running, [`Executor::run`] returns `None`, the ledger keeps the task `started`, and the next start
 //! waits for the unit and reports it ([`Executor::recover`]).
 //!
-//! The registered types are [`super::IMPLEMENTED`]: `apply_package_updates` (P3-AGENT-UPDATES, #37,
-//! [`super::apply_updates`]); any other type is refused `not_supported` before anything is started.
-//! The framework's own tests use test-only types.
+//! This build implements `refresh_reports` ([`super::refresh_reports`], P3-A04) and `restart_service`
+//! ([`super::restart_service`], P3-A06), both #36, and `apply_package_updates`
+//! ([`super::apply_updates`], P3-AGENT-UPDATES, #37) ([`super::IMPLEMENTED`]); any other type is
+//! refused `not_supported` before anything is started. The framework's tests use test-only types.
 
 pub mod output;
 pub mod spawn;
@@ -344,6 +345,33 @@ impl Run<'_> {
             .deadline
             .saturating_duration_since(Instant::now())
     }
+
+    // --- P3-A04, P3-A06 (#36): for a job that waits between programs, or without one.
+
+    /// Why a job that is waiting must stop now, if it must: the deadline passed (`TimedOut`), or, for
+    /// an interruptible type, the agent is stopping (`Interrupted`) or the server cancelled it
+    /// (`Cancelled`). Call it often while waiting: it also keeps the server's progress up to date. A
+    /// type that cannot be interrupted is stopped only by its deadline here; a program it runs keeps
+    /// the shutdown rules of [`spawn::run`].
+    pub fn stopped(&self) -> Option<Stop> {
+        if Instant::now() >= self.limits.deadline {
+            return Some(Stop::TimedOut);
+        }
+        if !self.limits.interruptible {
+            // Progress only: a cancel never stops this task (DEC-14).
+            self.control.cancel_requested();
+            return None;
+        }
+        if self.control.shutdown().is_requested() {
+            return Some(Stop::Interrupted);
+        }
+        self.control.cancel_requested().then_some(Stop::Cancelled)
+    }
+
+    /// Whether the agent is stopping.
+    pub fn stopping(&self) -> bool {
+        self.control.shutdown().is_requested()
+    }
 }
 
 /// How often [`Run::pause`] looks at the deadline, the cancel, and the shutdown.
@@ -365,17 +393,18 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// The task types this agent version implements ([`super::IMPLEMENTED`]). `package_report` asks the
-    /// agent's package report loop for a report (`apply_package_updates`).
-    pub fn production(
-        settings: TaskSettings,
-        package_report: Arc<dyn super::apply_updates::PackageReport>,
-    ) -> Self {
+    /// The task types this agent version implements ([`super::IMPLEMENTED`]). `reports` is how
+    /// `refresh_reports` asks the report loops for fresh reports ([`crate::report::refresh`]), and how
+    /// `apply_package_updates` asks for a package report after an upgrade.
+    pub fn production(settings: TaskSettings, reports: Arc<crate::report::Refresh>) -> Self {
         let tasks: Vec<Box<dyn TaskImpl>> = vec![
+            // P3-A04, P3-A06 (#36): refresh_reports and restart_service.
+            Box::new(super::refresh_reports::RefreshReports::new(Arc::clone(
+                &reports,
+            ))),
+            Box::new(super::restart_service::RestartService::production()),
             // --- P3-AGENT-UPDATES (#37): apply_package_updates (DEC-16), apt on Debian. ---
-            Box::new(super::apply_updates::ApplyUpdates::production(
-                package_report,
-            )),
+            Box::new(super::apply_updates::ApplyUpdates::production(reports)),
             // --- end of #37's block ---
         ];
         Self::new(tasks, settings, Box::new(unit::Systemd))
@@ -493,12 +522,14 @@ impl Executor for Registry {
     }
 
     fn recover(&self, task: &ledger::Task) -> Recovered {
-        // Only a type this version runs can have left a unit; this build has none, so nothing is asked.
-        if !task
-            .task_type
-            .as_deref()
-            .is_some_and(|t| self.implements(t))
-        {
+        // Only a type this version runs, and only one whose programs run in transient units (a
+        // `package_manager` type), can have left a unit. Any other started a child of the agent,
+        // which ended with it, so systemd is not asked (#36: an unreadable unit state would otherwise
+        // hold polling for a refresh_reports or restart_service task that cannot have left one).
+        if !task.task_type.as_deref().is_some_and(|t| {
+            self.implements(t)
+                && Self::entry(t).is_some_and(|e| e.privilege == Privilege::PackageManager)
+        }) {
             return Recovered::Nothing;
         }
         let capture = Arc::new(Mutex::new(Capture::default()));

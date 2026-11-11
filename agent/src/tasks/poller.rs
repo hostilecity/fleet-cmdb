@@ -37,9 +37,10 @@
 //!    recovery deals with it.
 //! 7. The result is sent until the server accepts it (or refuses it for good), then `reported`.
 //!
-//! In this build the executor ([`super::executor::Registry`], P3-A03) implements no type, so the poller
-//! does not poll at all by default, and any task that does arrive stops at step 3 with
-//! `not_supported`. Steps 4 to 6 are exercised by the tests with test executors.
+//! In this build the executor ([`super::executor::Registry`], P3-A03) implements `refresh_reports` and
+//! `restart_service` (#36), so a default agent polls (refresh_reports is on by default, DEC-14);
+//! `apply_package_updates` stops at step 3 with `not_supported`. The tests drive steps 4 to 6 with
+//! test executors as well as the real ones.
 //!
 //! **Poll interval.** The poll response's `poll_seconds` (Settings: Tasks, #31) replaces the
 //! configured interval, clamped to the configured `min_seconds` and `max_seconds`. A `cancel` in a

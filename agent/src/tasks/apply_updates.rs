@@ -122,15 +122,6 @@ pub trait PackageReport: Send + Sync {
     fn request_package_report(&self);
 }
 
-/// A [`PackageReport`] that asks for nothing (tests).
-#[cfg(test)]
-pub struct Ignored;
-
-#[cfg(test)]
-impl PackageReport for Ignored {
-    fn request_package_report(&self) {}
-}
-
 /// The real host.
 pub struct RealSystem;
 
