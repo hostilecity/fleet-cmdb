@@ -65,7 +65,9 @@ module AuditEntriesHelper
     Audit::Actions::SECOND_FACTOR_STEP_UP_FAILED => "Code refused",
     Audit::Actions::SECOND_FACTOR_LOCKED => "Locked after wrong codes",
     Audit::Actions::SECOND_FACTOR_RECOVERY_CODE_USED => "Recovery code used",
-    Audit::Actions::SECOND_FACTOR_RESET => "Reset from the console"
+    Audit::Actions::SECOND_FACTOR_RESET => "Reset from the console",
+    Audit::Actions::TASK_LATE_RESULT => "Late task result kept (task had already ended)",
+    Audit::Actions::TASK_RESULT_CONFLICT => "Task result refused (conflicting)"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.

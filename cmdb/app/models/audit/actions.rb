@@ -66,6 +66,10 @@ module Audit
     SECOND_FACTOR_LOCKED = "second_factor.locked"
     SECOND_FACTOR_RECOVERY_CODE_USED = "second_factor.recovery_code_used"
     SECOND_FACTOR_RESET = "second_factor.reset"
+    # Task results (P3-S04): a result that arrived after the server had ended the task, kept as an annotation, and a
+    # result refused because it differs from the one already recorded or the task's state cannot take it.
+    TASK_LATE_RESULT = "task.late_result"
+    TASK_RESULT_CONFLICT = "task.result_conflict"
 
     ALL = constants.map { |name| const_get(name) }.freeze
   end

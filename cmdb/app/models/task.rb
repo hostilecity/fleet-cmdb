@@ -32,6 +32,9 @@ class Task < ApplicationRecord
                        not_allowed_on_server protected_service].freeze
   REASONS = { "failed" => FAILED_REASONS, "refused" => REFUSED_REASONS }.freeze
 
+  # The attributes an agent's result sets beside the outcome (P3-S04).
+  REPORT_ATTRIBUTES = %i[result_report_id result_digest result_received_at result_details].freeze
+
   # The hard limit on stored output, whatever the configured output limit (P3-S04); the database checks it too.
   MAX_OUTPUT_BYTES = 1.megabyte
 
@@ -54,6 +57,8 @@ class Task < ApplicationRecord
   belongs_to :task_batch
   belongs_to :host
   belongs_to :cancel_requested_by, class_name: "Operator", optional: true
+  # A result that arrived after the server had ended the task itself (P3-S04): kept beside it, never applied.
+  has_one :late_result, class_name: "TaskLateResult", dependent: :restrict_with_exception
 
   attr_readonly :uuid, :task_batch_id, :host_id, :task_type, :parameters, :expires_at, :timeout_seconds
 
@@ -119,6 +124,24 @@ class Task < ApplicationRecord
   # queued -> expired: still waiting at its expiry, so it is never delivered (FR-3.2, AC-3.8).
   def expire!(actor:, now: Time.current) = finish!(:expire, actor:, now:)
 
+  # Whether an agent's result decided how this task ended (P3-S04). A terminal task without one was ended by the
+  # server: expired, timed out, lease expired, cancelled, or refused at claim.
+  def agent_result? = result_digest.present?
+
+  # A running task's progress as the agent reports it (P3-S04): ignored once the task is not running.
+  def record_progress!(percent:, now: Time.current)
+    with_lock { update!(progress_percent: percent, progress_reported_at: now) if state == "running" }
+    self
+  end
+
+  # A claimed task delivered again to its host's poll (P3-S03): the lease starts over. Not a transition, so no
+  # audit entry; the claim was audited.
+  def renew_lease!(lease_expires_at:)
+    raise InvalidTransition, "only a claimed task's lease is renewed" unless state == "claimed"
+
+    update!(lease_expires_at:)
+  end
+
   # update_column(s) skip callbacks, so guard the state here too. Bulk paths (update_all) are stopped by tasks_guard.
   def update_columns(attributes)
     if attributes.to_h.stringify_keys.key?("state") && !@transitioning
@@ -130,11 +153,14 @@ class Task < ApplicationRecord
 
   private
 
+  # report: what identifies an agent's result (P3-S04, AgentTasks.record_result!): result_report_id, result_digest,
+  # result_received_at, and result_details. Absent when the server ends the task itself.
   def finish!(event, actor:, reason: nil, exit_status: nil, output: nil, output_truncated: false,
-              agent_started_at: nil, agent_finished_at: nil, now: Time.current)
+              agent_started_at: nil, agent_finished_at: nil, report: {}, now: Time.current)
     attributes = { finished_at: now, reason:, exit_status:, output:, output_truncated:, lease_expires_at: nil }
     attributes[:agent_started_at] = agent_started_at if agent_started_at
     attributes[:agent_finished_at] = agent_finished_at if agent_finished_at
+    attributes.merge!(report.to_h.slice(*REPORT_ATTRIBUTES))
     transition!(event, actor:, attributes:)
   end
 
