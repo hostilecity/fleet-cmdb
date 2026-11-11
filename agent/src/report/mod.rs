@@ -55,7 +55,7 @@ use crate::config::Config;
 use crate::facts::host::{Host, RealHost};
 use crate::retry::{Backoff, RetryPolicy, Rng, SplitMix64};
 use crate::shutdown::Shutdown;
-use crate::tasks::executor::NoExecutor;
+use crate::tasks::executor::Registry;
 use crate::tasks::poller::{Poller, TaskHint};
 use crate::tasks::wire::Api as TasksApi;
 use crate::update::Updater;
@@ -171,7 +171,8 @@ fn run_with(
             );
         });
         // P3-A02: the task poller. It opens the ledger and reports any task left unreported, and
-        // polls only when a type is enabled and supported (none in this build: no executor yet).
+        // polls only when a type is enabled and supported (none in this build: P3-A03's registry is
+        // empty until the task types are built).
         let tasks = spawn_loop(scope, "tasks", || {
             let _stop = StopOnExit(shutdown);
             tasks_loop(config, transport, shutdown, updater, hint);
@@ -277,8 +278,8 @@ fn tasks_loop(
     updater: &Updater,
     hint: &TaskHint,
 ) {
-    // P3-A03 replaces this with the registry of implemented types.
-    let executor = NoExecutor;
+    // P3-A03: the registry of implemented task types (none in this build, `tasks::IMPLEMENTED`).
+    let executor = Registry::production(config.tasks.clone());
     let api = TasksApi(transport);
     let mut poller = Poller::new(
         &config.state_dir,

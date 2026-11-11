@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use super::*;
+use crate::collect::contract::assert_conforms;
 use crate::retry::{RetryPolicy, SplitMix64};
 use crate::tasks::executor::Execution;
 use crate::tasks::ledger::{DAMAGED_FILE, LEDGER_FILE};
@@ -89,7 +90,12 @@ struct Server {
     start_error: RefCell<Option<ApiError>>,
     fail_results: Cell<u32>,
     reject_start: Cell<bool>,
+    /// The state `start` answers with when it rejects (`cancelled` unless set).
+    reject_start_state: RefCell<Option<String>>,
     reject_result: Cell<bool>,
+    poll_seconds: Cell<Option<u64>>,
+    progress: RefCell<Vec<String>>,
+    cancel: Cell<bool>,
 }
 
 impl Server {
@@ -108,8 +114,8 @@ impl Server {
     }
 }
 
-impl TaskApi for Server {
-    fn poll(&self) -> Result<wire::PollReply, ApiError> {
+impl Server {
+    fn poll_task(&self) -> Result<wire::PollReply, ApiError> {
         self.polls.set(self.polls.get() + 1);
         if self.fail_polls.get() > 0 {
             self.fail_polls.set(self.fail_polls.get() - 1);
@@ -119,7 +125,24 @@ impl TaskApi for Server {
         if claimed.is_none() {
             *claimed = self.queue.borrow_mut().pop_front();
         }
-        Ok(claimed.clone())
+        Ok(claimed.clone().into())
+    }
+}
+
+impl TaskApi for Server {
+    fn poll(&self) -> Result<wire::PollReply, ApiError> {
+        let mut reply = self.poll_task()?;
+        reply.poll_seconds = self.poll_seconds.get();
+        Ok(reply)
+    }
+
+    fn progress(&self, id: &str, percent: Option<u8>) -> Result<wire::ProgressReply, ApiError> {
+        assert!(percent.is_none_or(|p| p <= 100));
+        self.progress.borrow_mut().push(id.into());
+        Ok(wire::ProgressReply {
+            state: "running".into(),
+            cancel: self.cancel.get(),
+        })
     }
 
     fn start(&self, id: &str, started_at: &str) -> Result<Reply, ApiError> {
@@ -135,8 +158,16 @@ impl TaskApi for Server {
             return Err(Self::down());
         }
         if self.reject_start.get() {
-            *self.claimed.borrow_mut() = None;
-            return Ok(Reply::Rejected("cancelled".into()));
+            let state = self
+                .reject_start_state
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| "cancelled".into());
+            // A requeued task stays this host's to be delivered again; a cancelled one is gone.
+            if state != "queued" {
+                *self.claimed.borrow_mut() = None;
+            }
+            return Ok(Reply::Rejected(state));
         }
         self.starts.borrow_mut().push(id.into());
         Ok(Reply::Accepted)
@@ -163,6 +194,12 @@ impl TaskApi for Server {
 struct Counting {
     implements: Vec<&'static str>,
     runs: Mutex<HashMap<String, u32>>,
+    /// `run` returns `None`, as when a unit is left running at shutdown.
+    detach: std::sync::atomic::AtomicBool,
+    /// What `recover` answers.
+    recovered: Mutex<Option<crate::tasks::executor::Recovered>>,
+    /// Whether the control said cancel during the run.
+    saw_cancel: std::sync::atomic::AtomicBool,
 }
 
 impl Counting {
@@ -170,6 +207,9 @@ impl Counting {
         Self {
             implements: implements.to_vec(),
             runs: Mutex::default(),
+            detach: Default::default(),
+            recovered: Mutex::default(),
+            saw_cancel: Default::default(),
         }
     }
 
@@ -194,14 +234,35 @@ impl Executor for Counting {
         Ok(())
     }
 
-    fn run(&self, task: &Delivered, _: &Shutdown) -> Execution {
+    fn recover(&self, _: &crate::tasks::ledger::Task) -> crate::tasks::executor::Recovered {
+        self.recovered
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(crate::tasks::executor::Recovered::Nothing)
+    }
+
+    fn run(&self, task: &Delivered, control: &dyn Control) -> Option<Execution> {
+        if control.cancel_requested() {
+            self.saw_cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if self.detach.load(std::sync::atomic::Ordering::SeqCst) {
+            *self
+                .runs
+                .lock()
+                .unwrap()
+                .entry(task.id.clone())
+                .or_insert(0) += 1;
+            return None;
+        }
         *self
             .runs
             .lock()
             .unwrap()
             .entry(task.id.clone())
             .or_insert(0) += 1;
-        Execution {
+        Some(Execution {
             outcome: Outcome::Succeeded,
             reason: None,
             exit_status: Some(0),
@@ -210,7 +271,7 @@ impl Executor for Counting {
             output: "restarted\n".into(),
             output_truncated: false,
             details: serde_json::Map::new(),
-        }
+        })
     }
 }
 
@@ -330,11 +391,18 @@ fn duplicate_delivery_of_one_id_runs_it_once() {
     ticks(&mut poller, &server, 3);
     assert_eq!(executor.runs(A), 1);
     assert_eq!(server.starts.borrow().len(), 1);
-    assert_eq!(
-        server.results().len(),
-        1,
-        "nothing further is reported for it"
-    );
+    // Each later delivery of the id is closed, never run: it ran, so `failed`/`agent_error` ("ran,
+    // or may have run"), which a server that really held it claimed would accept (#31).
+    let results = server.results();
+    assert_eq!(results[0].1["outcome"], "succeeded");
+    assert!(results.len() > 1);
+    for (id, body) in &results[1..] {
+        assert_eq!(id, A);
+        assert_eq!(
+            (&body["outcome"], &body["reason"]),
+            (&json!("failed"), &json!("agent_error"))
+        );
+    }
 }
 
 /// Runs task A up to `point`, "kills" the agent there, and restarts it with the server still
@@ -357,13 +425,14 @@ fn crash_and_restart(point: Point) -> (u32, Vec<(String, Value)>, Vec<String>) {
 }
 
 #[test]
-fn killed_after_received_reports_interrupted_and_never_runs_it() {
+fn killed_after_received_reports_not_run_and_never_runs_it() {
+    // `start` was never sent, so the server holds it claimed and accepts `not_run` (#31).
     let (runs, results, starts) = crash_and_restart(Point::Received);
     assert_eq!(runs, 0);
     assert!(starts.is_empty());
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].1["outcome"], "failed");
-    assert_eq!(results[0].1["reason"], "interrupted");
+    assert_eq!(results[0].1["reason"], "not_run");
 }
 
 #[test]
@@ -475,9 +544,10 @@ fn every_local_refusal_is_reported_with_its_reason_and_nothing_starts() {
 
 #[test]
 fn this_build_never_polls_and_would_refuse_anything_not_supported() {
-    // No executor yet (P3-A03): no type is implemented, so there is nothing to poll for.
+    // The registry is empty (P3-A03, `tasks::IMPLEMENTED`): no type is implemented, so there is
+    // nothing to poll for.
     let rig = Rig::new(TaskSettings::default());
-    let executor = super::super::executor::NoExecutor;
+    let executor = super::super::executor::Registry::production(TaskSettings::default());
     let server = Server::with(vec![task(A, "refresh_reports", json!({}))]);
     let mut poller = rig.poller(&executor, None);
     assert!(!poller.polls());
@@ -743,4 +813,212 @@ fn a_result_rebuilt_from_the_ledger_is_stored_and_sent_unchanged() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].1, stored);
     assert_eq!(executor.runs(A), 1);
+}
+
+#[test]
+fn a_start_the_server_answers_queued_is_closed_not_run_and_never_run() {
+    // #31, threat model L2: the claim lapsed before `start` arrived. The agent closes the task with
+    // failed/not_run at once, and again if the server delivers it anyway; it never runs it.
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::with(vec![restart(A)]);
+    server.reject_start.set(true);
+    *server.reject_start_state.borrow_mut() = Some("queued".into());
+    let mut poller = rig.poller(&executor, None);
+    poller.tick(&server, Instant::now(), wall());
+    assert_eq!(executor.total(), 0);
+    let results = server.results();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1["outcome"], "failed");
+    assert_eq!(results[0].1["reason"], "not_run");
+    assert_eq!(results[0].1["started_at"], Value::Null);
+    let task = poller.ledger().unwrap().task(A).unwrap().clone();
+    assert_eq!(task.state, State::Reported);
+    assert!(task.started && !task.executed);
+    // Delivered again (the close was lost): closed again, with the same reason, and still not run.
+    server.reject_start.set(false);
+    server.queue.borrow_mut().push_back(restart(A));
+    ticks(&mut poller, &server, 2);
+    assert_eq!(executor.total(), 0);
+    let results = server.results();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[1].1["reason"], "not_run");
+    for (_, body) in results {
+        assert_conforms("v1", "task-result.request", &body);
+    }
+}
+
+#[test]
+fn the_servers_poll_hint_sets_the_interval_within_the_configured_bounds() {
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::default();
+    server.poll_seconds.set(Some(120));
+    let mut poller = rig.poller(&executor, None);
+    let t0 = Instant::now();
+    poller.tick(&server, t0, wall());
+    for s in 1..120 {
+        poller.tick(&server, t0 + Duration::from_secs(s), wall());
+    }
+    assert_eq!(
+        server.polls.get(),
+        1,
+        "the 120 s hint replaced the 30 s interval"
+    );
+    poller.tick(&server, t0 + Duration::from_secs(121), wall());
+    assert_eq!(server.polls.get(), 2);
+    // Above the configured maximum (300 s): clamped to it.
+    server.poll_seconds.set(Some(300));
+    drop(poller);
+    let mut poller = rig.poller(&executor, None);
+    poller.tick(&server, t0, wall());
+    assert_eq!(poller.interval(), Duration::from_secs(300));
+}
+
+#[test]
+fn a_running_task_sends_progress_and_hears_the_servers_cancel() {
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::with(vec![restart(A)]);
+    server.cancel.set(true);
+    let mut poller = rig.poller(&executor, None);
+    poller.set_progress_every(Duration::from_millis(1));
+    poller.tick(&server, Instant::now(), wall());
+    assert_eq!(*server.progress.borrow(), [A]);
+    assert!(
+        executor
+            .saw_cancel
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(poller.ledger().unwrap().task(A).unwrap().executed);
+}
+
+#[test]
+fn a_task_left_running_in_its_unit_is_waited_for_after_a_restart_and_then_reported() {
+    // Threat model L8: the agent stopped while a task that cannot be interrupted ran on.
+    use crate::tasks::executor::Recovered;
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    executor
+        .detach
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let server = Server::with(vec![restart(A), restart(B)]);
+    let mut poller = rig.poller(&executor, None);
+    poller.tick(&server, Instant::now(), wall());
+    assert!(
+        server.results().is_empty(),
+        "nothing is reported for a task still running"
+    );
+    drop(poller);
+    // Restarted: the unit still runs, so nothing is reported and nothing new is polled.
+    executor
+        .detach
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    *executor.recovered.lock().unwrap() = Some(Recovered::Running);
+    *server.claimed.borrow_mut() = None;
+    let polls = server.polls.get();
+    let mut poller = rig.poller(&executor, None);
+    let wait = poller.tick(&server, Instant::now(), wall());
+    assert_eq!(wait, RECOVERY_CHECK);
+    assert_eq!(server.polls.get(), polls);
+    assert!(server.results().is_empty());
+    // It ended: what it did is reported, then polling resumes.
+    *executor.recovered.lock().unwrap() = Some(Recovered::Ended(Execution {
+        outcome: Outcome::Failed,
+        reason: Some("nonzero_exit"),
+        exit_status: Some(100),
+        started_at: wall(),
+        finished_at: wall() + Duration::from_secs(60),
+        output: "E: broken\n".into(),
+        output_truncated: false,
+        details: serde_json::Map::new(),
+    }));
+    ticks(&mut poller, &server, 2);
+    let results = server.results();
+    assert_eq!(results[0].0, A);
+    assert_eq!(results[0].1["exit_status"], 100);
+    assert_eq!(results[0].1["output"], "E: broken\n");
+    assert_eq!(executor.runs(A), 1);
+    assert_eq!(executor.runs(B), 1);
+}
+
+#[test]
+fn a_canary_proves_refused_tasks_run_nothing_and_an_accepted_one_runs() {
+    // AC-3.1 (agent half), P3-A03 AC: the real registry and spawn path, with a test type whose only
+    // effect is creating a canary file.
+    use crate::tasks::catalog::Privilege;
+    use crate::tasks::executor::tests::{Fixed, fake_units, leak, program, registry};
+    let tmp = TempDir::new();
+    let canary = tmp.path("canary");
+    let touch = || {
+        program(
+            "/usr/bin/touch",
+            Box::leak(vec![leak(canary.display().to_string())].into_boxed_slice()),
+            Privilege::ReadOnly,
+        )
+    };
+    let restart = Fixed {
+        type_id: "restart_service",
+        programs: vec![touch()],
+        service: true,
+    };
+    let executor = registry(
+        vec![Fixed::new("refresh_reports", vec![touch()]), restart],
+        fake_units(),
+    );
+    let rig = Rig::new(settings(
+        "[tasks]\nenabled = [\"refresh_reports\"]\nallowed_services = [\"nginx.service\"]\n",
+    ));
+    let hostile = [
+        task("00000000-0000-4000-8000-0000000000c1", "reboot", json!({})),
+        task(
+            "00000000-0000-4000-8000-0000000000c2",
+            "refresh_reports",
+            json!({"extra": true}),
+        ),
+        task(
+            "00000000-0000-4000-8000-0000000000c3",
+            "refresh_reports",
+            json!({"command": "id"}),
+        ),
+        task(
+            "00000000-0000-4000-8000-0000000000c4",
+            "restart_service",
+            json!({"service": "nginx.service"}),
+        ),
+        task(
+            "00000000-0000-4000-8000-0000000000c5",
+            "apply_package_updates",
+            json!({}),
+        ),
+    ];
+    let server = Server::with(hostile.to_vec());
+    let mut poller = rig.poller(&executor, None);
+    ticks(&mut poller, &server, 8);
+    let results = server.results();
+    let reasons: Vec<&str> = results
+        .iter()
+        .map(|(_, b)| b["reason"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            "unknown_type",
+            "invalid_params",
+            "invalid_params",
+            "not_enabled_locally",
+            "not_enabled_locally"
+        ]
+    );
+    assert!(results.iter().all(|(_, b)| b["outcome"] == "refused"));
+    assert!(server.starts.borrow().is_empty());
+    assert!(!canary.exists(), "a refused task ran something");
+    server
+        .queue
+        .borrow_mut()
+        .push_back(task(B, "refresh_reports", json!({})));
+    rig.hint.raise();
+    ticks(&mut poller, &server, 2);
+    assert!(canary.exists(), "the accepted task did not run");
+    assert_eq!(server.results().last().unwrap().1["outcome"], "succeeded");
 }

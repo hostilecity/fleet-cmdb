@@ -6,10 +6,13 @@
 //! - `received`: the poll delivered the task (id, type, catalog version, timeout, parameters);
 //! - `started`: the agent is about to run it. **Written and flushed before the server is told and
 //!   before anything runs**, so after a crash the agent knows the task may have run;
+//! - `executing`: the server accepted `start` and the executor is about to run it (P3-A03, the threat
+//!   model's proposed `acknowledged` step, L2). A task `started` without `executing` never ran;
 //! - `finished`: the outcome (and reason) the agent decided or observed. The full result body, with
 //!   any output, is in [`RESULT_FILE`] first, so the ledger lines stay small;
 //! - `reported`: the server accepted the result (or refused it for good, `rejected`);
-//! - `done`: what compaction keeps of a reported task, enough to know its id was seen;
+//! - `done`: what compaction keeps of a reported task, enough to know its id was seen (and, `unrun`,
+//!   that it never ran);
 //! - `hold`: the ledger was found damaged; run nothing until `until_unix` (below).
 //!
 //! **The rules this module enforces.** A task id is received once: a second delivery of an id already
@@ -138,6 +141,10 @@ enum Entry {
         task_id: String,
         at: String,
     },
+    Executing {
+        task_id: String,
+        at: String,
+    },
     Finished {
         task_id: String,
         outcome: Outcome,
@@ -155,6 +162,9 @@ enum Entry {
         task_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<Outcome>,
+        /// The task never ran (no `executing` record). Absent: it may have run.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unrun: bool,
         at: String,
     },
     Hold {
@@ -214,6 +224,9 @@ pub struct Task {
     pub state: State,
     /// Whether a `started` record exists: the task may have run.
     pub started: bool,
+    /// Whether the executor may have run it: an `executing` record exists, or compaction did not
+    /// record that it never ran.
+    pub executed: bool,
     /// When the `started` record was written (agent clock, RFC 3339).
     pub started_at: Option<String>,
     /// When the task was reported (agent clock, RFC 3339), kept through compaction.
@@ -565,6 +578,24 @@ impl Ledger {
         })
     }
 
+    /// Records that the server accepted `start` for `id` and the executor runs it now. Only a task
+    /// just started may; returns once the record is on disk, before anything runs.
+    pub fn executing(&mut self, id: &str, now: SystemTime) -> Result<(), LedgerError> {
+        match self.task(id) {
+            Some(task) if task.state == State::Started && !task.executed => {}
+            other => {
+                return Err(LedgerError::Step(format!(
+                    "task {id} cannot be executed: it is {}",
+                    other.map_or("not in the ledger", |t| t.state.name())
+                )));
+            }
+        }
+        self.write(Entry::Executing {
+            task_id: id.to_owned(),
+            at: rfc3339(now),
+        })
+    }
+
     /// Records the outcome of `id`. `result` is the full body for the result API: it is written to
     /// [`RESULT_FILE`] first, so a crash after this record can still send it ([`Ledger::result`]).
     pub fn finish(
@@ -732,6 +763,11 @@ impl Ledger {
                     self.tasks[i].started_at.get_or_insert(at);
                     (task_id, State::Started, None)
                 }
+                Entry::Executing { task_id, .. } => {
+                    let i = self.slot(&task_id);
+                    self.tasks[i].executed = true;
+                    (task_id, State::Started, None)
+                }
                 Entry::Finished {
                     task_id,
                     outcome,
@@ -741,24 +777,23 @@ impl Ledger {
                     self.outcomes.insert(task_id.clone(), outcome);
                     (task_id, State::Finished { outcome, reason }, None)
                 }
-                Entry::Reported { task_id, at, .. }
-                | Entry::Done {
-                    task_id,
-                    at,
-                    outcome: None,
-                } => {
+                Entry::Reported { task_id, at, .. } => {
                     let i = self.slot(&task_id);
                     self.tasks[i].reported_at.get_or_insert(at);
                     (task_id, State::Reported, None)
                 }
                 Entry::Done {
                     task_id,
-                    outcome: Some(outcome),
+                    outcome,
+                    unrun,
                     at,
                 } => {
-                    self.outcomes.insert(task_id.clone(), outcome);
+                    if let Some(outcome) = outcome {
+                        self.outcomes.insert(task_id.clone(), outcome);
+                    }
                     let i = self.slot(&task_id);
                     self.tasks[i].reported_at.get_or_insert(at);
+                    self.tasks[i].executed = !unrun;
                     (task_id, State::Reported, None)
                 }
             },
@@ -782,6 +817,7 @@ impl Ledger {
             task_type: None,
             state: State::Received,
             started: false,
+            executed: false,
             started_at: None,
             reported_at: None,
         });
@@ -839,6 +875,7 @@ impl Ledger {
             contents.extend(line(&Entry::Done {
                 task_id: task.id.clone(),
                 outcome: self.outcomes.get(&task.id).copied(),
+                unrun: !task.executed,
                 at: task.reported_at.clone().unwrap_or_else(|| at.clone()),
             })?);
         }

@@ -48,7 +48,7 @@ pub struct TaskType {
     /// The catalog version that added this type.
     pub since: u32,
     pub privilege: Privilege,
-    #[allow(dead_code)] // Read by the executor and the tasks (P3-A03 onwards).
+    /// Whether a cancel or the agent's shutdown may stop a running task of this type (DEC-14).
     pub interruptible: bool,
     /// Whether an agent runs this type without a local configuration change (DEC-14). The agent
     /// honours it only for [`Privilege::ReadOnly`] types, whatever the file says.

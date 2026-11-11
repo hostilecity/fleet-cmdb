@@ -15,5 +15,5 @@ The agent runs as **root under a hardened systemd unit**.
 ## Consequences
 
 - The config file is mode `0600`, owned by root; the state directory is root-owned under `/var/lib/fleet-agent`.
-- Systemd sandboxing is applied as far as tasks allow. Package updates need write access to `/usr`, `/etc`, `/boot`, and `/var`, so hardening is reviewed per task in Phase 3 and a per-task privilege table is kept.
+- Systemd sandboxing is applied as far as tasks allow. Package updates need write access to `/usr`, `/etc`, `/boot`, and `/var`, so hardening is reviewed per task in Phase 3 and a per-task privilege table is kept: [`docs/operations/agent-task-privileges.md`](../operations/agent-task-privileges.md) (P3-A05). The agent's unit stays as it is; package manager programs run in a transient unit outside it.
 - Agent compromise means root on that VM; mitigations are no inbound ports, no arbitrary command execution, and the allowlists in ADR 0014.

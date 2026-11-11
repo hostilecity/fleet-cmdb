@@ -113,6 +113,52 @@ fn a_task_goes_through_every_step_and_each_is_on_disk_at_once() {
     assert!(!dir.join(RESULT_FILE).exists());
 }
 
+#[test]
+fn executing_is_recorded_once_after_started_and_survives_compaction() {
+    // P3-A03, threat model L2: the ledger tells a task that never ran from one that may have.
+    let (_tmp, dir) = state();
+    let (mut ledger, _) = open(&dir);
+    receive(&mut ledger, A);
+    assert!(matches!(
+        ledger.executing(A, now()),
+        Err(LedgerError::Step(_))
+    ));
+    ledger.start(A, now()).unwrap();
+    assert!(!ledger.task(A).unwrap().executed);
+    ledger.executing(A, now()).unwrap();
+    assert!(matches!(
+        ledger.executing(A, now()),
+        Err(LedgerError::Step(_))
+    ));
+    let mut ledger = open_again(ledger, &dir);
+    let task = ledger.task(A).unwrap().clone();
+    assert!(task.started && task.executed);
+    assert_eq!(task.state, State::Started);
+    ledger
+        .finish(A, Outcome::Succeeded, None, &result("succeeded"), now())
+        .unwrap();
+    ledger.reported(A, false, now()).unwrap();
+    // B started and was dropped without running.
+    receive(&mut ledger, B);
+    ledger.start(B, now()).unwrap();
+    ledger
+        .finish(
+            B,
+            Outcome::Cancelled,
+            Some("not_run"),
+            &result("cancelled"),
+            now(),
+        )
+        .unwrap();
+    ledger.reported(B, true, now()).unwrap();
+    assert!(!ledger.task(B).unwrap().executed);
+    ledger.compact(now()).unwrap();
+    let ledger = open_again(ledger, &dir);
+    assert!(ledger.task(A).unwrap().executed);
+    assert!(!ledger.task(B).unwrap().executed);
+    assert!(lines(&dir).iter().any(|l| l.contains("\"unrun\":true")));
+}
+
 /// Drops `ledger` (as a crash would: nothing more is written) and opens the file again.
 fn open_again(ledger: Ledger, dir: &Path) -> Ledger {
     drop(ledger);
@@ -558,6 +604,7 @@ fn compaction_waits_for_an_unreported_task_and_a_full_ledger_takes_nothing_more(
     let pad = line(&Entry::Done {
         task_id: B.into(),
         outcome: None,
+        unrun: false,
         at: "x".repeat(MAX_RECORD_BYTES - 200),
     })
     .unwrap();
@@ -567,6 +614,7 @@ fn compaction_waits_for_an_unreported_task_and_a_full_ledger_takes_nothing_more(
     let small = line(&Entry::Done {
         task_id: B.into(),
         outcome: None,
+        unrun: false,
         at: "t".into(),
     })
     .unwrap();
