@@ -1,0 +1,33 @@
+<% content_for :title, "Cancel batch #{@batch.id}" %>
+<%# The cancel confirmation for the rest of a batch (P3-DASH-TASKS, mockup cancel.html#batch): it counts what will and
+    will not change. Nothing is undone. %>
+<% waiting = @tasks.select { |task| TaskCancellation::UNSTARTED.include?(task.state) } %>
+<% running = @tasks.select { |task| task.state == "running" && !task.cancel_requested? } %>
+<% stoppable, unstoppable = running.partition(&:interruptible?) %>
+<% already = @tasks.select { |task| task.state == "running" && task.cancel_requested? } %>
+<% finished = @tasks.select(&:terminal?) %>
+<% names = ->(tasks) { tasks.map { |task| task.host.name }.join(", ") } %>
+<p><%= link_to "← Batch #{@batch.id}", task_batch_path(@batch) %></p>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <% if waiting.empty? && running.empty? %>
+    <h2 id="dialog_title">Nothing left to cancel in batch <%= @batch.id %></h2>
+    <p><%= already.any? ? "Cancel was already requested for the #{pluralize(already.size, 'running task')}, and every other task has finished." : "Every task has finished." %> Nothing is undone.</p>
+    <div class="actions"><%= link_to "Back to the batch", task_batch_path(@batch), class: "btn" %></div>
+  <% else %>
+    <h2 id="dialog_title">Cancel the rest of batch <%= @batch.id %>?</h2>
+    <ul class="change-list" id="cancel_effects">
+      <% if waiting.any? %><li><strong><%= pluralize(waiting.size, "waiting task") %></strong> (<%= names.(waiting) %>) <%= waiting.one? ? "becomes" : "become" %> cancelled now and <%= waiting.one? ? "is" : "are" %> never delivered.</li><% end %>
+      <% if stoppable.any? %><li><strong><%= pluralize(stoppable.size, "running task") %></strong> (<%= names.(stoppable) %>) can be stopped safely: the agent is told to stop, and <%= stoppable.one? ? "it ends" : "they end" %> as cancelled.</li><% end %>
+      <% if unstoppable.any? %><li><strong><%= pluralize(unstoppable.size, "running task") %></strong> (<%= names.(unstoppable) %>) cannot be stopped safely and <%= unstoppable.one? ? "runs" : "run" %> to completion, by <%= task_time(unstoppable.filter_map { |task| task_deadline(task) }.max) %> at the latest.</li><% end %>
+      <% if already.any? %><li><strong><%= pluralize(already.size, "running task") %></strong> (<%= names.(already) %>) already <%= already.one? ? "has" : "have" %> a cancel request.</li><% end %>
+      <li><strong><%= pluralize(finished.size, "finished task") %></strong> <%= finished.one? ? "is" : "are" %> not changed. Nothing is undone.</li>
+    </ul>
+    <%= form_with url: cancel_task_batch_path(@batch), method: :post, id: "cancel_form", local: true do %>
+      <%= render "second_factors/prompt", result: second_factor_result, intro: "Cancelling needs a code from your authenticator app." %>
+      <div class="actions">
+        <button class="btn danger" type="submit">Cancel the rest</button>
+        <%= link_to "Keep the batch going", task_batch_path(@batch), class: "btn quiet" %>
+      </div>
+    <% end %>
+  <% end %>
+</div>

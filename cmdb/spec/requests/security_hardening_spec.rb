@@ -116,6 +116,31 @@ RSpec.describe "Security hardening", type: :request do
       expect_page_within_csp("the batch page")
     end
 
+    it "keeps the task list, task pages, batch progress, the cancel confirmations, and the host's Tasks tab within it too (P3-DASH-TASKS)" do
+      sign_in_operator
+      enrol_second_factor(Operator.find_by!(email: "operator@example.com"))
+      hosts = Array.new(3) { task_host }
+      result = create_task_batch(hosts, type: "apply_package_updates")
+      done, running, waiting = result.tasks
+      [ done, running ].each do |task|
+        task.claim!(actor: task.host, lease_expires_at: 5.minutes.from_now)
+        task.start!(actor: task.host, lease_expires_at: 1.hour.from_now)
+      end
+      done.succeed!(actor: done.host, exit_status: 0, output: "<b>done</b>\n")
+      [ "/tasks", "/tasks?state=problem", "/tasks/#{done.id}", "/tasks/#{running.id}", "/tasks/#{waiting.id}", "/tasks/batches/#{result.batch.id}",
+        "/tasks/#{running.id}/cancel", "/tasks/#{waiting.id}/cancel", "/tasks/batches/#{result.batch.id}/cancel", "/hosts/#{done.host_id}/tasks" ].each do |path|
+        get path
+        expect(response).to have_http_status(:ok), "GET #{path}"
+        expect_page_within_csp(path)
+      end
+      post "/tasks/#{waiting.id}/cancel", params: { second_factor_code: "000000" }
+      expect(response).to have_http_status(:forbidden)
+      expect_page_within_csp("a refused cancel")
+      get "/tasks/#{done.id}/output"
+      expect(response.media_type).to eq("text/plain")
+      expect(response.headers["X-Content-Type-Options"]).to eq("nosniff")
+    end
+
     it "keeps Turbo and Stimulus loadable: the importmap pins only this site's own files" do
       get "/sign_in"
 

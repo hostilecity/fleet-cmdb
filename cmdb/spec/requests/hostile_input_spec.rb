@@ -381,6 +381,46 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
         expect(page.text).to include("Task creation refused")
       end
 
+      it "escapes the task list, a task's page, its output, batch progress, the cancel confirmations, and the host's Tasks tab (P3-DASH-TASKS)" do
+        enrol_second_factor(operator)
+        capable = task_host(services: [ fit(64) ])
+        capable.update_columns(name: fit(100), hostname: fit(253), tags: [ fit(32) ], agent_version: fit(64), liveness_status: "offline", last_seen_at: 1.hour.ago)
+        other = task_host
+        batch = create_task_batch([ capable, other ], type: "apply_package_updates", operator: hostile_operator).batch
+        finished, waiting = batch.tasks.order(:id).to_a
+        finished.claim!(actor: capable, lease_expires_at: 5.minutes.from_now)
+        finished.start!(actor: capable, lease_expires_at: 1.hour.from_now)
+        finished.record_progress!(percent: 50)
+        finished.request_cancel!(operator: hostile_operator)
+        finished.time_out!(actor: Audit::SYSTEM)
+        payload = { "report_id" => SecureRandom.uuid, "outcome" => "succeeded", "exit_status" => 0, "started_at" => Time.current.iso8601, "finished_at" => Time.current.iso8601,
+                    "output" => text, "details" => { "reboot_required" => true, "services_needing_restart" => [ fit(200) ], "reports_sent" => [ fit(32) ] } }
+        AgentTasks.record_result!(host: capable, task: finished, payload:)
+        single = create_task(capable, type: "refresh_reports", operator: hostile_operator)
+        single.claim!(actor: capable, lease_expires_at: 5.minutes.from_now)
+        single.start!(actor: capable, lease_expires_at: 1.hour.from_now)
+        single.succeed!(actor: capable, exit_status: 0, output: text, report: { result_report_id: SecureRandom.uuid, result_digest: SecureRandom.hex(32), result_received_at: Time.current,
+                                                                                  result_details: { "reboot_required" => true, "services_needing_restart" => [ text ], "reports_sent" => [ text ] } })
+
+        [ [ "/tasks", true ], [ "/tasks?host=#{CGI.escape(text.first(100))}", false ], [ "/tasks/#{finished.id}", true ], [ "/tasks/#{single.id}", true ],
+          [ "/tasks/batches/#{batch.id}", true ], [ "/tasks/#{waiting.id}/cancel", false ], [ "/tasks/batches/#{batch.id}/cancel", false ], [ "/hosts/#{capable.id}/tasks", true ] ].each do |path, shown|
+          get path
+          expect(response).to have_http_status(:ok), "GET #{path} -> #{response.status}"
+          expect_no_injected_markup(path)
+          expect_shown_as_text(text, path) if shown
+        end
+        [ single, finished ].each do |task|
+          get "/tasks/#{task.id}"
+          expect(page.css("pre.output")).not_to be_empty
+          expect(page.css("pre.output *")).to be_empty # the output is text, with no element inside it
+        end
+
+        get "/tasks/#{single.id}/output"
+        expect(response.media_type).to eq("text/plain")
+        expect(response.headers["Content-Disposition"]).to start_with("attachment;")
+        expect(response.headers["X-Content-Type-Options"]).to eq("nosniff")
+      end
+
       it "escapes a retired host's name and the retirement notice" do
         Host.where(id: host.id).update_all(enrollment_state: "retired") # the transition methods validate; a stored row may not pass them
 
@@ -405,6 +445,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
                second_factors#show second_factors#setup second_factors#new_recovery_codes task_settings#show task_settings#confirm_remove
                tasks#index task_creations#type task_creations#parameters task_creations#targets task_creations#confirm task_batches#show
+               tasks#show tasks#output task_cancellations#confirm_task task_cancellations#confirm_batch host_tasks#show
                rollouts#new rollouts#confirm_advance rollouts#confirm_halt rollouts#confirm_resume rollouts#confirm_cancel
                data_sources#show data_sources#confirm_refresh data_sources#import
                rules#index rules#show rules#new rules#edit rules#confirm_disable rules#confirm_enable rule_versions#show rule_imports#new rule_imports#show]

@@ -1,0 +1,42 @@
+<% content_for :title, "Cancel task ##{@task.id}" %>
+<%# The cancel confirmation for one task (P3-DASH-TASKS, mockup cancel.html, owner decisions Q17 and Q23): it says
+    what a cancel can and cannot do in the task's state now. The button is named by what it can do. %>
+<% task = @task %>
+<% host = task.host.name %>
+<% name = task_type_name(task.task_type) %>
+<% batch = task.task_batch_id %>
+<% waiting = @unstarted.size %>
+<p><%= link_to "← Task ##{task.id}", task_path(task) %></p>
+<div class="dialog" role="dialog" aria-labelledby="dialog_title">
+  <% if task.terminal? %>
+    <h2 id="dialog_title">Task #<%= task.id %> on <%= host %> has finished</h2>
+    <p>It ended <strong><%= task_state_label(task.state).downcase %></strong> at <%= task_time(task.finished_at) %>. A finished task cannot be cancelled, and nothing is undone.</p>
+    <div class="actions"><%= link_to "Back to the task", task_path(task), class: "btn" %></div>
+  <% elsif task.state == "running" && task.cancel_requested? %>
+    <h2 id="dialog_title">Cancel was already requested for task #<%= task.id %></h2>
+    <p>Requested at <%= task_time(task.cancel_requested_at) %>. <%= task.interruptible? ? "The agent is told to stop, and the task ends as cancelled." : "It cannot be stopped safely and runs to completion." %> There is nothing more to do.</p>
+    <div class="actions"><%= link_to "Back to the task", task_path(task), class: "btn" %></div>
+  <% elsif task.state == "queued" %>
+    <h2 id="dialog_title">Cancel task #<%= task.id %> on <%= host %>?</h2>
+    <p>It has not been delivered. It becomes <strong>cancelled</strong> now, and <%= host %> will never receive it, even if it polls a moment from now.</p>
+    <%= render "task_form", task:, label: "Cancel task", button_class: "btn danger" %>
+  <% elsif task.state == "claimed" %>
+    <h2 id="dialog_title">Cancel task #<%= task.id %> on <%= host %>?</h2>
+    <p><%= host %> has picked it up but has not started it. It becomes <strong>cancelled</strong> now. If the agent tries to start it, the server refuses and tells it to drop the task, so it never runs.</p>
+    <%= render "task_form", task:, label: "Cancel task", button_class: "btn danger" %>
+  <% elsif task.interruptible? %>
+    <h2 id="dialog_title">Stop task #<%= task.id %> on <%= host %>?</h2>
+    <p><%= name %> can be stopped safely. The agent gets the cancel on its next poll or progress report and stops. Anything it has already sent is kept. The task ends as <strong>cancelled</strong>.</p>
+    <%= render "task_form", task:, label: "Stop task", button_class: "btn danger" %>
+  <% else %>
+    <h2 id="dialog_title">Task #<%= task.id %> on <%= host %> cannot be stopped</h2>
+    <p><strong>It will keep running until it finishes</strong>, at <%= task_time(task_deadline(task)) %> at the latest. <%= name %> cannot be stopped safely once started.</p>
+    <% if waiting.positive? %>
+      <p>What you can do: record that you asked to cancel, and stop the <strong><%= pluralize(waiting, "task") %> in batch <%= batch %> that <%= waiting == 1 ? "has" : "have" %> not started</strong> (<%= @unstarted.map { |other| other.host.name }.join(", ") %>) from ever starting.</p>
+      <%= render "task_form", task:, label: "Cancel what has not started", button_class: "btn danger" %>
+    <% else %>
+      <p><%= @task.task_batch.tasks.size > 1 ? "No other task of batch #{batch} is waiting to start" : "It is not part of a batch" %>, so there is nothing else to stop. You can still record that you asked to cancel, for the audit trail.</p>
+      <%= render "task_form", task:, label: "Record a cancel request anyway", button_class: "btn quiet" %>
+    <% end %>
+  <% end %>
+</div>
