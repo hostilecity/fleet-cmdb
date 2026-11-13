@@ -57,41 +57,24 @@
 </section>
 <section class="sheet" aria-labelledby="tracker-h" id="tracker" style="margin-top:1.5rem">
   <h2 id="tracker-h">Debian Security Tracker <span class="badge">Triage only</span></h2>
-  <p style="max-width:70ch">Debian's own triage of each CVE for each release: status, urgency, and no-DSA or postponed notes. It is shown beside findings on each host's Vulnerabilities tab and package pages. It never changes a finding's state, its severity, or any count; those come from the advisory data above (<a href="../../decisions/0022-distribution-triage.md">ADR 0022</a>).</p>
-<div class="notice info" role="status" id="tracker_freshness"><strong>Debian's triage is out of date, so it is not shown beside findings.</strong>
-<p>Tracker data for trixie was last imported 3 days ago (2026-11-03 06:04 UTC). The last 3 refreshes failed; see the imports below, or the failed jobs page. Findings, severity, and counts are not affected.</p></div>
+  <p style="max-width:70ch">Debian's own triage, shown beside findings. Never changes a finding's state, severity, or count.</p>
+<div class="notice info" role="status" id="tracker_freshness"><strong>Out of date, so not shown beside findings.</strong>
+<p>trixie last imported 3 days ago (2026-11-03 06:04 UTC). The last 3 refreshes failed (see the <a href="#tracker-imports">failed jobs</a>).</p></div>
 <div class="table-wrap"><table id="tracker_releases"><caption class="visually-hidden">Debian Security Tracker data by release</caption><thead><tr><th scope="col">Release</th><th scope="col">Freshness</th><th scope="col">Last successful import</th><th scope="col">Entries kept</th><th scope="col">Hosts using it</th></tr></thead><tbody>
-<tr><td><span class="mono">trixie</span><span class="state-note">Debian 13, <span class="mono">Debian:13</span></span></td><td><span class="stale-word">Stale: older than 48 hours</span></td><td>2026-11-03 06:04 UTC <span class="state-note">3 days ago</span></td><td>41,250 entries<span class="state-note">3,108 open: 1,947 no-DSA, 214 postponed, 96 ignored</span></td><td><a href="compliance.html">4 hosts</a></td></tr>
+<tr><td><span class="mono">trixie</span><span class="state-note">Debian 13, <span class="mono">Debian:13</span></span></td><td><span class="stale-word">Stale: older than 48 hours</span></td><td>2026-11-03 06:04 UTC <span class="state-note">3 days ago</span></td><td>41,250 entries<span class="state-note" title="1,947 no-DSA, 214 postponed, 96 ignored">3,108 open</span></td><td><a href="compliance.html">4 hosts</a></td></tr>
 </tbody></table></div>
-  <p class="muted" style="font-size:.875rem">Only releases the fleet uses are kept, through the release mapping (<span class="mono">debian</span> <span class="mono">13</span> is <span class="mono">trixie</span>); the others in the file (bookworm, bullseye, forky, sid) are skipped. A release appears here when a host uses it. Stale after 48 hours, the same limit as the advisory data.</p>
-<div class="cols-2" style="margin-top:1rem">
-<section aria-labelledby="tracker-feed">
-  <h3 id="tracker-feed" style="margin-top:0">Scheduled download</h3>
-  <dl class="facts tight">
-    <dt>Source</dt><dd class="mono">security-tracker.debian.org/tracker/data/json</dd>
-    <dt>Refresh</dt><dd>With the advisory feed, every 6 hours, right after it; up to 5 attempts with backoff</dd>
-    <dt>Refresh now</dt><dd>Refreshes with the advisory data: the one <strong>Refresh now</strong> above runs OSV and then this source, under the same 5-minute cool-down</dd>
-    <dt>Request</dt><dd>One file per refresh, conditional (ETag or Last-Modified), so an unchanged file is not downloaded again</dd>
-    <dt>Limits</dt><dd>Download 200 MiB, 10 minutes <span class="muted">(examples; set from the measured file, 84 MiB today)</span></dd>
-    <dt>Guard</dt><dd>An import that would remove more than 10% of a release's entries is held back and keeps the previous data</dd>
-  </dl>
-  <p style="margin-bottom:0" class="muted">Manual refresh is the <strong>Refresh now</strong> button on the scheduled feed above, which refreshes both sources (<a href="index.html#t2">T2</a>). A failed tracker refresh never stops the advisory refresh or matching.</p>
-</section>
-<section aria-labelledby="tracker-up">
-  <h3 id="tracker-up" style="margin-top:0">No upload</h3>
-  <p style="margin-top:0">This source has no upload form. A server without internet access imports the file on the server with <code>bin/rails advisories:triage_import FILE=&hellip;</code>.</p>
-  <p class="hint muted" style="font-size:.875rem">Only the source's host and path are shown. It is set in the server's configuration (<span class="mono">FLEET_DEBIAN_TRACKER_URL</span>; empty turns it off), not here.</p>
-</section>
-</div>
+  <p class="muted" style="font-size:.875rem" id="tracker_schedule">From <span class="mono">security-tracker.debian.org/tracker/data/json</span>. Next refresh in about 3 hours (every 6 hours, after the advisory feed); <strong>Refresh now</strong> above refreshes it too.</p>
 <h3 id="tracker-imports">Recent tracker imports</h3>
-<div class="table-wrap"><table><caption class="visually-hidden">Recent Debian Security Tracker imports</caption><thead><tr><th scope="col">When (UTC)</th><th scope="col">How</th><th scope="col">Source</th><th scope="col">Result</th><th scope="col">What happened</th><th scope="col">By</th></tr></thead><tbody>
-<tr><td>2026-11-06 06:15</td><td>Scheduled refresh</td><td class="mono">security-tracker.debian.org/tracker/data/json</td><td><span class="lamp fail">Failed</span></td><td>Download failed after 5 attempts: timed out after 10 minutes</td><td>System</td></tr>
-<tr><td>2026-11-05 06:15</td><td>Scheduled refresh</td><td class="mono">security-tracker.debian.org/tracker/data/json</td><td><span class="lamp fail">Failed</span></td><td>Download failed after 5 attempts: timed out after 10 minutes</td><td>System</td></tr>
-<tr><td>2026-11-04 06:15</td><td>Scheduled refresh</td><td class="mono">security-tracker.debian.org/tracker/data/json</td><td><span class="lamp fail">Failed</span></td><td>Download failed after 5 attempts: connection refused</td><td>System</td></tr>
-<tr><td>2026-11-03 06:04</td><td>Scheduled refresh</td><td class="mono">security-tracker.debian.org/tracker/data/json</td><td><span class="lamp online">Succeeded</span></td><td>trixie: 79,410 entries read, 41,190 kept: 31 new, 264 changed, 1 removed; 0 malformed</td><td>System</td></tr>
+<div class="table-wrap"><table><caption class="visually-hidden">Recent Debian Security Tracker imports</caption><thead><tr><th scope="col">When (UTC)</th><th scope="col">How</th><th scope="col">Result</th><th scope="col">What happened</th><th scope="col">By</th></tr></thead><tbody>
+<tr><td>2026-11-06 06:15</td><td>Scheduled refresh</td><td><span class="lamp fail">Failed</span></td><td>Nothing imported: the download timed out after 15 minutes</td><td>System</td></tr>
+<tr><td>2026-11-05 06:15</td><td>Scheduled refresh</td><td><span class="lamp fail">Failed</span></td><td>Nothing imported: the download timed out after 15 minutes</td><td>System</td></tr>
+<tr><td>2026-11-04 06:15</td><td>Scheduled refresh</td><td><span class="lamp fail">Failed</span></td><td>Nothing imported: connection refused</td><td>System</td></tr>
+<tr><td>2026-11-03 06:04</td><td>Scheduled refresh</td><td><span class="lamp online">Succeeded</span></td><td>trixie: 41,190 kept, 1 removed; 79,410 entries read</td><td>System</td></tr>
 </tbody></table></div>
-  <p class="pager"><span>Showing the latest 4 imports.</span><span>Every import is in the audit log.</span></p>
+  <p class="pager"><span>Showing the latest 4 imports.</span><span>Every import, with its counts per release, is in the audit log.</span></p>
+  <p class="hint muted" style="font-size:.875rem">How Debian triage works, its limits, and importing without internet access: <span class="mono">docs/operations/health-and-jobs.md</span>, "Debian triage".</p>
 </section>
+<p class="note"><span class="review-q">#148.</span> Trimmed to status, problems, and the latest activity: a one-line description, one short notice only when something needs attention, the source and next refresh in one line, and a short summary per import (the full counts are in the audit entry). The explanations (release table, staleness, conditional download and limits, the 10% guard and <code>ALLOW_DROPS</code>, no upload and the offline rake task, where the URL is set) moved to <code>docs/operations/health-and-jobs.md</code>, "Debian triage". The open count's split by no-DSA reason is a tooltip.</p>
 <p class="note"><span class="review-q">P2-D07 review.</span> The tracker's stale state: its own notice inside its panel, in the blue information style rather than the amber alert, because stale triage hides nothing: findings then say "Debian triage not available" with the reason (<a href="host-vulns.html#triage-page">drawn on the Vulnerabilities tab</a>). It is not shown on the Fleet list or Compliance, whose counts do not use it. Failures appear on the failed jobs page like the advisory refresh's, and never block it.</p>
 <p class="note">The stale state: the warning is the same notice used on the Fleet list, here with the reason the data is old (three failed refreshes). A host's Vulnerabilities tab and Compliance show the same warning, so a stale feed is never read as zero findings. Failed imports also appear on the failed jobs page and in <code>/health</code>.</p>
 <p class="note">Also see <a href="data-sources.html">the fresh state of this page</a>, <a href="data-sources-import.html">an upload result with skipped records</a>, and <a href="states-empty.html#freshness">the other freshness indicators</a>.</p>
