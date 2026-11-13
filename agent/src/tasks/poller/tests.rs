@@ -43,6 +43,7 @@ pub enum Point {
 
 /// Whether the poller should stop here (tests only). Once it has, every later point stops too.
 pub fn crash_at(point: Point) -> bool {
+    crate::test_support::fault_hook();
     let crash = CRASHED.with(Cell::get) || CRASH.with(|c| c.get() == Some(point));
     if crash {
         CRASHED.with(|c| c.set(true));
@@ -86,6 +87,8 @@ struct Server {
     starts: RefCell<Vec<String>>,
     results: RefCell<Vec<(String, Value)>>,
     fail_polls: Cell<u32>,
+    /// Polls whose reply is lost after the server claimed the task: a kill mid-poll (P3-X03).
+    lose_polls: Cell<u32>,
     fail_starts: Cell<u32>,
     start_error: RefCell<Option<ApiError>>,
     fail_results: Cell<u32>,
@@ -124,6 +127,10 @@ impl Server {
         let mut claimed = self.claimed.borrow_mut();
         if claimed.is_none() {
             *claimed = self.queue.borrow_mut().pop_front();
+        }
+        if self.lose_polls.get() > 0 {
+            self.lose_polls.set(self.lose_polls.get() - 1);
+            return Err(Self::down());
         }
         Ok(claimed.clone().into())
     }
@@ -1030,4 +1037,121 @@ fn a_canary_proves_refused_tasks_run_nothing_and_an_accepted_one_runs() {
     ticks(&mut poller, &server, 2);
     assert!(canary.exists(), "the accepted task did not run");
     assert_eq!(server.results().last().unwrap().1["outcome"], "succeeded");
+}
+
+/// What one run of the kill-point matrix saw: how often each id ran, the starts the server
+/// accepted, and the results it received.
+type MatrixRun = (Vec<(String, u32)>, Vec<String>, Vec<(String, Value)>);
+
+/// One run of the kill-point matrix (P3-X03): a seeded random number of tasks, server faults, and
+/// lives, each life "killed" at a random point (or not at all), then a last life with no faults.
+fn kill_matrix_run(seed: u64) -> MatrixRun {
+    use crate::retry::Rng;
+    let mut rng = SplitMix64::new(seed);
+    let mut pick = |n: u64| rng.next_u64() % n;
+    let points = [
+        None,
+        Some(Point::Received),
+        Some(Point::Started),
+        Some(Point::Acknowledged),
+        Some(Point::Ran),
+        Some(Point::Finished),
+    ];
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let ids: Vec<String> = (0..=pick(3))
+        .map(|n| format!("00000000-0000-4000-8000-{:08x}{n:04x}", seed))
+        .collect();
+    let server = Server::with(ids.iter().map(|id| restart(id)).collect());
+    for _ in 0..=pick(5) {
+        // A hostile server also replays ids it delivered before, finished or not (C7).
+        for id in &ids {
+            if pick(3) == 0 {
+                server.queue.borrow_mut().push_back(restart(id));
+            }
+        }
+        server.fail_polls.set(pick(3) as u32);
+        server.lose_polls.set(pick(3) as u32);
+        server.fail_starts.set(pick(3) as u32);
+        server.fail_results.set(pick(3) as u32);
+        crash_next_at(points[pick(points.len() as u64) as usize]);
+        let mut poller = rig.poller(&executor, None);
+        let start = Instant::now();
+        for i in 0..=pick(6) {
+            poller.tick(&server, start + Duration::from_secs(31 * i + 1), wall());
+            if crashed() {
+                break;
+            }
+        }
+        drop(poller);
+    }
+    // The agent comes back for good: no faults, no kill.
+    crash_next_at(None);
+    for fault in [
+        &server.fail_polls,
+        &server.lose_polls,
+        &server.fail_starts,
+        &server.fail_results,
+    ] {
+        fault.set(0);
+    }
+    server
+        .queue
+        .borrow_mut()
+        .extend(ids.iter().map(|id| restart(id)));
+    let mut poller = rig.poller(&executor, None);
+    let start = Instant::now();
+    for i in 0..200 {
+        if server.queue.borrow().is_empty() && server.claimed.borrow().is_none() {
+            break;
+        }
+        poller.tick(&server, start + Duration::from_secs(31 * i + 1), wall());
+    }
+    let runs = ids
+        .iter()
+        .map(|id| (id.clone(), executor.runs(id)))
+        .collect();
+    let starts = server.starts.borrow().clone();
+    (runs, starts, server.results())
+}
+
+#[test]
+fn no_kill_point_in_a_hundred_and_twenty_randomised_runs_runs_a_task_twice() {
+    // AC-3.3, P3-X03 AC: at least 100 randomised runs. Each run kills the agent at a random point of
+    // the lifecycle (after received, after started, after the server's acceptance, mid-run, after
+    // finished, or not at all), loses poll replies after the server claimed (a kill mid-poll), and
+    // fails polls, starts, and results, several times over, against a server that redelivers a
+    // claimed task until its result arrives and replays ids it delivered before, finished or not.
+    // The seed is in every message, so a failure replays.
+    let mut kills = HashMap::new();
+    for seed in 0..120 {
+        let (runs, starts, results) = kill_matrix_run(seed);
+        for (id, ran) in &runs {
+            assert!(*ran <= 1, "seed {seed}: {id} ran {ran} times");
+            if *ran == 1 {
+                assert!(
+                    starts.contains(id),
+                    "seed {seed}: {id} ran without an accepted start"
+                );
+            }
+            let first = results
+                .iter()
+                .find(|(r, _)| r == id)
+                .unwrap_or_else(|| panic!("seed {seed}: {id} was never reported"));
+            let outcome = first.1["outcome"].as_str().unwrap();
+            if *ran == 0 {
+                assert_ne!(
+                    outcome, "succeeded",
+                    "seed {seed}: {id} succeeded without running"
+                );
+            }
+            *kills.entry(outcome.to_owned()).or_insert(0) += 1;
+        }
+    }
+    // The matrix reaches both ends: tasks that ran to success, and tasks a kill stopped.
+    assert!(
+        kills.get("succeeded").copied().unwrap_or(0) > 0,
+        "{kills:?}"
+    );
+    assert!(kills.get("failed").copied().unwrap_or(0) > 0, "{kills:?}");
 }

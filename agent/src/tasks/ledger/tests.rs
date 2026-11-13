@@ -13,6 +13,7 @@ thread_local! {
 
 /// Called before every append (tests only).
 pub(super) fn fail_point() -> io::Result<()> {
+    crate::test_support::fault_hook();
     FAIL_APPEND.with(|fail| match fail.get() {
         Some(1) => {
             fail.set(None);

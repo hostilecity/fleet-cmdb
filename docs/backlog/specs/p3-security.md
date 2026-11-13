@@ -7,7 +7,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 ### Scope
 
 - Threat model document (drafted early, finalised here) covering the threats in [DEC-14](../../decisions/0014-task-trust-model.md), how each control addresses them, and residual risk. Stored in `docs/decisions/`: [`phase-3-threat-model.md`](../../decisions/phase-3-threat-model.md) (first draft; later Phase 3 pull requests update the rows they touch).
-- **No-arbitrary-shell review**, with a written review note (AC-3.2):
+- **No-arbitrary-shell review**, with a written review note (AC-3.2), kept as [`phase-3-security-review.md`](../../decisions/phase-3-security-review.md):
   - Enumerate every server route and parameter that reaches task creation, and show none accepts a command, script, path, or executable name.
   - Enumerate every process spawn in the agent and show each uses an absolute path and a fixed vector, no shell, and no parameter in an executable or option position.
   - Search for `sh -c`, string-built commands, `eval`-like constructs, and template-based commands in both codebases.
