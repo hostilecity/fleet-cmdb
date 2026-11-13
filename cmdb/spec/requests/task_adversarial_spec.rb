@@ -74,16 +74,46 @@ RSpec.describe "Adversarial task traffic", type: :request do
       expect(task_world).to eq(before)
     end
 
-    it "refuses each one without the CSRF token, even with a right code, and changes nothing (H8)" do
+    # The confirmation page's hidden fields for creating refresh_reports on host, as the browser would send them.
+    def confirmation_fields
+      get "/tasks/new/confirm", params: { type: "refresh_reports", target: { host_ids: [ host.id ] } }
+      expect(response).to have_http_status(:ok)
+      page.css("#create_task input[type=hidden]").each_with_object({}) do |input, fields|
+        name = input["name"]
+        next if name == "authenticity_token"
+
+        name.end_with?("[]") ? (fields[name] ||= []) << input["value"] : fields[name] = input["value"]
+      end
+    end
+
+    # A request that would succeed but for its missing CSRF token: a genuine confirmation for create.
+    def complete(route, **extra)
+      if route == "task_creations#create"
+        post "/tasks", params: confirmation_fields.merge(extra.transform_keys(&:to_s))
+      else
+        forge(route, **extra)
+      end
+    end
+
+    it "refuses each one without the CSRF token, even with a right code and a genuine confirmation, and changes nothing (H8)" do
       secret = enrol_second_factor(operator).first
       before = task_world
       ActionController::Base.allow_forgery_protection = true
       task_changing_routes.each do |route|
-        forge(route, second_factor_code: totp_code(secret))
+        complete(route, second_factor_code: totp_code(secret))
         expect(response).not_to have_http_status(:redirect), route
         expect(response).not_to have_http_status(:ok), route
       end
       expect(task_world).to eq(before)
+
+      # The control: the same requests with CSRF checks off succeed, so the token was what stopped them. The first
+      # code opens the step-up window; the rest pass inside it.
+      ActionController::Base.allow_forgery_protection = false
+      task_changing_routes.each_with_index do |route, i|
+        complete(route, **(i.zero? ? { second_factor_code: totp_code(secret) } : {}))
+        expect(response).to have_http_status(:redirect), "#{route}: #{response.status}"
+      end
+      expect(task_world).not_to eq(before)
     ensure
       ActionController::Base.allow_forgery_protection = false
     end

@@ -15,7 +15,7 @@
 #    every hook keeps, so the binary check below would see a hook if one were there.
 # 3. The release binary does not contain it.
 #
-# Exits 1 and says why when the check fails.
+# Exits 1 and says why when the check fails, and 2 when a binary cannot be read or scanned.
 set -eu
 
 release=${1:?usage: check-no-fault-hooks.sh RELEASE_BINARY TEST_BINARY}
@@ -44,11 +44,23 @@ if grep -q '^\[features\]' Cargo.toml; then
     fail "Cargo.toml declares [features]; a feature could compile fault hooks into a release"
 fi
 
+# Whether FILE contains the marker: 0 yes, 1 no. Anything else (a missing or unreadable file, a read
+# error) stops the check, so an artefact that cannot be scanned never passes as one without hooks.
+has_marker() {
+    [ -f "$1" ] && [ -r "$1" ] || { echo "check-no-fault-hooks: cannot read $1" >&2; exit 2; }
+    found=0
+    grep -aqF "$marker" "$1" || found=$?
+    case "$found" in
+        0 | 1) return "$found" ;;
+        *) echo "check-no-fault-hooks: grep failed on $1 (status $found)" >&2; exit 2 ;;
+    esac
+}
+
 # 2. The unit-test binary has the marker.
-grep -aqF "$marker" "$test_bin" || fail "the unit-test binary $test_bin lacks the fault-hook marker, so this check cannot see hooks"
+has_marker "$test_bin" || fail "the unit-test binary $test_bin lacks the fault-hook marker, so this check cannot see hooks"
 
 # 3. The release binary does not.
-if grep -aqF "$marker" "$release"; then
+if has_marker "$release"; then
     fail "the release binary $release contains fault-injection code"
 fi
 
