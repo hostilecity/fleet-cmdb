@@ -42,7 +42,7 @@
           <% if row.held %><span class="state-note">Last refresh held back</span><% end %>
         </td>
         <td><% if status.never? %><span class="muted">Never</span><% else %><%= utc(status.updated_at) %> <span class="state-note"><%= seen_ago(status.updated_at) %></span><% end %></td>
-        <td><%= number_with_delimiter(row.entries) %> <%= "entry".pluralize(row.entries) %><span class="state-note" title="<%= number_with_delimiter(row.no_dsa) %> no-DSA, <%= number_with_delimiter(row.postponed) %> postponed, <%= number_with_delimiter(row.ignored) %> ignored"><%= number_with_delimiter(row.open) %> open</span></td>
+        <td><%= number_with_delimiter(row.entries) %> <%= "entry".pluralize(row.entries) %><details class="fix"><summary><%= number_with_delimiter(row.open) %> open</summary><p><%= number_with_delimiter(row.no_dsa) %> no-DSA, <%= number_with_delimiter(row.postponed) %> postponed, <%= number_with_delimiter(row.ignored) %> ignored</p></details></td>
         <td><%= row.ecosystem ? link_to(pluralize(row.hosts, "host"), compliance_path(ecosystem: row.ecosystem)) : pluralize(row.hosts, "host") %></td>
       </tr>
     <% end %>

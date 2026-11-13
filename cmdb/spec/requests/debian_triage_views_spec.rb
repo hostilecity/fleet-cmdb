@@ -348,9 +348,11 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       expect(panel.at_css("h2 + p").text.squish).to eq("Debian's own triage, shown beside findings. Never changes a finding's state, severity, or count.")
       expect(page.at_css("#triage_freshness").text.squish).to eq("Debian's triage for trixie: less than 5 seconds ago.")
       expect(panel.css("#tracker_releases tbody tr td").map { |td| td.text.squish }).to eq([
-        "trixieDebian 13, Debian:13", "Fresh", "2026-11-07 09:00 UTC less than 5 seconds ago", "3 entries1 open", "1 host"
+        "trixieDebian 13, Debian:13", "Fresh", "2026-11-07 09:00 UTC less than 5 seconds ago", "3 entries1 open1 no-DSA, 0 postponed, 0 ignored", "1 host"
       ])
-      expect(panel.at_css("#tracker_releases td:nth-child(4) .state-note")["title"]).to eq("1 no-DSA, 0 postponed, 0 ignored")
+      # The split by no-DSA reason is a closed disclosure, reachable by keyboard and touch (review of #173).
+      split = panel.at_css("#tracker_releases td:nth-child(4) details")
+      expect([ split["open"], split.at_css("summary").text, split.at_css("p").text ]).to eq([ nil, "1 open", "1 no-DSA, 0 postponed, 0 ignored" ])
       expect(panel.at_css("#tracker_releases a")["href"]).to eq("/compliance?ecosystem=Debian%3A13")
       expect(panel.at_css("#tracker_schedule").text.squish)
         .to eq("From security-tracker.example.org/tracker/data/json. Not scheduled in this environment; Refresh now above refreshes it too.")
