@@ -2,7 +2,8 @@
 # Runs cargo fmt, clippy, tests, a dependency audit, the systemd unit check, the static musl release
 # build for each target in DEC-01 (x86_64-unknown-linux-musl only) with a reproducibility check, a release
 # dry run with a throwaway key, the sandbox smoke test (the musl binary under the unit, on systemd) and the
-# task privilege smoke test (P3-A05), the no-shell check for the task module (P3-A03), and
+# task privilege smoke test (P3-A05), the no-shell check for the task module (P3-A03), the check that the
+# release binary has no fault-injection hooks (P3-X03), and
 # the update smoke test (a supervised agent update and its rollbacks on systemd, P1-AGENT-UPDATE; agent
 # changes and pushes to main only, in three parallel groups).
 # Pushes to main upload the binary as a workflow artefact (built with the release keys in
@@ -290,6 +291,16 @@ jobs:
             | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .target.kind == ["bin"]) | .executable')
           [ -n "$bin" ] || { echo "::error::no unit-test binary was built"; exit 1; }
           sudo GITHUB_ACTIONS=true scripts/task-privilege-smoke.sh "$bin" src/install/fleet-agent.service
+
+      - name: No fault-injection hooks in the release binary
+        # P3-X03 AC, threat model S7: the kill points and failed-append hooks are test-only. The unit-test
+        # binary must carry their marker (so the check can see a hook) and the release binary must not.
+        run: |
+          set -eu
+          bin=$(cargo test --locked --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .target.kind == ["bin"]) | .executable')
+          [ -n "$bin" ] || { echo "::error::no unit-test binary was built"; exit 1; }
+          scripts/check-no-fault-hooks.sh target/x86_64-unknown-linux-musl/release/fleet-agent "$bin"
 
   update:
     name: Update smoke test (${{ matrix.group }})

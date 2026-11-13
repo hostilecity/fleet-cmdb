@@ -17,6 +17,16 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 pub mod memory;
 
+/// Kept in every fault-injection hook (the poller's kill points, the ledger's failed appends), so
+/// `scripts/check-no-fault-hooks.sh` can show it is in the unit-test binary and absent from the
+/// release binary (P3-X03, threat model S7).
+pub const FAULT_HOOK_MARKER: &str = "fleet-agent fault-injection hook: test builds only";
+
+/// Marks the calling function as a fault-injection hook (see [`FAULT_HOOK_MARKER`]).
+pub fn fault_hook() {
+    std::hint::black_box(FAULT_HOOK_MARKER);
+}
+
 /// A directory under the system temp dir, removed on drop.
 pub struct TempDir(PathBuf);
 

@@ -547,6 +547,64 @@ mod tests {
     }
 
     #[test]
+    fn a_hostile_servers_extra_fields_never_reach_the_task_and_bad_type_ids_are_not_tasks() {
+        // P3-X02, threat model C1, C2: whatever a server adds beside the five fields (a command, a
+        // program, arguments, an environment, a script) has nowhere to go, because a task is only
+        // these five; and a type id outside the catalog's form is not a task at all.
+        let base = json!({
+            "id": "0b5c8a4e-1d6f-4a3b-9c2d-7e8f9a0b1c2d",
+            "type": "refresh_reports",
+            "parameters": {},
+            "timeout_seconds": 600,
+            "catalog_version": 1,
+        });
+        let mut hostile = base.clone();
+        for (key, value) in [
+            ("command", json!("/bin/sh -c 'touch /tmp/pwned'")),
+            ("program", json!("/usr/bin/curl")),
+            ("args", json!(["-o", "/etc/passwd"])),
+            ("env", json!({"LD_PRELOAD": "/tmp/x.so"})),
+            ("script", json!("rm -rf /")),
+            (
+                "definition",
+                json!({"type": "refresh_reports", "programs": ["/bin/sh"]}),
+            ),
+        ] {
+            hostile[key] = value;
+        }
+        let read = |task: &Value| parse_poll(&json!({ "task": task })).map(|r| r.task.unwrap());
+        assert_eq!(read(&hostile).unwrap(), read(&base).unwrap());
+        for bad in [
+            "Refresh_reports",
+            "refresh reports",
+            "refresh_reports;id",
+            "refresh_reports\n",
+            "../refresh_reports",
+            "refresh_reports\u{202e}",
+            "\u{0440}efresh_reports",
+            "",
+        ] {
+            let mut task = base.clone();
+            task["type"] = json!(bad);
+            assert!(read(&task).is_err(), "{bad:?} was read as a task type");
+        }
+        for (field, value) in [
+            ("id", json!("0B5C8A4E-1D6F-4A3B-9C2D-7E8F9A0B1C2D")),
+            ("id", json!("../../etc/passwd")),
+            ("parameters", json!("service=nginx.service")),
+            ("parameters", json!(["nginx.service"])),
+            ("timeout_seconds", json!(-1)),
+            ("timeout_seconds", json!(86_401)),
+            ("timeout_seconds", json!(1e9)),
+            ("catalog_version", json!(u64::MAX)),
+        ] {
+            let mut task = base.clone();
+            task[field] = value.clone();
+            assert!(read(&task).is_err(), "{field} = {value} was read as a task");
+        }
+    }
+
+    #[test]
     fn stored_results_say_their_outcome() {
         for (name, body) in example("task-result.request", "valid") {
             let (outcome, reason) = outcome_of(&body).unwrap_or_else(|| panic!("{name}"));
