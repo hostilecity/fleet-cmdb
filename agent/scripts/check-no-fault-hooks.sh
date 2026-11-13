@@ -47,7 +47,10 @@ fi
 # Whether FILE contains the marker: 0 yes, 1 no. Anything else (a missing or unreadable file, a read
 # error) stops the check, so an artefact that cannot be scanned never passes as one without hooks.
 has_marker() {
-    [ -f "$1" ] && [ -r "$1" ] || { echo "check-no-fault-hooks: cannot read $1" >&2; exit 2; }
+    if [ ! -f "$1" ] || [ ! -r "$1" ]; then
+        echo "check-no-fault-hooks: cannot read $1" >&2
+        exit 2
+    fi
     found=0
     grep -aqF "$marker" "$1" || found=$?
     case "$found" in
