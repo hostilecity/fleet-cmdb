@@ -84,7 +84,7 @@ No spawn passes a value in an executable or option position. No spawn uses a she
 | Task privileges under the real unit | `scripts/task-privilege-smoke.sh` | Agent CI, sandbox job |
 | Dependency audit | `cargo audit --deny warnings`; `bin/bundler-audit`, `bin/importmap audit`, Brakeman | Agent CI "Dependency audit"; Server CI `bin/ci` |
 
-Dependency audit results: `bundler-audit` found no vulnerabilities (run for this review, 2026-11-13). `cargo audit --deny warnings` passed on `main` at `6aae4e3` (2026-11-11) and runs again on this pull request. Dependabot is on for both. No new dependency was added in Phase 3's task path beyond what the earlier pull requests reviewed.
+Dependency audit results: `bundler-audit` found no vulnerabilities (run for this review, 2026-11-13). `cargo audit --deny warnings` passed on `main` at `6aae4e3` (2026-11-11) and runs again on this pull request. Dependabot is on for both. Phase 3 added one dependency: the `rqrcode_core` gem, which draws the TOTP enrolment QR code on the server (#165). The agent gained no crate in Phase 3.
 
 **Finding F-9 (repository setting, not code):** branch protection on `main` requires only the **Server CI** check. **Agent CI** runs on every pull request, but a failing Agent CI does not block a merge, so the catalog contract test, the no-shell check, and the fault-hook check are advisory today. `agent-ci.yml` itself says branch protection should require it. This is the owner's setting to change (Q13).
 
