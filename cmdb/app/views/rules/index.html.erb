@@ -4,7 +4,8 @@
   <div class="actions"><%= link_to "Add rule", new_rule_path, class: "btn" %><%= link_to "Import rules file", import_rules_path, class: "btn quiet" %></div>
 </div>
 <% if @list.total.zero? %>
-  <div class="sheet" id="no_rules"><p><strong>No rules yet.</strong></p><p>Rules are imported from a file you keep. Nothing is checked until at least one rule is enabled.</p><%= link_to "Import rules file", import_rules_path, class: "btn" %></div>
+  <%# The one "Import rules file" button is in the page head (#144). %>
+  <div class="sheet" id="no_rules"><p><strong>No rules yet.</strong></p><p>Rules are imported from a file you keep. Nothing is checked until at least one rule is enabled.</p></div>
 <% else %>
   <%= form_with url: rules_path, method: :get, class: "filters", role: "search", id: "rule_filters" do %>
     <label>Search title, key, or reference<%= search_field_tag :q, @list.q, placeholder: "ssh or CIS Debian 13 5.1", maxlength: RuleList::QUERY_MAX, id: "q" %></label>

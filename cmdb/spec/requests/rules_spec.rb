@@ -60,10 +60,11 @@ RSpec.describe "Rules", :signed_in, type: :request do
   def table_counts = [ CisRule, CisRuleVersion, CisResult, CisResultChange, AuditEntry, ReportRequest ].to_h { |model| [ model.name, model.count ] }
 
   describe "the list (rules.html)" do
-    it "shows the empty state with the import button when there are no rules" do
+    it "shows the empty state, with the one import button in the page head, when there are no rules (#144)" do
       get "/rules"
       expect(page.at_css("#no_rules").text).to include("No rules yet.")
-      expect(page.at_css("#no_rules a.btn")["href"]).to eq("/rules/import")
+      expect(page.at_css("#no_rules a")).to be_nil
+      expect(page.css("a[href='/rules/import']").map { |a| [ a.text, a.ancestors(".page-head").any? ] }).to eq([ [ "Import rules file", true ] ])
       expect(page.at_css("nav[aria-label='Main'] a[aria-current='page']").text).to eq("Rules")
     end
 
