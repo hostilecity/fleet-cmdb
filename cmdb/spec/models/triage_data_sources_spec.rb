@@ -6,13 +6,23 @@ RSpec.describe TriageDataSources do
   it "reads the scheduled refresh's interval, and how long after the advisory feed's it runs, from config/recurring.yml" do
     allow(Rails).to receive(:env).and_return(ActiveSupport::EnvironmentInquirer.new("production"))
     expect(described_class.schedule).to eq([ 6.hours.to_i, 15.minutes.to_i ])
-    expect(ApplicationController.helpers.triage_schedule_text(described_class.schedule))
-      .to eq("Every 6 hours, 15 minutes after the advisory feed's refresh; up to 5 attempts with backoff")
-    expect(ApplicationController.helpers.triage_schedule_text([ 6.hours.to_i, nil ])).to eq("Every 6 hours; up to 5 attempts with backoff")
+  end
+
+  it "says when the scheduled refresh runs next, in one line (#148)" do
+    allow(Rails).to receive(:env).and_return(ActiveSupport::EnvironmentInquirer.new("production"))
+    now = Time.utc(2026, 11, 7, 2, 0)
+    # "56 */6 * * *", in the server's time zone as Solid Queue runs it.
+    next_at = described_class.next_refresh(now)
+    expect([ next_at.min, next_at.hour % 6, (next_at - now).between?(0, 6.hours) ]).to eq([ 56, 0, true ])
+    helpers = ApplicationController.helpers
+    expect(helpers.triage_refresh_text(described_class.schedule, now + 4.hours, now)).to eq("Next refresh in about 4 hours (every 6 hours, after the advisory feed)")
+    expect(helpers.triage_refresh_text([ 6.hours.to_i, nil ], now + 3.minutes, now)).to eq("Next refresh in 3 minutes (every 6 hours)")
   end
 
   it "has no schedule in an environment that does not schedule the refresh" do
     expect(described_class.schedule).to be_nil
+    expect(described_class.next_refresh).to be_nil
+    expect(ApplicationController.helpers.triage_refresh_text(nil, nil)).to eq("Not scheduled in this environment")
   end
 
   it "lists only the releases active hosts use, with entries counted by no-DSA reason" do

@@ -60,8 +60,7 @@ class TriageDataSources
   # [seconds between two scheduled runs, seconds after the advisory feed's run], or nil when this environment does
   # not schedule it.
   def self.schedule
-    jobs = YAML.safe_load_file(Rails.root.join("config/recurring.yml")).fetch(Rails.env, nil) || {}
-    triage, osv = [ SCHEDULE_KEY, "advisory_feed_refresh" ].map { |key| (cron = jobs.dig(key, "schedule")) && (Fugit.parse_cron(cron) || Fugit.parse_nat(cron)) }
+    triage, osv = crons
     return nil unless triage
 
     first = triage.next_time(Time.utc(2026, 1, 1))
@@ -69,6 +68,20 @@ class TriageDataSources
     after = osv && ((first.to_t - osv.next_time(Time.utc(2026, 1, 1)).to_t).round % interval)
     [ interval, after ]
   end
+
+  # When the scheduled refresh runs next, for "Next refresh in about 4 hours" (#148), or nil when this environment
+  # does not schedule it.
+  def self.next_refresh(now = Time.current) = crons.first&.next_time(now)&.to_t
+
+  # This environment's recurring jobs, from config/recurring.yml.
+  def self.recurring_jobs = YAML.safe_load_file(Rails.root.join("config/recurring.yml")).fetch(Rails.env, nil) || {}
+
+  # [the tracker refresh's schedule, the advisory feed's], each nil when this environment does not schedule it.
+  def self.crons
+    jobs = recurring_jobs
+    [ SCHEDULE_KEY, "advisory_feed_refresh" ].map { |key| (cron = jobs.dig(key, "schedule")) && (Fugit.parse_cron(cron) || Fugit.parse_nat(cron)) }
+  end
+  private_class_method :crons
 
   private
 

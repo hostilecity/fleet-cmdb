@@ -286,8 +286,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       end
 
       get "/data-sources"
-      expect(page.at_css("#tracker_freshness").text.squish).to eq("Debian's triage is out of date, so it is not shown beside findings. " \
-                                                                  "Tracker data for trixie was last imported 2 days ago (2026-11-07 09:00 UTC). Findings, severity, and counts are not affected.")
+      expect(page.at_css("#tracker_freshness").text.squish).to eq("Out of date, so not shown beside findings. trixie last imported 2 days ago (2026-11-07 09:00 UTC).")
       expect(page.at_css("#tracker_releases tbody tr td:nth-child(2)").text.squish).to eq("Stale: older than 48 hours")
     ensure
       travel_back
@@ -340,30 +339,30 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
   end
 
   describe "the data sources page (data-sources.html#tracker, data-sources-held.html, T2, T4)" do
-    it "shows the tracker as a second source, triage only, with its freshness, entry counts, hosts, settings, and imports" do
+    it "shows the tracker as a second source, triage only, with its freshness, entry counts, hosts, next refresh, and imports, and links the docs (#148)" do
       glibc_example
       import_triage(sample)
       get "/data-sources"
       panel = page.at_css("#tracker")
       expect(panel.at_css("h2").text.squish).to eq("Debian Security Tracker Triage only")
+      expect(panel.at_css("h2 + p").text.squish).to eq("Debian's own triage, shown beside findings. Never changes a finding's state, severity, or count.")
       expect(page.at_css("#triage_freshness").text.squish).to eq("Debian's triage for trixie: less than 5 seconds ago.")
       expect(panel.css("#tracker_releases tbody tr td").map { |td| td.text.squish }).to eq([
-        "trixieDebian 13, Debian:13", "Fresh", "2026-11-07 09:00 UTC less than 5 seconds ago", "3 entries1 open: 1 no-DSA, 0 postponed, 0 ignored", "1 host"
+        "trixieDebian 13, Debian:13", "Fresh", "2026-11-07 09:00 UTC less than 5 seconds ago", "3 entries1 open", "1 host"
       ])
+      expect(panel.at_css("#tracker_releases td:nth-child(4) .state-note")["title"]).to eq("1 no-DSA, 0 postponed, 0 ignored")
       expect(panel.at_css("#tracker_releases a")["href"]).to eq("/compliance?ecosystem=Debian%3A13")
-      expect(facts(panel.at_css("#tracker_feed").parent)).to eq(
-        "Source" => "security-tracker.example.org/tracker/data/json",
-        "Refresh" => "Not scheduled in this environment; run bin/rails advisories:triage_refresh",
-        "Refresh now" => "Refreshes with the advisory data: the one Refresh now above runs OSV and then this source, under the same cool-down (5 minutes)",
-        "Request" => "One file per refresh, conditional (ETag or Last-Modified), so an unchanged file is not downloaded again",
-        "Limits" => "Download 512 MiB, 15 minutes",
-        "Guard" => "An import that would remove more than 10% of a release's entries is held back and keeps the previous data"
-      )
+      expect(panel.at_css("#tracker_schedule").text.squish)
+        .to eq("From security-tracker.example.org/tracker/data/json. Not scheduled in this environment; Refresh now above refreshes it too.")
       expect(panel.css("form, input[type=file], button")).to be_empty # no upload and no button of its own (T2)
       expect(panel.css("#tracker_import_list tbody tr td").map { |td| td.text.squish })
-        .to eq([ "2026-11-07 09:00", "File import on the server", "json", "Succeeded", "bookworm: 1 kept, 0 removed; forky: 1 kept, 0 removed; sid: 1 kept, 0 removed; " \
-                                                                                           "trixie: 3 kept, 0 removed; 5 entries read; 3 malformed", "System" ])
+        .to eq([ "2026-11-07 09:00", "File import on the server", "Succeeded", "bookworm: 1 kept; forky: 1 kept; sid: 1 kept; trixie: 3 kept; 5 entries read; 3 malformed", "System" ])
       expect(panel.at_css("#tracker_held, #tracker_freshness, #tracker_off")).to be_nil
+      expect(panel.css(".pager span").map { |span| span.text.squish }).to eq([ "Showing the latest 1 import.", "Every import, with its counts per release, is in the audit log." ])
+      expect(panel.at_css("#tracker_docs").text.squish)
+        .to eq(%(How Debian triage works, its limits, and importing without internet access: docs/operations/health-and-jobs.md, "Debian triage".))
+      # The explanations moved to the docs (#148).
+      expect(panel.text.squish).not_to include("Scheduled download", "No upload", "ETag", "MiB", "config/triage_releases.yml", "FLEET_DEBIAN_TRACKER_URL")
     end
 
     it "shows a held-back import with its counts and a status notice, on this page only, with no button to accept it (T4)" do
@@ -375,20 +374,16 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       notice = page.at_css("#tracker_held")
       expect([ notice["class"], notice["role"] ]).to eq([ "notice", "status" ])
       expect(notice.text.squish).to eq(
-        "The last Debian Security Tracker refresh was held back. It would have removed 1 of 1 stored bookworm entries (100%), 1 of 1 stored forky entries (100%), " \
-        "1 of 1 stored sid entries (100%), and 3 of 3 stored trixie entries (100%), more than the 10% limit, at 2026-11-07 10:00 UTC, so bookworm, forky, sid, and trixie " \
-        "kept their previous data. The previous data for trixie is shown beside findings until it goes stale, 48 hours after its last successful import " \
-        "(2026-11-07 09:00 UTC), unless a later refresh imports. Findings, severity, and counts are not affected."
+        "The last refresh was held back. It would have removed 100% of bookworm's entries, 100% of forky's entries, 100% of sid's entries, " \
+        "and 100% of trixie's entries; the previous data is kept."
       )
       expect(page.at_css("#tracker_releases tbody tr td:nth-child(2)").text.squish).to eq("Fresh Last refresh held back")
       held = page.at_css("#tracker_import_list tbody tr")
-      expect(held.css("td").map { |td| td.text.squish }.values_at(1, 3, 4)).to eq([
-        "Scheduled refresh", "Held back", "Held back: bookworm would go from 1 to 0 entries (1 removed, 100%); previous data kept; forky would go from 1 to 0 entries " \
-                                          "(1 removed, 100%); previous data kept; sid would go from 1 to 0 entries (1 removed, 100%); previous data kept; " \
-                                          "trixie would go from 3 to 0 entries (3 removed, 100%); previous data kept; 0 entries read; 0 malformed"
+      expect(held.css("td").map { |td| td.text.squish }.values_at(1, 2, 3)).to eq([
+        "Scheduled refresh", "Held back", "bookworm: held back (1 of 1 would be removed); forky: held back (1 of 1 would be removed); " \
+                                          "sid: held back (1 of 1 would be removed); trixie: held back (3 of 3 would be removed); 0 entries read"
       ])
       expect(page.css("#tracker form, #tracker button")).to be_empty
-      expect(page.at_css("#tracker_feed").parent.text.squish).to include("There is no button to accept a held-back download.")
 
       get "/hosts/#{host.id}/vulnerabilities"
       expect(page.at_css("#tracker_held, #triage_stale")).to be_nil
@@ -398,9 +393,10 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       travel 2.days
       sign_in_operator # the session expired meanwhile
       get "/data-sources"
-      expect(page.at_css("#tracker_held").text.squish).to include(
-        "kept their previous data. The previous data for trixie is out of date, so it is no longer shown beside findings. Findings, severity"
+      expect(page.at_css("#tracker_held").text.squish).to end_with(
+        "the previous data is kept. The previous data for trixie is out of date, so it is no longer shown beside findings."
       )
+      expect(page.at_css("#tracker_freshness")).to be_nil # the held-back notice says it, once
     ensure
       travel_back
     end
@@ -409,10 +405,52 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       glibc_example
       DebianTriage.config.tracker_url = nil
       get "/data-sources"
-      expect(page.at_css("#tracker_off").text.squish).to start_with("Debian's triage refresh is off.")
-      expect(facts(page.at_css("#tracker_feed").parent)).to eq("Source" => "None: turned off on this server",
-                                                               "Guard" => "An import that would remove more than 10% of a release's entries is held back and keeps the previous data")
-      expect(page.at_css("#no_tracker_imports")).to be_present
+      expect(page.at_css("#tracker_off").text.squish).to eq("Turned off on this server. Its data changes only when a file is imported on the server.")
+      expect(page.at_css("#tracker_schedule")).to be_nil
+      expect(page.at_css("#no_tracker_imports").text.squish).to eq("Nothing imported yet.")
+    end
+
+    it "says why nothing was imported when no active host uses a release in the release table (#148)" do
+      DebianTriage::Import.new(origin: "feed", source: "security-tracker.example.org/tracker/data/json").call(nil)
+      DebianTriage::Import.new(origin: "file", source: "json").call(nil)
+      get "/data-sources"
+      expect(page.css("#tracker_import_list tbody tr").map { |tr| tr.css("td").map { |td| td.text.squish }.values_at(1, 3) }).to eq([
+        [ "File import on the server", "Nothing imported: no active host uses a release in the release table" ],
+        [ "Scheduled refresh", "Nothing downloaded: no active host uses a release in the release table" ]
+      ])
+      expect(page.at_css("#tracker_releases tbody td").text.squish).to eq("No active host uses a release in the release table yet.")
+    end
+
+    it "says in one notice which release is out of date and how many refreshes failed, and only removed counts above zero (#148)" do
+      glibc_example
+      hosts_on("12") # bookworm, never imported
+      import_triage(sample, releases: [ "trixie" ])
+      travel 1.hour
+      smaller = tracker_document("glibc" => { "CVE-2026-19499" => { "trixie" => tracker_release(nodsa: "Minor issue") } })
+      import_triage(smaller, releases: [ "trixie" ], allowed_drops: { "trixie" => 2 })
+      travel 2.days + 1.hour
+      2.times { DebianTriage::Import.record_failure(reason: "the tracker answered HTTP 503", origin: "feed", source: "security-tracker.example.org/tracker/data/json") }
+      sign_in_operator # the session expired meanwhile
+      get "/data-sources"
+      notice = page.at_css("#tracker_freshness")
+      expect(notice.text.squish).to eq("Out of date, so not shown beside findings. bookworm not imported yet; trixie last imported 2 days ago (2026-11-07 10:00 UTC). " \
+                                       "The last 2 refreshes failed (see the failed jobs).")
+      expect(notice.at_css("a")["href"]).to eq("/jobs/failed")
+      expect(page.css("#tracker_import_list tbody tr td:nth-child(4)").map { |td| td.text.squish }.last(2)).to eq([
+        "trixie: 1 kept, 2 removed; 1 entry read", "trixie: 3 kept; 5 entries read; 2 malformed"
+      ])
+    ensure
+      travel_back
+    end
+
+    it "says when the next scheduled refresh runs, in one line with the source (#148)" do
+      glibc_example
+      allow(TriageDataSources).to receive(:recurring_jobs).and_return(YAML.safe_load_file(Rails.root.join("config/recurring.yml")).fetch("production"))
+      allow(TriageDataSources).to receive(:next_refresh).and_return(start + 4.hours) # its time zone is the model spec's
+      get "/data-sources"
+      expect(page.at_css("#tracker_schedule").text.squish).to eq(
+        "From security-tracker.example.org/tracker/data/json. Next refresh in about 4 hours (every 6 hours, after the advisory feed); Refresh now above refreshes it too."
+      )
     end
 
     it "says in the refresh confirmation, in one sentence, that Debian's triage is refreshed right after, and attributes it to the operator (T2)" do
@@ -426,7 +464,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       TriageImport.create!(tracker: "debian", origin: "feed", source: "security-tracker.example.org/tracker/data/json", operator:, state: "failed",
                            reason: "the Debian Security Tracker at security-tracker.example.org answered HTTP 503", started_at: Time.current, finished_at: Time.current)
       get "/data-sources"
-      expect(page.css("#tracker_import_list tbody tr td").map { |td| td.text.squish }.values_at(1, 3, 4, 5)).to eq([
+      expect(page.css("#tracker_import_list tbody tr td").map { |td| td.text.squish }.values_at(1, 2, 3, 4)).to eq([
         "Refresh now, after the advisory feed", "Failed", "Nothing imported: the Debian Security Tracker at security-tracker.example.org answered HTTP 503", operator.display_name
       ])
 
