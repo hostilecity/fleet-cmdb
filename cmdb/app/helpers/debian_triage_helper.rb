@@ -83,7 +83,8 @@ module DebianTriageHelper
   def triage_hours = pluralize((Advisories.config.max_age / 1.hour).round, "hour")
 
 
-  # The data sources page's tracker panel (P2-D08; data-sources.html#tracker, data-sources-held.html).
+  # The data sources page's tracker panel (P2-D08; data-sources.html#tracker, data-sources-held.html), trimmed to
+  # status, problems, and the latest activity (#148). How it works is in docs/operations/health-and-jobs.md.
 
   def triage_import_how(import)
     if import.origin == "file" then "File import on the server"
@@ -101,36 +102,39 @@ module DebianTriageHelper
     tag.span(word, class: [ "lamp", lamp ])
   end
 
-  # "79,646 entries read; trixie: 41,250 kept, 3 removed; 0 malformed", or what was held back and why.
+  # A short summary of what an import did: "trixie: 41,250 kept, 3 removed; 79,646 entries read", with what was
+  # held back, the malformed entries when there were any, or why nothing was imported. The full counts per release
+  # are in the import's audit entry.
   def triage_import_summary(import)
     counts = import.counts
     return "Nothing imported: #{import.reason}" if import.state == "failed"
     return "Not modified since the last download; nothing imported" if counts["not_modified"]
+    return "#{import.origin == 'file' ? 'Nothing imported' : 'Nothing downloaded'}: no active host uses a release in the release table" if counts["no_hosts"]
 
     releases = (counts["releases"].is_a?(Hash) ? counts["releases"] : {}).sort.select do |_, o|
       o.is_a?(Hash) && (o["outcome"] == "held_back" || o["stored"].to_i.positive? || o["in_file"].to_i.positive?)
     end
-    held, stored = releases.partition { |_, o| o["outcome"] == "held_back" }
-    parts = held.map do |release, o|
-      "#{release} would go from #{number_with_delimiter(o['stored'].to_i)} to #{number_with_delimiter(o['in_file'].to_i)} entries " \
-        "(#{number_with_delimiter(o['dropped'].to_i)} removed, #{triage_share(o['dropped'], o['stored'])}); previous data kept"
+    parts = releases.map do |release, o|
+      dropped = number_with_delimiter(o["dropped"].to_i)
+      if o["outcome"] == "held_back" then "#{release}: held back (#{dropped} of #{number_with_delimiter(o['stored'].to_i)} would be removed)"
+      else "#{release}: #{number_with_delimiter(o['in_file'].to_i)} kept#{", #{dropped} removed" if o['dropped'].to_i.positive?}"
+      end
     end
-    parts += stored.map { |release, o| "#{release}: #{number_with_delimiter(o['in_file'].to_i)} kept, #{number_with_delimiter(o['dropped'].to_i)} removed" }
-    read = "#{number_with_delimiter(counts['entries'].to_i)} #{'entry'.pluralize(counts['entries'].to_i)} read"
-    summary = [ *parts, read, "#{number_with_delimiter(counts['malformed'].to_i)} malformed" ].join("; ")
-    held.any? ? "Held back: #{summary}" : summary
+    parts << "#{number_with_delimiter(counts['entries'].to_i)} #{'entry'.pluralize(counts['entries'].to_i)} read"
+    parts << "#{number_with_delimiter(counts['malformed'].to_i)} malformed" if counts["malformed"].to_i.positive?
+    parts.join("; ")
   end
 
   # "90%" of a release's stored entries.
   def triage_share(part, whole) = whole.to_i.positive? ? "#{(100.0 * part.to_i / whole.to_i).round}%" : "all"
 
-  # "Every 6 hours, 15 minutes after the advisory feed's refresh; up to 5 attempts with backoff".
-  def triage_schedule_text(schedule)
-    return "Not scheduled in this environment; run bin/rails advisories:triage_refresh" unless schedule
+  # "Next refresh in about 4 hours (every 6 hours, after the advisory feed)". schedule: TriageDataSources.schedule;
+  # next_at: TriageDataSources.next_refresh.
+  def triage_refresh_text(schedule, next_at, now = Time.current)
+    return "Not scheduled in this environment" unless schedule && next_at
 
     interval, after = schedule
-    after_text = after&.positive? ? ", #{human_duration(after)} after the advisory feed's refresh" : ""
-    "Every #{human_duration(interval)}#{after_text}; up to #{ApplicationJob::ATTEMPTS} attempts with backoff"
+    "Next refresh in #{distance_of_time_in_words(now, next_at)} (every #{human_duration(interval)}#{', after the advisory feed' if after})"
   end
 
   private
