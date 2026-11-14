@@ -98,7 +98,7 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `FLEET_BACKUP_STATUS_FILE` | `/rails/storage/backup/last_success`, in the Docker volume | Touched by `ops/backup/backup.sh` after each complete backup; the app reads its time |
 | `FLEET_RESTORE_DRILL` | unset; *fixed* to `1` by `restore-drill.sh` | Makes the drill's boot use an in-memory cache, so it never writes to the live cache database |
 
-**Data retention** (snapshots, report ids, status history; default 90 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
+**Data retention** (snapshots and status history; default 90 days; report ids are kept 7 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
 
 ## Database
 

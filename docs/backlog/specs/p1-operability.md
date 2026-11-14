@@ -6,7 +6,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- Configurable retention settings (default 90 days) for inventory snapshots, recent report ids, and host status events.
+- Configurable retention settings (default 90 days) for inventory snapshots and host status events. Recent report ids are kept 7 days (or the retention window if shorter): they only need to outlive an agent's retries, and at 96 inventory reports a host a day they were the largest table (scale assessment).
 - Scheduled job that prunes beyond the retention window in batches, always keeping the most recent snapshot per host.
 - Audit entries are **not** pruned by default ([DEC-07](../../decisions/0007-snapshots-and-retention.md)); if an audit retention setting is added it is a separate, off-by-default setting.
 - Dry-run mode and log lines stating counts deleted.
