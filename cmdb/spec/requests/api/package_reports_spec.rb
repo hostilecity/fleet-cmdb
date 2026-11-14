@@ -68,6 +68,32 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(diff.changed.map { |c| [ c.name, c.from.version, c.to.version, c.direction ] }).to eq([ [ "openssl", "3.5.1-1+deb13u1", "3.5.1-1+deb13u2", :upgrade ] ])
       expect(PackageDiff.for(first).installed.size).to eq(8)
     end
+
+    it "writes only the packages that changed: the others keep their rows (scale assessment)" do
+      send_report(report)
+      kept = HostPackage.where(host:).where.not(name: %w[vim openssl tzdata]).pluck(:name, :architecture, :id)
+      packages = example["packages"].reject { |p| p["name"] == "vim" }
+                                    .map { |p| p["name"] == "openssl" ? p.merge("version" => "3.5.1-1+deb13u2") : p }
+                                    .map { |p| p["name"] == "tzdata" ? p.merge("source" => "tzdata-legacy") : p }
+      packages << { "name" => "curl", "version" => "8.14.1-2", "architecture" => "amd64", "source" => nil }
+
+      statements = []
+      counter = ->(*, payload) { statements << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)[^"]*"host_packages"/) }
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { send_report(report(packages:)) }
+
+      expect(stored_packages).to eq(sorted(packages))
+      expect(HostPackage.where(host:).where.not(name: %w[vim openssl tzdata curl]).pluck(:name, :architecture, :id)).to match_array(kept)
+      expect(HostPackage.find_by!(host:, name: "tzdata")).to have_attributes(source: "tzdata-legacy")
+      expect(statements.size).to eq(2) # one DELETE of vim, one upsert of openssl, tzdata, and curl
+      expect(statements.join).not_to include("libc6")
+    end
+
+    it "writes no package rows when only the skipped names changed" do
+      send_report(report)
+      ids = HostPackage.where(host:).order(:id).pluck(:id)
+      expect { send_report(report(skipped: [ { "name" => "vim", "reason" => "unpacked" } ])) }.to change(PackageSnapshot, :count).by(1)
+      expect(HostPackage.where(host:).order(:id).pluck(:id)).to eq(ids)
+    end
   end
 
   describe "an unsupported package manager" do
