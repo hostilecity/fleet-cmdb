@@ -110,7 +110,15 @@ The new version's own log lines, before the rollback, say why it did not confirm
    Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
    ```
 
-3. Run **Apply package updates** on the host again. Its package report follows, and the findings close.
+3. Run **Apply package updates** on the host again. Its package report follows, and the fixed findings close.
+4. If some stay open, the fix may be held back. The task respects holds, installs no new packages, and removes none, so a fix that needs a new dependency is left alone. On the VM:
+
+   ```sh
+   apt-mark showhold                         # packages you have held
+   apt-get -s upgrade | grep -A20 'kept back' # fixes that need a new or removed package
+   ```
+
+   Install those by hand (`apt-get install <package>`) once you have checked what they change.
 
 ## `/health` is unhealthy
 

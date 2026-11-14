@@ -96,11 +96,11 @@ The host reports its task types within a minute. A mistake in `[tasks]` turns ev
 | **Refused**, `not_enabled_locally` | Turn the task type on in that VM's `[tasks] enabled`, as above. |
 | **Refused**, `not_allowed_locally` | Add the service to that VM's `[tasks] allowed_services`. |
 | **Refused**, `protected_service` | Nothing can restart this unit remotely, by design. Use the console. |
-| **Refused**, `not_supported` | The agent is too old for this task. [Update it](install-agent.md#update-agents). |
+| **Refused**, `not_supported` | This agent cannot run the task on this VM. Either the agent is too old ([update it](install-agent.md#update-agents)), or, for package updates, the VM has no `apt` or `dpkg`. The task page's detail says which. |
 | **Failed** | Read the reason and the output on the task page. `nonzero_exit` is the command's own failure, for example a service that did not come back. |
 | **Timed out** | For package updates, run `dpkg --configure -a` on the VM as root, then run the task again. |
 | **Expired** | The host did not poll in time, usually because it was offline. Bring it back, then create the task again. |
-| **Cancelled** | Nothing ran after the cancel. |
+| **Cancelled** | Nothing new starts after the cancel. A **Refresh reports** that was already collecting may still send its reports. |
 
 ## Read the audit log
 
