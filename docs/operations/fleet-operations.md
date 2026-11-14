@@ -19,7 +19,7 @@ Use it after a revocation, when a VM lost `/etc/fleet-agent/config.toml`, or whe
 
 The old credential stops working the moment the new one is issued. **Check:** the host returns to **Online**, and its page shows the new credential's key id.
 
-**Recovering a lost credential** is the same thing: the server stores only a hash, so a lost credential cannot be shown again; re-enroll instead. If a VM was cloned from another enrolled VM, agent config included, both use one credential and the host page warns of a machine ID mismatch; on the clone run `fleet-agent install --reenroll` and approve it as a **new host**, and the original keeps its own credential. For VMs cloned from one template before the agent was installed, see [troubleshooting.md](troubleshooting.md#vms-cloned-from-one-template).
+**Recovering a lost credential** is the same thing: the server stores only a hash, so a lost credential cannot be shown again; re-enroll instead. If a VM was cloned from another enrolled VM, agent config included, both use one credential and the host page warns of a machine ID mismatch; on the clone run `fleet-agent install --reenroll` and approve it as a **new host**. Then re-enroll the original as the same host: its credential stays the original's, but only a re-enrollment clears the warning. For VMs cloned from one template before the agent was installed, see [troubleshooting.md](troubleshooting.md#vms-cloned-from-one-template).
 
 ## Retire a host
 

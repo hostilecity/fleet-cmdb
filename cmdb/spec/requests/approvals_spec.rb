@@ -137,6 +137,15 @@ RSpec.describe "Onboarding approval", :signed_in, type: :request do
       expect(page.at_css("label.choice:has(input[value=new])").text.squish).to include('give the copy its own machine ID: see "VMs cloned from one template"')
     end
 
+    it "treats a reported hostname with a trailing dot or other case as the same hostname" do
+      dotted = start_onboarding(client_ip: "192.0.2.11", hostname: "VM-08.example.lan.").record
+      media, = enrolled_host(name: "Media server", hostname: "vm-08.example.lan")
+      media.agent_credentials.active.sole.update_column(:machine_id, dotted.machine_id)
+      get "/onboard/#{dotted.user_code}"
+      expect(page.at_css("#onboard_match p").text).not_to include("template")
+      expect(page.css("input[name=choice]").map { |i| [ i["value"], i["checked"].present? ] }).to eq([ [ "reenroll-#{media.id}", true ], [ "new", false ] ])
+    end
+
     it "keeps re-enrollment the default for a machine-ID match when the VM could not read its hostname" do
       blind = start_onboarding(client_ip: "192.0.2.11", hostname: nil).record
       media, = enrolled_host(name: "Media server", hostname: "vm-01.example.lan")

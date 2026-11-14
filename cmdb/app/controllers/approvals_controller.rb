@@ -101,7 +101,8 @@ class ApprovalsController < ApplicationController
     @host = host || Host.new(name: @request.hostname&.split(".")&.first, hostname: @request.hostname)
   end
 
-  # A VM that could not read its hostname gives no reason to doubt a machine-ID match.
-  def same_hostname?(host) = @request.hostname.nil? || host.hostname.to_s.casecmp?(@request.hostname)
+  # A VM that could not read its hostname gives no reason to doubt a machine-ID match. Compared as Host stores it:
+  # lowercase, without a trailing dot.
+  def same_hostname?(host) = @request.hostname.nil? || host.hostname.to_s.casecmp?(@request.hostname.strip.delete_suffix("."))
   helper_method :same_hostname?
 end

@@ -42,14 +42,16 @@ VMs cloned from one template all have the same machine ID (`/etc/machine-id`), u
 - **Give each clone its own machine ID,** before installing the agent if you can. On the clone, as root:
 
   ```sh
-  rm -f /etc/machine-id
+  old=$(cat /etc/machine-id)
+  rm -f /etc/machine-id /var/lib/dbus/machine-id
   systemd-machine-id-setup
-  cat /etc/machine-id                       # a new 32-character ID
+  if [ -d /var/lib/dbus ]; then ln -s /etc/machine-id /var/lib/dbus/machine-id; fi
+  [ "$(cat /etc/machine-id)" != "$old" ] && echo "new machine ID"
   ```
 
-  `systemd-machine-id-setup` alone does nothing while the old file is there.
+  Remove both files: `systemd-machine-id-setup` does nothing while `/etc/machine-id` is there, and copies the old ID back from `/var/lib/dbus/machine-id` if that file holds it.
 - **If the agent is already installed,** restart it (`systemctl restart fleet-agent`). The host page then warns that the credential was used from another machine. To clear it, re-enroll the VM: `fleet-agent install --reenroll`, and approve it as a re-enrollment of the same host.
-- **To fix the template,** empty its machine ID just before you shut it down for the last time: `truncate -s 0 /etc/machine-id`. Each clone then makes its own ID when it first boots.
+- **To fix the template,** empty its machine ID just before you shut it down for the last time: `truncate -s 0 /etc/machine-id`, then `rm -f /var/lib/dbus/machine-id` and, if `/var/lib/dbus` exists, `ln -s /etc/machine-id /var/lib/dbus/machine-id`. Each clone then makes its own ID when it first boots.
 
 ## The clock is off
 
