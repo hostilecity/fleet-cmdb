@@ -2111,3 +2111,30 @@ fn real_server_install_and_uninstall() {
     println!("{}", outcome.out);
     outcome.ok();
 }
+
+#[test]
+fn install_copies_the_running_image_whatever_its_path_now_names() {
+    // What `fleet-agent install` copies is the file the kernel started, not whatever sits at the path
+    // it was started from by the time of the copy.
+    assert_eq!(running_image(), Path::new(RUNNING_IMAGE));
+    let exe = std::env::current_exe().unwrap();
+    assert!(fsx::same_contents(&running_image(), &exe).unwrap());
+
+    // The kernel's guarantee that makes this safe: a process's /proc/PID/exe still opens the file it
+    // was started from after its path is replaced by another file.
+    let dir = TempDir::new();
+    let started = dir.path("fleet-agent");
+    fs::copy("/bin/sleep", &started).unwrap();
+    let mut child = std::process::Command::new(&started)
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let swapped = dir.write("other", "#!/bin/sh\necho swapped\n");
+    fs::rename(&swapped, &started).unwrap();
+    let image = PathBuf::from(format!("/proc/{}/exe", child.id()));
+    let copied = fs::read(&image);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(copied.unwrap(), fs::read("/bin/sleep").unwrap());
+    assert_eq!(fs::read(&started).unwrap(), b"#!/bin/sh\necho swapped\n");
+}
