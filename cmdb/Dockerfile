@@ -88,7 +88,8 @@ RUN groupadd --system --gid 1000 rails && \
 # Copy built artifacts: gems, application
 COPY --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 COPY --from=build /rails /rails
-RUN chown -R rails:rails /rails/storage /rails/tmp /rails/log
+# The Ruby image leaves GEM_HOME world-writable (1777); nothing writes there at runtime.
+RUN chown -R rails:rails /rails/storage /rails/tmp /rails/log && chmod 755 "${BUNDLE_PATH}"
 USER 1000:1000
 
 # Entrypoint prepares the database.

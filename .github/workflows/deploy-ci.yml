@@ -138,7 +138,7 @@ jobs:
           expect "the app runs as uid 1000" 1000 "$(docker exec fleet-cmdb id -u)"
           expect "the app has no capabilities" 0000000000000000 "$(docker exec fleet-cmdb sed -n 's/^CapEff:[[:space:]]*//p' /proc/1/status)"
           expect "the app cannot gain privileges" 1 "$(docker exec fleet-cmdb sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/1/status)"
-          for dir in /rails/app /rails/config /rails/bin /usr/local/bundle; do
+          for dir in /rails/app /rails/config /rails/bin /usr/local/bundle '/usr/local/bundle/ruby/*/gems'; do
             expect "the app cannot write $dir" no "$(docker exec fleet-cmdb sh -c "touch $dir/.probe 2>/dev/null && echo yes || echo no")"
           done
           for dir in /rails/tmp /rails/log /rails/storage; do
