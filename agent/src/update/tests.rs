@@ -550,6 +550,53 @@ fn one_update_at_a_time_and_one_answer_per_offer() {
 }
 
 #[test]
+fn a_server_that_sends_a_new_offer_every_time_cannot_grow_the_updaters_memory() {
+    // A hostile server can put a new rollout id in every heartbeat. Each offer here is refused (an older
+    // version) and answered; the next arrives while that answer waits to be posted, or after it was.
+    let rig = Rig::new();
+    let mut offer = directive_json(&publish(
+        &rig.fetch,
+        &rig.world.key,
+        "0.0.1",
+        &binary(100),
+        1,
+    ));
+    let sizes = |rig: &Rig| {
+        let memory = rig.updater.inner.memory.lock().unwrap();
+        (
+            memory.reported.len(),
+            memory.noted.len(),
+            memory.attempts.len(),
+        )
+    };
+    for rollout_id in 1..=(3 * MEMORY_LIMIT as u64) {
+        offer["rollout_id"] = json!(rollout_id);
+        rig.updater.process_now(&offer);
+        // Every other offer finds the answer to the one before still waiting (it is ignored and noted);
+        // the rest find it posted (they are refused and answered).
+        if rollout_id % 2 == 0 {
+            PendingResult::remove(rig.world.state()).unwrap();
+        }
+        let (reported, noted, attempts) = sizes(&rig);
+        assert!(
+            reported <= MEMORY_LIMIT && noted <= MEMORY_LIMIT && attempts <= MEMORY_LIMIT,
+            "after {rollout_id} offers: {reported} answered, {noted} notes, {attempts} attempt counts"
+        );
+    }
+    assert!(sizes(&rig).0 > 0, "offers were answered and remembered");
+
+    // A recent offer is still answered only once.
+    PendingResult::remove(rig.world.state()).unwrap();
+    let last = 3 * MEMORY_LIMIT as u64 - 1;
+    offer["rollout_id"] = json!(last);
+    rig.updater.process_now(&offer);
+    assert!(
+        rig.world.pending().is_none(),
+        "a remembered offer is not answered again"
+    );
+}
+
+#[test]
 fn a_download_that_keeps_failing_is_retried_and_then_reported() {
     let rig = Rig::new();
     let offer = rig.offer(NEW, 5);
@@ -1026,4 +1073,22 @@ fn a_task_in_flight_defers_an_update_and_an_update_in_progress_blocks_tasks() {
     assert!(error.contains("confirmed or rolled back"), "{error}");
     Record::remove(rig.world.state()).unwrap();
     assert!(rig.updater.task_slot().is_ok());
+}
+
+#[test]
+fn hostile_update_directives_never_panic_and_only_a_strict_one_is_acted_on() {
+    let keys = [
+        "rollout_id",
+        "version",
+        "manifest_url",
+        "signature_url",
+        "binary_url",
+    ];
+    crate::test_support::hostile::each(&keys, |value| {
+        if let Some(directive) = Directive::parse(value) {
+            assert!(directive.rollout_id > 0);
+            assert!(directive.version.build.is_empty());
+            assert!(super::layout::parse_version(&directive.version.to_string()).is_some());
+        }
+    });
 }
