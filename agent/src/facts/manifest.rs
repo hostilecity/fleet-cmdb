@@ -476,4 +476,24 @@ mod tests {
                 .all(|f| !matches!(f.ty, FactType::Unknown(_)))
         );
     }
+
+    #[test]
+    fn hostile_config_manifests_never_panic_and_stay_within_the_caps() {
+        let keys = [
+            "manifest_version",
+            "facts",
+            "key",
+            "type",
+            "max_length",
+            "max_items",
+            "item_max_length",
+            "minimum",
+            "maximum",
+        ];
+        crate::test_support::hostile::each(&keys, |body| {
+            if let Ok(manifest) = parse(body) {
+                assert!(manifest.facts.len() <= MAX_FACTS);
+            }
+        });
+    }
 }

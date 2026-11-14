@@ -612,4 +612,40 @@ mod tests {
             assert_eq!(reason.as_deref(), body["reason"].as_str(), "{name}");
         }
     }
+
+    #[test]
+    fn hostile_task_responses_never_panic_and_never_make_a_bad_task() {
+        let keys = [
+            "task",
+            "id",
+            "type",
+            "parameters",
+            "timeout_seconds",
+            "catalog_version",
+            "poll_seconds",
+            "cancel",
+            "state",
+            "run",
+        ];
+        crate::test_support::hostile::each(&keys, |body| {
+            if let Ok(reply) = parse_poll(body) {
+                if let Some(task) = reply.task {
+                    assert!(crate::tasks::ledger::is_task_id(&task.id));
+                    assert!(crate::tasks::catalog::is_type_id(&task.task_type));
+                    assert!(task.parameters.is_object());
+                    assert!((1..=86_400).contains(&task.timeout_seconds));
+                }
+                assert!(reply.poll_seconds.is_none_or(|s| (10..=300).contains(&s)));
+                assert!(
+                    reply
+                        .cancel
+                        .is_none_or(|id| crate::tasks::ledger::is_task_id(&id))
+                );
+            }
+            if let Ok(reply) = parse_progress("00000000-0000-4000-8000-000000000001", body) {
+                assert!(reply.state.chars().count() <= 32);
+            }
+            let _ = parse_start(body);
+        });
+    }
 }

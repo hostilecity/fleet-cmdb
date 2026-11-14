@@ -534,3 +534,19 @@ fn the_release_workflow_script_writes_a_manifest_the_agent_accepts() {
         );
     }
 }
+
+#[test]
+fn hostile_manifests_never_panic_and_only_a_well_formed_one_parses() {
+    // parse_manifest only ever sees bytes whose signature verified, but it must not trust them either.
+    let keys = ["format", "version", "target", "sha256", "size"];
+    crate::test_support::hostile::each(&keys, |value| {
+        let bytes = serde_json::to_vec(value).unwrap();
+        if let Ok(manifest) = parse_manifest(&bytes) {
+            assert_eq!(manifest.target, TARGET);
+            assert!((1..=MAX_BINARY_BYTES).contains(&manifest.size));
+            assert!(manifest.version.build.is_empty());
+        }
+        // The same bytes cut short, as a torn download would leave them.
+        let _ = parse_manifest(&bytes[..bytes.len() / 2]);
+    });
+}

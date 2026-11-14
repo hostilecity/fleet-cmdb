@@ -781,4 +781,34 @@ mod tests {
         assert!(envelope.ignored.iter().all(|n| !n.contains('\n')));
         assert!(envelope.ignored.iter().all(|n| n.chars().count() < 100));
     }
+
+    #[test]
+    fn hostile_heartbeat_responses_never_panic_and_bad_parts_do_nothing() {
+        let keys = [
+            "server_time",
+            "directives",
+            "intervals",
+            "heartbeat_seconds",
+            "inventory_seconds",
+            "agent_update",
+            "rollout_id",
+            "version",
+            "manifest_url",
+            "signature_url",
+            "binary_url",
+            "report_request",
+            "types",
+            TASK_HINT,
+        ];
+        crate::test_support::hostile::each(&keys, |body| {
+            let envelope = parse(body);
+            // An update offer only ever gets through whole and well formed.
+            if let Some(update) = &envelope.agent_update {
+                assert!(update.is_object());
+                assert!(agent_update_problem(update.as_object().unwrap()).is_none());
+            }
+            assert!(envelope.report_types.len() <= MAX_REPORT_TYPES);
+            assert!(envelope.ignored.len() <= 4 * (MAX_LISTED + 1));
+        });
+    }
 }
