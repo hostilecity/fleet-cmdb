@@ -146,7 +146,9 @@ jobs:
           docker build --pull -q --build-context api="build-$sha/docs/api" --build-context trust="build-$sha/agent/trust" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
           echo "==> replace the container"
           docker rm -f fleet-cmdb >/dev/null 2>&1 || true
+          # No capabilities and no privilege gain (setuid): the app binds ports above 1024 and needs neither.
           docker run -d --name fleet-cmdb -p 443:3443 --network "$network" --restart unless-stopped \
+            --cap-drop ALL --security-opt no-new-privileges \
             -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb.env "fleet-cmdb:$sha" >/dev/null
           rm -f fleet-cmdb.env
           echo "==> wait for /up (the first start creates and migrates the databases)"

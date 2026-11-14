@@ -99,6 +99,7 @@ jobs:
             > "$RUNNER_TEMP/fleet-cmdb.env")
           docker volume create fleet-cmdb_storage
           docker run -d --name fleet-cmdb -p 127.0.0.1:8443:3443 --network fleet-db \
+            --cap-drop ALL --security-opt no-new-privileges \
             -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/fleet-cmdb.env" fleet-cmdb:ci
           rm -f "$RUNNER_TEMP/fleet-cmdb.env"
           for _ in $(seq 1 60); do
@@ -132,6 +133,18 @@ jobs:
             "$(code -X POST -H "Host: $DASHBOARD" -H "Forwarded: host=$AGENT" "$url/api/v1/heartbeat")"
           expect "/health on the dashboard hostname is 404" 404 "$(code -H "Host: $DASHBOARD" "$url/health")"
           expect "the storage volume belongs to the app" 1000 "$(docker exec fleet-cmdb stat -c %u /rails/storage/releases)"
+          # Container hardening (server assessment): the app owns only what it writes, has no capabilities, cannot gain
+          # privileges, and the image carries no test or development gems.
+          expect "the app runs as uid 1000" 1000 "$(docker exec fleet-cmdb id -u)"
+          expect "the app has no capabilities" 0000000000000000 "$(docker exec fleet-cmdb sed -n 's/^CapEff:[[:space:]]*//p' /proc/1/status)"
+          expect "the app cannot gain privileges" 1 "$(docker exec fleet-cmdb sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/1/status)"
+          for dir in /rails/app /rails/config /rails/bin /usr/local/bundle; do
+            expect "the app cannot write $dir" no "$(docker exec fleet-cmdb sh -c "touch $dir/.probe 2>/dev/null && echo yes || echo no")"
+          done
+          for dir in /rails/tmp /rails/log /rails/storage; do
+            expect "the app can write $dir" yes "$(docker exec fleet-cmdb sh -c "touch $dir/.probe && rm $dir/.probe && echo yes || echo no")"
+          done
+          expect "the image has no test gems" 0 "$(docker exec fleet-cmdb sh -c 'ls /usr/local/bundle/ruby/*/gems | grep -c -e "^rspec-core-" -e "^webmock-" -e "^brakeman-"')"
           health="$(docker exec fleet-cmdb curl -s -w ' %{http_code}' http://localhost:3000/health)"
           echo "/health: $health"
           expect "/health is 503 until a backup exists" 503 "${health##* }"
