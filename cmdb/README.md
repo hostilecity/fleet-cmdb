@@ -73,6 +73,8 @@ Specs that use threads (`spec/services/*_concurrency_spec.rb`) run outside the t
 
 `bin/simulate-fleet` runs fake hosts against a running development server through the real agent API: seed data, the NFR-3 load check (`--load-check`), and a scaled-down AC-1.2 liveness check (`--liveness-check`). See [docs/operations/fleet-simulator.md](../docs/operations/fleet-simulator.md).
 
+`bin/benchmark` measures what the server costs at scale: it seeds a database with a large synthetic fleet (100,000 hosts by default) in SQL from one host recorded through the real API, then counts the statements and rows of each agent request, explains the hot queries, times the fleet-wide jobs, and drives HTTP load against a running server. See [docs/operations/benchmark.md](../docs/operations/benchmark.md).
+
 ## Databases
 
 Development uses `cmdb_development` plus `cmdb_development_cache`, `_queue`, and `_cable`, mirroring production's layout. Tests use a single `cmdb_test` database with the test adapters for jobs, cache, and cable.

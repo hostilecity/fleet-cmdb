@@ -17,6 +17,6 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 | [agent-packages.md](agent-packages.md) | Where the agent's package list comes from, `skipped`, `unsupported`, `unreadable`, and checking it against a host (AC-2.3) |
 | [troubleshooting.md](troubleshooting.md) | Certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates |
 
-For development and testing: [running-locally.md](running-locally.md), [fleet-simulator.md](fleet-simulator.md), and [agent-soak.md](agent-soak.md).
+For development and testing: [running-locally.md](running-locally.md), [fleet-simulator.md](fleet-simulator.md), [benchmark.md](benchmark.md) (the scale benchmark), and [agent-soak.md](agent-soak.md).
 
 Agent internals (options, files, exit codes, the update mechanism): [agent/README.md](../../agent/README.md). Releases and the release keys: [docs/releases.md](../releases.md).
