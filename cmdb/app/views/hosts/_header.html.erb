@@ -5,7 +5,7 @@
 <% if host.machine_id_mismatch? %>
   <div class="notice" role="status">
     <strong>This credential was used from another machine.</strong>
-    <p>Enrolled on machine <code><%= credential&.machine_id || "unknown" %></code>, last report from <code><%= host.reported_machine_id || "an unreadable machine ID" %></code> (<%= utc(host.machine_id_mismatch_at) %>). If this VM was cloned, retire the copy or re-enroll this host.</p>
+    <p>Enrolled on machine <code><%= credential&.machine_id || "unknown" %></code>, last report from <code><%= host.reported_machine_id || "an unreadable machine ID" %></code> (<%= utc(host.machine_id_mismatch_at) %>). If you gave this VM a new machine ID, re-enroll it to clear this. If its agent config was copied to another VM, re-enroll that copy as a new host.</p>
   </div>
 <% end %>
 <div class="host-head">
