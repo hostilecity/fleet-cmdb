@@ -13,7 +13,7 @@ module FleetBenchmark
   class Load
     KINDS = {
       "heartbeat" => [ "/api/v1/heartbeat", false ],
-      "inventory" => [ "/api/v1/reports/inventory", false ],
+      "inventory" => [ "/api/v1/reports/inventory", false ], # built per request, for its host (see #worker)
       "config" => [ "/api/v1/reports/config", false ],
       "packages" => [ "/api/v1/reports/packages", true ],
       "poll" => [ "/api/v1/tasks/poll", false ]
@@ -22,7 +22,7 @@ module FleetBenchmark
     MIX = { "heartbeat" => 60.0, "poll" => 120.0, "inventory" => 4.0, "config" => 1 / 6.0, "packages" => 1 / 6.0 }.freeze
     POOL = 97 # distinct bodies per kind (a prime, so a host meets the same report id again only after POOL x hosts requests)
 
-    def initialize(url:, kind: "heartbeat", threads: 8, duration: 30, hosts: 20_000, first_host: 1001, agent_host: nil)
+    def initialize(url:, kind: "heartbeat", threads: 8, duration: 30, hosts: 20_000, first_host: 1001, agent_host: nil, warm: false)
       @uri = URI(url)
       @kind = kind
       @threads = threads
@@ -30,11 +30,14 @@ module FleetBenchmark
       @hosts = hosts
       @first_host = first_host
       @agent_host = agent_host || Rails.configuration.x.fleet_hosts.agent
+      @warm = warm
       @payloads = Payloads.new
     end
 
     def call
-      bodies = KINDS.keys.select { |k| @kind == "mix" || k == @kind }.to_h { |k| [ k, build_bodies(k) ] }
+      check_hosts!
+      bodies = KINDS.keys.select { |k| @kind == "mix" || k == @kind }.without("inventory").to_h { |k| [ k, build_bodies(k) ] }
+      warm_inventories if @warm
       before = db_counters
       samples = run(bodies)
       after = db_counters
@@ -43,11 +46,44 @@ module FleetBenchmark
 
     private
 
+    # Every host the run sends as must be a seeded host with an active credential: a missing one would answer 401
+    # quickly and inflate the throughput (review of #188).
+    def check_hosts!
+      first, last = [ @first_host, @first_host + @hosts - 1 ].map { |i| FleetBenchmark.credential(i).split(".").first }
+      found = AgentCredential.active.where(key_id: first..last).count
+      return if found == @hosts
+
+      abort "load: only #{found} of the #{@hosts} hosts from #{@first_host} have an active seeded credential; " \
+            "adjust --first-host and --load-hosts to the seed (bin/benchmark seed --hosts)"
+    end
+
+    # A seeded host's inventory is a copy of the template's, so its first own report writes a snapshot and records its
+    # machine id. --warm sends that first report to every host before the run, untimed, so the run measures steady reports.
+    def warm_inventories
+      counter = Concurrent::AtomicFixnum.new(-1)
+      Array.new(@threads) do
+        Thread.new do
+          http = connect
+          while (n = counter.increment) < @hosts
+            http.request(request_for("inventory", @first_host + n, JSON.generate(@payloads.inventory(@first_host + n))))
+          end
+        end
+      end.each(&:join)
+    end
+
+    def request_for(kind, host, body)
+      path, gzip = KINDS.fetch(kind)
+      request = Net::HTTP::Post.new(path, "Content-Type" => "application/json", "Host" => @agent_host,
+                                          "Authorization" => "Bearer #{FleetBenchmark.credential(host)}")
+      request["Content-Encoding"] = "gzip" if gzip
+      request.body = body
+      request
+    end
+
     def build_bodies(kind)
       Array.new(POOL) do
         payload = case kind
         when "heartbeat" then @payloads.heartbeat(0)
-        when "inventory" then @payloads.inventory(0)
         when "config" then @payloads.config(0)
         when "packages" then @payloads.packages(0)
         else @payloads.task_poll
@@ -79,12 +115,11 @@ module FleetBenchmark
       while FleetBenchmark.clock < deadline
         n = counter.increment
         kind = pick_kind(rng)
-        path, gzip = KINDS.fetch(kind)
-        body = bodies.fetch(kind)[n % POOL]
-        request = Net::HTTP::Post.new(path, "Content-Type" => "application/json", "Host" => @agent_host,
-                                            "Authorization" => "Bearer #{FleetBenchmark.credential(@first_host + (n % @hosts))}")
-        request["Content-Encoding"] = "gzip" if gzip
-        request.body = body
+        host = @first_host + (n % @hosts)
+        # An inventory report names its host (hostname, machine id), so it is built for the host it is sent as; the
+        # other kinds carry nothing host-specific and come from the pool.
+        body = kind == "inventory" ? JSON.generate(@payloads.inventory(host)) : bodies.fetch(kind)[n % POOL]
+        request = request_for(kind, host, body)
         started = FleetBenchmark.clock
         begin
           response = http.request(request)
@@ -119,7 +154,10 @@ module FleetBenchmark
     end
 
     def print_results(samples, db)
-      puts format("load: %s, %d threads, %d s, %d hosts, against %s", @kind, @threads, @duration, @hosts, @uri)
+      puts format("load: %s, %d threads, %d s, %d hosts, against %s%s", @kind, @threads, @duration, @hosts, @uri, @warm ? ", inventories warmed" : "")
+      if !@warm && %w[inventory mix].include?(@kind)
+        puts "note: without --warm, a host's first inventory report in this database writes a snapshot (seeded inventories are the template's)"
+      end
       puts format("%-10s %8s %8s %8s %8s %8s %8s  %-22s %9s %9s", "kind", "requests", "req/s", "p50 ms", "p90 ms", "p99 ms", "max ms", "statuses", "bytes in", "bytes out")
       samples.group_by(&:first).sort_by { |kind, _| KINDS.keys.index(kind) }.each { |kind, rows| print_row(kind, rows) }
       print_row("all", samples) if @kind == "mix"

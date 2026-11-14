@@ -13,8 +13,10 @@ module FleetBenchmark
 
     def call
       puts format("%-58s %10s %10s %10s %8s %12s", "job", "median ms", "min ms", "max ms", "units", "ms per unit")
-      measurements.each do |name, (units, work, setup)|
+      measurements.each do |name, (units, work, setup, warm)|
         next if @only && !name.include?(@only)
+
+        work.call if warm # the first run may write what later runs do not (the seed's resolved findings reopen), so it is not timed
 
         times = Array.new(@repeat) { setup ? rolled_back { setup.call && time(&work) } : time(&work) }
         median = FleetBenchmark.median(times)
@@ -58,9 +60,9 @@ module FleetBenchmark
         # so every host goes offline at once, as after a server outage.
         "liveness evaluation, steady (per active host)" => [ active, -> { Liveness.evaluate! }, -> { fresh_heartbeats } ],
         "liveness evaluation, all go offline (per host)" => [ active, -> { Liveness.evaluate!(now: Time.current + 20.minutes) }, -> { fresh_heartbeats } ],
-        "CIS evaluation, every rule (per host)" => [ cis_hosts.size, -> { CisEvaluation.evaluate!(cis_hosts) } ],
-        "vulnerability matching, every package (per host)" => [ package_hosts.size, -> { VulnerabilityMatcher.match!(package_hosts) } ],
-        "advisory import: one changed source (per affected host)" => [ targeted, -> { VulnerabilityMatchJob.new.perform(packages: sources) } ],
+        "CIS evaluation, every rule (per host)" => [ cis_hosts.size, -> { CisEvaluation.evaluate!(cis_hosts) }, nil, true ],
+        "vulnerability matching, every package (per host)" => [ package_hosts.size, -> { VulnerabilityMatcher.match!(package_hosts) }, nil, true ],
+        "advisory import: one changed source (per affected host)" => [ targeted, -> { VulnerabilityMatchJob.new.perform(packages: sources) }, nil, true ],
         "retention prune, all tables (rolled back; per row deleted)" => [ retention_rows, -> { rolled_back { Retention.prune! } } ],
         "retention dry run (counts only)" => [ 1, -> { Retention.prune!(dry_run: true) } ],
         "task expiry and leases (per run)" => [ 1, -> { rolled_back { TaskLeases.expire! && TaskLeases.lapse! } } ]

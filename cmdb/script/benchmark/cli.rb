@@ -26,6 +26,7 @@ module FleetBenchmark
         o.on("--load-hosts N", Integer, "seeded hosts to send as, in turn (default 20000)") { |v| options[:load_hosts] = v }
         o.on("--first-host N", Integer, "the first of them (default 1001, after the hosts with queued tasks)") { |v| options[:first_host] = v }
         o.on("--agent-host NAME", "the server's FLEET_AGENT_HOST (default this environment's)") { |v| options[:agent_host] = v }
+        o.on("--warm", "load: first send each host its own inventory report, untimed") { options[:warm] = true }
       end
       parser.parse!(argv)
       refuse_production!
@@ -36,7 +37,7 @@ module FleetBenchmark
       when "jobs" then Jobs.new(**options.slice(:repeat, :samples, :only)).call
       when "load"
         Load.new(url: options.fetch(:url) { abort("load needs --url") }, hosts: options.fetch(:load_hosts, 20_000),
-                 **options.slice(:kind, :threads, :duration, :first_host, :agent_host)).call
+                 **options.slice(:kind, :threads, :duration, :first_host, :agent_host, :warm)).call
       else
         puts parser
         return 1

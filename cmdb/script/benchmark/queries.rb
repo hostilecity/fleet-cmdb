@@ -23,7 +23,10 @@ module FleetBenchmark
       cases.each do |c|
         next if @only && !c.name.include?(@only)
 
-        print_case(c, run_case(c, sample_hosts(c.hosts)))
+        hosts = sample_hosts(c.hosts)
+        next puts(format("%-30s skipped: no seeded host fits (for example no queued task left)", c.name)) if hosts.empty?
+
+        print_case(c, run_case(c, hosts))
       end
     end
 

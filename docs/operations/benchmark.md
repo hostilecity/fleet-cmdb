@@ -29,8 +29,10 @@ RAILS_ENV=production RAILS_LOG_LEVEL=warn SECRET_KEY_BASE=<64 characters> FLEET_
   DATABASE_URL=... QUEUE_DATABASE_URL=... CACHE_DATABASE_URL=... CABLE_DATABASE_URL=... PORT=3001 bundle exec puma -C config/puma.rb
 
 bin/benchmark load --url http://127.0.0.1:3001 --agent-host agent.example.lan --kind heartbeat --threads 8 --duration 30
-bin/benchmark load --url http://127.0.0.1:3001 --agent-host agent.example.lan --kind mix --threads 8 --duration 60
+bin/benchmark load --url http://127.0.0.1:3001 --agent-host agent.example.lan --kind mix --threads 8 --duration 60 --warm
 ```
+
+`load` checks that every host it will send as (`--first-host`, `--load-hosts`) has a seeded credential. A seeded host's inventory is a copy of the template's, so its first inventory report writes a snapshot; `--warm` sends each host that first report before the run, untimed, so `inventory` and `mix` runs measure steady reports.
 
 `bin/benchmark --help` lists every option. Reset with `bin/rails db:schema:load` before seeding again, and drop the databases when done (`bin/rails db:drop`).
 
@@ -38,10 +40,10 @@ bin/benchmark load --url http://127.0.0.1:3001 --agent-host agent.example.lan --
 
 | Command | Measures |
 |---|---|
-| `seed` | Creates one template host through the real API and jobs (heartbeat, inventory, config and package reports, CIS evaluation, vulnerability matching, with the simulator's Phase 2 rules and advisories), then copies its rows in SQL to `--hosts` hosts, with history spread over 1.2 retention windows so pruning has work to do. A third of the hosts are "stable": all their inventory snapshots are older than the window. Prints each table's rows and bytes per row, the figures to extrapolate from. |
+| `seed` | Needs an empty database. Creates one template host through the real API and jobs (heartbeat, inventory, config and package reports, CIS evaluation, vulnerability matching, with the simulator's Phase 2 rules and advisories), then copies its rows in SQL to `--hosts` hosts, with history spread over 1.2 retention windows so pruning has work to do. A third of the hosts are "stable": all their inventory snapshots are older than the window. Prints each table's rows and bytes per row, the figures to extrapolate from. |
 | `queries` | Each agent request in process through the whole Rails stack, for `--samples` hosts: wall and SQL time (median, p99), statements, rows, request and response bytes. `--verbose` lists the statements, so a review can see a new one. |
 | `explain` | Runs each hot path (liveness, fleet list, compliance, task list, audit log, retention, advisory re-matching, CIS evaluation, vulnerability matching, task jobs, host page) in a rolled-back transaction, and prints EXPLAIN (ANALYZE, BUFFERS) for every statement it sent. Sequential scans of large tables are flagged: those statements grow with the fleet. |
-| `jobs` | Times the jobs whose cost grows with the fleet (median, min, max of `--repeat` runs) and the cost per host or per row. |
+| `jobs` | Times the jobs whose cost grows with the fleet (median, min, max of `--repeat` runs) and the cost per host or per row. CIS evaluation and matching run once untimed first: the seed leaves findings that the first run reopens. |
 | `load` | Closed-loop HTTP load, each request as the next seeded host: throughput, p50, p90, p99, status counts, payload sizes, and the database's commits, rows written, and HOT update share for `hosts` during the run. `--kind mix` sends the default intervals' proportions (per agent per hour: 60 heartbeats, 120 task polls, 4 inventory reports, and one config and one package report every 6 hours). |
 
 ## Reading the results

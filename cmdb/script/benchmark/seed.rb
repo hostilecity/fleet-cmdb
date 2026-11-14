@@ -45,7 +45,8 @@ module FleetBenchmark
 
     def refuse_production!
       raise "bin/benchmark seed refuses to run in production" if Rails.env.production?
-      raise "the database already has benchmark hosts; reset it first (bin/rails db:schema:load)" if Host.where("name LIKE 'bench-%'").exists?
+      # Some phases update rows in bulk; on an empty database they can only touch what the seed wrote (review of #188).
+      raise "bin/benchmark seed needs an empty database: reset it first (bin/rails db:schema:load)" if Host.exists? || Task.exists?
     end
 
     def log(message) = puts("[seed] #{message}")
@@ -130,7 +131,7 @@ module FleetBenchmark
       # Some resolved findings too, as upgrades leave them: a fifth of the open ones, resolved 30 to 120 days ago.
       run_sql(<<~SQL)
         UPDATE vulnerability_findings SET state = 'resolved', resolution = 'fixed', resolved_at = now() - (30 + (id % 90)) * interval '1 day'
-        WHERE id % 5 = 0 AND host_id <> #{@template}
+        WHERE id % 5 = 0 AND host_id IN (SELECT id FROM hosts WHERE name LIKE 'bench-%' AND id <> #{@template})
       SQL
     end
 
@@ -206,11 +207,13 @@ module FleetBenchmark
                now() - (s * 7) * interval '1 day' + interval '24 hours', now() - (s * 7) * interval '1 day', now()
         FROM (#{task_hosts}) h CROSS JOIN generate_series(1, #{@o[:tasks_per_host]}) s
       SQL
-      run_sql("UPDATE tasks SET state = 'claimed', claimed_at = created_at, lease_expires_at = created_at + interval '5 minutes'")
-      run_sql("UPDATE tasks SET state = 'running', started_at = created_at, lease_expires_at = created_at + interval '15 minutes'")
+      seeded = "task_batch_id = ANY (ARRAY[#{batch_ids.join(',')}]::bigint[])"
+      run_sql("UPDATE tasks SET state = 'claimed', claimed_at = created_at, lease_expires_at = created_at + interval '5 minutes' WHERE #{seeded}")
+      run_sql("UPDATE tasks SET state = 'running', started_at = created_at, lease_expires_at = created_at + interval '15 minutes' WHERE #{seeded}")
       run_sql(<<~SQL)
         UPDATE tasks SET state = 'succeeded', finished_at = created_at + interval '1 minute', exit_status = 0, output = 'reports sent',
                result_report_id = gen_random_uuid(), result_digest = md5(id::text) || md5(id::text), result_received_at = created_at + interval '1 minute'
+        WHERE #{seeded}
       SQL
       run_sql(<<~SQL)
         INSERT INTO tasks (task_batch_id, host_id, task_type, parameters, state, timeout_seconds, expires_at, created_at, updated_at)
@@ -222,6 +225,7 @@ module FleetBenchmark
         SELECT CASE WHEN a.action = 'task.created' THEN 'operator' ELSE 'host' END, CASE WHEN a.action = 'task.created' THEN #{operator.id} ELSE t.host_id END,
                a.action, 'Task', t.id, jsonb_build_object('state', jsonb_build_array(NULL, a.action)), t.created_at
         FROM tasks t CROSS JOIN (VALUES ('task.created'), ('task.claimed'), ('task.started'), ('task.succeeded')) a(action)
+        WHERE t.#{seeded}
       SQL
       run_sql(<<~SQL)
         INSERT INTO audit_entries (actor_type, actor_id, action, target_type, target_id, changeset, occurred_at)
