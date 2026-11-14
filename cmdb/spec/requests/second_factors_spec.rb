@@ -14,12 +14,13 @@ RSpec.describe "Your second factor", :signed_in, type: :request do
     follow_redirect!
   end
 
-  it "says there is none yet, how to set one up, and how a lost authenticator is reset" do
+  it "says there is none yet and how to set one up, without the lost-authenticator help that does not apply yet" do
     get second_factor_path
     expect(response).to have_http_status(:ok)
     expect(response.headers["Cache-Control"]).to eq("no-store")
     expect(page.at_css("nav.tabs a[aria-current=page]").text).to eq("Your second factor")
-    expect(page.text).to include("You have no second factor", "bin/rails second_factor:reset EMAIL=operator@example.com")
+    expect(page.text).to include("You have no second factor")
+    expect(page.at_css("#lost_heading")).to be_nil
     expect(page.at_css("a.btn[href='#{setup_second_factor_path}']").text).to eq("Set up an authenticator app")
   end
 
@@ -57,6 +58,8 @@ RSpec.describe "Your second factor", :signed_in, type: :request do
 
     get second_factor_path
     expect(page.text).to include("Authenticator app set up", "10 of 10 unused")
+    expect(page.at_css("#lost_heading").text).to eq("Lost your authenticator?")
+    expect(page.at_css("section:has(#lost_heading) pre").text).to eq("docker exec fleet-cmdb bin/rails second_factor:reset EMAIL=operator@example.com")
     expect(page.text).not_to include(*codes)
   end
 
