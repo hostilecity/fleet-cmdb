@@ -72,13 +72,15 @@ module Liveness
     Host.connection_pool.with_connection do |connection|
       next 0 unless connection.select_value("SELECT pg_try_advisory_lock(#{EVALUATION_LOCK_KEY})")
 
+      changed = []
       begin
         now ||= Time.current
         thresholds ||= Setting.liveness_thresholds
-        changed = buckets(now, thresholds).flat_map { |status, condition| transition_all!(status, condition, now) }
-        FleetBroadcast.hosts_changed(changed)
+        buckets(now, thresholds).each { |status, condition| transition_all!(status, condition, now, changed) }
         changed.size
       ensure
+        # Also when a later batch fails: the batches before it are committed, and open pages must show them (review of #186).
+        FleetBroadcast.hosts_changed(changed)
         unlock(connection)
       end
     end
@@ -105,17 +107,18 @@ module Liveness
   end
   private_class_method :buckets
 
-  # Every host that should move to status, in batches in id order; returns their ids. Each batch starts after the
-  # last id of the one before, so the run reads the table once however many batches it takes, and a batch smaller
-  # than BATCH_SIZE is the last.
-  def transition_all!(status, condition, now)
-    changed = []
+  # Every host that should move to status, in batches in id order, each batch's ids added to changed once it has
+  # committed. Each batch starts after the last id of the one before, so the run reads the table once however many
+  # batches it takes, and a batch smaller than BATCH_SIZE is the last.
+  def transition_all!(status, condition, now, changed)
+    after = 0
     loop do
-      batch = transition_batch!(status, condition, now, after: changed.last || 0)
+      batch = transition_batch!(status, condition, now, after:)
       changed.concat(batch)
       break if batch.size < BATCH_SIZE
+
+      after = batch.last
     end
-    changed
   end
   private_class_method :transition_all!
 

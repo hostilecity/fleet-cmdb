@@ -98,10 +98,30 @@ RSpec.describe Liveness do
     expect(batches.size).to eq(5) # and one query each for the online and stale buckets, which have nothing to move
   end
 
+  it "refreshes the fleet pages for the batches that committed when a later batch fails, then releases the lock (review of #186)" do
+    stub_const("Liveness::BATCH_SIZE", 1)
+    others = Array.new(2) { enrolled_host.first }
+    ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
+    calls = 0
+    allow(HostStatusEvent).to receive(:insert_all!).and_wrap_original do |original, *args|
+      raise ActiveRecord::StatementInvalid, "simulated failure" if (calls += 1) == 2
+
+      original.call(*args)
+    end
+    allow(FleetBroadcast).to receive(:hosts_changed)
+
+    expect { travel_to(start + 20.minutes) { described_class.evaluate! } }.to raise_error(ActiveRecord::StatementInvalid)
+    first = Host.where(liveness_status: "offline").pluck(:id)
+    expect(first.size).to eq(1) # the first batch committed; the second rolled back
+    expect(FleetBroadcast).to have_received(:hosts_changed).with(first)
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(2) # the lock was released; the next run does the rest
+  end
+
   it "releases the evaluation lock after a run, so the next run is not refused" do
     heartbeat_at(start)
     expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(1)
-    expect(Host.connection.select_value("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = #{Liveness::EVALUATION_LOCK_KEY}")).to eq(0)
+    held = "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = #{Liveness::EVALUATION_LOCK_KEY} AND pid = pg_backend_pid()"
+    expect(Host.connection.select_value(held)).to eq(0) # this connection's lock only: other databases share the cluster (review of #186)
   end
 
   it "closes the connection when the lock cannot be released, so the lock goes with it and no later run is blocked" do
