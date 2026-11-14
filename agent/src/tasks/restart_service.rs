@@ -726,4 +726,121 @@ mod tests {
         );
         assert!(task.unit_dirs.iter().all(|d| d.is_absolute()));
     }
+    /// The catalog's pattern for `service`, written out by hand so the fuzz below does not trust the
+    /// code it checks: `^[A-Za-z0-9][A-Za-z0-9_.@-]{0,247}\.service$`.
+    fn fits_the_catalog(name: &str) -> bool {
+        let Some(stem) = name.strip_suffix(".service") else {
+            return false;
+        };
+        let mut chars = stem.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && stem.len() <= 248
+            && chars.all(|c| c.is_ascii_alphanumeric() || "_.@-".contains(c))
+    }
+
+    #[test]
+    fn fuzzed_service_names_are_refused_by_the_pattern_and_never_reach_systemctl() {
+        // P3-X02: a fuzz-style test of the agent's validator. Random names built from shell and
+        // option characters, whitespace and control characters, path separators, Unicode look-alikes,
+        // bidirectional and zero-width characters, and the characters the pattern does allow. A name
+        // outside the catalog's pattern is `invalid_params`; one inside it but not on this VM's list is
+        // never accepted. Nothing is ever run (the fake systemctl's call log is the canary).
+        use crate::retry::{Rng, SplitMix64};
+        let systemctl = FakeSystemctl::new(0);
+        let registry = registry(systemctl.task(vec![]), allowing(&["nginx.service"]));
+        let pieces: &[&str] = &[
+            "a",
+            "Z",
+            "0",
+            "9",
+            "_",
+            ".",
+            "@",
+            "-",
+            "--",
+            "nginx",
+            "ssh",
+            "fleet-agent",
+            ";",
+            "|",
+            "&",
+            "$",
+            "`",
+            "(",
+            ")",
+            "$(",
+            "<",
+            ">",
+            "*",
+            "?",
+            "[",
+            "]",
+            "{",
+            "}",
+            "!",
+            "~",
+            "#",
+            "'",
+            "\"",
+            "\\",
+            "/",
+            "../",
+            "%2e",
+            "%2F",
+            " ",
+            "\t",
+            "\n",
+            "\r",
+            "\0",
+            "\u{1b}[31m",
+            "\u{7f}",
+            "\u{85}",
+            "\u{a0}",
+            "\u{200b}",
+            "\u{200d}",
+            "\u{202e}",
+            "\u{2066}",
+            "\u{feff}",
+            "\u{17f}",
+            "\u{212a}",
+            "\u{0441}",
+            "\u{ff4e}",
+            "\u{1d5c7}",
+            ".service",
+            ".socket",
+            ".target",
+            ".service.d",
+            "@.service",
+        ];
+        let mut rng = SplitMix64::new(0x38);
+        let mut outside = 0;
+        for _ in 0..5_000 {
+            let mut name = String::new();
+            for _ in 0..=rng.next_u64() % 12 {
+                name.push_str(pieces[(rng.next_u64() % pieces.len() as u64) as usize]);
+            }
+            if rng.next_u64().is_multiple_of(2) {
+                name.push_str(".service");
+            }
+            let checked = registry.check(&restart(&name));
+            if fits_the_catalog(&name) {
+                assert_ne!(checked, Err("invalid_params"), "{name:?}");
+                if name != "nginx.service" {
+                    assert!(checked.is_err(), "{name:?} is not on this VM's list");
+                }
+            } else {
+                outside += 1;
+                assert_eq!(checked, Err("invalid_params"), "{name:?}");
+                let ran = registry
+                    .run(&restart(&name), &TestControl::default())
+                    .unwrap();
+                assert_eq!(ran.reason, Some("agent_error"), "{name:?}");
+            }
+        }
+        assert!(
+            outside > 1_000,
+            "the fuzz mostly built valid names ({outside} outside)"
+        );
+        assert!(systemctl.calls().is_empty(), "{:?}", systemctl.calls());
+    }
 }

@@ -117,6 +117,7 @@ RSpec.describe "Tasks pages", type: :request do
       get "/tasks/#{task.id}/output"
       expect(response.media_type).to eq("text/plain")
       expect(response.headers["Content-Disposition"]).to start_with("attachment;")
+      expect(response.headers["X-Content-Type-Options"]).to eq("nosniff") # threat model O3: never sniffed as HTML
       expect(response.body).to eq(task.output)
       get "/tasks/#{batch.tasks.last.id}/output"
       expect(response).to have_http_status(:not_found)

@@ -79,11 +79,14 @@ impl UnitInfo {
 }
 
 /// The state of each of `units` (`None` for a unit systemd does not know), or why it could not be
-/// read. Every name must satisfy [`valid_unit`].
+/// read. Every name must satisfy [`valid_unit`]: names can come from the server's config manifest,
+/// so one that does not is refused here, in release builds too, with nothing run (P3-X01 review).
 pub fn show(ctx: &Ctx, units: &[&str]) -> Result<Vec<Option<UnitInfo>>, String> {
+    if units.iter().any(|u| !valid_unit(u)) {
+        return Err("a name that is not a unit name was not passed to systemctl".into());
+    }
     let mut all = Vec::with_capacity(units.len());
     for chunk in units.chunks(CHUNK) {
-        debug_assert!(chunk.iter().all(|u| valid_unit(u)));
         let mut args = vec![
             "show",
             "--no-pager",
@@ -277,6 +280,26 @@ mod tests {
         ] {
             assert!(!valid_unit(name), "{name:?}");
         }
+    }
+
+    #[test]
+    fn show_refuses_a_name_that_is_not_a_unit_name_and_runs_nothing() {
+        // P3-X01 review: the check holds in release builds, not only as a debug assertion.
+        let host = crate::facts::fake::FakeHost::debian13();
+        let ctx = Ctx::new(&host, crate::facts::BUDGET);
+        for bad in [
+            "--host=evil.example.lan",
+            "ssh.service; reboot",
+            "../x.service",
+        ] {
+            assert!(show(&ctx, &["ssh.service", bad]).is_err(), "{bad}");
+        }
+        assert!(
+            host.log().iter().all(|entry| !entry.starts_with("run ")),
+            "{:?}",
+            host.log()
+        );
+        assert!(show(&ctx, &["ssh.service"]).is_ok());
     }
 
     #[test]
