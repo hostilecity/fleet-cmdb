@@ -594,6 +594,28 @@ fn a_server_that_sends_a_new_offer_every_time_cannot_grow_the_updaters_memory() 
         rig.world.pending().is_none(),
         "a remembered offer is not answered again"
     );
+
+    // A newer release whose download keeps failing for a moment: each rollout id gets an attempt count.
+    let rig = Rig::new();
+    let mut offer = rig.offer(NEW, 1);
+    let manifest_url = offer["manifest_url"].as_str().unwrap().to_owned();
+    for rollout_id in 1..=(3 * MEMORY_LIMIT as u64) {
+        offer["rollout_id"] = json!(rollout_id);
+        rig.fetch.errors.lock().unwrap().insert(
+            manifest_url.clone(),
+            FetchError::Transient("cannot reach the download address".into()),
+        );
+        rig.updater.process_now(&offer);
+        assert!(
+            rig.world.pending().is_none(),
+            "a transient failure is only retried"
+        );
+        let attempts = sizes(&rig).2;
+        assert!(
+            (1..=MEMORY_LIMIT).contains(&attempts),
+            "after {rollout_id} offers: {attempts} attempt counts"
+        );
+    }
 }
 
 #[test]
@@ -1091,4 +1113,30 @@ fn hostile_update_directives_never_panic_and_only_a_strict_one_is_acted_on() {
             assert!(super::layout::parse_version(&directive.version.to_string()).is_some());
         }
     });
+}
+
+#[test]
+fn a_valid_update_directive_changed_one_field_at_a_time_is_acted_on_only_if_still_strict() {
+    let valid = json!({
+        "rollout_id": 7,
+        "version": "1.2.3",
+        "manifest_url": "https://fleet-vm.example.com/m",
+        "signature_url": "https://fleet-vm.example.com/s",
+        "binary_url": "https://fleet-vm.example.com/b",
+    });
+    assert!(Directive::parse(&valid).is_some());
+    let keys = ["rollout_id", "version"];
+    let (mut taken, mut refused) = (0, 0);
+    crate::test_support::hostile::each_mutation(&valid, &keys, |value| {
+        match Directive::parse(value) {
+            Some(directive) => {
+                assert!(directive.rollout_id > 0);
+                assert_eq!(value["version"], directive.version.to_string());
+                assert!(super::layout::parse_version(&directive.version.to_string()).is_some());
+                taken += 1;
+            }
+            None => refused += 1,
+        }
+    });
+    assert!(taken > 0 && refused > 0, "{taken} taken, {refused} refused");
 }

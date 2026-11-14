@@ -613,39 +613,108 @@ mod tests {
         }
     }
 
+    /// The rules every task the poll parser accepts must keep, whatever the server sent.
+    fn check_poll(body: &Value) -> bool {
+        let Ok(reply) = parse_poll(body) else {
+            return false;
+        };
+        if let Some(task) = &reply.task {
+            assert!(crate::tasks::ledger::is_task_id(&task.id));
+            assert!(crate::tasks::catalog::is_type_id(&task.task_type));
+            assert!(task.parameters.is_object());
+            assert!((1..=86_400).contains(&task.timeout_seconds));
+            assert_eq!(body["task"]["id"], task.id.as_str());
+            assert_eq!(body["task"]["parameters"], task.parameters);
+        }
+        assert!(reply.poll_seconds.is_none_or(|s| (10..=300).contains(&s)));
+        assert!(
+            reply
+                .cancel
+                .is_none_or(|id| crate::tasks::ledger::is_task_id(&id))
+        );
+        reply.task.is_some()
+    }
+
+    /// `parse_start` accepts only `run: true`, rejects only `run: false` (with bounded text), and refuses
+    /// anything else.
+    fn check_start(body: &Value) {
+        match parse_start(body) {
+            Ok(Reply::Accepted) => assert_eq!(body.get("run"), Some(&Value::Bool(true))),
+            Ok(Reply::Rejected(state)) => {
+                assert_eq!(body.get("run"), Some(&Value::Bool(false)));
+                assert!(state.chars().count() <= 32);
+            }
+            Err(_) => assert!(!body.get("run").is_some_and(Value::is_boolean)),
+        }
+    }
+
+    /// `parse_progress` keeps its state bounded and cancels only the task it was asked about.
+    fn check_progress(body: &Value) {
+        let id = "00000000-0000-4000-8000-000000000001";
+        if let Ok(reply) = parse_progress(id, body) {
+            assert!(reply.state.chars().count() <= 32);
+            assert_eq!(reply.cancel, body["cancel"]["id"] == id);
+        }
+    }
+
+    const TASK_KEYS: [&str; 11] = [
+        "task",
+        "id",
+        "type",
+        "parameters",
+        "service",
+        "timeout_seconds",
+        "catalog_version",
+        "poll_seconds",
+        "cancel",
+        "state",
+        "run",
+    ];
+
     #[test]
     fn hostile_task_responses_never_panic_and_never_make_a_bad_task() {
-        let keys = [
-            "task",
-            "id",
-            "type",
-            "parameters",
-            "timeout_seconds",
-            "catalog_version",
-            "poll_seconds",
-            "cancel",
-            "state",
-            "run",
-        ];
-        crate::test_support::hostile::each(&keys, |body| {
-            if let Ok(reply) = parse_poll(body) {
-                if let Some(task) = reply.task {
-                    assert!(crate::tasks::ledger::is_task_id(&task.id));
-                    assert!(crate::tasks::catalog::is_type_id(&task.task_type));
-                    assert!(task.parameters.is_object());
-                    assert!((1..=86_400).contains(&task.timeout_seconds));
-                }
-                assert!(reply.poll_seconds.is_none_or(|s| (10..=300).contains(&s)));
-                assert!(
-                    reply
-                        .cancel
-                        .is_none_or(|id| crate::tasks::ledger::is_task_id(&id))
-                );
-            }
-            if let Ok(reply) = parse_progress("00000000-0000-4000-8000-000000000001", body) {
-                assert!(reply.state.chars().count() <= 32);
-            }
-            let _ = parse_start(body);
+        crate::test_support::hostile::each(&TASK_KEYS, |body| {
+            check_poll(body);
+            check_start(body);
+            check_progress(body);
         });
+    }
+
+    #[test]
+    fn a_valid_task_response_changed_one_field_at_a_time_never_makes_a_bad_task() {
+        use crate::test_support::hostile::each_mutation;
+        let poll = json!({
+            "task": {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "type": "restart_service",
+                "parameters": {"service": "nginx.service"},
+                "timeout_seconds": 60,
+                "catalog_version": 1,
+            },
+            "poll_seconds": 30,
+            "cancel": {"id": "00000000-0000-4000-8000-000000000003"},
+        });
+        assert!(check_poll(&poll), "the valid poll reply has a task");
+        let (mut tasks, mut refused) = (0, 0);
+        each_mutation(&poll, &TASK_KEYS, |body| {
+            if check_poll(body) {
+                tasks += 1;
+            } else {
+                refused += 1;
+            }
+        });
+        assert!(tasks > 0 && refused > 0, "{tasks} tasks, {refused} refused");
+
+        for valid in [
+            json!({"run": true}),
+            json!({"run": false, "state": "cancelled"}),
+        ] {
+            each_mutation(&valid, &TASK_KEYS, check_start);
+        }
+        let progress = json!({
+            "state": "running",
+            "cancel": {"id": "00000000-0000-4000-8000-000000000001"},
+        });
+        each_mutation(&progress, &TASK_KEYS, check_progress);
     }
 }

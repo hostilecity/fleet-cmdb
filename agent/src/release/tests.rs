@@ -539,14 +539,39 @@ fn the_release_workflow_script_writes_a_manifest_the_agent_accepts() {
 fn hostile_manifests_never_panic_and_only_a_well_formed_one_parses() {
     // parse_manifest only ever sees bytes whose signature verified, but it must not trust them either.
     let keys = ["format", "version", "target", "sha256", "size"];
-    crate::test_support::hostile::each(&keys, |value| {
+    let check = |value: &serde_json::Value| -> bool {
         let bytes = serde_json::to_vec(value).unwrap();
-        if let Ok(manifest) = parse_manifest(&bytes) {
-            assert_eq!(manifest.target, TARGET);
-            assert!((1..=MAX_BINARY_BYTES).contains(&manifest.size));
-            assert!(manifest.version.build.is_empty());
-        }
         // The same bytes cut short, as a torn download would leave them.
-        let _ = parse_manifest(&bytes[..bytes.len() / 2]);
+        assert!(parse_manifest(&bytes[..bytes.len() / 2]).is_err());
+        match parse_manifest(&bytes) {
+            Ok(manifest) => {
+                assert_eq!(value["format"], MANIFEST_FORMAT);
+                assert_eq!(manifest.target, TARGET);
+                assert!((1..=MAX_BINARY_BYTES).contains(&manifest.size));
+                assert!(manifest.version.build.is_empty());
+                assert_eq!(value["version"], manifest.version.to_string());
+                assert_eq!(value["sha256"], hex(&manifest.sha256));
+                true
+            }
+            Err(_) => false,
+        }
+    };
+    crate::test_support::hostile::each(&keys, |value| {
+        check(value);
     });
+    // One field at a time of a valid manifest, so hostile values reach every check after `format`.
+    let valid: serde_json::Value = serde_json::from_slice(&manifest_for(BINARY, "1.2.3")).unwrap();
+    assert!(check(&valid), "the valid manifest parses");
+    let (mut accepted, mut refused) = (0, 0);
+    crate::test_support::hostile::each_mutation(&valid, &keys, |value| {
+        if check(value) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    });
+    assert!(
+        refused > 0 && accepted > 0,
+        "{accepted} accepted, {refused} refused"
+    );
 }

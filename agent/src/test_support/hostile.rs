@@ -197,3 +197,94 @@ pub fn each(keys: &[&str], mut check: impl FnMut(&Value)) {
         }
     }
 }
+
+/// One step into a value: an object's field, or a list's item.
+#[derive(Debug, Clone)]
+enum Step {
+    Field(String),
+    Item(usize),
+}
+
+impl std::fmt::Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Field(key) => write!(f, ".{key}"),
+            Self::Item(index) => write!(f, "[{index}]"),
+        }
+    }
+}
+
+/// The path (outermost first) of every object field and list item in `value`.
+fn paths(value: &Value, prefix: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
+    let children: Vec<(Step, &Value)> = match value {
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| (Step::Field(k.clone()), v))
+            .collect(),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (Step::Item(i), v))
+            .collect(),
+        _ => Vec::new(),
+    };
+    for (step, inner) in children {
+        prefix.push(step);
+        out.push(prefix.clone());
+        paths(inner, prefix, out);
+        prefix.pop();
+    }
+}
+
+/// `valid` with the part at `path` replaced by `with`, or removed when `with` is `None`.
+fn mutated(valid: &Value, path: &[Step], with: Option<Value>) -> Value {
+    let mut value = valid.clone();
+    let (last, parents) = path.split_last().expect("a path is never empty");
+    let mut parent = &mut value;
+    for step in parents {
+        parent = match step {
+            Step::Field(key) => parent.get_mut(key.as_str()),
+            Step::Item(index) => parent.get_mut(*index),
+        }
+        .expect("the path exists in the valid value");
+    }
+    match (last, parent, with) {
+        (Step::Field(key), Value::Object(map), Some(with)) => {
+            map.insert(key.clone(), with);
+        }
+        (Step::Field(key), Value::Object(map), None) => {
+            map.remove(key);
+        }
+        (Step::Item(index), Value::Array(items), Some(with)) => items[*index] = with,
+        (Step::Item(index), Value::Array(items), None) => {
+            items.remove(*index);
+        }
+        _ => unreachable!("a path's parent is an object or a list"),
+    }
+    value
+}
+
+/// Runs `check` on [`CASES`] copies of `valid`, each with one field or list item (at any depth) replaced by a hostile
+/// value or removed, so that hostile values also reach the checks a parser makes after its first ones.
+/// A panic names the seed, the field, and the value.
+pub fn each_mutation(valid: &Value, keys: &[&str], mut check: impl FnMut(&Value)) {
+    let mut all = Vec::new();
+    paths(valid, &mut Vec::new(), &mut all);
+    assert!(!all.is_empty(), "the valid value has parts to change");
+    for seed in 0..CASES {
+        let mut hostile = Hostile::new(seed, keys);
+        let path = &all[hostile.below(all.len())];
+        let with = match hostile.below(6) {
+            0 => None,
+            1 | 2 => Some(hostile.value(0)),
+            _ => Some(hostile.value(2)),
+        };
+        let value = mutated(valid, path, with);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&value)));
+        if caught.is_err() {
+            let shown: String = value.to_string().chars().take(2_000).collect();
+            let at: String = path.iter().map(ToString::to_string).collect();
+            panic!("seed {seed} (at {at}) panicked the parser on: {shown}");
+        }
+    }
+}
