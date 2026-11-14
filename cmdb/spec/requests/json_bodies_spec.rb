@@ -101,11 +101,16 @@ RSpec.describe "JSON request bodies", type: :request do
       expect(json.dig("error", "message")).to eq("The request body has a number longer than #{limit} digits.")
     end
 
-    it "leaves a body that is not JSON, or not UTF-8, to the JSON check" do
-      [ "#{long_number}-not-json", "{\"a\":\"\xFF\",\"b\":\"#{long_number}\"}".b, "{\"a\":\"\xFF\"}".b ].each do |body|
-        post_api "/api/v1/heartbeat", body, credential
-        expect_error(:bad_request, "validation_failed")
-      end
+    it "still refuses a body that is not JSON" do
+      post_api "/api/v1/heartbeat", "#{long_number}-not-json", credential
+      expect_error(:bad_request, "validation_failed")
+    end
+
+    it "scans invalid UTF-8 as bytes and leaves its handling to the parser and the endpoint, as before" do
+      post_api "/api/v1/heartbeat", heartbeat_with(%("\xFF #{long_number}")).b, credential
+      expect(response).to have_http_status(:ok)
+      post_api "/api/v1/heartbeat", heartbeat_with("[\"\xFF\", #{long_number}]").b, credential
+      expect(json.dig("error", "message")).to eq("The request body has a number longer than #{limit} digits.")
     end
   end
 end

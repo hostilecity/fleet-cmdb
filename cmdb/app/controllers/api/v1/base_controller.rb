@@ -97,8 +97,9 @@ module Api
       end
 
       # Whether the body has more than MAX_NUMBER_DIGITS digits in a row outside its strings, checked before parsing.
-      # Read as bytes, so invalid UTF-8 is left for JSON.parse to refuse; a body that is not JSON gets some answer here
-      # and is refused there.
+      # Read as bytes, so the scan itself never fails on invalid UTF-8: the body then goes to JSON.parse and the endpoint
+      # unchanged, and each handles encoding as before (task output keeps invalid UTF-8 and scrubs it, docs/api/README.md).
+      # A body that is not JSON gets some answer here and is refused by JSON.parse.
       def long_number?(body)
         bytes = body.b
         # The usual case, and fast (a few ms for 4 MB): no such run anywhere, strings included.
