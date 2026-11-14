@@ -15,7 +15,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 ### Implementation notes
 
 - `Retention` (`cmdb/app/services/retention.rb`) prunes `inventory_snapshots` and `host_status_events` (keeping each host's newest row) and `inventory_report_receipts`. A later phase adds its own snapshot table with `Retention.register`. `RetentionPruneJob` runs daily (`config/recurring.yml`), `dry_run: true` only counts, and each run logs the counts.
-- One setting, `retention.days` (default 90, 7 to 3650), covers all three tables: `bin/rails settings:retention DAYS=90`. There is no dashboard control yet (P1-D02 owns the settings page).
+- One setting, `retention.days` (default 90, 7 to 3650), covers the snapshot and history tables: `bin/rails settings:retention DAYS=90`. Report receipts are kept for the shorter of 7 days and that window (`Retention::REPORT_ID_WINDOW`). There is no dashboard control yet (P1-D02 owns the settings page).
 
 ### Acceptance criteria
 

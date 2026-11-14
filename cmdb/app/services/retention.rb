@@ -14,7 +14,8 @@
 # - Report ids (the receipts that recognise a retried report) are kept for REPORT_ID_WINDOW, or the retention window
 #   if it is shorter: they only need to outlive an agent's retries, and an agent writes one for every report (96
 #   inventory reports a day), so at 90 days they were the largest table of all (about 9,400 rows a host). A report
-#   retried after its receipt is gone is stored again as a new report; its content is the current state, so no snapshot.
+#   retried after its receipt is gone is processed again as a new report: it writes a snapshot only if its content
+#   differs from the host's stored state, as any report does.
 # - Deletes run in batches of `batch_size` rows, each its own short statement, so a large table never holds a
 #   long lock or writes one huge transaction.
 # - `dry_run` counts what would be deleted and changes nothing.
