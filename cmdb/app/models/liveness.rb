@@ -10,6 +10,8 @@ module Liveness
   STATUSES = %w[online stale offline].freeze
   # Advisory lock key that serialises evaluation runs ("live" in ASCII).
   EVALUATION_LOCK_KEY = 0x6c697665
+  # Hosts moved per transaction by evaluate!, so a heartbeat never waits behind a fleet-wide transition.
+  BATCH_SIZE = 1_000
 
   module_function
 
@@ -56,24 +58,41 @@ module Liveness
   end
   private_class_method :task_capability_columns
 
-  # Moves every active host to the status its last heartbeat implies. Runs are serialised by a transaction-
-  # level advisory lock taken before the clock and thresholds are read, so an older run can never act after
-  # a newer one (review of #50); a run that finds another in progress does nothing, and the next minute's
-  # run catches up. Rows a heartbeat holds are skipped and handled by the next run. Returns the number of
-  # transitions written.
+  # Moves every active host to the status its last heartbeat implies. Runs are serialised by a session-level
+  # advisory lock taken before the clock and thresholds are read and released when the run ends, so an older run
+  # can never act after a newer one (review of #50); a run that finds another in progress does nothing, and the
+  # next minute's run catches up. Rows a heartbeat holds are skipped and handled by the next run. Returns the
+  # number of transitions written.
+  #
+  # Transitions are written in transactions of at most BATCH_SIZE hosts, each committed before the next, so a
+  # heartbeat waits for at most one batch's row locks. In one transaction, every host going offline at once (after
+  # a server outage, or a network partition) held every host row until the whole run committed: 12 s for 100,000
+  # hosts on the scale benchmark, with every heartbeat of the fleet queued behind it.
   def evaluate!(now: nil, thresholds: nil)
-    Host.transaction do
-      if Host.connection.select_value("SELECT pg_try_advisory_xact_lock(#{EVALUATION_LOCK_KEY})")
+    Host.connection_pool.with_connection do |connection|
+      next 0 unless connection.select_value("SELECT pg_try_advisory_lock(#{EVALUATION_LOCK_KEY})")
+
+      begin
         now ||= Time.current
         thresholds ||= Setting.liveness_thresholds
         changed = buckets(now, thresholds).flat_map { |status, condition| transition_all!(status, condition, now) }
         FleetBroadcast.hosts_changed(changed)
         changed.size
-      else
-        0
+      ensure
+        unlock(connection)
       end
     end
   end
+
+  # A session lock outlives the run if it is not released, and would then block every later run on other
+  # connections. If the unlock itself fails (the connection broke, or a caller's transaction was aborted), the
+  # connection is closed and taken out of the pool, which releases the lock with it.
+  def unlock(connection)
+    connection.select_value("SELECT pg_advisory_unlock(#{EVALUATION_LOCK_KEY})")
+  rescue ActiveRecord::ActiveRecordError
+    connection.throw_away!
+  end
+  private_class_method :unlock
 
   def buckets(now, thresholds)
     online_after = now - thresholds[:online]
@@ -86,17 +105,33 @@ module Liveness
   end
   private_class_method :buckets
 
+  # Every host that should move to status, in batches in id order; returns their ids. Each batch starts after the
+  # last id of the one before, so the run reads the table once however many batches it takes, and a batch smaller
+  # than BATCH_SIZE is the last.
   def transition_all!(status, condition, now)
-    candidates = Host.active.where.not(last_seen_at: nil).where(*condition)
-                     .where("hosts.liveness_status IS DISTINCT FROM ?", status)
-                     .lock("FOR UPDATE SKIP LOCKED").pluck(:id, :liveness_status)
-    return [] if candidates.empty?
-
-    Host.where(id: candidates.map(&:first)).update_all(liveness_status: status)
-    HostStatusEvent.insert_all!(candidates.map do |id, from|
-      { host_id: id, from_status: from, to_status: status, reason: "evaluation", occurred_at: now }
-    end)
-    candidates.map(&:first)
+    changed = []
+    loop do
+      batch = transition_batch!(status, condition, now, after: changed.last || 0)
+      changed.concat(batch)
+      break if batch.size < BATCH_SIZE
+    end
+    changed
   end
   private_class_method :transition_all!
+
+  def transition_batch!(status, condition, now, after:)
+    Host.transaction do
+      candidates = Host.active.where.not(last_seen_at: nil).where(*condition).where("hosts.id > ?", after)
+                       .where("hosts.liveness_status IS DISTINCT FROM ?", status)
+                       .order(:id).limit(BATCH_SIZE).lock("FOR UPDATE SKIP LOCKED").pluck(:id, :liveness_status)
+      next [] if candidates.empty?
+
+      Host.where(id: candidates.map(&:first)).update_all(liveness_status: status)
+      HostStatusEvent.insert_all!(candidates.map do |id, from|
+        { host_id: id, from_status: from, to_status: status, reason: "evaluation", occurred_at: now }
+      end)
+      candidates.map(&:first)
+    end
+  end
+  private_class_method :transition_batch!
 end
