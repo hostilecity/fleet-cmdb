@@ -91,6 +91,7 @@ The files of a signed release the server has imported ([docs/releases.md](../rel
   - Unknown fields are ignored and logged, so schemas do not set `additionalProperties: false`.
   - Wrong types, out-of-range values, and unknown values of enumerated fields are rejected.
   - Formats such as timestamps, UUIDs and credentials are checked with `pattern`, not `format`, so every validator agrees. Patterns cannot express every calendar rule (for example 30 February), so the server also parses timestamps and addresses when it implements an endpoint.
+  - Before the body is parsed, the server refuses a number with more than 32 digits in a row outside strings (`400 validation_failed`). No field allows one (the longest number any schema allows has 16 digits), and parsing a very long one is slow.
 - **Identifiers:**
   - Every report carries a `report_id`: a UUIDv4, generated per report and reused on retry.
   - A report whose `report_id` was already processed is answered `200` with `duplicate: true` and changes nothing.
