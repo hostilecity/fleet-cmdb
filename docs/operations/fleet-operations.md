@@ -19,7 +19,7 @@ Use it after a revocation, when a VM lost `/etc/fleet-agent/config.toml`, or whe
 
 The old credential stops working the moment the new one is issued. **Check:** the host returns to **Online**, and its page shows the new credential's key id.
 
-**Recovering a lost credential** is the same thing: the server stores only a hash, so a lost credential cannot be shown again; re-enroll instead. If the VM was cloned from another enrolled VM, the host page warns of a machine ID mismatch; re-enroll the clone as a **new host**, and the original keeps its own credential.
+**Recovering a lost credential** is the same thing: the server stores only a hash, so a lost credential cannot be shown again; re-enroll instead. If a VM was cloned from another enrolled VM, agent config included, both use one credential and the host page warns of a machine ID mismatch; on the clone run `fleet-agent install --reenroll` and approve it as a **new host**. Then re-enroll the original as the same host: its credential stays the original's, but only a re-enrollment clears the warning. For VMs cloned from one template before the agent was installed, see [troubleshooting.md](troubleshooting.md#vms-cloned-from-one-template).
 
 ## Retire a host
 
@@ -64,6 +64,43 @@ It removes their authenticator and recovery codes, ends any step-up window, and 
 - **Limits:** the most hosts in one batch (up to 25), the output kept per task (4 KiB to 1 MiB), the poll interval agents are asked to use (300 s by default; a heartbeat tells an agent at once when a task is waiting, so this only bounds how late a task starts if that is missed), and how long each task type may wait before it expires (1 hour to 7 days, 24 hours by default). Changes apply to what happens next; tasks already queued keep their expiry.
 
 Removing a service, revoking a host's credential, re-enrolling it, or retiring it never runs anything: queued restarts of a removed service are refused when their agent picks them up, and a host's queued tasks are cancelled when it is revoked, re-enrolled, or retired.
+
+## Run a task
+
+A task runs one action from a fixed catalog on a host: **Refresh reports**, **Restart a service**, or **Apply package updates**. The dashboard cannot send a command. Each VM decides for itself what it will run, so only **Refresh reports** works until you turn the others on, on the VM.
+
+**Once per VM**, as root, in `/etc/fleet-agent/config.toml`:
+
+```toml
+[tasks]
+enabled = ["refresh_reports", "restart_service", "apply_package_updates"]
+allowed_services = ["nginx.service"]       # only for restart_service
+```
+
+Then check it and restart the agent:
+
+```sh
+fleet-agent check-config
+systemctl restart fleet-agent
+```
+
+The host reports its task types within a minute. A mistake in `[tasks]` turns every task type off on that VM, and `check-config` says why.
+
+**Once per operator:** set up your second factor under **Settings > Your second factor**. For **Restart a service**, also add the service under **Settings > Tasks**, as above.
+
+**Each time:** **Tasks > New task**, or **Run a task on this host** on a host's page. Choose the task, its parameters, and the hosts, check the confirmation page, and type a code from your authenticator app. The task page, and the batch page for several hosts, update live.
+
+| The task ends as | What to do |
+|---|---|
+| **Succeeded** | Nothing. For package updates, the page says if the VM needs a reboot; the task never reboots. |
+| **Refused**, `not_enabled_locally` | Turn the task type on in that VM's `[tasks] enabled`, as above. |
+| **Refused**, `not_allowed_locally` | Add the service to that VM's `[tasks] allowed_services`. |
+| **Refused**, `protected_service` | Nothing can restart this unit remotely, by design. Use the console. |
+| **Refused**, `not_supported` | This agent cannot run the task on this VM. Either the agent is too old ([update it](install-agent.md#update-agents)), or, for package updates, the VM has no `apt` or `dpkg`. The task page's detail says which. |
+| **Failed** | Read the reason and the output on the task page. `nonzero_exit` is the command's own failure, for example a service that did not come back. |
+| **Timed out** | For package updates, run `dpkg --configure -a` on the VM as root, then run the task again. |
+| **Expired** | The host did not poll in time, usually because it was offline. Bring it back, then create the task again. |
+| **Cancelled** | Nothing new starts after the cancel. A **Refresh reports** that was already collecting may still send its reports. |
 
 ## Read the audit log
 

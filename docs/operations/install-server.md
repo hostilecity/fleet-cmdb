@@ -151,6 +151,18 @@ Release files and the backup status file are in the Docker volume `fleet-cmdb_st
 - **Roll back:** if `FLEET_JOBS_CONTAINER` is `true` and you go back to a commit from before the jobs container existed, first run `docker stop -t 30 fleet-cmdb-jobs && docker rm fleet-cmdb-jobs` on the VM: that commit's workflow does not know the container and would leave it running new code beside the old app's own jobs. Then open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: that needs a backup (a later issue).
 - Two deploys never overlap; a second one waits.
 
+## 8. First steps in the dashboard
+
+The server is up but empty. In this order:
+
+1. **Make the first agent release.** Generate the release keys once, then run **Actions > Agent release** ([docs/releases.md](../releases.md#generating-the-keys-once-by-the-owner)). Nothing needs building on your own machine.
+2. **Give the server the release key.** Set the **variable** (not a secret) `FLEET_RELEASE_KEY_CURRENT` to the second line of `agent/release-keys/current.pub`, then run **Actions > Deploy**.
+3. **Import the release** on the **Agents** page, by its version.
+4. **Install agents** on your VMs ([install-agent.md](install-agent.md)). VMs cloned from one template need one extra step: "VMs cloned from one template" in [troubleshooting.md](troubleshooting.md).
+5. **Load the starter rules:** `docker exec fleet-cmdb bin/rails rules:import FILE=config/rules/debian-13.yml` ([cis-rules.md](cis-rules.md)).
+6. **Vulnerability data** downloads every 6 hours by itself. To start now, choose **Data sources > Refresh now** ([health-and-jobs.md](health-and-jobs.md)).
+7. **For tasks,** set up your second factor under **Settings > Your second factor**, and turn tasks on in each VM ([fleet-operations.md](fleet-operations.md#run-a-task)).
+
 ## Security notes
 
 - **Port 443 is the only published port**, and only the tunnel VM and the VMs that run agents need it. Docker's published ports bypass `ufw`'s usual rules, so limit it in the `DOCKER-USER` chain (after Docker's DNAT the port is the container's, 3443), for example `iptables -I DOCKER-USER -p tcp --dport 3443 ! -s 192.0.2.0/24 -j DROP`.
