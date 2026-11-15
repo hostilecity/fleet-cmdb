@@ -40,6 +40,33 @@ module Releases
 
   def store = Store.new(config.storage_dir)
 
+  # The release public keys published in the repository (agent/release-keys/current.pub and next.pub, the files
+  # compiled into the agent), as copied into this server's build: { "current" => PublicKey or nil, "next" => ... }.
+  # The install page compares them with the configured keys above (#181). A missing file is no key, as a file of
+  # comments is; raises KeyError if a file is not a key.
+  def repository_keys
+    %w[current next].index_with do |role|
+      path = config.repository_keys_dir.join("#{role}.pub")
+      PublicKey.parse(path.exist? ? path.read : nil, role:)
+    end
+  end
+
+  # The configured keys that differ from the repository's, by role ("current", "next"): releases this server
+  # accepts with such a key fail the install check on the VM, which uses the repository's key.
+  def keys_unlike_repository
+    configured = { "current" => PublicKey.parse(config.current_key, role: "current"), "next" => PublicKey.parse(config.next_key, role: "next") }
+    repository = repository_keys
+    configured.keys.reject { |role| configured[role]&.line == repository[role]&.line }
+  end
+
+  # Where the install commands fetch the release public key from (#181): the repository's current.pub at the
+  # release's own tag, on GitHub, not from this server. The release workflow signs with exactly the key in
+  # current.pub of the commit it tags (docs/releases.md), so this is the key that signed the release, before
+  # and after a key rotation. refs/tags/ so that a branch of the same name cannot stand in for the tag.
+  def public_key_url(version, repository: config.github_repository)
+    "https://raw.githubusercontent.com/#{repository}/refs/tags/agent-v#{version}/agent/release-keys/current.pub"
+  end
+
   # The agent API, as agents and the installer reach it.
   def agent_server_url = "https://#{HostSeparation.agent_host}"
 

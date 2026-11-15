@@ -4,26 +4,36 @@
   <div class="page-head"><div><h1>Install an agent</h1></div></div>
   <div class="sheet empty" id="no_release"><p><strong>No release to install yet.</strong></p><p>Import a signed release on the <%= link_to "Agents", agents_path %> page first. This page then shows the exact commands for it.</p></div>
 <% else %>
-  <div class="page-head"><div><h1>Install an agent</h1><p>Release <strong class="mono" id="release_version"><%= @release.version %></strong><%= " (a pre-release)" if @release.prerelease? %>, signature verified. Needs Debian 13 on x86_64 with systemd, root, and HTTPS access to <span class="mono"><%= agent_host %></span>.</p></div></div>
+  <div class="page-head"><div><h1>Install an agent</h1><p>Release <strong class="mono" id="release_version"><%= @release.version %></strong><%= " (a pre-release)" if @release.prerelease? %>, signature verified. Needs Debian 13 on x86_64 with systemd, root, and HTTPS access to <span class="mono"><%= agent_host %></span> and to GitHub (<span class="mono">raw.githubusercontent.com</span>).</p></div></div>
   <nav class="tabs" aria-label="Install method"><a href="#one" aria-selected="true">One VM, approved here</a><a href="#unattended" aria-selected="false">Unattended</a></nav>
+  <% if @keys_unlike_repository.any? %>
+    <div class="notice error" role="alert" id="release_key_warning"><strong>This server's release <%= "key".pluralize(@keys_unlike_repository.size) %> <%= @keys_unlike_repository.map { |role| "FLEET_RELEASE_KEY_#{role.upcase}" }.to_sentence %> <%= @keys_unlike_repository.one? ? "differs" : "differ" %> from the repository's.</strong>
+      <p>The check on the VM uses the public key in the repository (<span class="mono">agent/release-keys/</span>), not this server's. A release this server accepts only with its own key fails that check, and so does not install. Set the keys as in <span class="mono">docs/releases.md</span> ("Release keys"), then deploy. If you did not change them, treat this server as compromised.</p></div>
+  <% end %>
   <section id="one" class="sheet">
     <ol class="steps">
-      <li><h3>Download the agent</h3><p>On the VM:</p>
-        <div class="token" id="download_command"><%= install_download_command(@release) %></div>
-        <p class="muted">No curl? Install it with <code>apt install curl</code>, as root.</p></li>
-      <li><h3>Check it</h3>
-        <div class="token" id="check_command"><%= install_check_command(@release) %></div>
-        <p class="muted">It must print <code>fleet-agent: OK</code>. If it does not, do not run it: download it again. The SHA-256 is <span class="mono" id="release_sha256"><%= @release.sha256 %></span>, <%= number_with_delimiter(@release.size) %> bytes.</p></li>
+      <li><h3>Download the agent</h3><p>On the VM, install curl and minisign if they are not there yet:</p>
+        <div class="token" id="tools_command"><%= install_tools_command %></div>
+        <p>Then download the agent, its signed manifest, and the signature, from <span class="mono"><%= agent_host %></span>:</p>
+        <div class="token" id="download_command"><%= install_download_command(@release) %></div></li>
+      <li><h3>Check the signature</h3><p>Get the release public key from the repository on GitHub, not from this server:</p>
+        <div class="token" id="key_command"><%= install_key_command(@release) %></div>
+        <p>Then check the signature, and the agent against the signed manifest:</p>
+        <div class="token" id="check_command"><%= install_check_command %></div>
+        <p>It must print exactly:</p>
+        <div class="terminal" id="check_output"><%= install_check_output(@release) %></div>
+        <p class="muted">Anything else, or an error, means the files are not release <%= @release.version %> as signed: do not run the agent. Delete the files and start again; if it fails again, tell whoever runs this server.</p>
+        <p class="muted" id="release_key">The key comes from <span class="mono"><%= Releases.config.github_repository %></span> at the tag <span class="mono">agent-v<%= @release.version %></span> on GitHub, so this server cannot change it. Check that the address in the command names both. This release is signed with key <span class="mono"><%= @release.key_id %></span><% if @signing_key %>, public key <span class="mono" id="release_key_line"><%= @signing_key.line %></span><% end %>, <%= @repository_role ? "the repository's #{@repository_role} key" : "which is not one of the keys in this server's copy of the repository" %>. To check by hand, compare it with <span class="mono">docs/releases.md</span> on GitHub.</p></li>
       <li><h3>Run the installer</h3>
         <div class="token" id="install_command"><%= install_run_command %></div>
-        <p class="muted">As root without sudo, leave out <code>sudo</code>. It checks the VM, installs the agent, and prints a link and a code like <code>WDJB-MJHT</code>.</p></li>
+        <p class="muted">It checks the VM, installs the agent, and prints a link and a code like <code>WDJB-MJHT</code>.</p></li>
       <li><h3>Approve it here</h3><p>Open the link, or go to <%= link_to "Approve a VM", onboard_path %>. Check that the code matches the terminal, name the host, and approve. The installer finishes by itself within a few seconds.</p></li>
     </ol>
     <h3>What the terminal shows</h3>
     <p>After checking the VM and installing, the installer waits for you with:</p>
     <div class="terminal" id="approval_example"><%= install_approval_example %></div>
     <p>Once approved it saves the credential, starts the service, waits for the first heartbeat, and ends with <code>Done. fleet-agent is installed, enrolled, and running.</code> If anything fails, it says what happened and what to do next. Logs: <code>journalctl -u fleet-agent</code>. To remove it: <code>sudo fleet-agent uninstall</code>.</p>
-    <p class="muted">If <span class="mono"><%= agent_host %></span> uses a private certificate authority, give its certificate to both commands: <code>curl --cacert ca.pem …</code> and <code>fleet-agent install … --ca-file ca.pem</code>.</p>
+    <p class="muted">As root without sudo, leave out <code>sudo</code>. If <span class="mono"><%= agent_host %></span> uses a private certificate authority, give its certificate to the downloads from it and to the installer: <code>curl --cacert ca.pem …</code> and <code>fleet-agent install … --ca-file ca.pem</code>.</p>
   </section>
   <section id="unattended" class="sheet">
     <h2>Unattended: cloud-init, templates, scripts</h2>
@@ -32,6 +42,7 @@
     <p class="muted">Paste the token when asked, so it never appears in the process list or shell history.</p>
     <p>Or with cloud-init, replacing <code><%= AgentReleasesHelper::TOKEN_PLACEHOLDER %></code> with the token:</p>
     <div class="terminal" id="cloud_init"><%= install_cloud_init(@release) %></div>
+    <p class="muted">It installs curl and minisign, downloads and checks the agent as above, and stops before running anything if the check fails. Before you put it in a template, check that the key address names <span class="mono"><%= Releases.config.github_repository %></span>.</p>
     <p class="muted">The token works once. A template that clones many VMs needs one pre-registration per VM.</p>
   </section>
   <h2>Afterwards</h2>

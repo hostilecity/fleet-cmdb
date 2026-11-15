@@ -13,10 +13,12 @@
   <h2>Install on the VM</h2>
   <% release = AgentRelease.current %>
   <% if release %>
-    <p>On <span class="mono"><%= @host.hostname %></span>, download and check the agent (release <span class="mono"><%= release.version %></span>; the check must print <code>fleet-agent: OK</code>):</p>
+    <p>On <span class="mono"><%= @host.hostname %></span>, as root, download and check the agent (release <span class="mono"><%= release.version %></span>; the check must end with <code>fleet-agent: OK</code>):</p>
+    <div class="token"><%= install_tools_command(sudo: false) %></div>
     <div class="token"><%= install_download_command(release) %></div>
-    <div class="token"><%= install_check_command(release) %></div>
-    <p>Then, as root:</p>
+    <div class="token"><%= install_key_command(release) %></div>
+    <div class="token"><%= install_check_command %></div>
+    <p>Then:</p>
   <% else %>
     <p>Download and check the agent as on <%= link_to "Install an agent", agent_install_path %>, then on <span class="mono"><%= @host.hostname %></span>, as root:</p>
   <% end %>

@@ -32,6 +32,7 @@ module Releases
     private_class_method :decode
 
     def initialize(bytes, role)
+      @bytes = bytes
       @key_id = bytes.byteslice(2, 8)
       @raw = bytes.byteslice(10, 32)
       @pkey = OpenSSL::PKey.new_raw_public_key("ED25519", @raw)
@@ -41,6 +42,10 @@ module Releases
     # The key id as minisign prints it ("minisign public key 9E62E8E1D2E10F3B"): the little-endian number
     # in uppercase hexadecimal.
     def id_hex = key_id.reverse.unpack1("H*").upcase
+
+    # The base64 line of the .pub file: what `minisign -P` takes, and what to compare by hand (the key id alone
+    # is chosen by whoever made the key, so it is a name, not a fingerprint).
+    def line = Base64.strict_encode64(@bytes)
 
     def ==(other) = other.is_a?(PublicKey) && other.raw == raw && other.key_id == key_id
 

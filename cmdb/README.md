@@ -55,7 +55,7 @@ bin/dev                   # starts the app on http://localhost:3000 with Solid Q
 ## Tests and checks
 
 ```sh
-bundle exec rspec                       # the test suite (coverage report in coverage/)
+bundle exec rspec                       # the test suite (coverage report in coverage/); needs minisign (apt install minisign, brew install minisign) for the install page's command tests
 NO_COVERAGE=1 bundle exec rspec spec/requests   # a subset, without coverage
 bin/rubocop                             # style
 bin/brakeman                            # static security analysis
@@ -341,7 +341,7 @@ Server-rendered Hotwire views built from the approved mockups in `../docs/mockup
 - **Settings** (`/settings`): the liveness thresholds.
 - **Data sources** (`/data-sources`, P2-D06): advisory data freshness, the scheduled feed and "Refresh now", advisory file uploads, and recent imports ("Advisory data", above).
 - **Agents** (`/agents`, P1-RELEASES): imported releases, which key signed each, and how many hosts in the fleet run it; imports from GitHub and by upload (below). Rollouts join this page with P1-UPDATES.
-- **Install an agent** (`/agents/install`, P1-D08): the exact commands for the newest imported release that is not a pre-release (or `?version=`): download from the agent hostname, check the SHA-256, run `fleet-agent install`, then approve; and the pre-registered-token and cloud-init variants. Every URL and checksum on the page comes from the one release shown. A pre-registered host's token page shows the same download and check.
+- **Install an agent** (`/agents/install`, P1-D08): the exact commands for the newest imported release that is not a pre-release (or `?version=`): download the binary, manifest, and signature from the agent hostname, check the signature with `minisign` and the release public key from the repository on GitHub (at the release's tag, never from this server; #181), then the binary against the signed manifest, run `fleet-agent install`, then approve; and the pre-registered-token and cloud-init variants. Every URL on the page comes from the one release shown. The page shows the key that signed the release, and warns when `FLEET_RELEASE_KEY_CURRENT` or `FLEET_RELEASE_KEY_NEXT` differs from the repository's `agent/release-keys` (copied into the image). A pre-registered host's token page shows the same download and check.
 - **Host actions** (P1-D04): pre-register (the one-time token and install commands appear only in the response to that POST, marked `no-store`), edit, and, each behind a confirmation page and a CSRF-protected POST: revoke, re-enroll (instructions for `fleet-agent install --reenroll`, or a new one-time token), and retire (the hostname must be typed).
 - **Onboarding approval** (P1-D07, `/onboard`): the installer's link opens `/onboard/<code>`, and signing in returns there. The page shows the code to match, what the VM reported, and, when the machine ID or hostname matches existing hosts, a choice between re-enrolling one and adding a new host. The code box answers unknown, expired, and decided codes alike. Code lookups are rate-limited per operator, and `/onboard/<code>` links that find nothing count against the same limit. The fleet page says while VMs are waiting, and the lists and outcomes update live.
 - **Escaping.** Everything a host or operator supplied is rendered through Rails' escaping; nothing is marked `html_safe`. Inventory meters use width classes rather than inline styles.
@@ -414,10 +414,10 @@ Settings and their defaults: [docs/operations/configuration.md](../docs/operatio
 
 ### Docker image
 
-The image needs the agent API schemas, the rule file schema, the task catalog, and the agent's compiled-in certificate authorities too, so build it from `cmdb/` with `docs/api` and `agent/trust` as named build contexts (`.github/workflows/cd.yml` does this):
+The image needs the agent API schemas, the rule file schema, the task catalog, and the agent's compiled-in certificate authorities and release public keys too, so build it from `cmdb/` with `docs/api`, `agent/trust`, and `agent/release-keys` as named build contexts (`.github/workflows/cd.yml` does this):
 
 ```sh
-docker build --build-context api=../docs/api --build-context trust=../agent/trust -t cmdb .
+docker build --build-context api=../docs/api --build-context trust=../agent/trust --build-context release-keys=../agent/release-keys -t cmdb .
 ```
 
 It runs Puma directly (`puma -C config/puma.rb`: plain HTTP on 3000 inside the container, HTTPS on 3443 with the server's certificate, ADR 0024), without Thruster: `HostSeparation` trusts forwarded headers only from the proxy that connected, and behind Thruster every request would come from loopback. Deploying it: [docs/operations/install-server.md](../docs/operations/install-server.md).
