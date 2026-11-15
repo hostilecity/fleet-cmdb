@@ -30,12 +30,14 @@ class AgentCredential < ApplicationRecord
   end
 
   # The active credential for an `Authorization: Bearer <key_id>.<secret>` header, or nil. Missing, malformed,
-  # unknown, wrong, revoked, and retired-host credentials are indistinguishable to the caller.
+  # unknown, wrong, revoked, and retired-host credentials are indistinguishable to the caller. One statement: the
+  # credential and its host are read together (#189). Nothing is locked here: the secret is checked first, in
+  # constant time, and only then does a write lock the host (AgentHostLock), so a wrong secret costs no lock.
   def self.authenticate(authorization)
     match = BEARER.match(authorization.to_s) or return nil
 
     key_id, secret = match.captures
-    credential = includes(:host).find_by(key_id:)
+    credential = eager_load(:host).find_by(key_id:)
     matches = ActiveSupport::SecurityUtils.secure_compare(AgentApi.digest(secret), credential&.secret_digest || UNKNOWN_KEY_DIGEST)
     credential if matches && credential.active? && !credential.host.retired?
   end
@@ -46,6 +48,8 @@ class AgentCredential < ApplicationRecord
     update!(state: "revoked", revoked_at: Time.current) if active?
   end
 
+  # Runs in the request's transaction, after the action has locked the host (lock order: host, then credential,
+  # as revocation takes them), so it adds no commit of its own (#189).
   def record_use!(now = Time.current)
     update_column(:last_used_at, now) if last_used_at.nil? || last_used_at < now - LAST_USED_RESOLUTION
   end
