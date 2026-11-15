@@ -36,10 +36,28 @@ Counted at 06:30 and 12:00 each day over the last 28 days (14 for 100,000 hosts)
 What this says, honestly:
 
 - **Whole sets share well only in a strictly uniform fleet.** One hand-installed tool, a kernel still waiting for a reboot, or a host halfway through a rollout makes the whole set distinct. The owner's homelab, cloned from one image, still has 39 distinct sets among 50 hosts once a few hosts have an extra tool; a hand-managed fleet is 96% distinct. The maximum column is a rollout in progress: on a point-release day nearly every host passes through a set no other host has.
-- **Chunks share well in every fleet modelled.** A host's set differs from its neighbours' in a few packages, so it differs in a few of its 64 chunks: 16 to 2,200 times fewer rows than per-host rows today (82 times in the hand-managed fleet), and only 2 to 11 new chunks a day in the 10,000-host template fleet (155 to 574 in the hand-managed one), against 142 to 222 new whole sets.
+- **Chunks share well in every fleet modelled.** A host's set differs from its neighbours' in a few packages, so it differs in a few of its 64 chunks: at one moment, 16 to 2,200 times fewer entry rows than per-host rows today (82 times in the hand-managed fleet), and only 2 to 11 new chunks a day in the 10,000-host template fleet (155 to 574 in the hand-managed one), against 142 to 222 new whole sets. What a retention window keeps is larger; see the next section.
 - **Re-matching after an advisory** for one base-image source touches 1 chunk on the homelab, 8 at 10,000 hosts, 15 at 100,000, and 96 in the hand-managed fleet, against every host today.
 - The model leaves out sources of variety a real fleet has (packages chosen by configuration management per host, language runtimes, held packages, dependency drift between image versions), so real fleets have more distinct whole sets, not fewer. Chunks are less sensitive to these, since each touches few buckets.
-- **Bucket count** (10,000-host template fleet): 16 buckets store 109,512 rows (2,037 chunks), 64 store 17,584 (1,133), 256 store 4,641 (905). 64 is the knee: past it, the 256 references a set needs cost more than the rows they save.
+
+### What a 90-day window keeps, and the bucket count
+
+Garbage collection keeps every set a kept snapshot references, so the window holds about 90 days of new sets, and the chunks they use. The review pointed out that the first version of this ADR counted only the sets of one moment. Counted again from the model (mean new sets and new chunks a day over 6 days, times 90, plus those of the moment), with sizes measured on scratch tables: a set row with its 64 chunk ids as a `bigint[]`, its hash index, and a GIN index on the ids is **814 bytes**; as 64 reference rows it would be 5,952 bytes (93 each); a chunk entry is 154.
+
+| 10,000 hosts, 90-day window | Kept sets | Buckets | Kept chunk entries | Total, references as arrays | Total, references as rows |
+|---|---|---|---|---|---|
+| Template fleet | 16,480 | 16 | 382,889 (59 MB) | about 66 MB | 83 MB |
+| | | 32 | 95,954 (15 MB) | about 24 MB | 64 MB |
+| | | **64** | 25,499 (4 MB) | **about 17 MB** | 102 MB |
+| Hand-managed fleet | 729,110 | 16 | 24.6 M (3.8 GB) | about 4.1 GB | 4.9 GB |
+| | | 32 | 3.7 M (570 MB) | about 950 MB | 2.7 GB |
+| | | **64** | 551,000 (85 MB) | **about 680 MB** | 4.4 GB |
+
+Against today, for the same fleets: `host_packages` is 1.7 GB, and the kept JSON snapshots at 8.5 KB each are at least another 0.14 GB (template) and 6.2 GB (hand-managed; one per kept set at least). So:
+
+- **The references are stored as an array**, `package_sets.chunk_ids bigint[]` (64 elements, NULL for an empty bucket), with mark-and-sweep garbage collection (decision 7). As rows they would cost more than the entries they save in the hand-managed fleet, as the review found.
+- **64 buckets** stay the best of the three in both fleets once references are arrays: fewer buckets make bigger chunks that change more often, and the window keeps every changed one.
+- With arrays, the hand-managed fleet stores about 680 MB against 7.9 GB today (12 times less), the template fleet about 17 MB against 1.8 GB.
 
 ### Measured on the benchmark seed
 
@@ -47,12 +65,12 @@ What this says, honestly:
 
 | What | Today | Whole sets | 64 chunks |
 |---|---|---|---|
-| Bytes a row, with indexes | `host_packages` 198 | entries 187 | chunk entries 154; set-to-chunk rows 93 |
-| Rows for this prototype | 4.0 M (5,001 hosts) | 1.2 M | 29,468 entries in 1,953 chunks, 96,000 set-to-chunk rows |
+| Bytes a row, with indexes | `host_packages` 198 | entries 187 | chunk entries 154; a set with its 64 chunk ids as an array, 814 |
+| Rows for this prototype | 4.0 M (5,001 hosts) | 1.2 M | 29,468 entries in 1,953 chunks |
 | A host's package page (50 rows, name order, offset 400) | 0.15 ms | 0.50 ms | 1.36 ms |
 | Search with count | 0.90 ms | | 1.06 ms |
 | Diff of two sets | | 0.73 ms in SQL (800 against 800) | 11 of 64 chunks differ: 164 rows read instead of 1,600 |
-| Find what to re-match for one source | 458 ms (sequential scan; #185 adds the index) | 26.5 ms (1,495 sets) | 0.08 ms (the chunks), 25 ms to list the 20,001 hosts that have them |
+| Find what to re-match for one source | 458 ms (sequential scan; #185, now merged, adds the index) | 26.5 ms (1,495 sets) | 0.08 ms (the chunks); 0.08 ms for the sets containing a chunk (GIN, 50,000 sets); 25 ms to list the 20,001 hosts that have them |
 
 Findings, per host, on the seed's 2.25 million rows:
 
@@ -62,13 +80,23 @@ Findings, per host, on the seed's 2.25 million rows:
 | Lifecycle only, natural key (decided below) | 178 |
 | Lifecycle only, with an id for (advisory, package, architecture) | 114 |
 
-Opening one new finding on 3 binary packages of every host (60,000 rows, one statement): **0.76 s**, 12.6 µs a row; at a million hosts, about 38 s, against about 3 hours of per-host matching today.
+Opening one new finding on 3 binary packages of every host, re-measured as the design runs it, on a scratch database with #206's schema and its statement triggers (1,000 hosts with 450 findings each; load average about 6, so rough):
+
+| How | Time a host |
+|---|---|
+| One short transaction a host, locking its row (two runs) | 9.6 to 13.5 ms |
+| The same with #206's triggers disabled | 5.2 ms |
+| **Batches of 100 hosts a transaction, locked in id order** (decided) | **1.2 ms** |
+| One statement for every host, triggers disabled (the first version's figure) | 0.33 ms |
+
+Most of the per-host cost is #206 recounting each host's summary. So host transitions run in batches of 100 hosts, as #204 already batches CIS evaluation. At a million hosts, an advisory that affects every host costs about **20 minutes** of one worker for the host rows (spread over #204's evaluation workers), not the 38 s the first version claimed from a bulk statement; matching it costs only its chunks. Today it is about 3 hours of matching, before #206's recounts.
 
 ## Options considered
 
 | Option | For | Against |
 |---|---|---|
-| **Content-addressed sets made of 64 content-addressed chunks; match per chunk; per-host lifecycle rows** (chosen) | Shares storage and matching in every fleet modelled; a one-package change copies one chunk; matching is exact per package, so per chunk is exact. | More tables; a host's package page reads through its set (about 1 ms more). |
+| **Content-addressed sets made of 64 content-addressed chunks; match per chunk; per-host lifecycle rows** (chosen) | Shares storage and matching in every fleet modelled; a change copies only the chunks of the sources it touches; matching is exact per package, so per chunk is exact. Snapshots are one small row. | More tables; a bucket function fixed for good; a host's package page reads through its set (about 1 ms more). |
+| Distinct package versions: a table of distinct `(ecosystem, name, architecture, version, source)`, one reference row per host and package, verdicts per distinct package version | Simpler: no buckets to fix for good, no sets. Matching is exact and as small (once per distinct version). The package page is about as fast (1.25 ms measured, the same join and sort as chunks). | Still one row per host and package: 83 bytes measured, so 852 packages are 71 KB a host, 71 GB at a million hosts (against 170 GB today and a few GB with chunks). A snapshot must still list every package (852 ids, about 7 KB), so kept snapshots save little against today's 8.5 KB JSON. An advisory's fan-out is the same. It loses on storage, which is the point of #196, by one to two orders of magnitude. |
 | Whole sets only, as the issue proposed | Simplest shared store. | Saves little unless the fleet is strictly uniform (39 of 50 sets distinct on the homelab model); any change copies the whole set. |
 | A set as a base set plus a delta | Small per host. | Deltas chain or must be rebased; diffs and matching must replay them; no sharing between hosts that drift the same way. |
 | Keep `host_packages`, match per distinct set only | No storage change. | Storage stays 170 to 400 GB at a million hosts. |
@@ -82,8 +110,9 @@ Opening one new finding on 3 binary packages of every host (60,000 rows, one sta
 3. The normalised list is what is hashed: the report's packages, sorted, as `PackageReport` already sorts them for its content hash. The manager, its reason, skipped names, and warnings stay per host, on `host_package_sets` and on the snapshot, as now.
 4. **Matching runs once per distinct chunk and ecosystem.** A package's verdict depends only on its version, its source, the ecosystem, and the advisory data, never on the other packages, so a chunk's verdicts are exact for every host that has it. A host's current findings are the verdicts of its set's chunks, for its ecosystem (from its inventory, `HostContext`, as now).
 5. **Per-host state is the lifecycle only**: `vulnerability_findings` keeps its name and its key (host, advisory, package, architecture) and its state, resolution, first seen, resolved at, and reopened at. Versions and sources move to the chunk verdicts. This keeps per host only what differs per host: when this host first had the finding, and whether it resolved and came back. When the host changes set, or a chunk's verdicts change, only that host's affected rows are written.
-6. **Copy-on-write.** When one package changes on one host, only its bucket's chunk changes. The server finds or stores that one chunk, then finds or stores the set (64 references), points the host at it, and writes a small snapshot row. If the chunk is new, matching runs for that chunk only (about 13 packages); if another host already brought it, nothing is matched. The host's finding rows change only for that chunk's packages.
-7. **Garbage collection** after each retention run: sets no host and no kept snapshot references, then chunks no set references, are deleted (their entries and verdicts cascade). Foreign keys guard every reference, anything created in the last day is skipped, and a recorder that loses a race to a deletion retries once.
+6. **Copy-on-write.** When one package changes on one host, only its bucket's chunk changes; a package whose source changes moves between two buckets, and an update that touches several sources (a kernel ABI bump touches `linux` and `linux-signed-amd64`) changes the chunks of each. Chunk boundaries never shift: a bucket depends only on a package's own source name. The server finds or stores the changed chunks, then finds or stores the set, points the host at it, and writes a small snapshot row. The host's finding rows change only for those chunks' packages.
+7. **A host's transitions need every chunk of its set evaluated.** "Stored" is not "matched": a chunk another host brought a moment ago may not be matched yet, and a chunk seen before only in another ecosystem has no verdicts for this one. Without verdicts the host's findings for it would wrongly resolve as `fixed`. So before a host's transitions run, every chunk of its set must have a `chunk_evaluations` row for the host's ecosystem, evaluated against the newest succeeded advisory import for that ecosystem (`advisory_import_id`); any that has none, or an older one, is matched first, in the same job (a chunk is about 13 packages). Two hosts matching the same new chunk at once write the same verdicts, with `INSERT ... ON CONFLICT DO NOTHING`.
+8. **Garbage collection is mark and sweep**, after each retention run. A set is kept if a host or a kept snapshot references it; a chunk is kept if a kept set's `chunk_ids` holds it; the rest are deleted (a chunk's entries and verdicts cascade). There are no foreign keys from snapshots or sets, so instead every set and chunk has a `last_used_at`: the recorder touches a set or chunk it reuses when that is more than a day old, and collection deletes only rows unreferenced and untouched for two days, re-checking `last_used_at` in the `DELETE`'s own condition. The touch and the delete then conflict on the row: if the touch wins, PostgreSQL re-evaluates the delete's condition on the touched row and skips it; if the delete wins, the touch updates nothing and the recorder stores the chunk again by its hash.
 
 ## Data model
 
@@ -108,20 +137,21 @@ CREATE INDEX ON package_chunk_entries ((COALESCE(source, name)), package_chunk_i
 CREATE TABLE package_sets (
   id            bigserial PRIMARY KEY,
   content_hash  bytea NOT NULL UNIQUE,  -- SHA-256 of the chunk hashes in bucket order
+  chunk_ids     bigint[] NOT NULL CHECK (cardinality(chunk_ids) = 64),  -- by bucket; NULL for an empty bucket
   package_count integer NOT NULL,
-  created_at    timestamp NOT NULL
+  created_at    timestamp NOT NULL,
+  last_used_at  timestamp NOT NULL
 );
-CREATE TABLE package_set_chunks (
-  package_set_id   bigint NOT NULL REFERENCES package_sets ON DELETE CASCADE,
-  bucket           smallint NOT NULL,
-  package_chunk_id bigint NOT NULL REFERENCES package_chunks,  -- RESTRICT: a used chunk is never deleted
-  PRIMARY KEY (package_set_id, bucket)
-);
-CREATE INDEX ON package_set_chunks (package_chunk_id);
+CREATE INDEX ON package_sets USING gin (chunk_ids);  -- the sets that contain a chunk
+-- package_chunks also gets last_used_at timestamp NOT NULL
 
-ALTER TABLE host_package_sets ADD COLUMN package_set_id bigint REFERENCES package_sets;  -- NULL: unsupported, or never readable
+-- No foreign keys from these to package_sets: package_snapshots is partitioned (ADR 0027), and a key there
+-- would lock package_sets on every partition operation; PostgreSQL 16 also refuses NOT VALID keys on a
+-- partitioned table, so adding one would scan every partition under lock. Mark and sweep instead.
+ALTER TABLE host_package_sets ADD COLUMN package_set_id bigint;  -- NULL: unsupported, or never readable
 CREATE INDEX ON host_package_sets (package_set_id);
-ALTER TABLE package_snapshots ADD COLUMN package_set_id bigint REFERENCES package_sets;  -- replaces packages jsonb
+ALTER TABLE package_snapshots ADD COLUMN package_set_id bigint;  -- replaces packages jsonb; NULL for unsupported and unreadable
+CREATE INDEX ON package_snapshots (package_set_id);  -- on every partition: the sweep's "is this set still kept"
 
 -- Matching's verdicts, once per chunk and ecosystem: only what is affected
 CREATE TABLE chunk_matches (
@@ -139,7 +169,8 @@ CREATE TABLE chunk_matches (
 CREATE TABLE chunk_evaluations (
   package_chunk_id bigint NOT NULL REFERENCES package_chunks ON DELETE CASCADE,
   ecosystem        varchar(64) NOT NULL,
-  not_evaluated    jsonb NOT NULL DEFAULT '[]',
+  not_evaluated    jsonb NOT NULL DEFAULT '[]',  -- [{package, architecture, version, source, advisory, reason}]
+  advisory_import_id bigint NOT NULL,           -- the newest succeeded import for the ecosystem when matched
   evaluated_at     timestamp NOT NULL,
   PRIMARY KEY (package_chunk_id, ecosystem)
 );
@@ -160,20 +191,22 @@ A host's current verdicts, for the pages and for the transitions:
 SELECT hps.host_id, m.*
 FROM host_package_sets hps
 JOIN host_vulnerability_evaluations e ON e.host_id = hps.host_id AND e.state = 'evaluated'
-JOIN package_set_chunks sc ON sc.package_set_id = hps.package_set_id
-JOIN chunk_matches m ON m.package_chunk_id = sc.package_chunk_id AND m.ecosystem = e.ecosystem
+JOIN package_sets s ON s.id = hps.package_set_id
+JOIN LATERAL unnest(s.chunk_ids) AS c(chunk_id) ON true
+JOIN chunk_matches m ON m.package_chunk_id = c.chunk_id AND m.ecosystem = e.ecosystem
 WHERE hps.host_id = $1;
 ```
 
-Set-to-chunk references are rows, not an array on `package_sets`, so that a foreign key protects every chunk in use from garbage collection. They cost 64 rows a new set (about 6 KB): 67 MB for the 100,000-host template fleet's 11,260 sets.
+Set-to-chunk references are an array on `package_sets` (814 bytes a set with its indexes), not 64 rows (5,952 bytes), because a window keeps many sets (see the context).
 
 ## How matching, the package diff, and the findings lifecycle change
 
-- **A new package report.** As in decision 6. Then the host's transitions, in its own short transaction under its row lock, as today: verdict keys that are new for the host open a finding (or reopen a resolved one); active findings whose key is gone resolve as `removed` (the package is not in the set), `fixed` (it is, at a version outside the ranges), `withdrawn`, or `not_affected` (from the advisory), as P2-S11 defines them. A host on a set that is already matched costs no matching at all.
-- **An advisory import.** Changed sources, per ecosystem, give the chunks that contain them (the `COALESCE(source, name)` index), which are matched again. The chunks whose verdicts changed give the sets that contain them, and those the hosts, whose transitions run in the batches of host id ranges that #204's evaluation runs already use. At 100,000 hosts in the template model, one source is 15 chunks to match instead of 100,000 hosts; the host transitions remain one row per affected host and package (38 s for 3 packages on a million hosts, measured above).
+- **A new package report.** As in decision 6, then decision 7's check, then the host's transitions under its row lock: verdict keys that are new for the host open a finding (or reopen a resolved one); active findings whose key is gone resolve as `removed` (the package is not in the set), `fixed` (it is, at a version outside the ranges), `withdrawn`, or `not_affected` (from the advisory), as P2-S11 defines them. A host on a set whose chunks are all evaluated costs no matching at all.
+- **Versions dpkg cannot parse.** As today (`vulnerability_matcher.rb`, the `verdict.is_a?(String)` branch), a package and advisory that cannot be evaluated leave the host's finding for them as it is: neither opened nor resolved. Only affected rows are in `chunk_matches`, so before a missing key resolves, it is looked up in the chunk's `not_evaluated` list, and a key listed there is left unchanged.
+- **An advisory import.** Changed sources, per ecosystem, give the chunks that contain them (the `COALESCE(source, name)` index), which are matched again and stamped with the import's id. The chunks whose verdicts changed give the sets that contain them (the GIN index), and those the hosts, whose transitions run in batches of 100 hosts within the host id ranges that #204's evaluation runs already use. At the end, the import matches again any chunk with a changed source whose `advisory_import_id` is older than its own: a chunk created during the import, matched against the data before it, is not left with stale verdicts. At 100,000 hosts in the template model, one source is 15 chunks to match instead of 100,000 hosts; the host transitions remain one row per affected host and package (about 1.2 ms a host with #206's triggers, measured above).
 - **A full match** (the first import, or "match again") is every distinct chunk once: 3,351 chunks, about 54,000 package verdicts, at 100,000 hosts in the template model, against 85 million package verdicts today.
 - **The not-evaluated list** of a host is the union of its chunks' lists, cut at 100 as now.
-- **Hosts that cannot be matched** (no inventory, unsupported or unreadable manager, no advisory data) stay "not evaluated" per host from `HostContext`, as now. An unreadable report keeps the host's previous set, as it keeps its rows now.
+- **Hosts that cannot be matched** (no inventory, unsupported or unreadable manager, no advisory data) stay "not evaluated" per host from `HostContext`, as now. An unreadable report keeps the host's previous set, as it keeps its rows now; its snapshot has no set (`package_set_id` NULL), as an unreadable snapshot has no list today.
 - **The package diff.** `PackageDiff.between` takes two sets: it compares their chunk references, loads entries only for the buckets that differ, and runs today's Ruby comparison (dpkg ordering, skipped names from each snapshot). A diff summary is cached by the pair of set ids instead of snapshot ids: sets never change, and hosts in a template fleet share pairs, so one host's comparison warms the cache for the others.
 
 ## How the dashboard changes
@@ -182,23 +215,28 @@ Every reader of `host_packages` moves to the host's set:
 
 | Reader | Change |
 |---|---|
-| Packages tab (`HostPackageList`: search, filters, sort, pages, architectures, "open findings" filter) | Entries through `host_package_sets`, `package_set_chunks`, `package_chunk_entries`; the open-findings filter joins `vulnerability_findings` on host, package, and architecture as now. 1.36 ms a page on the seed, against 0.15 ms. |
+| Packages tab (`HostPackageList`: search, filters, sort, pages, architectures, "open findings" filter) | Entries through `host_package_sets`, the set's `chunk_ids`, and `package_chunk_entries`; the open-findings filter joins `vulnerability_findings` on host, package, and architecture as now. 1.36 ms a page on the seed, against 0.15 ms. |
 | Package comparison and snapshot list (`PackageSnapshotTimeline`) | Snapshots carry set ids; diffs by chunk; summaries cached by set pair. |
 | Vulnerabilities tab and package page (`HostVulnerabilitiesController`) | Installed versions and sibling packages from the host's chunk verdicts and entries instead of `host_packages` and the findings' copied versions. |
 | "Hosts with this source" (`VulnerabilityMatchJob`, `AdvisoryUploadImportJob#matching`) | Chunks with the source, then sets, then hosts. |
-| Fleet list and compliance counts (`FleetCompliance`; #206's summaries) | Unchanged: they count active findings by host and severity, and the table keeps host, advisory, and state. #206's triggers on `vulnerability_findings` keep working; an advisory that changes only versions no longer writes per-host rows, so it no longer recounts every host. |
+| Fleet list and compliance counts (`FleetCompliance`; ADR 0026's summaries, #206) | Unchanged: they count active findings by host and severity, and the table keeps host, advisory, and state. #206's triggers on `vulnerability_findings` keep working, and they are most of the cost of an advisory's fan-out (measured above). An advisory that changes only versions no longer writes per-host rows, so it no longer recounts every host. |
 
 ## Migration from the current schema, online, at a million hosts
 
 Each step is additive or catalog-only; the long work is batched in short transactions.
 
 1. **New tables, empty.** Deploy the recorder writing both: chunks, set, and `package_set_id` as well as `host_packages`. Readers unchanged.
-2. **Backfill** in a job, in keyset batches of 1,000 hosts. Hosts with the same `host_package_sets.content_hash` have the same list, so a set is computed once per distinct hash from one host's rows, and every host with that hash is pointed at it. A host whose hash changed during the batch is skipped: the recorder already wrote it. At 1,000,000 hosts with 10% distinct hashes, about 100,000 sets to compute; the prototype built a set in about 17 ms of SQL, so about half an hour of one worker.
-3. **Match the chunks** (every distinct chunk once), then run a check that, for every host, the active findings derived from its chunks are the same keys as its active `vulnerability_findings`, with the same versions. The old matcher stays as the oracle until the check is clean.
-4. **Switch matching and the readers** to sets and chunks; stop writing `host_packages`; snapshots write `package_set_id`. Old snapshots keep their JSON until they are pruned (one retention window; with ADR 0027, when their legacy partition is dropped), and `PackageSnapshot#package_list` reads either.
-5. **Clean up:** `DROP TABLE host_packages` and `DROP COLUMN packages` (both instant). Dropping the derived columns of `vulnerability_findings` is instant too, but the space returns only as rows are rewritten; a large fleet that wants the smaller rows at once rebuilds the table with a batched copy and a swap.
+2. **Backfill hosts** in a job, in keyset batches of 1,000 hosts.
+   - **Only `manager = 'dpkg'` hosts are grouped.** Hosts with the same `host_package_sets.content_hash` and a `dpkg` manager have the same list, so a set is computed once per distinct hash from one host's rows, and every host with that hash points at it.
+   - **An unreadable host's set is built from its own `host_packages` rows.** Its `content_hash` hashes only `("unreadable", reason, [])` (`lib/agent_api/package_report.rb:48`), while `PackageRecorder` keeps that host's previous rows, so every unreadable host with the same reason shares a hash but not a list (the review's blocker). An unsupported host gets no set.
+   - A host whose hash changed during the batch is skipped: the recorder already wrote it.
+   - **Cost.** The model's fleets have 78 to 96% distinct hashes, so at a million hosts that is up to about 900,000 sets to compute; at about 17 ms each (the prototype, in SQL), about **4.5 hours of one worker**, or about an hour over #204's evaluation workers. It is resumable and holds no long lock.
+3. **Backfill the kept snapshots.** Retention keeps each host's newest package snapshot whatever its age (ADR 0007; ADR 0027 moves it forward), so for every host whose packages have not changed since the switch, that snapshot is a JSON-only row that would otherwise be lost (the review's blocker). In the same batched way, every `dpkg` snapshot with a list and no `package_set_id` gets the set of its JSON list (found by hash, or stored). Unsupported and unreadable snapshots have no list and keep no set.
+4. **Match the chunks** (every distinct chunk once), then run a check that, for every host, the active findings derived from its chunks are the same keys as its active `vulnerability_findings`, with the same versions, and that unparsable versions are left alone as decided. The old matcher stays as the oracle until the check is clean.
+5. **Switch matching and the readers** to sets and chunks; stop writing `host_packages`; snapshots write `package_set_id`. `PackageSnapshot#package_list` reads either until the clean-up.
+6. **Clean up**, only once `packages:check_snapshots` reports **no `dpkg` snapshot with neither a set nor a list**: run step 3 again for snapshots written between it and the switch, then `DROP TABLE host_packages` and `DROP COLUMN packages` (both instant). Dropping the derived columns of `vulnerability_findings` is instant too, but the space returns only as rows are rewritten; a large fleet that wants the smaller rows at once rebuilds the table with a batched copy and a swap.
 
-With ADR 0027: convert `package_snapshots` to partitions first, so the new small snapshots are written to the partitioned table and the JSON ones leave with the legacy partition.
+With ADR 0027: convert `package_snapshots` to partitions first, so the new small snapshots are written to the partitioned table; the JSON ones that retention would drop leave with their partitions, and the kept ones are covered by step 3.
 
 ## The homelab
 
@@ -207,16 +245,19 @@ No setting, no service, nothing to install. The model's homelab (50 hosts from o
 ## Risks
 
 - **Correctness of derived findings.** Mitigated by the equivalence check in step 3, and by keeping today's matcher as a test oracle on randomised fleets until the switch.
-- **More writes for fleets where every set is unique.** A changed report in a fleet like the hand-managed model writes a new set (1 row and 64 references) and a chunk (about 13 entries), against about 30 changed rows with #185. Storage still falls 82 times in that model.
+- **More writes for fleets where every set is unique.** A changed report in a fleet like the hand-managed model writes a new set (one 814-byte row) and a chunk (about 13 entries), against about 30 changed rows with #185. Over a 90-day window that fleet stores about 680 MB against 7.9 GB today (12 times less, not the 82 times the first version claimed from one moment's entries).
 - **The bucket function is forever.** Changing it re-chunks every set; the chunking version in the hash allows it as a rebuild.
-- **Garbage collection racing a report** that reuses a chunk: foreign keys refuse the deletion or the insert, the one-day grace period makes it rare, and the recorder retries once.
+- **Garbage collection racing a report** that reuses a set or chunk: decision 8's touch and its re-checked `DELETE` conflict on the row, so exactly one wins; a spec runs both orders. Without foreign keys, a bug could leave a dangling id; `packages:check_snapshots` reports any.
+- **A chunk with stale verdicts** after an import that raced its creation: closed by the end-of-import pass (decision 7); a full "match again" clears anything else.
 - **Per-host finding rows remain the largest table**: 450 findings at 178 bytes is 80 KB a host, 80 GB at a million hosts (from 157 GB). The next steps, if needed, are an id for (advisory, package, architecture) (114 bytes) and later a derived lifecycle, which needs its own decision on P2-S11.
 - **Hash collisions** of SHA-256 are not a practical risk.
 
 ## How it will be tested and measured
 
-- Property specs: a list stored and read back is the same list; the same list gives the same set id whatever the report order; a change of one package changes one chunk; an empty list and an unsupported manager.
-- Matching equivalence on randomised fleets from the fleet simulator: chunk-derived findings, states, and versions equal today's `VulnerabilityMatcher` output, for new reports, advisory imports, withdrawals, unparsable versions, skipped packages, and unreadable reports.
+- Property specs: a list stored and read back is the same list; the same list gives the same set id whatever the report order; a change changes only the chunks of the sources it touches (two for a package whose source changes); an empty list and an unsupported manager.
+- Matching equivalence on randomised fleets from the fleet simulator: chunk-derived findings, states, and versions equal today's `VulnerabilityMatcher` output, for new reports, advisory imports, withdrawals, unparsable versions (left unchanged), skipped packages, and unreadable reports.
+- Race specs: a host whose set has a chunk not yet evaluated (or evaluated only in another ecosystem, or against an older import) gets it matched before its transitions, and no finding resolves; a chunk created during an import is matched again at its end; collection against a touch, in both orders.
+- Migration specs: unreadable hosts with the same reason get their own sets; a host's kept JSON-only snapshot gets its set; the clean-up refuses while any `dpkg` snapshot has neither.
 - `PackageDiff` equivalence between sets and the JSON lists.
 - `bin/benchmark seed` gains `--package-variants` to seed sets with the model's distribution; `queries`, `explain`, and `jobs` report the package report, the packages tab, matching, and an advisory import, before and after.
 - 100% line coverage, as now.
@@ -225,14 +266,14 @@ No setting, no service, nothing to install. The model's homelab (50 hosts from o
 
 One issue each; each PR is reviewable alone.
 
-1. **Sets and chunks, written alongside** (after #185): the tables, the store (hashing, chunking, find or create), the recorder writing both, the backfill job, the benchmark's `--package-variants`.
-2. **Readers on sets:** the packages tab, the comparison and snapshot list, the vulnerabilities pages; snapshots store set ids.
-3. **Matching per chunk** (after #204): `chunk_matches`, `chunk_evaluations`, host transitions, advisory import by chunk, the equivalence check; `vulnerability_findings` slimmed.
-4. **Clean-up and garbage collection:** drop `host_packages` and the JSON column; the garbage-collection pass in the retention job; `docs/operations/agent-packages.md`, and the P2-S08 and P2-S11 texts in the specs.
+1. **Sets and chunks, written alongside:** the tables, the store (hashing, chunking, find or create, touch), the recorder writing both, the host backfill (dpkg grouped, unreadable from own rows), the benchmark's `--package-variants`.
+2. **Readers on sets:** the packages tab, the comparison and snapshot list, the vulnerabilities pages; snapshots store set ids; the snapshot backfill and `packages:check_snapshots`.
+3. **Matching per chunk** (after #204): `chunk_matches`, `chunk_evaluations` with the import id, the evaluated-chunks check before transitions, transitions in batches of 100 hosts, advisory import by chunk with its end-of-import pass, the equivalence check; `vulnerability_findings` slimmed.
+4. **Clean-up and garbage collection:** drop `host_packages` and the JSON column behind the check; mark-and-sweep collection in the retention job; `docs/operations/agent-packages.md`, and the P2-S08 and P2-S11 texts in the specs.
 
 ## Consequences
 
-- Package storage grows with the number of distinct chunks, not with hosts times packages: in the 100,000-host template model, 54,456 entry rows instead of 85 million.
-- Matching cost grows with new chunks, not with hosts; an advisory's per-host cost is one row write for each host it affects.
+- Package storage grows with the sets and chunks a window keeps, not with hosts times packages: 12 to 100 times less than today in the 10,000-host models over a 90-day window, snapshots included.
+- Matching cost grows with new chunks, not with hosts; an advisory's per-host cost is its finding rows and #206's recount, about 1.2 ms a host in batches.
 - Whole-set sharing is not the saving: a fleet "built from one image" still has many distinct sets. The design does not depend on fleets being uniform.
 - The per-host findings lifecycle is the remaining per-host store, and the next limit.
