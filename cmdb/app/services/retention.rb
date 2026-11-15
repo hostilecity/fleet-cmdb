@@ -11,14 +11,21 @@
 #   imports, so they are kept however old (P2-D06, P2-S16), and the entries are replaced only by an import.
 # - Audit entries are never pruned (FR-S.3). They are not registered here, and the database blocks deleting
 #   them anyway.
+# - Report ids (the receipts that recognise a retried report) are kept for REPORT_ID_WINDOW, or the retention window
+#   if it is shorter: they only need to outlive an agent's retries, and an agent writes one for every report (96
+#   inventory reports a day), so at 90 days they were the largest table of all (about 9,400 rows a host). A report
+#   retried after its receipt is gone is processed again as a new report: it writes a snapshot only if its content
+#   differs from the host's stored state, as any report does.
 # - Deletes run in batches of `batch_size` rows, each its own short statement, so a large table never holds a
 #   long lock or writes one huge transaction.
 # - `dry_run` counts what would be deleted and changes nothing.
 # - A later phase registers its own snapshot type with Retention.register (for example P2-S12).
 module Retention
-  Target = Data.define(:model, :time_column, :keep_newest_per_host, :keep_newest, :only)
+  Target = Data.define(:model, :time_column, :keep_newest_per_host, :keep_newest, :only, :max_age)
 
   DEFAULT_BATCH_SIZE = 1_000
+  # How long report ids are kept (see above): longer than any retry (an agent waits at most a day between retries).
+  REPORT_ID_WINDOW = 7.days
 
   @targets = []
 
@@ -27,18 +34,23 @@ module Retention
 
     # Adds a table to prune. `time_column` is the row's age (received_at, occurred_at); `keep_newest_per_host`
     # needs a host_id column and an index on (host_id, time_column); `keep_newest` keeps the table's newest row;
-    # `only` (a where condition) limits pruning to the rows that are history, such as resolved findings.
-    def register(model, time_column:, keep_newest_per_host: false, keep_newest: false, only: nil)
+    # `only` (a where condition) limits pruning to the rows that are history, such as resolved findings; `max_age`
+    # prunes the table sooner than the retention window.
+    def register(model, time_column:, keep_newest_per_host: false, keep_newest: false, only: nil, max_age: nil)
       @targets.reject! { |target| target.model == model }
-      @targets << Target.new(model:, time_column:, keep_newest_per_host:, keep_newest:, only:)
+      @targets << Target.new(model:, time_column:, keep_newest_per_host:, keep_newest:, only:, max_age:)
     end
 
     # Deletes (or, in a dry run, counts) the expired rows of every target. Returns { "inventory_snapshots" => 12 }.
     def prune!(now: Time.current, window: Setting.retention_window, dry_run: false, batch_size: DEFAULT_BATCH_SIZE)
       cutoff = now - window
-      counts = targets.to_h { |target| [ target.model.table_name, prune_target(target, cutoff:, dry_run:, batch_size:) ] }
+      counts = targets.to_h do |target|
+        [ target.model.table_name, prune_target(target, cutoff: now - [ window, target.max_age ].compact.min, dry_run:, batch_size:) ]
+      end
       summary = counts.map { |table, count| "#{table}=#{count}" }.join(" ")
-      Rails.logger.info("[retention] #{dry_run ? 'dry run, would delete' : 'deleted'} #{summary} older than #{cutoff.utc.iso8601}")
+      sooner = targets.filter_map { |t| "#{t.model.table_name} older than #{(now - t.max_age).utc.iso8601}" if t.max_age && t.max_age < window }
+      Rails.logger.info("[retention] #{dry_run ? 'dry run, would delete' : 'deleted'} #{summary} older than #{cutoff.utc.iso8601}" \
+                        "#{" (#{sooner.join(', ')})" if sooner.any?}")
       counts
     end
 
@@ -78,11 +90,11 @@ module Retention
   end
 
   register InventorySnapshot, time_column: :received_at, keep_newest_per_host: true
-  register InventoryReportReceipt, time_column: :received_at
+  register InventoryReportReceipt, time_column: :received_at, max_age: REPORT_ID_WINDOW
   register PackageSnapshot, time_column: :received_at, keep_newest_per_host: true
-  register PackageReportReceipt, time_column: :received_at
+  register PackageReportReceipt, time_column: :received_at, max_age: REPORT_ID_WINDOW
   register ConfigSnapshot, time_column: :received_at, keep_newest_per_host: true
-  register ConfigReportReceipt, time_column: :received_at
+  register ConfigReportReceipt, time_column: :received_at, max_age: REPORT_ID_WINDOW
   register CisResultChange, time_column: :occurred_at
   register HostStatusEvent, time_column: :occurred_at, keep_newest_per_host: true
   # On-demand report requests (P2-S03), by when they were made: a request ends within an hour, and the audit
