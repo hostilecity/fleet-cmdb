@@ -492,6 +492,7 @@
   done:
     - "Risky task types are disabled by default, and the compiled-in catalog matches the shared file."
     - "Killing the agent after the `started` record is written reports `interrupted` on restart and never re-runs the task (AC-3.3)."
+    - "With the default 300 s poll, a task starts within about one heartbeat of being created when the heartbeat carries `tasks_available` (#190)."
   blocked_by: [P3-TASK-MODEL, P1-AGENT-CORE, P3-TASK-API]
 
 - key: P3-AGENT-EXEC
