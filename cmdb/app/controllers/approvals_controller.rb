@@ -91,10 +91,18 @@ class ApprovalsController < ApplicationController
 
   def host_params = params.fetch(:host, {}).permit(:name, :hostname, :tags, :description, :notes)
 
+  # Re-enrollment is the default only for a host with the same machine ID and the same hostname: the VM that was
+  # rebuilt or lost its credential. A machine-ID match under another hostname is most likely a VM cloned from the same
+  # template, so "A new host" is the default there, and re-enrolling, which takes that host over, must be chosen.
   def prepare_review(host: nil)
     @matches = @request.matching_hosts
-    default_target = @matches.find { |_, why| why == :machine_id }&.first
+    default_target = @matches.find { |match, why| why == :machine_id && same_hostname?(match) }&.first
     @choice = params[:choice].presence || (default_target ? "reenroll-#{default_target.id}" : "new")
     @host = host || Host.new(name: @request.hostname&.split(".")&.first, hostname: @request.hostname)
   end
+
+  # A VM that could not read its hostname gives no reason to doubt a machine-ID match. Compared as Host stores it:
+  # lowercase, without a trailing dot.
+  def same_hostname?(host) = @request.hostname.nil? || host.hostname.to_s.casecmp?(@request.hostname.strip.delete_suffix("."))
+  helper_method :same_hostname?
 end

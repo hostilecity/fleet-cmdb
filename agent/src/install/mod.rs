@@ -526,7 +526,7 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
         is_root: euid == 0,
         owner_uid: euid,
         machine: crate::collect::HostSystem.machine().unwrap_or_default(),
-        exe: std::env::current_exe().unwrap_or_default(),
+        exe: running_image(),
         system_ca_bundle: PathBuf::from(crate::client::SYSTEM_CA_BUNDLE),
         systemd: Box::new(Systemctl::default()),
         clock: Box::new(SystemClock(shutdown)),
@@ -551,6 +551,22 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
 }
 
 use crate::collect::System as _;
+
+/// The binary this process runs, for `install` to copy. `/proc/self/exe` opens the very file the kernel
+/// started, even if its path now names another one. The installer runs as root but usually from a
+/// directory its user can write (where the binary was downloaded), so copying by that path would let
+/// whoever can write there swap in another binary between the checksum check, `sudo`, and the copy; the
+/// running file itself cannot be changed while it runs (`ETXTBSY`). Outside Linux's procfs, the path.
+fn running_image() -> PathBuf {
+    let image = Path::new(RUNNING_IMAGE);
+    if image.exists() {
+        image.to_owned()
+    } else {
+        std::env::current_exe().unwrap_or_default()
+    }
+}
+
+const RUNNING_IMAGE: &str = "/proc/self/exe";
 
 /// `sudo fleet-agent ARGS`, quoted for copying. Only built after [`parse`] accepted the arguments, so
 /// none of them is a secret.

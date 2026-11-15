@@ -66,7 +66,9 @@ The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (O
 
 | Setting | Default | |
 |---|---|---|
-| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints; also per address for onboarding polls |
+| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints, **per web process** (counted in memory, #191: with `WEB_CONCURRENCY` processes a credential can get up to that many times this); also per address for onboarding polls (shared by all processes) |
+| `FLEET_API_RATE_LIMIT_MAX_CREDENTIALS` | `100000` | Credentials whose request counts each web process keeps (about 160 bytes each); past it the least recently counted is dropped and its count starts again. Raise it above the fleet size if each process serves the whole fleet |
+| `FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE` | `60` | Failed authentications per client address, per web process, before every request from that address is refused for the rest of the minute (`429`), checked before authentication (#191, S-5) |
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
 | `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Lifetime of a pre-registration one-time token |
 | `FLEET_ONBOARDING_TTL_MINUTES` | `10` | How long an onboarding request waits for approval |
@@ -98,7 +100,7 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `FLEET_BACKUP_STATUS_FILE` | `/rails/storage/backup/last_success`, in the Docker volume | Touched by `ops/backup/backup.sh` after each complete backup; the app reads its time |
 | `FLEET_RESTORE_DRILL` | unset; *fixed* to `1` by `restore-drill.sh` | Makes the drill's boot use an in-memory cache, so it never writes to the live cache database |
 
-**Data retention** (snapshots, report ids, status history; default 90 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
+**Data retention** (snapshots and status history; default 90 days; report ids are kept 7 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
 
 ## Database
 
