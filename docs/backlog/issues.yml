@@ -101,6 +101,7 @@
   done:
     - "Hostile strings in every agent- and operator-supplied field render escaped in every view under a restrictive CSP."
     - "Retention prunes expired snapshots but keeps each host's newest and never touches audit entries, and failed jobs appear in an operator-visible list and in `/health`."
+    - "The every-minute jobs run on a queue with a worker of its own, so a long job on the default queue cannot delay them (S-7, ADR 0025)."
   blocked_by: [P1-INVENTORY, P1-HEARTBEAT, P1-ACCESS, P1-DASH-FLEET, P1-DASH-ACTIONS, P1-ONBOARD, P1-UPDATES]
 
 - key: P1-DASH-FLEET
@@ -191,6 +192,7 @@
   done:
     - "`/api/v1` is unreachable through the public hostname, and an agent verifies the agent-hostname certificate with its compiled-in trust (ADR 0024), with no `ca_file`."
     - "Following the docs alone, a fresh reader sets up the server and enrolls a VM."
+    - "The default deploy is one container; `FLEET_JOBS_CONTAINER=true` runs the jobs in a second one, and the sizing and connection budget are documented (#198, ADR 0025)."
   blocked_by: [P1-ACCESS, P1-PACKAGING, P1-RELEASES]
 
 - key: P1-VERIFY
@@ -490,6 +492,7 @@
   done:
     - "Risky task types are disabled by default, and the compiled-in catalog matches the shared file."
     - "Killing the agent after the `started` record is written reports `interrupted` on restart and never re-runs the task (AC-3.3)."
+    - "With the default 300 s poll, a task starts within about one heartbeat of being created when the heartbeat carries `tasks_available` (#190)."
   blocked_by: [P3-TASK-MODEL, P1-AGENT-CORE, P3-TASK-API]
 
 - key: P3-AGENT-EXEC

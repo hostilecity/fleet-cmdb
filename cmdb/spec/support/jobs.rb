@@ -3,7 +3,7 @@
 module JobHelpers
   # The recurring liveness job finished at `at`, as /health expects it to every minute.
   def liveness_job_ran(at: Time.current)
-    SolidQueue::Job.create!(queue_name: "default", class_name: LivenessEvaluationJob.name, finished_at: at)
+    SolidQueue::Job.create!(queue_name: "realtime", class_name: LivenessEvaluationJob.name, finished_at: at)
   end
 
   # A job that failed all its retries `at`, with the error Solid Queue stores.

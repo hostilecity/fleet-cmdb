@@ -18,6 +18,9 @@ require "action_cable/engine"
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
 
+# Thread and process counts, read by config/database.yml and config/queue.yml (#198).
+require_relative "../lib/sizing/process_sizing"
+
 module Cmdb
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
@@ -26,7 +29,7 @@ module Cmdb
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
     # Common ones are `templates`, `generators`, or `middleware`, for example.
-    config.autoload_lib(ignore: %w[assets ci fleet_simulator fleet_simulator.rb logging middleware tasks tls]) # lib/ci is bin/ci and spec tooling only; lib/fleet_simulator is bin/simulate-fleet
+    config.autoload_lib(ignore: %w[assets ci fleet_simulator fleet_simulator.rb logging middleware sizing tasks tls]) # lib/ci is bin/ci and spec tooling only; lib/fleet_simulator is bin/simulate-fleet
 
     # Configuration for the application, engines, and railties goes here.
     #
