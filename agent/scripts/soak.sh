@@ -55,7 +55,7 @@ if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${SOAK_DISPOSABLE:-}" != yes ]; then
     echo "soak: this rewrites $LIB, $ETC, $STATE and $UNITS; run it on a disposable machine and set SOAK_DISPOSABLE=yes" >&2
     exit 2
 fi
-for path in "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service"; do
+for path in "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service"; do
     [ ! -e "$path" ] || { echo "soak: $path exists; an agent is installed here, and this test would destroy it" >&2; exit 2; }
 done
 for file in test.key "fleet-agent-$OLD" "fleet-agent-$NEW"; do
@@ -87,12 +87,12 @@ fail() {
 
 cleanup() {
     status=$?
-    journalctl -u fleet-agent -u fleet-agent-update -u fleet-agent-rollback --no-pager -o short-iso > "$out/journal.log" 2>&1 || true
+    journalctl -u fleet-agent -u fleet-agent-update -u fleet-agent-rollback -u fleet-agent-recovery --no-pager -o short-iso > "$out/journal.log" 2>&1 || true
     tail -n 200 "$events" > "$out/server-events-tail.jsonl" 2>/dev/null || true
-    systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback 2>/dev/null || true
-    systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback 2>/dev/null || true
+    systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
+    systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
     stop_server
-    rm -rf "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$tmp"
+    rm -rf "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service" "$tmp"
     systemctl daemon-reload 2>/dev/null || true
     exit "$status"
 }
@@ -199,6 +199,7 @@ EOF
 )
 install -m 0644 "$agent_dir/src/install/fleet-agent.service" "$UNITS/fleet-agent.service"
 install -m 0644 "$agent_dir/src/install/fleet-agent-rollback.service" "$UNITS/fleet-agent-rollback.service"
+install -m 0644 "$agent_dir/src/install/fleet-agent-recovery.service" "$UNITS/fleet-agent-recovery.service"
 systemctl daemon-reload
 echo "epoch,elapsed_s,phase,pid,version,restarts,rss_kib,fds,threads,state_bytes,state_entries,versions,server_up" > "$samples"
 

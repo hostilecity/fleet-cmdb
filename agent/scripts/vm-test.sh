@@ -33,6 +33,10 @@
 #   crash loop and reboot    a release that crash-loops, switched to, then the VM restarts: rolled
 #                            back (by the failure hook, as nothing else runs)
 #
+# Every scenario also checks that recovery mode (fleet-agent-recovery.service, ADR 0030) is not running
+# once it settles: a rollback restarts the service, which cancels the recovery unit the same OnFailure=
+# queued.
+#
 # Before them, one check of the package report (P2-AGENT-PACKAGES, AC-2.3): the report the agent sends
 # at startup, under the real unit on the real image, lists exactly the VM's own dpkg listing, with the
 # source package of each.
@@ -51,6 +55,17 @@
 #                            the restarted agent reports it succeeded (threat model L8)
 #   forced timeout           a maintainer script that hangs, with a 60 s deadline: timed_out, the whole
 #                            process tree ended, the repair guidance in the output
+#
+# Last, recovery mode (#180, ADR 0030), with two more builds: fleet-agent-1.1.0, the VM fault build
+# (src/vm_fault.rs; `VM_FAULT=1 update-smoke-build.sh`), and fleet-agent-1.1.1, a normal build:
+#
+#   crash loop on a confirmed version   1.1.0 is installed and confirmed; then a file in the state
+#                            directory makes its normal mode panic at every start. systemd stops
+#                            restarting it, the rollback unit finds nothing to roll back, and recovery
+#                            mode starts: heartbeats that say why, from the same binary, with no
+#                            capabilities, and no report or task poll. The server offers 1.1.1 (the
+#                            "fixed release"): recovery mode installs it through the signed path, 1.1.1
+#                            confirms in normal mode, and recovery mode has stopped.
 set -euo pipefail
 
 dir=${1:?usage: scripts/vm-test.sh DIR IMAGE OUT}
@@ -65,6 +80,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 OLD=1.0.0
 NEW=1.0.1
 LOOPING=1.0.3
+FAULTY=1.1.0
+FIXED=1.1.1
+# The file that makes the fault build's normal mode panic (src/vm_fault.rs).
+POISON=vm-test-poison
 SERVER_NAME=agent.example.lan
 PORT=8443
 SSH_PORT=${VM_SSH_PORT:-2222}
@@ -78,10 +97,20 @@ DROPIN=/etc/systemd/system/fleet-agent-update.service.d
 # put back exactly what it held, so a lost or skipped backup shows as a difference.
 MARKER=vm-test-marker.json
 
-for file in test.key "fleet-agent-$OLD" "fleet-agent-$NEW"; do
+for file in test.key "fleet-agent-$OLD" "fleet-agent-$NEW" "fleet-agent-$FAULTY" "fleet-agent-$FIXED"; do
     [ -s "$dir/$file" ] || { echo "vm-test: missing $dir/$file" >&2; exit 2; }
 done
 [ -s "$image" ] || { echo "vm-test: missing image $image" >&2; exit 2; }
+# Only the fault build has the fault (scripts/check-no-fault-hooks.sh proves a release has none).
+fault_marker=$(sed -n 's/^pub const FAULT_HOOK_MARKER: &str = "\(.*\)";$/\1/p' src/test_support.rs)
+[ -n "$fault_marker" ] || { echo "vm-test: FAULT_HOOK_MARKER not found in src/test_support.rs" >&2; exit 2; }
+grep -aqF "$fault_marker" "$dir/fleet-agent-$FAULTY" || { echo "vm-test: fleet-agent-$FAULTY is not the fault build" >&2; exit 2; }
+for version in "$OLD" "$NEW" "$FIXED"; do
+    if grep -aqF "$fault_marker" "$dir/fleet-agent-$version"; then
+        echo "vm-test: fleet-agent-$version contains the fault" >&2
+        exit 2
+    fi
+done
 image=$(cd "$(dirname "$image")" && pwd)/$(basename "$image")
 mkdir -p "$out/logs"
 out=$(cd "$out" && pwd)
@@ -245,13 +274,14 @@ held_before_switch() {
 reset() {
     wait_until "SSH" 300 ssh_up
     set_plan '{}'
-    vm "systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback 2>/dev/null || true
-        systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback 2>/dev/null || true
+    vm "systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
+        systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
         rm -f $HOLD; rm -rf $DROPIN; systemctl daemon-reload
         find $LIB/versions -mindepth 1 -maxdepth 1 ! -name $OLD -exec rm -rf {} +
         rm -f $LIB/previous
         ln -sfn versions/$OLD $LIB/current
         rm -rf $STATE/update $STATE/update.json $STATE/update-confirmed.json $STATE/update-result.json $STATE/update.lock
+        rm -f $STATE/$POISON $STATE/recovery.json $STATE/last-failure.json
         systemctl start fleet-agent"
     since=$(date +%s.%N)
     wait_until "a heartbeat from $OLD" 90 heartbeat_from "$OLD"
@@ -277,7 +307,7 @@ unsettled() {
     vm "s=''
         [ ! -e $STATE/update.json ] || s=\"\$s the update record $STATE/update.json is still there;\"
         [ ! -e $STATE/update-result.json ] || s=\"\$s the outcome in $STATE/update-result.json is not yet accepted;\"
-        for u in fleet-agent-update fleet-agent-rollback; do
+        for u in fleet-agent-update fleet-agent-rollback fleet-agent-recovery; do
             a=\$(systemctl show -p ActiveState --value \$u)
             case \$a in inactive|failed|'') ;; *) s=\"\$s \$u is \$a;\" ;; esac
         done
@@ -360,6 +390,8 @@ make_certs "$tmp" "$SERVER_NAME"
 mkrelease "$stub/releases" good "$NEW" "$dir/fleet-agent-$NEW" "$dir/test.key"
 mkscript "$tmp/loops.sh" "$LOOPING" "echo \"vm-test: release $LOOPING started\" >&2; sleep 2; exit 1"
 mkrelease "$stub/releases" crash_loop "$LOOPING" "$tmp/loops.sh" "$dir/test.key"
+mkrelease "$stub/releases" faulty "$FAULTY" "$dir/fleet-agent-$FAULTY" "$dir/test.key"
+mkrelease "$stub/releases" fixed "$FIXED" "$dir/fleet-agent-$FIXED" "$dir/test.key"
 
 STUB_PUBLIC_URL="https://$SERVER_NAME:$PORT" STUB_CREDENTIAL="$CREDENTIAL" STUB_ENROLL_TOKEN="$ENROLL_TOKEN" \
     python3 "$here/update-stub.py" "$PORT" "$tmp/cert.pem" "$tmp/key.pem" "$stub" &
@@ -472,6 +504,63 @@ crash_loop_and_reboot() {
     expect_one_version "$OLD" - # `previous` put back as it was before the update (none)
     vm "journalctl -b -u fleet-agent-rollback --no-pager -o cat" | grep -q "update supervisor finished" \
         || fail "the failure hook did not run after the reboot"
+}
+
+# heartbeat_in_mode VERSION recovery|normal: an acknowledged heartbeat from VERSION since $since, in that mode.
+heartbeat_in_mode() {
+    local test='.recovery != null'
+    [ "$2" = recovery ] || test='.recovery == null'
+    event_exists "[.[] | select(.kind == \"heartbeat\" and .agent_version == \"$1\" and .status == 200 and .at > $since and $test)] | length > 0"
+}
+inventory_since() {
+    event_exists "[.[] | select(.kind == \"inventory\" and .agent_version == \"$1\" and .status == 200 and .at > $since)] | length > 0"
+}
+
+# #180, ADR 0030: a confirmed version that crash-loops, with nothing to roll back to, goes to recovery mode
+# instead of stopping for good, and a fixed release reaches it through the signed update path.
+recovery_mode() {
+    rollout=$1
+    reset
+    offer faulty "$FAULTY"
+    expect_result succeeded "$FAULTY"
+    expect_one_version "$FAULTY" "$OLD"
+    echo "$FAULTY is installed and confirmed; now host state makes its normal mode fail at every start"
+    since=$(date +%s.%N)
+    vm "touch $STATE/$POISON && chmod 0600 $STATE/$POISON && systemctl restart fleet-agent"
+    wait_until "recovery mode to start" 240 vm_ok 'systemctl is-active --quiet fleet-agent-recovery'
+    vm_ok '! systemctl is-active --quiet fleet-agent' || fail "fleet-agent.service is active beside recovery mode"
+    # This boot's journal: no earlier scenario has the fault build (the guest's clock is not the runner's).
+    vm "journalctl -b -u fleet-agent --no-pager -o cat" | grep -q "vm-test fault" \
+        || fail "the crash loop was not the fault's"
+    wait_until "a heartbeat in recovery mode from $FAULTY" 120 heartbeat_in_mode "$FAULTY" recovery
+    local reason pid caps exe entered
+    reason=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.reason' "$events")
+    entered=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.entered_at' "$events")
+    echo "recovery mode since $entered: $reason"
+    [[ $reason == *"panicked"*"vm-test fault"* ]] || fail "the reason does not say what failed: $reason"
+    pid=$(vm 'systemctl show -p MainPID --value fleet-agent-recovery')
+    exe=$(vm "readlink /proc/$pid/exe")
+    [ "$exe" = "$LIB/versions/$FAULTY/fleet-agent" ] || fail "recovery mode runs $exe, expected version $FAULTY"
+    caps=$(vm "awk '/^CapBnd:/ { print \$2 }' /proc/$pid/status")
+    [ "$caps" = 0000000000000000 ] || fail "recovery mode has capabilities (CapBnd $caps)"
+    # Two more heartbeat intervals: recovery mode sends no report and polls for no task.
+    sleep $((25 * slow))
+    event_exists "[.[] | select((.kind == \"inventory\" or .kind == \"packages\" or .kind == \"task_poll\") and .at > $since and .agent_version == \"$FAULTY\")] | length == 0" \
+        || fail "recovery mode sent a report or polled for a task"
+    echo "recovery mode heartbeats as $FAULTY with no capabilities, and sends nothing else; now the server offers $FIXED"
+    rollout=$(($1 + 1000))
+    offer fixed "$FIXED"
+    expect_result succeeded "$FIXED"
+    # One version runs (recovery mode, `current/fleet-agent run --recovery`, would be a second process).
+    expect_one_version "$FIXED" "$FAULTY"
+    since=$(date +%s.%N)
+    wait_until "a heartbeat in normal mode from $FIXED" 90 heartbeat_in_mode "$FIXED" normal
+    # The cause is still there; the fixed release runs normally with it, reports included.
+    vm_ok "test -e $STATE/$POISON" || fail "the poison file is gone"
+    wait_until "an inventory report from $FIXED" 150 inventory_since "$FIXED"
+    vm "rm -f $STATE/$POISON"
+    echo "recovery mode installed $FIXED, which confirmed and runs normally; recovery mode has stopped"
+    printf '%s' "recovered: $FAULTY crash-looped, recovery mode installed $FIXED" > "$tmp/last-result"
 }
 
 # AC-2.3: the package report equals the installed packages of `dpkg-query --show` on the VM (status
@@ -677,7 +766,7 @@ diagnostics() {
     vm "ls -l $LIB $LIB/versions $STATE; cat $STATE/update.json 2>/dev/null" 2>&1 || echo "(the VM does not answer)"
     echo "--- journals (this boot and the one before)"
     for b in -1 0; do
-        vm "journalctl -b $b --no-pager -o short-iso -u fleet-agent -u fleet-agent-update -u fleet-agent-rollback | tail -n 80" 2>&1 || true
+        vm "journalctl -b $b --no-pager -o short-iso -u fleet-agent -u fleet-agent-update -u fleet-agent-rollback -u fleet-agent-recovery | tail -n 80" 2>&1 || true
     done
     echo "--- task units"
     vm "systemctl list-units --all --plain --no-legend 'fleet-agent-task-*'; journalctl --no-pager -o cat -u 'fleet-agent-task-*' | tail -n 60" 2>&1 || true
@@ -692,6 +781,7 @@ record_header() {
     echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with \`fleet-agent install\`."
     echo "The package report check (AC-2.3) compares the agent's startup package report with \`dpkg-query --show\` on the VM."
     echo "The package update scenarios (P3-AGENT-UPDATES) run the real apply_package_updates task against a local repository of test packages built in the guest."
+    echo "The recovery mode scenario (#180, ADR 0030) makes a confirmed $FAULTY (the VM fault build) crash-loop and checks that recovery mode installs $FIXED."
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
@@ -706,6 +796,7 @@ scenario 370 "Package updates applied, no reboot (AC-3.4, AC-3.5)" packages_upgr
 scenario 371 "Package manager lock held: lock_timeout" lock_contention
 scenario 372 "Agent restarted during the upgrade (L8)" agent_restart_mid_upgrade
 scenario 373 "Forced timeout ends the process tree" forced_timeout
+scenario 307 "Crash loop on a confirmed version: recovery mode (#180)" recovery_mode
 
 # shellcheck disable=SC2016 # expanded in the guest
 os=$(vm '. /etc/os-release; echo "$PRETTY_NAME"' 2> /dev/null || echo "Debian 13")

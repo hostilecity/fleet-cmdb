@@ -2,7 +2,8 @@
 # Boots Debian's official genericcloud image under QEMU (KVM when the runner allows it, TCG otherwise),
 # installs the agent with the real installer, and kills the update supervisor and restarts the VM in
 # the middle of updates (agent/scripts/vm-test.sh); then runs the apply_package_updates task for real
-# against a local repository of test packages (P3-AGENT-UPDATES). The results are uploaded as the "vm-test-results"
+# against a local repository of test packages (P3-AGENT-UPDATES), and last makes a confirmed agent crash-loop
+# into recovery mode (#180, ADR 0030). The results are uploaded as the "vm-test-results"
 # artifact (JUnit and Markdown) and shown in the job summary.
 #
 # Separate from Agent CI because it takes several minutes; it runs on every change to agent/ and by
@@ -78,7 +79,10 @@ jobs:
           workspaces: agent
           key: vm
 
-      - name: Build two versions that trust a throwaway key
+      - name: Build the versions that trust a throwaway key
+        # 1.0.0 and 1.0.1 for the update failure tests; for recovery mode (#180), 1.1.0, the VM fault build
+        # (`--cfg fleet_vm_fault`, src/vm_fault.rs: a test-only fault, in a target directory of its own),
+        # and 1.1.1, a normal build. vm-test.sh checks that only 1.1.0 has the fault.
         run: |
           set -eu
           dir="$RUNNER_TEMP/vm-test"
@@ -86,6 +90,8 @@ jobs:
           minisign -G -W -p "$dir/test.pub" -s "$dir/test.key" > /dev/null
           scripts/update-smoke-build.sh 1.0.0 "$dir/test.pub" "$dir/fleet-agent-1.0.0" "$RUNNER_TEMP/vm-target"
           scripts/update-smoke-build.sh 1.0.1 "$dir/test.pub" "$dir/fleet-agent-1.0.1" "$RUNNER_TEMP/vm-target"
+          scripts/update-smoke-build.sh 1.1.1 "$dir/test.pub" "$dir/fleet-agent-1.1.1" "$RUNNER_TEMP/vm-target"
+          VM_FAULT=1 scripts/update-smoke-build.sh 1.1.0 "$dir/test.pub" "$dir/fleet-agent-1.1.0" "$RUNNER_TEMP/vm-target-fault"
 
       - name: Find the image and its published checksum
         id: image

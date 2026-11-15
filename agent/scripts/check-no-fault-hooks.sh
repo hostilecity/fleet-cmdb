@@ -10,7 +10,10 @@
 #
 # 1. Source: each line of non-test code that calls `tests::crash_at(` or `tests::fail_point(` comes
 #    straight after a `#[cfg(test)]` line, and Cargo.toml declares no `[features]` that could switch
-#    hooks on in another build.
+#    hooks on in another build. The VM test's crash-loop fault (src/vm_fault.rs, #180) is compiled only
+#    with `--cfg fleet_vm_fault`, which only the VM test's fault build sets: every call to it comes
+#    straight after `#[cfg(fleet_vm_fault)]`, its module after `#[cfg(any(test, fleet_vm_fault))]`, and
+#    neither the release build script, the release workflow, nor a Cargo config file names the cfg.
 # 2. Positive control: the unit-test binary contains FAULT_HOOK_MARKER (src/test_support.rs), which
 #    every hook keeps, so the binary check below would see a hook if one were there.
 # 3. The release binary does not contain it.
@@ -40,6 +43,25 @@ printf '%s\n' "$calls" | while IFS=: read -r file line _; do
         exit 1
     fi
 done || status=1
+calls=$(grep -rn --include='*.rs' -E 'vm_fault::' src | grep -v -E '^src/vm_fault\.rs:' || true)
+[ -n "$calls" ] || fail "no call to the VM test fault found in src: has the check gone stale?"
+printf '%s\n' "$calls" | while IFS=: read -r file line _; do
+    [ -n "$file" ] || continue
+    above=$(sed -n "$((line - 1))p" "$file" | tr -d ' ')
+    if [ "$above" != "#[cfg(fleet_vm_fault)]" ]; then
+        echo "check-no-fault-hooks: $file:$line calls the VM test fault without #[cfg(fleet_vm_fault)] on the line above" >&2
+        exit 1
+    fi
+done || status=1
+module=$(grep -n -E '^mod vm_fault;' src/main.rs | cut -d: -f1)
+if [ -z "$module" ] || [ "$(sed -n "$((module - 1))p" src/main.rs)" != "#[cfg(any(test, fleet_vm_fault))]" ]; then
+    fail "src/main.rs must declare \`mod vm_fault;\` straight after #[cfg(any(test, fleet_vm_fault))]"
+fi
+for file in scripts/build-release.sh ../.github/workflows/agent-release.yml .cargo/config.toml .cargo/config ../.cargo/config.toml ../.cargo/config; do
+    if [ -f "$file" ] && grep -q 'fleet_vm_fault' "$file"; then
+        fail "$file names fleet_vm_fault, which would compile the VM test fault into a release"
+    fi
+done
 if grep -q '^\[features\]' Cargo.toml; then
     fail "Cargo.toml declares [features]; a feature could compile fault hooks into a release"
 fi
