@@ -34,7 +34,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Implementation notes
 
-- `/health` checks: `database`, `releases` (the newest release and a running rollout's target), `backup`, `failed_jobs`, `job_liveness`. The liveness check is "the recurring liveness evaluation finished within 5 minutes".
+- `/health` checks: `database`, `releases` (the newest release and a running rollout's target), `backup`, `failed_jobs`, `job_liveness`, `live_updates` (this process's Solid Cable listener is running, #194). The liveness check is "the recurring liveness evaluation finished within 5 minutes".
 - Production logs are one JSON object per line (`StructuredLogFormatter`): time, level, message, and `request_id`, `host_id`, `report_id` when known, plus a `request completed` line with `duration_ms`, controller, action, method, and status (never the query string). The request id is also the `X-Request-Id` response header and the `request_id` in every error envelope, so an agent log line is matched to a server line by that id; a report is found by `report_id`.
 
 ### Acceptance criteria

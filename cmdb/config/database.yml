@@ -39,6 +39,10 @@ development:
     <<: *primary_development
     database: cmdb_development_cable
     migrations_paths: db/cable_migrate
+    # An unreachable cable database fails a connection attempt within 2 s (#194), which Solid Cable's listener retries.
+    # No statement_timeout: a cancelled poll (ActiveRecord::QueryCanceled) is not an error the listener retries, so
+    # it would stop the listener thread for good (review of #218). /health's live_updates check reports that.
+    connect_timeout: 2
 
 
   # The specified database role being used to connect to PostgreSQL.
@@ -126,3 +130,7 @@ production:
     <<: *primary_production
     database: cmdb_production_cable
     migrations_paths: db/cable_migrate
+    # An unreachable cable database fails a connection attempt within 2 s (#194), which Solid Cable's listener retries.
+    # No statement_timeout: a cancelled poll (ActiveRecord::QueryCanceled) is not an error the listener retries, so
+    # it would stop the listener thread for good (review of #218). /health's live_updates check reports that.
+    connect_timeout: 2
