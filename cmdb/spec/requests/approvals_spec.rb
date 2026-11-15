@@ -287,10 +287,16 @@ RSpec.describe "Onboarding approval", :signed_in, type: :request do
     include ActiveJob::TestHelper
 
     it "refreshes open dashboards when a request arrives or is decided" do
-      expect { request_record }.to have_enqueued_job(FleetBroadcastJob).with([])
-      expect { Onboarding::Reject.call(request: request_record, operator:) }.to have_enqueued_job(FleetBroadcastJob).with([])
+      everywhere = [ FleetBroadcast::STREAM, FleetBroadcast::ALL_HOSTS_STREAM ]
+      record_refresh_requests
+      request_record
+      expect(refresh_requests).to eq([ everywhere ])
+      Onboarding::Reject.call(request: request_record, operator:)
+      expect(refresh_requests).to eq([ everywhere ] * 2)
       other = start_onboarding(client_ip: "192.0.2.11").record
-      expect { Onboarding::Approve.call(request: other, operator:, attributes: { name: "VM" }) }.to have_enqueued_job(FleetBroadcastJob).with([])
+      refresh_requests.clear
+      Onboarding::Approve.call(request: other, operator:, attributes: { name: "VM" })
+      expect(refresh_requests).to include(everywhere)
     end
   end
 

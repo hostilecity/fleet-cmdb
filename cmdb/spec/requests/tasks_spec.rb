@@ -262,7 +262,8 @@ RSpec.describe "Tasks pages", type: :request do
       expect(rows("#batch_tasks").map { |row| row.at_css("td").text }).to eq(%w[sim-026 sim-027 sim-028 sim-021])
       expect(rows("#batch_excluded").sole.css("td").map(&:text)).to eq([ "sim-029", "Not active when the batch was created." ])
       expect(page.at_css("#cancel_link").text).to eq("Cancel the rest of this batch")
-      expect(page.at_css("turbo-cable-stream-source#tasks_stream")).to be_present
+      expect(page_streams(page)).to eq([ TaskBroadcast.batch_stream(result.batch.id) ]) # not the other batches' (#194)
+      expect(page.at_css("turbo-cable-stream-source#batch_stream_#{result.batch.id}")).to be_present
       expect(page.at_css("#run_again")).to be_nil
 
       running.request_cancel!(operator:)

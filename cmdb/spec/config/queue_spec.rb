@@ -4,7 +4,7 @@ require "rails_helper"
 # its own serves (config/queue.yml), so long jobs on the default queue can never delay them.
 RSpec.describe "config/queue.yml" do
   let(:realtime_jobs) do
-    [ LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, FleetBroadcastJob, TaskBroadcastJob ]
+    [ LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, LiveRefreshJob ]
   end
 
   def workers(env: "production")
@@ -41,14 +41,13 @@ RSpec.describe "config/queue.yml" do
 
   it "runs the every-minute jobs before a backlog of broadcasts on the realtime queue" do
     adapter = ActiveJob::QueueAdapters::SolidQueueAdapter.new
-    3.times { adapter.enqueue(FleetBroadcastJob.new([])) }
-    adapter.enqueue(TaskBroadcastJob.new)
+    4.times { adapter.enqueue(LiveRefreshJob.new) }
     adapter.enqueue(TaskLeaseJob.new)
     adapter.enqueue(LivenessEvaluationJob.new)
 
     order = Array.new(6) { SolidQueue::ReadyExecution.claim([ "realtime" ], 1, nil).sole.job.class_name }
     expect(order.first(2)).to eq(%w[TaskLeaseJob LivenessEvaluationJob])
-    expect(order.drop(2)).to all(end_with("BroadcastJob"))
+    expect(order.drop(2)).to all(eq("LiveRefreshJob"))
   end
 
   it "sizes the database pool for every process it configures" do
