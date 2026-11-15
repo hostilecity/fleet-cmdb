@@ -177,6 +177,10 @@ Rails.application.routes.draw do
     get "data-sources/imports/:id", to: "data_sources#import", as: :advisory_import, constraints: { id: /\d+/ }
     # A full import refused for what it would withdraw: the second confirmation, naming the counts (review of #129).
     post "data-sources/imports/:id/confirm-withdrawals", to: "data_sources#confirm_withdrawals", as: :confirm_withdrawals_advisory_import, constraints: { id: /\d+/ }
+    # Fleet-wide evaluation runs (#197): the progress line refreshes itself from its own small page; a failed run is
+    # started again with a CSRF-protected POST (review of #204).
+    get "evaluation-runs/:id/progress", to: "evaluation_runs#progress", as: :evaluation_run_progress, constraints: { id: /\d+/ }
+    post "evaluation-runs/:id/retry", to: "evaluation_runs#retry", as: :retry_evaluation_run, constraints: { id: /\d+/ }
     patch "settings", to: "settings#update"
     # Live updates (P1-D05). Connections are authenticated (ApplicationCable::Connection).
     mount ActionCable.server => "/cable"

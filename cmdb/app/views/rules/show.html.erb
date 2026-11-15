@@ -30,6 +30,7 @@
   <section aria-labelledby="results" id="results_section">
     <h2 id="results">Results on hosts</h2>
     <p class="muted intro">Each result names the rule version and config snapshot that produced it.</p>
+    <% if @evaluation %><%= render "evaluation_runs/progress", run: @evaluation, tick: 0 %><% end %>
     <% if @results.rows.empty? %>
       <div class="sheet"><p><strong>No hosts in the fleet.</strong></p></div>
     <% else %>

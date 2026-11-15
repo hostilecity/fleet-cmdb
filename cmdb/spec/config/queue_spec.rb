@@ -1,7 +1,8 @@
 require "rails_helper"
 
 # S-7: the jobs that run every minute, and the live-refresh broadcasts, are on the realtime queue, which a worker of
-# its own serves (config/queue.yml), so long jobs on the default queue can never delay them.
+# its own serves (config/queue.yml), so long jobs on the default queue can never delay them. #197: fleet-wide
+# evaluation batches are on the evaluation queue, with a worker of their own, so they never hold the default threads.
 RSpec.describe "config/queue.yml" do
   let(:realtime_jobs) do
     [ LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, FleetBroadcastJob, TaskBroadcastJob ]
@@ -15,10 +16,33 @@ RSpec.describe "config/queue.yml" do
     Rails.root.glob("app/jobs/*_job.rb").map { |path| path.basename(".rb").to_s.camelize.constantize } - [ ApplicationJob ]
   end
 
-  it "runs a worker that serves only the realtime queue, in every environment, beside one for every queue" do
+  let(:evaluation_jobs) { [ EvaluationRunJob, EvaluationBatchJob ] }
+
+  it "runs a worker for the realtime queue only, one for the default queue (taking realtime jobs too), and one for evaluation, in every environment" do
     %w[development test production].each do |env|
-      expect(workers(env:).map { |w| w[:queues] }).to eq([ "realtime", "*" ]), env
+      expect(workers(env:).map { |w| w[:queues] }).to eq([ "realtime", %w[default solid_queue_recurring realtime], "evaluation" ]), env
       expect(workers(env:).first).to include(threads: 1, processes: 1)
+      expect(workers(env:).last).to include(threads: ProcessSizing.evaluation_threads, processes: 1)
+    end
+  end
+
+  # Every queue a job class or a recurring task (a command too: Solid Queue runs it as SolidQueue::RecurringJob) puts
+  # work on has a worker in every environment; none serves "*".
+  it "serves every queue that any job or recurring task uses" do
+    Rails.application.eager_load!
+    used = ActiveJob::Base.descendants.select(&:name).map { |job| job.new.queue_name }
+    recurring = YAML.load_file(Rails.root.join("config/recurring.yml"))
+    recurring.each_value do |tasks|
+      tasks.each do |key, options|
+        task = SolidQueue::RecurringTask.from_configuration(key, **options.symbolize_keys)
+        used << (task.queue_name || (task.class_name || "SolidQueue::RecurringJob").constantize.new.queue_name)
+      end
+    end
+    expect(used.uniq).to contain_exactly("default", "realtime", "evaluation", "solid_queue_recurring")
+    %w[development test production].each do |env|
+      served = workers(env:).flat_map { |w| Array(w[:queues]) }
+      expect(served).not_to include("*")
+      expect(used.uniq - served).to be_empty, env
     end
   end
 
@@ -33,10 +57,11 @@ RSpec.describe "config/queue.yml" do
   end
 
   it "keeps every other job, the long ones included, off the realtime queue" do
-    others = job_classes - realtime_jobs
+    others = job_classes - realtime_jobs - evaluation_jobs
     expect(others).to include(AdvisoryFeedRefreshJob, DebianTriageRefreshJob, AdvisoryUploadImportJob, VulnerabilityMatchJob,
                               CisEvaluationJob, AgentReleaseImportJob, RetentionPruneJob)
     others.each { |job| expect(job.new.queue_name).to eq("default"), job.name }
+    evaluation_jobs.each { |job| expect(job.new.queue_name).to eq("evaluation"), job.name }
   end
 
   it "runs the every-minute jobs before a backlog of broadcasts on the realtime queue" do
@@ -114,6 +139,32 @@ RSpec.describe "config/queue.yml" do
       expect(SolidQueue::ClaimedExecution.joins(:job).where(job: { class_name: "SlowImportJob" }).count).to eq(ProcessSizing.job_threads)
       expect(SolidQueue::ReadyExecution.joins(:job).where(job: { class_name: "SlowImportJob" }).count).to eq(1)
       expect(ran_at).to be_within(15.seconds).of(Time.current)
+    end
+
+    # #197: a fleet-wide run's batches fill the evaluation worker, never the default one.
+    it "runs a default job while every evaluation thread is busy with a batch, and more batches wait" do
+      gate = [ started, release ]
+      stub_const("SlowBatchJob", Class.new(ApplicationJob) do
+        queue_as :evaluation
+        define_method(:perform) do
+          gate.first << :busy
+          gate.last.wait(60)
+        end
+      end)
+      ran = Queue.new
+      stub_const("QuickDefaultJob", Class.new(ApplicationJob) do
+        queue_as :default
+        define_method(:perform) { ran << :ran }
+      end)
+      start(SolidQueue::Configuration.new(mode: :async, only_work: true))
+      threads = ProcessSizing.evaluation_threads
+      (threads + 3).times { adapter.enqueue(SlowBatchJob.new) }
+      threads.times { Timeout.timeout(15) { started.pop } }
+
+      adapter.enqueue(QuickDefaultJob.new)
+      expect(Timeout.timeout(15) { ran.pop }).to eq(:ran)
+      expect(SolidQueue::ClaimedExecution.joins(:job).where(job: { class_name: "SlowBatchJob" }).count).to eq(threads)
+      expect(SolidQueue::ReadyExecution.joins(:job).where(job: { class_name: "SlowBatchJob" }).count).to eq(3)
     end
 
     it "would starve them with one worker for every queue, as before S-7 (so the example above can fail)" do

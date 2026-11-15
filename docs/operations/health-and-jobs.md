@@ -16,11 +16,15 @@ Served on the agent hostname and on localhost, never the dashboard hostname. No 
 
 ## Job queues
 
-The app's jobs use two queues (`cmdb/config/queue.yml`). `realtime` holds the jobs that run every minute (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes, and has a worker of its own, so a long advisory refresh, upload import, or matching run never delays them. `default` holds everything else; its worker also takes realtime jobs when it has a free thread. The failed-jobs page shows each job's queue. Sizing the workers: [scaling.md](scaling.md).
+The app's jobs use three queues (`cmdb/config/queue.yml`), each with a worker of its own. `realtime` holds the jobs that run every minute (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes, so a long advisory refresh, upload import, or matching run never delays them. `default` holds everything else; its worker also takes realtime jobs when it has a free thread. `evaluation` holds the batches of fleet-wide CIS evaluation and advisory re-matching (#197), so a fleet-wide run never holds the threads per-host work and imports need. The failed-jobs page shows each job's queue. Sizing the workers: [scaling.md](scaling.md).
 
 ## Failed jobs
 
 Every job is retried 5 times with a growing delay (about 3 s, 18 s, 83 s, 4 min). After the last failure the job is kept as failed. Signed in, the dashboard shows a red banner with the count of jobs that failed in the last 24 hours, linking to **Failed jobs** (`/jobs/failed`): the time, job, queue, and error of each, newest first (the newest 100). The page is read-only. Retrying or discarding a failed job is done from the server console for now.
+
+## Fleet-wide evaluation
+
+A rule change and an advisory import re-evaluate the fleet in the background (#197). Each is a run of batches of at most 1,000 hosts on the `evaluation` queue, which has its own worker, so liveness, leases, and live updates never wait behind it. While a run is unfinished, the rule's page (for a rule change) or **Data sources** (for an import) says how many hosts are done. Only that line refreshes, first after 3 s and then less often, up to once a minute; it does not keep a signed-in session from timing out. If the run has not moved for 10 minutes, the line says so and stops refreshing: check that the job workers are running. A failed batch is retried on its own like any job; after its last attempt it appears under **Failed jobs** and the run **stops**: the line says "Stopped", how many hosts were done, and offers **Check every host again** (or **Re-match again**), which starts the same run again. A later change to all the same rules, or an import of all the same sources, replaces a stopped run too. A rule change costs well under a millisecond a host, so it finishes in seconds on one thread; re-matching after an import costs about 10 ms a host, and that is where more `EVALUATION_THREADS` help.
 
 ## Logs
 

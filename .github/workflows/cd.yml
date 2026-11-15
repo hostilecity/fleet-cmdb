@@ -179,14 +179,14 @@ jobs:
               --cap-drop ALL --security-opt no-new-privileges \
               -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb-jobs.env "fleet-cmdb:$sha" ./bin/jobs >/dev/null
             rm -f fleet-cmdb-jobs.env
-            # Up when its workers (realtime and every queue) have registered in the queue database.
+            # Up when its three workers (realtime, default, evaluation) have registered in the queue database.
             jobs_host="$(docker inspect -f '{{.Config.Hostname}}' fleet-cmdb-jobs)"
             for _ in $(seq 1 12); do
               workers="$(docker exec fleet-cmdb ./bin/rails runner 'print SolidQueue::Process.where(kind: "Worker", hostname: ARGV.first).count' "$jobs_host" 2>/dev/null || true)"
-              [ "${workers:-0}" -ge 2 ] && break
+              [ "${workers:-0}" -ge 3 ] && break
               sleep 5
             done
-            if [ "${workers:-0}" -lt 2 ]; then
+            if [ "${workers:-0}" -lt 3 ]; then
               docker logs --tail 100 fleet-cmdb-jobs
               echo "the jobs container's workers did not start, so no background job runs: fix it, or set FLEET_JOBS_CONTAINER=false and run the workflow again" >&2
               exit 1

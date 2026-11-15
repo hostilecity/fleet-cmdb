@@ -92,7 +92,7 @@ RSpec.describe "CIS rule evaluation from config reports", type: :request do
     expect do
       perform_enqueued_jobs do
         CisEvaluationJob.perform_later(host_ids: [ host.id ])
-        CisEvaluationJob.perform_later(rule_ids: CisRule.ids)
+        EvaluationRun.start!("cis_rules", "rule_ids" => CisRule.ids)
       end
       send_config # the same facts: no snapshot, so no evaluation either
       import(rule, sudoers) # the same rules: no new version
