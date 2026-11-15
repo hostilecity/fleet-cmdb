@@ -7,10 +7,13 @@
 #   not_evaluated, as is every rule on a host that has sent no config report.
 # - A CisResultChange is written only when the result changes (pass to fail, fail to not_readable, ...), never
 #   for the same result with another observed value, so running evaluation again writes no history.
-# - Hosts are evaluated in chunks of LOCK_CHUNK, each in its own short transaction holding the chunk's host rows
-#   (FOR UPDATE in id order, as AgentHostLock takes one for every agent write), so a config report in progress is
-#   waited for, never half seen, and two runs for one host are serialised. Locking in id order means two runs
-#   never deadlock; a chunk holds its rows for one set-based read and write, not for the whole run (#197).
+# - Hosts are evaluated in chunks, each in its own short transaction holding the chunk's host rows (FOR UPDATE in id
+#   order, as AgentHostLock takes one for every agent write), so a config report in progress is waited for, never
+#   half seen, and two runs for one host are serialised. Locking in id order means two runs never deadlock; a chunk
+#   holds its rows for one set-based read and write, not for the whole run (#197). A chunk is sized by its work, at
+#   most EVALUATIONS_PER_CHUNK host-and-rule evaluations and LOCK_CHUNK hosts, and then by time: each next chunk is
+#   scaled so it holds its locks for about LOCK_TARGET, so a heartbeat or report waits about that long at most
+#   (review of #204).
 #   Idempotent: a retried or duplicated run changes nothing more.
 # - The rules, the snapshots, and the time are all read once the chunk is locked, bypassing the query cache, so
 #   a run that waited for the lock never writes an older rule's result over a newer one or dates a change
@@ -33,6 +36,10 @@ module CisEvaluation
 
   # The most hosts locked at once: a chunk is read, evaluated, and written while its rows are held.
   LOCK_CHUNK = 100
+  # The most host-and-rule evaluations in one chunk: 100 hosts for one rule, 14 for the 71 starter rules.
+  EVALUATIONS_PER_CHUNK = 1_000
+  # How long a chunk should hold its host rows, in seconds; the next chunk is sized from the last one's time.
+  LOCK_TARGET = 0.2
 
   # host_ids: the hosts to evaluate (retired hosts are skipped); rule_ids: the rules, or nil for every rule.
   # now: the evaluation time, by default the time each chunk's locks are taken.
@@ -41,7 +48,12 @@ module CisEvaluation
     changed_host_ids = []
     return Outcome.new(hosts: 0, results: 0, changes: 0, changed_host_ids:) if rule_ids&.empty?
 
-    Host.in_fleet.where(id: host_ids).order(:id).pluck(:id).each_slice(LOCK_CHUNK) do |chunk|
+    ids = Host.in_fleet.where(id: host_ids).order(:id).pluck(:id)
+    cap = chunk_cap(rule_ids ? rule_ids.size : CisRule.count) # read unlocked, only to size the chunks
+    size = cap
+    until ids.empty?
+      chunk = ids.shift(size)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       CisResult.transaction do
         CisResult.uncached do
           locked = Host.lock.in_fleet.where(id: chunk).order(:id).pluck(:id) # FOR UPDATE: waits for config reports in progress
@@ -57,9 +69,16 @@ module CisEvaluation
           changed_host_ids.concat(shown_changed)
         end
       end
+      size = next_chunk_size(size, Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, cap)
     end
     Outcome.new(hosts: outcome[:hosts], results: outcome[:results], changes: outcome[:changes], changed_host_ids:)
   end
+
+  # The most hosts in a chunk for this many rules: EVALUATIONS_PER_CHUNK evaluations, at most LOCK_CHUNK hosts.
+  def chunk_cap(rule_count) = (EVALUATIONS_PER_CHUNK / [ rule_count, 1 ].max).clamp(1, LOCK_CHUNK)
+
+  # The next chunk's size, scaled from how long the last one held its locks so it takes about LOCK_TARGET.
+  def next_chunk_size(size, seconds, cap) = (size * LOCK_TARGET / [ seconds, 0.001 ].max).floor.clamp(1, cap)
 
   # Evaluates the locked hosts with one read of each kind and one write. Returns how many results changed, and the
   # hosts whose shown compliance changed: a result, or the version a failure is counted under.
@@ -131,5 +150,5 @@ module CisEvaluation
   # Whether going from the stored result (nil when there is none) to this one is a change, which is recorded.
   def change?(before, after) = before != after
 
-  private_class_method :evaluate_hosts, :needs_facts?, :latest_snapshot_ids, :latest_facts
+  private_class_method :chunk_cap, :next_chunk_size, :evaluate_hosts, :needs_facts?, :latest_snapshot_ids, :latest_facts
 end

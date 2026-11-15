@@ -146,8 +146,28 @@ RSpec.describe CisEvaluation do
       locks = statements.grep(/FOR UPDATE/)
       expect(locks.size).to eq(1)
       expect(locks.sole).to match(/ORDER BY "hosts"."id" ASC/)
-      expect(statements.index(locks.sole)).to be < statements.index { |sql| sql.include?(%(FROM "cis_rules")) }
+      expect(statements.index(locks.sole)).to be < statements.index { |sql| sql.include?(%(SELECT "cis_rules".*)) } # the count before only sizes chunks
     end
+  end
+
+  it "sizes chunks by their work, then by how long each held its locks (review of #204)" do
+    stub_const("CisEvaluation::EVALUATIONS_PER_CHUNK", 4)
+    rules = define_cis_rules(cis_rule_hash, cis_rule_hash(key: "ssh-max-auth-tries", fact: "sshd.maxauthtries", condition: { "lte" => 4 }))
+    hosts = [ host, *Array.new(4) { enrolled_host.first.tap { |h| record_inventory(h) } } ]
+    locks = lambda do |**options|
+      sizes = []
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+        sizes << payload[:type_casted_binds].count { |value| value.is_a?(Integer) } if payload[:sql].include?("FOR UPDATE") # the host ids
+      end
+      described_class.evaluate!(hosts.map(&:id), **options)
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+      sizes
+    end
+    expect(locks.call).to eq([ 2, 2, 1 ]) # two rules: 4 evaluations are 2 hosts
+    expect(locks.call(rule_ids: [ rules.first.id ])).to eq([ 4, 1 ]) # one rule: 4 hosts
+    stub_const("CisEvaluation::LOCK_TARGET", 0.000_001) # every chunk takes far longer than its target
+    expect(locks.call(rule_ids: [ rules.first.id ])).to eq([ 4, 1 ])
+    expect(locks.call).to eq([ 2, 1, 1, 1 ])
   end
 
   it "reads facts only on hosts where an enabled rule applies, and only the facts the rules name (#197)" do
