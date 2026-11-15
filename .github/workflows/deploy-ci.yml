@@ -138,11 +138,19 @@ jobs:
           expect "the app runs as uid 1000" 1000 "$(docker exec fleet-cmdb id -u)"
           expect "the app has no capabilities" 0000000000000000 "$(docker exec fleet-cmdb sed -n 's/^CapEff:[[:space:]]*//p' /proc/1/status)"
           expect "the app cannot gain privileges" 1 "$(docker exec fleet-cmdb sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/1/status)"
+          # yes or no for the app user creating a file in the directory; the container's shell expands a pattern
+          # first (review of #184), and a directory that is not there is "missing", which fails either way.
+          writable() {
+            docker exec fleet-cmdb sh -c 'for d in $1; do
+              [ -d "$d" ] || { echo missing; exit 0; }
+              if touch "$d/.probe" 2>/dev/null; then rm -f "$d/.probe"; echo yes; else echo no; fi; exit 0
+            done' sh "$1"
+          }
           for dir in /rails/app /rails/config /rails/bin /usr/local/bundle '/usr/local/bundle/ruby/*/gems'; do
-            expect "the app cannot write $dir" no "$(docker exec fleet-cmdb sh -c "touch $dir/.probe 2>/dev/null && echo yes || echo no")"
+            expect "the app cannot write $dir" no "$(writable "$dir")"
           done
           for dir in /rails/tmp /rails/log /rails/storage; do
-            expect "the app can write $dir" yes "$(docker exec fleet-cmdb sh -c "touch $dir/.probe && rm $dir/.probe && echo yes || echo no")"
+            expect "the app can write $dir" yes "$(writable "$dir")"
           done
           expect "the image has no test gems" 0 "$(docker exec fleet-cmdb sh -c 'ls /usr/local/bundle/ruby/*/gems | grep -c -e "^rspec-core-" -e "^webmock-" -e "^brakeman-"')"
           health="$(docker exec fleet-cmdb curl -s -w ' %{http_code}' http://localhost:3000/health)"
