@@ -25,7 +25,10 @@ module FleetBroadcast
     ids = Array(host_ids).compact.uniq
     return if ids.empty?
 
-    ActiveRecord.after_all_transactions_commit { LiveRefresh.request([ STREAM, *ids.map { |id| host_stream(id) } ]) }
+    # More hosts than one flush would send one by one: every host page refreshes instead, and one row is written in
+    # place of a row per host (review of #212: 100,000 rows for a fleet-wide liveness change).
+    streams = ids.size > LiveRefresh::FAN_OUT_LIMIT ? [ ALL_HOSTS_STREAM ] : ids.map { |id| host_stream(id) }
+    ActiveRecord.after_all_transactions_commit { LiveRefresh.request([ STREAM, *streams ]) }
   end
 
   # Something every open fleet page may show changed without one host changing: an onboarding request arrived or
