@@ -50,6 +50,10 @@ These leave little headroom: add a process for bursts, such as every agent repor
 
 With 5 processes, plan on 6 to 7 cores for one VM: about 4.3 for Puma, 1.3 for PostgreSQL, and the rest for jobs. `WEB_CONCURRENCY=auto` starts one process per core, which leaves none for PostgreSQL on the same VM; set a number instead.
 
+### Report load shedding: `FLEET_REPORT_MAX_IN_FLIGHT`
+
+Off by default. Set it to 2 (one less than `RAILS_MAX_THREADS`) once one process serves thousands of agents: a report that arrives while 2 are in flight in that process gets `503 overloaded` with `Retry-After` (30 to 60 s, `FLEET_REPORT_RETRY_AFTER_SECONDS`), so one thread is always free for heartbeats and hosts never go offline because of a report surge. The agent keeps the report and comes back after `Retry-After` (#200). A shed request costs no authentication and no body parsing. Watch the log for `[agent_api] shed`: steady shedding means the process count is too low, not a fault. Leave it off for `bin/simulate-fleet --load-check`, which sends 16 requests at once on purpose.
+
 ### Job workers: `JOB_THREADS`, `JOB_CONCURRENCY`, `JOB_REALTIME_THREADS`, `EVALUATION_THREADS`
 
 - Raise `JOB_CONCURRENCY` (processes) before `JOB_THREADS` (threads in each): the long jobs (advisory refresh and import, per-host matching) are Ruby work and hold the global lock like requests do. Do it when jobs wait on the default queue: in the console, `SolidQueue::ReadyExecution.group(:queue_name).count` shows how many are waiting on each queue.

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "overloaded",
+    "message": "The server is busy. Retry after the Retry-After delay.",
+    "request_id": "00000000-0000-4000-8000-000000000001"
+  }
+}

@@ -147,7 +147,7 @@
   goal: "The agent loads validated config and talks to the server over verified HTTPS with retry and backoff, never crashing on server outages."
   done:
     - "An `http://` URL is rejected, there is no way to skip certificate verification, and the credential never appears in logs."
-    - "`401`, `403 reenrollment_required`, `426`, and `429` are each logged plainly and backed off without a tight retry loop, and server outages never crash the agent."
+    - "`401`, `403 reenrollment_required`, `426`, `429`, and `503` with `Retry-After` are each logged plainly and backed off without a tight retry loop, and server outages never crash the agent."
   blocked_by: [P0-AGENT, P0-CONTRACT, P1-API-AUTH]
 
 - key: P1-AGENT-COLLECT
