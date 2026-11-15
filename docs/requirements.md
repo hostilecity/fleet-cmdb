@@ -42,7 +42,7 @@ The Rails application is the system of record. It stores inventory, evaluates po
 | CMDB server and dashboard | Ruby on Rails | Host records, dashboard, application programming interface (API), evaluation, task dispatch, audit log |
 | Database | Relational, via Rails | All persistent state; no state held only in agent or server memory |
 | Agent | Rust, single static binary | Self-install and enrollment, heartbeat, fact collection, signed self-update with rollback, task polling and execution (Phase 3) |
-| Background jobs | Rails job system | Liveness transitions, Phase 2 evaluations, vulnerability matching, stale-data cleanup |
+| Background jobs | Rails job system | Liveness transitions, Phase 2 evaluations, vulnerability matching, stale-data cleanup. The every-minute jobs have a queue and worker of their own, so long jobs never delay them (proposed, ADR 0025) |
 
 Stack (decided, DEC-02): Ruby 3.4 and Rails 8.1, PostgreSQL, Solid Queue and Solid Cable, Hotwire (Turbo and Stimulus) for the dashboard, RSpec for server tests. The agent builds as a static `musl` binary with `rustls`.
 
@@ -68,7 +68,7 @@ agent/            # Rust agent
 
 ### Deployment assumptions
 
-- The Rails server runs in Docker on one homelab machine and is reachable by agents on the local network. (decided, DEC-05)
+- The Rails server runs in Docker on one homelab machine and is reachable by agents on the local network. (decided, DEC-05) By default one container runs the web server and the background jobs; the jobs may run in a second container from the same image, and the number of web and job processes and threads are settings, sized in `docs/operations/scaling.md`. (proposed, ADR 0025, #198)
 - The dashboard is published to the operator through a Cloudflare tunnel, which terminates TLS, with Cloudflare Access in front of it. (decided, DEC-05)
 - The **agent API is private**: it is served only on a separate hostname that resolves to a private address, and is never routed through the tunnel. The server serves HTTPS on that hostname with a Cloudflare Origin CA certificate, which the tunnel also connects to, and agents trust Cloudflare's Origin CA roots compiled into their build (decided, ADR 0024, superseding the Let's Encrypt certificate). Rails enforces this with host-based route constraints, so dashboard routes answer only on the dashboard hostname and `/api/v1` only on the agent hostname. (decided, DEC-05)
 - Each agent runs as a systemd service on a Debian VM; the fleet profile is Debian 13 on x86_64 with systemd and dpkg/apt. Other distributions and architectures are out of scope until the owner adds them. (decided, DEC-01)
@@ -176,7 +176,7 @@ Retiring a host keeps its history and audit trail but removes it from the active
 
 - Status is derived on the server from `last_seen_at`, never reported by the agent.
 - Default thresholds, configurable by the operator: **online** if the last heartbeat is under 3 minutes old, **stale** if it is 3–15 minutes old, **offline** if older than 15 minutes.
-- A recurring server job evaluates liveness at least every 60 seconds.
+- A recurring server job evaluates liveness at least every 60 seconds. Other jobs cannot delay it: it runs on a queue with a worker of its own. (proposed, ADR 0025, S-7)
 - The dashboard updates a host's status without a manual page reload, within 30 seconds of the transition being recorded. (proposed)
 - Every status change is recorded in a host status history table (not the audit log) so an operator can see when a host went offline and returned.
 
@@ -231,7 +231,7 @@ Phase 2 starts only after Phase 1 is accepted.
 - Each evaluation produces one result per rule per host: pass, fail, not applicable, or not readable, with the observed value that produced the result.
 - Rules are versioned. Editing a rule creates a new version, and each result records the rule version that produced it, so history is never rewritten.
 - The dashboard shows per-host and per-rule results, a compliance summary per host (passed / failed / not evaluated), and result history so an operator can see a failure appear and clear.
-- Editing, disabling, or adding a rule re-evaluates each host's latest config snapshot without contacting agents.
+- Editing, disabling, or adding a rule re-evaluates each host's latest config snapshot without contacting agents. Fleet-wide re-evaluation is split into batches that several background workers share, and the rule's page shows its progress until it is done, or that it stopped, with a way to start it again (#197).
 - Before an edit or a new rule is saved, the server can show which hosts would change result under it (a dry run that writes nothing), so an operator sees the effect first.
 
 ### FR-2.3 Package reporting
@@ -244,7 +244,7 @@ Phase 2 starts only after Phase 1 is accepted.
 
 - The server matches stored package sets against vulnerability data imported by the operator or fetched from a configured advisory source: advisory identifier, affected package, affected version range, fixed version where known, severity, and a link to the advisory. Advisories are scoped to a distribution release, and matching uses the host's distribution and release from its inventory and the source package name where the feed uses it. (DEC-11)
 - Matching produces one finding per host, package, and advisory, with state: open, resolved (package updated or removed), or reopened.
-- When a new package snapshot arrives or vulnerability data is refreshed, matching re-runs automatically in a background job. Agents are not involved.
+- When a new package snapshot arrives or vulnerability data is refreshed, matching re-runs automatically in a background job. Agents are not involved. After an import, only the hosts it affects are re-matched, in batches that several background workers share, and the data sources page shows the progress, or that it stopped, with a way to start it again (#197).
 - The dashboard shows findings per host and per package, filterable by severity, with fleet-wide counts of open findings by severity.
 - Matching must handle version comparison using the package manager's own version rules. String comparison of versions is not acceptable.
 - Where the distribution publishes its own triage of a CVE for a release (for Debian, the Security Tracker's status, urgency, and no-DSA or postponed notes), the server imports it beside the advisory data and the dashboard shows it next to each finding, saying when it is not available. It never changes a finding's state, its normalised severity, or any count. (DEC-22)
@@ -289,6 +289,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 - Every task has an expiry time (default 24 hours, configurable per task type). A task still queued at expiry becomes expired and is never delivered, so a host that returns after a long outage does not suddenly run stale instructions.
 - A claim is a lease. If a claimed task shows no progress before the lease runs out, the server returns it to queued (if the agent never started it) or marks it failed with reason `lease_expired` (if the agent reported that it started).
 - Agents receive tasks only by polling the server, on the heartbeat path or a dedicated poll at a configurable interval. The server does not connect to agents.
+  - The dedicated poll runs every 5 minutes by default. The heartbeat tells the agent when a task is waiting, and the agent polls at once, so a task normally starts within one heartbeat of being created; the poll interval only bounds how late a task starts when that signal is missed. (#190)
 - Claiming is atomic: if an agent restarts and polls again, it must never run the same task twice. Each task carries a unique identifier the agent records before execution, and a task already recorded as started is reported, not re-run.
 - The agent reports progress where a task type supports it, and always reports a final result: exit status mapped to succeeded or failed, start and finish times, and captured output truncated to a server-defined limit with truncation clearly marked.
 - The server sets a per-task timeout by task type. A task exceeding it is marked timed out, and the agent terminates its own over-running task and reports that it did so.

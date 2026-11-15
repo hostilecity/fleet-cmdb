@@ -3,6 +3,8 @@ require "rails_helper"
 # HostComplianceSummary (#193): the database keeps every host's row equal to a fresh count of the rows the host pages
 # show, whichever code writes them, and copies the host fields the fleet list sorts by.
 RSpec.describe HostComplianceSummary do
+  include ActiveJob::TestHelper
+
   def summary(host) = described_class.find(host.id)
 
   # The counts, from the rows, counted again in Ruby as the host tabs count them.
@@ -78,6 +80,19 @@ RSpec.describe HostComplianceSummary do
     CisRule.where(id: banner.id).delete_all
     expect(summary(host)).to have_attributes(cis_failed: 1, cis_low: 0)
     expect_consistent(host, other)
+  end
+
+  it "follows a fleet-wide evaluation run that writes many hosts' results in each batch and chunk (#204)" do
+    hosts = Array.new(5) { |i| enrolled_host(name: "Chunked #{i}").first }
+    hosts.each { |host| record_inventory(host) }
+    rule, = define_cis_rules(cis_rule_hash(severity: "critical"))
+    hosts.each_with_index { |host, i| record_config(host, "sshd.permitrootlogin" => ok_fact(i.even? ? "yes" : "no")) }
+    stub_const("EvaluationRun::BATCH_SIZE", 3)
+    stub_const("CisEvaluation::LOCK_CHUNK", 2)
+    perform_enqueued_jobs { EvaluationRun.start!("cis_rules", "rule_ids" => [ rule.id ]) }
+    expect(EvaluationRun.order(:id).last).to have_attributes(state: "finished", batch_count: 2)
+    expect(hosts.map { |host| summary(host).cis_critical }).to eq([ 1, 0, 1, 0, 1 ])
+    expect_consistent(*hosts)
   end
 
   it "counts a failure that names no rule version under the rule's current version, which can change" do

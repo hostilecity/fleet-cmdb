@@ -188,6 +188,18 @@ RSpec.describe HostComplianceSummary do
     expect(described_class.drift).to be_empty
   end
 
+  it "recounts every host of a CIS evaluation chunk, written in one transaction, when it commits (#204)" do
+    @hosts = Array.new(3) { |i| enrolled_host(hostname: "summary-chunk-#{i}.example.lan").first }
+    @hosts.each { |host| record_inventory(host) }
+    define_cis_rules(cis_rule_hash)
+    @hosts.each_with_index { |host, i| record_config(host, "sshd.permitrootlogin" => ok_fact(i == 1 ? "no" : "yes")) }
+    stub_const("CisEvaluation::LOCK_CHUNK", 3)
+    CisEvaluation.evaluate!(@hosts.map(&:id))
+    expect(@hosts.map { |host| summary(host).cis_failed }).to eq([ 1, 0, 1 ])
+    expect(ActiveRecord::Base.connection.select_value("SELECT count(*) FROM host_compliance_pending")).to eq(0)
+    expect(described_class.drift).to be_empty
+  end
+
   it "keeps a host retired or revoked while another transaction recounts it" do
     @host = enrolled_host(hostname: "summary-retire.example.lan").first
     other = enrolled_host(hostname: "summary-revoke.example.lan").first
