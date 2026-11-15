@@ -1,6 +1,6 @@
 # Compliance summaries
 
-The fleet list and the compliance page read one row per host from `host_compliance_summaries` instead of counting every host's CIS results and findings on every view ([ADR 0025](../decisions/0025-dashboard-summaries-and-keyset-pages.md), #193). This page is for whoever runs the server and wants to know what keeps those rows right, and what to do if they are not.
+The fleet list and the compliance page read one row per host from `host_compliance_summaries` instead of counting every host's CIS results and findings on every view ([ADR 0026](../decisions/0026-dashboard-summaries-and-keyset-pages.md), #193). This page is for whoever runs the server and wants to know what keeps those rows right, and what to do if they are not.
 
 ## What a row holds
 
@@ -12,11 +12,17 @@ The pass rate and the sort keys are generated from these columns. Retired hosts 
 
 ## What keeps it right
 
-Triggers in the database, in the same transaction as the change, whichever code makes it: a CIS evaluation, a rule enabled, disabled, edited, or deleted, vulnerability matching, an advisory import that changes a severity, a host edited, revoked, re-enrolled, or retired, an inventory report with a new operating system. Nothing else writes the table, and there is no setting. A host whose shown values did not change is not rewritten.
+Triggers in the database, whichever code makes the change: a CIS evaluation, a rule enabled, disabled, edited, or deleted, vulnerability matching, a host edited, revoked, re-enrolled, or retired, a liveness change, an inventory report with a new operating system. The triggers only note which hosts a transaction changed; when it commits, the summaries of those hosts are synced and recounted in one step, with their rows locked in host order. So a transaction never waits on a summary row in the middle of its work, and two transactions never deadlock on them; at most, one waits a moment for another's commit. A host whose shown values did not change is not rewritten, and a change of liveness alone moves only the status sort key.
+
+An advisory import that changes a severity is different: it can move the counts of every host with an open finding for that advisory, and it is one long transaction. It only queues those hosts (`host_compliance_recounts`); `ComplianceSummaryRecountJob` recounts them in batches of 1,000 just after the import commits, then refreshes open fleet pages. Until it has run, those hosts' severity counts are a few seconds behind.
+
+`TRUNCATE` is refused on the tables the counts come from (`cis_results`, `vulnerability_findings`, `host_vulnerability_evaluations`, `host_inventories`): it would skip the triggers. Delete the rows instead.
+
+Nothing else writes the table, and there is no setting.
 
 ## Upgrading
 
-The migration that creates the table (`20261110193000`) fills every existing host's row before the triggers are switched on. It reads every host's results and findings once: seconds on a homelab, about a minute at 100,000 hosts. Nothing else is needed.
+The migration that creates the table (`20261110193000`) runs outside a transaction, so agents keep reporting while it runs: it creates the table and the triggers (each takes its table's lock for a moment), fills every existing host's row in batches of 1,000, each in its own short transaction, then builds the indexes concurrently and adds the foreign key without a long lock. At 100,000 hosts it takes a few minutes. If it stops partway, roll it back (`bin/rails db:migrate:down:primary VERSION=20261110193000`) and run it again.
 
 ## Checking and rebuilding
 
@@ -25,6 +31,6 @@ bin/rails compliance_summaries:check     # compares every row with a fresh count
 bin/rails compliance_summaries:rebuild   # recounts every host, creating any missing row
 ```
 
-Both work in batches of 1,000 hosts, each in its own short transaction, so they can run with the server up; `check` writes nothing. In the container, prefix them as the other tasks are (`docker exec ... bin/rails ...`, see [install-server.md](install-server.md)).
+Both work in batches of 1,000 hosts, each in its own short transaction, so they can run with the server up; `check` writes nothing, locks each batch before reading it, and leaves out hosts still queued for a recount (it says how many). `rebuild` empties the queue for the hosts it recounts. In the container, prefix them as the other tasks are (`docker exec ... bin/rails ...`, see [install-server.md](install-server.md)).
 
 Rebuild after anything that wrote the tables with triggers off: data loaded with `session_replication_role = replica` or `pg_restore --disable-triggers`, or rows copied in by hand. A backup restored with `ops/backup/restore.sh` ([backup-and-restore.md](backup-and-restore.md)) holds the summaries as they were when it was taken, which match the rest of the dump, so it needs no rebuild; `check` confirms it.

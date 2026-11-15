@@ -341,7 +341,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 ### NFR-3 Performance and scale
 
 - The system stays responsive with 50 hosts reporting on the default intervals: dashboard fleet list loads in under 2 seconds on the homelab server, and heartbeat handling stays under 200 ms at the 95th percentile and does not degrade as snapshots accumulate. (proposed figure)
-- The fleet list and the compliance page cost about the same whatever the fleet size: they read precomputed per-host summaries in pages, never every host's results and findings on a view ([ADR 0025](decisions/0025-dashboard-summaries-and-keyset-pages.md), #193). Acceptance stays at 50 hosts (ADR 0019); `bin/benchmark` measures larger fleets.
+- The fleet list and the compliance page cost about the same whatever the fleet size: they read precomputed per-host summaries in pages, never every host's results and findings on a view ([ADR 0026](decisions/0026-dashboard-summaries-and-keyset-pages.md), #193). Acceptance stays at 50 hosts (ADR 0019); `bin/benchmark` measures larger fleets.
 - Snapshot growth is bounded by retention settings, not by manual database cleanup.
 
 ### NFR-4 Observability and operability
