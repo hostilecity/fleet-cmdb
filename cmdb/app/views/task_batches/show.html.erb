@@ -2,7 +2,7 @@
 <%# Batch progress (P3-DASH-TASKS, mockups batch.html and batch-partial.html, owner decisions Q14 to Q17). The counts
     are worked out from the task rows on every render, and the page refreshes itself when a task changes. %>
 <%= turbo_refreshes_with method: :morph, scroll: :preserve %>
-<%= turbo_stream_from TaskBroadcast::STREAM, id: "tasks_stream", data: { turbo_permanent: true } %>
+<%= turbo_stream_from TaskBroadcast.batch_stream(@batch.id), id: "batch_stream_#{@batch.id}", data: { turbo_permanent: true } %>
 <% total = @tasks.size %>
 <% open = @tasks.reject(&:terminal?) %>
 <% waiting = open.select { |task| TaskCancellation::UNSTARTED.include?(task.state) } %>

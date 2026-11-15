@@ -324,19 +324,22 @@ for file in heartbeat.json inventory.json; do
     [ -s "$STATE/$file" ] || fail "success: $STATE/$file is missing after the update"
 done
 since=0
-inventory_from "$NEW" || fail "success: no inventory report from $NEW"
+# The updated agent restarted with an inventory record, so its startup report waits a splay of up to 60 s (#200).
+wait_until "inventory from $NEW" 90 inventory_from "$NEW"
 
 echo "== below minimum: an agent the server answers 426 still updates (NFR-5)"
 reset
 set_plan "{\"min_version\": \"$NEW\"}"
 since=$(date +%s.%N)
-systemctl restart fleet-agent
+# A first start (no inventory record), so the startup inventory is not held back by the restart splay (#200).
+systemctl stop fleet-agent && rm -f "$STATE/inventory.json" && systemctl start fleet-agent
 wait_until "inventory to be refused with 426" 60 inventory_from "$OLD" 426
 offer good "$NEW" "{\"min_version\": \"$NEW\"}"
 wait_until "the update to be reported" 150 result_accepted
 expect_result "below minimum" succeeded "$NEW"
 running_is "$NEW" || fail "below minimum: running $(running_version)"
-# The new version's startup inventory (since is still from before the update; inventory is every 15 min).
-wait_until "inventory from $NEW to be accepted" 90 inventory_from "$NEW" 200
+# The new version's startup inventory (since is still from before the update; inventory is every 15 min). The
+# update restarted it with an inventory record, so the report waits a splay of up to 60 s (#200).
+wait_until "inventory from $NEW to be accepted" 150 inventory_from "$NEW" 200
 
 echo "update-smoke: every $group scenario passed"

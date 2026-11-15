@@ -79,9 +79,11 @@ module Liveness
         buckets(now, thresholds).each { |status, condition| transition_all!(status, condition, now, changed) }
         changed.size
       ensure
-        # Also when a later batch fails: the batches before it are committed, and open pages must show them (review of #186).
-        FleetBroadcast.hosts_changed(changed)
+        # The lock first, so nothing after it can leave the lock held on a pooled connection (review of #212).
         unlock(connection)
+        # Also when a later batch fails: the batches before it are committed, and open pages must show them (review of
+        # #186). A failure to request is reported by LiveRefresh, never raised over this run's own error.
+        FleetBroadcast.hosts_changed(changed)
       end
     end
   end

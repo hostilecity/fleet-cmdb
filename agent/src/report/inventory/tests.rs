@@ -230,6 +230,7 @@ fn a_retried_send_reuses_the_report_id_and_body() {
         Err(ApiError::Transport("connection refused".into())),
         Err(ApiError::Server {
             status: 503,
+            retry_after: None,
             request_id: None,
         }),
     ]);
@@ -823,9 +824,9 @@ fn a_requested_report_replaced_by_a_stable_change_still_answers_the_request() {
     h.tick(&mut reporter, &transport, now);
     assert_eq!(ids(&transport).len(), 1);
 
-    // The requested report fails to send, and keeps failing for a while.
+    // The requested report fails to send, and keeps failing for a while (past the change check).
     reporter.request();
-    for _ in 0..4 {
+    for _ in 0..8 {
         transport.push(Err(ApiError::Transport("down".into())));
     }
     let asked = now + secs(10);
@@ -885,4 +886,77 @@ fn the_backoff_starts_when_the_failed_send_ends() {
         late >= fast + slow - Duration::from_millis(50),
         "fast {fast:?}, slow {late:?}"
     );
+}
+
+#[test]
+fn the_startup_splay_holds_back_the_startup_report_and_its_collection_but_not_a_request() {
+    // #200: on a restart the startup report waits for its splay, and nothing is collected meanwhile
+    // (a change check would otherwise send it early). A request is still answered at once.
+    let h = Harness::new();
+    let first = h.at(secs(40));
+    let mut reporter = h.reporter().first_report_at(first);
+    let transport = FakeTransport::new(vec![]);
+    transport.set_accepting(true);
+    let wake = h.tick(&mut reporter, &transport, h.at(Duration::ZERO));
+    assert!(wake <= first, "woke after the splay ended");
+    let mut now = wake;
+    while now < first {
+        now = h.tick(&mut reporter, &transport, now);
+    }
+    assert_eq!(h.collections.get(), 0, "collected during the splay");
+    assert!(ids(&transport).is_empty(), "sent during the splay");
+    h.tick(&mut reporter, &transport, first);
+    assert_eq!(
+        ids(&transport).len(),
+        1,
+        "the startup report at the end of the splay"
+    );
+
+    let h = Harness::new();
+    let mut reporter = h.reporter().first_report_at(h.at(secs(40)));
+    reporter.request();
+    h.tick(&mut reporter, &transport_accepting(), h.at(Duration::ZERO));
+    assert_eq!(
+        h.collections.get(),
+        1,
+        "a request is answered during the splay"
+    );
+}
+
+fn transport_accepting() -> FakeTransport {
+    let transport = FakeTransport::new(vec![]);
+    transport.set_accepting(true);
+    transport
+}
+
+#[test]
+fn a_report_shed_with_503_waits_the_servers_retry_after_and_keeps_its_id() {
+    // #200: the server sheds report load with 503 and Retry-After; the report waits at least that
+    // long (spread a little above it) and is retried with the same report id.
+    let h = Harness::new();
+    let mut reporter = h.reporter();
+    let transport = FakeTransport::new(vec![Err(ApiError::Server {
+        status: 503,
+        retry_after: Some(secs(120)),
+        request_id: None,
+    })]);
+    let now = h.at(Duration::ZERO);
+    let wake = logs_of(|| h.tick(&mut reporter, &transport, now)).0;
+    let first = ids(&transport);
+    assert_eq!(first.len(), 1);
+    // The change check may wake the loop sooner; the retry itself is not before Retry-After.
+    let mut at = wake;
+    let mut retried_at = at;
+    transport.set_accepting(true);
+    while ids(&transport).len() < 2 {
+        assert!(
+            at < now + secs(120 + 13),
+            "not retried within Retry-After and its spread"
+        );
+        retried_at = at;
+        at = h.tick(&mut reporter, &transport, at);
+    }
+    let sent = ids(&transport);
+    assert_eq!(sent[1], first[0], "the same report id");
+    assert!(retried_at >= now + secs(120), "retried before Retry-After");
 }

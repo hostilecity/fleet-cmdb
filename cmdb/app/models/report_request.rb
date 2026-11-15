@@ -16,7 +16,9 @@ class ReportRequest < ApplicationRecord
   scope :pending, -> { where(state: "pending") }
   # Pending and not yet past its expiry: what the heartbeat directive carries. A pending request past its
   # expiry is waiting for ReportRequestExpiryJob to mark it expired, and is no longer sent.
-  scope :outstanding, ->(now) { pending.where("report_requests.expires_at > ?", now) }
+  # Written as NOT (expires_at <= now), which PostgreSQL reads as expires_at > now (expires_at is never null), so
+  # now is a bind parameter and the heartbeat's directives statement can be prepared (review of #209).
+  scope :outstanding, ->(now) { pending.where.not(expires_at: ..now) }
 
   # The state the host page shows: a pending request past its expiry already reads as expired.
   def display_state(now = Time.current) = state == "pending" && expires_at <= now ? "expired" : state

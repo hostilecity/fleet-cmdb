@@ -11,7 +11,7 @@ class TaskLateResult < ApplicationRecord
 
   before_destroy { raise ActiveRecord::ReadOnlyRecord, "late task results are never deleted" }
   # The task's page shows it (P3-DASH-TASKS).
-  after_create_commit { TaskBroadcast.changed }
+  after_create_commit { TaskBroadcast.changed(task) }
 
   def readonly? = super || persisted?
 end

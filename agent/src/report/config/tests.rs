@@ -435,3 +435,32 @@ fn the_wait_after_a_failed_manifest_fetch_starts_when_it_ends() {
     };
     assert_later_by(wake_after(Duration::ZERO), wake_after(slow), slow);
 }
+
+#[test]
+fn the_startup_splay_holds_back_the_startup_report_but_not_a_request() {
+    // #200: on a restart the startup report waits for its splay; nothing is fetched meanwhile.
+    let host = FakeHost::debian13();
+    let transport = transport();
+    let t0 = Instant::now();
+    let mut reporter = reporter(&host).first_report_at(t0 + secs(300));
+    let wake = reporter.tick(t0, &transport);
+    assert_eq!(wake, t0 + secs(300));
+    reporter.tick(t0 + secs(299), &transport);
+    assert!(posts(&transport).is_empty());
+    assert!(
+        transport.gets().is_empty(),
+        "fetched the manifest during the splay"
+    );
+    reporter.tick(t0 + secs(300), &transport);
+    assert_eq!(posts(&transport).len(), 1);
+
+    let transport = self::transport();
+    let mut reporter = self::reporter(&host).first_report_at(t0 + secs(300));
+    reporter.request();
+    reporter.tick(t0, &transport);
+    assert_eq!(
+        posts(&transport).len(),
+        1,
+        "a request is answered during the splay"
+    );
+}

@@ -74,7 +74,7 @@ class Task < ApplicationRecord
   before_update :require_transition_for_state_change
   before_destroy { raise ActiveRecord::ReadOnlyRecord, "tasks are never deleted" }
   # Open task pages refresh themselves (P3-DASH-TASKS).
-  after_commit { TaskBroadcast.changed }
+  after_commit { TaskBroadcast.changed(self) }
 
   scope :open_now, -> { where(state: OPEN_STATES) }
   scope :terminal, -> { where(state: TERMINAL_STATES) }

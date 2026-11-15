@@ -2,7 +2,9 @@
 //!
 //! A report is sent:
 //!
-//! - **on startup**, always (FR-1.3);
+//! - **on startup**, always (FR-1.3). On a restart (an accepted report is on record) the loop holds it
+//!   back by a random startup splay of up to a minute ([`Reporter::first_report_at`],
+//!   [`super::StartupSplay`], #200), so a fleet restarted together does not report together;
 //! - **on schedule**, one inventory interval (minus up to 10% jitter) after the previous report was
 //!   accepted or rejected;
 //! - **on change**: every [`CHANGE_CHECK_INTERVAL`] the facts are collected and the hash of their stable
@@ -175,9 +177,19 @@ pub struct Reporter<'a, R: Rng> {
     /// The real time the current tick began, so a delay after a failure counts from the failure, not
     /// from the tick's (simulated) `now` ([`super::failed_at`], review of #117).
     tick_started: Instant,
+    /// No startup report is built before this (the startup splay, #200). A request is not held back.
+    first_at: Option<Instant>,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
+    /// Builds the startup report no earlier than `at`, and collects nothing before then (the startup
+    /// splay, #200). A request ([`Reporter::request`]) is still answered at once.
+    pub fn first_report_at(mut self, at: Instant) -> Self {
+        self.first_at = Some(at);
+        self.next_check = self.next_check.max(at);
+        self
+    }
+
     /// Loads the state record from `state_dir`. The first [`Reporter::tick`] sends the startup report.
     pub fn new(intervals: &'a Intervals, state_dir: PathBuf, backoff: Backoff<R>, rng: R) -> Self {
         let record = load_record(&state_dir);
@@ -201,6 +213,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             answered: false,
             requested_done: None,
             tick_started: Instant::now(),
+            first_at: None,
         }
     }
 
@@ -290,14 +303,15 @@ impl<'a, R: Rng> Reporter<'a, R> {
         wake
     }
 
-    /// When the next report is due to be built: at once at startup, one interval (less this cycle's
+    /// When the next report is due to be built: at startup at once (or at the end of the startup
+    /// splay), one interval (less this cycle's
     /// jitter) after the previous report was done with, or when a report still waiting for its retry
     /// becomes one interval old. Never before `hold_until`, after a report could not be built.
     fn build_due_at(&self, now: Instant, interval: Duration) -> Instant {
         let due = match (&self.pending, self.last_done) {
             (Some(pending), _) => pending.built_at + interval,
             (None, Some(done)) => done + interval - interval * self.jitter_permille as u32 / 1000,
-            (None, None) => now,
+            (None, None) => self.first_at.map_or(now, |at| at.max(now)),
         };
         self.hold_until.map_or(due, |hold| due.max(hold))
     }

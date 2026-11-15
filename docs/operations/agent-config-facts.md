@@ -6,7 +6,7 @@ The agent runs as root under the systemd sandbox ([`agent/contrib/README.md`](..
 
 ## When it reports
 
-- once at startup;
+- once at startup; after a restart it first waits a random delay of up to 10 minutes, so a fleet restarted together does not report together (a newly installed agent reports at once);
 - every 6 hours, less up to 10% (set `[config_report] interval_seconds` in `/etc/fleet-agent/config.toml`; allowed 300 to 86400 seconds);
 - once when an operator asks for a report from the dashboard (the server puts `report_request` in the heartbeat responses; the agent sends one report, not one per heartbeat);
 - once more, at once, when the server's answer names a newer manifest than the report used.

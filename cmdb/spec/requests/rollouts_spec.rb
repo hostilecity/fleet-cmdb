@@ -337,17 +337,17 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
     release
     post "/agents/rollouts", params: { release: "0.3.0", canary_tag: "canary", stages: "50, 100" }
     rollout = Rollout.sole
-    clear_enqueued_jobs
+    clear_pending_refreshes
 
     expect(offer(canary_host)).to include(version: "0.3.0")
-    expect(enqueued_jobs.map { |j| j["job_class"] }).to include("FleetBroadcastJob")
+    expect(pending_refreshes).to include(FleetBroadcast::STREAM, FleetBroadcast.host_stream(canary_host.id))
     get "/agents"
     expect(host_rows.first[3]).to eq("Offered 0.3.0, waiting for its result")
     expect(stage_cards.first).to start_with("1. Canary 0 of 1 confirmed, 1 updating")
 
-    clear_enqueued_jobs
+    clear_pending_refreshes
     report(rollout, canary_host)
-    expect(enqueued_jobs.map { |j| j["job_class"] }).to include("FleetBroadcastJob")
+    expect(pending_refreshes).to include(FleetBroadcast::STREAM, FleetBroadcast.host_stream(canary_host.id))
     expect(rollout.reload.current_stage).to eq(1) # all canaries confirmed: stage 2 opened by itself
     get "/agents"
     expect(host_rows.map { |row| [ row[0], row[3] ] }).to eq([ [ "Media server", "Confirmed on 0.3.0" ], [ "Web A", "Waiting for its next heartbeat" ] ])

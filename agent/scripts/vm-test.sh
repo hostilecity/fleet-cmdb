@@ -483,7 +483,8 @@ package_report_matches_dpkg() {
     # Nothing installs or removes a package between the report and the listing it is compared with.
     vm 'systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service'
     rm -f "$stub/packages.json"
-    vm 'systemctl restart fleet-agent'
+    # A first start (no inventory record), so the startup reports are not held back by the restart splay (#200).
+    vm "systemctl stop fleet-agent && rm -f $STATE/inventory.json && systemctl start fleet-agent"
     wait_until "the startup package report" 90 test -s "$stub/packages.json"
     jq -e '.manager == "dpkg" and .unsupported_reason == null and .warnings == []' "$stub/packages.json" > /dev/null \
         || fail "the report is not a clean dpkg listing: $(jq -c '{manager, unsupported_reason, warnings}' "$stub/packages.json")"
