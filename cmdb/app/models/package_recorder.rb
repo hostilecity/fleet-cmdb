@@ -4,7 +4,8 @@
 #
 # - A report id already processed for the host is a duplicate: nothing changes.
 # - When the content hash differs from the current set's, a snapshot of the whole set is written and the
-#   host's HostPackage rows are replaced. Otherwise only the report details (time, warnings) are updated.
+#   host's HostPackage rows are brought up to date, writing only the packages that changed. Otherwise only the
+#   report details (time, warnings) are updated.
 # - An unsupported package manager is stored as such, with its reason and no packages: never as an empty set.
 # - An unreadable one (dpkg is there, its database could not be listed) is stored with its reason too, but the
 #   host's previous packages and count are kept, since nothing says they changed; vulnerability matching does not
@@ -46,10 +47,19 @@ module PackageRecorder
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end
 
+  # Brings the host's rows to the report's packages, writing only what changed: rows for packages no longer listed are
+  # deleted, and new or changed packages (version or source) are upserted. A report that upgrades five of 800 packages
+  # writes five rows, not 800 deletions and 800 insertions with their index entries. The report has no two packages
+  # with one name and architecture (AgentApi::PackageReport refuses them).
   def replace_packages(host_id, packages)
-    HostPackage.where(host_id:).delete_all
-    packages.each_slice(INSERT_BATCH) do |slice|
-      HostPackage.insert_all(slice.map { |p| { host_id:, name: p.name, architecture: p.architecture, version: p.version, source: p.source } })
+    current = HostPackage.where(host_id:).pluck(:id, :name, :architecture, :version, :source).index_by { |row| row[1, 2] }
+    listed = packages.to_set(&:key)
+    removed = current.filter_map { |key, row| row.first unless listed.include?(key) }
+    HostPackage.where(id: removed).delete_all if removed.any?
+    changed = packages.reject { |p| (row = current[p.key]) && row[3] == p.version && row[4] == p.source }
+    changed.each_slice(INSERT_BATCH) do |slice|
+      HostPackage.upsert_all(slice.map { |p| { host_id:, name: p.name, architecture: p.architecture, version: p.version, source: p.source } },
+                             unique_by: %i[host_id name architecture], update_only: %i[version source])
     end
   end
   private_class_method :replace_packages

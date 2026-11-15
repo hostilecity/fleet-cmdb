@@ -8,7 +8,8 @@
 #   checked again. Saving goes through CisRule.define!, the import's path, under the rules' write lock: version 1
 #   for a new rule (its key must still be unused), a new version for an edit (refused if someone else saved a
 #   version since the edit began), audited with the operator as actor and the before and after values, and every
-#   host re-evaluated by CisEvaluationJob once it commits. No agent is contacted (AC-2.2).
+#   host re-evaluated by a fleet-wide EvaluationRun once it commits, whose progress the rule page shows (#197). No agent
+#   is contacted (AC-2.2).
 # - Enable and disable are a confirmation page (GET) and a CSRF-protected POST, audited and re-evaluated the same way.
 class RulesController < ApplicationController
   CHANGE_LOG_LIMIT = 50
@@ -27,6 +28,7 @@ class RulesController < ApplicationController
     @authors = version_authors(authored)
     @records = AuditLog::Records.for(@entries + authored)
     @fact_users = CisRuleVersion.where(id: CisRule.select(:current_version_id), fact: @version.fact).count
+    @evaluation = EvaluationRun.shown_for_rule(@rule.id) # #197: progress of the fleet-wide run after a change
   end
 
   def new

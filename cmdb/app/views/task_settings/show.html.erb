@@ -70,7 +70,7 @@
   <% end %>
   <div class="row">
     <% { "max_hosts_per_batch" => "1 to 25. 25 is the hard cap (ADR 0014).", "output_limit_kib" => "4 to 1024. Longer output is cut in the middle.",
-         "poll_seconds" => "A hint sent to agents; 10 to 300." }.each do |field, hint| %>
+         "poll_seconds" => "A hint sent to agents; 10 to 300. A heartbeat tells them at once when a task is waiting." }.each do |field, hint| %>
       <% invalid = @limit_errors&.key?(field) %>
       <% label, _key, unit = TaskSettings::LIMITS.fetch(field).values_at(1, 0, 2) %>
       <div class="field<%= " invalid" if invalid %>">

@@ -22,6 +22,20 @@ RSpec.describe "Security hardening", type: :request do
 
   # The response has a CSP nonce on every inline script and style, no inline handler or style attribute, and nothing
   # from another origin.
+  def url_attributes = %w[src href action formaction data srcset imagesrcset poster ping background xlink:href codebase archive manifest]
+  def list_attributes = %w[srcset imagesrcset ping]
+  # Another origin: any scheme but data: (which img-src allows), or a protocol-relative start, with the forms browsers
+  # accept: any case, leading whitespace, and backslashes counted as slashes.
+  def other_origin = %r{\A\s*(?:[a-z][a-z0-9+.\-]*:(?<!data:)|[/\\]{2})}i
+
+  def loaded_urls(doc = page)
+    urls = doc.xpath("//@*").select { |attr| url_attributes.include?(attr.name) && !(attr.name == "href" && attr.parent.name == "a") }
+               .flat_map { |attr| list_attributes.include?(attr.name) ? attr.value.split(/[\s,]+/) : [ attr.value ] }
+    urls += doc.css("meta[http-equiv]").select { |meta| meta["http-equiv"].casecmp?("refresh") }
+                .map { |meta| meta["content"].to_s[/url\s*=\s*['"]?(.*)/i, 1].to_s }
+    urls + doc.css("style").flat_map { |style| style.text.scan(/url\(\s*['"]?([^'")]+)/).flatten }
+  end
+
   def expect_page_within_csp(label)
     nonce = csp[/script-src [^;]*'nonce-([^']+)'/, 1]
     inline = page.css("script:not([src]), style")
@@ -29,7 +43,10 @@ RSpec.describe "Security hardening", type: :request do
     expect(inline.map { |node| node["nonce"] }.uniq).to eq([ nonce ]), "inline code without the nonce on #{label}"
     expect(page.xpath("//@*[starts-with(name(), 'on')]")).to be_empty, "inline event handler on #{label}"
     expect(page.css("[style]")).to be_empty, "style attribute on #{label}"
-    expect(page.css("script[src], link[href], img[src], iframe, object, embed, form[action]").flat_map { |node| node.attribute_nodes.map(&:value) }.grep(%r{\A(https?:)?//})).to be_empty, "external resource on #{label}"
+    # Every attribute that makes the browser load or send something, on any element (links the operator clicks are
+    # not loads), plus meta refresh and url() in style blocks. Values, not every attribute, so the random base64 nonce,
+    # which can start with "//", is never read as a URL.
+    expect(loaded_urls).to all(satisfy { |url| !url.match?(other_origin) }), "external resource on #{label}"
   end
 
   describe "Content Security Policy" do
@@ -61,6 +78,28 @@ RSpec.describe "Security hardening", type: :request do
       expect(directive("connect-src")).to eq("connect-src 'self'")
       # The only origin other than this site is Google, for the sign-in form's redirect.
       expect(csp.scan(%r{https://[^\s;]+}).uniq).to eq([ "https://accounts.google.com" ])
+    end
+
+    it "does not mistake a nonce that starts with // for an external resource" do
+      generator = ->(_request) { "//AbCdEfGhIjKlMnOp==" }
+      allow(Rails.application).to receive(:env_config)
+        .and_wrap_original { |original| original.call.merge("action_dispatch.content_security_policy_nonce_generator" => generator) }
+      sign_in_operator
+      get "/"
+      expect(response).to have_http_status(:ok)
+      expect(csp).to include("'nonce-//AbCdEfGhIjKlMnOp=='")
+      expect_page_within_csp("a page whose nonce starts with //")
+    end
+
+    it "finds every way a page could load from another origin, and leaves local and data: URLs and links alone" do
+      external = [ %(<button formaction="https://x.example">), %(<video poster="//x.example/p.png">), %(<img srcset="/a.png 1x, https://x.example/b.png 2x">),
+                   %(<a ping="https://x.example/p">ok</a>), %(<svg><image xlink:href="https://x.example/i.png"/></svg>), %(<base href="https://x.example/">),
+                   %(<meta http-equiv="Refresh" content="0; url=https://x.example/">), %(<style>body { background: url("//x.example/b.png") }</style>),
+                   %(<script src="HTTPS://x.example/s.js"></script>), %(<img src=" //x.example/a.png">), %(<img src="\\\\x.example/a.png">),
+                   %(<link rel="preload" imagesrcset="wss://x.example/a">) ]
+      external.each { |html| expect(loaded_urls(Nokogiri::HTML(html))).to include(match(other_origin)), html }
+      local = %(<img src="/logo.svg"><img src="data:image/png;base64,AA=="><a href="https://example.com/docs">docs</a><form action="/hosts"></form>)
+      expect(loaded_urls(Nokogiri::HTML(local)).grep(other_origin)).to be_empty
     end
 
     it "uses a different nonce on each request" do
