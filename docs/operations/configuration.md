@@ -35,6 +35,7 @@ Keep a copy of each with your other secrets (GitHub never shows a secret again),
 | `FLEET_RELEASES_DIR` | `/rails/storage/releases`, in the Docker volume `fleet-cmdb_storage` | Release binaries. Uploaded releases exist only here |
 | `FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE` | `60` | Release downloads per client address |
 | `FLEET_ROLLOUT_SPREAD_SECONDS` | `300` | Window over which opening a rollout stage spreads the update directive, so VMs behind one address do not hit the download limit together |
+| `FLEET_ROLLOUT_DOWNLOADS_PER_SECOND` | `10` | A large rollout stage spreads its offers so that its hosts download about this many releases a second on average: the window is the larger of `FLEET_ROLLOUT_SPREAD_SECONDS` and the stage's hosts divided by this (#199). A homelab keeps the 300 seconds |
 | `FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES` | `30` | A host sent the update directive that has not reported by then is `unconfirmed`, which halts the rollout |
 | `FLEET_MINIMUM_AGENT_VERSION` | `0.1.0` | Older agents get `426 agent_version_unsupported` on reports, but can still heartbeat, download releases, and update |
 

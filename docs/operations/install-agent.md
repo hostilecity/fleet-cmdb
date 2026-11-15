@@ -89,7 +89,7 @@ Agents update themselves only to a newer release signed by the release key, veri
    rollout.rollout_hosts.group(:stage, :state).count                      # progress
    ```
 
-   The next stage opens by itself when all hosts of the current one have confirmed; `Rollouts.advance!(rollout, actor: me)` opens it now. Default stages: the canaries, then 25%, then 100% of the hosts running an older version.
+   The next stage opens by itself when all hosts of the current one have confirmed; `Rollouts.advance!(rollout, actor: me)` opens it now. Default stages: the canaries, then 25%, then 100% of the hosts running an older version; from 1,000 active hosts the canaries, then 1%, 10%, 50%, and 100%.
 3. **Check:** each host's agent version on the Fleet page changes to the new release, and its page lists the update as succeeded. On a VM: `fleet-agent --version` and `journalctl -u fleet-agent | grep -i update`.
 
 **When a rollout halts** (a host reported `failed` or `rolled_back`, or did not report within 30 minutes): no further host is offered the update. Find out why, `Rollout.order(:id).last.halt_reason`, and the host's audit entries and `journalctl -u fleet-agent` on that VM ([troubleshooting.md](troubleshooting.md#a-rollout-halted)). Then either `Rollouts.resume!(rollout, actor: me)` or `Rollouts.cancel!(rollout, actor: me)`. A halted rollout never resumes by itself.
