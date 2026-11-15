@@ -521,6 +521,11 @@ inventory_since() {
 recovery_mode() {
     rollout=$1
     reset
+    # It runs after the package update scenarios, which add a [tasks] section to the config and task files to
+    # the state directory: what must stay unchanged is what is there now.
+    config_sum=$(vm 'sha256sum /etc/fleet-agent/config.toml')
+    state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -size +0 ! -name 'update*' ! -name '$MARKER' -printf '%f '")
+    empty_state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -empty ! -name 'update*' -printf '%f '")
     offer faulty "$FAULTY"
     expect_result succeeded "$FAULTY"
     expect_one_version "$FAULTY" "$OLD"
