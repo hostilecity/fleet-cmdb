@@ -2,7 +2,7 @@
 <%# One task (P3-DASH-TASKS, mockups task.html and task-states.html, owner decisions Q18, Q19, Q22). Everything the
     agent reported (output, details, times) is shown as escaped text. %>
 <%= turbo_refreshes_with method: :morph, scroll: :preserve %>
-<%= turbo_stream_from TaskBroadcast::STREAM, id: "tasks_stream", data: { turbo_permanent: true } %>
+<%= render "hosts/live_streams", host: @task.host %>
 <% task = @task %>
 <% cancel_entry = @entries.reverse.find { |e| e.action == Audit::Actions::TASK_CANCELLED } %>
 <p><% if @batch_size > 1 %><%= link_to "← Batch #{@batch.id}", task_batch_path(@batch) %> &middot; <% end %><%= link_to "Tasks", tasks_path %></p>
