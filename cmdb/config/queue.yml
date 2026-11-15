@@ -1,11 +1,25 @@
+# Solid Queue's processes (S-7, #198, docs/operations/scaling.md). Two workers, each its own process:
+#
+# - realtime: only the realtime queue, with JOB_REALTIME_THREADS threads (default 1). The jobs that run every
+#   minute (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live
+#   refreshes are on it, and no other job is, so a long advisory refresh, import, or matching run can never hold
+#   its thread. spec/config/queue_spec.rb runs both workers and checks that.
+# - every queue ("*", realtime included), with JOB_THREADS threads (default 3) in each of JOB_CONCURRENCY
+#   processes (default 1): everything else, and realtime jobs too when it has a free thread.
+#
+# The database pool follows these counts (config/database.yml, lib/sizing/process_sizing.rb).
 default: &default
   dispatchers:
     - polling_interval: 1
       batch_size: 500
   workers:
+    - queues: realtime
+      threads: <%= ProcessSizing.realtime_threads %>
+      processes: 1
+      polling_interval: 1
     - queues: "*"
-      threads: 3
-      processes: <%= ENV.fetch("JOB_CONCURRENCY", 1) %>
+      threads: <%= ProcessSizing.job_threads %>
+      processes: <%= ProcessSizing.job_processes %>
       polling_interval: 1
 
 development:

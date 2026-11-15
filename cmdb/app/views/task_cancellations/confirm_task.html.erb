@@ -26,7 +26,7 @@
     <%= render "task_form", task:, label: "Cancel task", button_class: "btn danger" %>
   <% elsif task.interruptible? %>
     <h2 id="dialog_title">Stop task #<%= task.id %> on <%= host %>?</h2>
-    <p><%= name %> can be stopped safely. The agent gets the cancel on its next poll or progress report and stops. Anything it has already sent is kept. The task ends as <strong>cancelled</strong>.</p>
+    <p><%= name %> can be stopped safely. The agent gets the cancel with its next progress report (about every 15 seconds) and stops. Anything it has already sent is kept. The task ends as <strong>cancelled</strong>.</p>
     <%= render "task_form", task:, label: "Stop task", button_class: "btn danger" %>
   <% else %>
     <h2 id="dialog_title">Task #<%= task.id %> on <%= host %> cannot be stopped</h2>

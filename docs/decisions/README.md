@@ -28,6 +28,7 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0022](0022-distribution-triage.md) | Show the distribution's own triage beside each finding | DEC-22 |
 | [0023](0023-deploy-with-github-actions.md) | Deploy the server with GitHub Actions as one container (its plain-HTTP tunnel origin superseded by 0024) | #88 |
 | [0024](0024-cloudflare-origin-ca-for-the-server.md) | The server's certificate comes from Cloudflare's Origin CA, and agents trust it from their build | #137 |
+| [0025](0025-first-scale-step.md) | First scale step: process sizing, a realtime job queue, and an optional jobs container (proposed) | #198 |
 | [0027](0027-time-partitioned-history.md) | Proposed: time-partitioned history tables; retention drops whole partitions | #195 |
 | [0028](0028-content-addressed-package-sets.md) | Proposed: each distinct package set stored once, in content-addressed chunks, matched once per chunk | #196 |
 

@@ -3,9 +3,12 @@
 //!
 //! **When it polls.** Only when the owner enabled a type that this agent implements ([`Poller::polls`]):
 //! with nothing enabled and supported the server offers this host nothing (P3-A01), so there is nothing
-//! to ask for. Then every poll interval (`[task_poll]` in the config, 30 s by default), and within
-//! [`HINT_CHECK`] of a heartbeat carrying the `tasks_available` directive ([`TaskHint`]). After a failure it backs off as every other request does ([`Backoff`],
-//! P1-A02). One task at a time: a task is handled to its end before the next poll.
+//! to ask for. Then every poll interval (`[task_poll]` in the config, 300 s by default), and within
+//! [`HINT_CHECK`] of a heartbeat carrying the `tasks_available` directive ([`TaskHint`]). The server
+//! sends that directive on every heartbeat while a task waits, so a task starts within about one
+//! heartbeat of being created, and the interval only bounds how late it starts when the hint is
+//! missed (#190). After a failure it backs off as every other request does ([`Backoff`], P1-A02).
+//! One task at a time: a task is handled to its end before the next poll.
 //!
 //! **What it does with a task.** In this order, stopping at the first that fails:
 //!
