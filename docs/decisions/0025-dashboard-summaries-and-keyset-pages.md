@@ -24,8 +24,8 @@ Rejected:
 
 ## Consequences
 
-- Both pages cost about the same at 100,000 hosts as at 50, whatever the page; the numbers are in #193's pull request and `docs/operations/benchmark.md`.
-- Writes that change a host's compliance do a little more work: one locked recount per host changed, in the same transaction. A rule change at 100,000 hosts recounts each host whose result changed.
+- At 100,000 hosts (`bin/benchmark explain`, #188), a page view costs 110 ms of database time on the fleet list and 95 ms on the compliance page, against 29.3 s and 22.5 s, and a page's rows about 1 ms on any page of any sort but last seen (about 0.3 s). What still grows with the fleet is three scans of the narrow summaries table per view (the fleet-wide counts, the status counts, and the tag list, together about 110 ms at 100,000 hosts), and the filters that read other tables (search, distribution).
+- Writes that change a host's compliance do a little more work: one locked recount per host changed, in the same transaction. Measured at 100,000 hosts, heartbeats, CIS evaluation (21 ms a host), and matching (48 ms a host) show no change beyond noise; the whole fleet going offline at once takes 18.8 s instead of 13.6 s, since every host's status sort key is rewritten in that transaction. The migration fills 100,000 rows and builds the indexes in about 2 minutes.
 - The summaries are derived data: a database restored with triggers disabled must be rebuilt (`docs/operations/compliance-summaries.md`).
 - "Last seen" stays a sort of the filtered fleet. At 100,000 hosts it is the one sort that grows with the fleet; moving `last_seen_at` off the `hosts` row (#192) would let it have an index.
 - The fleet list and the compliance page show "N hosts shown of M" with Previous and Next, not page numbers.
