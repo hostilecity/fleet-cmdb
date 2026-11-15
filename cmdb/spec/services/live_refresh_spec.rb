@@ -207,6 +207,19 @@ RSpec.describe LiveRefresh, type: :job do
       expect(jobs.size).to eq(1)
     end
 
+    it "gives back the rows a flush took and never finished (its worker died), and schedules their flush" do
+      described_class.request(%w[a b])
+      clear_enqueued_jobs
+      described_class.take("~0badf00d:") # the flush died after taking them
+      PendingRefresh.where(stream: described_class::SCHEDULED).update_all(requested_at: 2.minutes.ago)
+      expect(described_class.sweep).to be(false) # taken a moment ago: perhaps still sending
+      PendingRefresh.where("stream LIKE '~%'").update_all(requested_at: 2.minutes.ago)
+      expect(described_class.sweep).to be(true)
+      expect(PendingRefresh.where("stream LIKE '~%'")).to be_empty
+      perform_enqueued_jobs
+      expect(sent).to eq("a" => 1, "b" => 1)
+    end
+
     it "does nothing when nothing is pending" do
       PendingRefresh.insert_all([ { stream: described_class::SCHEDULED, requested_at: 2.minutes.ago } ])
       expect(described_class.sweep).to be(false)
