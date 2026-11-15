@@ -70,7 +70,7 @@ class TaskCancellationsController < ApplicationController
     when :cancelled
       "Task ##{task.id} cancelled. #{task.host.name} will never run it."
     when :stop_requested
-      "Stop requested. Task ##{task.id} on #{task.host.name} stops when its agent next polls or reports progress, and ends as cancelled."
+      "Stop requested. Task ##{task.id} on #{task.host.name} stops when its agent next reports progress (about every 15 seconds), and ends as cancelled."
     when :already_requested
       "Cancel was already requested for task ##{task.id}. Nothing else was changed."
     else

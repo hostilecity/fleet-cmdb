@@ -59,10 +59,11 @@ max_seconds = 86400
 
 # How often to ask the server for a task (P3-A02), in seconds; each value within 5..=3600. The agent
 # polls only while a task type in [tasks] is enabled and implemented by this agent version, and also
-# polls at once when a heartbeat says a task is waiting. The server's poll_seconds (Settings: Tasks)
-# replaces interval_seconds, clamped to min_seconds..=max_seconds.
+# polls at once when a heartbeat says a task is waiting, so a task normally starts within about one
+# heartbeat; this interval only bounds how late it starts if that hint is missed. The server's
+# poll_seconds (Settings: Tasks) replaces interval_seconds, clamped to min_seconds..=max_seconds.
 [task_poll]
-interval_seconds = 30
+interval_seconds = 300
 min_seconds = 10
 max_seconds = 300
 

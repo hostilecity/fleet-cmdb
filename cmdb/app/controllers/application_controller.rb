@@ -61,10 +61,14 @@ class ApplicationController < ActionController::Base
       return nil
     end
 
-    operator_session.record_activity!
+    operator_session.record_activity! if records_activity?
     Current.operator_session = operator_session
     operator_session.operator
   end
+
+  # Whether this request counts as the operator's activity for the idle timeout. A page refreshing itself does not
+  # (EvaluationRunsController#progress), so an open tab cannot keep a session alive.
+  def records_activity? = true
 
   def start_session(operator)
     reset_session # a new cookie on sign-in, so a planted session cannot be reused
