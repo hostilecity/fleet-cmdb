@@ -11,6 +11,11 @@ Rails.application.configure do
 
   # Per-credential limit on authenticated endpoints, and a stricter per-address limit on enrollment.
   api.rate_limit ||= { to: Integer(ENV.fetch("FLEET_API_RATE_LIMIT_PER_MINUTE", "120")), within: 1.minute }
+  # #191: the per-credential limit is counted in each server process's memory, for at most this many credentials
+  # per process (the least recently used are dropped first), and a client address may fail authentication this many
+  # times a minute per process before every request from it is refused, checked before authentication (S-5).
+  api.rate_limit_max_keys ||= Integer(ENV.fetch("FLEET_API_RATE_LIMIT_MAX_CREDENTIALS", "100000"))
+  api.failed_auth_rate_limit ||= { to: Integer(ENV.fetch("FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE", "60")), within: 1.minute }
   api.enroll_rate_limit ||= { to: Integer(ENV.fetch("FLEET_ENROLL_RATE_LIMIT_PER_MINUTE", "10")), within: 1.minute }
 
   # Report load shedding (#200, lib/middleware/report_load_shedder.rb): at most this many report requests in flight

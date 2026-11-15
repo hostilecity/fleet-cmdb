@@ -25,6 +25,8 @@ module Rollouts
   CANARY_TAG_LIMIT = 32 # rollouts.canary_tag
   DEFAULT_STAGES = [ 25, 100 ].freeze
   DIRECTIVE_FILES = { manifest_url: "manifest", signature_url: "signature", binary_url: "binary" }.freeze
+  # [rollout host id, its state, rollout id, release version] of a host's open offer (offer_scope), in this order.
+  OFFER_COLUMNS = %w[rollout_hosts.id rollout_hosts.state rollouts.id agent_releases.version].freeze
   OUTCOME_STATES = { "succeeded" => "confirmed", "failed" => "failed", "rolled_back" => "rolled_back" }.freeze
   OUTCOME_ACTIONS = { "succeeded" => Audit::Actions::UPDATE_SUCCEEDED, "failed" => Audit::Actions::UPDATE_FAILED,
                       "rolled_back" => Audit::Actions::UPDATE_ROLLED_BACK }.freeze
@@ -133,12 +135,23 @@ module Rollouts
   # offering, and a heartbeat that arrives during one waits and then re-reads the row: once a halt commits, no
   # heartbeat offers the update. Heartbeats only share the lock, so they never wait for one another. Lock order is
   # host row (the heartbeat's), then rollout, then rollout host, the same as record_result!.
+  #
+  # The heartbeat reads offer_scope in one statement with its other directives (HeartbeatDirectives, #189) and builds
+  # the directive with directive_from; the lock is the same either way.
   def directive_for(host_id:, agent_version:, now: Time.current)
-    row = RolloutHost.joins(rollout: :agent_release)
-                     .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
-                     .where("rollout_hosts.stage <= rollouts.current_stage AND rollout_hosts.offer_at <= ?", now)
-                     .lock("FOR SHARE OF rollouts")
-                     .pick("rollout_hosts.id", "rollout_hosts.state", "rollouts.id", "agent_releases.version")
+    directive_from(offer_scope(host_id:, now:).pick(*OFFER_COLUMNS), host_id:, agent_version:, now:)
+  end
+
+  # The host's open offer, at most one row, with the rollout row FOR SHARE (see directive_for).
+  def offer_scope(host_id:, now:)
+    RolloutHost.joins(rollout: :agent_release)
+               .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
+               .where("rollout_hosts.stage <= rollouts.current_stage AND rollout_hosts.offer_at <= ?", now)
+               .lock("FOR SHARE OF rollouts").limit(1)
+  end
+
+  # The directive for an offer_scope row (OFFER_COLUMNS), or nil for none.
+  def directive_from(row, host_id:, agent_version:, now:)
     return nil unless row
 
     id, state, rollout_id, version = row

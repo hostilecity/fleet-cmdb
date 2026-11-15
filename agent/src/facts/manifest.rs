@@ -476,4 +476,74 @@ mod tests {
                 .all(|f| !matches!(f.ty, FactType::Unknown(_)))
         );
     }
+
+    #[test]
+    fn hostile_config_manifests_never_panic_and_stay_within_the_caps() {
+        let keys = [
+            "manifest_version",
+            "facts",
+            "key",
+            "type",
+            "max_length",
+            "max_items",
+            "item_max_length",
+            "minimum",
+            "maximum",
+        ];
+        crate::test_support::hostile::each(&keys, |body| {
+            if let Ok(manifest) = parse(body) {
+                assert!(manifest.facts.len() <= MAX_FACTS);
+            }
+        });
+    }
+
+    #[test]
+    fn a_valid_manifest_changed_one_part_at_a_time_never_panics_or_exceeds_the_caps() {
+        let valid = json!({
+            "schema_version": 1,
+            "manifest_version": 3,
+            "facts": [
+                {"key": "sshd.maxauthtries", "type": "integer", "since": 1, "description": "x",
+                 "minimum": 0, "maximum": 1000},
+                {"key": "sshd.banner", "type": "string", "since": 1, "description": "x",
+                 "max_length": 100},
+                {"key": "services.running", "type": "string_list", "since": 1, "description": "x",
+                 "max_items": 1000, "item_max_length": 64},
+                {"key": "file:/etc/passwd", "type": "file_attributes", "since": 1, "description": "x"},
+                {"key": "service:ssh.service", "type": "service_state", "since": 1, "description": "x"}
+            ]
+        });
+        assert_eq!(parse(&valid).unwrap().facts.len(), 5);
+        let keys = [
+            "key",
+            "type",
+            "max_length",
+            "max_items",
+            "item_max_length",
+            "minimum",
+            "maximum",
+        ];
+        // `refused`: the manifest, or at least one of its facts, was not taken.
+        let (mut usable, mut refused) = (0, 0);
+        crate::test_support::hostile::each_mutation(&valid, &keys, |body| match parse(body) {
+            Ok(manifest) => {
+                assert!(manifest.facts.len() <= 5);
+                if manifest.facts.len() < 5 {
+                    refused += 1;
+                }
+                for fact in &manifest.facts {
+                    assert!(valid_key(&fact.key), "{}", fact.key);
+                    assert!(fact.limits.max_length as u64 <= HARD_MAX_STRING);
+                    assert!(fact.limits.max_items as u64 <= HARD_MAX_ITEMS);
+                    assert!(fact.limits.item_max_length as u64 <= HARD_MAX_STRING);
+                }
+                usable += 1;
+            }
+            Err(_) => refused += 1,
+        });
+        assert!(
+            usable > 0 && refused > 0,
+            "{usable} usable, {refused} refused"
+        );
+    }
 }

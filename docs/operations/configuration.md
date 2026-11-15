@@ -66,7 +66,9 @@ The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (O
 
 | Setting | Default | |
 |---|---|---|
-| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints; also per address for onboarding polls |
+| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints, **per web process** (counted in memory, #191: with `WEB_CONCURRENCY` processes a credential can get up to that many times this); also per address for onboarding polls (shared by all processes) |
+| `FLEET_API_RATE_LIMIT_MAX_CREDENTIALS` | `100000` | Credentials whose request counts each web process keeps (about 160 bytes each); past it the least recently counted is dropped and its count starts again. Raise it above the fleet size if each process serves the whole fleet |
+| `FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE` | `60` | Failed authentications per client address, per web process, before every request from that address is refused for the rest of the minute (`429`), checked before authentication (#191, S-5) |
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
 | `FLEET_REPORT_MAX_IN_FLIGHT` | `0` (off) | Report load shedding (#200): reports (inventory, config, packages) in flight at once per server process, beyond which a report gets `503 overloaded` with `Retry-After`. Heartbeats and tasks are never shed. Leave it off on a homelab. At scale, set it below `RAILS_MAX_THREADS` (for example threads minus one) so heartbeats always find a free thread |
 | `FLEET_REPORT_RETRY_AFTER_SECONDS` | `30` | The shortest `Retry-After` of a shed report; each answer picks a random value up to twice this, so agents turned away together come back apart |
@@ -100,7 +102,7 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `FLEET_BACKUP_STATUS_FILE` | `/rails/storage/backup/last_success`, in the Docker volume | Touched by `ops/backup/backup.sh` after each complete backup; the app reads its time |
 | `FLEET_RESTORE_DRILL` | unset; *fixed* to `1` by `restore-drill.sh` | Makes the drill's boot use an in-memory cache, so it never writes to the live cache database |
 
-**Data retention** (snapshots, report ids, status history; default 90 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
+**Data retention** (snapshots and status history; default 90 days; report ids are kept 7 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
 
 ## Database
 
@@ -116,9 +118,10 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `RAILS_LOG_LEVEL` | `info` | `debug` logs much more, including values that may be personal; use it briefly |
 | `RAILS_MAX_THREADS` | `3` | Puma threads in each Puma process. More threads do not serve more agents; add processes instead ([scaling.md](scaling.md)) |
 | `WEB_CONCURRENCY` | unset: one Puma process | Puma processes. One serves about 2,100 agents on the default intervals; how to size it, and the connections it needs: [scaling.md](scaling.md#step-1-up-to-about-10000-agents) |
-| `JOB_THREADS` | `3` | Threads in each Solid Queue worker process for the default queue and every other queue |
+| `JOB_THREADS` | `3` | Threads in each Solid Queue worker process for the default queue (which also takes realtime jobs when a thread is free) |
 | `JOB_CONCURRENCY` | `1` | How many of those worker processes |
 | `JOB_REALTIME_THREADS` | `1` | Threads of the worker that serves only the realtime queue: the every-minute jobs (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes, so long jobs never delay them |
+| `EVALUATION_THREADS` | `2` | Threads of the worker that serves only the `evaluation` queue: fleet-wide CIS evaluation after a rule change and re-matching after an advisory import, in batches (#197). More threads finish a fleet-wide run sooner, at the cost of database load; the database pool follows it |
 | `FLEET_JOBS_CONTAINER` | `false` (workflow variable) | `true`: background jobs run in a second container, `fleet-cmdb-jobs`, from the same image and settings, instead of inside the app container ([scaling.md](scaling.md#solid-queue-in-its-own-container-fleet_jobs_container)). The deploy stops on any other value |
 | `RAILS_ENV` | *fixed* by the image: `production` | |
 | `PORT` | *fixed* by the image: `3000` | Puma's plain-HTTP port inside the container, for its health checks; not published |

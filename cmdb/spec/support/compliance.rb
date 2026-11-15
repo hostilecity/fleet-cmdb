@@ -61,4 +61,22 @@ end
 
 RSpec.configure do |config|
   config.include ComplianceHelpers
+
+  # The summaries are synced and recounted when a transaction commits (a deferred constraint trigger, ADR 0026), and a
+  # spec's transaction never commits: inside it, they are synced at the end of each statement instead. Specs outside
+  # the test transaction (the concurrency specs) run the real deferred flush.
+  config.before do |example|
+    next unless example.example_group.use_transactional_tests
+
+    ActiveRecord::Base.connection.execute("SET CONSTRAINTS host_compliance_summaries_flush IMMEDIATE")
+  end
+
+  # Specs outside the test transaction delete their hosts with triggers off (hosts cannot be deleted), which leaves
+  # their summary rows behind (#193); they would count as hosts in later specs' fleet-wide totals.
+  config.after do |example|
+    next if example.example_group.use_transactional_tests
+
+    HostComplianceSummary.where.not(host_id: Host.select(:id)).delete_all
+    ActiveRecord::Base.connection.execute("DELETE FROM host_compliance_recounts WHERE host_id NOT IN (SELECT id FROM hosts)")
+  end
 end

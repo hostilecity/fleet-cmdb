@@ -550,6 +550,75 @@ fn one_update_at_a_time_and_one_answer_per_offer() {
 }
 
 #[test]
+fn a_server_that_sends_a_new_offer_every_time_cannot_grow_the_updaters_memory() {
+    // A hostile server can put a new rollout id in every heartbeat. Each offer here is refused (an older
+    // version) and answered; the next arrives while that answer waits to be posted, or after it was.
+    let rig = Rig::new();
+    let mut offer = directive_json(&publish(
+        &rig.fetch,
+        &rig.world.key,
+        "0.0.1",
+        &binary(100),
+        1,
+    ));
+    let sizes = |rig: &Rig| {
+        let memory = rig.updater.inner.memory.lock().unwrap();
+        (
+            memory.reported.len(),
+            memory.noted.len(),
+            memory.attempts.len(),
+        )
+    };
+    for rollout_id in 1..=(3 * MEMORY_LIMIT as u64) {
+        offer["rollout_id"] = json!(rollout_id);
+        rig.updater.process_now(&offer);
+        // Every other offer finds the answer to the one before still waiting (it is ignored and noted);
+        // the rest find it posted (they are refused and answered).
+        if rollout_id % 2 == 0 {
+            PendingResult::remove(rig.world.state()).unwrap();
+        }
+        let (reported, noted, attempts) = sizes(&rig);
+        assert!(
+            reported <= MEMORY_LIMIT && noted <= MEMORY_LIMIT && attempts <= MEMORY_LIMIT,
+            "after {rollout_id} offers: {reported} answered, {noted} notes, {attempts} attempt counts"
+        );
+    }
+    assert!(sizes(&rig).0 > 0, "offers were answered and remembered");
+
+    // A recent offer is still answered only once.
+    PendingResult::remove(rig.world.state()).unwrap();
+    let last = 3 * MEMORY_LIMIT as u64 - 1;
+    offer["rollout_id"] = json!(last);
+    rig.updater.process_now(&offer);
+    assert!(
+        rig.world.pending().is_none(),
+        "a remembered offer is not answered again"
+    );
+
+    // A newer release whose download keeps failing for a moment: each rollout id gets an attempt count.
+    let rig = Rig::new();
+    let mut offer = rig.offer(NEW, 1);
+    let manifest_url = offer["manifest_url"].as_str().unwrap().to_owned();
+    for rollout_id in 1..=(3 * MEMORY_LIMIT as u64) {
+        offer["rollout_id"] = json!(rollout_id);
+        rig.fetch.errors.lock().unwrap().insert(
+            manifest_url.clone(),
+            FetchError::Transient("cannot reach the download address".into()),
+        );
+        rig.updater.process_now(&offer);
+        assert!(
+            rig.world.pending().is_none(),
+            "a transient failure is only retried"
+        );
+        let attempts = sizes(&rig).2;
+        assert!(
+            (1..=MEMORY_LIMIT).contains(&attempts),
+            "after {rollout_id} offers: {attempts} attempt counts"
+        );
+    }
+}
+
+#[test]
 fn a_download_that_keeps_failing_is_retried_and_then_reported() {
     let rig = Rig::new();
     let offer = rig.offer(NEW, 5);
@@ -1027,4 +1096,48 @@ fn a_task_in_flight_defers_an_update_and_an_update_in_progress_blocks_tasks() {
     assert!(error.contains("confirmed or rolled back"), "{error}");
     Record::remove(rig.world.state()).unwrap();
     assert!(rig.updater.task_slot().is_ok());
+}
+
+#[test]
+fn hostile_update_directives_never_panic_and_only_a_strict_one_is_acted_on() {
+    let keys = [
+        "rollout_id",
+        "version",
+        "manifest_url",
+        "signature_url",
+        "binary_url",
+    ];
+    crate::test_support::hostile::each(&keys, |value| {
+        if let Some(directive) = Directive::parse(value) {
+            assert!(directive.rollout_id > 0);
+            assert!(directive.version.build.is_empty());
+            assert!(super::layout::parse_version(&directive.version.to_string()).is_some());
+        }
+    });
+}
+
+#[test]
+fn a_valid_update_directive_changed_one_field_at_a_time_is_acted_on_only_if_still_strict() {
+    let valid = json!({
+        "rollout_id": 7,
+        "version": "1.2.3",
+        "manifest_url": "https://fleet-vm.example.com/m",
+        "signature_url": "https://fleet-vm.example.com/s",
+        "binary_url": "https://fleet-vm.example.com/b",
+    });
+    assert!(Directive::parse(&valid).is_some());
+    let keys = ["rollout_id", "version"];
+    let (mut taken, mut refused) = (0, 0);
+    crate::test_support::hostile::each_mutation(&valid, &keys, |value| {
+        match Directive::parse(value) {
+            Some(directive) => {
+                assert!(directive.rollout_id > 0);
+                assert_eq!(value["version"], directive.version.to_string());
+                assert!(super::layout::parse_version(&directive.version.to_string()).is_some());
+                taken += 1;
+            }
+            None => refused += 1,
+        }
+    });
+    assert!(taken > 0 && refused > 0, "{taken} taken, {refused} refused");
 }

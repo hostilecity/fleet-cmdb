@@ -57,14 +57,32 @@ module AgentTasks
   # duplicate: the server already had this result; applied: it decided the task's state; conflict: refused, with
   # why ("different_result" or "state").
   Outcome = Data.define(:task, :duplicate, :applied, :conflict)
+  # task: the task a poll delivers, or nil; cancel: the cancel directive ({ id: }), or nil.
+  Poll = Data.define(:task, :cancel)
 
   module_function
 
   # The task to deliver to this host's poll, or nil. host must be locked (AgentHostLock).
-  def poll!(host:, now: Time.current)
-    return nil if host.tasks.exists?(state: "running")
+  def poll!(host:, now: Time.current) = next_task!(host, open_tasks(host), now)
 
-    if (claimed = host.tasks.where(state: "claimed").lock.first)
+  # A poll's answer (P3-S03, P3-S05): the task to deliver, or nil, and the cancel directive, or nil, from one read of
+  # the host's running and claimed tasks (#189). A poll with nothing to do is that one SELECT and the queue's. host
+  # must be locked (AgentHostLock).
+  def poll_with_cancel!(host:, now: Time.current)
+    open = open_tasks(host)
+    running = open.find { |task| task.state == "running" }
+    Poll.new(task: next_task!(host, open, now), cancel: running && cancel_for(running))
+  end
+
+  def open_tasks(host) = host.tasks.where(state: %w[running claimed]).order(:id).to_a
+
+  # open: the host's running and claimed tasks, read without a lock. A claimed one is locked and read again before it
+  # is delivered or expired, as the lease job may have put it back in the queue since.
+  def next_task!(host, open, now)
+    return nil if open.any? { |task| task.state == "running" }
+
+    candidate = open.find { |task| task.state == "claimed" }
+    if candidate && (claimed = host.tasks.where(id: candidate.id, state: "claimed").lock.first)
       if host.tasks.where(id: claimed.id).where("expires_at > clock_timestamp()").exists?
         unless refuse_if_invalid(claimed)
           claimed.renew_lease!(lease_expires_at: now + CLAIM_LEASE)
@@ -95,13 +113,18 @@ module AgentTasks
   # operator asked to cancel it and its type is interruptible.
   def cancel_directive(host)
     task = host.tasks.where(state: "running").where.not(cancel_requested_at: nil).first
-    task&.interruptible? ? { id: task.uuid } : nil
+    task && cancel_for(task)
   end
 
-  # Whether this host's next poll would get a task: the heartbeat's tasks_available directive. One query.
-  def available?(host_id:)
+  def cancel_for(running) = running.cancel_requested_at && running.interruptible? ? { id: running.uuid } : nil
+
+  # Whether this host's next poll would get a task: the heartbeat's tasks_available directive. One query. The
+  # heartbeat reads available_scope in one statement with its other directives (HeartbeatDirectives, #189).
+  def available?(host_id:) = available_scope(host_id:).exists?
+
+  def available_scope(host_id:)
     Task.where(host_id:, state: %w[queued claimed]).where("expires_at > clock_timestamp()")
-        .where("NOT EXISTS (?)", Task.select(1).where(host_id:, state: "running")).exists?
+        .where("NOT EXISTS (?)", Task.select(1).where(host_id:, state: "running"))
   end
 
   # The agent recorded the task as started and asks to run it. Returns the task in its state now.
@@ -205,5 +228,5 @@ module AgentTasks
 
   def agent_time(value) = value && Time.iso8601(value)
 
-  private_class_method :refuse_if_invalid, :takes?, :claimed_by?, :apply!, :keep_late!, :conflict!, :agent_time, :details
+  private_class_method :open_tasks, :next_task!, :cancel_for, :refuse_if_invalid, :takes?, :claimed_by?, :apply!, :keep_late!, :conflict!, :agent_time, :details
 end

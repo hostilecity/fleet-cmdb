@@ -164,25 +164,33 @@ RSpec.describe FleetCompliance do
     expect([ list.aria_sort("worst"), list.aria_sort("name") ]).to eq(%w[ascending none])
   end
 
-  it "pages by 100" do
+  it "pages by 100, after and before a cursor host, in the sort's order (#193)" do
     stub_const("FleetCompliance::PER_PAGE", 4)
-    second = described_class.new(page: "2", sort: "name")
-    expect([ second.total, second.pages, second.page, second.first_row, second.last_row ]).to eq([ 6, 2, 2, 5, 6 ])
+    first = described_class.new(sort: "name")
+    expect(first.rows.map { |r| r.host.name }).to eq([ "Backup target", "Build runner", "DNS resolver", "Media server" ])
+    expect([ first.page.previous, first.page.next ]).to eq([ nil, { after: media.id } ])
+    second = described_class.new(sort: "name", after: media.id.to_s)
     expect(second.rows.map { |r| r.host.name }).to eq([ "Old findings", "Web A" ])
-    expect(described_class.new(page: "99").page).to eq(2)
-    expect(described_class.new(q: "no such host")).to have_attributes(total: 0, pages: 1, first_row: 0, last_row: 0)
+    expect([ second.page.previous, second.page.next ]).to eq([ { before: old.id }, nil ])
+    back = described_class.new(sort: "name", before: old.id.to_s)
+    expect(back.rows.map { |r| r.host.name }).to eq(first.rows.map { |r| r.host.name })
+    expect(back.page.previous).to be_nil
+    expect([ first.total, described_class.new(q: "no such host").total ]).to eq([ 6, 0 ])
+    expect(described_class.new(after: media.id.to_s)).to be_cursor
+    expect(described_class.new(after: "0")).not_to be_cursor
   end
 
-  it "writes one count column for each severity a rule version or an advisory can have" do
+  it "keeps one count column for each severity a rule version or an advisory can have" do
     allowed = CisRuleVersion.connection.select_value("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'cis_rule_versions_severity'")
     expect(FleetCompliance::CIS_SEVERITIES).to match_array(allowed.scan(/'(\w+)'/).flatten.uniq)
-    expect(FleetCompliance::JOINS.scan(/AS cis_(critical|high|medium|low)\b/).flatten).to eq(FleetCompliance::CIS_SEVERITIES)
-    expect(FleetCompliance::JOINS.scan(/AS vuln_(\w+)/).flatten).to eq(Advisory::SEVERITIES)
+    counts = HostComplianceSummary.column_names.grep(/\A(cis|vuln)_(critical|high|medium|low|unknown)\z/)
+    expect(counts).to match_array(FleetCompliance::CIS_SEVERITIES.map { |s| "cis_#{s}" } + Advisory::SEVERITIES.map { |s| "vuln_#{s}" })
+    expect(FleetCompliance::COUNTS).to include(*counts)
   end
 
   it "builds a page in a fixed number of queries" do
     list = described_class.new(sort: "worst")
     queries = count_queries { list.rows && list.total && described_class.totals && described_class.tags }
-    expect(queries).to be <= 8 # rows, HostContext (three), count, totals, tags
+    expect(queries).to be <= 9 # rows, their details, HostContext (three), count, totals, tags
   end
 end
