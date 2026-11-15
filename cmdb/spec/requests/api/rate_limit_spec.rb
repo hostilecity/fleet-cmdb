@@ -72,6 +72,66 @@ RSpec.describe "Agent API rate limits", type: :request do
       expect(response).to have_http_status(:ok)
     end
 
+    it "still lets in a key id that authenticated recently, so a client sharing the address cannot lock agents out" do
+      poll(credential) # this agent authenticated a moment ago
+      limit.times { poll(wrong) } # a hostile client behind the same address
+      poll(credential)
+      expect(response).to have_http_status(:ok)
+      _other_host, unseen = enrolled_host # an agent not seen in this process recently waits like everyone else
+      poll(unseen)
+      expect_error(:too_many_requests, "rate_limited")
+    end
+
+    it "remembers a key id for 15 minutes from its last success, then not" do
+      poll(credential)
+      limit.times { poll(wrong) }
+      later = AgentApi.recent_credentials.clock + AgentApi::RECENT_CREDENTIAL_TTL.to_f + 1
+      allow(AgentApi.recent_credentials).to receive(:clock).and_return(later)
+      poll(credential)
+      expect_error(:too_many_requests, "rate_limited")
+    end
+
+    it "counts the failures of a recent key id, and stops letting it through past the limit" do
+      poll(credential)
+      key_id = credential.split(".").first
+      limit.times { poll(wrong) }
+      limit.times { poll("#{key_id}.#{'y' * 43}") } # the key id is not secret: a guesser may use it
+      expect_error(:unauthorized, "unauthorized") # passed the address block, failed authentication
+      poll(credential)
+      expect_error(:too_many_requests, "rate_limited")
+    end
+
+    it "counts an IPv6 client per /64, and an IPv4-mapped address as IPv4" do
+      limit.times { |i| poll(wrong, from: "2001:db8:1:2::#{i + 1}") }
+      poll(credential, from: "2001:db8:1:2:ffff::1") # same /64
+      expect_error(:too_many_requests, "rate_limited")
+      poll(credential, from: "2001:db8:1:3::1") # another /64
+      expect(response).to have_http_status(:ok)
+      limit.times { poll(wrong, from: "::ffff:192.0.2.20") }
+      poll(credential, from: "192.0.2.21")
+      expect(response).to have_http_status(:ok) # not one key for every mapped address
+    end
+
+    it "counts a client address that is not an IP address as it is" do
+      allow_any_instance_of(ActionDispatch::Request).to receive(:remote_ip).and_return("unix-socket") # rubocop:disable RSpec/AnyInstance
+      limit.times { poll(wrong) }
+      expect(AgentApi.failed_auth_rate_limiter.count("failed-auth:unix-socket")).to eq(limit)
+      poll(credential)
+      expect_error(:too_many_requests, "rate_limited")
+    end
+
+    it "keeps a blocked address blocked while failures from many other addresses arrive (review of #211)" do
+      small = AgentApi::RateLimiter.new(max_keys: 5)
+      allow(AgentApi).to receive(:failed_auth_rate_limiter).and_return(small)
+      limit.times { poll(wrong) }
+      20.times do |i|
+        poll(wrong, from: "198.51.100.#{i + 1}")
+        poll(wrong) # the blocked address keeps trying
+      end
+      poll(credential)
+      expect_error(:too_many_requests, "rate_limited")
+    end
+
     it "counts every kind of failed authentication the same (missing, malformed, revoked)" do
       host, revoked = enrolled_host
       host.revoke!(actor: Audit::SYSTEM)
