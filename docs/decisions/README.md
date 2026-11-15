@@ -21,7 +21,7 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0015](0015-restartable-services.md) | Restartable services allowlist | DEC-15 |
 | [0016](0016-package-update-policy.md) | Package update task policy | DEC-16 |
 | [0017](0017-agent-onboarding.md) | Onboarding from the installer, approved in the dashboard | DEC-17 |
-| [0018](0018-signed-agent-updates.md) | Signed remote agent updates with automatic rollback | DEC-18 |
+| [0018](0018-signed-agent-updates.md) | Signed remote agent updates with automatic rollback (amended by 0030: recovery mode) | DEC-18 |
 | [0019](0019-scale-direction.md) | Design direction toward enterprise scale | DEC-19 |
 | [0020](0020-named-heartbeat-directives.md) | Heartbeat directives are named entries in an object | DEC-20 |
 | [0021](0021-release-signature-format.md) | Release signature format: minisign | #15 |
@@ -32,5 +32,6 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0026](0026-dashboard-summaries-and-keyset-pages.md) | The dashboard reads per-host summaries kept by the database, in keyset pages (proposed) | #193 |
 | [0027](0027-time-partitioned-history.md) | Time-partitioned history tables; retention drops whole partitions (proposed) | #195 |
 | [0028](0028-content-addressed-package-sets.md) | Each distinct package set stored once, in content-addressed chunks, matched once per chunk (proposed) | #196 |
+| [0030](0030-agent-recovery-mode.md) | An agent that keeps failing on a confirmed version runs in recovery mode instead of stopping for good (proposed; amends 0018) | #180 |
 
 Not an ADR: [`phase-3-threat-model.md`](phase-3-threat-model.md) is the Phase 3 threat model ([P3-X01](../backlog/specs/p3-security.md)). It decides nothing by itself; its proposals become binding only through a spec or an ADR.
