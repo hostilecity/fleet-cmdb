@@ -114,9 +114,10 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `RAILS_LOG_LEVEL` | `info` | `debug` logs much more, including values that may be personal; use it briefly |
 | `RAILS_MAX_THREADS` | `3` | Puma threads in each Puma process. More threads do not serve more agents; add processes instead ([scaling.md](scaling.md)) |
 | `WEB_CONCURRENCY` | unset: one Puma process | Puma processes. One serves about 2,100 agents on the default intervals; how to size it, and the connections it needs: [scaling.md](scaling.md#step-1-up-to-about-10000-agents) |
-| `JOB_THREADS` | `3` | Threads in each Solid Queue worker process for the default queue and every other queue |
+| `JOB_THREADS` | `3` | Threads in each Solid Queue worker process for the default queue (which also takes realtime jobs when a thread is free) |
 | `JOB_CONCURRENCY` | `1` | How many of those worker processes |
 | `JOB_REALTIME_THREADS` | `1` | Threads of the worker that serves only the realtime queue: the every-minute jobs (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes, so long jobs never delay them |
+| `EVALUATION_THREADS` | `2` | Threads of the worker that serves only the `evaluation` queue: fleet-wide CIS evaluation after a rule change and re-matching after an advisory import, in batches (#197). More threads finish a fleet-wide run sooner, at the cost of database load; the database pool follows it |
 | `FLEET_LIVE_REFRESH_SECONDS` | `2` | Open dashboard pages refresh at most once in this many seconds per stream: a burst of host or task changes is sent as one refresh, one job, at the end of the window (#194). A whole number from 1 to 15; any other value stops the boot. Raise it (for example to 10) for a large fleet with many open browsers, where each fleet-list refresh is expensive |
 | `FLEET_JOBS_CONTAINER` | `false` (workflow variable) | `true`: background jobs run in a second container, `fleet-cmdb-jobs`, from the same image and settings, instead of inside the app container ([scaling.md](scaling.md#solid-queue-in-its-own-container-fleet_jobs_container)). The deploy stops on any other value |
 | `RAILS_ENV` | *fixed* by the image: `production` | |

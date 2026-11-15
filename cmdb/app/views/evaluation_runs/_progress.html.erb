@@ -1,0 +1,22 @@
+<%# A fleet-wide evaluation (#197; review of #204), in plain text, in a frame that refreshes only itself. locals: run, tick
+    (how many times it has refreshed, for the back-off). Shown while the run is unfinished, and once it failed. %>
+<%= turbo_frame_tag "evaluation_progress" do %>
+  <% if run.unfinished? && !evaluation_stalled?(run) %>
+    <%= tag.p "#{evaluation_doing(run)}: #{evaluation_count_text(run)}.", id: "evaluation_progress_text", class: "muted", role: "status",
+              data: { controller: "evaluation-progress", evaluation_progress_url_value: evaluation_run_progress_path(run, tick: tick + 1),
+                      evaluation_progress_seconds_value: evaluation_refresh_seconds(tick) } %>
+  <% elsif run.unfinished? %>
+    <p class="muted" id="evaluation_progress_text" role="status"><%= evaluation_doing(run) %>: <%= evaluation_count_text(run) %>. No progress for
+      <%= pluralize((EvaluationRunsHelper::STALLED_AFTER / 1.minute).round, "minute") %>: check that the job workers are running, and see the
+      <%= link_to "failed jobs", failed_jobs_path, data: { turbo_frame: "_top" } %>. Reload the page to check again.</p>
+  <% elsif run.failed? %>
+    <div class="notice" id="evaluation_progress_text" role="status"><strong>Stopped: <%= evaluation_count_text(run) %>.</strong>
+      <p>Part of the work failed every retry (see the <%= link_to "failed jobs", failed_jobs_path, data: { turbo_frame: "_top" } %>), so some hosts were not checked.</p>
+      <%= button_to(run.kind == "cis_rules" ? "Check every host again" : "Re-match again", retry_evaluation_run_path(run), class: "btn quiet",
+                    form: { data: { turbo_frame: "_top" } }) %></div>
+  <% else %>
+    <%# Done: the page reloads once, to show the results. %>
+    <%= tag.p "#{evaluation_doing(run)}: done.", id: "evaluation_progress_text", class: "muted", role: "status",
+              data: { controller: "refresh-after", refresh_after_seconds_value: 0 } %>
+  <% end %>
+<% end %>
