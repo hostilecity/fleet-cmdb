@@ -3,9 +3,15 @@ default: &default
     - polling_interval: 1
       batch_size: 500
   workers:
-    - queues: "*"
+    - queues: "default"
       threads: 3
       processes: <%= ENV.fetch("JOB_CONCURRENCY", 1) %>
+      polling_interval: 1
+    # Fleet-wide CIS evaluation and advisory re-matching, in batches (#197), on workers of their own so liveness,
+    # leases, and broadcasts never wait behind them. More threads finish a fleet-wide run sooner.
+    - queues: "evaluation"
+      threads: <%= ENV.fetch("EVALUATION_THREADS", 2) %>
+      processes: 1
       polling_interval: 1
 
 development:
