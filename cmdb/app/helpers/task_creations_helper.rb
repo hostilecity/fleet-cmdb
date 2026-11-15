@@ -2,6 +2,8 @@
 # got wrong, and the hidden fields that carry earlier choices from step to step.
 module TaskCreationsHelper
   STEPS = [ "Task type", "Parameters", "Targets", "Confirm" ].freeze
+  # The agent's own heartbeat interval when the server sets none (agent/src/config.rs HEARTBEAT_LIMITS).
+  AGENT_DEFAULT_HEARTBEAT_SECONDS = 60
 
   # Where a problem's JSON Pointer points, in words, for "The service is not on the allowlist."
   PROBLEM_SUBJECTS = {
@@ -9,6 +11,14 @@ module TaskCreationsHelper
     "/target" => "The selection", "/target/host_ids" => "The selection", "/target/tag" => "The tag",
     "/confirm_host_count" => "The number typed", "/confirmation" => "The confirmation", "/second_factor_code" => "The second factor"
   }.freeze
+
+  # How far apart hosts pick up the tasks of one batch, in words: a waiting task starts at the host's next heartbeat
+  # (tasks_available) or poll, whichever comes first (#190).
+  def task_pickup_spread
+    heartbeat = Setting.agent_intervals.fetch(:heartbeat_seconds, AGENT_DEFAULT_HEARTBEAT_SECONDS)
+    seconds = [ heartbeat, TaskSettings.poll_seconds ].min
+    seconds <= 60 ? "about a minute" : "about #{pluralize((seconds / 60.0).round, "minute")}"
+  end
 
   # The step list at the top of each page, with the earlier steps as links back.
   def task_flow(current, links = {})
