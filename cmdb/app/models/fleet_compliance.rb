@@ -155,7 +155,7 @@ class FleetCompliance
             .reduce(:or).select(:host_id)
   end
 
-  def self.tags =Host.active.distinct.pluck(Arel.sql("unnest(hosts.tags)")).sort
+  def self.tags = FleetList.tags_of(HostComplianceSummary.where(enrollment_state: "active"))
 
   def scope
     hosts = Host.active

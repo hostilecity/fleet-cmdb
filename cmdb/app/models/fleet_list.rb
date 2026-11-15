@@ -85,7 +85,11 @@ class FleetList
     STATUS_RANKS.transform_values { |rank| totals.fetch(rank, 0) }
   end
 
-  def self.tags = Host.in_fleet.distinct.pluck(Arel.sql("unnest(hosts.tags)")).sort
+  # The tags in use, from the summaries' tag lists, which are much narrower than hosts (a tag never holds a comma:
+  # Host::TAG_FORMAT).
+  def self.tags = tags_of(HostComplianceSummary.where.not(enrollment_state: "retired"))
+
+  def self.tags_of(summaries) = summaries.distinct.pluck(Arel.sql("unnest(string_to_array(tags_key, ','))")).sort
 
   # The display status key for one host, matching STATUSES.
   def self.status_of(host)
