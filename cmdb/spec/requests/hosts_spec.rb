@@ -350,6 +350,8 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       warning = notice
       expect(warning.at_css("strong").text).to eq("This credential was used from another machine.")
       expect(warning.css("code").map(&:text)).to eq(%w[0123456789abcdef0123456789abcdef fedcba9876543210fedcba9876543210])
+      expect(warning.at_css("p").text.squish).to end_with("If its agent config was copied to another VM, enroll that copy as a new host first. " \
+                                                          "Then, or if you gave this VM a new machine ID, re-enroll this host to clear the warning.")
     end
 
     it "escapes hostile strings everywhere they appear (P1-D03)" do
