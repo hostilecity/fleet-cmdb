@@ -30,7 +30,7 @@ RSpec.configure do |config|
   # One-second spread, whatever the stage's size: every offer time is the opening time, so directives are due at once.
   config.around do |example|
     rollouts = Rails.configuration.x.rollouts
-    saved = rollouts.to_h.slice(:spread, :confirmation_timeout, :downloads_per_second)
+    saved = rollouts.to_h.slice(:spread, :confirmation_timeout, :downloads_per_second, :large_fleet_hosts)
     rollouts.spread = 1
     rollouts.downloads_per_second = 1_000_000
     example.run

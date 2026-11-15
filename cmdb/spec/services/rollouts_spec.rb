@@ -99,10 +99,43 @@ RSpec.describe Rollouts do
       expect(Rollouts.default_stages(1_000_000)).to eq([ 1, 10, 50, 100 ])
     end
 
+    it "uses FLEET_ROLLOUT_LARGE_FLEET_HOSTS as the threshold" do
+      Rails.configuration.x.rollouts.large_fleet_hosts = 50_000
+      expect(Rollouts.default_stages(49_999)).to eq([ 25, 100 ])
+      expect(Rollouts.default_stages(50_000)).to eq([ 1, 10, 50, 100 ])
+    end
+
+    describe "FLEET_ROLLOUT_LARGE_FLEET_HOSTS" do
+      def boot_with(value)
+        saved = ENV.fetch("FLEET_ROLLOUT_LARGE_FLEET_HOSTS", nil)
+        ENV["FLEET_ROLLOUT_LARGE_FLEET_HOSTS"] = value
+        Rails.configuration.x.rollouts.delete(:large_fleet_hosts)
+        load Rails.root.join("config/initializers/rollouts.rb")
+        Rails.configuration.x.rollouts.large_fleet_hosts
+      ensure
+        ENV["FLEET_ROLLOUT_LARGE_FLEET_HOSTS"] = saved
+      end
+
+      it "is 1,000 hosts by default, including when set empty, and otherwise a whole number from 1 to 100,000,000" do
+        expect(boot_with(nil)).to eq(1_000)
+        expect(boot_with("")).to eq(1_000)
+        expect(boot_with("250")).to eq(250)
+        expect(boot_with("1")).to eq(1)
+        expect(boot_with("100000000")).to eq(100_000_000)
+      end
+
+      it "stops the server at boot, naming the setting, for anything else" do
+        [ "0", "-5", "100000001", "1.5", "1e3", "1,000", "abc" ].each do |value|
+          expect { boot_with(value) }
+            .to raise_error(RuntimeError, "FLEET_ROLLOUT_LARGE_FLEET_HOSTS must be a whole number of hosts from 1 to 100000000 (got #{value.inspect})")
+        end
+      end
+    end
+
     it "chooses them by the fleet's active hosts when a rollout starts without stages" do
       canary, = host_running("0.2.0")
       host_running("0.3.0")
-      stub_const("Rollouts::LARGE_FLEET", 2) # two active hosts
+      Rails.configuration.x.rollouts.large_fleet_hosts = 2 # two active hosts
       expect(start_rollout(release:, canaries: [ canary ]).stage_percents).to eq([ 1, 10, 50, 100 ])
     end
   end

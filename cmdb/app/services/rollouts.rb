@@ -9,7 +9,8 @@
 #
 # Stages: stage 0 is the canaries (an explicit list of hosts, or a tag); stage n then brings the rollout to
 # stage_percents[n - 1] percent of the hosts that run an older version. The default stages follow the fleet's
-# size (default_stages, #199): 25 and 100 percent for a homelab, 1, 10, 50, and 100 from LARGE_FLEET active hosts.
+# size (default_stages, #199): 25 and 100 percent for a homelab, 1, 10, 50, and 100 from FLEET_ROLLOUT_LARGE_FLEET_HOSTS
+# (1,000) active hosts.
 # A stage's hosts are chosen when it opens, in batches of OPEN_BATCH, and its offers are spread over a window that
 # grows with the stage (stage_spread). A stage advances by itself when all its hosts have confirmed, or when an
 # operator advances it. Only a running rollout sends directives; a halted one resumes only by operator action.
@@ -26,9 +27,8 @@ module Rollouts
 
   CANARY_TAG_LIMIT = 32 # rollouts.canary_tag
   DEFAULT_STAGES = [ 25, 100 ].freeze
-  # From this many active hosts the default stages are LARGE_FLEET_STAGES (#199), so the first stage after the
-  # canaries is 1% of the fleet rather than a quarter of it.
-  LARGE_FLEET = 1_000
+  # From FLEET_ROLLOUT_LARGE_FLEET_HOSTS active hosts (config.large_fleet_hosts, default 1,000) the default stages are
+  # LARGE_FLEET_STAGES (#199), so the first stage after the canaries is 1% of the fleet rather than a quarter of it.
   LARGE_FLEET_STAGES = [ 1, 10, 50, 100 ].freeze
   # Hosts chosen and inserted per statement when a stage opens (#199).
   OPEN_BATCH = 10_000
@@ -77,7 +77,7 @@ module Rollouts
   end
 
   # The default stages after the canaries for a fleet of active_hosts active hosts (#199).
-  def default_stages(active_hosts = Host.active.count) = active_hosts >= LARGE_FLEET ? LARGE_FLEET_STAGES : DEFAULT_STAGES
+  def default_stages(active_hosts = Host.active.count) = active_hosts >= config.large_fleet_hosts ? LARGE_FLEET_STAGES : DEFAULT_STAGES
 
   # The window a stage of hosts hosts spreads its offers over (#199): FLEET_ROLLOUT_SPREAD_SECONDS, or longer
   # when the stage is large, so that offers, and so downloads, come at most FLEET_ROLLOUT_DOWNLOADS_PER_SECOND a
