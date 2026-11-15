@@ -47,9 +47,10 @@ module FleetBenchmark
       before = db_counters
       wal = WalWindow.open(ApplicationRecord.connection)
       samples = run(bodies)
-      wal = wal.finish
+      wal.stop
       sleep STATS_SETTLE
       after = db_counters
+      wal = wal.finish
       print_results(samples, after.to_h { |key, value| [ key, value.is_a?(Hash) ? value.to_h { |k, v| [ k, v - before.dig(key, k).to_i ] } : value - before.fetch(key, 0) ] }, wal)
     end
 

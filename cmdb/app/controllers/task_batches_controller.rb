@@ -5,7 +5,7 @@
 class TaskBatchesController < ApplicationController
   def show
     @batch = TaskBatch.includes(:operator).find(params[:id])
-    @tasks = @batch.tasks.includes(:host, :cancel_requested_by).order(:id).to_a
+    @tasks = @batch.tasks.includes({ host: :liveness }, :cancel_requested_by).order(:id).to_a
     @counts = Task::STATES.index_with(0).merge(@tasks.map(&:state).tally)
     @excluded_hosts = Host.where(id: @batch.excluded_hosts.pluck("host_id")).index_by(&:id)
   end

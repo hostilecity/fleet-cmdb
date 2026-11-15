@@ -29,13 +29,16 @@ module FleetBenchmark
       @start = @conn.select_value("SELECT pg_current_wal_insert_lsn()::text")
     end
 
+    # The end of the run's range, taken as soon as the run ends.
+    def stop = @finish ||= ApplicationRecord.uncached { @conn.select_value("SELECT pg_current_wal_insert_lsn()::text") }
+
     # { "wal_cluster_bytes", "wal_bytes", "wal_fpi_bytes", "wal_records", "wal_by_relation" => [[name, bytes], ...] }.
-    def finish = ApplicationRecord.uncached { read }
+    # Its temporary table writes rows, so read the run's other counters first.
+    def finish = ApplicationRecord.uncached { read(stop) }
 
     private
 
-    def read
-      finish_lsn = @conn.select_value("SELECT pg_current_wal_insert_lsn()::text")
+    def read(finish_lsn)
       result = { "wal_cluster_bytes" => @conn.select_value("SELECT pg_wal_lsn_diff('#{finish_lsn}', '#{@start}')").to_i }
       return result unless @inspect
 

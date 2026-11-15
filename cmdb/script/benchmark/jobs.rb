@@ -43,8 +43,7 @@ module FleetBenchmark
 
     # Every active host heartbeated within the last 50 seconds and is online, as in a healthy fleet.
     def fresh_heartbeats
-      ApplicationRecord.connection.execute("UPDATE hosts SET liveness_status = 'online', last_seen_at = now() - random() * interval '50 seconds' " \
-                                           "WHERE enrollment_state = 'active'")
+      ApplicationRecord.connection.execute("UPDATE host_liveness SET liveness_status = 'online', last_seen_at = now() - random() * interval '50 seconds'")
     end
 
     def bench_hosts = Host.where("name LIKE 'bench-%'").where.not(name: "bench-0000000")

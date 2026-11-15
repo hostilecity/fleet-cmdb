@@ -6,6 +6,10 @@
 #   and offline by the configured thresholds. It is idempotent and safe to run concurrently.
 # - Hosts that have never sent a heartbeat have no liveness status ("awaiting first contact").
 # - Hosts that are not active are not evaluated; they show their enrollment state.
+#
+# The status and the two times are in host_liveness (HostLiveness, #192), a narrow table whose updates stay heap-only
+# (HOT); a steady heartbeat does not write the hosts row. Every write of host_liveness holds the host row lock
+# (AgentHostLock, or FOR NO KEY UPDATE in evaluate!), so whoever holds that lock reads the latest committed row.
 module Liveness
   STATUSES = %w[online stale offline].freeze
   # Advisory lock key that serialises evaluation runs ("live" in ASCII).
@@ -16,45 +20,64 @@ module Liveness
   module_function
 
   # Records a heartbeat: locks the host row and re-checks the host and credential under that lock
-  # (AgentHostLock, raising AgentHostLock::Refused), then reads the server clock and writes one UPDATE, plus
-  # a status event only when the host was not already online. Must run inside a transaction (the
-  # request's). Returns the server time it recorded. task_capabilities is the heartbeat's `tasks` object (P3-A01),
-  # written to the host's capability columns in the same UPDATE (task_capability_columns).
+  # (AgentHostLock, raising AgentHostLock::Refused), then writes the host's host_liveness row in one statement, plus
+  # a status event only when the host was not already online. The hosts row is written only when something it holds
+  # changed: the agent version or schema version, the task capabilities, or the first heartbeat's first_seen_at. Must
+  # run inside a transaction (the request's). Returns the server time it recorded. task_capabilities is the
+  # heartbeat's `tasks` object (P3-A01), compared with the host's capability columns (task_capability_columns).
   def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil)
     host = AgentHostLock.lock!(host_id:, credential_id:)
 
-    # Sampled only now, after the lock: a heartbeat that waited for the row cannot write an older time than
-    # the one it waited for, so last_seen_at never moves backwards.
-    now = [ Time.current, host.last_seen_at ].compact.max
-    updates = { last_seen_at: now, agent_version:, agent_schema_version:, agent_reported_at: agent_time, liveness_status: "online",
-                **task_capability_columns(task_capabilities, now) }
+    # The clock is read only now, after the lock, and last_seen_at never moves backwards: a heartbeat that waited for
+    # the row cannot write an older time than the one it waited for.
+    now, was = touch(host.id, Time.current, agent_time)
+    capabilities = task_capability_columns(task_capabilities)
+    updates = { agent_version:, agent_schema_version:, **capabilities }.reject { |column, value| host[column] == value }
+    if updates.keys.intersect?(capabilities.keys) || task_capabilities.nil? != host.task_capabilities_reported_at.nil?
+      updates[:task_capabilities_reported_at] = task_capabilities && now
+    end
     updates[:first_seen_at] = now if host.first_seen_at.nil?
-    Host.where(id: host.id).update_all(updates)
-    unless host.liveness_status == "online"
-      HostStatusEvent.insert!({ host_id: host.id, from_status: host.liveness_status, to_status: "online", reason: "heartbeat", occurred_at: now })
+    Host.where(id: host.id).update_all(updates) if updates.any?
+    unless was == "online"
+      HostStatusEvent.insert!({ host_id: host.id, from_status: was, to_status: "online", reason: "heartbeat", occurred_at: now })
     end
     # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05) and a new agent
     # version, such as the one an update installed (P1-D09).
-    FleetBroadcast.hosts_changed([ host.id ]) unless host.liveness_status == "online" && host.agent_version == agent_version
+    FleetBroadcast.hosts_changed([ host.id ]) unless was == "online" && !updates.key?(:agent_version)
     now
   end
 
+  # Sets the host's host_liveness row to online at the later of now and its last_seen_at, in one statement that also
+  # returns the status it had (nil before the first heartbeat, which inserts the row). Only last_seen_at,
+  # agent_reported_at, and (rarely) the status change, none of them indexed, so the update is heap-only. Returns
+  # [recorded time, previous status].
+  def touch(host_id, now, agent_time)
+    row = HostLiveness.connection.select_all(HostLiveness.sanitize_sql_array([ <<~SQL, { host_id:, now:, agent_time: } ]), "Liveness touch").cast_values.first
+      WITH previous AS (SELECT host_id, liveness_status FROM host_liveness WHERE host_id = :host_id)
+      UPDATE host_liveness l SET liveness_status = 'online', last_seen_at = GREATEST(l.last_seen_at, :now), agent_reported_at = :agent_time
+        FROM previous p WHERE l.host_id = p.host_id
+      RETURNING l.last_seen_at, p.liveness_status
+    SQL
+    return row if row
+
+    HostLiveness.insert!({ host_id:, liveness_status: "online", last_seen_at: now, agent_reported_at: agent_time })
+    [ now, nil ]
+  end
+  private_class_method :touch
+
   # The host columns for a heartbeat's `tasks` object (FR-3.1, P3-A01): the catalog version compiled into the agent,
   # the types it implements, the types its VM enables, and the services its VM allows restarting, which
-  # Host#task_exclusion_reason reads when a task is
-  # created (P3-S02). A local configuration the agent refused enables nothing, whatever the lists say. A heartbeat
-  # without the object, from an agent older than Phase 3, clears them, so its host is excluded with
-  # no_capability_report. Unknown fields inside the object are ignored (DEC-08).
-  def task_capability_columns(tasks, now)
-    if tasks.nil?
-      return { task_catalog_version: nil, task_types_supported: [], task_types_enabled: [], task_services_allowed: [],
-               task_capabilities_reported_at: nil }
-    end
+  # Host#task_exclusion_reason reads when a task is created (P3-S02). A local configuration the agent refused enables
+  # nothing, whatever the lists say. A heartbeat without the object, from an agent older than Phase 3, clears them, so
+  # its host is excluded with no_capability_report. Unknown fields inside the object are ignored (DEC-08).
+  # task_capabilities_reported_at is the time of the heartbeat that first reported them as they are now (nil without
+  # the object); every later heartbeat confirms them, so the host's last_seen_at is when they were last reported.
+  def task_capability_columns(tasks)
+    return { task_catalog_version: nil, task_types_supported: [], task_types_enabled: [], task_services_allowed: [] } if tasks.nil?
 
     valid = tasks["local_config"] == "valid"
     { task_catalog_version: tasks["catalog_version"], task_types_supported: tasks["supported"].sort,
-      task_types_enabled: valid ? tasks["enabled"].sort : [], task_services_allowed: valid ? tasks["allowed_services"].sort : [],
-      task_capabilities_reported_at: now }
+      task_types_enabled: valid ? tasks["enabled"].sort : [], task_services_allowed: valid ? tasks["allowed_services"].sort : [] }
   end
   private_class_method :task_capability_columns
 
@@ -76,7 +99,7 @@ module Liveness
       begin
         now ||= Time.current
         thresholds ||= Setting.liveness_thresholds
-        buckets(now, thresholds).each { |status, condition| transition_all!(status, condition, now, changed) }
+        transition_all!(now, thresholds, changed)
         changed.size
       ensure
         # Also when a later batch fails: the batches before it are committed, and open pages must show them (review of #186).
@@ -96,44 +119,50 @@ module Liveness
   end
   private_class_method :unlock
 
-  def buckets(now, thresholds)
-    online_after = now - thresholds[:online]
-    stale_after = now - thresholds[:stale]
-    {
-      "online" => [ "hosts.last_seen_at > ?", online_after ],
-      "stale" => [ "hosts.last_seen_at <= ? AND hosts.last_seen_at > ?", online_after, stale_after ],
-      "offline" => [ "hosts.last_seen_at <= ?", stale_after ]
-    }
+  # The status a host's last heartbeat implies, as SQL over host_liveness l.
+  def target_sql(now, thresholds)
+    HostLiveness.sanitize_sql_array([ "CASE WHEN l.last_seen_at > :online_after THEN 'online' WHEN l.last_seen_at > :stale_after THEN 'stale' " \
+                                      "ELSE 'offline' END", { online_after: now - thresholds[:online], stale_after: now - thresholds[:stale] } ])
   end
-  private_class_method :buckets
+  private_class_method :target_sql
 
-  # Every host that should move to status, in batches in id order, each batch's ids added to changed once it has
-  # committed. Each batch starts after the last id of the one before, so the run reads the table once however many
-  # batches it takes, and a batch smaller than BATCH_SIZE is the last.
-  def transition_all!(status, condition, now, changed)
+  # Every host whose status should change, in batches in id order, each batch's ids added to changed once it has
+  # committed. Each batch starts after the last id of the one before, so the run reads host_liveness, not hosts,
+  # once however many batches it takes, and a batch smaller than BATCH_SIZE is the last.
+  def transition_all!(now, thresholds, changed)
+    target = target_sql(now, thresholds)
     after = 0
     loop do
-      batch = transition_batch!(status, condition, now, after:)
-      changed.concat(batch)
-      break if batch.size < BATCH_SIZE
+      found, moved = transition_batch!(target, now, after:)
+      changed.concat(moved)
+      break if found.size < BATCH_SIZE
 
-      after = batch.last
+      after = found.last
     end
   end
   private_class_method :transition_all!
 
-  def transition_batch!(status, condition, now, after:)
+  # One batch: the next BATCH_SIZE hosts whose status is not the one their last heartbeat implies, found in the narrow
+  # host_liveness alone; then the active ones' host rows locked (FOR NO KEY UPDATE, which a heartbeat's lock waits for),
+  # skipping rows a heartbeat holds, for the next run. Hosts that are not active are found but never moved. The statuses are then read again under those locks, by a new statement
+  # that sees every heartbeat committed before them, and moved. Returns [ids found, ids moved].
+  def transition_batch!(target, now, after:)
     Host.transaction do
-      candidates = Host.active.where.not(last_seen_at: nil).where(*condition).where("hosts.id > ?", after)
-                       .where("hosts.liveness_status IS DISTINCT FROM ?", status)
-                       .order(:id).limit(BATCH_SIZE).lock("FOR UPDATE SKIP LOCKED").pluck(:id, :liveness_status)
-      next [] if candidates.empty?
+      connection = HostLiveness.connection
+      found = connection.select_values(HostLiveness.sanitize_sql_array([ <<~SQL, { after:, limit: BATCH_SIZE } ]), "Liveness candidates")
+        SELECT l.host_id FROM host_liveness l WHERE l.host_id > :after AND l.liveness_status <> #{target} ORDER BY l.host_id LIMIT :limit
+      SQL
+      locked = found.empty? ? [] : Host.where(id: found).active.order(:id).lock("FOR NO KEY UPDATE SKIP LOCKED").pluck(:id)
+      next [ found, [] ] if locked.empty?
 
-      Host.where(id: candidates.map(&:first)).update_all(liveness_status: status)
-      HostStatusEvent.insert_all!(candidates.map do |id, from|
-        { host_id: id, from_status: from, to_status: status, reason: "evaluation", occurred_at: now }
-      end)
-      candidates.map(&:first)
+      moved = connection.select_rows(HostLiveness.sanitize_sql_array([ <<~SQL, { ids: locked } ]), "Liveness transitions")
+        UPDATE host_liveness l SET liveness_status = t.target
+          FROM (SELECT l.host_id, l.liveness_status AS was, #{target} AS target FROM host_liveness l WHERE l.host_id IN (:ids)) t
+         WHERE l.host_id = t.host_id AND t.was <> t.target
+        RETURNING l.host_id, t.was, t.target
+      SQL
+      HostStatusEvent.insert_all!(moved.map { |id, from, to| { host_id: id, from_status: from, to_status: to, reason: "evaluation", occurred_at: now } }) if moved.any?
+      [ found, moved.map(&:first) ]
     end
   end
   private_class_method :transition_batch!

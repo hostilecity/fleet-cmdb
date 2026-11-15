@@ -6,7 +6,7 @@
 <section class="sheet" aria-labelledby="capabilities_title" id="capabilities">
   <h2 id="capabilities_title">What this host will run</h2>
   <% if @host.task_capabilities_reported_at %>
-    <p class="muted intro">As its agent last reported, <%= seen_ago(@host.task_capabilities_reported_at) %>.<% if @host.agent_version %> Agent <span class="mono"><%= @host.agent_version %></span>,<% end %> catalog version <%= @host.task_catalog_version %>.</p>
+    <p class="muted intro">As its agent last reported, <%= seen_ago(@host.last_seen_at) %>.<% if @host.agent_version %> Agent <span class="mono"><%= @host.agent_version %></span>,<% end %> catalog version <%= @host.task_catalog_version %>.</p>
     <div class="table-wrap"><table class="stack">
       <caption class="visually-hidden">Task types on this host</caption>
       <thead><tr><th scope="col">Task</th><th scope="col">On this VM</th></tr></thead>

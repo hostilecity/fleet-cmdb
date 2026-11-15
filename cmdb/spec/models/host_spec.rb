@@ -95,10 +95,10 @@ RSpec.describe Host do
 
       it "still allows bulk updates that leave the enrollment state alone" do
         host = host_in("active")
-        Host.where(id: host.id).update_all(liveness_status: "stale")
-        expect(host.reload.liveness_status).to eq("stale")
-        host.update_column(:liveness_status, "offline")
-        expect(host.reload.liveness_status).to eq("offline")
+        Host.where(id: host.id).update_all(notes: "Bulk")
+        expect(host.reload.notes).to eq("Bulk")
+        host.update_column(:notes, "One")
+        expect(host.reload.notes).to eq("One")
       end
     end
 
@@ -156,7 +156,7 @@ RSpec.describe Host do
     end
 
     it "applies liveness to active hosts only" do
-      Host.where(id: [ active.id, revoked.id ]).update_all(liveness_status: "online")
+      [ active, revoked ].each { |host| set_liveness(host, liveness_status: "online") }
       expect(Host.with_liveness("online")).to contain_exactly(active)
     end
 

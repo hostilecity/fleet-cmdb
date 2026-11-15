@@ -81,9 +81,9 @@ RSpec.describe HostComplianceSummary do
     @host = enrolled_host(hostname: "summary-heartbeat.example.lan").first
     @hosts = [ @host ]
     findings!(@host, "high")
-    Host.where(id: @host.id).update_all(liveness_status: "offline")
+    set_liveness(@host, liveness_status: "offline")
     import = holding(2.0) { raise_severity(@host) }
-    without_waiting { Host.where(id: @host.id).update_all(liveness_status: "online", last_seen_at: Time.current) } # was a lock timeout
+    without_waiting { HostLiveness.where(host_id: @host.id).update_all(liveness_status: "online", last_seen_at: Time.current) } # was a lock timeout
     expect(summary.status_rank).to eq(0)
     import.join
     expect(summary.vuln_high).to eq(1) # queued for the recount job
@@ -112,6 +112,7 @@ RSpec.describe HostComplianceSummary do
     b = enrolled_host(hostname: "summary-b.example.lan").first
     @hosts = [ a, b ]
     [ a, b ].each { |host| findings!(host, "high") }
+    [ a, b ].each { |host| set_liveness(host) }
     first = Concurrent::CountDownLatch.new(1)
     moved = Concurrent::CountDownLatch.new(1)
     errors = Queue.new
@@ -132,9 +133,9 @@ RSpec.describe HostComplianceSummary do
       ActiveRecord::Base.connection_pool.with_connection do
         first.wait
         ActiveRecord::Base.transaction do
-          Host.where(id: b.id).update_all(liveness_status: "stale")
+          HostLiveness.where(host_id: b.id).update_all(liveness_status: "stale")
           moved.count_down
-          Host.where(id: a.id).update_all(liveness_status: "stale")
+          HostLiveness.where(host_id: a.id).update_all(liveness_status: "stale")
         end
       rescue StandardError => e
         errors << e

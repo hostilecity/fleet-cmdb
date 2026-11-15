@@ -395,6 +395,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
     t.index ["host_id"], name: "index_host_inventories_on_host_id", unique: true
   end
 
+  create_table "host_liveness", primary_key: "host_id", id: :bigint, default: nil, force: :cascade, options: "WITH (fillfactor = 50, autovacuum_vacuum_scale_factor = 0.01)" do |t|
+    t.string "liveness_status", null: false
+    t.datetime "last_seen_at", null: false
+    t.datetime "agent_reported_at"
+    t.check_constraint "liveness_status::text = ANY (ARRAY['online'::text, 'stale'::text, 'offline'::text])", name: "host_liveness_status_valid"
+  end
+
   create_table "host_package_sets", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.string "manager", limit: 16, null: false
@@ -462,13 +469,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
     t.string "tags", default: [], null: false, array: true
     t.string "enrollment_state", default: "pending", null: false
     t.datetime "first_seen_at"
-    t.datetime "last_seen_at"
     t.string "agent_version", limit: 64
     t.integer "agent_schema_version"
-    t.string "liveness_status"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.datetime "agent_reported_at"
     t.datetime "machine_id_mismatch_at"
     t.string "reported_machine_id", limit: 32
     t.integer "task_catalog_version"
@@ -480,11 +484,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
     t.index ["hostname"], name: "index_hosts_on_hostname_trigram", opclass: :gin_trgm_ops, using: :gin
-    t.index ["liveness_status"], name: "index_hosts_on_liveness_status"
     t.index ["name"], name: "index_hosts_on_name_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["tags"], name: "index_hosts_on_tags", using: :gin
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying::text, 'active'::character varying::text, 'revoked'::character varying::text, 'retired'::character varying::text])", name: "hosts_enrollment_state_valid"
-    t.check_constraint "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying::text, 'stale'::character varying::text, 'offline'::character varying::text]))", name: "hosts_liveness_status_valid"
   end
 
   create_table "inventory_report_receipts", force: :cascade do |t|
@@ -908,6 +910,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
   add_foreign_key "host_compliance_summaries", "hosts"
   add_foreign_key "host_configs", "hosts"
   add_foreign_key "host_inventories", "hosts"
+  add_foreign_key "host_liveness", "hosts"
   add_foreign_key "host_package_sets", "hosts"
   add_foreign_key "host_packages", "hosts"
   add_foreign_key "host_status_events", "hosts"
@@ -1245,7 +1248,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
 
         INSERT INTO host_compliance_summaries AS s (host_id, enrollment_state, status_rank, name_key, hostname, tags_key, agent_key, os_name)
         SELECT h.id, h.enrollment_state,
-               host_compliance_status_rank(h.enrollment_state, h.liveness_status),
+               host_compliance_status_rank(h.enrollment_state, l.liveness_status),
                lower(h.name), h.hostname,
                -- By the tag list as displayed (in entry order); no tags is NULL, so it sorts last.
                NULLIF(array_to_string(h.tags, ','), ''),
@@ -1255,6 +1258,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
                     THEN string_to_array(regexp_replace(h.agent_version, '[-+].*$', ''), '.')::numeric[] END,
                i.stable #>> '{os,pretty_name}'
           FROM hosts h
+          LEFT JOIN host_liveness l ON l.host_id = h.id -- the status (#192); no row is no heartbeat yet
           LEFT JOIN host_inventories i ON i.host_id = h.id
          WHERE h.id = ANY (host_ids)
         ON CONFLICT (host_id) DO UPDATE
@@ -1329,12 +1333,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
                       SELECT a FROM unnest(all_ids) a WHERE NOT EXISTS (SELECT 1 FROM host_compliance_summaries s WHERE s.host_id = a))) h ORDER BY h);
         PERFORM host_compliance_summaries_sync(sync_ids);
 
-        -- Liveness alone moves only the status sort key: no join, no regex, no rewrite of the other copies.
+        -- Liveness alone moves only the status sort key: no join to hosts (the summary has its enrollment state), no regex,
+        -- no rewrite of the other copies. The status is in host_liveness (#192); no row there is no heartbeat yet.
         UPDATE host_compliance_summaries s
-           SET status_rank = host_compliance_status_rank(h.enrollment_state, h.liveness_status)
-          FROM hosts h
-         WHERE h.id = s.host_id AND s.host_id = ANY (status_ids) AND NOT s.host_id = ANY (sync_ids)
-           AND s.status_rank IS DISTINCT FROM host_compliance_status_rank(h.enrollment_state, h.liveness_status);
+           SET status_rank = host_compliance_status_rank(s.enrollment_state, l.liveness_status)
+          FROM (SELECT a AS host_id FROM unnest(status_ids) a) c
+          LEFT JOIN host_liveness l ON l.host_id = c.host_id
+         WHERE s.host_id = c.host_id AND NOT s.host_id = ANY (sync_ids)
+           AND s.status_rank IS DISTINCT FROM host_compliance_status_rank(s.enrollment_state, l.liveness_status);
 
         PERFORM host_compliance_summaries_refresh(count_ids);
         RETURN NULL;
@@ -1355,8 +1361,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
         -- Notes the hosts whose summaries a change can move (#193), for host_compliance_summaries_flush at commit. No
         -- summary row is locked here. Statement triggers pick out the rows that changed in a way the summary can see.
 
-        -- hosts (statement): a new host, a change to a field the fleet list shows, sorts, or filters by (a sync), or a
-        -- change of liveness only (the status sort key).
+        -- hosts (statement): a new host, or a change to a field the fleet list shows, sorts, or filters by (a sync).
         IF TG_TABLE_NAME = 'hosts' THEN
           IF TG_OP = 'INSERT' THEN
             PERFORM host_compliance_summaries_mark(ARRAY(SELECT n.id FROM new_rows n), 1::smallint);
@@ -1365,12 +1370,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
               SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
                WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
                      IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state)), 1::smallint);
-            PERFORM host_compliance_summaries_mark(ARRAY(
-              SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
-               WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
-                     IS NOT DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state)
-                 AND o.liveness_status IS DISTINCT FROM n.liveness_status), 2::smallint);
           END IF;
+          RETURN NULL;
+        END IF;
+
+        -- host_liveness (row, its status changed; #192): the status sort key only. A row trigger with a WHEN clause, so the
+        -- heartbeats that leave the status as it was, nearly all of them, queue nothing and call nothing.
+        IF TG_TABLE_NAME = 'host_liveness' THEN
+          PERFORM host_compliance_summaries_mark(ARRAY[CASE TG_OP WHEN 'DELETE' THEN OLD.host_id ELSE NEW.host_id END], 2::smallint);
           RETURN NULL;
         END IF;
 
@@ -1571,6 +1578,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
 
   create_trigger :vulnerability_findings_no_truncate, sql_definition: <<-SQL
       CREATE TRIGGER vulnerability_findings_no_truncate BEFORE TRUNCATE ON public.vulnerability_findings FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
+  SQL
+
+  create_trigger :host_compliance_summaries_liveness_insert_delete, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_liveness_insert_delete AFTER INSERT OR DELETE ON public.host_liveness FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_liveness_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER host_liveness_no_truncate BEFORE TRUNCATE ON public.host_liveness FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
+  SQL
+
+  create_trigger :host_compliance_summaries_liveness_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_liveness_update AFTER UPDATE OF liveness_status ON public.host_liveness FOR EACH ROW WHEN (((old.liveness_status)::text IS DISTINCT FROM (new.liveness_status)::text)) EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
   create_trigger :host_compliance_summaries_findings_delete, sql_definition: <<-SQL

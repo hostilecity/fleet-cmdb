@@ -348,7 +348,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
       it "escapes the create-task flow, its refusals, the batch page, and refused creations in the audit log (P3-S08)" do
         secret, = enrol_second_factor(operator)
         capable = task_host
-        capable.update_columns(name: fit(100), hostname: fit(253), tags: [ fit(32) ], agent_version: fit(64), liveness_status: "offline", last_seen_at: 1.hour.ago)
+        capable.update_columns(name: fit(100), hostname: fit(253), tags: [ fit(32) ], agent_version: fit(64))
+        set_liveness(capable, liveness_status: "offline", last_seen_at: 1.hour.ago)
         ids = [ capable.id, host.id ] # host's credential is in use on another machine, so it is left out with its name shown
         steps = [
           [ "/tasks/new", { type: text.first(30), target: { host_ids: [ text.first(30) ] } } ],
@@ -384,7 +385,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
       it "escapes the task list, a task's page, its output, batch progress, the cancel confirmations, and the host's Tasks tab (P3-DASH-TASKS)" do
         enrol_second_factor(operator)
         capable = task_host(services: [ fit(64) ])
-        capable.update_columns(name: fit(100), hostname: fit(253), tags: [ fit(32) ], agent_version: fit(64), liveness_status: "offline", last_seen_at: 1.hour.ago)
+        capable.update_columns(name: fit(100), hostname: fit(253), tags: [ fit(32) ], agent_version: fit(64))
+        set_liveness(capable, liveness_status: "offline", last_seen_at: 1.hour.ago)
         other = task_host
         batch = create_task_batch([ capable, other ], type: "apply_package_updates", operator: hostile_operator).batch
         finished, waiting = batch.tasks.order(:id).to_a

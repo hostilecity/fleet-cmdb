@@ -173,9 +173,10 @@ RSpec.describe "Creating a task", type: :request do
     it "resolves a tag to the hosts that get the task and those left out with why, warning about offline hosts (Q7, Q8)" do
       allow_restart("nginx.service", tag: "web")
       online = task_host(name: "sim-001", tags: %w[web])
-      online.update_columns(liveness_status: "online", agent_version: "0.9.0", last_seen_at: 1.minute.ago)
+      online.update_columns(agent_version: "0.9.0")
+      set_liveness(online, liveness_status: "online", last_seen_at: 1.minute.ago)
       offline = task_host(name: "sim-004", tags: %w[web])
-      offline.update_columns(liveness_status: "offline", last_seen_at: 3.hours.ago)
+      set_liveness(offline, liveness_status: "offline", last_seen_at: 3.hours.ago)
       task_host(name: "sim-006", tags: %w[web], enabled: %w[refresh_reports])
       task_host(name: "sim-007", tags: %w[web], services: %w[chrony.service])
       create(:host, :active, name: "sim-009", tags: %w[web], agent_version: "0.8.3")
@@ -283,7 +284,7 @@ RSpec.describe "Creating a task", type: :request do
     it "shows exactly what will run, on which hosts, with the typed count and the code box in one form (Q9 to Q11)" do
       allow_restart("nginx.service")
       hosts = Array.new(4) { |index| task_host(name: "sim-00#{index + 1}", tags: %w[web]) }
-      hosts.last.update_columns(liveness_status: "offline", last_seen_at: 2.hours.ago)
+      set_liveness(hosts.last, liveness_status: "offline", last_seen_at: 2.hours.ago)
       task_host(name: "sim-009", tags: %w[web], enabled: %w[refresh_reports])
       fields = confirm(type: "restart_service", parameters: { service: "nginx.service" }, target: { tag: "web" })
 

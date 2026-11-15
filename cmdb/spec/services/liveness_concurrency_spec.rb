@@ -19,7 +19,7 @@ RSpec.describe "Concurrent liveness evaluation" do
   def prepare_hosts(start)
     @hosts = Array.new(3) { |i| enrolled_host(hostname: "race-#{i}.example.lan").first }
     @hosts.each { |h| record_heartbeat(h, agent_time: start) }
-    Host.where(id: @hosts.map(&:id)).update_all(last_seen_at: start - 20.minutes)
+    HostLiveness.where(host_id: @hosts.map(&:id)).update_all(last_seen_at: start - 20.minutes)
   end
 
   it "lets only one evaluation run at a time: an overlapping run does nothing and does not wait" do
@@ -81,7 +81,7 @@ RSpec.describe "Concurrent liveness evaluation" do
     release << :go
     holder.join
     expect(Liveness.evaluate!(now: start)).to eq(1)
-    expect(Host.where(id: @hosts.map(&:id)).pluck(:liveness_status).uniq).to eq([ "offline" ])
+    expect(HostLiveness.where(host_id: @hosts.map(&:id)).pluck(:liveness_status).uniq).to eq([ "offline" ])
   ensure
     release << :go if release&.empty?
   end
@@ -106,7 +106,7 @@ RSpec.describe "Concurrent liveness evaluation" do
     second_batch.pop
 
     # Mid-run: the first batch's host is committed offline and its row is free; a heartbeat for it does not wait.
-    first = Host.where(id: @hosts.map(&:id), liveness_status: "offline").pick(:id)
+    first = HostLiveness.where(host_id: @hosts.map(&:id), liveness_status: "offline").pick(:host_id)
     expect(first).to be_present
     heartbeat = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
