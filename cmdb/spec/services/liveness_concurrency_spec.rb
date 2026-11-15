@@ -29,23 +29,28 @@ RSpec.describe "Concurrent liveness evaluation" do
     release = Queue.new
     allow(Setting).to receive(:liveness_thresholds).and_call_original
 
-    first = Thread.new do
-      ActiveRecord::Base.connection_pool.with_connection do
-        Host.transaction do
-          written = Liveness.evaluate!(now: start)
-          first_done << written
-          release.pop # hold the transaction (and its row locks) open while the second run happens
-          written
+    # The first run pauses after writing its batch's events, inside the batch's transaction (its row locks held) and
+    # holding the evaluation lock, while the second run happens.
+    allow(HostStatusEvent).to receive(:insert_all!).and_wrap_original do |original, *args|
+      original.call(*args).tap do
+        if Thread.current[:liveness_first_run]
+          first_done << :paused
+          release.pop
         end
       end
     end
-    expect(first_done.pop).to eq(3)
+    first = Thread.new do
+      Thread.current[:liveness_first_run] = true
+      ActiveRecord::Base.connection_pool.with_connection { Liveness.evaluate!(now: start) }
+    end
+    expect(first_done.pop).to eq(:paused)
 
     second = Thread.new { ActiveRecord::Base.connection_pool.with_connection { Liveness.evaluate!(now: start) } }
     second_written = second.join(10)&.value # SKIP LOCKED: must not wait for the first run
     release << :go
     first.join
 
+    expect(first.value).to eq(3)
     expect(second_written).to eq(0) # the overlapping run did nothing rather than act on its own clock
     expect(Setting).to have_received(:liveness_thresholds).once # only the first run read its clock and thresholds
     expect(HostStatusEvent.where(host_id: @hosts.map(&:id), reason: "evaluation").group(:host_id).count.values).to eq([ 1, 1, 1 ])
@@ -77,6 +82,44 @@ RSpec.describe "Concurrent liveness evaluation" do
     holder.join
     expect(Liveness.evaluate!(now: start)).to eq(1)
     expect(Host.where(id: @hosts.map(&:id)).pluck(:liveness_status).uniq).to eq([ "offline" ])
+  ensure
+    release << :go if release&.empty?
+  end
+
+  it "commits each batch before the next, so a heartbeat waits for one batch at most, not the whole run (scale assessment)" do
+    stub_const("Liveness::BATCH_SIZE", 1)
+    start = Time.current
+    prepare_hosts(start)
+    second_batch = Queue.new
+    release = Queue.new
+    batches = 0
+    allow(HostStatusEvent).to receive(:insert_all!).and_wrap_original do |original, *args|
+      original.call(*args).tap do
+        batches += 1
+        next unless batches == 2
+
+        second_batch << true
+        release.pop
+      end
+    end
+    evaluator = Thread.new { ActiveRecord::Base.connection_pool.with_connection { Liveness.evaluate!(now: start) } }
+    second_batch.pop
+
+    # Mid-run: the first batch's host is committed offline and its row is free; a heartbeat for it does not wait.
+    first = Host.where(id: @hosts.map(&:id), liveness_status: "offline").pick(:id)
+    expect(first).to be_present
+    heartbeat = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do
+        Host.transaction do
+          Host.connection.execute("SET LOCAL lock_timeout = '2s'")
+          Host.where(id: first).lock.pick(:id)
+        end
+      end
+    end
+    expect(heartbeat.join(5)&.value).to eq(first)
+    release << :go
+    expect(evaluator.value).to eq(3)
+    expect(HostStatusEvent.where(host_id: @hosts.map(&:id), reason: "evaluation").count).to eq(3)
   ensure
     release << :go if release&.empty?
   end
