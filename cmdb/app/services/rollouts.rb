@@ -170,11 +170,13 @@ module Rollouts
     directive_from(offer_scope(host_id:, now:).pick(*OFFER_COLUMNS), host_id:, agent_version:, now:)
   end
 
-  # The host's open offer, at most one row, read without a lock on the rollout row (see directive_for, #199).
+  # The host's open offer, at most one row, read without a lock on the rollout row (see directive_for, #199). Every
+  # value is a condition Active Record binds (no value inside SQL text), so the heartbeat's directives statement keeps
+  # the same text and can be prepared (review of #209, HeartbeatDirectives).
   def offer_scope(host_id:, now:)
     RolloutHost.joins(rollout: :agent_release)
                .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
-               .where("rollout_hosts.stage <= rollouts.current_stage AND rollout_hosts.offer_at <= ?", now)
+               .where("rollout_hosts.stage <= rollouts.current_stage").where(offer_at: ..now)
                .limit(1)
   end
 

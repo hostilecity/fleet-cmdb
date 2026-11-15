@@ -1,0 +1,5 @@
+<%# The live refreshes every page of one host listens to (#194, FleetBroadcast): this host's changes, its tasks'
+    changes, and changes for every host. Not the fleet stream, so another host's change does not refresh it. The
+    ids name the host, so Turbo never carries one host's subscription over to another host's page. %>
+<%= turbo_stream_from FleetBroadcast.host_stream(host.id), id: "host_stream_#{host.id}", data: { turbo_permanent: true } %>
+<%= turbo_stream_from FleetBroadcast::ALL_HOSTS_STREAM, id: "all_hosts_stream", data: { turbo_permanent: true } %>

@@ -5,9 +5,17 @@
 //! request never delays a heartbeat:
 //!
 //! - the heartbeat loop ([`heartbeat`]): a heartbeat at once, then every heartbeat interval;
-//! - the inventory loop ([`inventory`]): a report at once, then on schedule and on stable-fact change;
-//! - the config loop ([`config`]): the manifest and a report at once, then every 6 hours;
-//! - the packages loop ([`packages`]): a package report at once, then on the config report's interval.
+//! - the inventory loop ([`inventory`]): a startup report, then on schedule and on stable-fact change;
+//! - the config loop ([`config`]): the manifest and a startup report, then every 6 hours;
+//! - the packages loop ([`packages`]): a startup package report, then on the config report's interval.
+//!
+//! **Startup splay** ([`StartupSplay`], #200). On a restart, each report loop waits a random time
+//! before its startup report: up to [`INVENTORY_SPLAY`] for inventory and up to [`REPORT_SPLAY`] for
+//! the heavier config and package reports, each at most its own interval. So a fleet restarted
+//! together (a mass agent update, a reboot wave after patching) spreads its reports over minutes, not
+//! seconds. The heartbeat is never delayed, nor is a report answering a `report_request` or a task. A
+//! first start (no accepted inventory report on record, so a newly enrolled host) has no splay, so a
+//! new host shows its facts in the dashboard at once.
 //!
 //! The server's `report_request` directive reaches the report loops through [`requests`]: the heartbeat
 //! loop raises one request per episode and the report loops poll for it every [`REQUEST_POLL`]. The
@@ -75,6 +83,55 @@ pub use time::rfc3339;
 /// How often a report loop looks for a `report_request` the heartbeat loop raised.
 pub const REQUEST_POLL: Duration = Duration::from_secs(5);
 
+/// The longest startup splay of the inventory report (#200).
+pub const INVENTORY_SPLAY: Duration = Duration::from_secs(60);
+
+/// The longest startup splay of the config and package reports (#200).
+pub const REPORT_SPLAY: Duration = Duration::from_secs(10 * 60);
+
+/// How long each report loop waits before its startup report (#200): zero on a first start, and on a
+/// restart a random time in `[0, min(window, interval)]`, drawn separately for each loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupSplay {
+    pub inventory: Duration,
+    pub config: Duration,
+    pub packages: Duration,
+}
+
+impl StartupSplay {
+    /// No delay at all.
+    pub const NONE: Self = Self {
+        inventory: Duration::ZERO,
+        config: Duration::ZERO,
+        packages: Duration::ZERO,
+    };
+
+    /// The splay for this start. `restart` is whether an accepted inventory report is on record;
+    /// `inventory` and `reports` are the inventory and config-report intervals.
+    pub fn new(restart: bool, inventory: Duration, reports: Duration, rng: &mut impl Rng) -> Self {
+        if !restart {
+            return Self::NONE;
+        }
+        Self {
+            inventory: splay(INVENTORY_SPLAY, inventory, rng),
+            config: splay(REPORT_SPLAY, reports, rng),
+            packages: splay(REPORT_SPLAY, reports, rng),
+        }
+    }
+
+    /// Whether this start is a restart: an inventory report was accepted before (its record is in
+    /// the state directory).
+    pub fn is_restart(state_dir: &Path) -> bool {
+        state_dir.join(inventory::RECORD_NAME).is_file()
+    }
+}
+
+/// A uniformly random delay in `[0, min(window, interval)]`, to the millisecond.
+fn splay(window: Duration, interval: Duration, rng: &mut impl Rng) -> Duration {
+    let bound = window.min(interval).as_millis() as u64;
+    Duration::from_millis(rng.next_u64() % (bound + 1))
+}
+
 /// Sends one JSON request. [`Client`] in production; a scripted fake in tests.
 pub trait Transport {
     fn post(&self, path: &str, body: &serde_json::Value) -> Result<ApiResponse, ApiError>;
@@ -140,6 +197,22 @@ fn run_with(
     // P3-A04: the refresh_reports task asks the report loops through this.
     let refresh = Arc::new(Refresh::new());
     let refresh = &refresh;
+    // #200: on a restart the startup reports wait a random splay; the heartbeat does not.
+    let splay = StartupSplay::new(
+        StartupSplay::is_restart(&config.state_dir),
+        config.inventory.start,
+        config.config_report.start,
+        &mut seeded(10),
+    );
+    if splay != StartupSplay::NONE {
+        tracing::info!(
+            inventory_seconds = splay.inventory.as_secs(),
+            config_seconds = splay.config.as_secs(),
+            packages_seconds = splay.packages.as_secs(),
+            "restarted: the startup reports wait a random delay so a fleet restarted together does not report together"
+        );
+    }
+    let started_at = Instant::now();
     thread::scope(|scope| {
         let heartbeat = spawn_loop(scope, "heartbeat", || {
             let _stop = StopOnExit(shutdown);
@@ -151,6 +224,7 @@ fn run_with(
             let _stop = StopOnExit(shutdown);
             inventory_loop(
                 intervals,
+                started_at + splay.inventory,
                 &config.state_dir,
                 collector,
                 transport,
@@ -163,6 +237,7 @@ fn run_with(
             let _stop = StopOnExit(shutdown);
             config_loop(
                 config.config_report.start,
+                started_at + splay.config,
                 host,
                 transport,
                 shutdown,
@@ -175,6 +250,7 @@ fn run_with(
             let _stop = StopOnExit(shutdown);
             packages_loop(
                 config.config_report.start,
+                started_at + splay.packages,
                 host,
                 transport,
                 shutdown,
@@ -311,8 +387,10 @@ fn tasks_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn inventory_loop(
     intervals: &Intervals,
+    first_at: Instant,
     state_dir: &Path,
     collector: &Collector,
     transport: &dyn Transport,
@@ -325,7 +403,8 @@ fn inventory_loop(
         state_dir.to_owned(),
         Backoff::new(RetryPolicy::default(), seeded(3)),
         seeded(4),
-    );
+    )
+    .first_report_at(first_at);
     while !shutdown.is_requested() {
         // Both are taken: one report answers the directive and the task (P3-A04).
         let directive = requests.take(ReportType::Inventory).is_some();
@@ -350,6 +429,7 @@ fn inventory_loop(
 
 fn config_loop(
     interval: Duration,
+    first_at: Instant,
     host: &dyn Host,
     transport: &dyn Transport,
     shutdown: &Shutdown,
@@ -362,6 +442,7 @@ fn config_loop(
         Backoff::new(RetryPolicy::default(), seeded(5)),
         seeded(6),
     )
+    .first_report_at(first_at)
     .stopping_on(shutdown);
     while !shutdown.is_requested() {
         // Both are taken: one report answers the directive and the task (P3-A04).
@@ -387,6 +468,7 @@ fn config_loop(
 
 fn packages_loop(
     interval: Duration,
+    first_at: Instant,
     host: &dyn Host,
     transport: &dyn Transport,
     shutdown: &Shutdown,
@@ -399,6 +481,7 @@ fn packages_loop(
         Backoff::new(RetryPolicy::default(), seeded(7)),
         seeded(8),
     )
+    .first_report_at(first_at)
     .stopping_on(shutdown);
     while !shutdown.is_requested() {
         // Both are taken: one report answers the directive and the task (P3-A04).
@@ -629,6 +712,64 @@ pub(crate) mod tests {
             body,
             request_id: Some("00000000-0000-4000-8000-0000000000aa".into()),
         })
+    }
+
+    #[test]
+    fn the_startup_splay_is_bounded_uniform_and_drawn_per_loop() {
+        // #200: on a restart each report loop waits uniformly in [0, min(window, interval)].
+        let inventory = Duration::from_secs(900);
+        let reports = Duration::from_secs(21_600);
+        let splays: Vec<StartupSplay> = (0..5_000u64)
+            .map(|seed| StartupSplay::new(true, inventory, reports, &mut SplitMix64::new(seed)))
+            .collect();
+        let check = |name: &str, of: fn(&StartupSplay) -> Duration, bound: Duration| {
+            let values: Vec<Duration> = splays.iter().map(of).collect();
+            assert!(values.iter().all(|d| *d <= bound), "{name}: over {bound:?}");
+            let mean = values.iter().sum::<Duration>() / values.len() as u32;
+            assert!(
+                mean >= bound * 45 / 100 && mean <= bound * 55 / 100,
+                "{name}: mean {mean:?} of {bound:?}"
+            );
+            // Spread over the whole window: every tenth of it gets about its share.
+            let mut buckets = [0u32; 10];
+            for d in &values {
+                buckets[((d.as_millis() * 10 / (bound.as_millis() + 1)) as usize).min(9)] += 1;
+            }
+            assert!(
+                buckets.iter().all(|n| (400..=600).contains(n)),
+                "{name}: {buckets:?}"
+            );
+        };
+        check("inventory", |s| s.inventory, INVENTORY_SPLAY);
+        check("config", |s| s.config, REPORT_SPLAY);
+        check("packages", |s| s.packages, REPORT_SPLAY);
+        // Drawn separately, so a host's config and package reports do not arrive together.
+        assert!(splays.iter().filter(|s| s.config == s.packages).count() < 10);
+        // Never longer than the interval itself.
+        let short = StartupSplay::new(
+            true,
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+            &mut SplitMix64::new(3),
+        );
+        assert!(short.inventory <= Duration::from_secs(30));
+        assert!(short.config <= Duration::from_secs(120));
+        assert!(short.packages <= Duration::from_secs(120));
+        // A first start has none, so a newly enrolled host shows its facts at once.
+        assert_eq!(
+            StartupSplay::new(false, inventory, reports, &mut SplitMix64::new(4)),
+            StartupSplay::NONE
+        );
+    }
+
+    #[test]
+    fn a_restart_is_an_inventory_report_on_record() {
+        let dir = TempDir::new();
+        let state = dir.path("state");
+        crate::state::ensure_dir(&state).unwrap();
+        assert!(!StartupSplay::is_restart(&state));
+        std::fs::write(state.join(inventory::RECORD_NAME), b"{}").unwrap();
+        assert!(StartupSplay::is_restart(&state));
     }
 
     #[test]

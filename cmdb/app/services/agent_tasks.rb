@@ -123,8 +123,9 @@ module AgentTasks
   def available?(host_id:) = available_scope(host_id:).exists?
 
   def available_scope(host_id:)
+    # Every value bound (no value inside SQL text), so the heartbeat's directives statement can be prepared (review of #209).
     Task.where(host_id:, state: %w[queued claimed]).where("expires_at > clock_timestamp()")
-        .where("NOT EXISTS (?)", Task.select(1).where(host_id:, state: "running"))
+        .where(Task.select(1).where(host_id:, state: "running").arel.exists.not)
   end
 
   # The agent recorded the task as started and asks to run it. Returns the task in its state now.

@@ -71,6 +71,8 @@ The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (O
 | `FLEET_API_RATE_LIMIT_MAX_CREDENTIALS` | `100000` | Credentials whose request counts each web process keeps (about 160 bytes each); past it the least recently counted is dropped and its count starts again. Raise it above the fleet size if each process serves the whole fleet |
 | `FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE` | `60` | Failed authentications per client address, per web process, before every request from that address is refused for the rest of the minute (`429`), checked before authentication (#191, S-5) |
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
+| `FLEET_REPORT_MAX_IN_FLIGHT` | `0` (off) | Report load shedding (#200): reports (inventory, config, packages) in flight at once per server process, beyond which a report gets `503 overloaded` with `Retry-After`. Heartbeats and tasks are never shed. Leave it off on a homelab. At scale, set it below `RAILS_MAX_THREADS` (for example threads minus one) so heartbeats always find a free thread |
+| `FLEET_REPORT_RETRY_AFTER_SECONDS` | `30` | The shortest `Retry-After` of a shed report; each answer picks a random value up to twice this, so agents turned away together come back apart |
 | `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Lifetime of a pre-registration one-time token |
 | `FLEET_ONBOARDING_TTL_MINUTES` | `10` | How long an onboarding request waits for approval |
 | `FLEET_ONBOARDING_POLL_SECONDS` | `5` | Minimum time between the installer's polls |
@@ -121,6 +123,7 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `JOB_CONCURRENCY` | `1` | How many of those worker processes |
 | `JOB_REALTIME_THREADS` | `1` | Threads of the worker that serves only the realtime queue: the every-minute jobs (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes, so long jobs never delay them |
 | `EVALUATION_THREADS` | `2` | Threads of the worker that serves only the `evaluation` queue: fleet-wide CIS evaluation after a rule change and re-matching after an advisory import, in batches (#197). More threads finish a fleet-wide run sooner, at the cost of database load; the database pool follows it |
+| `FLEET_LIVE_REFRESH_SECONDS` | `2` | Open dashboard pages refresh at most once in this many seconds per stream: a burst of host or task changes is sent as one refresh, one job, at the end of the window (#194). A whole number from 1 to 15; any other value stops the boot. Raise it (for example to 10) for a large fleet with many open browsers, where each fleet-list refresh is expensive |
 | `FLEET_JOBS_CONTAINER` | `false` (workflow variable) | `true`: background jobs run in a second container, `fleet-cmdb-jobs`, from the same image and settings, instead of inside the app container ([scaling.md](scaling.md#solid-queue-in-its-own-container-fleet_jobs_container)). The deploy stops on any other value |
 | `RAILS_ENV` | *fixed* by the image: `production` | |
 | `PORT` | *fixed* by the image: `3000` | Puma's plain-HTTP port inside the container, for its health checks; not published |

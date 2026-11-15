@@ -6,7 +6,8 @@
 //! manager) or `unreadable` (dpkg is there but cannot be listed) with the reason and no packages. It follows the config report's cadence
 //! and handling ([`super::config`]), as FR-2.3 asks:
 //!
-//! - **on startup**;
+//! - **on startup**; on a restart after a random startup splay of up to 10 minutes
+//!   ([`super::StartupSplay`], #200), so a fleet restarted together does not report together;
 //! - **on schedule**, one config-report interval (`[config_report] interval_seconds`, 6 hours by
 //!   default, less up to 10% jitter) after the previous report was accepted or rejected;
 //! - **on request**: the heartbeat's `report_request` directive names `packages`
@@ -105,9 +106,18 @@ pub struct Reporter<'a, R: Rng> {
     /// The real time the current tick began, so a delay after a failure counts from the failure, not
     /// from the tick's (simulated) `now` ([`super::failed_at`], review of #117).
     tick_started: Instant,
+    /// No startup report is built before this (the startup splay, #200). A request is not held back.
+    first_at: Option<Instant>,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
+    /// Builds the startup report no earlier than `at` (the startup splay, #200). A request
+    /// ([`Reporter::request`]) is still answered at once.
+    pub fn first_report_at(mut self, at: Instant) -> Self {
+        self.first_at = Some(at);
+        self
+    }
+
     pub fn new(host: &'a dyn Host, interval: Duration, backoff: Backoff<R>, rng: R) -> Self {
         Self {
             host,
@@ -125,6 +135,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             stop: None,
             new_id: new_report_id,
             tick_started: Instant::now(),
+            first_at: None,
         }
     }
 
@@ -199,7 +210,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             (None, Some(done)) => {
                 done + self.interval - self.interval * self.jitter_permille / 1000
             }
-            (None, None) => now,
+            (None, None) => self.first_at.map_or(now, |at| at.max(now)),
         };
         self.hold_until.map_or(due, |hold| due.max(hold))
     }

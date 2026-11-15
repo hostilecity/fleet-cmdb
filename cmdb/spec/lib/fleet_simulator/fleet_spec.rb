@@ -75,7 +75,8 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
         define_method(:post_api) do |path, payload, **options|
           if path == "/api/v1/heartbeat" && !@answered
             @answered = true
-            next FleetSimulator::Response.new(status:, body: "{}", headers: { "retry-after" => "5" }, ms: 1)
+            # Retry-After only on the 429: a 503 with one is load shedding (#200), which the simulator waits out.
+            next FleetSimulator::Response.new(status:, body: "{}", headers: status == 429 ? { "retry-after" => "5" } : {}, ms: 1)
           end
           __getobj__.post_api(path, payload, **options)
         end

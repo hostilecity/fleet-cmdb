@@ -169,6 +169,8 @@ RSpec.describe AgentReleaseImportJob, type: :job do
 
   it "tells open dashboards to refresh when it finishes" do
     stub_github
-    expect { run_import }.to have_performed_job(FleetBroadcastJob).at_least(:once)
+    record_refresh_requests
+    run_import
+    expect(refresh_requests).to include([ FleetBroadcast::STREAM, FleetBroadcast::ALL_HOSTS_STREAM ])
   end
 end

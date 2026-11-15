@@ -18,6 +18,11 @@ Rails.application.configure do
   api.failed_auth_rate_limit ||= { to: Integer(ENV.fetch("FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE", "60")), within: 1.minute }
   api.enroll_rate_limit ||= { to: Integer(ENV.fetch("FLEET_ENROLL_RATE_LIMIT_PER_MINUTE", "10")), within: 1.minute }
 
+  # Report load shedding (#200, lib/middleware/report_load_shedder.rb): at most this many report requests in flight
+  # per process, then 503 overloaded with Retry-After between retry_after and twice that. 0 (the default) is off.
+  api.report_shedding ||= { max_in_flight: Integer(ENV.fetch("FLEET_REPORT_MAX_IN_FLIGHT", "0")),
+                            retry_after: Integer(ENV.fetch("FLEET_REPORT_RETRY_AFTER_SECONDS", "30")) }
+
   # Enrollment tokens expire after this long (DEC-04: default 24 hours).
   config.x.enrollment.token_ttl ||= Integer(ENV.fetch("FLEET_ENROLLMENT_TOKEN_TTL_HOURS", "24")).hours
 
@@ -35,5 +40,8 @@ Rails.application.configure do
     dir = config.x.agent_api.schemas_dir
     raise "Agent API schemas not found at #{dir}; set FLEET_API_SCHEMAS_DIR" unless dir.join("v1").directory?
     raise "FLEET_MINIMUM_AGENT_VERSION is not a semantic version" unless AgentApi::AgentVersion.parse(config.x.agent_api.minimum_agent_version)
+    shedding = config.x.agent_api.report_shedding
+    raise "FLEET_REPORT_MAX_IN_FLIGHT must be 0 (off) or more" if shedding[:max_in_flight].negative?
+    raise "FLEET_REPORT_RETRY_AFTER_SECONDS must be at least 1" unless shedding[:retry_after].positive?
   end
 end

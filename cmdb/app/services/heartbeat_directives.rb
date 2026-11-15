@@ -27,8 +27,18 @@ module HeartbeatDirectives
     rollout = Rollouts.offer_scope(host_id:, now:).select(Arel.sql(OFFER_JSON))
     requests = ReportRequests.outstanding_scope(host_id:, now:).select(Arel.sql("json_agg(json_build_array(report_requests.id, report_requests.report_type, report_requests.sent_at))"))
     tasks = AgentTasks.available_scope(host_id:).select(1)
-    sql = "SELECT (#{rollout.to_sql}) AS rollout, (#{requests.to_sql}) AS report_requests, EXISTS (#{tasks.to_sql}) AS tasks_available"
-    result = ApplicationRecord.connection.select_all(sql, "HeartbeatDirectives")
+    # Composed with Arel, not with to_sql, so every value stays a bind parameter ($1, $2, ...) and the statement text
+    # is the same on every heartbeat: PostgreSQL then prepares it once per connection instead of planning it on every
+    # heartbeat (review of #209). Active Record would not prepare it by itself, because the scopes hold SQL text (the
+    # FOR SHARE clause, the stage comparison) and it prepares no statement with SQL literals, as they might carry
+    # values. Here they are constants, so the text is compiled once per call with the connection's visitor and passed
+    # as preparable. spec/services/heartbeat_directives_spec.rb checks that the statement is prepared.
+    select = Arel::SelectManager.new.project(Arel::Nodes::Grouping.new(rollout.arel).as("rollout"),
+                                             Arel::Nodes::Grouping.new(requests.arel).as("report_requests"),
+                                             tasks.arel.exists.as("tasks_available"))
+    connection = ApplicationRecord.connection
+    sql, binds = connection.visitor.compile(select.ast, Arel::Collectors::Composite.new(Arel::Collectors::SQLString.new, Arel::Collectors::Bind.new))
+    result = connection.select_all(sql, "HeartbeatDirectives", binds, preparable: true)
     result.columns.zip(result.cast_values.first).to_h
   end
   private_class_method :read
