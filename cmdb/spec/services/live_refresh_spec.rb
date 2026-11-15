@@ -127,9 +127,22 @@ RSpec.describe LiveRefresh, type: :job do
       expect(sent).to eq(TaskBroadcast::STREAM => 1, TaskBroadcast.batch_stream(1) => 1)
     end
 
-    it "is scheduled by the next change when enqueueing fails, and the error is not hidden" do
+    it "schedules the next flush for a change that commits just after the pending rows were taken (review of #212)" do
+      described_class.request([ "tasks" ])
+      clear_enqueued_jobs
+      allow(described_class).to receive(:collapse).and_wrap_original do |original, streams|
+        described_class.request([ "tasks:batch:9" ])
+        original.call(streams)
+      end
+      described_class.flush
+      expect(jobs.size).to eq(1)
+    end
+
+    it "reports a failed enqueue without failing the committed change, and the next change schedules the flush" do
       allow(LiveRefreshJob).to receive(:set).and_raise(ActiveRecord::ConnectionNotEstablished)
-      expect { described_class.request([ TaskBroadcast::STREAM ]) }.to raise_error(ActiveRecord::ConnectionNotEstablished)
+      allow(Rails.error).to receive(:report)
+      expect { described_class.request([ TaskBroadcast::STREAM ]) }.not_to raise_error
+      expect(Rails.error).to have_received(:report).with(an_instance_of(ActiveRecord::ConnectionNotEstablished), hash_including(handled: true))
       expect(marker).to be_nil
       expect(pending_refreshes).to eq([ TaskBroadcast::STREAM ])
 
@@ -139,8 +152,8 @@ RSpec.describe LiveRefresh, type: :job do
       expect(sent).to eq(TaskBroadcast::STREAM => 1, FleetBroadcast::STREAM => 1)
     end
 
-    it "keeps the streams not yet sent when a broadcast fails, and fails the job so it is retried" do
-      described_class.request([ "a", "b", "c" ])
+    it "keeps every stream pending and the marker held when a broadcast fails, and fails the flush for its retry" do
+      described_class.request(%w[a b c])
       calls = 0
       allow(Turbo::StreamsChannel).to receive(:broadcast_refresh_to).and_wrap_original do |original, stream|
         raise "cable down" if (calls += 1) == 2
@@ -148,15 +161,70 @@ RSpec.describe LiveRefresh, type: :job do
         original.call(stream)
       end
       expect { described_class.flush }.to raise_error("cable down")
-      expect(sent).to eq("a" => 1)
-      expect(pending_refreshes).to eq(%w[b c])
+      expect(sent).to eq("a" => 1) # sent before the failure; sent again by the retry, which is harmless
+      expect(pending_refreshes).to eq(%w[a b c]) # the delete rolled back with the failed flush
       expect(marker).to be_present
+    end
+
+    # Review of #212: each failed flush both re-requested (a new job) and raised (a retry of the same job), so the
+    # jobs doubled with every failure: 3, 9, 27, 79 ... runs per 5 s.
+    it "runs a failing flush only as its own retries, however many changes arrive meanwhile, and then stops" do
+      allow(Turbo::StreamsChannel).to receive(:broadcast_refresh_to).and_raise("cable down")
+      described_class.request([ TaskBroadcast::STREAM ])
+      runs = 0
+      50.times do # due jobs in time order, retries included; far more than a bounded run needs
+        job = enqueued_jobs.select { |j| j["job_class"] == "LiveRefreshJob" }.min_by { |j| j["scheduled_at"].to_s } or break
+        enqueued_jobs.delete(job)
+        runs += 1
+        begin
+          ActiveJob::Base.execute(job)
+        rescue RuntimeError
+          nil # the last attempt raises, so Solid Queue keeps it as failed
+        end
+        described_class.request([ FleetBroadcast::STREAM ]) # a change between attempts
+      end
+      expect(runs).to eq(ApplicationJob::ATTEMPTS)
+      expect(jobs).to be_empty
+      expect(pending_refreshes).to eq([ FleetBroadcast::STREAM, TaskBroadcast::STREAM ])
+      expect(marker).to be_present # held until it is old, then the sweep or the next change takes it over
+    end
+  end
+
+  describe ".sweep (LiveRefreshSweepJob, every minute)" do
+    it "schedules a flush for streams left pending with no marker" do
+      PendingRefresh.insert_all([ { stream: TaskBroadcast::STREAM } ])
+      expect(described_class.sweep).to be(true)
+      expect(jobs.size).to eq(1)
+      perform_enqueued_jobs
+      expect(sent).to eq(TaskBroadcast::STREAM => 1)
+    end
+
+    it "takes over a marker whose flush never came, and leaves a fresh one alone" do
+      PendingRefresh.insert_all([ { stream: TaskBroadcast::STREAM }, { stream: described_class::SCHEDULED } ])
+      expect(described_class.sweep).to be(false)
+      PendingRefresh.where(stream: described_class::SCHEDULED).update_all(requested_at: 2.minutes.ago)
+      expect(captured_log { LiveRefreshSweepJob.perform_now }).to include("[live_refresh] sweep scheduled a flush for streams left pending")
+      expect(jobs.size).to eq(1)
+    end
+
+    it "does nothing when nothing is pending" do
+      PendingRefresh.insert_all([ { stream: described_class::SCHEDULED, requested_at: 2.minutes.ago } ])
+      expect(described_class.sweep).to be(false)
+      expect(jobs).to be_empty
     end
   end
 
   describe "many hosts at once" do
-    it "refreshes every host page once in place of more than #{LiveRefresh::FAN_OUT_LIMIT} host streams" do
-      FleetBroadcast.hosts_changed((1..(LiveRefresh::FAN_OUT_LIMIT + 1)).to_a)
+    it "writes two rows, not one per host, for a change to more than #{LiveRefresh::FAN_OUT_LIMIT} hosts (review of #212)" do
+      FleetBroadcast.hosts_changed((1..100_000).to_a)
+      expect(pending_refreshes).to eq([ FleetBroadcast::STREAM, FleetBroadcast::ALL_HOSTS_STREAM ])
+      expect(described_class.flush).to eq([ FleetBroadcast::STREAM, FleetBroadcast::ALL_HOSTS_STREAM ])
+      expect(sent).to eq(FleetBroadcast::STREAM => 1, FleetBroadcast::ALL_HOSTS_STREAM => 1)
+    end
+
+    it "refreshes every host page once in place of more than #{LiveRefresh::FAN_OUT_LIMIT} host streams from many changes" do
+      (1..(LiveRefresh::FAN_OUT_LIMIT + 1)).each { |id| FleetBroadcast.hosts_changed([ id ]) }
+      expect(pending_refreshes.size).to eq(LiveRefresh::FAN_OUT_LIMIT + 2)
       expect(described_class.flush).to eq([ FleetBroadcast::STREAM, FleetBroadcast::ALL_HOSTS_STREAM ])
       expect(sent).to eq(FleetBroadcast::STREAM => 1, FleetBroadcast::ALL_HOSTS_STREAM => 1)
     end

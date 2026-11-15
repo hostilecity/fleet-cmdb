@@ -1,5 +1,8 @@
 # Helpers for specs of live refreshes (#194, LiveRefresh).
 module LiveRefreshHelpers
+  # The last example run, to name in the marker guard.
+  mattr_accessor :last_example
+
   # The streams waiting for the next flush, sorted.
   def pending_refreshes = PendingRefresh.where.not(stream: LiveRefresh::SCHEDULED).pluck(:stream).sort
 
@@ -34,7 +37,24 @@ end
 
 RSpec.configure do |config|
   config.include LiveRefreshHelpers
-  # Specs without a transaction (the concurrency specs) commit their refresh requests. A marker left behind would
-  # hold back the next example's flush for a minute, so they end with none. Other examples roll theirs back.
-  config.after { PendingRefresh.delete_all unless self.class.use_transactional_tests }
+
+  # A committed marker left behind would silently hold back every later example's flush for a minute (review of
+  # #212). Specs without a transaction (the concurrency specs) are the only ones that commit refresh rows:
+  # - After one, a marker still held with no flush queued is a leak, and fails the example. The rows are then
+  #   deleted, so the next example starts clean either way.
+  # - Before any example, a committed marker fails it, naming the example that left it, in case one ever escapes.
+  config.before do
+    leaked = PendingRefresh.exists?(stream: LiveRefresh::SCHEDULED)
+    raise "a committed live-refresh marker was left by #{LiveRefreshHelpers.last_example || 'an earlier example'}" if leaked
+  end
+
+  config.after do |example|
+    LiveRefreshHelpers.last_example = example.full_description
+    next if self.class.use_transactional_tests
+
+    held = PendingRefresh.exists?(stream: LiveRefresh::SCHEDULED)
+    queued = ActiveJob::Base.queue_adapter.enqueued_jobs.any? { |job| job["job_class"] == "LiveRefreshJob" }
+    PendingRefresh.delete_all
+    raise "the live-refresh marker is held with no flush queued: it leaked" if held && !queued
+  end
 end

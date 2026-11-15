@@ -5,7 +5,7 @@ require "rails_helper"
 # evaluation batches are on the evaluation queue, with a worker of their own, so they never hold the default threads.
 RSpec.describe "config/queue.yml" do
   let(:realtime_jobs) do
-    [ LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, LiveRefreshJob ]
+    [ LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, LiveRefreshJob, LiveRefreshSweepJob ]
   end
 
   def workers(env: "production")
@@ -50,7 +50,7 @@ RSpec.describe "config/queue.yml" do
     recurring = YAML.load_file(Rails.root.join("config/recurring.yml"))
     every_minute = recurring.values.flat_map(&:values).select { |task| task["schedule"] == "every minute" }
                             .map { |task| task.fetch("class").constantize }.uniq
-    expect(every_minute).to contain_exactly(LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob)
+    expect(every_minute).to contain_exactly(LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, LiveRefreshSweepJob)
     expect(recurring.values.flat_map(&:values).pluck("queue").compact).to be_empty # the job class decides its queue
 
     realtime_jobs.each { |job| expect(job.new.queue_name).to eq("realtime"), job.name }
