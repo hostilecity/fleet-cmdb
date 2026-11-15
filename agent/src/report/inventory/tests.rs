@@ -230,6 +230,7 @@ fn a_retried_send_reuses_the_report_id_and_body() {
         Err(ApiError::Transport("connection refused".into())),
         Err(ApiError::Server {
             status: 503,
+            code: String::new(),
             retry_after: None,
             request_id: None,
         }),
@@ -731,9 +732,10 @@ fn a_report_that_cannot_be_built_is_postponed_without_a_tight_loop() {
 
 #[test]
 fn a_report_waiting_for_its_retry_is_replaced_once_an_interval_old() {
-    // Only volatile facts change, so nothing but the report's age can replace it.
+    // Only volatile facts change, so nothing but the report's age can replace it. Simulated time only:
+    // a loaded runner must not move the retries (review of #208).
     let h = Harness::new();
-    let mut reporter = h.reporter();
+    let mut reporter = h.reporter().without_real_time();
     let transport = FakeTransport::new(vec![]);
     let (_, logs) = logs_of(|| {
         let mut now = h.drive(
@@ -931,12 +933,19 @@ fn transport_accepting() -> FakeTransport {
 
 #[test]
 fn a_report_shed_with_503_waits_the_servers_retry_after_and_keeps_its_id() {
-    // #200: the server sheds report load with 503 and Retry-After; the report waits at least that
-    // long (spread a little above it) and is retried with the same report id.
+    // #200: the server sheds report load with 503 overloaded and Retry-After; under the report
+    // loops' policy the report waits at least that long (spread a little above it) and is retried
+    // with the same report id.
     let h = Harness::new();
-    let mut reporter = h.reporter();
+    let mut reporter = Reporter::new(
+        &h.intervals,
+        h.state_dir(),
+        Backoff::new(RetryPolicy::reports(), SplitMix64::new(7)),
+        SplitMix64::new(8),
+    );
     let transport = FakeTransport::new(vec![Err(ApiError::Server {
         status: 503,
+        code: "overloaded".into(),
         retry_after: Some(secs(120)),
         request_id: None,
     })]);
