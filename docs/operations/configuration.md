@@ -113,7 +113,8 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 |---|---|---|
 | `RAILS_LOG_LEVEL` | `info` | `debug` logs much more, including values that may be personal; use it briefly |
 | `RAILS_MAX_THREADS` | Puma: `3` threads; database pool: `5` | Sets both. Keep the default unless the dashboard is slow under load |
-| `JOB_CONCURRENCY` | `1` | Solid Queue worker processes |
+| `JOB_CONCURRENCY` | `1` | Solid Queue worker processes for the default queue (3 threads each) |
+| `EVALUATION_THREADS` | `2` | Threads of the worker for fleet-wide CIS evaluation and advisory re-matching (the `evaluation` queue, #197), a process of its own in the same container. More threads finish a fleet-wide run sooner, at the cost of database load; above 3, raise `RAILS_MAX_THREADS` too, since each thread holds a database connection |
 | `RAILS_ENV` | *fixed* by the image: `production` | |
 | `PORT` | *fixed* by the image: `3000` | Puma's plain-HTTP port inside the container, for its health checks; not published |
 | `SOLID_QUEUE_IN_PUMA` | *fixed* by the workflow: `1` | Background jobs and the recurring schedule run inside the app container |

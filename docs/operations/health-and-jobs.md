@@ -18,6 +18,10 @@ Served on the agent hostname and on localhost, never the dashboard hostname. No 
 
 Every job is retried 5 times with a growing delay (about 3 s, 18 s, 83 s, 4 min). After the last failure the job is kept as failed. Signed in, the dashboard shows a red banner with the count of jobs that failed in the last 24 hours, linking to **Failed jobs** (`/jobs/failed`): the time, job, queue, and error of each, newest first (the newest 100). The page is read-only. Retrying or discarding a failed job is done from the server console for now.
 
+## Fleet-wide evaluation
+
+A rule change and an advisory import re-evaluate the fleet in the background (#197). Each is a run of batches of at most 1,000 hosts on the `evaluation` queue, which has its own worker, so liveness, leases, and live updates never wait behind it. While a run is unfinished, the rule's page (for a rule change) or **Data sources** (for an import) says how many hosts are done, and refreshes itself. A failed batch is retried on its own like any job and appears under **Failed jobs** after its last attempt; the run then stays unfinished, and the next change to the same rules (or import of the same sources) starts a run that replaces it. A rule change costs well under a millisecond a host, so it finishes in seconds on one thread; re-matching after an import costs about 10 ms a host, and that is where more `EVALUATION_THREADS` help.
+
 ## Logs
 
 In production the server writes one JSON object per line to standard output:

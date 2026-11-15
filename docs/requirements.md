@@ -231,7 +231,7 @@ Phase 2 starts only after Phase 1 is accepted.
 - Each evaluation produces one result per rule per host: pass, fail, not applicable, or not readable, with the observed value that produced the result.
 - Rules are versioned. Editing a rule creates a new version, and each result records the rule version that produced it, so history is never rewritten.
 - The dashboard shows per-host and per-rule results, a compliance summary per host (passed / failed / not evaluated), and result history so an operator can see a failure appear and clear.
-- Editing, disabling, or adding a rule re-evaluates each host's latest config snapshot without contacting agents.
+- Editing, disabling, or adding a rule re-evaluates each host's latest config snapshot without contacting agents. Fleet-wide re-evaluation is split into batches that several background workers share, and the rule's page shows its progress until it is done (#197).
 - Before an edit or a new rule is saved, the server can show which hosts would change result under it (a dry run that writes nothing), so an operator sees the effect first.
 
 ### FR-2.3 Package reporting
@@ -244,7 +244,7 @@ Phase 2 starts only after Phase 1 is accepted.
 
 - The server matches stored package sets against vulnerability data imported by the operator or fetched from a configured advisory source: advisory identifier, affected package, affected version range, fixed version where known, severity, and a link to the advisory. Advisories are scoped to a distribution release, and matching uses the host's distribution and release from its inventory and the source package name where the feed uses it. (DEC-11)
 - Matching produces one finding per host, package, and advisory, with state: open, resolved (package updated or removed), or reopened.
-- When a new package snapshot arrives or vulnerability data is refreshed, matching re-runs automatically in a background job. Agents are not involved.
+- When a new package snapshot arrives or vulnerability data is refreshed, matching re-runs automatically in a background job. Agents are not involved. After an import, only the hosts it affects are re-matched, in batches that several background workers share, and the data sources page shows the progress (#197).
 - The dashboard shows findings per host and per package, filterable by severity, with fleet-wide counts of open findings by severity.
 - Matching must handle version comparison using the package manager's own version rules. String comparison of versions is not acceptable.
 - Where the distribution publishes its own triage of a CVE for a release (for Debian, the Security Tracker's status, urgency, and no-DSA or postponed notes), the server imports it beside the advisory data and the dashboard shows it next to each finding, saying when it is not available. It never changes a finding's state, its normalised severity, or any count. (DEC-22)
