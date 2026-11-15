@@ -25,7 +25,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - `Setting` model (typed key/value with defaults) holding the online and stale thresholds (defaults 3 and 15 minutes) with validation that online is less than stale. Changes are audited ([P1-S03](p1-hosts.md)) and made with `bin/rails settings:liveness`. The dashboard settings form moved to [P1-DASH-FLEET](p1-dash-fleet.md), so it is built from the approved settings mockup.
 - `host_status_events` table (host, from, to, occurred at, reason), separate from the audit log.
-- Recurring Solid Queue job (at least once per minute) that evaluates every active host from `last_seen_at` and writes events only when status changes. Idempotent and safe to run concurrently or twice.
+- Recurring Solid Queue job (at least once per minute) that evaluates every active host from `last_seen_at` and writes events only when status changes. Idempotent and safe to run concurrently or twice. Runs are serialised by a session-level advisory lock, and transitions are written in transactions of at most 1,000 hosts, so a heartbeat never waits behind a fleet-wide transition (for example every host going offline after a server outage).
 - Status of hosts that are not `active` is not evaluated (they show their enrollment state).
 - Hosts that have never sent a heartbeat stay out of `online` and are shown as awaiting first contact rather than offline.
 
