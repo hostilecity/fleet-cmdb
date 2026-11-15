@@ -66,7 +66,9 @@ The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (O
 
 | Setting | Default | |
 |---|---|---|
-| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints; also per address for onboarding polls |
+| `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints, **per web process** (counted in memory, #191: with `WEB_CONCURRENCY` processes a credential can get up to that many times this); also per address for onboarding polls (shared by all processes) |
+| `FLEET_API_RATE_LIMIT_MAX_CREDENTIALS` | `100000` | Credentials whose request counts each web process keeps (about 160 bytes each); past it the least recently counted is dropped and its count starts again. Raise it above the fleet size if each process serves the whole fleet |
+| `FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE` | `60` | Failed authentications per client address, per web process, before every request from that address is refused for the rest of the minute (`429`), checked before authentication (#191, S-5) |
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
 | `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Lifetime of a pre-registration one-time token |
 | `FLEET_ONBOARDING_TTL_MINUTES` | `10` | How long an onboarding request waits for approval |
