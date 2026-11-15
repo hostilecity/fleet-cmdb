@@ -63,7 +63,7 @@
   milestone: 1
   labels: ["area:server", "area:api", "security"]
   covers: [FR-S.2, NFR-5, NFR-1, FR-S.1, AC-1.5, AC-1.6, FR-1.1, AC-1.1, AC-1.7]
-  goal: "An agent can redeem a one-time token for a per-host credential and call a versioned, validated, rate-limited JSON API that exposes only its own host."
+  goal: "An agent can redeem a one-time token for a per-host credential and call a versioned, validated, rate-limited JSON API that exposes only its own host (#191: limits per credential and per address on failed authentication)."
   done:
     - "A token is redeemable exactly once, and after re-enrollment or revocation the old credential gets 401 immediately (AC-1.5)."
     - "A credential for host A cannot read or modify host B on any endpoint (AC-1.6)."

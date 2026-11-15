@@ -127,7 +127,7 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 | 410 | `onboarding_expired` | Onboarding device code unknown, expired, or already used to collect a credential. Same body for each case; the installer starts again |
 | 413 | `payload_too_large` | Body over the endpoint's size limit |
 | 426 | `agent_version_unsupported` | `agent_version` is older than the server's minimum. The agent logs this plainly and backs off. Never sent by `heartbeat`, `update-results`, or the release downloads (the update path) |
-| 429 | `rate_limited` | Too many requests, too many onboarding requests open, onboarding polled faster than its `interval`, or too many release downloads from one address. Honour the `Retry-After` header |
+| 429 | `rate_limited` | Too many requests, too many failed authentications from one address, onboarding polled faster than its `interval`, or too many release downloads from one address. Honour the `Retry-After` header |
 | 500 | `internal_error` | Unexpected failure. The message never contains internals |
 
 P1-API-AUTH implements these. If it changes a code or status, it must update this table in the same pull request.

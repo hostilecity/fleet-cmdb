@@ -4,9 +4,24 @@ module AgentApi
 
   def config = Rails.configuration.x.agent_api
 
-  # The rate-limit counters. Tests use their own memory store because the test cache is a null store.
+  # The rate-limit counters for enrollment, onboarding, and release downloads: Rails.cache, so shared by every server
+  # process. Tests use their own memory store because the test cache is a null store.
   def rate_limit_store
     @rate_limit_store ||= Rails.env.test? ? ActiveSupport::Cache::MemoryStore.new : Rails.cache
+  end
+
+  LIMITERS = Mutex.new
+  # Failed authentications are counted for at most this many client addresses per process (#191).
+  FAILED_AUTH_MAX_ADDRESSES = 10_000
+
+  # The per-credential limit on authenticated endpoints, in this process's memory (RateLimiter, #191).
+  def credential_rate_limiter
+    @credential_rate_limiter || LIMITERS.synchronize { @credential_rate_limiter ||= RateLimiter.new(max_keys: config.rate_limit_max_keys) }
+  end
+
+  # The per-address limit on failed authentication (server finding S-5), in this process's memory (#191).
+  def failed_auth_rate_limiter
+    @failed_auth_rate_limiter || LIMITERS.synchronize { @failed_auth_rate_limiter ||= RateLimiter.new(max_keys: FAILED_AUTH_MAX_ADDRESSES) }
   end
 
   # Credentials and tokens are long random values, so a plain SHA-256 digest is appropriate (FR-S.1).
