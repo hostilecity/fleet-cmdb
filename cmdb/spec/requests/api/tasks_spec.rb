@@ -59,7 +59,7 @@ RSpec.describe "Task API", type: :request do
     it "answers with no task when there is nothing to do (task-poll.response)" do
       poll
       expect(response).to have_http_status(:ok)
-      expect(json).to eq("task" => nil, "poll_seconds" => 30)
+      expect(json).to eq("task" => nil, "poll_seconds" => 300)
       conforms("task-poll.response")
     end
 
@@ -71,7 +71,7 @@ RSpec.describe "Task API", type: :request do
         expect(response).to have_http_status(:ok)
         conforms("task-poll.response")
         expect(json).to eq("task" => { "id" => older.uuid, "type" => "restart_service", "parameters" => { "service" => "nginx.service" },
-                                       "timeout_seconds" => 300, "catalog_version" => TaskCatalog.current.version }, "poll_seconds" => 30)
+                                       "timeout_seconds" => 300, "catalog_version" => TaskCatalog.current.version }, "poll_seconds" => 300)
         expect(older.reload).to have_attributes(state: "claimed", claimed_at: Time.current, lease_expires_at: Time.current + AgentTasks::CLAIM_LEASE)
       end
       entry = entries(Audit::Actions::TASK_CLAIMED, older).sole
@@ -104,7 +104,7 @@ RSpec.describe "Task API", type: :request do
       poll
       start(task)
       poll
-      expect(json).to eq("task" => nil, "poll_seconds" => 30)
+      expect(json).to eq("task" => nil, "poll_seconds" => 300)
       expect(task.reload.state).to eq("running")
       expect(host.tasks.where(state: "claimed")).to be_empty
     end
@@ -112,7 +112,7 @@ RSpec.describe "Task API", type: :request do
     it "never delivers a queued task past its expiry, by the database clock (AC-3.8)" do
       expired = queued_task(now: 24.hours.ago - 1.second)
       poll
-      expect(json).to eq("task" => nil, "poll_seconds" => 30)
+      expect(json).to eq("task" => nil, "poll_seconds" => 300)
       expect(expired.reload.state).to eq("queued") # the expiry job (P3-S05) marks it expired; the poll only skips it
     end
 
@@ -154,7 +154,7 @@ RSpec.describe "Task API", type: :request do
       poll
       TaskAllowedService.delete_all
       poll
-      expect(json).to eq("task" => nil, "poll_seconds" => 30)
+      expect(json).to eq("task" => nil, "poll_seconds" => 300)
       expect(task.reload).to have_attributes(state: "refused", reason: "not_allowed_on_server")
     end
 
@@ -162,7 +162,7 @@ RSpec.describe "Task API", type: :request do
       task = queued_task
       stub_catalog_without("refresh_reports")
       poll
-      expect(json).to eq("task" => nil, "poll_seconds" => 30)
+      expect(json).to eq("task" => nil, "poll_seconds" => 300)
       expect(task.reload).to have_attributes(state: "refused", reason: "unknown_type")
     end
 
@@ -171,7 +171,7 @@ RSpec.describe "Task API", type: :request do
       2.times { queued_task }
       stub_catalog_without("refresh_reports")
       poll
-      expect(json).to eq("task" => nil, "poll_seconds" => 30)
+      expect(json).to eq("task" => nil, "poll_seconds" => 300)
       expect(host.tasks.pluck(:state).tally).to eq("refused" => 1, "queued" => 1)
     end
 
@@ -179,7 +179,7 @@ RSpec.describe "Task API", type: :request do
       other, = task_agent(hostname: "vm-02.example.lan")
       task = queued_task(for_host: other)
       poll
-      expect(json).to eq("task" => nil, "poll_seconds" => 30)
+      expect(json).to eq("task" => nil, "poll_seconds" => 300)
       expect(task.reload.state).to eq("queued")
     end
 
@@ -536,7 +536,7 @@ RSpec.describe "Task API", type: :request do
       expect(json).to eq("id" => task.uuid, "state" => "running")
       TaskCancellation.cancel_task!(task, operator:)
       poll
-      expect(json).to eq("task" => nil, "poll_seconds" => 30, "cancel" => { "id" => task.uuid })
+      expect(json).to eq("task" => nil, "poll_seconds" => 300, "cancel" => { "id" => task.uuid })
       conforms("task-poll.response")
       progress(task)
       expect(json).to eq("id" => task.uuid, "state" => "running", "cancel" => { "id" => task.uuid })

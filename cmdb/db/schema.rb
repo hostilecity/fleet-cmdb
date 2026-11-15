@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_10_903001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -332,8 +332,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.string "architecture", limit: 32, null: false
     t.string "version", limit: 256, null: false
     t.string "source", limit: 128
+    t.index "COALESCE(source, name), host_id", name: "index_host_packages_on_source_package"
     t.index ["host_id", "name", "architecture"], name: "index_host_packages_on_host_id_and_name_and_architecture", unique: true
-    t.index ["source"], name: "index_host_packages_on_source"
   end
 
   create_table "host_status_events", force: :cascade do |t|
@@ -787,6 +787,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
+    t.index ["ecosystem", "source", "host_id"], name: "index_vulnerability_findings_on_ecosystem_and_source"
     t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
     t.index ["host_id", "source"], name: "index_vulnerability_findings_on_host_id_and_source"
     t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
