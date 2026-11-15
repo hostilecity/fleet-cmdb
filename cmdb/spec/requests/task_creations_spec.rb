@@ -297,6 +297,10 @@ RSpec.describe "Creating a task", type: :request do
       expect(page.at_css("#confirm_targeted").text.squish).to eq("4 get the task: sim-001, sim-002, sim-003, sim-004 (offline: runs when it returns, if within 1 day).")
       expect(page.at_css("#confirm_excluded").text).to include("sim-009 (not enabled on this VM)")
       expect(page.text).to include("All hosts run their task within about a minute of each other")
+      # A longer heartbeat set by the server spreads the pickups; the 300 s poll caps the spread (#190).
+      Setting.update_agent_intervals!(heartbeat_seconds: 600, actor: create(:operator))
+      confirm(type: "restart_service", parameters: { service: "nginx.service" }, target: { tag: "web" })
+      expect(page.text).to include("All hosts run their task within about 5 minutes of each other")
       expect(page.at_css("#confirm_host_count")).to be_present
       expect(page.at_css("#create_task input[name=second_factor_code]")).to be_present
       expect(page.at_css("#create_task button").text).to eq("Create 4 tasks")

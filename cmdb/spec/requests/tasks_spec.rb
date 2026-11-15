@@ -128,6 +128,8 @@ RSpec.describe "Tasks pages", type: :request do
       queued = create_task(host)
       get "/tasks/#{queued.id}"
       expect(page.at_css("#result h2").text).to eq("Queued: waiting for sim-028 to poll")
+      expect(page.at_css("#result p").text).to start_with("The agent picks up tasks at its next heartbeat, which tells it a task is waiting, " \
+                                                          "and in any case when it polls, about every 300 seconds.")
       expect(page.at_css("#cancel_link").text).to eq("Cancel task")
       expect(page.at_css("#no_output").text).to eq("Output appears when the task finishes.")
 

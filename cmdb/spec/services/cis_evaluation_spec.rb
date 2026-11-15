@@ -119,20 +119,73 @@ RSpec.describe CisEvaluation do
       expect(CisResult.sole).to have_attributes(result: "not_evaluated", reason: CisEvaluation::DISABLED)
     end
 
-    it "dates each host's results when its lock is taken, unless a time is given" do
+    it "dates each chunk's results when its locks are taken, unless a time is given (#197)" do
+      stub_const("CisEvaluation::LOCK_CHUNK", 2)
       define_cis_rules(cis_rule_hash)
-      other = enrolled_host.first
-      [ host, other ].each { |h| record_inventory(h) && record_config(h) }
+      hosts = [ host, *Array.new(2) { enrolled_host.first } ]
+      hosts.each { |h| record_inventory(h) && record_config(h) }
       start = Time.current.change(usec: 0)
       travel_to(start)
       allow(Host).to receive(:lock).and_wrap_original do |original, *args|
-        travel(1.minute) # each host waits a minute for its lock
+        travel(1.minute) # each chunk waits a minute for its locks
         original.call(*args)
       end
-      described_class.evaluate!([ host.id, other.id ])
-      expect(CisResult.order(:host_id).pluck(:evaluated_at)).to eq([ start + 1.minute, start + 2.minutes ])
-      expect(CisResultChange.order(:host_id).pluck(:occurred_at)).to eq([ start + 1.minute, start + 2.minutes ])
+      described_class.evaluate!(hosts.map(&:id))
+      expect(CisResult.order(:host_id).pluck(:evaluated_at)).to eq([ start + 1.minute, start + 1.minute, start + 2.minutes ])
+      expect(CisResultChange.order(:host_id).pluck(:occurred_at)).to eq([ start + 1.minute, start + 1.minute, start + 2.minutes ])
     end
+
+    it "locks a chunk's hosts in id order, in one statement, before reading the rules (#197)" do
+      define_cis_rules(cis_rule_hash)
+      hosts = [ host, enrolled_host.first ]
+      hosts.each { |h| record_config(h) }
+      statements = []
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") { |*, payload| statements << payload[:sql] }
+      described_class.evaluate!(hosts.map(&:id).reverse)
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+      locks = statements.grep(/FOR UPDATE/)
+      expect(locks.size).to eq(1)
+      expect(locks.sole).to match(/ORDER BY "hosts"."id" ASC/)
+      expect(statements.index(locks.sole)).to be < statements.index { |sql| sql.include?(%(SELECT "cis_rules".*)) } # the count before only sizes chunks
+    end
+  end
+
+  it "sizes chunks by their work, then by how long each held its locks (review of #204)" do
+    stub_const("CisEvaluation::EVALUATIONS_PER_CHUNK", 4)
+    rules = define_cis_rules(cis_rule_hash, cis_rule_hash(key: "ssh-max-auth-tries", fact: "sshd.maxauthtries", condition: { "lte" => 4 }))
+    hosts = [ host, *Array.new(4) { enrolled_host.first.tap { |h| record_inventory(h) } } ]
+    locks = lambda do |**options|
+      sizes = []
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+        sizes << payload[:type_casted_binds].count { |value| value.is_a?(Integer) } if payload[:sql].include?("FOR UPDATE") # the host ids
+      end
+      described_class.evaluate!(hosts.map(&:id), **options)
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+      sizes
+    end
+    expect(locks.call).to eq([ 2, 2, 1 ]) # two rules: 4 evaluations are 2 hosts
+    expect(locks.call(rule_ids: [ rules.first.id ])).to eq([ 4, 1 ]) # one rule: 4 hosts
+    stub_const("CisEvaluation::LOCK_TARGET", 0.000_001) # every chunk takes far longer than its target
+    expect(locks.call(rule_ids: [ rules.first.id ])).to eq([ 4, 1 ])
+    expect(locks.call).to eq([ 2, 1, 1, 1 ])
+  end
+
+  it "reads facts only on hosts where an enabled rule applies, and only the facts the rules name (#197)" do
+    rule, = define_cis_rules(cis_rule_hash)
+    elsewhere = enrolled_host.first
+    record_inventory(elsewhere, os: { "id" => "ubuntu", "version_id" => "24.04", "pretty_name" => "Ubuntu 24.04" })
+    [ host, elsewhere ].each { |h| record_config(h) }
+    reads = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") { |*, payload| reads << [ payload[:sql], payload[:type_casted_binds] ] if payload[:sql].include?("jsonb_each") }
+    evaluate([ host, elsewhere ])
+    CisRule.transaction { rule.disable!(actor: Audit::SYSTEM) }
+    evaluate([ host, elsewhere ])
+    ActiveSupport::Notifications.unsubscribe(subscriber)
+    expect(reads.size).to eq(1) # the first run, for the Debian host only; the disabled rule needs no facts
+    sql, binds = reads.sole
+    expect(sql).to include("IN ('sshd.permitrootlogin')")
+    expect(binds).to eq([ ConfigSnapshot.find_by!(host:).id ])
+    expect(results(elsewhere)).to eq([ [ "ssh-root-login-off", "not_evaluated", CisEvaluation::DISABLED ] ])
   end
 
   it "refuses a history row that is not a change (the database checks it)" do
