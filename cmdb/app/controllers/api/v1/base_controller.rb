@@ -31,8 +31,9 @@ module Api
 
       # Rails' rate_limit with the agent API's store and the documented 429 (with Retry-After). limit is a
       # { to:, within: } setting from config/initializers; by keys the counter (a credential, a client address).
-      def self.limits_rate(name, limit, by:, **options)
-        rate_limit(to: limit[:to], within: limit[:within], by:, store: AgentApi.rate_limit_store, name:, scope: "agent_api",
+      # store defaults to Rails.cache (shared by every process); the per-credential limit passes its in-memory one.
+      def self.limits_rate(name, limit, by:, store: AgentApi.rate_limit_store, **options)
+        rate_limit(to: limit[:to], within: limit[:within], by:, store:, name:, scope: "agent_api",
                    with: -> { rate_limited!(limit[:within]) }, **options)
       end
 
