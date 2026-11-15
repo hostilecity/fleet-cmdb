@@ -112,6 +112,14 @@ RSpec.describe "Agent API rate limits", type: :request do
       expect(response).to have_http_status(:ok) # not one key for every mapped address
     end
 
+    it "counts a client address that is not an IP address as it is" do
+      allow_any_instance_of(ActionDispatch::Request).to receive(:remote_ip).and_return("unix-socket") # rubocop:disable RSpec/AnyInstance
+      limit.times { poll(wrong) }
+      expect(AgentApi.failed_auth_rate_limiter.count("failed-auth:unix-socket")).to eq(limit)
+      poll(credential)
+      expect_error(:too_many_requests, "rate_limited")
+    end
+
     it "keeps a blocked address blocked while failures from many other addresses arrive (review of #211)" do
       small = AgentApi::RateLimiter.new(max_keys: 5)
       allow(AgentApi).to receive(:failed_auth_rate_limiter).and_return(small)
