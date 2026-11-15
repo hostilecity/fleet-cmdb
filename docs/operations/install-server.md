@@ -93,6 +93,7 @@ In **Settings > Environments**, create **`production`**. Under **Deployment bran
 | `FLEET_RELEASE_KEY_NEXT` | Variable, optional | `RWQ…` | Second line of `next.pub` |
 | `RAILS_LOG_LEVEL` | Variable, optional | `info` (the default) | |
 | `FLEET_EXTRA_SETTINGS` | Variable, optional | `FLEET_SESSION_IDLE_MINUTES=60` | Any other non-secret setting of [configuration.md](configuration.md), one `NAME=value` per line |
+| `FLEET_JOBS_CONTAINER` | Variable, optional | `false` (the default) | `true` runs background jobs in a second container, `fleet-cmdb-jobs`; only for larger fleets ([scaling.md](scaling.md)) |
 
 ## 3. Publish the dashboard through the tunnel
 
@@ -136,6 +137,7 @@ Then sign in with Google as that account. To manage other operators, see [fleet-
 ```sh
 docker ps --filter name=fleet-cmdb        # Up …
 docker logs -f fleet-cmdb                 # the app: one JSON object per line (health-and-jobs.md)
+docker logs -f fleet-cmdb-jobs            # background jobs, only with FLEET_JOBS_CONTAINER=true
 docker exec fleet-cmdb curl -s http://localhost:3000/health
 ```
 
