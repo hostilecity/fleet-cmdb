@@ -10,6 +10,10 @@
 # re-run an earlier Deploy run (it redeploys its commit) or revert on main. The runner needs bash, ssh and tar, not
 # git: actions/checkout downloads the commit through the API when git is missing. It also needs openssl, to check
 # that agents will trust the server's certificate before it is deployed.
+#
+# Background jobs run inside the app container (SOLID_QUEUE_IN_PUMA). With the variable FLEET_JOBS_CONTAINER set to
+# true they run in a second container instead, fleet-cmdb-jobs, from the same image and settings (#198,
+# docs/operations/scaling.md); unset or false goes back to one container.
 name: Deploy
 
 on:
@@ -41,6 +45,7 @@ jobs:
       DEPLOY_USER: ${{ vars.DEPLOY_USER }}
       DEPLOY_DIR: ${{ vars.DEPLOY_DIR || 'fleet-cmdb' }}
       DB_NETWORK: ${{ vars.FLEET_DB_NETWORK }}
+      JOBS_CONTAINER: ${{ vars.FLEET_JOBS_CONTAINER || 'false' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,6 +59,7 @@ jobs:
           [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "::error::set the variable DEPLOY_USER"; exit 1; }
           [[ "$DEPLOY_DIR" =~ ^[A-Za-z0-9._/-]+$ && "$DEPLOY_DIR" != *..* ]] || { echo "::error::DEPLOY_DIR is not a plain path"; exit 1; }
           [[ "$DB_NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::set the variable FLEET_DB_NETWORK"; exit 1; }
+          [[ "$JOBS_CONTAINER" =~ ^(true|false)$ ]] || { echo "::error::FLEET_JOBS_CONTAINER must be true, false, or unset"; exit 1; }
 
       - name: Configure SSH
         env:
@@ -110,7 +116,9 @@ jobs:
         run: |
           # One NAME=value per line (docker takes the value literally). Unset optional settings are left out, so the
           # app's defaults apply. Only names are ever printed.
-          lines=(SOLID_QUEUE_IN_PUMA=1)
+          lines=()
+          # Jobs in the app container, unless they have their own (FLEET_JOBS_CONTAINER).
+          if [ "$JOBS_CONTAINER" != true ]; then lines+=(SOLID_QUEUE_IN_PUMA=1); fi
           for name in SECRET_KEY_BASE FLEET_ENCRYPTION_KEY DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST \
                       PGHOST RAILS_LOG_LEVEL FLEET_RELEASE_KEY_CURRENT FLEET_RELEASE_KEY_NEXT FLEET_ADVISORY_FEED_TOKEN; do
             [[ "${!name}" != *$'\n'* ]] || { echo "::error::$name holds a line break"; exit 1; }
@@ -133,9 +141,9 @@ jobs:
 
       - name: Build and run on the server
         run: |
-          ssh -F "$SSH_CONFIG" server "bash -s -- '$DEPLOY_DIR' '$DEPLOY_SHA' '$DB_NETWORK'" <<'REMOTE'
+          ssh -F "$SSH_CONFIG" server "bash -s -- '$DEPLOY_DIR' '$DEPLOY_SHA' '$DB_NETWORK' '$JOBS_CONTAINER'" <<'REMOTE'
           set -euo pipefail
-          dir="$1" sha="$2" network="$3"
+          dir="$1" sha="$2" network="$3" jobs_container="$4"
           cd "$dir"
           echo "==> database network $network"
           docker network inspect "$network" >/dev/null \
@@ -145,21 +153,51 @@ jobs:
           echo "==> build fleet-cmdb:$sha"
           docker build --pull -q --build-context api="build-$sha/docs/api" --build-context trust="build-$sha/agent/trust" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
           echo "==> replace the container"
+          # The jobs container goes first, so no job of the old commit runs against the new commit's migrations. It is
+          # removed when FLEET_JOBS_CONTAINER is off too, which goes back to one container. Stopped first (SIGTERM, up to
+          # 30 s), so Solid Queue releases the jobs it claimed instead of leaving them to fail as pruned.
+          docker stop -t 30 fleet-cmdb-jobs >/dev/null 2>&1 || true
+          docker rm -f fleet-cmdb-jobs >/dev/null 2>&1 || true
           docker rm -f fleet-cmdb >/dev/null 2>&1 || true
           docker run -d --name fleet-cmdb -p 443:3443 --network "$network" --restart unless-stopped \
             -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb.env "fleet-cmdb:$sha" >/dev/null
-          rm -f fleet-cmdb.env
           echo "==> wait for /up (the first start creates and migrates the databases)"
           for _ in $(seq 1 60); do
             if docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null; then up=yes; break; fi
             sleep 5
           done
           if [ -z "${up:-}" ]; then docker logs --tail 100 fleet-cmdb; echo "the app did not answer /up" >&2; exit 1; fi
+          if [ "$jobs_container" = true ]; then
+            # Started once the app has migrated the databases. No port; the same storage volume (job code writes release
+            # files there); no capabilities and no privilege gain, which it never needs. Its settings are the app's
+            # without the TLS certificate and key (FLEET_TLS_*): only Puma serves HTTPS, and this is the container that
+            # parses downloaded feeds, uploads, and release archives. The env files are deleted below, and by the
+            # clean-up step if this fails.
+            echo "==> start the jobs container"
+            (umask 077 && grep -v '^FLEET_TLS_' fleet-cmdb.env > fleet-cmdb-jobs.env)
+            docker run -d --name fleet-cmdb-jobs --network "$network" --restart unless-stopped \
+              --cap-drop ALL --security-opt no-new-privileges \
+              -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb-jobs.env "fleet-cmdb:$sha" ./bin/jobs >/dev/null
+            rm -f fleet-cmdb-jobs.env
+            # Up when its three workers (realtime, default, evaluation) have registered in the queue database.
+            jobs_host="$(docker inspect -f '{{.Config.Hostname}}' fleet-cmdb-jobs)"
+            for _ in $(seq 1 12); do
+              workers="$(docker exec fleet-cmdb ./bin/rails runner 'print SolidQueue::Process.where(kind: "Worker", hostname: ARGV.first).count' "$jobs_host" 2>/dev/null || true)"
+              [ "${workers:-0}" -ge 3 ] && break
+              sleep 5
+            done
+            if [ "${workers:-0}" -lt 3 ]; then
+              docker logs --tail 100 fleet-cmdb-jobs
+              echo "the jobs container's workers did not start, so no background job runs: fix it, or set FLEET_JOBS_CONTAINER=false and run the workflow again" >&2
+              exit 1
+            fi
+          fi
+          rm -f fleet-cmdb.env
           # The HTTPS listener agents and the tunnel use (inside the container; -k: this checks the listener, the deploy
           # checked the certificate before shipping).
           docker exec fleet-cmdb curl -fsSk -o /dev/null https://localhost:3443/up \
             || { docker logs --tail 100 fleet-cmdb; echo "the app does not answer HTTPS on 3443" >&2; exit 1; }
-          docker ps --filter name='^fleet-cmdb$' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          docker ps --filter name='^fleet-cmdb(-jobs)?$' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
           echo "/health: $(docker exec fleet-cmdb curl -s http://localhost:3000/health) (503 until backups exist)"
           docker images fleet-cmdb --format '{{.Tag}}' | grep -vx -e latest -e "$sha" | sed 's/^/fleet-cmdb:/' | xargs -r docker rmi >/dev/null || true
           docker image prune -f >/dev/null
@@ -169,6 +207,6 @@ jobs:
         if: always()
         run: |
           if [ -n "${SSH_CONFIG:-}" ]; then
-            ssh -F "$SSH_CONFIG" server "rm -rf '$DEPLOY_DIR/build-${DEPLOY_SHA:-none}' '$DEPLOY_DIR/fleet-cmdb.env'" || true
+            ssh -F "$SSH_CONFIG" server "rm -rf '$DEPLOY_DIR/build-${DEPLOY_SHA:-none}' '$DEPLOY_DIR/fleet-cmdb.env' '$DEPLOY_DIR/fleet-cmdb-jobs.env'" || true
           fi
           rm -rf "$RUNNER_TEMP/deploy-ssh"

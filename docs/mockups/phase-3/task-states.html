@@ -19,7 +19,7 @@
 <div class="page-head"><div><h1>Task states</h1><p>The top of <a href="task.html">the task page</a> in every state, with the reason in plain words and the code beside it. The rest of the page (task facts, timeline, output, audit entries) is the same in every state.</p></div></div>
 
 <h2 id="queued" class="state-title">Queued</h2>
-<section class="result wait"><h2>Queued: waiting for sim-028 to poll</h2><p>The agent picks up tasks when it polls, about every 30 seconds. sim-028 has been <span class="lamp offline">offline</span> for 3 hours. If it has not picked this up by <strong>2026-11-09 14:02 UTC</strong>, the task expires and is never delivered.</p></section>
+<section class="result wait"><h2>Queued: waiting for sim-028 to poll</h2><p>The agent picks up tasks at its next heartbeat, which tells it a task is waiting, and in any case when it polls, about every 300 seconds. sim-028 has been <span class="lamp offline">offline</span> for 3 hours. If it has not picked this up by <strong>2026-11-09 14:02 UTC</strong>, the task expires and is never delivered.</p></section>
 <div class="actions"><a class="btn danger quiet" href="cancel.html#queued">Cancel task</a></div>
 
 <h2 id="claimed" class="state-title">Claimed</h2>
