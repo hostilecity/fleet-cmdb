@@ -73,7 +73,7 @@ Each process opens at most its pool to each database it uses, and the pool in `c
 
 | Process | Primary | Cache | Queue | Cable | With the defaults |
 |---|---|---|---|---|---|
-| Each Puma process (`WEB_CONCURRENCY`) | P: request threads, plus Action Cable's 4 worker threads and its event loop, which check operator sessions | `RAILS_MAX_THREADS` (the rate limit) | `RAILS_MAX_THREADS` (enqueues) | 2 (Solid Cable's listener) | 5 + 3 + 3 + 2 = 13 |
+| Each Puma process (`WEB_CONCURRENCY`) | P: request threads, plus Action Cable's 4 worker threads and its event loop, which check operator sessions | `RAILS_MAX_THREADS` (the enrollment, onboarding, and download rate limits; agent requests no longer use it, #191) | `RAILS_MAX_THREADS` (enqueues) | 2 (Solid Cable's listener) | 5 + 3 + 3 + 2 = 13 |
 | Each worker process for every queue (`JOB_CONCURRENCY`) | `JOB_THREADS` | `JOB_THREADS` | `JOB_THREADS` + 2 | `JOB_THREADS` | 3 + 3 + 5 + 3 = 14 |
 | The realtime worker | `JOB_REALTIME_THREADS` | `JOB_REALTIME_THREADS` | `JOB_REALTIME_THREADS` + 2 | `JOB_REALTIME_THREADS` | 1 + 1 + 3 + 1 = 6 |
 | Scheduler | | | P: the five every-minute tasks fire together, each on its own thread, beside its heartbeat | | 5 |
@@ -104,13 +104,18 @@ The plan sits above the peaks because a pool is a ceiling: connections open only
 When the plan passes about 90:
 
 - **Raise `max_connections`** in the PostgreSQL container (provisioned outside this project) to the plan plus headroom, for example `ALTER SYSTEM SET max_connections = 200;`, and restart PostgreSQL. Each connection is a server process with its own memory, so check the database VM's memory after the change.
-- **Or move the cache and cable databases** to another PostgreSQL server with `CACHE_DATABASE_URL` and `CABLE_DATABASE_URL`. That takes their connections (up to half of the plan, a fifth of the measured peaks) and the rate-limit write of every agent request off the main one. A URL without a user or password, such as `postgres://db2.example.lan/cmdb_production_cache` in `FLEET_EXTRA_SETTINGS`, keeps the role `cmdb` and `DATABASE_PASSWORD` from `config/database.yml`, so no secret goes into a variable.
+- **Or move the cache and cable databases** to another PostgreSQL server with `CACHE_DATABASE_URL` and `CABLE_DATABASE_URL`. That takes their connections (up to half of the plan, a fifth of the measured peaks) off the main one. (Before #191 it also took a rate-limit write per agent request; the agent limits are now in each process's memory.) A URL without a user or password, such as `postgres://db2.example.lan/cmdb_production_cache` in `FLEET_EXTRA_SETTINGS`, keeps the role `cmdb` and `DATABASE_PASSWORD` from `config/database.yml`, so no secret goes into a variable.
 
 Past about 200 connections, or with more than one app VM, use PgBouncer instead (below).
+
+### Rate limits with several processes (#191)
+
+The agent API's limits are counted in each Puma process's memory, with no database write per request: the per-credential limit (`FLEET_API_RATE_LIMIT_PER_MINUTE`, 120 a minute) and the per-address limit on failed authentication (`FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE`, 60 a minute). With `WEB_CONCURRENCY` processes, each new connection may land on any of them, so a client whose requests reach several processes can get up to that many times each limit; a restart resets the counters. That still stops a runaway agent, which is what the limit is for: a normal agent sends about 3 requests a minute. Each process keeps counts for at most `FLEET_API_RATE_LIMIT_MAX_CREDENTIALS` credentials (100,000 by default, about 16 MB): above that fleet size, raise it, or the least recently counted credentials lose their counts. Enrollment, onboarding, and release-download limits stay in the cache database, shared by every process ([configuration.md](configuration.md)).
 
 ## Step 2: up to about 100,000 agents (not built yet)
 
 - **Separate API and dashboard nodes** behind a load balancer: about 20 API cores at a 300 s poll interval (2,100 requests a second). The host constraints already keep `/api/v1` on the agent hostname.
+- **Rate limit at the edge** (proposed, #191). With many API processes on several nodes, the in-process limits allow a client the limit once per process. Put the limit that must hold in the load balancer or proxy in front of the agent hostname: per credential key id (the part of `Authorization: Bearer <key_id>.<secret>` before the dot; the key id is not secret) at about 120 a minute, and per source address for requests that end in `401`, at about 60 a minute. Keep the application's limits as the second layer. The application cannot do this itself without a shared counter (Redis or Valkey `INCR` and `EXPIRE`), which would be a second required service; the edge already sees every request.
 - **PgBouncer in transaction mode** between the app and PostgreSQL (below).
 - **A read replica** for the dashboard and reports.
 - **Jobs on their own VM**, from the jobs container above.
