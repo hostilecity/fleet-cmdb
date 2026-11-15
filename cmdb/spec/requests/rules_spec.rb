@@ -183,6 +183,25 @@ RSpec.describe "Rules", :signed_in, type: :request do
       expect(page.css(".actions a").map(&:text)).to eq([ "Edit", "Disable", "Audit log" ])
     end
 
+    it "shows the progress of the fleet-wide evaluation a change started, refreshing itself until it is done (#197)" do
+      stub_const("EvaluationRun::BATCH_SIZE", 2)
+      progress = lambda do
+        get "/rules/#{rule.id}"
+        page.at_css("#results_section turbo-frame#evaluation_progress #evaluation_progress_text")
+      end
+      CisRule.transaction { rule.disable!(actor: operator) }
+      expect(progress.call.text).to eq("Checking every host against the latest change: starting.")
+      expect(progress.call["data-controller"]).to eq("evaluation-progress") # refreshes only its frame (review of #204)
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      first = enqueued_jobs.find { |job| job["job_class"] == "EvaluationBatchJob" }
+      enqueued_jobs.delete(first)
+      EvaluationBatchJob.perform_now(*ActiveJob::Arguments.deserialize(first["arguments"]))
+      expect(progress.call.text).to eq("Checking every host against the latest change: 2 of 3 hosts done.")
+      perform_evaluation_jobs
+      expect(progress.call).to be_nil
+      expect(result(web, "ssh-max-auth-tries")).to eq("not_evaluated")
+    end
+
     it "says in the change log where each change was made: the dashboard, a rules file import, or rules:import" do
       perform_enqueued_jobs { patch "/rules/#{rule.id}", params: form_params(rule, expected: "3") }
       post "/rules/#{rule.id}/disable"

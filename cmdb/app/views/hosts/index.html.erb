@@ -19,7 +19,12 @@
   <%= hidden_field_tag :dir, @fleet.direction unless @fleet.direction == "asc" %>
   <button class="btn quiet" type="submit">Apply</button>
 <% end %>
-<% if @hosts.empty? && !@fleet.filtered? %>
+<% if @hosts.empty? && @fleet.cursor? && @total.positive? %>
+  <div class="sheet empty" id="page_gone">
+    <p><strong>No hosts are left on this page.</strong> The hosts it listed have changed or left these filters.</p>
+    <p><%= link_to "Go to the first page", root_path(@fleet.list_params) %></p>
+  </div>
+<% elsif @hosts.empty? && !@fleet.filtered? %>
   <div class="sheet empty">
     <p><strong>No hosts in the fleet.</strong></p>
     <p>Run the installer on a VM and approve it on the <%= link_to "approval page", onboard_path %>, or <%= link_to "pre-register a host", new_host_path %> for an unattended install.</p>
@@ -41,4 +46,12 @@
       <%= render partial: "hosts/row", collection: @hosts, as: :host, locals: { compliance: @compliance, rules_defined: @rules_defined } %>
     </tbody>
   </table></div>
+  <% page = @fleet.page %>
+  <% if page.previous || page.next %>
+    <nav class="pager" aria-label="Host pages" id="fleet_pager">
+      <% if page.previous %><%= link_to "Previous", root_path(@fleet.list_params.merge(page.previous)), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+      <span class="muted"><%= pluralize(number_with_delimiter(@hosts.size), "host") %> shown of <%= number_with_delimiter(@total) %><%= " matching" if @fleet.filtered? %></span>
+      <% if page.next %><%= link_to "Next", root_path(@fleet.list_params.merge(page.next)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+    </nav>
+  <% end %>
 <% end %>
