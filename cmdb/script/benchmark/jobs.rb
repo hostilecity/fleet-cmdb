@@ -62,7 +62,7 @@ module FleetBenchmark
         "liveness evaluation, all go offline (per host)" => [ active, -> { Liveness.evaluate!(now: Time.current + 20.minutes) }, -> { fresh_heartbeats } ],
         "CIS evaluation, every rule (per host)" => [ cis_hosts.size, -> { CisEvaluation.evaluate!(cis_hosts) }, nil, true ],
         "vulnerability matching, every package (per host)" => [ package_hosts.size, -> { VulnerabilityMatcher.match!(package_hosts) }, nil, true ],
-        "advisory import: one changed source (per affected host)" => [ targeted, -> { VulnerabilityMatchJob.new.perform(packages: sources) }, nil, true ],
+        "advisory import: one changed source (per affected host)" => [ targeted, -> { EvaluationRun::Advisories.new("packages" => sources).call(Host.minimum(:id)..Host.maximum(:id)) }, nil, true ],
         "retention prune, all tables (rolled back; per row deleted)" => [ retention_rows, -> { rolled_back { Retention.prune! } } ],
         "retention dry run (counts only)" => [ 1, -> { Retention.prune!(dry_run: true) } ],
         "task expiry and leases (per run)" => [ 1, -> { rolled_back { TaskLeases.expire! && TaskLeases.lapse! } } ]
