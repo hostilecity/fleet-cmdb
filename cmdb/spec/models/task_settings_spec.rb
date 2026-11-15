@@ -8,9 +8,16 @@ RSpec.describe TaskSettings do
   def entries(action) = AuditEntry.where(action:).order(:id)
 
   describe "limits" do
-    it "starts at the defaults: 25 hosts, 64 KiB, 30 seconds, and the catalog's 24 hours per type" do
+    it "defaults the poll hint to the task-poll.response schema's default, within its range (#190, shared with the agent)" do
+      property = ApiContract.schema("task-poll.response", "v1").dig("properties", "poll_seconds")
+      definition = Setting::DEFINITIONS.fetch("tasks.poll_seconds")
+      expect(definition[:default]).to eq(property.fetch("default"))
+      expect(definition[:range]).to eq(property.fetch("minimum")..property.fetch("maximum"))
+    end
+
+    it "starts at the defaults: 25 hosts, 64 KiB, 300 seconds, and the catalog's 24 hours per type" do
       limits = described_class.limits
-      expect(limits.to_h).to eq("max_hosts_per_batch" => 25, "output_limit_kib" => 64, "poll_seconds" => 30,
+      expect(limits.to_h).to eq("max_hosts_per_batch" => 25, "output_limit_kib" => 64, "poll_seconds" => 300,
                                 "expiry_hours" => TaskCatalog.current.types.index_with(24))
       expect(limits.output_limit_bytes).to eq(TaskOutput::LIMIT_BYTES)
       expect(limits.expiry("restart_service")).to eq(24.hours)
@@ -19,7 +26,7 @@ RSpec.describe TaskSettings do
     it "saves the changed values and audits them once, with before and after" do
       changes = described_class.update_limits!({ "max_hosts_per_batch" => "10", "output_limit_kib" => "64", "poll_seconds" => 60,
                                                  "expiry_hours" => { "restart_service" => "12", "refresh_reports" => "24" } }, actor: operator)
-      expected = { "tasks.max_hosts_per_batch" => [ 25, 10 ], "tasks.poll_seconds" => [ 30, 60 ], "tasks.expiry_hours.restart_service" => [ 24, 12 ] }
+      expected = { "tasks.max_hosts_per_batch" => [ 25, 10 ], "tasks.poll_seconds" => [ 300, 60 ], "tasks.expiry_hours.restart_service" => [ 24, 12 ] }
       expect(changes).to eq(expected)
       expect(described_class.limits).to have_attributes(max_hosts_per_batch: 10, poll_seconds: 60, output_limit_kib: 64)
       expect(described_class.expiry("restart_service")).to eq(12.hours)
@@ -28,7 +35,7 @@ RSpec.describe TaskSettings do
     end
 
     it "audits nothing when nothing changed, and keeps an expiry set back to the default out of storage" do
-      expect(described_class.update_limits!({ "poll_seconds" => "30" }, actor: operator)).to eq({})
+      expect(described_class.update_limits!({ "poll_seconds" => "300" }, actor: operator)).to eq({})
       described_class.update_limits!({ "expiry_hours" => { "restart_service" => "12" } }, actor: operator)
       described_class.update_limits!({ "expiry_hours" => { "restart_service" => "24" } }, actor: operator)
       expect(Setting.find_by(key: "tasks.expiry_hours").value).to eq({})

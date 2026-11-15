@@ -15,9 +15,11 @@
 default: &default
   adapter: postgresql
   encoding: unicode
-  # For details on connection pooling, see Rails configuration guide
-  # https://guides.rubyonrails.org/configuring.html#database-pooling
-  max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  # The most connections one process may open to each database: the largest thread count of any process (Puma's
+  # RAILS_MAX_THREADS, the job workers' JOB_THREADS and JOB_REALTIME_THREADS) plus 2 for Solid Queue's polling and
+  # heartbeat (lib/sizing/process_sizing.rb). 5 with the defaults. The connection budget against PostgreSQL's
+  # max_connections is in docs/operations/scaling.md.
+  max_connections: <%= ProcessSizing.database_pool %>
 
 
 # Development mirrors production's layout: the Solid components live in their own databases.

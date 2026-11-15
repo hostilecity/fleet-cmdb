@@ -6,6 +6,7 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 |---|---|
 | [install-server.md](install-server.md) | Prerequisites, the GitHub environment, the Cloudflare tunnel and Access, deploying with GitHub Actions, the first operator, logs, upgrading and rolling back, first steps in the dashboard, security notes, uninstalling |
 | [configuration.md](configuration.md) | Every server setting, its default, and the outbound access the server needs |
+| [scaling.md](scaling.md) | Sizing Puma and the job workers, running jobs in their own container, the connection budget, PgBouncer, and the steps past the homelab |
 | [backup-and-restore.md](backup-and-restore.md) | What is backed up, scheduling, restore, and the restore drill |
 | [install-agent.md](install-agent.md) | Installing the agent with approval or a one-time token, remote and manual updates, rollback, uninstall |
 | [fleet-operations.md](fleet-operations.md) | Revoke, re-enroll, retire, lost credentials, liveness thresholds, operators, task settings, running a task and what each result means, the audit log |

@@ -1,6 +1,6 @@
 # Install the server
 
-The server runs as one Docker container, `fleet-cmdb`, on a VM on your network. It uses a PostgreSQL container that already runs there. Operators reach the dashboard through a Cloudflare tunnel whose connector runs on another VM. The tunnel and the agents both connect to the VM's internal hostname over HTTPS, with a Cloudflare Origin CA certificate the server serves itself ([ADR 0005](../decisions/0005-hosting-tls-deployment.md), [ADR 0024](../decisions/0024-cloudflare-origin-ca-for-the-server.md), [P1-DEPLOY](../backlog/specs/p1-deploy.md)). GitHub Actions deploys it (`.github/workflows/cd.yml`):
+The server runs as one Docker container, `fleet-cmdb`, on a VM on your network (larger fleets may run the background jobs in a second one, `fleet-cmdb-jobs`: [scaling.md](scaling.md)). It uses a PostgreSQL container that already runs there. Operators reach the dashboard through a Cloudflare tunnel whose connector runs on another VM. The tunnel and the agents both connect to the VM's internal hostname over HTTPS, with a Cloudflare Origin CA certificate the server serves itself ([ADR 0005](../decisions/0005-hosting-tls-deployment.md), [ADR 0024](../decisions/0024-cloudflare-origin-ca-for-the-server.md), [P1-DEPLOY](../backlog/specs/p1-deploy.md)). GitHub Actions deploys it (`.github/workflows/cd.yml`):
 
 1. a self-hosted runner on the LAN connects to the VM over SSH;
 2. it ships the commit, builds the image there, and replaces the container.
@@ -93,6 +93,7 @@ In **Settings > Environments**, create **`production`**. Under **Deployment bran
 | `FLEET_RELEASE_KEY_NEXT` | Variable, optional | `RWQ…` | Second line of `next.pub` |
 | `RAILS_LOG_LEVEL` | Variable, optional | `info` (the default) | |
 | `FLEET_EXTRA_SETTINGS` | Variable, optional | `FLEET_SESSION_IDLE_MINUTES=60` | Any other non-secret setting of [configuration.md](configuration.md), one `NAME=value` per line |
+| `FLEET_JOBS_CONTAINER` | Variable, optional | `false` (the default) | `true` runs background jobs in a second container, `fleet-cmdb-jobs`; only for larger fleets ([scaling.md](scaling.md)) |
 
 ## 3. Publish the dashboard through the tunnel
 
@@ -115,7 +116,7 @@ Open **Actions > Deploy > Run workflow**, pick branch `main` (a run from any oth
 3. `wait for /up` (the first start migrates the databases);
 4. the container's status, and `/health` (`503` until backups exist).
 
-The deploy stops with a clear message if the network is missing, a required setting is not set, or agents would not trust the certificate; only names are printed, never values (and the certificate's names and expiry, which are not secret). The server does not start if the key does not match the certificate or the certificate does not cover `FLEET_AGENT_HOST`; `docker logs fleet-cmdb` says which. Secret values reach the VM over SSH standard input, into a mode-0600 env file for `docker run --env-file`, which is deleted once the container has started. Docker keeps them in the container's configuration (`docker inspect`), which only users in the `docker` group can read.
+The deploy stops with a clear message if the network is missing, a required setting is not set, or agents would not trust the certificate; only names are printed, never values (and the certificate's names and expiry, which are not secret). The server does not start if the key does not match the certificate or the certificate does not cover `FLEET_AGENT_HOST`; `docker logs fleet-cmdb` says which. Secret values reach the VM over SSH standard input, into a mode-0600 env file for `docker run --env-file`, which is deleted once the containers have started. With `FLEET_JOBS_CONTAINER=true`, the jobs container gets a copy without the TLS certificate and key (`FLEET_TLS_*`), which only the app serves. Docker keeps them in the container's configuration (`docker inspect`), which only users in the `docker` group can read.
 
 **Check:**
 - Open `https://fleet.example.com` in a browser. Pass Access, and the sign-in page opens.
@@ -136,6 +137,7 @@ Then sign in with Google as that account. To manage other operators, see [fleet-
 ```sh
 docker ps --filter name=fleet-cmdb        # Up …
 docker logs -f fleet-cmdb                 # the app: one JSON object per line (health-and-jobs.md)
+docker logs -f fleet-cmdb-jobs            # background jobs, only with FLEET_JOBS_CONTAINER=true
 docker exec fleet-cmdb curl -s http://localhost:3000/health
 ```
 
@@ -146,7 +148,7 @@ Release files and the backup status file are in the Docker volume `fleet-cmdb_st
 - **Upgrade:** merge to `main`; every push to `main` deploys. Migrations run on start (`db:prepare`).
 - **Change a setting:** change the secret or variable in GitHub, then run the workflow.
 - **Renew the certificate:** before it expires (Settings shows when), create a new Origin certificate as in step 1, replace `FLEET_TLS_CERT` and `FLEET_TLS_KEY`, and run the workflow. Agents need nothing.
-- **Roll back:** open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: that needs a backup (a later issue).
+- **Roll back:** if `FLEET_JOBS_CONTAINER` is `true` and you go back to a commit from before the jobs container existed, first run `docker stop -t 30 fleet-cmdb-jobs && docker rm fleet-cmdb-jobs` on the VM: that commit's workflow does not know the container and would leave it running new code beside the old app's own jobs. Then open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: that needs a backup (a later issue).
 - Two deploys never overlap; a second one waits.
 
 ## 8. First steps in the dashboard
@@ -173,7 +175,7 @@ The server is up but empty. In this order:
 ## Uninstall
 
 ```sh
-docker rm -f fleet-cmdb
+docker rm -f fleet-cmdb-jobs fleet-cmdb    # the jobs container exists only with FLEET_JOBS_CONTAINER=true
 docker volume rm fleet-cmdb_storage       # deletes uploaded release files
 docker image rm $(docker images -q fleet-cmdb)
 ```

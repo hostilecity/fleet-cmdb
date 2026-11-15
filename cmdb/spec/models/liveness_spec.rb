@@ -65,7 +65,7 @@ RSpec.describe Liveness do
     record_heartbeat(host, agent_time: Time.current)
     host.update_columns(last_seen_at: 20.minutes.ago)
     locked_at = nil
-    callback = ->(*, payload) { locked_at ||= Time.current if payload[:sql].include?("pg_try_advisory_xact_lock") }
+    callback = ->(*, payload) { locked_at ||= Time.current if payload[:sql].include?("pg_try_advisory_lock") }
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { described_class.evaluate! }
     expect(locked_at).to be_present
     expect(host.status_events.chronological.last).to have_attributes(to_status: "offline", occurred_at: be >= locked_at.floor(6))
@@ -76,6 +76,65 @@ RSpec.describe Liveness do
     ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
     expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(4)
     expect(Host.active.pluck(:liveness_status).uniq).to eq([ "offline" ])
+  end
+
+  it "moves hosts in transactions of at most BATCH_SIZE hosts, each with its own events (scale assessment)" do
+    stub_const("Liveness::BATCH_SIZE", 2)
+    others = Array.new(4) { enrolled_host.first }
+    ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
+    batches = []
+    callback = lambda do |*, payload|
+      next unless payload[:sql].include?("FOR UPDATE SKIP LOCKED")
+
+      binds = payload[:type_casted_binds].respond_to?(:call) ? payload[:type_casted_binds].call : payload[:type_casted_binds]
+      batches << "#{payload[:sql]} #{Array(binds).join(' ')}"
+    end
+    written = ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { travel_to(start + 20.minutes) { described_class.evaluate! } }
+
+    expect(written).to eq(5)
+    expect(Host.active.pluck(:liveness_status).uniq).to eq([ "offline" ])
+    expect(HostStatusEvent.where(reason: "evaluation", to_status: "offline").count).to eq(5)
+    expect(batches.count { |sql| sql.include?("offline") }).to eq(3) # 2 + 2 + 1, then the short batch ends the bucket
+    expect(batches.size).to eq(5) # and one query each for the online and stale buckets, which have nothing to move
+  end
+
+  it "refreshes the fleet pages for the batches that committed when a later batch fails, then releases the lock (review of #186)" do
+    stub_const("Liveness::BATCH_SIZE", 1)
+    others = Array.new(2) { enrolled_host.first }
+    ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
+    calls = 0
+    allow(HostStatusEvent).to receive(:insert_all!).and_wrap_original do |original, *args|
+      raise ActiveRecord::StatementInvalid, "simulated failure" if (calls += 1) == 2
+
+      original.call(*args)
+    end
+    allow(FleetBroadcast).to receive(:hosts_changed)
+
+    expect { travel_to(start + 20.minutes) { described_class.evaluate! } }.to raise_error(ActiveRecord::StatementInvalid)
+    first = Host.where(liveness_status: "offline").pluck(:id)
+    expect(first.size).to eq(1) # the first batch committed; the second rolled back
+    expect(FleetBroadcast).to have_received(:hosts_changed).with(first)
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(2) # the lock was released; the next run does the rest
+  end
+
+  it "releases the evaluation lock after a run, so the next run is not refused" do
+    heartbeat_at(start)
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(1)
+    held = "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = #{Liveness::EVALUATION_LOCK_KEY} AND pid = pg_backend_pid()"
+    expect(Host.connection.select_value(held)).to eq(0) # this connection's lock only: other databases share the cluster (review of #186)
+  end
+
+  it "closes the connection when the lock cannot be released, so the lock goes with it and no later run is blocked" do
+    heartbeat_at(start)
+    connection = Host.connection
+    allow(connection).to receive(:select_value).and_call_original
+    allow(connection).to receive(:select_value).with(/pg_advisory_unlock/).and_raise(ActiveRecord::ConnectionFailed)
+    allow(connection).to receive(:throw_away!)
+
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(1)
+    expect(connection).to have_received(:throw_away!)
+  ensure
+    connection&.execute("SELECT pg_advisory_unlock_all()") # throw_away! was stubbed, so the test's connection still holds it
   end
 end
 

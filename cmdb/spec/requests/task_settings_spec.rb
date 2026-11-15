@@ -19,7 +19,7 @@ RSpec.describe "Settings: Tasks", type: :request do
     expect(page.css("tr.locked-row td.mono").map(&:text)).to include("ssh.service, sshd.service", "systemd-*.service")
     expect(page.at_css("#max_hosts_per_batch")["value"]).to eq("25")
     expect(page.at_css("#output_limit_kib")["value"]).to eq("64")
-    expect(page.at_css("#poll_seconds")["value"]).to eq("30")
+    expect(page.at_css("#poll_seconds")["value"]).to eq("300")
     expect(page.css("input[id^=expiry_]").map { |input| input["value"] }).to eq(%w[24 24 24])
     expect(page.text).to include("Time limits per task type (10, 5, and 60 minutes)")
     expect(page.css("input[name=second_factor_code]").map { |input| input["id"] }).to eq(%w[add_service_second_factor_code limits_second_factor_code])
@@ -79,7 +79,7 @@ RSpec.describe "Settings: Tasks", type: :request do
   end
 
   it "saves limits with a code, says what changed, and shows errors in place" do
-    patch "/settings/tasks/limits", params: { max_hosts_per_batch: "10", output_limit_kib: "64", poll_seconds: "30",
+    patch "/settings/tasks/limits", params: { max_hosts_per_batch: "10", output_limit_kib: "64", poll_seconds: "300",
                                               expiry_hours: { restart_service: "12", refresh_reports: "24", apply_package_updates: "24" }, **code }
     expect(response).to redirect_to("/settings/tasks#limits")
     expect(flash[:notice]).to start_with("Limits saved. Most hosts in one batch: 25 → 10; Expiry of restart_service (hours): 24 → 12.")
