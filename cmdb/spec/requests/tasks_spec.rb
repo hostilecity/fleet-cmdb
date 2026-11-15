@@ -287,7 +287,9 @@ RSpec.describe "Tasks pages", type: :request do
 
     it "claims a restarted service is active only when the agent said so" do
       allow_restart("nginx.service")
-      result = create_task_batch(Array.new(3) { task_host }, type: "restart_service", parameters: { "service" => "nginx.service" })
+      # Rows sort by host name, so the names are fixed: the factory's "VM 9" sorts after "VM 10".
+      hosts = %w[web-1 web-2 web-3].map { |name| task_host(name:) }
+      result = create_task_batch(hosts, type: "restart_service", parameters: { "service" => "nginx.service" })
       result.tasks.zip([ { "unit_active" => true }, { "unit_active" => false }, nil ]).each do |task, details|
         run(task).succeed!(actor: task.host, exit_status: 0, report: report(details))
       end
