@@ -23,4 +23,4 @@ One Puma process with 3 threads serves about 2,100 agents on the default interva
 
 - The default deploy gains one process (the realtime worker, about 55 MB) and about three database connections; nothing else changes for the homelab.
 - A long job can no longer delay liveness or lease expiry. A long realtime job still can: realtime jobs must stay short, and the liveness evaluation's cost at scale is #192's.
-- PgBouncer in transaction mode needs `prepared_statements: false`, `advisory_locks: false`, and either a direct connection for the jobs or a lease row in place of the session-level liveness lock from #186. That is the next step's work.
+- PgBouncer in transaction mode needs `prepared_statements: false`, migrations run once on a direct connection (with several app nodes the entrypoint must stop running `db:prepare` on each), and either a jobs-only direct database connection (not offered by `cd.yml` yet) or a lease row in place of the session-level liveness lock from #186. That is the next step's work.

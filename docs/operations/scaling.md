@@ -69,24 +69,26 @@ On one VM the two containers share the same cores, so this alone adds no capacit
 
 ### Connection budget
 
-Every thread may hold one connection to each database it uses, and the pool in `config/database.yml` follows the thread counts (the largest of `RAILS_MAX_THREADS`, `JOB_THREADS`, and `JOB_REALTIME_THREADS`, plus 2 for Solid Queue's polling and heartbeat: 5 with the defaults). For planning:
+Each process opens at most its pool to each database it uses, and the pool in `config/database.yml` follows the thread counts: the largest of `RAILS_MAX_THREADS`, `JOB_THREADS`, and `JOB_REALTIME_THREADS`, plus 2 (Solid Queue's polling and heartbeat). Call it P: 5 with the defaults. For planning, count each database as the threads in that process that use it, but never more than P:
 
-| Process | Connections, all four databases | With the defaults |
-|---|---|---|
-| Each Puma process (`WEB_CONCURRENCY`) | 4 x `RAILS_MAX_THREADS` + 1 (Solid Cable's listener) | 13 |
-| Each worker process for every queue (`JOB_CONCURRENCY`) | 4 x `JOB_THREADS` + 2 | 14 |
-| The realtime worker | 4 x `JOB_REALTIME_THREADS` + 2 | 6 |
-| Supervisor, dispatcher, scheduler | 2 each, queue database only | 6 |
-| Margin: backups, a console, the restore drill | | 5 |
+| Process | Primary | Cache | Queue | Cable | With the defaults |
+|---|---|---|---|---|---|
+| Each Puma process (`WEB_CONCURRENCY`) | P: request threads, plus Action Cable's 4 worker threads and its event loop, which check operator sessions | `RAILS_MAX_THREADS` (the rate limit) | `RAILS_MAX_THREADS` (enqueues) | 2 (Solid Cable's listener) | 5 + 3 + 3 + 2 = 13 |
+| Each worker process for every queue (`JOB_CONCURRENCY`) | `JOB_THREADS` | `JOB_THREADS` | `JOB_THREADS` + 2 | `JOB_THREADS` | 3 + 3 + 5 + 3 = 14 |
+| The realtime worker | `JOB_REALTIME_THREADS` | `JOB_REALTIME_THREADS` | `JOB_REALTIME_THREADS` + 2 | `JOB_REALTIME_THREADS` | 1 + 1 + 3 + 1 = 6 |
+| Scheduler | | | P: the five every-minute tasks fire together, each on its own thread, beside its heartbeat | | 5 |
+| Dispatcher | | | 3: polling, maintenance, heartbeat | | 3 |
+| Supervisor | | | 1 | | 1 |
+| Margin: backups, a console, the restore drill | | | | | 5 |
 
-Total = `WEB_CONCURRENCY` x 13 + `JOB_CONCURRENCY` x 14 + 17 with the default threads. Compare it with PostgreSQL's `max_connections` (default 100, of which 3 are kept for superusers), counting any other application on the same PostgreSQL server:
+Total = `WEB_CONCURRENCY` x 13 + `JOB_CONCURRENCY` x 14 + 20 with the default threads. The hard ceiling, every process at its pool on every database it uses, is (`WEB_CONCURRENCY` + `JOB_CONCURRENCY` + 1) x 4P + 3P + 5 (80 with the defaults); real use stays well below it. Compare the plan with PostgreSQL's `max_connections` (default 100, of which 3 are kept for superusers), counting any other application on the same PostgreSQL server:
 
 | Agents | `WEB_CONCURRENCY` | `JOB_CONCURRENCY` | Planned connections | Default `max_connections` 100 |
 |---|---|---|---|---|
-| Up to 2,000 | 1 | 1 | 44 | fits |
-| 5,000 | 3 | 1 | 70 | fits |
-| 10,000 | 5 | 1 | 96 | no: raise it |
-| 10,000 | 5 | 2 | 110 | no: raise it |
+| Up to 2,000 | 1 | 1 | 47 | fits |
+| 5,000 | 3 | 1 | 73 | fits |
+| 10,000 | 5 | 1 | 99 | no: raise it |
+| 10,000 | 5 | 2 | 113 | no: raise it |
 
 Measured peaks (most connections seen per database while the mix load ran with three long jobs, 2 CPUs):
 
@@ -120,12 +122,13 @@ Past about 200 connections, or with more than one app VM, use PgBouncer instead 
 **How:**
 
 1. Run PgBouncer on the database's Docker network with `pool_mode = transaction`, one pool for each of the four databases, `max_client_conn` at least the connection plan above, and `default_pool_size` per database to fit `max_connections` (for example 40 for the primary and 10 for each of the others).
-2. Point the app at it: `FLEET_DB_HOST` to the PgBouncer container and `PGPORT` to its port (6432 by default), in `FLEET_EXTRA_SETTINGS`.
-3. In `config/database.yml` (a code change, made with this step): `prepared_statements: false`, because a prepared statement belongs to one server connection, which the next transaction may not get; and `advisory_locks: false`, because Rails' migration lock is session-level. Only the app container runs migrations (`db:prepare`, once, before Puma starts), so they still never run twice at once. PgBouncer 1.21 and later can track prepared statements itself (`max_prepared_statements`), which lets Rails keep them; measure before relying on it.
+2. Point the app's requests at it: the app container's database host to the PgBouncer container and its port (6432 by default). Today `FLEET_DB_HOST` and `PGPORT` are one setting for both containers, so this step needs a database host override for the jobs container alone (not built yet; see the caveat below). Do not point `FLEET_DB_HOST` at PgBouncer before that exists.
+3. In `config/database.yml` (a code change, made with this step): `prepared_statements: false`, because a prepared statement belongs to one server connection, which the next transaction may not get. PgBouncer 1.21 and later can track prepared statements itself (`max_prepared_statements`), which lets Rails keep them; measure before relying on it.
+4. **Migrations run once, on a direct connection.** Rails serialises migrations with a session-level advisory lock, which is not safe through transaction pooling, and turning it off (`advisory_locks: false`) is only safe when one process migrates. With several app nodes every container runs `db:prepare` from `bin/docker-entrypoint` on start, so this step also changes the deploy: run `bin/rails db:prepare` once as a one-off container whose `DATABASE_URL` (and the queue, cache, and cable URLs) go straight to PostgreSQL, with the advisory lock left on, and have the entrypoint skip `db:prepare` on the nodes behind PgBouncer (for example with a setting that only the one-off sets).
 
-**What stays safe:** the app's other advisory locks are transaction-level (`pg_advisory_xact_lock`, `pg_try_advisory_xact_lock`), and `lock_timeout` is set with `SET LOCAL`; both end with their transaction. Solid Queue claims jobs with `FOR UPDATE SKIP LOCKED` inside transactions, and Solid Cable and Solid Cache poll and write in ordinary statements.
+**What stays safe:** the app's advisory locks today are all transaction-level (`pg_advisory_xact_lock`, `pg_try_advisory_xact_lock`), and `lock_timeout` is set with `SET LOCAL`; both end with their transaction. Solid Queue claims jobs with `FOR UPDATE SKIP LOCKED` inside transactions, and Solid Cable and Solid Cache poll and write in ordinary statements.
 
-**The caveat, from #186:** batching the liveness evaluation (#186) holds a session-level advisory lock (`pg_try_advisory_lock`) across its batches, so that runs never overlap. Behind a transaction-mode PgBouncer the lock and its unlock may run on different server connections, so a lock could stay held by a connection another client then uses. Before PgBouncer goes in front of the jobs, either run the jobs on a direct connection to PostgreSQL (the jobs container is the place: only it needs one, and its few connections fit easily), or replace the lock with a lease row (a row with an expiry, taken with `UPDATE ... WHERE expires_at < now()`).
+**The caveat, from #186:** batching the liveness evaluation (#186) holds a session-level advisory lock (`pg_try_advisory_lock`) across its batches, so that runs never overlap. Behind a transaction-mode PgBouncer the lock and its unlock may run on different server connections, so a lock could stay held by a connection another client then uses. Before PgBouncer goes in, either keep the jobs on a direct connection to PostgreSQL, or replace the lock with a lease row (a row with an expiry, taken with `UPDATE ... WHERE expires_at < now()`). A direct connection for the jobs needs the jobs container to have its own database settings (its own `DATABASE_URL` and queue, cache, and cable URLs, or its own `PGHOST` and `PGPORT`), which `cd.yml` does not offer yet: both containers share one env file. Its connections are few, so they fit beside PgBouncer's pools easily.
 
 ## Step 3: up to a million agents (not built yet)
 

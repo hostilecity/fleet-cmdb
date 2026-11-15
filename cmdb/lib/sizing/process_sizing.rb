@@ -14,7 +14,10 @@
 module ProcessSizing
   MAX = 64
   # Solid Queue needs a worker's threads plus 2 connections to the queue database: one for polling and one for
-  # its heartbeat. A Puma process needs one per thread, plus one for Solid Cable's listener on the cable database.
+  # its heartbeat (its own estimate, SolidQueue::Configuration#estimated_database_pool_size_for_worker). Other
+  # processes can use the whole pool on a database: Puma's request threads share the primary with Action Cable's
+  # worker pool and event loop, and the scheduler runs the every-minute tasks at once. The connection budget in
+  # docs/operations/scaling.md counts that.
   POOL_EXTRA = 2
 
   module_function

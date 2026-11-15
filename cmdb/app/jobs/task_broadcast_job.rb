@@ -3,7 +3,8 @@
 # cancelled at once.
 class TaskBroadcastJob < ApplicationJob
   # Open pages refresh within seconds, never behind a long import (S-7, config/queue.yml). After the every-minute
-  # jobs on the same queue (a larger number runs later), so a burst of changes cannot hold them up.
+  # jobs on the same queue (a larger number runs later), so a burst of changes cannot hold them up. A burst still
+  # queues one refresh per change; coalescing them is #194.
   queue_as :realtime
   queue_with_priority ApplicationJob::BROADCAST_PRIORITY
 

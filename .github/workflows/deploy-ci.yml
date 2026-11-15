@@ -156,9 +156,13 @@ jobs:
           docker run -d --name fleet-cmdb -p 127.0.0.1:8443:3443 --network fleet-db \
             -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/fleet-cmdb-nojobs.env" fleet-cmdb:ci >/dev/null
           for _ in $(seq 1 60); do docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null && break; sleep 3; done
+          # As cd.yml does: the jobs container's settings are the app's without the TLS certificate and key.
+          (umask 077 && grep -v '^FLEET_TLS_' "$RUNNER_TEMP/fleet-cmdb-nojobs.env" > "$RUNNER_TEMP/fleet-cmdb-jobs.env")
           docker run -d --name fleet-cmdb-jobs --network fleet-db --cap-drop ALL --security-opt no-new-privileges \
-            -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/fleet-cmdb-nojobs.env" fleet-cmdb:ci ./bin/jobs >/dev/null
-          rm -f "$RUNNER_TEMP/fleet-cmdb-nojobs.env"
+            -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/fleet-cmdb-jobs.env" fleet-cmdb:ci ./bin/jobs >/dev/null
+          rm -f "$RUNNER_TEMP/fleet-cmdb-nojobs.env" "$RUNNER_TEMP/fleet-cmdb-jobs.env"
+          expect "the jobs container has no TLS key or certificate" 0 "$(docker exec fleet-cmdb-jobs env | grep -c '^FLEET_TLS_')"
+          expect "the app container still has both" 2 "$(docker exec fleet-cmdb env | grep -c '^FLEET_TLS_')"
 
           jobs_host="$(docker inspect -f '{{.Config.Hostname}}' fleet-cmdb-jobs)"
           # The scheduler enqueues the liveness evaluation every minute; the jobs container's realtime worker runs it.

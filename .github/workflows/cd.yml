@@ -154,7 +154,9 @@ jobs:
           docker build --pull -q --build-context api="build-$sha/docs/api" --build-context trust="build-$sha/agent/trust" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
           echo "==> replace the container"
           # The jobs container goes first, so no job of the old commit runs against the new commit's migrations. It is
-          # removed when FLEET_JOBS_CONTAINER is off too, which goes back to one container.
+          # removed when FLEET_JOBS_CONTAINER is off too, which goes back to one container. Stopped first (SIGTERM, up to
+          # 30 s), so Solid Queue releases the jobs it claimed instead of leaving them to fail as pruned.
+          docker stop -t 30 fleet-cmdb-jobs >/dev/null 2>&1 || true
           docker rm -f fleet-cmdb-jobs >/dev/null 2>&1 || true
           docker rm -f fleet-cmdb >/dev/null 2>&1 || true
           docker run -d --name fleet-cmdb -p 443:3443 --network "$network" --restart unless-stopped \
@@ -166,16 +168,28 @@ jobs:
           done
           if [ -z "${up:-}" ]; then docker logs --tail 100 fleet-cmdb; echo "the app did not answer /up" >&2; exit 1; fi
           if [ "$jobs_container" = true ]; then
-            # Started once the app has migrated the databases. No port; the same settings and storage volume (job
-            # code writes release files there). No capabilities and no privilege gain, which it never needs. The env
-            # file is deleted below, and by the clean-up step if this fails.
+            # Started once the app has migrated the databases. No port; the same storage volume (job code writes release
+            # files there); no capabilities and no privilege gain, which it never needs. Its settings are the app's
+            # without the TLS certificate and key (FLEET_TLS_*): only Puma serves HTTPS, and this is the container that
+            # parses downloaded feeds, uploads, and release archives. The env files are deleted below, and by the
+            # clean-up step if this fails.
             echo "==> start the jobs container"
+            (umask 077 && grep -v '^FLEET_TLS_' fleet-cmdb.env > fleet-cmdb-jobs.env)
             docker run -d --name fleet-cmdb-jobs --network "$network" --restart unless-stopped \
               --cap-drop ALL --security-opt no-new-privileges \
-              -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb.env "fleet-cmdb:$sha" ./bin/jobs >/dev/null
-            sleep 20 # Solid Queue boots and forks its workers; a bad setting stops it at once
-            if [ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' fleet-cmdb-jobs)" != "true 0" ]; then
-              docker logs --tail 100 fleet-cmdb-jobs; echo "the jobs container did not stay up" >&2; exit 1
+              -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb-jobs.env "fleet-cmdb:$sha" ./bin/jobs >/dev/null
+            rm -f fleet-cmdb-jobs.env
+            # Up when its workers (realtime and every queue) have registered in the queue database.
+            jobs_host="$(docker inspect -f '{{.Config.Hostname}}' fleet-cmdb-jobs)"
+            for _ in $(seq 1 12); do
+              workers="$(docker exec fleet-cmdb ./bin/rails runner 'print SolidQueue::Process.where(kind: "Worker", hostname: ARGV.first).count' "$jobs_host" 2>/dev/null || true)"
+              [ "${workers:-0}" -ge 2 ] && break
+              sleep 5
+            done
+            if [ "${workers:-0}" -lt 2 ]; then
+              docker logs --tail 100 fleet-cmdb-jobs
+              echo "the jobs container's workers did not start, so no background job runs: fix it, or set FLEET_JOBS_CONTAINER=false and run the workflow again" >&2
+              exit 1
             fi
           fi
           rm -f fleet-cmdb.env
@@ -193,6 +207,6 @@ jobs:
         if: always()
         run: |
           if [ -n "${SSH_CONFIG:-}" ]; then
-            ssh -F "$SSH_CONFIG" server "rm -rf '$DEPLOY_DIR/build-${DEPLOY_SHA:-none}' '$DEPLOY_DIR/fleet-cmdb.env'" || true
+            ssh -F "$SSH_CONFIG" server "rm -rf '$DEPLOY_DIR/build-${DEPLOY_SHA:-none}' '$DEPLOY_DIR/fleet-cmdb.env' '$DEPLOY_DIR/fleet-cmdb-jobs.env'" || true
           fi
           rm -rf "$RUNNER_TEMP/deploy-ssh"
