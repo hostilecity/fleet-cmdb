@@ -7,6 +7,10 @@ RSpec.describe "Hosts", :signed_in, type: :request do
 
   def row_names = page.css("tbody tr td:first-child a").map(&:text)
 
+  def words(node) = node.text.squish
+
+  def query(link) = Rack::Utils.parse_query(URI(link["href"]).query)
+
   describe "GET / (fleet list)" do
     it "shows the empty state when there are no hosts" do
       get "/"
@@ -61,6 +65,29 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         get "/", params: { q: "no-such-host", tag: "media" }
         expect(page.at_css(".empty strong").text).to eq(%(No hosts match "no-such-host" with tag "media".))
         expect(page.at_css(".empty a")["href"]).to eq("/")
+      end
+
+      it "draws no pager when the fleet fits one page, as on the approved mockup" do
+        get "/"
+        expect(page.at_css("#fleet_pager")).to be_nil
+      end
+
+      it "pages a large fleet by keyset, keeping the search, filters, and sort in every link (#193)" do
+        stub_const("FleetList::PER_PAGE", 1)
+        get "/", params: { sort: "name", dir: "desc" }
+        expect(row_names).to eq([ "Media server" ])
+        expect(words(page.at_css("#fleet_pager"))).to eq("Previous 1 host shown of 2 Next")
+        expect(query(page.at_css("#fleet_pager a[rel=next]"))).to eq("dir" => "desc", "after" => media.id.to_s)
+        get "/", params: { sort: "name", dir: "desc", after: media.id }
+        expect(row_names).to eq([ "Lab sandbox" ])
+        expect(query(page.at_css("#fleet_pager a[rel=prev]"))).to eq("dir" => "desc", "before" => pending.id.to_s)
+        expect(page.at_css("#fleet_pager span.off[aria-disabled=true]").text).to eq("Next")
+        expect(page.css("thead a").map { |a| query(a).key?("after") }.uniq).to eq([ false ]) # a new sort starts at the first page
+        get "/", params: { q: "a" }
+        expect(words(page.at_css("#fleet_pager"))).to eq("Previous 1 host shown of 2 matching Next")
+        get "/", params: { tag: "lab", after: pending.id }
+        expect(words(page.at_css("#page_gone"))).to eq("No hosts are left on this page. The hosts it listed have changed or left these filters. Go to the first page")
+        expect(query(page.at_css("#page_gone a"))).to eq("tag" => "lab")
       end
 
       it "links status counts to the filtered list" do
