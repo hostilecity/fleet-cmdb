@@ -10,6 +10,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Request validation against the JSON Schemas in `docs/api/schemas/` (for example with `json_schemer`), so the schema is the single source of truth. Unknown fields ignored and logged, per [DEC-08](../../decisions/0008-api-conventions.md); wrong types and out-of-range values rejected with details.
 - Consistent error envelope with machine-readable code, message, and request id; mapping for validation, authentication, rate limit, oversize, unsupported version, and unexpected errors. Unexpected errors never leak internals.
 - Per-credential rate limiting with `429` and `Retry-After` (Rails' built-in rate limiting is a good fit); limits configurable.
+- Report load shedding (#200): with `FLEET_REPORT_MAX_IN_FLIGHT` set, a report (`POST /api/v1/reports/inventory`, `config`, `packages`) that arrives while that many are in flight in the process is answered `503 overloaded` with `Retry-After` between `FLEET_REPORT_RETRY_AFTER_SECONDS` (30) and twice that, before authentication and before the body is read (`lib/middleware/report_load_shedder.rb`). Heartbeats and task calls are never shed. Off by default (0).
 - Maximum request body size per endpoint, returning `413`.
 - Minimum agent version check: the agent version in the request is compared to a setting; older agents get the dedicated error code ([DEC-08](../../decisions/0008-api-conventions.md)).
 - Request id on every response and in logs.

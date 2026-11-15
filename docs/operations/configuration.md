@@ -68,6 +68,8 @@ The refreshes need outbound HTTPS from the server to `storage.googleapis.com` (O
 |---|---|---|
 | `FLEET_API_RATE_LIMIT_PER_MINUTE` | `120` | Per credential, across authenticated endpoints; also per address for onboarding polls |
 | `FLEET_ENROLL_RATE_LIMIT_PER_MINUTE` | `10` | Per client address, on `POST /api/v1/enroll` |
+| `FLEET_REPORT_MAX_IN_FLIGHT` | `0` (off) | Report load shedding (#200): reports (inventory, config, packages) in flight at once per server process, beyond which a report gets `503 overloaded` with `Retry-After`. Heartbeats and tasks are never shed. Leave it off on a homelab. At scale, set it below `RAILS_MAX_THREADS` (for example threads minus one) so heartbeats always find a free thread |
+| `FLEET_REPORT_RETRY_AFTER_SECONDS` | `30` | The shortest `Retry-After` of a shed report; each answer picks a random value up to twice this, so agents turned away together come back apart |
 | `FLEET_ENROLLMENT_TOKEN_TTL_HOURS` | `24` | Lifetime of a pre-registration one-time token |
 | `FLEET_ONBOARDING_TTL_MINUTES` | `10` | How long an onboarding request waits for approval |
 | `FLEET_ONBOARDING_POLL_SECONDS` | `5` | Minimum time between the installer's polls |

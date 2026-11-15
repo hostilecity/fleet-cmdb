@@ -128,6 +128,7 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 | 426 | `agent_version_unsupported` | `agent_version` is older than the server's minimum. The agent logs this plainly and backs off. Never sent by `heartbeat`, `update-results`, or the release downloads (the update path) |
 | 429 | `rate_limited` | Too many requests, too many onboarding requests open, onboarding polled faster than its `interval`, or too many release downloads from one address. Honour the `Retry-After` header |
 | 500 | `internal_error` | Unexpected failure. The message never contains internals |
+| 503 | `overloaded` | The server is shedding report load (#200): too many reports in flight. Only `POST /api/v1/reports/inventory`, `config`, and `packages`, and only when `FLEET_REPORT_MAX_IN_FLIGHT` is set. Sent before authentication, so it says nothing about the credential. Has `Retry-After` (seconds, randomised by the server). The agent keeps the report and its `report_id` and retries no sooner than `Retry-After`. A `503` without `Retry-After` (for example from a proxy) is an ordinary transient failure |
 
 P1-API-AUTH implements these. If it changes a code or status, it must update this table in the same pull request.
 
