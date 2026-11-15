@@ -1,0 +1,28 @@
+{
+  "ignored_warnings": [
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "bca0c5d367477250e44b02694e6f8ff17d12119bb609751f155b0652537a252c",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "script/benchmark/explain.rb",
+      "line": 110,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.select_value(\"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) #{sql}\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "FleetBenchmark::Explain",
+        "method": "explain"
+      },
+      "user_input": "sql",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "bin/benchmark explain (development and test only, refuses production): EXPLAIN of statements the application itself just sent, captured from sql.active_record with binds quoted by the connection. No request input reaches it."
+    }
+  ],
+  "brakeman_version": "8.1.0"
+}
