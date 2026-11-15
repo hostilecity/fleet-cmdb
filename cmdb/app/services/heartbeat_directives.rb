@@ -7,6 +7,8 @@
 # The writes stay where they were and happen only when there is something new: marking a host updating on its first
 # offer, and marking report requests sent the first time a heartbeat carries them.
 module HeartbeatDirectives
+  OFFER_JSON = "json_build_array(rollout_hosts.id, rollout_hosts.state, rollouts.id, agent_releases.version)".freeze
+
   module_function
 
   # { agent_update:, report_request:, tasks_available: }, each nil when it has nothing to say. Runs in the heartbeat's
@@ -21,8 +23,8 @@ module HeartbeatDirectives
   end
 
   def read(host_id:, now:)
-    columns = Rollouts::OFFER_COLUMNS.join(", ")
-    rollout = Rollouts.offer_scope(host_id:, now:).select(Arel.sql("json_build_array(#{columns})"))
+    # The columns of Rollouts::OFFER_COLUMNS, in its order (spec/services/heartbeat_directives_spec.rb checks they agree).
+    rollout = Rollouts.offer_scope(host_id:, now:).select(Arel.sql(OFFER_JSON))
     requests = ReportRequests.outstanding_scope(host_id:, now:).select(Arel.sql("json_agg(json_build_array(report_requests.id, report_requests.report_type, report_requests.sent_at))"))
     tasks = AgentTasks.available_scope(host_id:).select(1)
     sql = "SELECT (#{rollout.to_sql}) AS rollout, (#{requests.to_sql}) AS report_requests, EXISTS (#{tasks.to_sql}) AS tasks_available"

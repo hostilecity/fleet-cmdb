@@ -9,11 +9,12 @@ How to size the server past the homelab, and the steps after that. The defaults 
 | Puma | 1 (`WEB_CONCURRENCY` unset) | 3 | `RAILS_MAX_THREADS` |
 | Solid Queue supervisor, dispatcher, scheduler | 1 each | | |
 | Solid Queue worker, realtime queue only | 1 | 1 | `JOB_REALTIME_THREADS` |
-| Solid Queue worker, every queue | 1 (`JOB_CONCURRENCY`) | 3 | `JOB_THREADS` |
+| Solid Queue worker, default queue (and realtime when free) | 1 (`JOB_CONCURRENCY`) | 3 | `JOB_THREADS` |
+| Solid Queue worker, evaluation queue only (#197) | 1 | 2 | `EVALUATION_THREADS` |
 
 All of them run in the `fleet-cmdb` container: Solid Queue starts inside Puma (`SOLID_QUEUE_IN_PUMA`). One PostgreSQL server holds the four databases: primary, queue, cache, and cable.
 
-**The realtime queue (S-7).** The jobs that run every minute (liveness, task leases, task expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes run on the `realtime` queue. A worker serves only that queue, so a long advisory refresh, upload import, or matching run can never take its thread. The other worker serves every queue, so it helps with realtime jobs when it has a free thread. Within the realtime queue the every-minute jobs run before the refreshes, so a burst of changes cannot hold them up either. `spec/config/queue_spec.rb` runs both workers and checks this.
+**The realtime queue (S-7).** The jobs that run every minute (liveness, task leases, task expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes run on the `realtime` queue. A worker serves only that queue, so a long advisory refresh, upload import, or matching run can never take its thread. The default worker serves `default`, Solid Queue's own `solid_queue_recurring` (the hourly clean-up of finished jobs), and then `realtime`, so it helps with realtime jobs when it has a free thread. A third worker serves only `evaluation`, the batches of fleet-wide CIS evaluation and advisory re-matching (#197), so a fleet-wide run never holds the default threads. No worker serves `*`: Solid Queue cannot leave a queue out of it. Within the realtime queue the every-minute jobs run before the refreshes, so a burst of changes cannot hold them up either. `spec/config/queue_spec.rb` runs the workers and checks this, and that every queue a job or recurring task uses has a worker.
 
 Measured on 2 CPUs, with three jobs of 150 s each holding every default thread (`SolidQueue::RecurringJob` running `sleep 150` on the default queue), the delay of each liveness evaluation from its scheduled minute:
 
@@ -49,9 +50,10 @@ These leave little headroom: add a process for bursts, such as every agent repor
 
 With 5 processes, plan on 6 to 7 cores for one VM: about 4.3 for Puma, 1.3 for PostgreSQL, and the rest for jobs. `WEB_CONCURRENCY=auto` starts one process per core, which leaves none for PostgreSQL on the same VM; set a number instead.
 
-### Job workers: `JOB_THREADS`, `JOB_CONCURRENCY`, `JOB_REALTIME_THREADS`
+### Job workers: `JOB_THREADS`, `JOB_CONCURRENCY`, `JOB_REALTIME_THREADS`, `EVALUATION_THREADS`
 
-- Raise `JOB_CONCURRENCY` (processes) before `JOB_THREADS` (threads in each): the fleet-wide jobs (matching, CIS evaluation) are Ruby work and hold the global lock like requests do. Do it when jobs wait on the default queue: in the console, `SolidQueue::ReadyExecution.group(:queue_name).count` shows how many are waiting on each queue.
+- Raise `JOB_CONCURRENCY` (processes) before `JOB_THREADS` (threads in each): the long jobs (advisory refresh and import, per-host matching) are Ruby work and hold the global lock like requests do. Do it when jobs wait on the default queue: in the console, `SolidQueue::ReadyExecution.group(:queue_name).count` shows how many are waiting on each queue.
+- Raise `EVALUATION_THREADS` when fleet-wide runs after advisory imports take too long: re-matching costs about 10 ms a host, and the batches of one run spread over the threads. A rule change costs well under a millisecond a host and gains little from more threads.
 - Raise `JOB_REALTIME_THREADS` to 2 when the liveness evaluation takes more than a few seconds (it scans every active host, #192), so the lease and expiry jobs scheduled in the same minute do not wait behind it.
 - Each is a whole number from 1 to 64; anything else stops the boot with a message naming the setting.
 
@@ -69,26 +71,27 @@ On one VM the two containers share the same cores, so this alone adds no capacit
 
 ### Connection budget
 
-Each process opens at most its pool to each database it uses, and the pool in `config/database.yml` follows the thread counts: the largest of `RAILS_MAX_THREADS`, `JOB_THREADS`, and `JOB_REALTIME_THREADS`, plus 2 (Solid Queue's polling and heartbeat). Call it P: 5 with the defaults. For planning, count each database as the threads in that process that use it, but never more than P:
+Each process opens at most its pool to each database it uses, and the pool in `config/database.yml` follows the thread counts: the largest of `RAILS_MAX_THREADS`, `JOB_THREADS`, `JOB_REALTIME_THREADS`, and `EVALUATION_THREADS`, plus 2 (Solid Queue's polling and heartbeat). Call it P: 5 with the defaults. For planning, count each database as the threads in that process that use it, but never more than P:
 
 | Process | Primary | Cache | Queue | Cable | With the defaults |
 |---|---|---|---|---|---|
 | Each Puma process (`WEB_CONCURRENCY`) | P: request threads, plus Action Cable's 4 worker threads and its event loop, which check operator sessions | `RAILS_MAX_THREADS` (the enrollment, onboarding, and download rate limits; agent requests no longer use it, #191) | `RAILS_MAX_THREADS` (enqueues) | 2 (Solid Cable's listener) | 5 + 3 + 3 + 2 = 13 |
 | Each worker process for every queue (`JOB_CONCURRENCY`) | `JOB_THREADS` | `JOB_THREADS` | `JOB_THREADS` + 2 | `JOB_THREADS` | 3 + 3 + 5 + 3 = 14 |
 | The realtime worker | `JOB_REALTIME_THREADS` | `JOB_REALTIME_THREADS` | `JOB_REALTIME_THREADS` + 2 | `JOB_REALTIME_THREADS` | 1 + 1 + 3 + 1 = 6 |
+| The evaluation worker (#197) | `EVALUATION_THREADS` | `EVALUATION_THREADS` | `EVALUATION_THREADS` + 2 | `EVALUATION_THREADS` | 2 + 2 + 4 + 2 = 10 |
 | Scheduler | | | P: the five every-minute tasks fire together, each on its own thread, beside its heartbeat | | 5 |
 | Dispatcher | | | 3: polling, maintenance, heartbeat | | 3 |
 | Supervisor | | | 1 | | 1 |
 | Margin: backups, a console, the restore drill | | | | | 5 |
 
-Total = `WEB_CONCURRENCY` x 13 + `JOB_CONCURRENCY` x 14 + 20 with the default threads. The hard ceiling, every process at its pool on every database it uses, is (`WEB_CONCURRENCY` + `JOB_CONCURRENCY` + 1) x 4P + 3P + 5 (80 with the defaults); real use stays well below it. Compare the plan with PostgreSQL's `max_connections` (default 100, of which 3 are kept for superusers), counting any other application on the same PostgreSQL server:
+Total = `WEB_CONCURRENCY` x 13 + `JOB_CONCURRENCY` x 14 + 30 with the default threads. The hard ceiling, every process at its pool on every database it uses, is (`WEB_CONCURRENCY` + `JOB_CONCURRENCY` + 2) x 4P + 3P + 5 (100 with the defaults); real use stays well below it. Compare the plan with PostgreSQL's `max_connections` (default 100, of which 3 are kept for superusers), counting any other application on the same PostgreSQL server:
 
 | Agents | `WEB_CONCURRENCY` | `JOB_CONCURRENCY` | Planned connections | Default `max_connections` 100 |
 |---|---|---|---|---|
-| Up to 2,000 | 1 | 1 | 47 | fits |
-| 5,000 | 3 | 1 | 73 | fits |
-| 10,000 | 5 | 1 | 99 | no: raise it |
-| 10,000 | 5 | 2 | 113 | no: raise it |
+| Up to 2,000 | 1 | 1 | 57 | fits |
+| 5,000 | 3 | 1 | 83 | fits |
+| 10,000 | 5 | 1 | 109 | no: raise it |
+| 10,000 | 5 | 2 | 123 | no: raise it |
 
 Measured peaks (most connections seen per database while the mix load ran with three long jobs, 2 CPUs):
 

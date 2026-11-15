@@ -7,6 +7,8 @@
 # - JOB_THREADS: threads of each Solid Queue worker process for the default queue and every other (default 3).
 # - JOB_CONCURRENCY: how many of those worker processes (default 1).
 # - JOB_REALTIME_THREADS: threads of the one worker process that serves only the realtime queue (default 1).
+# - EVALUATION_THREADS: threads of the one worker process that serves only the evaluation queue, fleet-wide CIS
+#   evaluation and advisory re-matching in batches (default 2, #197).
 #
 # Each must be a whole number from 1 to MAX; anything else (an empty value too) stops the boot, naming the setting.
 #
@@ -26,12 +28,13 @@ module ProcessSizing
   def job_threads(env = ENV) = whole("JOB_THREADS", 3, env)
   def job_processes(env = ENV) = whole("JOB_CONCURRENCY", 1, env)
   def realtime_threads(env = ENV) = whole("JOB_REALTIME_THREADS", 1, env)
+  def evaluation_threads(env = ENV) = whole("EVALUATION_THREADS", 2, env)
 
   # The most connections one process may hold to each database (max_connections in config/database.yml). Every
   # process reads the same file, so the pool fits the largest of them; a pool is a ceiling, and connections are
   # opened only when a thread needs one. With the defaults: 3 + 2 = 5.
   def database_pool(env = ENV)
-    [ web_threads(env), job_threads(env), realtime_threads(env) ].max + POOL_EXTRA
+    [ web_threads(env), job_threads(env), realtime_threads(env), evaluation_threads(env) ].max + POOL_EXTRA
   end
 
   def whole(name, default, env)
