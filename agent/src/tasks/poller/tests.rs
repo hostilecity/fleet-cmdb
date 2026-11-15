@@ -1165,8 +1165,15 @@ fn no_kill_point_in_a_hundred_and_twenty_randomised_runs_runs_a_task_twice() {
     assert!(kills.get("failed").copied().unwrap_or(0) > 0, "{kills:?}");
 }
 
-/// The server's default `poll_seconds` (Settings: Tasks, `cmdb/app/models/setting.rb`, #190).
-const SERVER_POLL_SECONDS: u64 = 300;
+/// The server's default `poll_seconds`, from the `task-poll.response` schema's `default`. The server's
+/// specs check that `tasks.poll_seconds` defaults to the same value, so either side drifting from
+/// the shared contract fails a test (#190).
+fn server_poll_seconds() -> u64 {
+    crate::collect::contract::schema("v1", "task-poll.response")["properties"]["poll_seconds"]
+        ["default"]
+        .as_u64()
+        .expect("task-poll.response documents a default poll_seconds")
+}
 
 /// What one simulated run of an agent with the default config saw.
 struct Timeline {
@@ -1177,17 +1184,17 @@ struct Timeline {
 }
 
 /// Runs a default-config agent (heartbeat 60 s, task poll 300 s) for `run` seconds against a server
-/// that sends `poll_seconds` at its default and, as the real one does (P3-S03), `tasks_available` on
-/// every heartbeat while a task is queued for the host. The task is created `created` seconds in, and
-/// the heartbeats in `lost` (counted from 0) never arrive. The poller is woken when its tick asks to
-/// be, as the agent's loop does.
-fn simulate(created: Option<u64>, lost: &[u64], run: u64) -> Timeline {
+/// that sends `poll_seconds` (`hint`; `None` sends none, so the agent's own default decides) and, as
+/// the real one does (P3-S03), `tasks_available` on every heartbeat while a task is queued for the
+/// host. The task is created `created` seconds in, and the heartbeats in `lost` (counted from 0)
+/// never arrive. The poller is woken when its tick asks to be, as the agent's loop does.
+fn simulate(hint: Option<u64>, created: Option<u64>, lost: &[u64], run: u64) -> Timeline {
     let config = crate::config::Config::from_toml(&crate::config::tests::minimal()).unwrap();
     let heartbeat = config.heartbeat.start.as_secs();
     let rig = Rig::new(all_enabled());
     let executor = Counting::new(&["restart_service"]);
     let server = Server::default();
-    server.poll_seconds.set(Some(SERVER_POLL_SECONDS));
+    server.poll_seconds.set(hint);
     let mut poller = rig.poller_every(&executor, None, config.task_poll);
     let t0 = Instant::now();
     // Heartbeats fall between the poller's wake-ups, the worst phase for a 5 s hint check.
@@ -1224,7 +1231,12 @@ fn the_default_task_poll_is_five_minutes_and_matches_the_servers_default() {
     let config = crate::config::Config::from_toml(&crate::config::tests::minimal()).unwrap();
     assert_eq!(config.task_poll.start, Duration::from_secs(300));
     assert_eq!(
-        config.task_poll.clamp_server_value(SERVER_POLL_SECONDS),
+        Duration::from_secs(server_poll_seconds()),
+        config.task_poll.start,
+        "the agent's default is the server's documented default"
+    );
+    assert_eq!(
+        config.task_poll.clamp_server_value(server_poll_seconds()),
         config.task_poll.start,
         "the server's default hint is within the agent's default bounds"
     );
@@ -1233,8 +1245,13 @@ fn the_default_task_poll_is_five_minutes_and_matches_the_servers_default() {
 
 #[test]
 fn an_idle_agent_polls_twelve_times_an_hour_at_the_defaults() {
-    // At 0, 300, ..., 3,300 s: 12 an hour, against 120 at the 30 s default before #190.
-    assert_eq!(simulate(None, &[], 3_600).polls, 12);
+    // At 0, 300, ..., 3,300 s: 12 an hour, against 120 at the 30 s default before #190. First with
+    // no poll_seconds from the server, so the agent's own default decides, then with the server's.
+    assert_eq!(simulate(None, None, &[], 3_600).polls, 12);
+    assert_eq!(
+        simulate(Some(server_poll_seconds()), None, &[], 3_600).polls,
+        12
+    );
 }
 
 #[test]
@@ -1243,7 +1260,7 @@ fn a_task_starts_within_one_heartbeat_of_its_creation_with_tasks_available() {
     let heartbeat = 60;
     let mut worst = 0;
     for created in (301..=600).step_by(7) {
-        let start = simulate(Some(created), &[], 1_000)
+        let start = simulate(Some(server_poll_seconds()), Some(created), &[], 1_000)
             .start_after
             .expect("the task started");
         assert!(
@@ -1257,17 +1274,32 @@ fn a_task_starts_within_one_heartbeat_of_its_creation_with_tasks_available() {
 
 #[test]
 fn a_missed_hint_costs_one_heartbeat_and_no_hint_at_all_costs_at_most_the_poll_interval() {
+    let poll = server_poll_seconds();
     // The server repeats tasks_available on every heartbeat while the task waits, so one lost
     // heartbeat only delays the start to the next one.
     let created = 400;
     let next_beat = (created - 7) / 60 + 1;
-    let start = simulate(Some(created), &[next_beat], 1_000)
+    let start = simulate(Some(poll), Some(created), &[next_beat], 1_000)
         .start_after
         .unwrap();
     assert!(start <= 2 * 60 + HINT_CHECK.as_secs(), "{start}");
     assert!(start > 60, "{start}");
-    // With every heartbeat lost, the 300 s poll still finds it.
+    // With every heartbeat lost, the poll still finds it within one interval, wherever in the
+    // interval the task was created.
     let all: Vec<u64> = (0..20).collect();
-    let start = simulate(Some(created), &all, 1_000).start_after.unwrap();
-    assert!(start <= SERVER_POLL_SECONDS, "{start}");
+    let mut worst = 0;
+    for created in (301..=600).step_by(7) {
+        let start = simulate(Some(poll), Some(created), &all, 1_000)
+            .start_after
+            .unwrap();
+        assert!(
+            start <= poll,
+            "created at {created} s, started {start} s later"
+        );
+        worst = worst.max(start);
+    }
+    assert!(
+        worst > poll - 10,
+        "the sweep reached the end of an interval: {worst}"
+    );
 }
