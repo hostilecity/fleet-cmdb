@@ -311,7 +311,7 @@ RSpec.describe "Compliance", :signed_in, type: :request do
     build.(47, 3)
     many = count_queries { get "/compliance" }
     expect(many).to eq(few)
-    expect(many).to be <= 15
+    expect(many).to be <= 16 # one for the page's liveness, in its own table since #192
     timings = Array.new(3) { Benchmark.realtime { get "/compliance" } }
     expect(row_names.size).to eq(50)
     expect(timings.min).to be < 2.0
