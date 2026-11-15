@@ -12,6 +12,8 @@ namespace :compliance_summaries do
   desc "Compare every host's compliance summary with a fresh count of its rows; exits 1 if any differs"
   task check: :environment do
     drifted = HostComplianceSummary.drift
+    queued = HostComplianceSummary.queued
+    puts "#{queued} #{'host'.pluralize(queued)} queued for a recount after an advisory import (not checked)." if queued.positive?
     if drifted.empty?
       puts "Every host's compliance summary matches its rows."
     else

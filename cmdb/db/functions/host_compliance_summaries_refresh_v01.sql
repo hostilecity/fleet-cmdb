@@ -3,7 +3,8 @@ RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  -- Recomputes the hosts' compliance counts in the transaction that changed their rows (#193).
+  -- Recomputes the hosts' compliance counts (#193). Called from host_compliance_summaries_flush at commit, which has
+  -- already locked these rows in one sorted statement, and by the rebuild and the recount queue.
   IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
     RETURN;
   END IF;

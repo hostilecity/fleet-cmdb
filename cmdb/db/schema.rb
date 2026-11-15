@@ -277,10 +277,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
   end
 
+  create_table "host_compliance_flushes", primary_key: "xact_id", id: :bigint, default: nil, force: :cascade do |t|
+  end
+
+  create_table "host_compliance_pending", primary_key: ["xact_id", "host_id"], force: :cascade do |t|
+    t.bigint "xact_id", null: false
+    t.bigint "host_id", null: false
+    t.integer "kinds", limit: 2, null: false
+  end
+
+  create_table "host_compliance_recounts", primary_key: "host_id", id: :bigint, default: nil, force: :cascade do |t|
+    t.datetime "queued_at", default: -> { "CURRENT_TIMESTAMP" }, null: false
+  end
+
   create_table "host_compliance_summaries", primary_key: "host_id", id: :bigint, default: nil, force: :cascade do |t|
     t.string "enrollment_state", limit: 16, null: false
     t.integer "status_rank", limit: 2, null: false
-    t.string "name_key", limit: 100, null: false
+    t.text "name_key", null: false
     t.string "hostname", limit: 253, null: false
     t.text "tags_key"
     t.decimal "agent_key", array: true
@@ -1088,6 +1101,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
       $function$
   SQL
 
+  create_function :host_compliance_status_rank, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_status_rank(enrollment_state text, liveness_status text)
+       RETURNS smallint
+       LANGUAGE sql
+       IMMUTABLE
+      AS $function$
+        -- The fleet list's status order (FleetList::STATUSES): online, stale, offline, awaiting first contact, pending,
+        -- revoked (#193).
+        SELECT (CASE
+          WHEN enrollment_state = 'active' AND liveness_status = 'online' THEN 0
+          WHEN enrollment_state = 'active' AND liveness_status = 'stale' THEN 1
+          WHEN enrollment_state = 'active' AND liveness_status = 'offline' THEN 2
+          WHEN enrollment_state = 'active' THEN 3
+          WHEN enrollment_state = 'pending' THEN 4
+          ELSE 5
+        END)::smallint;
+      $function$
+  SQL
+
   create_function :host_compliance_counts, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.host_compliance_counts(host_ids bigint[])
        RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean)
@@ -1136,7 +1168,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
        LANGUAGE plpgsql
       AS $function$
       BEGIN
-        -- Recomputes the hosts' compliance counts in the transaction that changed their rows (#193).
+        -- Recomputes the hosts' compliance counts (#193). Called from host_compliance_summaries_flush at commit, which has
+        -- already locked these rows in one sorted statement, and by the rebuild and the recount queue.
         IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
           RETURN;
         END IF;
@@ -1175,19 +1208,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
         END IF;
 
         -- Lock first, then read the hosts in a later statement (a new snapshot under READ COMMITTED), as the refresh does.
+        -- Called from host_compliance_summaries_flush, which has already locked these rows in one sorted statement.
         PERFORM 1 FROM host_compliance_summaries s WHERE s.host_id = ANY (host_ids) ORDER BY s.host_id FOR UPDATE;
 
         INSERT INTO host_compliance_summaries AS s (host_id, enrollment_state, status_rank, name_key, hostname, tags_key, agent_key, os_name)
         SELECT h.id, h.enrollment_state,
-               -- FleetList::STATUSES order: online, stale, offline, awaiting first contact, pending, revoked.
-               CASE
-                 WHEN h.enrollment_state = 'active' AND h.liveness_status = 'online' THEN 0
-                 WHEN h.enrollment_state = 'active' AND h.liveness_status = 'stale' THEN 1
-                 WHEN h.enrollment_state = 'active' AND h.liveness_status = 'offline' THEN 2
-                 WHEN h.enrollment_state = 'active' THEN 3
-                 WHEN h.enrollment_state = 'pending' THEN 4
-                 ELSE 5
-               END,
+               host_compliance_status_rank(h.enrollment_state, h.liveness_status),
                lower(h.name), h.hostname,
                -- By the tag list as displayed (in entry order); no tags is NULL, so it sorts last.
                NULLIF(array_to_string(h.tags, ','), ''),
@@ -1210,6 +1236,80 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
       $function$
   SQL
 
+  create_function :host_compliance_summaries_mark, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_summaries_mark(host_ids bigint[], kinds smallint)
+       RETURNS void
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- Notes that this transaction changed what the hosts' summaries are built from (#193). kinds is a bit set: 1 the
+        -- host's own fields or operating system (a sync), 2 its liveness only (the status sort key), 4 its counts. Nothing
+        -- here locks a summary row: host_compliance_summaries_flush does it once, sorted, at commit. The rows are keyed by
+        -- transaction, so two transactions marking one host never wait for each other.
+        IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
+          RETURN;
+        END IF;
+
+        INSERT INTO host_compliance_pending AS p (xact_id, host_id, kinds)
+        SELECT txid_current(), h.id, kinds FROM (SELECT DISTINCT unnest(host_ids) AS id) h
+        ON CONFLICT (xact_id, host_id) DO UPDATE SET kinds = p.kinds | EXCLUDED.kinds
+         WHERE p.kinds | EXCLUDED.kinds <> p.kinds;
+
+        -- One row a transaction; its deferred constraint trigger runs the flush once, at commit.
+        INSERT INTO host_compliance_flushes (xact_id) VALUES (txid_current()) ON CONFLICT DO NOTHING;
+      END;
+      $function$
+  SQL
+
+  create_function :host_compliance_summaries_flush, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_summaries_flush()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      DECLARE
+        all_ids bigint[];
+        sync_ids bigint[];
+        status_ids bigint[];
+        count_ids bigint[];
+      BEGIN
+        -- Runs once a transaction, at commit (a deferred constraint trigger on host_compliance_flushes, #193): syncs and
+        -- recounts every host the transaction marked. Every summary row it needs is locked in one statement, in host id
+        -- order, so locks are held only while the transaction commits, and always taken in the same order: two
+        -- transactions can wait for each other's commit, but never deadlock on summaries, and a transaction never waits
+        -- on a summary row in the middle of its work.
+        DELETE FROM host_compliance_flushes WHERE xact_id = NEW.xact_id;
+        WITH taken AS (DELETE FROM host_compliance_pending WHERE xact_id = NEW.xact_id RETURNING host_id, kinds)
+        SELECT array_agg(host_id ORDER BY host_id),
+               array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 1 <> 0),
+               array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 3 = 2),
+               array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 4 <> 0)
+          INTO all_ids, sync_ids, status_ids, count_ids
+          FROM taken;
+        IF all_ids IS NULL THEN
+          RETURN NULL;
+        END IF;
+
+        PERFORM 1 FROM host_compliance_summaries s WHERE s.host_id = ANY (all_ids) ORDER BY s.host_id FOR UPDATE;
+
+        -- A host with no summary row yet (made in this transaction, or not reached by the migration's fill) is synced,
+        -- which makes the row.
+        sync_ids := ARRAY(SELECT DISTINCT h FROM unnest(COALESCE(sync_ids, '{}'::bigint[]) || ARRAY(
+                      SELECT a FROM unnest(all_ids) a WHERE NOT EXISTS (SELECT 1 FROM host_compliance_summaries s WHERE s.host_id = a))) h ORDER BY h);
+        PERFORM host_compliance_summaries_sync(sync_ids);
+
+        -- Liveness alone moves only the status sort key: no join, no regex, no rewrite of the other copies.
+        UPDATE host_compliance_summaries s
+           SET status_rank = host_compliance_status_rank(h.enrollment_state, h.liveness_status)
+          FROM hosts h
+         WHERE h.id = s.host_id AND s.host_id = ANY (status_ids) AND NOT s.host_id = ANY (sync_ids)
+           AND s.status_rank IS DISTINCT FROM host_compliance_status_rank(h.enrollment_state, h.liveness_status);
+
+        PERFORM host_compliance_summaries_refresh(count_ids);
+        RETURN NULL;
+      END;
+      $function$
+  SQL
+
   create_function :host_compliance_summaries_changed, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.host_compliance_summaries_changed()
        RETURNS trigger
@@ -1220,27 +1320,45 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
         open_states CONSTANT text[] := ARRAY['open', 'reopened'];
         host_ids bigint[];
       BEGIN
-        -- Keeps host_compliance_summaries right in the transaction that changes what it is built from (#193). Statement
-        -- triggers find the hosts whose rows changed in a way the summary can see, and each is synced or recounted once.
+        -- Notes the hosts whose summaries a change can move (#193), for host_compliance_summaries_flush at commit. No
+        -- summary row is locked here. Statement triggers pick out the rows that changed in a way the summary can see.
 
-        -- hosts (statement): a new host, or a change to a field the fleet list shows, sorts, or filters by.
+        -- hosts (statement): a new host, a change to a field the fleet list shows, sorts, or filters by (a sync), or a
+        -- change of liveness only (the status sort key).
         IF TG_TABLE_NAME = 'hosts' THEN
           IF TG_OP = 'INSERT' THEN
-            host_ids := ARRAY(SELECT n.id FROM new_rows n);
+            PERFORM host_compliance_summaries_mark(ARRAY(SELECT n.id FROM new_rows n), 1::smallint);
           ELSE
-            host_ids := ARRAY(
+            PERFORM host_compliance_summaries_mark(ARRAY(
               SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
-               WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state, o.liveness_status)
-                     IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state, n.liveness_status));
+               WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
+                     IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state)), 1::smallint);
+            PERFORM host_compliance_summaries_mark(ARRAY(
+              SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
+               WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
+                     IS NOT DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state)
+                 AND o.liveness_status IS DISTINCT FROM n.liveness_status), 2::smallint);
           END IF;
-          PERFORM host_compliance_summaries_sync(host_ids);
           RETURN NULL;
         END IF;
 
         -- host_inventories (row, its operating system name changed).
         IF TG_TABLE_NAME = 'host_inventories' THEN
-          PERFORM host_compliance_summaries_sync(CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id]
-                                                            ELSE ARRAY[OLD.host_id, NEW.host_id] END);
+          PERFORM host_compliance_summaries_mark(CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id]
+                                                            ELSE ARRAY[OLD.host_id, NEW.host_id] END, 1::smallint);
+          RETURN NULL;
+        END IF;
+
+        -- advisories (statement): a new severity moves the counts of every host with an open finding for it, which can
+        -- be the whole fleet. Those hosts are queued, not recounted here: an import is one long transaction, and must not
+        -- hold their summary rows. ComplianceSummaryRecountJob recounts them in short sorted batches after it commits.
+        IF TG_TABLE_NAME = 'advisories' THEN
+          INSERT INTO host_compliance_recounts (host_id)
+          SELECT DISTINCT f.host_id
+            FROM old_rows o JOIN new_rows n ON n.id = o.id
+            JOIN vulnerability_findings f ON f.advisory_id = n.id
+           WHERE o.severity <> n.severity AND f.state = ANY (open_states)
+          ON CONFLICT DO NOTHING;
           RETURN NULL;
         END IF;
 
@@ -1282,18 +1400,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
                WHERE (o.state = ANY (open_states) OR n.state = ANY (open_states))
                  AND ((o.state = ANY (open_states)) <> (n.state = ANY (open_states)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id));
           END IF;
-
-        -- advisories (statement): a new severity moves the counts of every host with an open finding for it.
-        ELSIF TG_TABLE_NAME = 'advisories' THEN
-          host_ids := ARRAY(
-            SELECT DISTINCT f.host_id
-              FROM old_rows o JOIN new_rows n ON n.id = o.id
-              JOIN vulnerability_findings f ON f.advisory_id = n.id
-             WHERE o.severity <> n.severity AND f.state = ANY (open_states));
         END IF;
 
-        PERFORM host_compliance_summaries_refresh(host_ids);
+        PERFORM host_compliance_summaries_mark(host_ids, 4::smallint);
         RETURN NULL;
+      END;
+      $function$
+  SQL
+
+  create_function :host_compliance_summaries_truncate_guard, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_summaries_truncate_guard()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- TRUNCATE fires no row or statement triggers, so it would leave the compliance summaries wrong (#193).
+        RAISE EXCEPTION '% is not truncated: the compliance summaries are built from it (delete the rows instead, or run bin/rails compliance_summaries:rebuild afterwards with this trigger disabled)', TG_TABLE_NAME
+          USING ERRCODE = 'insufficient_privilege';
       END;
       $function$
   SQL
@@ -1354,6 +1477,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
       CREATE TRIGGER host_compliance_summaries_advisories_update AFTER UPDATE ON public.advisories REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
+  create_trigger :host_compliance_summaries_cis_insert, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_cis_insert AFTER INSERT ON public.cis_results REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :cis_results_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER cis_results_no_truncate BEFORE TRUNCATE ON public.cis_results FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
+  SQL
+
   create_trigger :host_compliance_summaries_cis_delete, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_cis_delete AFTER DELETE ON public.cis_results REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
@@ -1362,20 +1493,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
       CREATE TRIGGER host_compliance_summaries_cis_update AFTER UPDATE ON public.cis_results REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
-  create_trigger :host_compliance_summaries_cis_insert, sql_definition: <<-SQL
-      CREATE TRIGGER host_compliance_summaries_cis_insert AFTER INSERT ON public.cis_results REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
-  SQL
-
   create_trigger :host_compliance_summaries_rule_version, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_rule_version AFTER UPDATE OF current_version_id ON public.cis_rules FOR EACH ROW WHEN ((old.current_version_id IS DISTINCT FROM new.current_version_id)) EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
-  create_trigger :host_compliance_summaries_inventory_update, sql_definition: <<-SQL
-      CREATE TRIGGER host_compliance_summaries_inventory_update AFTER UPDATE ON public.host_inventories FOR EACH ROW WHEN ((((old.stable #>> '{os,pretty_name}'::text[]) IS DISTINCT FROM (new.stable #>> '{os,pretty_name}'::text[])) OR (old.host_id <> new.host_id))) EXECUTE FUNCTION host_compliance_summaries_changed()
+  create_trigger :host_inventories_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER host_inventories_no_truncate BEFORE TRUNCATE ON public.host_inventories FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
   SQL
 
   create_trigger :host_compliance_summaries_inventory_insert_delete, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_inventory_insert_delete AFTER INSERT OR DELETE ON public.host_inventories FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_inventory_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_inventory_update AFTER UPDATE ON public.host_inventories FOR EACH ROW WHEN ((((old.stable #>> '{os,pretty_name}'::text[]) IS DISTINCT FROM (new.stable #>> '{os,pretty_name}'::text[])) OR (old.host_id <> new.host_id))) EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
   create_trigger :host_compliance_summaries_evaluation_insert_delete, sql_definition: <<-SQL
@@ -1384,6 +1515,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
 
   create_trigger :host_compliance_summaries_evaluation_update, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_evaluation_update AFTER UPDATE ON public.host_vulnerability_evaluations FOR EACH ROW WHEN ((((old.state)::text IS DISTINCT FROM (new.state)::text) OR (old.host_id <> new.host_id))) EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_vulnerability_evaluations_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER host_vulnerability_evaluations_no_truncate BEFORE TRUNCATE ON public.host_vulnerability_evaluations FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
   SQL
 
   create_trigger :host_compliance_summaries_hosts_insert, sql_definition: <<-SQL
@@ -1402,7 +1537,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
       CREATE TRIGGER host_compliance_summaries_findings_update AFTER UPDATE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
+  create_trigger :vulnerability_findings_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER vulnerability_findings_no_truncate BEFORE TRUNCATE ON public.vulnerability_findings FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
+  SQL
+
   create_trigger :host_compliance_summaries_findings_delete, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_findings_delete AFTER DELETE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_flush, sql_definition: <<-SQL
+      CREATE CONSTRAINT TRIGGER host_compliance_summaries_flush AFTER INSERT ON public.host_compliance_flushes DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_flush()
   SQL
 end

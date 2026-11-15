@@ -106,12 +106,17 @@ RSpec.describe HostComplianceSummary do
     expect(summary(host)).to have_attributes(vuln_critical: 0, vuln_high: 1)
     expect_consistent(host, other)
 
-    # As an advisory import writes them: an upsert of the advisory rows.
+    # As an advisory import writes them: an upsert of the advisory rows. The hosts are queued, not recounted in the
+    # import's transaction, and the recount job brings them up to date.
     advisory = resolved.advisory
     Advisory.upsert_all([ advisory.attributes.except("id").merge("severity" => "unknown") ], unique_by: :advisory_id, record_timestamps: false)
-    expect(summary(host)).to have_attributes(vuln_high: 0, vuln_unknown: 1)
-    Advisory.where(id: critical.advisory_id).update_all(severity: "low") # resolved: no count moves
-    expect(summary(host).vuln_low).to eq(1)
+    Advisory.where(id: critical.advisory_id).update_all(severity: "low") # resolved: nothing queued
+    expect(summary(host)).to have_attributes(vuln_high: 1, vuln_unknown: 0)
+    expect(described_class.queued).to eq(1)
+    expect(described_class.drift).to be_empty # queued hosts are known to be behind
+    expect(ComplianceSummaryRecountJob.perform_now).to eq(1)
+    expect(summary(host)).to have_attributes(vuln_high: 0, vuln_unknown: 1, vuln_low: 1)
+    expect(described_class.queued).to eq(0)
     expect_consistent(host, other)
 
     expect(summary(host)).to have_attributes(vuln_evaluated: false, fleet_vulns_key: 2)
@@ -154,6 +159,45 @@ RSpec.describe HostComplianceSummary do
     expect_consistent(host)
   end
 
+  it "moves only the status sort key when liveness alone changes" do
+    host, = enrolled_host
+    record_heartbeat(host)
+    findings!(host, "low")
+    before = summary(host).attributes
+    Host.where(id: host.id).update_all(liveness_status: "offline")
+    expect(summary(host).attributes).to eq(before.merge("status_rank" => 2))
+    expect_consistent(host)
+  end
+
+  it "recounts the queue in batches, refreshing open pages once, and does nothing when it is empty" do
+    hosts = Array.new(3) { enrolled_host.first }
+    hosts.each { |host| findings!(host, "high") }
+    Advisory.update_all(severity: "critical")
+    expect(described_class.queued).to eq(3)
+    stub_const("HostComplianceSummary::BATCH_SIZE", 2)
+    expect(FleetBroadcast).to receive(:refresh).once
+    expect(ComplianceSummaryRecountJob.perform_now).to eq(3)
+    hosts.each { |host| expect(summary(host)).to have_attributes(vuln_high: 0, vuln_critical: 1) }
+    expect(ComplianceSummaryRecountJob.perform_now).to eq(0)
+  end
+
+  it "queues the recount when an advisory import commits" do
+    expect { ActiveRecord::Base.transaction { ComplianceSummaryRecountJob.after_import } }.to have_enqueued_job(ComplianceSummaryRecountJob)
+  end
+
+  it "refuses TRUNCATE on the tables the counts come from" do
+    %w[cis_results vulnerability_findings host_vulnerability_evaluations host_inventories].each do |table|
+      expect { described_class.transaction(requires_new: true) { described_class.connection.execute("TRUNCATE #{table} CASCADE") } }
+        .to raise_error(ActiveRecord::StatementInvalid, /#{table} is not truncated: the compliance summaries are built from it/)
+    end
+  end
+
+  it "keeps a lowered name of any length, as lower() can lengthen it (ICU)" do
+    expect(described_class.columns_hash["name_key"].sql_type).to eq("text")
+    host = create(:host, name: "A" * 100)
+    expect(summary(host).name_key).to eq("a" * 100)
+  end
+
   it "rebuilds rows written wrong or missing, and its check names them without writing" do
     host, = enrolled_host
     other, = enrolled_host
@@ -164,8 +208,10 @@ RSpec.describe HostComplianceSummary do
     expect(described_class.where(host_id: host.id).pick(:vuln_high)).to eq(7)
     expect(described_class.exists?(other.id)).to be(false)
 
+    Advisory.update_all(severity: "critical") # queued, then emptied by the rebuild
     expect(described_class.rebuild!(batch_size: 1)).to eq(2)
-    expect(summary(host)).to have_attributes(vuln_high: 1, name_key: host.name.downcase)
+    expect(described_class.queued).to eq(0)
+    expect(summary(host)).to have_attributes(vuln_critical: 1, name_key: host.name.downcase)
     expect(summary(other).status_rank).to eq(3)
     expect_consistent(host, other)
   end

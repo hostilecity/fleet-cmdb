@@ -21,6 +21,9 @@ RSpec.describe "compliance_summaries rake tasks" do
     findings!(host, "high")
     expect(run("compliance_summaries:check")).to eq("Every host's compliance summary matches its rows.\n")
     expect(run("compliance_summaries:rebuild")).to eq("Rebuilt the compliance summaries of 1 host.\n")
+    Advisory.update_all(severity: "critical")
+    expect(run("compliance_summaries:check")).to eq("1 host queued for a recount after an advisory import (not checked).\n" \
+                                                    "Every host's compliance summary matches its rows.\n")
   end
 
   it "names the hosts whose summaries differ and exits 1, until they are rebuilt" do
