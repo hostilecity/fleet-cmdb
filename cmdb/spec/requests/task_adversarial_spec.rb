@@ -213,7 +213,7 @@ RSpec.describe "Adversarial task traffic", type: :request do
 
     # The per-credential rate limit is not what these examples test, so each request starts with a fresh count.
     def raw(path, body, content_type: "application/json", headers: {})
-      AgentApi.rate_limit_store.clear
+      AgentApi.credential_rate_limiter.clear # many requests from one credential in one example (#191: counted in memory)
       post path, params: body, headers: api_headers(credential).merge("Content-Type" => content_type, **headers)
     end
 

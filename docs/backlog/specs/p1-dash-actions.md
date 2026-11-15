@@ -14,7 +14,7 @@ Static mockups in `docs/mockups/phase-1/`, delivered as their own pull request (
   - the user code to confirm against the terminal;
   - the reported facts (hostname, OS, machine ID, agent version) and the client address;
   - the host fields, prefilled;
-  - when the machine ID or hostname matches an existing host, the choice between re-enrolling that host and adding a new one;
+  - when the machine ID or hostname matches an existing host, the choice between re-enrolling that host and adding a new one; Re-enrolling is chosen by default only for a host with the same machine ID and the same hostname; a machine-ID match under another hostname (a VM cloned from the same template) defaults to a new host (UX assessment, November 2026);
   - approve and reject;
   - expired, already-decided, and unknown-code states.
 - **The "Awaiting approval" list,** with a fleet-page notice linking to it.

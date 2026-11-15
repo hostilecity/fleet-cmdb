@@ -159,7 +159,9 @@ jobs:
           docker stop -t 30 fleet-cmdb-jobs >/dev/null 2>&1 || true
           docker rm -f fleet-cmdb-jobs >/dev/null 2>&1 || true
           docker rm -f fleet-cmdb >/dev/null 2>&1 || true
+          # No capabilities and no privilege gain (setuid): the app binds ports above 1024 and needs neither.
           docker run -d --name fleet-cmdb -p 443:3443 --network "$network" --restart unless-stopped \
+            --cap-drop ALL --security-opt no-new-privileges \
             -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb.env "fleet-cmdb:$sha" >/dev/null
           echo "==> wait for /up (the first start creates and migrates the databases)"
           for _ in $(seq 1 60); do

@@ -26,7 +26,7 @@ RUN apt-get update -qq && \
 ENV RAILS_ENV="production" \
     BUNDLE_DEPLOYMENT="1" \
     BUNDLE_PATH="/usr/local/bundle" \
-    BUNDLE_WITHOUT="development" \
+    BUNDLE_WITHOUT="development:test" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so" \
     FLEET_API_SCHEMAS_DIR="/rails/api-schemas" \
     FLEET_RULES_SCHEMA_DIR="/rails/api-rules" \
@@ -79,14 +79,18 @@ RUN SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile
 # Final stage for app image
 FROM base
 
-# Run and own only the runtime files as a non-root user for security
+# Run as a non-root user that owns only what it writes at runtime (NFR-1): storage/ (the volume), tmp/ (bootsnap's and
+# Puma's files), and log/. The code and the gems belong to root, so a compromised app process cannot change what it
+# runs, and a change cannot outlive the container's restart (`--restart unless-stopped` keeps the same container).
 RUN groupadd --system --gid 1000 rails && \
-    useradd rails --uid 1000 --gid 1000 --create-home --shell /bin/bash
-USER 1000:1000
+    useradd rails --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin
 
 # Copy built artifacts: gems, application
-COPY --chown=rails:rails --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
-COPY --chown=rails:rails --from=build /rails /rails
+COPY --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
+COPY --from=build /rails /rails
+# The Ruby image leaves GEM_HOME world-writable (1777); nothing writes there at runtime.
+RUN chown -R rails:rails /rails/storage /rails/tmp /rails/log && chmod 755 "${BUNDLE_PATH}"
+USER 1000:1000
 
 # Entrypoint prepares the database.
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]

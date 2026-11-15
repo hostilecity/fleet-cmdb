@@ -12,9 +12,10 @@ class HostsController < ApplicationController
   REPORT_REQUEST_LIMIT = 10
 
   def index
-    @fleet = FleetList.new(params.permit(:q, :tag, :status, :sort, :dir))
-    @hosts = @fleet.hosts.to_a
+    @fleet = FleetList.new(params.permit(:q, :tag, :status, :sort, :dir, :after, :before))
+    @hosts = @fleet.hosts
     @counts = FleetList.counts
+    @total = @fleet.filtered? ? @fleet.total : @counts.values.sum
     @tags = FleetList.tags
     @awaiting_approval = OnboardingRequest.awaiting.count
     @advisory_freshness = Advisories::Freshness.statuses

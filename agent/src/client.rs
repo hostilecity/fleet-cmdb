@@ -677,6 +677,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_trusted_certificate_for_another_name_is_refused() {
+        // The CA is trusted, but its certificate names only `localhost`: reached as 127.0.0.1, the
+        // server must be refused before any request (and so the credential) is sent.
+        let pki = TestPki::generate();
+        let dir = TempDir::new();
+        let ca = dir.write("ca.pem", &pki.ca_pem);
+        let server = TlsServer::start(&pki, vec![response("200 OK", &[], "{}")]);
+        let text = format!(
+            "server_url = \"https://127.0.0.1:{}\"\ncredential = \"{}\"\nca_file = \"{}\"\n",
+            server.port,
+            cfg::CREDENTIAL,
+            ca.display()
+        );
+        let config = Config::from_toml(&text).unwrap();
+        let client = Client::with_system_bundle(&config, &dir.path("absent.pem")).unwrap();
+        let result = client.post_json("/api/v1/heartbeat", &serde_json::json!({}));
+        let requests = server.finish();
+        match result {
+            Err(ApiError::Transport(message)) => {
+                assert!(is_certificate_error(&message), "{message}");
+            }
+            other => panic!("a certificate for another name was accepted: {other:?}"),
+        }
+        assert!(requests.is_empty(), "a request reached the server");
+    }
+
+    #[test]
     fn missing_or_empty_ca_file_is_an_error() {
         let dir = TempDir::new();
         let absent = dir.path("absent.pem");

@@ -117,11 +117,40 @@ RSpec.describe "Onboarding approval", :signed_in, type: :request do
       expect(facts["Operating system"]).to start_with(HOSTILE)
     end
 
-    it "offers re-enrollment of a host with the same machine ID, chosen by default" do
-      media, = enrolled_host(name: "Media server", hostname: "vm-01.example.lan")
+    it "offers re-enrollment of a host with the same machine ID and hostname, chosen by default" do
+      media, = enrolled_host(name: "Media server", hostname: "vm-08.example.lan")
       media.agent_credentials.active.sole.update_column(:machine_id, "89abcdef0123456789abcdef01234567")
       get "/onboard/#{code}"
       expect(page.at_css("#onboard_match strong").text).to eq("This VM has the same machine ID as Media server.")
+      expect(page.at_css("#onboard_match p").text).not_to include("template")
+      expect(page.css("input[name=choice]").map { |i| [ i["value"], i["checked"].present? ] }).to eq([ [ "reenroll-#{media.id}", true ], [ "new", false ] ])
+    end
+
+    # The owner's homelab: every VM is cloned from one template, so each new VM reports the machine ID of the hosts
+    # already enrolled. Re-enrolling one of them would take it over, so it is never the default.
+    it "defaults to a new host when the machine ID matches under another hostname, as for a VM cloned from a template" do
+      media, = enrolled_host(name: "Media server", hostname: "vm-01.example.lan")
+      media.agent_credentials.active.sole.update_column(:machine_id, "89abcdef0123456789abcdef01234567")
+      get "/onboard/#{code}"
+      expect(page.at_css("#onboard_match p").text.squish).to include("The hostnames differ, so this is probably a copy made from the same template.")
+      expect(page.css("input[name=choice]").map { |i| [ i["value"], i["checked"].present? ] }).to eq([ [ "reenroll-#{media.id}", false ], [ "new", true ] ])
+      expect(page.at_css("label.choice:has(input[value=new])").text.squish).to include('give the copy its own machine ID: see "VMs cloned from one template"')
+    end
+
+    it "treats a reported hostname with a trailing dot or other case as the same hostname" do
+      dotted = start_onboarding(client_ip: "192.0.2.11", hostname: "VM-08.example.lan.").record
+      media, = enrolled_host(name: "Media server", hostname: "vm-08.example.lan")
+      media.agent_credentials.active.sole.update_column(:machine_id, dotted.machine_id)
+      get "/onboard/#{dotted.user_code}"
+      expect(page.at_css("#onboard_match p").text).not_to include("template")
+      expect(page.css("input[name=choice]").map { |i| [ i["value"], i["checked"].present? ] }).to eq([ [ "reenroll-#{media.id}", true ], [ "new", false ] ])
+    end
+
+    it "keeps re-enrollment the default for a machine-ID match when the VM could not read its hostname" do
+      blind = start_onboarding(client_ip: "192.0.2.11", hostname: nil).record
+      media, = enrolled_host(name: "Media server", hostname: "vm-01.example.lan")
+      media.agent_credentials.active.sole.update_column(:machine_id, blind.machine_id)
+      get "/onboard/#{blind.user_code}"
       expect(page.css("input[name=choice]").map { |i| [ i["value"], i["checked"].present? ] }).to eq([ [ "reenroll-#{media.id}", true ], [ "new", false ] ])
     end
 
