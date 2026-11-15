@@ -64,7 +64,7 @@
       }
     },
     "poll_seconds": {
-      "description": "The poll interval the server wants, in whole seconds (Settings: Tasks, P3-S06; default 30). A hint: the agent clamps it to its own bounds, and an absent value leaves it at its configured interval. Additive (DEC-20).",
+      "description": "The poll interval the server wants, in whole seconds (Settings: Tasks, P3-S06; default 300, #190). A hint: the agent clamps it to its own bounds, and an absent value leaves it at its configured interval. Additive (DEC-20).",
       "type": "integer",
       "minimum": 10,
       "maximum": 300

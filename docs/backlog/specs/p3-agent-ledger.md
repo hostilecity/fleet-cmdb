@@ -30,7 +30,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Scope
 
-- Poll at a configurable interval (default 30 seconds) and promptly when the heartbeat directive says tasks are available; at most one task in flight; backoff on failures as in [P1-A02](p1-agent-core.md).
+- Poll at a configurable interval (default 300 seconds, #190) and promptly when the heartbeat directive says tasks are available, so a task normally starts within one heartbeat of being created; at most one task in flight; backoff on failures as in [P1-A02](p1-agent-core.md).
 - A durable ledger in the state directory (append-only records, `fsync`ed) with these steps per task id: `received`, `started`, `finished`, `reported`.
 - **The `started` record is written and flushed before anything is executed.** Only then is the server acknowledged ([P3-S03](p3-task-api.md)) and the task run.
 - A task id already present in the ledger is never run again. At startup the agent reconciles: `started` without `finished` is reported as `failed` with reason `interrupted`; `finished` without `reported` is re-reported; unknown states are reported, not executed.
