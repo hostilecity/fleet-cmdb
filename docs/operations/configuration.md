@@ -117,6 +117,7 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 | `JOB_THREADS` | `3` | Threads in each Solid Queue worker process for the default queue and every other queue |
 | `JOB_CONCURRENCY` | `1` | How many of those worker processes |
 | `JOB_REALTIME_THREADS` | `1` | Threads of the worker that serves only the realtime queue: the every-minute jobs (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes, so long jobs never delay them |
+| `FLEET_LIVE_REFRESH_SECONDS` | `2` | Open dashboard pages refresh at most once in this many seconds per stream: a burst of host or task changes is sent as one refresh, one job, at the end of the window (#194). A whole number from 1 to 15; any other value stops the boot. Raise it (for example to 10) for a large fleet with many open browsers, where each fleet-list refresh is expensive |
 | `FLEET_JOBS_CONTAINER` | `false` (workflow variable) | `true`: background jobs run in a second container, `fleet-cmdb-jobs`, from the same image and settings, instead of inside the app container ([scaling.md](scaling.md#solid-queue-in-its-own-container-fleet_jobs_container)). The deploy stops on any other value |
 | `RAILS_ENV` | *fixed* by the image: `production` | |
 | `PORT` | *fixed* by the image: `3000` | Puma's plain-HTTP port inside the container, for its health checks; not published |

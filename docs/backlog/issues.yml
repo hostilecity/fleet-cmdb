@@ -113,7 +113,7 @@
   done:
     - "The fleet list sorts, searches, and filters by tag and status with counts on top, and loads in under 2 s at 50 hosts."
     - "Host detail shows inventory matching the VM, field-level history diffs, status history, and audit entries (AC-1.3)."
-    - "A status change appears in an open browser within 30 seconds without a reload."
+    - "A status change appears in an open browser within 30 seconds without a reload; each page refreshes at most once per window (FLEET_LIVE_REFRESH_SECONDS), last change included, and not for another host's change (#194)."
   blocked_by: [P1-ACCESS, P1-HOSTS, P1-HEARTBEAT, P1-INVENTORY]
 
 - key: P1-AUDIT-PAGE

@@ -71,6 +71,7 @@ Static HTML mockups (no backend) in `docs/mockups/phase-1/`:
 
 - When a host's liveness status changes, the fleet list row, the status counts, and the host detail header update in place within 30 seconds, without a manual reload (Turbo Streams over Solid Cable, or polling if [DEC-02](../../decisions/0002-server-stack.md) chose that).
 - Broadcast after the transaction commits so clients never see uncommitted state.
+- Coalesced on the server (#194, `LiveRefresh`): each stream refreshes at most once per `FLEET_LIVE_REFRESH_SECONDS` (2 s by default, 1 to 15), at the end of the window, with one job for the burst. The fleet list and the fleet-wide pages (compliance, agents and rollouts, approvals) are on the `fleet` stream. Every page of a host is on its own `fleet:host:<id>` stream and on `fleet:all-hosts`, so a host page refreshes for its own host's changes and its tasks, and for fleet-wide changes (onboarding, rollouts, advisory imports), but not for another host's change. When more than 100 host streams are due in one window, `fleet:all-hosts` gets one refresh in their place. A status change still appears well within 30 seconds.
 - Graceful behaviour when the connection drops: indicate the page may be stale and recover on reconnect.
 - Only authenticated operators can subscribe.
 
