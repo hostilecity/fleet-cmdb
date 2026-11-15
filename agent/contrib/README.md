@@ -43,7 +43,16 @@ Deliberately not set:
 
 The supervisor runs as its own transient unit (`fleet-agent-update`), outside this sandbox, so the service needs no write access to `/usr/lib/fleet-agent`; if a design gives the running agent that access, add `ReadWritePaths=/usr/lib/fleet-agent` and nothing wider.
 
-`fleet-agent-rollback.service` (`Type=oneshot`) runs `/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop`: the previous version's binary, the one that was known to work. It has no `ProtectSystem=` because it has to change `/usr/lib/fleet-agent` and the state directory and restart the service, but it keeps the other restrictions that do not get in its way. `fleet-agent install` writes both units; `uninstall` removes both. An update does not rewrite them (see the spec's known limit).
+`fleet-agent-rollback.service` (`Type=oneshot`) runs `/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop`: the previous version's binary, the one that was known to work. It has no `ProtectSystem=` because it has to change `/usr/lib/fleet-agent` and the state directory and restart the service, but it keeps the other restrictions that do not get in its way. `fleet-agent install` writes the three units; `uninstall` stops recovery mode and removes them. An update does not rewrite them (see the spec's known limit).
+
+### Recovery mode (#180)
+
+`OnFailure=fleet-agent-rollback.service fleet-agent-recovery.service`: after the rollback unit, [`fleet-agent-recovery.service`](fleet-agent-recovery.service) runs `current/fleet-agent run --recovery` when there was nothing to roll back ([ADR 0030](../../docs/decisions/0030-agent-recovery-mode.md)). Its options:
+
+- `After=fleet-agent-rollback.service`: it starts only once the rollback unit has finished.
+- `Conflicts=fleet-agent.service`: the two never run together. A rollback restarts the service, which cancels the queued recovery unit; any later start of the service (a confirmed update, an operator, the hourly try of normal mode) stops it.
+- `StartLimitIntervalSec=0`, `Restart=on-failure`, `RestartSec=5min`, `RestartSteps=4`, `RestartMaxDelaySec=1h`: never stopped for good; a failing recovery mode is retried after 5 minutes, growing to an hour (systemd 254 and later; earlier versions keep 5 minutes). No `RestartPreventExitStatus=`, so it comes back by itself once a broken config is fixed. No `[Install]`: nothing starts it at boot.
+- The sandbox is this unit's, with three options tighter: `CapabilityBoundingSet=` (none: recovery mode runs no collector, so it needs no `CAP_DAC_READ_SEARCH`; root still reads and writes its own root-owned files, and systemd authorizes its `systemd-run` and `systemctl` calls by user id), `ProtectHome=yes`, and no `AF_NETLINK` (only the interface list needs it). `systemd-analyze security`: 1.6. `scripts/check-unit.sh` fails CI if it is ever above the service's.
 
 ### What Phase 3 tasks add
 

@@ -4,6 +4,8 @@
 //! `uninstall` (P1-A10, in [`install`]); `verify-release` (P1-PACKAGING, in [`release`]); `self-test`,
 //! `update-supervise`, and `update-rollback` (P1-AGENT-UPDATE, in [`update`]). `run` sends heartbeats
 //! and inventory reports ([`report`], P1-AGENT-REPORT) and acts on the server's update directive.
+//! `run --recovery` is recovery mode ([`recovery`], ADR 0030), which only `fleet-agent-recovery.service`
+//! starts.
 
 // The agent is built for Linux only (DEC-01): it reads `/proc`, runs under systemd, and some system
 // structs differ elsewhere (on macOS `statvfs` counts are 32-bit, a deliberate compile error in
@@ -24,6 +26,7 @@ mod install;
 mod logging;
 mod owner;
 mod packages;
+mod recovery;
 mod release;
 mod report;
 mod retry;
@@ -33,10 +36,12 @@ mod tasks;
 #[cfg(test)]
 mod test_support;
 mod update;
+#[cfg(any(test, fleet_vm_fault))]
+mod vm_fault;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use client::Client;
 use config::{Config, DEFAULT_CONFIG_PATH, Interval};
@@ -63,7 +68,8 @@ const USAGE: &str = "\
 Usage: fleet-agent [COMMAND] [OPTIONS]
 
 Commands:
-  run           Run the agent (the default)
+  run           Run the agent (the default). `run --recovery` is recovery mode, which only
+                fleet-agent-recovery.service starts (ADR 0030)
   check-config  Validate the config file and trusted certificates without contacting the server
   install       Install, enroll, and start the agent (see `fleet-agent install --help`)
   uninstall     Stop and remove the agent (see `fleet-agent uninstall --help`)
@@ -81,7 +87,7 @@ Options:
 /// What the command line asked for.
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
-    Run { config: PathBuf },
+    Run { config: PathBuf, recovery: bool },
     CheckConfig { config: PathBuf },
     Version,
     Help,
@@ -98,6 +104,7 @@ where
     let mut parser = lexopt::Parser::from_args(args);
     let mut subcommand: Option<&'static str> = None;
     let mut config: Option<PathBuf> = None;
+    let mut recovery = false;
     // `--version` and `--help` stand alone.
     let mut only: Option<(Command, &'static str)> = None;
     let mut others = false;
@@ -128,6 +135,12 @@ where
                     return Err("--config given more than once".into());
                 }
             }
+            Long("recovery") => {
+                if recovery {
+                    return Err("--recovery given more than once".into());
+                }
+                recovery = true;
+            }
             Value(value) => match value.to_str() {
                 Some(name @ ("run" | "check-config")) if subcommand.is_none() => {
                     subcommand = Some(if name == "run" { "run" } else { "check-config" });
@@ -150,8 +163,11 @@ where
     }
     let config = config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     Ok(match subcommand {
+        Some("check-config") if recovery => {
+            return Err("--recovery goes only with run".into());
+        }
         Some("check-config") => Command::CheckConfig { config },
-        _ => Command::Run { config },
+        _ => Command::Run { config, recovery },
     })
 }
 
@@ -276,9 +292,16 @@ fn run(path: &Path) -> ExitCode {
         Ok(shutdown) => shutdown,
         Err(e) => {
             tracing::error!("cannot install signal handlers: {e}");
+            recovery::record_failure(
+                &config.state_dir,
+                &format!("cannot install signal handlers: {e}"),
+                SystemTime::now(),
+            );
             return ExitCode::FAILURE;
         }
     };
+    recovery::install_panic_hook();
+    end_recovery_episode_when_healthy(&config.state_dir, &shutdown);
 
     tracing::info!(
         agent_version = AGENT_VERSION,
@@ -310,9 +333,130 @@ fn run(path: &Path) -> ExitCode {
     // Heartbeats and inventory reports until SIGTERM or SIGINT (P1-AGENT-REPORT).
     if !report::run(&config, &client, &shutdown, started, &updater) {
         tracing::error!("fleet-agent stopped after an internal error");
+        // For recovery mode, if this turns out to be a crash loop (ADR 0030).
+        let why = match recovery::panic_summary() {
+            Some(panic) => format!("a loop of the agent failed: {panic}"),
+            None => "a loop of the agent failed".to_owned(),
+        };
+        recovery::record_failure(&config.state_dir, &why, SystemTime::now());
         return ExitCode::FAILURE;
     }
     tracing::info!("fleet-agent stopped");
+    ExitCode::SUCCESS
+}
+
+/// Normal mode has run long enough ([`recovery::HEALTHY_AFTER`]) to say a recovery episode, if there was
+/// one, is over: its records are removed on a thread of its own.
+fn end_recovery_episode_when_healthy(state_dir: &Path, shutdown: &Shutdown) {
+    let state_dir = state_dir.to_owned();
+    let shutdown = shutdown.clone();
+    let spawned = std::thread::Builder::new()
+        .name("fleet-agent-recovery-check".into())
+        .spawn(move || {
+            if !shutdown.wait(recovery::HEALTHY_AFTER) && recovery::clear(&state_dir) {
+                tracing::info!(
+                    "left recovery mode: the agent has run normally for {} minutes",
+                    recovery::HEALTHY_AFTER.as_secs() / 60
+                );
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("cannot start the recovery check: {e}");
+    }
+}
+
+/// `run --recovery`: recovery mode (#180, ADR 0030), started only by `fleet-agent-recovery.service`
+/// after systemd stopped restarting the agent and there was nothing to roll back. Heartbeats with the
+/// reason, update results, and signed updates only; see [`recovery`].
+fn recover(path: &Path) -> ExitCode {
+    let started = Instant::now();
+    let config = match Config::load(path) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("fleet-agent: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let client = match Client::new(&config) {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("fleet-agent: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    logging::init(config.log_level);
+    // Recovery mode carries on without its records: heartbeats need none.
+    if let Err(e) = state::ensure_dir(&config.state_dir) {
+        tracing::error!(
+            state_dir = %config.state_dir.display(),
+            "cannot prepare the state directory: {}",
+            state::describe_write_error(&config.state_dir, &e)
+        );
+    }
+    let shutdown = match Shutdown::on_signals() {
+        Ok(shutdown) => shutdown,
+        Err(e) => {
+            tracing::error!("cannot install signal handlers: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    recovery::install_panic_hook();
+    let now = SystemTime::now();
+    let episode = recovery::begin(
+        &config.state_dir,
+        now,
+        recovery::monitor_reason(|key| std::env::var(key).ok()),
+    );
+    let status = recovery::Status {
+        entered_at: episode.entered_at.clone(),
+        reason: episode.reason.clone(),
+        retry_at: report::rfc3339(now + recovery::RETRY_AFTER),
+    };
+    tracing::warn!(
+        agent_version = AGENT_VERSION,
+        reason = episode.reason.as_str(),
+        since = episode.entered_at.as_str(),
+        starts = episode.starts,
+        retry_at = status.retry_at.as_str(),
+        "fleet-agent started in recovery mode: the agent kept failing on a version it had confirmed. \
+         It only sends heartbeats and installs a signed agent update; no reports, no tasks"
+    );
+    let config_path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    let updater = update::Updater::from_config(&config, &config_path);
+    updater.start_watchdog();
+    let systemctl = install::Systemctl::default();
+    let try_normal = || {
+        use install::Systemd;
+        // A service stopped by its start limit refuses to start until it is reset.
+        let _ = systemctl.systemctl(&["reset-failed", install::UNIT_NAME]);
+        // `--no-block`: starting it stops this process (Conflicts=), which must not wait on that.
+        systemctl
+            .systemctl(&["start", "--no-block", install::UNIT_NAME])
+            .map(drop)
+    };
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        report::run_recovery(
+            &config,
+            &client,
+            &shutdown,
+            started,
+            &updater,
+            status,
+            recovery::RETRY_AFTER,
+            &try_normal,
+        );
+    }));
+    if ran.is_err() {
+        let why = recovery::panic_summary().unwrap_or_else(|| "a panic".to_owned());
+        tracing::error!("recovery mode stopped after an internal error");
+        recovery::record_failure(
+            &config.state_dir,
+            &format!("recovery mode failed: {why}"),
+            SystemTime::now(),
+        );
+        return ExitCode::FAILURE;
+    }
+    tracing::info!("fleet-agent stopped (recovery mode)");
     ExitCode::SUCCESS
 }
 
@@ -345,7 +489,14 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::CheckConfig { config }) => check_config(&config),
-        Ok(Command::Run { config }) => run(&config),
+        Ok(Command::Run {
+            config,
+            recovery: false,
+        }) => run(&config),
+        Ok(Command::Run {
+            config,
+            recovery: true,
+        }) => recover(&config),
         Err(message) => {
             eprintln!("fleet-agent: {message}\n\n{USAGE}");
             ExitCode::from(EXIT_USAGE)
@@ -365,6 +516,7 @@ mod tests {
     fn version_help_and_run_parse() {
         let run = || Command::Run {
             config: default_config(),
+            recovery: false,
         };
         for (args, expected) in [
             (vec!["--version"], Command::Version),
@@ -397,8 +549,25 @@ mod tests {
         }
         assert_eq!(
             parse_args(["--config", "/tmp/agent.toml"]),
-            Ok(Command::Run { config: path })
+            Ok(Command::Run {
+                config: path.clone(),
+                recovery: false
+            })
         );
+        // Recovery mode (ADR 0030): `run --recovery`, as fleet-agent-recovery.service starts it.
+        for args in [
+            vec!["run", "--recovery", "--config", "/tmp/agent.toml"],
+            vec!["--recovery", "run", "-c", "/tmp/agent.toml"],
+        ] {
+            assert_eq!(
+                parse_args(&args),
+                Ok(Command::Run {
+                    config: path.clone(),
+                    recovery: true
+                }),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]
@@ -416,6 +585,9 @@ mod tests {
             &["verify-release"],
             &["self-test"],
             &["update-supervise"],
+            &["check-config", "--recovery"],
+            &["run", "--recovery", "--recovery"],
+            &["run", "--recovery=yes"],
         ] {
             assert!(parse_args(args).is_err(), "{args:?}");
         }

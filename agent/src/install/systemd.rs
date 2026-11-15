@@ -20,6 +20,11 @@ pub const UNIT: &str = include_str!("fleet-agent.service");
 pub const ROLLBACK_UNIT_NAME: &str = "fleet-agent-rollback.service";
 pub const ROLLBACK_UNIT: &str = include_str!("fleet-agent-rollback.service");
 
+/// The unit `OnFailure=` starts after the rollback unit: recovery mode, for a version that keeps failing
+/// with nothing to roll back to (#180, ADR 0030). Written by `install` next to the service unit.
+pub const RECOVERY_UNIT_NAME: &str = "fleet-agent-recovery.service";
+pub const RECOVERY_UNIT: &str = include_str!("fleet-agent-recovery.service");
+
 /// The first line of every unit file the installer wrote. A unit without it is not the installer's, so
 /// it is neither replaced nor removed.
 pub const UNIT_MARKER: &str = "# Written by `fleet-agent install`";
@@ -208,8 +213,114 @@ mod tests {
         // systemd's default limit (five starts in ten seconds).
         assert_eq!(values("StartLimitIntervalSec"), ["300"]);
         assert_eq!(values("StartLimitBurst"), ["4"]);
-        assert_eq!(values("OnFailure"), [ROLLBACK_UNIT_NAME]);
+        // ADR 0030: the rollback unit first, then recovery mode, which waits for it (After=).
+        assert_eq!(
+            values("OnFailure"),
+            [format!("{ROLLBACK_UNIT_NAME} {RECOVERY_UNIT_NAME}")]
+        );
         assert_eq!(values("Restart"), ["on-failure"]);
+    }
+
+    /// The values of `key=` in the recovery unit, in order.
+    fn recovery_values(key: &str) -> Vec<&'static str> {
+        RECOVERY_UNIT
+            .lines()
+            .filter_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+            .collect()
+    }
+
+    #[test]
+    fn the_recovery_unit_runs_the_current_version_after_the_rollback_unit_and_never_gives_up() {
+        // #180, ADR 0030.
+        assert!(RECOVERY_UNIT.starts_with(UNIT_MARKER));
+        assert_eq!(
+            recovery_values("ExecStart"),
+            ["/usr/lib/fleet-agent/current/fleet-agent run --recovery"]
+        );
+        // The rollback unit has its turn first; restarting the service (a rollback, a confirmed update,
+        // an operator, the agent's hourly retry) stops recovery mode, so the two never run together.
+        assert_eq!(
+            recovery_values("After"),
+            [format!("network-online.target {ROLLBACK_UNIT_NAME}")]
+        );
+        assert_eq!(recovery_values("Conflicts"), [UNIT_NAME]);
+        // Never stopped for good: no start limit, restarts after a long delay, whatever the exit status.
+        assert_eq!(recovery_values("StartLimitIntervalSec"), ["0"]);
+        assert_eq!(recovery_values("Restart"), ["on-failure"]);
+        assert_eq!(recovery_values("RestartSec"), ["5min"]);
+        assert_eq!(recovery_values("RestartMaxDelaySec"), ["1h"]);
+        assert!(recovery_values("RestartPreventExitStatus").is_empty());
+        // Nothing starts it at boot: only OnFailure= (or a person on the VM).
+        assert!(!RECOVERY_UNIT.contains("[Install]"));
+        assert!(
+            RECOVERY_UNIT == include_str!("../../contrib/fleet-agent-recovery.service"),
+            "agent/contrib/fleet-agent-recovery.service differs from the installer's"
+        );
+    }
+
+    #[test]
+    fn the_recovery_sandbox_is_the_services_or_tighter() {
+        // ADR 0030: recovery mode gains no privilege. Every sandbox option of the service is set the same
+        // way, except the three it tightens.
+        let tightened = [
+            "CapabilityBoundingSet",
+            "ProtectHome",
+            "RestrictAddressFamilies",
+        ];
+        let sandbox = UNIT
+            .split("[Service]")
+            .nth(1)
+            .unwrap()
+            .split("[Install]")
+            .next()
+            .unwrap();
+        let mut checked = 0;
+        for line in sandbox.lines() {
+            let Some((key, _)) = line.split_once('=') else {
+                continue;
+            };
+            if line.starts_with('#')
+                || tightened.contains(&key)
+                || [
+                    "Type",
+                    "ExecStart",
+                    "Restart",
+                    "RestartSec",
+                    "RestartPreventExitStatus",
+                ]
+                .contains(&key)
+            {
+                continue;
+            }
+            assert!(
+                RECOVERY_UNIT.lines().any(|l| l == line),
+                "the recovery unit lacks the service's `{line}`"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 20, "only {checked} options compared");
+        assert_eq!(values("CapabilityBoundingSet"), ["CAP_DAC_READ_SEARCH"]);
+        assert_eq!(recovery_values("CapabilityBoundingSet"), [""]);
+        assert_eq!(recovery_values("ProtectHome"), ["yes"]);
+        let service: Vec<&str> = values("RestrictAddressFamilies")[0].split(' ').collect();
+        for family in recovery_values("RestrictAddressFamilies")[0].split(' ') {
+            assert!(
+                service.contains(&family),
+                "{family} is not allowed to the service"
+            );
+        }
+        assert_eq!(
+            recovery_values("RestrictAddressFamilies"),
+            ["AF_UNIX AF_INET AF_INET6"]
+        );
+        for widening in [
+            "AmbientCapabilities",
+            "ReadWritePaths",
+            "User",
+            "PrivateUsers",
+        ] {
+            assert!(recovery_values(widening).is_empty(), "{widening}");
+        }
     }
 
     #[test]

@@ -413,6 +413,13 @@ impl Updater {
         }
     }
 
+    /// No update is being prepared or in progress (no update record), so the service may be restarted
+    /// without cutting one short: recovery mode's hourly try of normal mode waits for this (ADR 0030).
+    pub fn idle(&self) -> bool {
+        !self.inner.busy.load(Ordering::SeqCst)
+            && matches!(Record::read(&self.inner.state_dir), Ok(None))
+    }
+
     /// Once per heartbeat round: posts the outcome waiting to be accepted, and makes sure an update in
     /// progress has a supervisor.
     pub fn tick(&self, transport: &dyn Transport) {

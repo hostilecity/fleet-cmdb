@@ -1,0 +1,65 @@
+# Written by `fleet-agent install`; re-running the installer replaces this file and
+# `fleet-agent uninstall` removes it. Do not edit it.
+#
+# Recovery mode (ADR 0030). Started by fleet-agent.service's OnFailure= when systemd stops
+# restarting the agent, after fleet-agent-rollback.service has had its turn. If that rolled
+# an unconfirmed update back, it restarted the service, which cancels this unit (Conflicts=).
+# Otherwise the agent kept failing on a version it had already confirmed, and nothing could
+# be rolled back: this runs the same binary as `run --recovery`, which only authenticates,
+# heartbeats with a "recovery" status and the reason, and installs a signed update offered
+# through the usual path (ADR 0018). No collectors, no reports, no tasks. The server cannot
+# start it. It never stops for good: no start limit, and a long, growing delay between
+# restarts. Starting fleet-agent.service (a confirmed update, an operator, or the agent
+# itself trying normal mode again every hour) stops it.
+#
+# The sandbox is fleet-agent.service's, tighter: no capabilities at all (no collector needs
+# CAP_DAC_READ_SEARCH), home directories hidden, and no netlink socket (no interface list).
+
+[Unit]
+Description=Fleet CMDB agent recovery mode
+Wants=network-online.target
+After=network-online.target fleet-agent-rollback.service
+Conflicts=fleet-agent.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/fleet-agent/current/fleet-agent run --recovery
+Restart=on-failure
+# 5 minutes, growing to an hour (systemd 254 and later; older systemd keeps 5 minutes).
+RestartSec=5min
+RestartSteps=4
+RestartMaxDelaySec=1h
+StateDirectory=fleet-agent
+StateDirectoryMode=0700
+UMask=0077
+
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+
+# IPv4 and IPv6 to the server; a local socket to systemd for the update supervisor and for
+# handing back to fleet-agent.service.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM

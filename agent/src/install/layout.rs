@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use crate::AGENT_VERSION;
 
 use super::fsx::{self, Kind, Lock};
-use super::systemd::{ROLLBACK_UNIT, UNIT};
+use super::systemd::{RECOVERY_UNIT, ROLLBACK_UNIT, UNIT};
 use super::ui::Ui;
 use super::{Failure, Host, InstallError};
 
@@ -156,9 +156,14 @@ pub fn install(host: &Host, ui: &mut Ui) -> Result<Installed, InstallError> {
 
     prune_versions(host, ui)?;
 
-    // The units, built into this binary: the service and the rollback unit its `OnFailure=` starts.
+    // The units, built into this binary: the service, and the rollback and recovery units its
+    // `OnFailure=` starts (ADR 0018, ADR 0030).
     let mut wrote_unit = false;
-    for (unit, text) in [(paths.unit(), UNIT), (paths.rollback_unit(), ROLLBACK_UNIT)] {
+    for (unit, text) in [
+        (paths.unit(), UNIT),
+        (paths.rollback_unit(), ROLLBACK_UNIT),
+        (paths.recovery_unit(), RECOVERY_UNIT),
+    ] {
         let same = fs::read(&unit).is_ok_and(|bytes| bytes == text.as_bytes());
         if same {
             ui.detail(&format!("{} is up to date.", unit.display()));

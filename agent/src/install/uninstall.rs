@@ -1,7 +1,7 @@
 //! `fleet-agent uninstall` (P1-A10): removes what `install` created, and nothing else.
 //!
-//! In order: stop and disable the service, remove the unit (only if the installer wrote it),
-//! `/usr/bin/fleet-agent` (only if it is the installer's link), `/usr/lib/fleet-agent`, and, unless
+//! In order: stop and disable the service (and recovery mode), remove the units (only if the installer
+//! wrote them), `/usr/bin/fleet-agent` (only if it is the installer's link), `/usr/lib/fleet-agent`, and, unless
 //! `--keep-state`, the config, the copied CA certificate, `/etc/fleet-agent` if nothing else is in it,
 //! and the default state directory. A state directory configured elsewhere, or files someone else put
 //! in `/etc/fleet-agent`, are listed and left alone. The host record on the server is not touched.
@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::config::Config;
 
 use super::fsx::{self, Kind, Lock};
-use super::systemd::{UNIT_MARKER, UNIT_NAME};
+use super::systemd::{RECOVERY_UNIT_NAME, UNIT_MARKER, UNIT_NAME};
 use super::ui::Ui;
 use super::{Failure, Host, InstallError, UninstallOptions};
 
@@ -64,18 +64,38 @@ pub fn uninstall(host: &Host, options: &UninstallOptions, ui: &mut Ui) -> Result
             }
         }
     }
-    // The rollback unit the service's OnFailure= starts, with the same rule.
-    let rollback = paths.rollback_unit();
-    if fs::read_to_string(&rollback).is_ok_and(|t| t.starts_with(UNIT_MARKER))
-        && fsx::check_file(&rollback, uid).is_none()
-    {
-        remove_file(&rollback, &mut removed, ui)?;
-    } else if rollback.exists() {
-        keep(
-            &mut kept,
-            ui,
-            format!("{} (not written by the installer)", rollback.display()),
-        );
+    // The rollback and recovery units the service's OnFailure= starts, with the same rule. Recovery mode
+    // runs the agent too (ADR 0030), so it is stopped before its unit goes.
+    let recovery = paths.recovery_unit();
+    let recovery_is_ours = fs::read_to_string(&recovery).is_ok_and(|t| t.starts_with(UNIT_MARKER))
+        && fsx::check_file(&recovery, uid).is_none();
+    if recovery_is_ours && host.systemd.unavailable().is_none() {
+        match host.systemd.systemctl(&["stop", RECOVERY_UNIT_NAME]) {
+            Ok(_) => {
+                let _ = host
+                    .systemd
+                    .systemctl(&["reset-failed", RECOVERY_UNIT_NAME]);
+            }
+            Err(e) => return Err(failed(format!("cannot stop {RECOVERY_UNIT_NAME}: {e}"))),
+        }
+    }
+    for (unit, ours) in [
+        (paths.rollback_unit(), None),
+        (recovery, Some(recovery_is_ours)),
+    ] {
+        let ours = ours.unwrap_or_else(|| {
+            fs::read_to_string(&unit).is_ok_and(|t| t.starts_with(UNIT_MARKER))
+                && fsx::check_file(&unit, uid).is_none()
+        });
+        if ours {
+            remove_file(&unit, &mut removed, ui)?;
+        } else if unit.exists() {
+            keep(
+                &mut kept,
+                ui,
+                format!("{} (not written by the installer)", unit.display()),
+            );
+        }
     }
     if unit_is_ours {
         remove_file(&unit, &mut removed, ui)?;
