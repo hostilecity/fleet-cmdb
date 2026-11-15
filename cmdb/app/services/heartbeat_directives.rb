@@ -30,7 +30,7 @@ module HeartbeatDirectives
     # Composed with Arel, not with to_sql, so every value stays a bind parameter ($1, $2, ...) and the statement text
     # is the same on every heartbeat: PostgreSQL then prepares it once per connection instead of planning it on every
     # heartbeat (review of #209). Active Record would not prepare it by itself, because the scopes hold SQL text (the
-    # FOR SHARE clause, the stage comparison) and it prepares no statement with SQL literals, as they might carry
+    # stage comparison, the offer's due time) and it prepares no statement with SQL literals, as they might carry
     # values. Here they are constants, so the text is compiled once per call with the connection's visitor and passed
     # as preparable. spec/services/heartbeat_directives_spec.rb checks that the statement is prepared.
     select = Arel::SelectManager.new.project(Arel::Nodes::Grouping.new(rollout.arel).as("rollout"),

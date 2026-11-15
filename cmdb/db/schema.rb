@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_11_199001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -663,6 +663,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
     t.datetime "finished_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.integer "halted_seconds", default: 0, null: false
     t.index ["agent_release_id"], name: "index_rollouts_on_agent_release_id"
     t.index ["open_slot"], name: "index_rollouts_one_open", unique: true
     t.check_constraint "(open_slot IS NOT NULL) = (state::text = ANY (ARRAY['running'::character varying, 'halted'::character varying]::text[]))", name: "rollouts_open_slot_matches_state"

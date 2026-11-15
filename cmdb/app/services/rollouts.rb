@@ -11,9 +11,10 @@
 # stage_percents[n - 1] percent of the hosts that run an older version. The default stages follow the fleet's
 # size (default_stages, #199): 25 and 100 percent for a homelab, 1, 10, 50, and 100 from FLEET_ROLLOUT_LARGE_FLEET_HOSTS
 # (1,000) active hosts.
-# A stage's hosts are chosen when it opens, in batches of OPEN_BATCH, and its offers are spread over a window that
-# grows with the stage (stage_spread). A stage advances by itself when all its hosts have confirmed, or when an
-# operator advances it. Only a running rollout sends directives; a halted one resumes only by operator action.
+# A stage's hosts are chosen before it opens, in batches of OPEN_BATCH and without the rollout lock, and its offers
+# are spread over a window that grows with the stage (stage_spread); time spent halted does not count against the
+# window (halted_seconds). A stage advances by itself when all its hosts have confirmed (RolloutAdvanceJob), or when
+# an operator advances it. Only a running rollout sends directives; a halted one resumes only by operator action.
 module Rollouts
   # field names the start form's control the problem is with (:release, :canary_tag, :stages), or nil.
   class Invalid < StandardError
@@ -36,6 +37,9 @@ module Rollouts
   # is spread evenly and never moves: 0 to spread - 1 seconds. Binds: the rollout id, then the spread in seconds.
   # hashtextextended is the hash PostgreSQL's hash partitioning relies on, so it is stable across versions.
   OFFER_DELAY_SQL = "make_interval(secs => (hashtextextended(?::text || ':' || hosts.id, 0) & 9223372036854775807) % ?)".freeze
+  # When an offer is due: its offer time moved on by the time the rollout has spent halted (#199), so a resume
+  # releases the stage over what is left of its window, not all at once.
+  OFFER_DUE_SQL = "rollout_hosts.offer_at + rollouts.halted_seconds * interval '1 second'".freeze
   DIRECTIVE_FILES = { manifest_url: "manifest", signature_url: "signature", binary_url: "binary" }.freeze
   # [rollout host id, its state, rollout id, release version] of a host's open offer (offer_scope), in this order.
   OFFER_COLUMNS = %w[rollout_hosts.id rollout_hosts.state rollouts.id agent_releases.version].freeze
@@ -63,7 +67,7 @@ module Rollouts
       now = Time.current
       rollout = Rollout.create!(agent_release: release, started_by: actor, canary_host_ids: ids, canary_tag: tag,
                                 stage_percents: percents, started_at: now, stage_opened_at: now)
-      added = open_stage!(rollout, now)
+      added = prepare_stage!(rollout, 0)
       raise Invalid.new("None of the canaries is an active host running an older version than #{release.version}.", field: :canary_tag) if added.zero?
 
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_STARTED, target: rollout,
@@ -101,21 +105,49 @@ module Rollouts
   # when no canary is named.
   def canary_hosts(release:, canary_host_ids: [], canary_tag: nil)
     ids, tag = canaries!(canary_host_ids, canary_tag)
-    older_hosts(release.semver).where(id: canary_ids(ids, tag))
+    older_hosts(release.semver).merge(canary_scope(ids, tag))
   end
 
   # The operator opens the next stage now, without waiting for the current one to confirm.
   # expected_stage is the stage the operator saw when confirming (the dashboard sends it): if another operator, or
   # the stage's last confirmation, moved the rollout on since, nothing is advanced, so one confirmation can never
   # skip a stage nobody chose to skip.
+  #
+  # The next stage's hosts are chosen first, outside the rollout lock (prepare_stage!), so update results and the
+  # timeout check never wait for a large stage to be chosen (review of #215). Only the advance itself, which re-checks
+  # all of the above, takes the lock.
   def advance!(rollout, actor:, expected_stage: nil)
+    rollout.reload
+    check_advance!(rollout, expected_stage)
+    expected = rollout.current_stage
+    prepare_stage!(rollout, expected + 1)
     in_state!(rollout, "running") do
-      if expected_stage && rollout.current_stage != expected_stage
-        raise Invalid, "The rollout already moved on to stage #{rollout.current_stage + 1} since you opened that page."
-      end
-      raise Invalid, "The rollout is already in its final stage." if rollout.final_stage?
-
+      check_advance!(rollout, expected_stage || expected)
       advance_stage!(rollout, actor:, reason: "advanced by an operator")
+    end
+  end
+
+  # Opens the stage after `from` once every host of `from` has confirmed (RolloutAdvanceJob): chooses its hosts without
+  # the lock, then advances under it if the rollout is still running at `from` and the stage is still confirmed.
+  # Does nothing otherwise, so a repeated or late job is harmless.
+  def advance_confirmed!(rollout_id, from:)
+    rollout = Rollout.find_by(id: rollout_id)
+    return unless rollout && advanceable?(rollout, from)
+
+    prepare_stage!(rollout, from + 1)
+    rollout.with_lock do
+      next unless advanceable?(rollout, from)
+
+      advance_stage!(rollout, actor: Audit::SYSTEM, reason: "all hosts in the stage confirmed")
+      FleetBroadcast.refresh
+    end
+  end
+
+  # The running rollout's current stage, if every host of it has confirmed and it is not the last: a backstop for
+  # an advance job that was lost (RolloutTimeoutJob runs this every minute).
+  def advance_confirmed_stages!
+    Rollout.where(state: "running").find_each do |rollout|
+      advance_confirmed!(rollout.id, from: rollout.current_stage) if advanceable?(rollout, rollout.current_stage)
     end
   end
 
@@ -126,7 +158,10 @@ module Rollouts
   # Only an operator resumes a halted rollout.
   def resume!(rollout, actor:)
     in_state!(rollout, "halted") do
-      rollout.update!(state: "running", resumed_by: actor, resumed_at: Time.current)
+      now = Time.current
+      # The time halted no longer counts against the open stage's window (#199): its pending offers stay spread.
+      halted = rollout.halted_at ? (now - rollout.halted_at).floor : 0
+      rollout.update!(state: "running", resumed_by: actor, resumed_at: now, halted_seconds: rollout.halted_seconds + halted)
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_RESUMED, target: rollout,
                    changes: { "state" => [ "halted", "running" ], "reason" => rollout.halt_reason })
       advance_if_confirmed!(rollout, actor: Audit::SYSTEM)
@@ -150,33 +185,33 @@ module Rollouts
   # reports a result, and the first time marks the host as updating and audits the request for that host. One
   # indexed SELECT when there is none.
   #
-  # Runs inside the heartbeat's transaction, and reads the rollout row without locking it (#199). Before, every
-  # heartbeat of a host in an open stage took the row FOR SHARE: at scale, hundreds of thousands of share lockers of
-  # one row (a MultiXact per combination), and a halt waiting for all of them while new heartbeats queued behind it.
-  # Now a halt, cancel, or advance never waits for heartbeats. What that allows, and why it is safe:
-  # - A heartbeat whose read began before a halt committed may still send the directive, at most milliseconds after
-  #   the halt. It is at most one offer per host (pending to updating is one conditional UPDATE, audited once), and
-  #   it is the offer the host would have had a moment earlier: the agent verifies the release itself (ADR 0018).
-  # - Every heartbeat that starts after the halt commits reads it and offers nothing.
-  # - The result of such an offer is still accepted (record_result! takes the rollout FOR UPDATE and stores late
-  #   results), a failure still halts a running rollout, and an offered host that never reports is marked
-  #   unconfirmed by expire_unconfirmed! once the rollout runs again.
-  # The stage gate (rollout_hosts.stage <= rollouts.current_stage) is read in the same statement as the state, so an
-  # advance is seen whole or not at all. Lock order elsewhere is host row, then rollout, then rollout host.
+  # Runs inside the heartbeat's transaction. The offer is read without a lock on the rollout row (#199): before,
+  # every heartbeat of a host in an open stage took the row FOR SHARE, which at scale is hundreds of thousands of
+  # share lockers of one row, and a halt waiting behind all of them. Only a host's first offer (pending to updating)
+  # takes the row, FOR SHARE SKIP LOCKED, and re-reads its state there (review of #215):
+  # - a halt, cancel, or advance in progress holds the row FOR UPDATE, so the first offer is skipped (no directive
+  #   this heartbeat; the next one tries again), and no heartbeat ever waits;
+  # - one that committed is seen by the locking read, so once a halt or cancel commits, no host is offered the update;
+  # - a halt or cancel waits only for the first offers in flight, about FLEET_ROLLOUT_DOWNLOADS_PER_SECOND a second.
+  # A host already updating keeps getting its directive until it reports; it was offered before the halt. The stage
+  # gate (rollout_hosts.stage <= rollouts.current_stage) is read in the same statement as the state, so an advance is
+  # seen whole or not at all. Lock order elsewhere is host row, then rollout, then rollout host.
   #
   # The heartbeat reads offer_scope in one statement with its other directives (HeartbeatDirectives, #189) and builds
-  # the directive with directive_from; neither locks the rollout.
+  # the directive with directive_from.
   def directive_for(host_id:, agent_version:, now: Time.current)
     directive_from(offer_scope(host_id:, now:).pick(*OFFER_COLUMNS), host_id:, agent_version:, now:)
   end
 
   # The host's open offer, at most one row, read without a lock on the rollout row (see directive_for, #199). Every
-  # value is a condition Active Record binds (no value inside SQL text), so the heartbeat's directives statement keeps
-  # the same text and can be prepared (review of #209, HeartbeatDirectives).
+  # value is a bind parameter (no value inside SQL text), so the heartbeat's directives statement keeps the same text
+  # and can be prepared (review of #209, HeartbeatDirectives); now is bound into OFFER_DUE_SQL's comparison.
   def offer_scope(host_id:, now:)
+    due = Arel::Nodes::BindParam.new(ActiveRecord::Relation::QueryAttribute.new("offer_at", now, RolloutHost.type_for_attribute(:offer_at)))
     RolloutHost.joins(rollout: :agent_release)
                .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
-               .where("rollout_hosts.stage <= rollouts.current_stage").where(offer_at: ..now)
+               .where("rollout_hosts.stage <= rollouts.current_stage")
+               .where(Arel::Nodes::LessThanOrEqual.new(Arel.sql(OFFER_DUE_SQL), due))
                .limit(1)
   end
 
@@ -188,6 +223,10 @@ module Rollouts
     current = AgentApi::AgentVersion.parse(agent_version)
     return nil unless current && current < AgentApi::AgentVersion.parse(version)
 
+    if state == "pending"
+      # The first offer re-reads the rollout under a share lock that never waits (see directive_for).
+      return nil unless Rollout.where(id: rollout_id, state: "running").lock("FOR SHARE SKIP LOCKED").exists?
+    end
     if state == "pending" && RolloutHost.where(id:, state: "pending").update_all(state: "updating", offered_at: now, updated_at: now) == 1
       # Once per host and rollout, never on a repeat heartbeat: the request is on the host's audit trail even if the
       # rollout is cancelled before the host reports or times out.
@@ -294,67 +333,108 @@ module Rollouts
       finish!(rollout, "completed")
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_COMPLETED, target: rollout, changes: { "state" => [ "running", "completed" ] })
     else
-      advance_stage!(rollout, actor:, reason: "all hosts in the stage confirmed")
+      # Choosing the next stage's hosts takes long for a large fleet, and this runs under the rollout lock (from an
+      # update result, a resume, or an advance), so it is left to a job that chooses them first (advance_confirmed!).
+      from = rollout.current_stage
+      ActiveRecord.after_all_transactions_commit { RolloutAdvanceJob.perform_later(rollout.id, from) }
     end
   end
   private_class_method :advance_if_confirmed!
 
+  # Raises Invalid unless the rollout can move on from expected_stage (the stage the operator saw, if given).
+  def check_advance!(rollout, expected_stage)
+    raise Invalid, "The rollout is #{rollout.state}, not running." unless rollout.state == "running"
+    if expected_stage && rollout.current_stage != expected_stage
+      raise Invalid, "The rollout already moved on to stage #{rollout.current_stage + 1} since you opened that page."
+    end
+    raise Invalid, "The rollout is already in its final stage." if rollout.final_stage?
+  end
+  private_class_method :check_advance!
+
+  # Running at stage from, not the last, and every host of it confirmed.
+  def advanceable?(rollout, from)
+    rollout.state == "running" && rollout.current_stage == from && !rollout.final_stage? &&
+      !rollout.rollout_hosts.where(stage: from).where.not(state: "confirmed").exists?
+  end
+  private_class_method :advanceable?
+
+  # Under the rollout lock: opens the next stage, whose hosts prepare_stage! chose, in one short update.
   def advance_stage!(rollout, actor:, reason:)
     from = rollout.current_stage
-    now = Time.current
-    rollout.update!(current_stage: from + 1, stage_opened_at: now)
-    added = open_stage!(rollout, now)
+    rollout.update!(current_stage: from + 1, stage_opened_at: Time.current)
+    added = rollout.rollout_hosts.where(stage: from + 1).count
     Audit.record(actor:, action: Audit::Actions::ROLLOUT_ADVANCED, target: rollout,
                  changes: { "stage" => [ from, from + 1 ], "hosts_added" => added, "reason" => reason })
     advance_if_confirmed!(rollout, actor: Audit::SYSTEM) # a stage that added no host is confirmed already
   end
   private_class_method :advance_stage!
 
-  # Chooses the hosts of the rollout's current stage and returns how many. Hosts that are not active, have
-  # not reported a version, or already run the release (or newer) are never chosen. Hosts are chosen in host id
-  # order, one host-id range of at most OPEN_BATCH hosts per INSERT ... SELECT (#199), so no statement and no Ruby
-  # array holds the whole fleet. All batches are in the caller's transaction, so a stage opens whole or not at all.
-  def open_stage!(rollout, now)
-    stage = rollout.current_stage
+  # Chooses the hosts of stage `stage` and returns how many it has. Runs before the stage opens and without the
+  # rollout lock (the stage gate, rollout_hosts.stage <= rollouts.current_stage, hides them until advance_stage!), in
+  # its own short transactions, so update results and the timeout check never wait for it (review of #215). Hosts
+  # that are not active, have not reported a version, or already run the release (or newer) are never chosen. A
+  # stage chosen before and not opened (an advance that found the rollout halted) is chosen again from where it was.
+  def prepare_stage!(rollout, stage)
     older = older_hosts(rollout.agent_release.semver)
-    older = older.where(id: canary_ids(rollout.canary_host_ids, rollout.canary_tag)) if stage.zero?
-    included = rollout.rollout_hosts.count
-    # Older hosts not in the rollout yet. A join, so a new rollout's missing statistics cannot make it quadratic.
-    candidates = older.count - rollout.rollout_hosts.joins(:host).merge(older).count
-    wanted = if stage.zero?
-      candidates
+    older = older.merge(canary_scope(rollout.canary_host_ids, rollout.canary_tag)) if stage.zero?
+    percent = stage.zero? ? 100 : rollout.stage_percents.fetch(stage - 1)
+    # The 100% stage takes every older host still left, however many there are by then (review of #215); a partial
+    # stage takes enough to reach its share of the older hosts and those already in the rollout.
+    wanted = if percent == 100
+      nil
     else
-      [ ((candidates + included) * rollout.stage_percents.fetch(stage - 1) / 100.0).ceil - included, 0 ].max
+      included = rollout.rollout_hosts.count
+      candidates = older.count - rollout.rollout_hosts.joins(:host).merge(older).count
+      [ ((candidates + included) * percent / 100.0).ceil - included, 0 ].max
     end
-    insert_stage_rows!(rollout, older, stage:, wanted:, spread: stage_spread(wanted), now:)
+    spread = stage_spread(wanted || older.count)
+    # Offer times count from now; halted_seconds is subtracted so a past halt does not delay this stage (OFFER_DUE_SQL).
+    base = Time.current - rollout.halted_seconds
+    insert_stage_rows!(rollout, older, stage:, wanted:, spread:, base:)
+    rollout.rollout_hosts.where(stage:).count
   end
-  private_class_method :open_stage!
+  private_class_method :prepare_stage!
 
-  # Inserts the first wanted older hosts that are not in the rollout yet, in host id order. Each statement takes the
-  # next range of at most OPEN_BATCH older hosts, never more than are still wanted, and inserts them; the unique
-  # index on (rollout_id, host_id) skips those already chosen (ON CONFLICT DO NOTHING), with no anti-join for the
-  # planner to get wrong: a new rollout's id has no statistics, and as a join that was quadratic (32 s for the third
-  # batch of 10,000). Earlier stages took the lowest ids, so the skipped hosts come first and cost one pass. Each
-  # host's offer time is the opening time plus its offset (OFFER_DELAY_SQL), computed in the same statement.
-  def insert_stage_rows!(rollout, older, stage:, wanted:, spread:, now:)
+  # Inserts up to wanted (or all) older hosts that are not in the rollout yet, in host id order. Each statement takes
+  # the next OPEN_BATCH older hosts after a cursor and inserts them; the unique index on (rollout_id, host_id) skips
+  # those already chosen (ON CONFLICT DO NOTHING), with no anti-join for the planner to get wrong: a new rollout's id
+  # has no statistics, and as a join that was quadratic (32 s for the third batch of 10,000). The batch, the insert,
+  # and the next cursor come from one statement, so one snapshot (review of #215); a batch that adds more than are
+  # still wanted has its highest extra rows deleted by id in the same transaction. Each host's offer time is base plus
+  # its offset (OFFER_DELAY_SQL).
+  def insert_stage_rows!(rollout, older, stage:, wanted:, spread:, base:)
     added = 0
     after = 0
-    while added < wanted
-      size = [ OPEN_BATCH, wanted - added ].min
-      upper = older.where("hosts.id > ?", after).order(:id).offset(size - 1).limit(1).pick(:id)
-      range = older.where("hosts.id > ?", after)
-      range = range.where("hosts.id <= ?", upper) if upper
-      rows = range.select(Arel.sql(ApplicationRecord.sanitize_sql_array(
-        [ "?, hosts.id, ?, 'pending', ?::timestamp + #{OFFER_DELAY_SQL}, hosts.agent_version, ?::timestamp, ?::timestamp",
-          rollout.id, stage, now, rollout.id, spread, now, now ]
-      )))
-      added += RolloutHost.connection.exec_update(
-        "INSERT INTO rollout_hosts (rollout_id, host_id, stage, state, offer_at, from_version, created_at, updated_at) " \
-        "#{rows.to_sql} ON CONFLICT (rollout_id, host_id) DO NOTHING"
-      )
-      break unless upper # no older host is left
+    loop do
+      break if wanted && added >= wanted
 
-      after = upper
+      batch = older.where("hosts.id > ?", after).order(:id).limit(OPEN_BATCH).select(:id, :agent_version)
+      values = ApplicationRecord.sanitize_sql_array(
+        [ "?, batch.id, ?, 'pending', ?::timestamp + #{OFFER_DELAY_SQL.sub('hosts.id', 'batch.id')}, batch.agent_version, ?::timestamp, ?::timestamp",
+          rollout.id, stage, base, rollout.id, spread, Time.current, Time.current ]
+      )
+      row = RolloutHost.transaction do
+        last, inserted = RolloutHost.connection.select_rows(<<~SQL.squish).first
+          WITH batch AS (#{batch.to_sql}),
+          inserted AS (
+            INSERT INTO rollout_hosts (rollout_id, host_id, stage, state, offer_at, from_version, created_at, updated_at)
+            SELECT #{values} FROM batch ORDER BY batch.id
+            ON CONFLICT (rollout_id, host_id) DO NOTHING RETURNING id, host_id
+          )
+          SELECT (SELECT max(id) FROM batch), (SELECT json_agg(json_build_array(host_id, id)) FROM inserted)
+        SQL
+        rows = inserted ? JSON.parse(inserted).sort : []
+        if wanted && added + rows.size > wanted
+          RolloutHost.where(id: rows.drop(wanted - added).map(&:last)).delete_all
+          rows = rows.first(wanted - added)
+        end
+        [ last, rows.size ]
+      end
+      last, count = row
+      added += count
+      break unless last # no older host is left
+
+      after = last
     end
     added
   end
@@ -371,11 +451,12 @@ module Rollouts
   end
   private_class_method :older_hosts
 
-  def canary_ids(ids, tag)
-    tagged = tag ? Host.active.tagged(tag).pluck(:id) : []
-    ids | tagged
+  # The named or tagged hosts, as a query: a large canary tag is never read into Ruby (review of #215).
+  def canary_scope(ids, tag)
+    named = Host.where(id: ids)
+    tag ? named.or(Host.tagged(tag)) : named
   end
-  private_class_method :canary_ids
+  private_class_method :canary_scope
 
   # The canary host ids and tag, cleaned; at least one of them is required.
   def canaries!(canary_host_ids, canary_tag)
@@ -387,7 +468,6 @@ module Rollouts
     [ ids, tag ]
   end
   private_class_method :canaries!
-
 
   def reject!(pointer, problem)
     raise AgentApi::ValidationFailed.new(details: [ { "pointer" => pointer, "problem" => problem } ])
