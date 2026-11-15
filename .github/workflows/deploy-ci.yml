@@ -103,6 +103,7 @@ jobs:
            { echo SOLID_QUEUE_IN_PUMA=1; cat "$RUNNER_TEMP/fleet-cmdb-nojobs.env"; } > "$RUNNER_TEMP/fleet-cmdb.env")
           docker volume create fleet-cmdb_storage
           docker run -d --name fleet-cmdb -p 127.0.0.1:8443:3443 --network fleet-db \
+            --cap-drop ALL --security-opt no-new-privileges \
             -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/fleet-cmdb.env" fleet-cmdb:ci
           rm -f "$RUNNER_TEMP/fleet-cmdb.env"
           for _ in $(seq 1 60); do
@@ -136,6 +137,26 @@ jobs:
             "$(code -X POST -H "Host: $DASHBOARD" -H "Forwarded: host=$AGENT" "$url/api/v1/heartbeat")"
           expect "/health on the dashboard hostname is 404" 404 "$(code -H "Host: $DASHBOARD" "$url/health")"
           expect "the storage volume belongs to the app" 1000 "$(docker exec fleet-cmdb stat -c %u /rails/storage/releases)"
+          # Container hardening (server assessment): the app owns only what it writes, has no capabilities, cannot gain
+          # privileges, and the image carries no test or development gems.
+          expect "the app runs as uid 1000" 1000 "$(docker exec fleet-cmdb id -u)"
+          expect "the app has no capabilities" 0000000000000000 "$(docker exec fleet-cmdb sed -n 's/^CapEff:[[:space:]]*//p' /proc/1/status)"
+          expect "the app cannot gain privileges" 1 "$(docker exec fleet-cmdb sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/1/status)"
+          # yes or no for the app user creating a file in the directory; the container's shell expands a pattern
+          # first (review of #184), and a directory that is not there is "missing", which fails either way.
+          writable() {
+            docker exec fleet-cmdb sh -c 'for d in $1; do
+              [ -d "$d" ] || { echo missing; exit 0; }
+              if touch "$d/.probe" 2>/dev/null; then rm -f "$d/.probe"; echo yes; else echo no; fi; exit 0
+            done' sh "$1"
+          }
+          for dir in /rails/app /rails/config /rails/bin /usr/local/bundle '/usr/local/bundle/ruby/*/gems'; do
+            expect "the app cannot write $dir" no "$(writable "$dir")"
+          done
+          for dir in /rails/tmp /rails/log /rails/storage; do
+            expect "the app can write $dir" yes "$(writable "$dir")"
+          done
+          expect "the image has no test gems" 0 "$(docker exec fleet-cmdb sh -c 'ls /usr/local/bundle/ruby/*/gems | grep -c -e "^rspec-core-" -e "^webmock-" -e "^brakeman-"')"
           health="$(docker exec fleet-cmdb curl -s -w ' %{http_code}' http://localhost:3000/health)"
           echo "/health: $health"
           expect "/health is 503 until a backup exists" 503 "${health##* }"
@@ -146,9 +167,10 @@ jobs:
           failed=0
           expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; failed=1; fi; }
           queue() { docker exec postgres psql -U postgres -d cmdb_production_queue -Atc "$1"; }
-          # Solid Queue's workers inside the app container, as deployed by default: one for realtime, one for every queue.
-          for _ in $(seq 1 30); do [ "$(queue "SELECT count(*) FROM solid_queue_processes WHERE kind = 'Worker'")" = 2 ] && break; sleep 2; done
-          expect "the app container runs a realtime worker and one for every queue" "*,realtime" \
+          # Solid Queue's workers inside the app container, as deployed by default: one for realtime, one for the default queue
+          # (and Solid Queue's recurring commands, and realtime when free), and one for fleet-wide evaluation (#197).
+          for _ in $(seq 1 30); do [ "$(queue "SELECT count(*) FROM solid_queue_processes WHERE kind = 'Worker'")" = 3 ] && break; sleep 2; done
+          expect "the app container runs a realtime, a default, and an evaluation worker" "default,solid_queue_recurring,realtime,evaluation,realtime" \
             "$(queue "SELECT string_agg(metadata::json->>'queues', ',' ORDER BY metadata::json->>'queues') FROM solid_queue_processes WHERE kind = 'Worker'")"
 
           docker rm -f fleet-cmdb >/dev/null
@@ -173,7 +195,7 @@ jobs:
           expect "the liveness evaluation ran on the realtime queue" realtime \
             "$(queue "SELECT string_agg(DISTINCT queue_name, ',') FROM solid_queue_jobs WHERE class_name = 'LivenessEvaluationJob' AND finished_at IS NOT NULL")"
           expect "every Solid Queue process is in the jobs container" "$jobs_host" "$(queue "SELECT string_agg(DISTINCT hostname, ',') FROM solid_queue_processes")"
-          expect "the jobs container runs a realtime worker and one for every queue" "*,realtime" \
+          expect "the jobs container runs a realtime, a default, and an evaluation worker" "default,solid_queue_recurring,realtime,evaluation,realtime" \
             "$(queue "SELECT string_agg(metadata::json->>'queues', ',' ORDER BY metadata::json->>'queues') FROM solid_queue_processes WHERE kind = 'Worker'")"
           expect "the jobs container is running" "true 0" "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' fleet-cmdb-jobs)"
           health="$(docker exec fleet-cmdb curl -s http://localhost:3000/health)"

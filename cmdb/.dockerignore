@@ -36,3 +36,7 @@
 # Ignore Docker-related files
 /.dockerignore
 /Dockerfile*
+
+# Tests and their output are not needed to run the server.
+/spec/
+/coverage/

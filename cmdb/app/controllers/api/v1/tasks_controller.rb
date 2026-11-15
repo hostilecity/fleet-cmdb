@@ -29,11 +29,12 @@ module Api
       validates_body_with "task-result.request", only: :result
       atomic :poll, :start, :progress, :result
 
-      # poll_seconds is the poll interval hint (Settings: Tasks); cancel names the running task to stop, if any (P3-S05).
+      # poll_seconds is the poll interval hint (Settings: Tasks), read through the per-process SettingsCache (#189);
+      # cancel names the running task to stop, if any (P3-S05).
       def poll
-        host = locked_host
-        task = AgentTasks.poll!(host:)
-        render json: { task: task && AgentTasks.delivery(task), poll_seconds: TaskSettings.poll_seconds, **{ cancel: AgentTasks.cancel_directive(host) }.compact }
+        result = AgentTasks.poll_with_cancel!(host: locked_host)
+        poll_seconds = SettingsCache.fetch(:task_poll_seconds) { TaskSettings.poll_seconds }
+        render json: { task: result.task && AgentTasks.delivery(result.task), poll_seconds:, **{ cancel: result.cancel }.compact }
       end
 
       def start

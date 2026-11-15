@@ -11,7 +11,9 @@ module Api
     # exempt from the minimum agent version, so an agent that is too old for the other endpoints still learns
     # of the release that updates it (FR-S.5). The report_request directive lists the report types an operator
     # asked for that no report has answered yet (P2-S03, ReportRequests). tasks_available tells the agent to poll
-    # for a task now (P3-S03, AgentTasks.available?). A host with nothing pending costs four extra SELECTs, no writes.
+    # for a task now (P3-S03, AgentTasks.available?). The last three are read in one SELECT (HeartbeatDirectives) and
+    # the intervals come from the per-process SettingsCache, so a host with nothing pending costs one extra SELECT and
+    # no writes (#189).
     #
     # The request's `tasks` object, the agent's task capabilities (P3-A01), is stored in the same UPDATE, so tasks
     # are created only for hosts that support and enable the type (Host#task_exclusion_reason, P3-S02). It allows up
@@ -37,11 +39,9 @@ module Api
 
       # Named entries in an object (DEC-20); a directive with nothing to say is left out.
       def directives(now, agent_time)
-        intervals = Setting.agent_intervals
-        update = Rollouts.directive_for(host_id: current_host.id, agent_version: payload["agent_version"], now:)
-        report_request = ReportRequests.directive_for(host_id: current_host.id, agent_time:, now:)
-        tasks_available = AgentTasks.available?(host_id: current_host.id) ? {} : nil
-        { intervals: intervals.presence, agent_update: update, report_request:, tasks_available: }.compact
+        intervals = SettingsCache.fetch(:agent_intervals) { Setting.agent_intervals }
+        host_directives = HeartbeatDirectives.lookup(host_id: current_host.id, agent_version: payload["agent_version"], agent_time:, now:)
+        { intervals: intervals.presence, **host_directives }.compact
       end
     end
   end

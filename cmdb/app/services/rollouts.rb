@@ -37,6 +37,8 @@ module Rollouts
   # hashtextextended is the hash PostgreSQL's hash partitioning relies on, so it is stable across versions.
   OFFER_DELAY_SQL = "make_interval(secs => (hashtextextended(?::text || ':' || hosts.id, 0) & 9223372036854775807) % ?)".freeze
   DIRECTIVE_FILES = { manifest_url: "manifest", signature_url: "signature", binary_url: "binary" }.freeze
+  # [rollout host id, its state, rollout id, release version] of a host's open offer (offer_scope), in this order.
+  OFFER_COLUMNS = %w[rollout_hosts.id rollout_hosts.state rollouts.id agent_releases.version].freeze
   OUTCOME_STATES = { "succeeded" => "confirmed", "failed" => "failed", "rolled_back" => "rolled_back" }.freeze
   OUTCOME_ACTIONS = { "succeeded" => Audit::Actions::UPDATE_SUCCEEDED, "failed" => Audit::Actions::UPDATE_FAILED,
                       "rolled_back" => Audit::Actions::UPDATE_ROLLED_BACK }.freeze
@@ -161,11 +163,23 @@ module Rollouts
   #   unconfirmed by expire_unconfirmed! once the rollout runs again.
   # The stage gate (rollout_hosts.stage <= rollouts.current_stage) is read in the same statement as the state, so an
   # advance is seen whole or not at all. Lock order elsewhere is host row, then rollout, then rollout host.
+  #
+  # The heartbeat reads offer_scope in one statement with its other directives (HeartbeatDirectives, #189) and builds
+  # the directive with directive_from; neither locks the rollout.
   def directive_for(host_id:, agent_version:, now: Time.current)
-    row = RolloutHost.joins(rollout: :agent_release)
-                     .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
-                     .where("rollout_hosts.stage <= rollouts.current_stage AND rollout_hosts.offer_at <= ?", now)
-                     .pick("rollout_hosts.id", "rollout_hosts.state", "rollouts.id", "agent_releases.version")
+    directive_from(offer_scope(host_id:, now:).pick(*OFFER_COLUMNS), host_id:, agent_version:, now:)
+  end
+
+  # The host's open offer, at most one row, read without a lock on the rollout row (see directive_for, #199).
+  def offer_scope(host_id:, now:)
+    RolloutHost.joins(rollout: :agent_release)
+               .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
+               .where("rollout_hosts.stage <= rollouts.current_stage AND rollout_hosts.offer_at <= ?", now)
+               .limit(1)
+  end
+
+  # The directive for an offer_scope row (OFFER_COLUMNS), or nil for none.
+  def directive_from(row, host_id:, agent_version:, now:)
     return nil unless row
 
     id, state, rollout_id, version = row

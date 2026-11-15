@@ -77,11 +77,42 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     writes = queries.grep(/\A\s*(INSERT|UPDATE|DELETE)/i)
     expect(writes.size).to eq(1), writes.inspect
     expect(writes.first).to match(/UPDATE "hosts"/)
-    # credential + host (authentication), host FOR UPDATE and credential re-check (under the lock), UPDATE,
-    # then the intervals setting and the host's rollout membership (P1-UPDATES), and its outstanding report
-    # requests (P2-S03), and whether it has a task waiting (P3-S03): four indexed SELECTs
-    expect(queries.size).to be <= 9, queries.inspect
-    expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events/)
+    # #189: the credential with its host (authentication), the host FOR UPDATE joined to the credential (the re-check
+    # under the lock), the UPDATE, and one SELECT for the rollout offer (P1-UPDATES), outstanding report requests
+    # (P2-S03), and a waiting task (P3-S03). The intervals setting comes from the per-process cache.
+    expect(queries.size).to eq(4), queries.inspect
+    expect(queries[0]).to match(/FROM "agent_credentials" LEFT OUTER JOIN "hosts"/)
+    expect(queries[1]).to match(/FROM "hosts" INNER JOIN "agent_credentials".*FOR UPDATE OF hosts FOR SHARE OF agent_credentials/m)
+    expect(queries[2]).to match(/\AUPDATE "hosts"/)
+    expect(queries[3]).to match(/rollout_hosts.*report_requests.*EXISTS \(SELECT 1 FROM "tasks"/m)
+    expect(queries[3]).not_to match(/FOR (SHARE|UPDATE)/) # no rollout row lock per heartbeat (#199)
+    expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events|settings/)
+  end
+
+  it "runs in one transaction, authentication included, and commits once (#189)" do
+    heartbeat
+    statements = []
+    callback = ->(*, payload) { statements << payload[:sql] unless payload[:name] == "SCHEMA" }
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat }
+    expect(response).to have_http_status(:ok)
+    # In the test's own transaction, the request's transaction is a savepoint: every statement is inside it.
+    expect(statements.first).to match(/\ASAVEPOINT/)
+    expect(statements.last).to match(/\ARELEASE SAVEPOINT/)
+    expect(statements.grep(/\A(SAVEPOINT|RELEASE|BEGIN|COMMIT)/).size).to eq(2), statements.inspect
+  end
+
+  it "reads the intervals setting at most once per process every few seconds, and at once after a change (#189)" do
+    reads = 0
+    callback = ->(*, payload) { reads += 1 if payload[:sql].include?('FROM "settings"') }
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { 3.times { heartbeat } }
+    expect(reads).to eq(1)
+    Setting.update_agent_intervals!(heartbeat_seconds: 120, actor: Audit::SYSTEM)
+    heartbeat
+    expect(json.dig("directives", "intervals")).to eq("heartbeat_seconds" => 120)
+    later = SettingsCache.clock + SettingsCache::TTL.to_f + 1
+    allow(SettingsCache).to receive(:clock).and_return(later)
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat }
+    expect(reads).to eq(2)
   end
 
   it "stays one write after the credential last-use interval has passed (no agent_credentials write)" do

@@ -4,7 +4,7 @@
   <% host, why = first_match %>
   <div class="notice" role="status" id="onboard_match">
     <strong>This VM has the same <%= why == :machine_id ? "machine ID" : "hostname" %> as <%= host.name %>.</strong>
-    <p><%= host.name %> (<span class="mono"><%= host.hostname %></span>) is <%= host.enrollment_state %><%= ", last seen #{seen_ago(host.last_seen_at).downcase_first}" if host.last_seen_at %>. Choose what this request is.</p>
+    <p><%= host.name %> (<span class="mono"><%= host.hostname %></span>) is <%= host.enrollment_state %><%= ", last seen #{seen_ago(host.last_seen_at).downcase_first}" if host.last_seen_at %>.<% if why == :machine_id && !same_hostname?(host) %> The hostnames differ, so this is probably a copy made from the same template.<% end %> Choose what this request is.</p>
   </div>
 <% end %>
 <div class="token-once">
@@ -27,7 +27,7 @@
           <p>The VM was rebuilt or lost its credential. It keeps its name, tags, inventory, and history. Its current credential keeps working until the installer collects the new one, then stops.</p></label>
       <% end %>
       <label class="choice"><%= radio_button_tag :choice, "new", @choice == "new" %><strong>A new host</strong>
-        <p>For example a cloned VM.<% if match_by_machine %> Both will report with the same machine ID and show the clone warning until the copy gets a new one (<code>systemd-machine-id-setup</code>).<% end %> Name it below.</p></label>
+        <p>For example a VM cloned from the same template. Name it below.<% if match_by_machine %> Then give the copy its own machine ID: see "VMs cloned from one template" in the troubleshooting guide.<% end %></p></label>
       <h3>The new host</h3>
       <p class="hint">Used only when "A new host" is chosen.</p>
     <% else %>

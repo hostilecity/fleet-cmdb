@@ -123,7 +123,26 @@ impl Fetch for NoFetch {
 type SelfTest = dyn Fn(&Path, &semver::Version) -> Result<(), String> + Send + Sync;
 type FreeBytes = dyn Fn(&Path) -> io::Result<u64> + Send + Sync;
 
-/// What the updater remembers while the agent runs.
+/// Most entries each of [`Memory`]'s maps and sets keeps. The keys come from the server: a hostile one
+/// can send a new rollout id or version with every heartbeat, so without a bound these would grow for as
+/// long as the agent runs. Past the bound a map or set is emptied and starts again. Forgetting is safe:
+/// an answered offer that comes back is refused or ignored again (an update in progress, or a version
+/// that is not newer), a forgotten attempt count only allows a few more downloads, and a forgotten note
+/// is logged once more.
+pub(crate) const MEMORY_LIMIT: usize = 256;
+
+/// Inserts `item` into `set`, emptying it first if it is full ([`MEMORY_LIMIT`]). `true` if it was new.
+fn remember<T: Eq + std::hash::Hash>(set: &mut HashSet<T>, item: T) -> bool {
+    if set.contains(&item) {
+        return false;
+    }
+    if set.len() >= MEMORY_LIMIT {
+        set.clear();
+    }
+    set.insert(item)
+}
+
+/// What the updater remembers while the agent runs. Each map and set holds at most [`MEMORY_LIMIT`].
 #[derive(Default)]
 struct Memory {
     /// Failed downloads per (rollout, version).
@@ -454,7 +473,7 @@ pub fn hold_for_install(state_dir: &Path) -> Result<Option<Lock>, String> {
 impl Inner {
     fn note_once(&self, note: &str) -> bool {
         let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
-        memory.noted.insert(note.to_owned())
+        remember(&mut memory.noted, note.to_owned())
     }
 
     fn process(&self, directive: &Directive) {
@@ -482,6 +501,10 @@ impl Inner {
             Err(StageError::Retry(why)) => {
                 let attempts = {
                     let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
+                    if memory.attempts.len() >= MEMORY_LIMIT && !memory.attempts.contains_key(&key)
+                    {
+                        memory.attempts.clear();
+                    }
                     let n = memory.attempts.entry(key).or_insert(0);
                     *n += 1;
                     *n
@@ -549,11 +572,14 @@ impl Inner {
             )));
         }
         // Handed over: whatever the supervisor decides, this process does not act on the offer again.
-        self.memory
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .reported
-            .insert((directive.rollout_id, directive.version.to_string()));
+        remember(
+            &mut self
+                .memory
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .reported,
+            (directive.rollout_id, directive.version.to_string()),
+        );
         Ok(())
     }
 
@@ -589,11 +615,14 @@ impl Inner {
         };
         match result.write(&self.state_dir) {
             Ok(()) => {
-                self.memory
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .reported
-                    .insert((directive.rollout_id, directive.version.to_string()));
+                remember(
+                    &mut self
+                        .memory
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .reported,
+                    (directive.rollout_id, directive.version.to_string()),
+                );
             }
             Err(e) => tracing::error!("cannot record the update result: {e}"),
         }
