@@ -543,9 +543,28 @@ pub(crate) fn validate_server_url(value: Option<&str>) -> Result<String, ConfigE
 
 fn validate_interval(limits: &IntervalLimits, raw: RawInterval) -> Result<Interval, ConfigError> {
     let name = limits.name;
-    let start = raw.interval_seconds.unwrap_or(limits.default_interval);
-    let min = raw.min_seconds.unwrap_or(limits.default_min.min(start));
-    let max = raw.max_seconds.unwrap_or(limits.default_max.max(start));
+    let (start, min, max) = match raw.interval_seconds {
+        Some(start) => (
+            start,
+            raw.min_seconds.unwrap_or(limits.default_min.min(start)),
+            raw.max_seconds.unwrap_or(limits.default_max.max(start)),
+        ),
+        // No interval set: the default, moved into the bounds the file sets, so a config that only
+        // narrows the bounds stays valid when a release changes the default (#190: `[task_poll]`
+        // with only `max_seconds = 120` was valid at 30 s and must stay valid at 300 s).
+        None => {
+            let min = raw
+                .min_seconds
+                .unwrap_or_else(|| limits.default_min.min(raw.max_seconds.unwrap_or(u64::MAX)));
+            let max = raw.max_seconds.unwrap_or(limits.default_max.max(min));
+            let start = if min <= max {
+                limits.default_interval.clamp(min, max)
+            } else {
+                limits.default_interval
+            };
+            (start, min, max)
+        }
+    };
     for (key, value) in [
         ("interval_seconds", start),
         ("min_seconds", min),
@@ -847,6 +866,36 @@ pub(crate) mod tests {
             config.inventory.clamp_server_value(60),
             Duration::from_secs(300)
         );
+    }
+
+    #[test]
+    fn an_unset_interval_is_moved_into_the_bounds_the_file_sets() {
+        // #190: the task poll default went from 30 s to 300 s; a file that only narrows the bounds
+        // must still load, or an agent updated remotely would exit 78.
+        let config =
+            Config::from_toml(&format!("{}[task_poll]\nmax_seconds = 120\n", minimal())).unwrap();
+        assert_eq!(config.task_poll.start, Duration::from_secs(120));
+        assert_eq!(config.task_poll.min, Duration::from_secs(10));
+        assert_eq!(config.task_poll.max, Duration::from_secs(120));
+        let config =
+            Config::from_toml(&format!("{}[task_poll]\nmin_seconds = 600\n", minimal())).unwrap();
+        assert_eq!(config.task_poll.start, Duration::from_secs(600));
+        assert_eq!(config.task_poll.max, Duration::from_secs(600));
+        // Bounds that contradict each other are still refused.
+        let message = invalid(&format!(
+            "{}[task_poll]\nmin_seconds = 200\nmax_seconds = 100\n",
+            minimal()
+        ));
+        assert!(
+            message.contains("min_seconds <= interval_seconds <= max_seconds"),
+            "{message}"
+        );
+        // A set interval outside set bounds is refused as before.
+        let message = invalid(&format!(
+            "{}[task_poll]\ninterval_seconds = 300\nmax_seconds = 120\n",
+            minimal()
+        ));
+        assert!(message.contains("10 <= 300 <= 120"), "{message}");
     }
 
     #[test]
