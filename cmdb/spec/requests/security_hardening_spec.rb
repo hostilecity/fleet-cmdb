@@ -29,7 +29,11 @@ RSpec.describe "Security hardening", type: :request do
     expect(inline.map { |node| node["nonce"] }.uniq).to eq([ nonce ]), "inline code without the nonce on #{label}"
     expect(page.xpath("//@*[starts-with(name(), 'on')]")).to be_empty, "inline event handler on #{label}"
     expect(page.css("[style]")).to be_empty, "style attribute on #{label}"
-    expect(page.css("script[src], link[href], img[src], iframe, object, embed, form[action]").flat_map { |node| node.attribute_nodes.map(&:value) }.grep(%r{\A(https?:)?//})).to be_empty, "external resource on #{label}"
+    # Only attributes that load or send somewhere are checked: the nonce is random base64 and can itself start with "//".
+    urls = page.css("script[src], link[href], img[src], iframe, object, embed, form[action]").flat_map do |node|
+      node.attribute_nodes.select { |attr| %w[src href action data srcset formaction poster].include?(attr.name) }.map(&:value)
+    end
+    expect(urls.grep(%r{\A(https?:)?//})).to be_empty, "external resource on #{label}"
   end
 
   describe "Content Security Policy" do
@@ -61,6 +65,17 @@ RSpec.describe "Security hardening", type: :request do
       expect(directive("connect-src")).to eq("connect-src 'self'")
       # The only origin other than this site is Google, for the sign-in form's redirect.
       expect(csp.scan(%r{https://[^\s;]+}).uniq).to eq([ "https://accounts.google.com" ])
+    end
+
+    it "does not mistake a nonce that starts with // for an external resource" do
+      generator = ->(_request) { "//AbCdEfGhIjKlMnOp==" }
+      allow(Rails.application).to receive(:env_config)
+        .and_wrap_original { |original| original.call.merge("action_dispatch.content_security_policy_nonce_generator" => generator) }
+      sign_in_operator
+      get "/"
+      expect(response).to have_http_status(:ok)
+      expect(csp).to include("'nonce-//AbCdEfGhIjKlMnOp=='")
+      expect_page_within_csp("a page whose nonce starts with //")
     end
 
     it "uses a different nonce on each request" do
