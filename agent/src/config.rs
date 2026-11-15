@@ -29,7 +29,7 @@
 //! max_seconds = 86400
 //!
 //! [task_poll]                                # optional; seconds (P3-A02): polls only when a type
-//! interval_seconds = 30                      # is enabled and supported; min and max bound the
+//! interval_seconds = 300                     # is enabled and supported; min and max bound the
 //! min_seconds = 10                           # server's poll_seconds (P3-S06)
 //! max_seconds = 300
 //!
@@ -102,14 +102,16 @@ const CONFIG_REPORT_LIMITS: IntervalLimits = IntervalLimits {
     default_max: 86_400,
 };
 
-/// P3-A02: poll for a task every 30 seconds by default (only when a type is enabled and supported).
-/// The server does not direct this interval (it sends the `tasks_available` hint instead); `min` and
-/// `max` are carried, as for `config_report`, so a future directive can clamp to them.
+/// P3-A02: poll for a task every 300 seconds by default (only when a type is enabled and supported).
+/// Promptness comes from the heartbeat's `tasks_available` hint, which makes the poller poll within
+/// [`crate::tasks::poller::HINT_CHECK`], so a task starts within about one heartbeat; this interval only
+/// bounds how late a task starts when that hint is missed (#190). The poll response's `poll_seconds`
+/// (Settings: Tasks) replaces the interval, clamped to `min` and `max`.
 const TASK_POLL_LIMITS: IntervalLimits = IntervalLimits {
     name: "task_poll",
     floor: 5,
     ceiling: 3_600,
-    default_interval: 30,
+    default_interval: 300,
     default_min: 10,
     default_max: 300,
 };
