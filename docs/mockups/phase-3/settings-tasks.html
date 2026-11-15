@@ -55,7 +55,7 @@
 <div class="row">
 <div class="field"><label for="max">Most hosts in one batch</label><input id="max" type="number" value="25" min="1" max="25"><p class="hint">1 to 25. 25 is the hard cap (ADR 0014).</p></div>
 <div class="field"><label for="out">Output kept per task (KiB)</label><input id="out" type="number" value="64" min="4" max="1024"><p class="hint">4 to 1024. Longer output is cut in the middle.</p></div>
-<div class="field"><label for="poll">Agents poll for tasks every (seconds)</label><input id="poll" type="number" value="30" min="10" max="300"><p class="hint">A hint sent to agents; 10 to 300.</p></div>
+<div class="field"><label for="poll">Agents poll for tasks every (seconds)</label><input id="poll" type="number" value="300" min="10" max="300"><p class="hint">A hint sent to agents; 10 to 300. A heartbeat tells them at once when a task is waiting.</p></div>
 </div>
 <p class="muted" style="margin-top:0">Batches of more than 3 hosts always ask for the host count to be typed (ADR 0014); that is not a setting.</p>
 <fieldset><legend>Expiry: a task not started within this time expires and is never delivered</legend>
