@@ -1,6 +1,5 @@
 <%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :tasks %>
 <%# A host's Tasks tab (P3-DASH-TASKS, mockup host-tasks.html, owner decision Q34). %>
-<%= turbo_stream_from TaskBroadcast::STREAM, id: "tasks_stream", data: { turbo_permanent: true } %>
 <% catalog = TaskCatalog.current %>
 <div class="cols-2">
 <section class="sheet" aria-labelledby="capabilities_title" id="capabilities">

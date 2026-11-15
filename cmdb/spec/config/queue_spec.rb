@@ -5,7 +5,7 @@ require "rails_helper"
 # evaluation batches are on the evaluation queue, with a worker of their own, so they never hold the default threads.
 RSpec.describe "config/queue.yml" do
   let(:realtime_jobs) do
-    [ LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, FleetBroadcastJob, TaskBroadcastJob ]
+    [ LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, LiveRefreshJob, LiveRefreshSweepJob ]
   end
 
   def workers(env: "production")
@@ -50,7 +50,7 @@ RSpec.describe "config/queue.yml" do
     recurring = YAML.load_file(Rails.root.join("config/recurring.yml"))
     every_minute = recurring.values.flat_map(&:values).select { |task| task["schedule"] == "every minute" }
                             .map { |task| task.fetch("class").constantize }.uniq
-    expect(every_minute).to contain_exactly(LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob)
+    expect(every_minute).to contain_exactly(LivenessEvaluationJob, TaskLeaseJob, TaskExpiryJob, RolloutTimeoutJob, ReportRequestExpiryJob, LiveRefreshSweepJob)
     expect(recurring.values.flat_map(&:values).pluck("queue").compact).to be_empty # the job class decides its queue
 
     realtime_jobs.each { |job| expect(job.new.queue_name).to eq("realtime"), job.name }
@@ -66,14 +66,13 @@ RSpec.describe "config/queue.yml" do
 
   it "runs the every-minute jobs before a backlog of broadcasts on the realtime queue" do
     adapter = ActiveJob::QueueAdapters::SolidQueueAdapter.new
-    3.times { adapter.enqueue(FleetBroadcastJob.new([])) }
-    adapter.enqueue(TaskBroadcastJob.new)
+    4.times { adapter.enqueue(LiveRefreshJob.new) }
     adapter.enqueue(TaskLeaseJob.new)
     adapter.enqueue(LivenessEvaluationJob.new)
 
     order = Array.new(6) { SolidQueue::ReadyExecution.claim([ "realtime" ], 1, nil).sole.job.class_name }
     expect(order.first(2)).to eq(%w[TaskLeaseJob LivenessEvaluationJob])
-    expect(order.drop(2)).to all(end_with("BroadcastJob"))
+    expect(order.drop(2)).to all(eq("LiveRefreshJob"))
   end
 
   it "sizes the database pool for every process it configures" do

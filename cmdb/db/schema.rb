@@ -599,6 +599,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
     t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "package_snapshots_manager_valid"
   end
 
+  create_table "pending_refreshes", primary_key: "stream", id: { type: :string, limit: 128 }, force: :cascade do |t|
+    t.datetime "requested_at", default: -> { "statement_timestamp()" }, null: false
+  end
+
   create_table "report_requests", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.string "report_type", limit: 16, null: false

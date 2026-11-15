@@ -4,8 +4,9 @@ module FleetSimulator
   Response = Data.define(:status, :body, :headers, :ms) do
     def json = JSON.parse(body.to_s)
     def success? = status.between?(200, 299)
-    # Seconds to wait from a 429's Retry-After (DEC-08), or nil for any other answer.
-    def retry_after = status == 429 ? [ headers["retry-after"].to_i, 1 ].max : nil
+    # Seconds to wait from the Retry-After of a 429 (DEC-08) or of a 503 that has one (report load shedding, #200),
+    # or nil for any other answer.
+    def retry_after = status == 429 || (status == 503 && headers["retry-after"]) ? [ headers["retry-after"].to_i, 1 ].max : nil
   end
 
   # Talks to a running server over HTTP, as agents and browsers do. Requests are addressed by Host header, so

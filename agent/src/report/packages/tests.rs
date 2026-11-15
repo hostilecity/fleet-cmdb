@@ -565,3 +565,28 @@ fn peak_memory_with_the_real_dpkg_query() {
     );
     assert!(peak < 4 * 1024 * 1024, "peak heap {peak} bytes");
 }
+
+#[test]
+fn the_startup_splay_holds_back_the_startup_report_but_not_a_request() {
+    // #200: on a restart the startup report waits for its splay; nothing is listed meanwhile.
+    let host = FakeHost::debian13();
+    let transport = transport();
+    let t0 = Instant::now();
+    let mut reporter = reporter(&host).first_report_at(t0 + secs(300));
+    let wake = reporter.tick(t0, &transport);
+    assert_eq!(wake, t0 + secs(300));
+    reporter.tick(t0 + secs(299), &transport);
+    assert!(posts(&transport).is_empty());
+    reporter.tick(t0 + secs(300), &transport);
+    assert_eq!(posts(&transport).len(), 1);
+
+    let transport = self::transport();
+    let mut reporter = self::reporter(&host).first_report_at(t0 + secs(300));
+    reporter.request();
+    reporter.tick(t0, &transport);
+    assert_eq!(
+        posts(&transport).len(),
+        1,
+        "a request is answered during the splay"
+    );
+}

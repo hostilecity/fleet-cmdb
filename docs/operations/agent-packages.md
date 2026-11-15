@@ -4,7 +4,7 @@ The agent sends a package report ([FR-2.3](../backlog/specs/p2-agent-packages.md
 
 ## When it reports
 
-On the configuration report's cadence (FR-2.3): once at startup, every `[config_report] interval_seconds` (6 hours by default, less up to 10%), and once when an operator asks for fresh reports from the dashboard (the heartbeat's `report_request` names `packages`; one report per request, not one per heartbeat). There is no separate interval setting.
+On the configuration report's cadence (FR-2.3): once at startup (after a restart, following a random delay of up to 10 minutes, drawn apart from the config report's), every `[config_report] interval_seconds` (6 hours by default, less up to 10%), and once when an operator asks for fresh reports from the dashboard (the heartbeat's `report_request` names `packages`; one report per request, not one per heartbeat). There is no separate interval setting.
 
 A report that fails to send is retried with the same `report_id` and the same body. One the server rejects for its content is logged and not retried. The body is sent gzip-compressed (`Content-Encoding: gzip`): about 27 KiB for 3,000 packages.
 

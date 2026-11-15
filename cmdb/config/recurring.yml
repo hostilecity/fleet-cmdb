@@ -32,6 +32,10 @@ development:
   task_leases:
     class: TaskLeaseJob
     schedule: every minute
+  # #194: live refreshes left pending with no flush coming (a lost or failed flush job) are scheduled again.
+  live_refresh_sweep:
+    class: LiveRefreshSweepJob
+    schedule: every minute
   # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
   rule_import_preview_pruning:
     class: RuleImportPreviewPruneJob
@@ -70,6 +74,10 @@ production:
     schedule: every minute
   task_leases:
     class: TaskLeaseJob
+    schedule: every minute
+  # #194: live refreshes left pending with no flush coming (a lost or failed flush job) are scheduled again.
+  live_refresh_sweep:
+    class: LiveRefreshSweepJob
     schedule: every minute
   # P2-D06: rules file previews are kept 15 minutes (owner decision Q13); expired ones are deleted here.
   rule_import_preview_pruning:

@@ -4,7 +4,9 @@
 //! The manifest is data: the agent reads the facts it has a reader for ([`crate::facts`]) and runs
 //! nothing the manifest says. A report is sent:
 //!
-//! - **on startup**, so a fresh agent has facts at once;
+//! - **on startup**, so a fresh agent has facts at once. On a restart (an inventory report is on
+//!   record) it waits a random startup splay of up to 10 minutes first ([`super::StartupSplay`],
+//!   #200), so a fleet restarted together does not send its heavy reports together;
 //! - **on schedule**, one config-report interval (6 hours by default, less up to 10% jitter) after the
 //!   previous report was accepted or rejected;
 //! - **on request**: the heartbeat's `report_request` directive names `config`
@@ -113,9 +115,18 @@ pub struct Reporter<'a, R: Rng> {
     /// The real time the current tick began, so a delay after a failure counts from the failure, not
     /// from the tick's (simulated) `now` ([`super::failed_at`], review of #117).
     tick_started: Instant,
+    /// No startup report is built before this (the startup splay, #200). A request is not held back.
+    first_at: Option<Instant>,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
+    /// Builds the startup report no earlier than `at` (the startup splay, #200). A request
+    /// ([`Reporter::request`]) is still answered at once.
+    pub fn first_report_at(mut self, at: Instant) -> Self {
+        self.first_at = Some(at);
+        self
+    }
+
     pub fn new(host: &'a dyn Host, interval: Duration, backoff: Backoff<R>, rng: R) -> Self {
         Self {
             host,
@@ -134,6 +145,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             stop: None,
             new_id: new_report_id,
             tick_started: Instant::now(),
+            first_at: None,
         }
     }
 
@@ -211,7 +223,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             (None, Some(done)) => {
                 done + self.interval - self.interval * self.jitter_permille / 1000
             }
-            (None, None) => now,
+            (None, None) => self.first_at.map_or(now, |at| at.max(now)),
         };
         self.hold_until.map_or(due, |hold| due.max(hold))
     }

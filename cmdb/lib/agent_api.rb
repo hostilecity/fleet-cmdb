@@ -24,6 +24,17 @@ module AgentApi
     @failed_auth_rate_limiter || LIMITERS.synchronize { @failed_auth_rate_limiter ||= RateLimiter.new(max_keys: FAILED_AUTH_MAX_ADDRESSES) }
   end
 
+  # How long a key id counts as recently authenticated (review of #211): longer than an agent's default gap between
+  # requests (a heartbeat a minute, a task poll every 5 minutes), so a working agent is never forgotten between two.
+  RECENT_CREDENTIAL_TTL = 15.minutes
+
+  # The key ids that authenticated in this process within RECENT_CREDENTIAL_TTL. A request whose key id is here
+  # passes an address's failed-authentication block, so a hostile client sharing the agents' address cannot lock
+  # them out. Only key ids that authenticated are added, so hostile input cannot grow it.
+  def recent_credentials
+    @recent_credentials || LIMITERS.synchronize { @recent_credentials ||= RateLimiter.new(max_keys: config.rate_limit_max_keys) }
+  end
+
   # Credentials and tokens are long random values, so a plain SHA-256 digest is appropriate (FR-S.1).
   def digest(secret) = OpenSSL::Digest::SHA256.hexdigest(secret)
 
@@ -64,4 +75,6 @@ module AgentApi
   AgentVersionUnsupported = error(:upgrade_required, "agent_version_unsupported", "This agent version is no longer supported. Upgrade the agent.")
   RateLimited = error(:too_many_requests, "rate_limited", "Too many requests. Retry later.")
   InternalError = error(:internal_server_error, "internal_error", "Something went wrong on the server.")
+  # Report load shedding (#200): too many reports in flight. Answered by ReportLoadShedder with Retry-After.
+  Overloaded = error(:service_unavailable, "overloaded", "The server is busy. Retry after the Retry-After delay.")
 end
