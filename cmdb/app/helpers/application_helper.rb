@@ -7,6 +7,13 @@ module ApplicationHelper
     tag.span(FleetList::STATUSES.fetch(key, key.humanize), class: [ "lamp", LAMP_CLASSES[key] ])
   end
 
+  # "Recovering" beside the status lamp of a host whose agent is in recovery mode (#180): a word, never colour alone.
+  def recovery_badge(host)
+    return unless host.recovering?
+
+    tag.span("Recovering", class: "recovering", title: "The agent is in recovery mode: it only heartbeats and installs agent updates")
+  end
+
   # "28 seconds ago", or "Never".
   def seen_ago(time)
     time ? "#{time_ago_in_words(time, include_seconds: true)} ago" : "Never"

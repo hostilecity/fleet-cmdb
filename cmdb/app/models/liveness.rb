@@ -19,25 +19,44 @@ module Liveness
   # (AgentHostLock, raising AgentHostLock::Refused), then reads the server clock and writes one UPDATE, plus
   # a status event only when the host was not already online. Must run inside a transaction (the
   # request's). Returns the server time it recorded. task_capabilities is the heartbeat's `tasks` object (P3-A01),
-  # written to the host's capability columns in the same UPDATE (task_capability_columns).
-  def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil)
+  # written to the host's capability columns in the same UPDATE (task_capability_columns); recovery is its `recovery`
+  # object (#180, ADR 0030), written the same way (recovery_columns).
+  def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil,
+                        recovery: nil)
     host = AgentHostLock.lock!(host_id:, credential_id:)
 
     # Sampled only now, after the lock: a heartbeat that waited for the row cannot write an older time than
     # the one it waited for, so last_seen_at never moves backwards.
     now = [ Time.current, host.last_seen_at ].compact.max
     updates = { last_seen_at: now, agent_version:, agent_schema_version:, agent_reported_at: agent_time, liveness_status: "online",
-                **task_capability_columns(task_capabilities, now) }
+                **task_capability_columns(task_capabilities, now), **recovery_columns(recovery, host, now) }
     updates[:first_seen_at] = now if host.first_seen_at.nil?
     Host.where(id: host.id).update_all(updates)
     unless host.liveness_status == "online"
       HostStatusEvent.insert!({ host_id: host.id, from_status: host.liveness_status, to_status: "online", reason: "heartbeat", occurred_at: now })
     end
-    # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05) and a new agent
-    # version, such as the one an update installed (P1-D09).
-    FleetBroadcast.hosts_changed([ host.id ]) unless host.liveness_status == "online" && host.agent_version == agent_version
+    # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05), a new agent
+    # version, such as the one an update installed (P1-D09), and entering or leaving recovery mode (#180).
+    unchanged = host.liveness_status == "online" && host.agent_version == agent_version &&
+                host.agent_recovery_since.nil? == recovery.nil?
+    FleetBroadcast.hosts_changed([ host.id ]) unless unchanged
     now
   end
+
+  # The host columns for a heartbeat's `recovery` object (#180, ADR 0030). Absent (normal mode) clears them. Present,
+  # agent_recovery_since keeps the server time of the episode's first such heartbeat, which is what makes the host
+  # "recovering"; the agent's times and reason replace the last ones. The reason is agent text: stored as sent, after the
+  # schema's check (one line, no control or bidirectional formatting characters, at most 256 characters), and only ever
+  # shown escaped.
+  def recovery_columns(recovery, host, now)
+    if recovery.nil?
+      return { agent_recovery_since: nil, agent_recovery_entered_at: nil, agent_recovery_retry_at: nil, agent_recovery_reason: nil }
+    end
+
+    { agent_recovery_since: host.agent_recovery_since || now, agent_recovery_entered_at: Time.iso8601(recovery["entered_at"]),
+      agent_recovery_retry_at: Time.iso8601(recovery["retry_at"]), agent_recovery_reason: recovery["reason"] }
+  end
+  private_class_method :recovery_columns
 
   # The host columns for a heartbeat's `tasks` object (FR-3.1, P3-A01): the catalog version compiled into the agent,
   # the types it implements, the types its VM enables, and the services its VM allows restarting, which
