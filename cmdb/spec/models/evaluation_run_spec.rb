@@ -210,10 +210,10 @@ RSpec.describe EvaluationRun do
         outcome
       end
       clear_enqueued_jobs
+      record_refresh_requests
       perform_batch(job)
       expect(older.reload.state).to eq("superseded")
-      broadcasts = enqueued_jobs.select { |j| j["job_class"] == "FleetBroadcastJob" }.map { |j| j["arguments"].first }
-      expect(broadcasts).to include(hosts.first(2).map(&:id))
+      expect(fleet_refresh_requests).to include(hosts.first(2).map(&:id))
     end
   end
 
