@@ -224,6 +224,10 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
       expect(stats.of(:fleet_list).last).to have_attributes(status: "incomplete", note: "/ listed 1/2")
       FleetSimulator::FleetListProbe.new(transport:, stats:, cookie: "none=1", host_names: %w[sim-001], interval: 10, clock:).probe("/", clock.now)
       expect(stats.of(:fleet_list).last).to have_attributes(status: "incomplete", note: "/ listed 0/1")
+
+      stub_const("FleetList::PER_PAGE", 1) # a fleet larger than a page must fill the first one (#193)
+      probe.probe("/", clock.now)
+      expect(stats.of(:fleet_list).last).to have_attributes(status: 200, note: "/ listed 1/1")
     end
 
     it "never signs in to a production dashboard" do

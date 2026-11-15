@@ -182,7 +182,7 @@ Retiring a host keeps its history and audit trail but removes it from the active
 
 ### FR-1.5 Dashboard — Phase 1
 
-- **Fleet list:** every active host with name, hostname, tags, operating system, agent version, liveness status, and last seen. Sortable, searchable by name and hostname, and filterable by tag and status. Fleet counts by status appear at the top.
+- **Fleet list:** every active host with name, hostname, tags, operating system, agent version, liveness status, and last seen. Sortable, searchable by name and hostname, and filterable by tag and status. Fleet counts by status appear at the top. A fleet larger than 100 hosts is shown in pages of 100, with Previous and Next keeping the sort and filters (#193, scope change: owner approval needed).
 - **Host detail:** full current inventory, inventory history with field-level change highlighting, enrollment and credential state, status history, and the host's audit entries.
 - **Operator actions:** approve or reject onboarding requests (with the host's name, tags, description, and notes), pre-register a host for an unattended install, edit name, description, notes and tags, revoke a credential, issue a new enrollment token, and retire a host.
 - **Agent install and updates:** the install commands for the current release, the target agent version and rollout progress, and each host's update history (FR-S.5).
@@ -252,7 +252,7 @@ Phase 2 starts only after Phase 1 is accepted.
 ### FR-2.5 Dashboard — Phase 2 additions
 
 - Host detail gains three views: configuration (latest facts, CIS results, snapshot diff), packages (current set, snapshot diff), and vulnerabilities (open and resolved findings).
-- A fleet compliance view lists every host with its CIS pass rate, open CIS failures by severity, and open vulnerability findings by severity.
+- A fleet compliance view lists every host with its CIS pass rate, open CIS failures by severity, and open vulnerability findings by severity, in pages of 100 with Previous and Next (#193).
 - Rules are managed in the dashboard: list and filter, view versions, add one rule from a form and edit a rule, each with a preview of the hosts that would change result before saving, enable and disable, and import a file with a preview of what would change. Rules with several conditions are added by importing a file.
 - Advisory data is managed in the dashboard: sources (OSV and the distribution's triage source), last import, an upload, and a manual feed refresh that is limited to one every 5 minutes.
 
@@ -342,6 +342,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 ### NFR-3 Performance and scale
 
 - The system stays responsive with 50 hosts reporting on the default intervals: dashboard fleet list loads in under 2 seconds on the homelab server, and heartbeat handling stays under 200 ms at the 95th percentile and does not degrade as snapshots accumulate. (proposed figure)
+- The fleet list and the compliance page cost about the same whatever the fleet size: they read precomputed per-host summaries in pages, never every host's results and findings on a view ([ADR 0026](decisions/0026-dashboard-summaries-and-keyset-pages.md), #193). Acceptance stays at 50 hosts (ADR 0019); `bin/benchmark` measures larger fleets.
 - Snapshot growth is bounded by retention settings, not by manual database cleanup.
 
 ### NFR-4 Observability and operability
