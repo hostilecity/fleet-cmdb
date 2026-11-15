@@ -61,4 +61,12 @@ end
 
 RSpec.configure do |config|
   config.include ComplianceHelpers
+
+  # Specs outside the test transaction delete their hosts with triggers off (hosts cannot be deleted), which leaves
+  # their summary rows behind (#193); they would count as hosts in later specs' fleet-wide totals.
+  config.after do |example|
+    next if example.example_group.use_transactional_tests
+
+    HostComplianceSummary.where.not(host_id: Host.select(:id)).delete_all
+  end
 end

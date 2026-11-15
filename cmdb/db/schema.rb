@@ -210,6 +210,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.string "reason", limit: 512
     t.datetime "evaluated_at", null: false
     t.datetime "changed_at", null: false
+    t.index ["cis_rule_id"], name: "index_cis_results_failing_without_version", where: "(((result)::text = 'fail'::text) AND (cis_rule_version_id IS NULL))"
     t.index ["cis_rule_id"], name: "index_cis_results_on_cis_rule_id"
     t.index ["config_snapshot_id"], name: "index_cis_results_on_config_snapshot_id"
     t.index ["host_id", "cis_rule_id"], name: "index_cis_results_on_host_id_and_cis_rule_id", unique: true
@@ -274,6 +275,51 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.datetime "updated_at", null: false
     t.index ["host_id"], name: "index_enrollment_tokens_on_host_id"
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
+  end
+
+  create_table "host_compliance_summaries", primary_key: "host_id", id: :bigint, default: nil, force: :cascade do |t|
+    t.string "enrollment_state", limit: 16, null: false
+    t.integer "status_rank", limit: 2, null: false
+    t.string "name_key", limit: 100, null: false
+    t.string "hostname", limit: 253, null: false
+    t.text "tags_key"
+    t.decimal "agent_key", array: true
+    t.text "os_name"
+    t.integer "cis_passed", default: 0, null: false
+    t.integer "cis_failed", default: 0, null: false
+    t.integer "cis_not_readable", default: 0, null: false
+    t.integer "cis_critical", default: 0, null: false
+    t.integer "cis_high", default: 0, null: false
+    t.integer "cis_medium", default: 0, null: false
+    t.integer "cis_low", default: 0, null: false
+    t.integer "vuln_critical", default: 0, null: false
+    t.integer "vuln_high", default: 0, null: false
+    t.integer "vuln_medium", default: 0, null: false
+    t.integer "vuln_low", default: 0, null: false
+    t.integer "vuln_unknown", default: 0, null: false
+    t.boolean "vuln_evaluated", default: false, null: false
+    t.virtual "cis_counted", type: :integer, as: "((cis_passed + cis_failed) + cis_not_readable)", stored: true
+    t.virtual "vuln_open", type: :integer, as: "((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown)", stored: true
+    t.virtual "pass_rate", type: :decimal, as: "\nCASE\n    WHEN (((cis_passed + cis_failed) + cis_not_readable) > 0) THEN ((cis_passed)::numeric / (((cis_passed + cis_failed) + cis_not_readable))::numeric)\n    ELSE NULL::numeric\nEND", stored: true
+    t.virtual "nothing_evaluated", type: :boolean, as: "((((cis_passed + cis_failed) + cis_not_readable) = 0) AND (NOT (vuln_evaluated OR (((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown) > 0))))", stored: true
+    t.virtual "fleet_cis_key", type: :decimal, as: "\nCASE\n    WHEN (((enrollment_state)::text = 'active'::text) AND (((cis_passed + cis_failed) + cis_not_readable) > 0)) THEN ((cis_passed)::numeric / (((cis_passed + cis_failed) + cis_not_readable))::numeric)\n    ELSE NULL::numeric\nEND", stored: true
+    t.virtual "fleet_vulns_key", type: :integer, as: "\nCASE\n    WHEN (((enrollment_state)::text = 'active'::text) AND (vuln_evaluated OR (((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown) > 0))) THEN ((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown)\n    ELSE NULL::integer\nEND", stored: true
+    t.index "lower(os_name) DESC NULLS LAST, name_key, host_id", name: "host_compliance_summaries_os_desc", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index "lower(os_name), name_key, host_id", name: "host_compliance_summaries_os", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index "nothing_evaluated, ((- (cis_critical + vuln_critical))), ((- (cis_high + vuln_high))), ((- (cis_medium + vuln_medium))), ((- (cis_low + vuln_low))), ((- vuln_unknown)), COALESCE(pass_rate, (2)::numeric), name_key, host_id", name: "host_compliance_summaries_worst", where: "((enrollment_state)::text = 'active'::text)"
+    t.index ["agent_key", "name_key", "host_id"], name: "host_compliance_summaries_agent", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["agent_key", "name_key", "host_id"], name: "host_compliance_summaries_agent_desc", order: { agent_key: "DESC NULLS LAST" }, where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["fleet_cis_key", "name_key", "host_id"], name: "host_compliance_summaries_cis", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["fleet_cis_key", "name_key", "host_id"], name: "host_compliance_summaries_cis_desc", order: { fleet_cis_key: "DESC NULLS LAST" }, where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["fleet_vulns_key", "name_key", "host_id"], name: "host_compliance_summaries_vulns", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["fleet_vulns_key", "name_key", "host_id"], name: "host_compliance_summaries_vulns_desc", order: { fleet_vulns_key: "DESC NULLS LAST" }, where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["hostname", "name_key", "host_id"], name: "host_compliance_summaries_hostname", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["name_key", "host_id"], name: "host_compliance_summaries_name", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["status_rank", "name_key", "host_id"], name: "host_compliance_summaries_status", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["status_rank", "name_key", "host_id"], name: "host_compliance_summaries_status_desc", order: { status_rank: :desc }, where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["tags_key", "name_key", "host_id"], name: "host_compliance_summaries_tags", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index ["tags_key", "name_key", "host_id"], name: "host_compliance_summaries_tags_desc", order: { tags_key: "DESC NULLS LAST" }, where: "((enrollment_state)::text <> 'retired'::text)"
+    t.check_constraint "status_rank >= 0 AND status_rank <= 5", name: "host_compliance_summaries_status_rank"
   end
 
   create_table "host_configs", force: :cascade do |t|
@@ -814,6 +860,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
   add_foreign_key "config_report_receipts", "hosts"
   add_foreign_key "config_snapshots", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
+  add_foreign_key "host_compliance_summaries", "hosts"
   add_foreign_key "host_configs", "hosts"
   add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_package_sets", "hosts"
@@ -1041,6 +1088,216 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
       $function$
   SQL
 
+  create_function :host_compliance_counts, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_counts(host_ids bigint[])
+       RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean)
+       LANGUAGE sql
+       STABLE
+      AS $function$
+        -- A host's compliance counts, computed from the rows the host pages show (P2-D05, #193): CIS results with the
+        -- severity of the rule version that produced them (the current version when a result names none), open and
+        -- reopened findings with their advisory's severity, and whether its last matching run evaluated it.
+        SELECT h.id,
+               cis.passed, cis.failed, cis.not_readable, cis.critical, cis.high, cis.medium, cis.low,
+               vulns.critical, vulns.high, vulns.medium, vulns.low, vulns.unknown,
+               COALESCE(hve.state = 'evaluated', false)
+          FROM (SELECT DISTINCT unnest(host_ids) AS id) h
+          LEFT JOIN LATERAL (
+            SELECT count(*) FILTER (WHERE r.result = 'pass')::integer AS passed,
+                   count(*) FILTER (WHERE r.result = 'fail')::integer AS failed,
+                   count(*) FILTER (WHERE r.result = 'not_readable')::integer AS not_readable,
+                   count(*) FILTER (WHERE r.result = 'fail' AND COALESCE(rv.severity, cv.severity) = 'critical')::integer AS critical,
+                   count(*) FILTER (WHERE r.result = 'fail' AND COALESCE(rv.severity, cv.severity) = 'high')::integer AS high,
+                   count(*) FILTER (WHERE r.result = 'fail' AND COALESCE(rv.severity, cv.severity) = 'medium')::integer AS medium,
+                   count(*) FILTER (WHERE r.result = 'fail' AND COALESCE(rv.severity, cv.severity) = 'low')::integer AS low
+              FROM cis_results r
+              JOIN cis_rules ru ON ru.id = r.cis_rule_id
+              LEFT JOIN cis_rule_versions rv ON rv.id = r.cis_rule_version_id
+              LEFT JOIN cis_rule_versions cv ON cv.id = ru.current_version_id
+             WHERE r.host_id = h.id
+          ) cis ON true
+          LEFT JOIN LATERAL (
+            SELECT count(*) FILTER (WHERE a.severity = 'critical')::integer AS critical,
+                   count(*) FILTER (WHERE a.severity = 'high')::integer AS high,
+                   count(*) FILTER (WHERE a.severity = 'medium')::integer AS medium,
+                   count(*) FILTER (WHERE a.severity = 'low')::integer AS low,
+                   count(*) FILTER (WHERE a.severity = 'unknown')::integer AS unknown
+              FROM vulnerability_findings f
+              JOIN advisories a ON a.id = f.advisory_id
+             WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')
+          ) vulns ON true
+          LEFT JOIN host_vulnerability_evaluations hve ON hve.host_id = h.id;
+      $function$
+  SQL
+
+  create_function :host_compliance_summaries_refresh, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_summaries_refresh(host_ids bigint[])
+       RETURNS void
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- Recomputes the hosts' compliance counts in the transaction that changed their rows (#193).
+        IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
+          RETURN;
+        END IF;
+
+        -- Lock first, in host order, then count in a later statement: under READ COMMITTED that statement takes a new
+        -- snapshot, so a transaction that waited here for another one counts what that one committed. Two transactions
+        -- changing one host's rows at once therefore leave the counts of both, whichever commits first.
+        PERFORM 1 FROM host_compliance_summaries s WHERE s.host_id = ANY (host_ids) ORDER BY s.host_id FOR UPDATE;
+
+        UPDATE host_compliance_summaries s
+           SET cis_passed = c.cis_passed, cis_failed = c.cis_failed, cis_not_readable = c.cis_not_readable,
+               cis_critical = c.cis_critical, cis_high = c.cis_high, cis_medium = c.cis_medium, cis_low = c.cis_low,
+               vuln_critical = c.vuln_critical, vuln_high = c.vuln_high, vuln_medium = c.vuln_medium, vuln_low = c.vuln_low,
+               vuln_unknown = c.vuln_unknown, vuln_evaluated = c.vuln_evaluated
+          FROM host_compliance_counts(host_ids) c
+         WHERE s.host_id = c.host_id
+           AND (s.cis_passed, s.cis_failed, s.cis_not_readable, s.cis_critical, s.cis_high, s.cis_medium, s.cis_low,
+                s.vuln_critical, s.vuln_high, s.vuln_medium, s.vuln_low, s.vuln_unknown, s.vuln_evaluated)
+               IS DISTINCT FROM
+               (c.cis_passed, c.cis_failed, c.cis_not_readable, c.cis_critical, c.cis_high, c.cis_medium, c.cis_low,
+                c.vuln_critical, c.vuln_high, c.vuln_medium, c.vuln_low, c.vuln_unknown, c.vuln_evaluated);
+      END;
+      $function$
+  SQL
+
+  create_function :host_compliance_summaries_sync, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_summaries_sync(host_ids bigint[])
+       RETURNS void
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- Copies the host's own fields the fleet list sorts and filters by, and its operating system name, into its
+        -- summary row (#193), creating the row for a new host, so every sort has one index with the name tie-break.
+        IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
+          RETURN;
+        END IF;
+
+        -- Lock first, then read the hosts in a later statement (a new snapshot under READ COMMITTED), as the refresh does.
+        PERFORM 1 FROM host_compliance_summaries s WHERE s.host_id = ANY (host_ids) ORDER BY s.host_id FOR UPDATE;
+
+        INSERT INTO host_compliance_summaries AS s (host_id, enrollment_state, status_rank, name_key, hostname, tags_key, agent_key, os_name)
+        SELECT h.id, h.enrollment_state,
+               -- FleetList::STATUSES order: online, stale, offline, awaiting first contact, pending, revoked.
+               CASE
+                 WHEN h.enrollment_state = 'active' AND h.liveness_status = 'online' THEN 0
+                 WHEN h.enrollment_state = 'active' AND h.liveness_status = 'stale' THEN 1
+                 WHEN h.enrollment_state = 'active' AND h.liveness_status = 'offline' THEN 2
+                 WHEN h.enrollment_state = 'active' THEN 3
+                 WHEN h.enrollment_state = 'pending' THEN 4
+                 ELSE 5
+               END,
+               lower(h.name), h.hostname,
+               -- By the tag list as displayed (in entry order); no tags is NULL, so it sorts last.
+               NULLIF(array_to_string(h.tags, ','), ''),
+               -- Numeric by release (0.10.0 after 0.9.0); pre-release and build suffixes are ignored. numeric, not int:
+               -- SemVer components are unbounded (review of #53). Anything but dotted numbers sorts last, never fails.
+               CASE WHEN h.agent_version ~ '^[0-9]+(\.[0-9]+)*([-+].*)?$'
+                    THEN string_to_array(regexp_replace(h.agent_version, '[-+].*$', ''), '.')::numeric[] END,
+               i.stable #>> '{os,pretty_name}'
+          FROM hosts h
+          LEFT JOIN host_inventories i ON i.host_id = h.id
+         WHERE h.id = ANY (host_ids)
+        ON CONFLICT (host_id) DO UPDATE
+           SET enrollment_state = EXCLUDED.enrollment_state, status_rank = EXCLUDED.status_rank, name_key = EXCLUDED.name_key,
+               hostname = EXCLUDED.hostname, tags_key = EXCLUDED.tags_key, agent_key = EXCLUDED.agent_key, os_name = EXCLUDED.os_name
+         WHERE (s.enrollment_state, s.status_rank, s.name_key, s.hostname, s.tags_key, s.agent_key, s.os_name)
+               IS DISTINCT FROM
+               (EXCLUDED.enrollment_state, EXCLUDED.status_rank, EXCLUDED.name_key, EXCLUDED.hostname, EXCLUDED.tags_key,
+                EXCLUDED.agent_key, EXCLUDED.os_name);
+      END;
+      $function$
+  SQL
+
+  create_function :host_compliance_summaries_changed, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_compliance_summaries_changed()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      DECLARE
+        counted CONSTANT text[] := ARRAY['pass', 'fail', 'not_readable'];
+        open_states CONSTANT text[] := ARRAY['open', 'reopened'];
+        host_ids bigint[];
+      BEGIN
+        -- Keeps host_compliance_summaries right in the transaction that changes what it is built from (#193). Statement
+        -- triggers find the hosts whose rows changed in a way the summary can see, and each is synced or recounted once.
+
+        -- hosts (statement): a new host, or a change to a field the fleet list shows, sorts, or filters by.
+        IF TG_TABLE_NAME = 'hosts' THEN
+          IF TG_OP = 'INSERT' THEN
+            host_ids := ARRAY(SELECT n.id FROM new_rows n);
+          ELSE
+            host_ids := ARRAY(
+              SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
+               WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state, o.liveness_status)
+                     IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state, n.liveness_status));
+          END IF;
+          PERFORM host_compliance_summaries_sync(host_ids);
+          RETURN NULL;
+        END IF;
+
+        -- host_inventories (row, its operating system name changed).
+        IF TG_TABLE_NAME = 'host_inventories' THEN
+          PERFORM host_compliance_summaries_sync(CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id]
+                                                            ELSE ARRAY[OLD.host_id, NEW.host_id] END);
+          RETURN NULL;
+        END IF;
+
+        -- host_vulnerability_evaluations (row, its state changed).
+        IF TG_TABLE_NAME = 'host_vulnerability_evaluations' THEN
+          host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
+
+        -- cis_rules (row, its current version changed): a failure that names no version takes the current one's severity.
+        ELSIF TG_TABLE_NAME = 'cis_rules' THEN
+          host_ids := ARRAY(SELECT DISTINCT r.host_id FROM cis_results r
+                             WHERE r.cis_rule_id = NEW.id AND r.result = 'fail' AND r.cis_rule_version_id IS NULL);
+
+        -- cis_results (statement): a counted result appeared or went, a result changed, or the rule version a failure is
+        -- counted under changed.
+        ELSIF TG_TABLE_NAME = 'cis_results' THEN
+          IF TG_OP = 'INSERT' THEN
+            host_ids := ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.result = ANY (counted));
+          ELSIF TG_OP = 'DELETE' THEN
+            host_ids := ARRAY(SELECT DISTINCT o.host_id FROM old_rows o WHERE o.result = ANY (counted));
+          ELSE
+            host_ids := ARRAY(
+              SELECT DISTINCT v.host_id
+                FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
+               WHERE o.host_id <> n.host_id OR o.cis_rule_id <> n.cis_rule_id
+                  OR (o.result <> n.result AND (o.result = ANY (counted) OR n.result = ANY (counted)))
+                  OR (n.result = 'fail' AND o.cis_rule_version_id IS DISTINCT FROM n.cis_rule_version_id));
+          END IF;
+
+        -- vulnerability_findings (statement): a finding opened, reopened, or resolved, or an open one moved.
+        ELSIF TG_TABLE_NAME = 'vulnerability_findings' THEN
+          IF TG_OP = 'INSERT' THEN
+            host_ids := ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY (open_states));
+          ELSIF TG_OP = 'DELETE' THEN
+            host_ids := ARRAY(SELECT DISTINCT o.host_id FROM old_rows o WHERE o.state = ANY (open_states));
+          ELSE
+            host_ids := ARRAY(
+              SELECT DISTINCT v.host_id
+                FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
+               WHERE (o.state = ANY (open_states) OR n.state = ANY (open_states))
+                 AND ((o.state = ANY (open_states)) <> (n.state = ANY (open_states)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id));
+          END IF;
+
+        -- advisories (statement): a new severity moves the counts of every host with an open finding for it.
+        ELSIF TG_TABLE_NAME = 'advisories' THEN
+          host_ids := ARRAY(
+            SELECT DISTINCT f.host_id
+              FROM old_rows o JOIN new_rows n ON n.id = o.id
+              JOIN vulnerability_findings f ON f.advisory_id = n.id
+             WHERE o.severity <> n.severity AND f.state = ANY (open_states));
+        END IF;
+
+        PERFORM host_compliance_summaries_refresh(host_ids);
+        RETURN NULL;
+      END;
+      $function$
+  SQL
+
   create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
       CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
   SQL
@@ -1091,5 +1348,61 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
 
   create_trigger :task_late_results_immutable, sql_definition: <<-SQL
       CREATE TRIGGER task_late_results_immutable BEFORE DELETE OR UPDATE ON public.task_late_results FOR EACH ROW EXECUTE FUNCTION task_late_results_guard()
+  SQL
+
+  create_trigger :host_compliance_summaries_advisories_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_advisories_update AFTER UPDATE ON public.advisories REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_cis_delete, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_cis_delete AFTER DELETE ON public.cis_results REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_cis_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_cis_update AFTER UPDATE ON public.cis_results REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_cis_insert, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_cis_insert AFTER INSERT ON public.cis_results REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_rule_version, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_rule_version AFTER UPDATE OF current_version_id ON public.cis_rules FOR EACH ROW WHEN ((old.current_version_id IS DISTINCT FROM new.current_version_id)) EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_inventory_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_inventory_update AFTER UPDATE ON public.host_inventories FOR EACH ROW WHEN ((((old.stable #>> '{os,pretty_name}'::text[]) IS DISTINCT FROM (new.stable #>> '{os,pretty_name}'::text[])) OR (old.host_id <> new.host_id))) EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_inventory_insert_delete, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_inventory_insert_delete AFTER INSERT OR DELETE ON public.host_inventories FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_evaluation_insert_delete, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_evaluation_insert_delete AFTER INSERT OR DELETE ON public.host_vulnerability_evaluations FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_evaluation_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_evaluation_update AFTER UPDATE ON public.host_vulnerability_evaluations FOR EACH ROW WHEN ((((old.state)::text IS DISTINCT FROM (new.state)::text) OR (old.host_id <> new.host_id))) EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_hosts_insert, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_hosts_insert AFTER INSERT ON public.hosts REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_hosts_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_hosts_update AFTER UPDATE ON public.hosts REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_findings_insert, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_findings_insert AFTER INSERT ON public.vulnerability_findings REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_findings_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_findings_update AFTER UPDATE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_findings_delete, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_findings_delete AFTER DELETE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 end
