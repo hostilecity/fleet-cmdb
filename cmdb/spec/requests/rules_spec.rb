@@ -187,11 +187,11 @@ RSpec.describe "Rules", :signed_in, type: :request do
       stub_const("EvaluationRun::BATCH_SIZE", 2)
       progress = lambda do
         get "/rules/#{rule.id}"
-        page.at_css("#results_section #evaluation_progress")
+        page.at_css("#results_section turbo-frame#evaluation_progress #evaluation_progress_text")
       end
       CisRule.transaction { rule.disable!(actor: operator) }
       expect(progress.call.text).to eq("Checking every host against the latest change: starting.")
-      expect(progress.call["data-controller"]).to eq("refresh-after")
+      expect(progress.call["data-controller"]).to eq("evaluation-progress") # refreshes only its frame (review of #204)
       perform_enqueued_jobs(only: EvaluationRunJob)
       first = enqueued_jobs.find { |job| job["job_class"] == "EvaluationBatchJob" }
       enqueued_jobs.delete(first)

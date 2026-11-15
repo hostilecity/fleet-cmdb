@@ -1,8 +1,12 @@
 # Evaluates one batch of a fleet-wide EvaluationRun (#197): its range of hosts, in short transactions that lock hosts
 # in id order. Retries follow ApplicationJob; a retried batch evaluates again (idempotent) and is counted once. A batch
-# whose run finished or was superseded no longer exists, and its job does nothing.
+# whose run finished, failed, or was superseded no longer exists, and its job does nothing. A batch that fails every
+# retry fails its run.
 class EvaluationBatchJob < ApplicationJob
   queue_as :evaluation
+
+  # After the last retry the batch's run is failed, and its other batches do nothing (review of #204).
+  after_discard { |job, _error| EvaluationRun.fail!(EvaluationBatch.where(id: job.arguments.first).pick(:evaluation_run_id)) }
 
   def perform(batch_id)
     batch = EvaluationBatch.includes(:evaluation_run).find_by(id: batch_id)

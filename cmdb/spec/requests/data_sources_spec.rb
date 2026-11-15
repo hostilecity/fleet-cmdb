@@ -48,13 +48,13 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       debian_host(packages: [ [ "curl", "8.14.1-1", "curl" ] ])
       import_advisories(osv_record(id: "DSA-1-1", package: "curl"))
       get "/data-sources"
-      expect(page.at_css("#evaluation_progress").text).to eq("Re-matching the hosts the latest import affects: starting.")
+      expect(page.at_css("#evaluation_progress_text").text).to eq("Re-matching the hosts the latest import affects: starting.")
       perform_enqueued_jobs(only: EvaluationRunJob)
       get "/data-sources"
-      expect(page.at_css("#evaluation_progress").text).to eq("Re-matching the hosts the latest import affects: 0 of 1 host done.")
+      expect(page.at_css("#evaluation_progress_text").text).to eq("Re-matching the hosts the latest import affects: 0 of 1 host done.")
       perform_evaluation_jobs
       get "/data-sources"
-      expect(page.at_css("#evaluation_progress")).to be_nil
+      expect(page.at_css("#evaluation_progress_text")).to be_nil
     end
 
     it "shows freshness, current and withdrawn advisories, and hosts per ecosystem, counted in the database" do

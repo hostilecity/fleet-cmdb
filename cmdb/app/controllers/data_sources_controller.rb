@@ -118,7 +118,7 @@ class DataSourcesController < ApplicationController
     @imports = @sources.imports
     @failed_refreshes = @sources.failed_refreshes
     @tracker = TriageDataSources.new
-    @matching = EvaluationRun.unfinished_advisories # #197: progress of re-matching after an import
+    @matching = EvaluationRun.shown_for_advisories # #197: progress of re-matching after an import
   end
 
   def refuse(message, field: :advisory_file)

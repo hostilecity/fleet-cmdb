@@ -10,16 +10,22 @@
 # - Retry-safe: evaluation and matching are idempotent, and a batch row is deleted when its batch is counted, under the
 #   run's row lock, so a retried or duplicated batch counts once. A batch locks its hosts in id order, in short
 #   transactions of its own (CisEvaluation, VulnerabilityMatcher), never one long one.
-# - Latest wins: a run supersedes the unfinished runs of its kind that it covers (the same rules, or the same sources),
-#   whose remaining batches then do nothing. Results are read under the host lock, so an older run's batch still
-#   working writes the newer rule's results anyway.
+# - Latest wins: a run supersedes the unfinished and failed runs of its kind that it covers (the same rules, or the
+#   same sources), whose remaining batches then do nothing. Results are read under the host lock, so an older run's
+#   batch still working writes the newer rule's results anyway.
+# - Failed: when the fan-out or a batch fails every retry (after_discard on their jobs), the run stops: its remaining
+#   batches are deleted and it is failed, which ends its progress line. The page says so, with a button that starts
+#   the same run again (EvaluationRunsController#retry), and a later run that covers it supersedes it.
 # - Progress: batches_done of batch_count and hosts_done of host_count, shown where the run was triggered (the rule page,
 #   the Advisory data sources page). The dashboard refreshes once when the run finishes, if what it shows changed.
-# - Runs finished more than KEPT ago are deleted when a run starts.
+# - Runs finished or superseded more than KEPT ago are deleted when a run starts; a failed run is kept until a later
+#   run supersedes it, so a fleet left part-checked stays visible.
 class EvaluationRun < ApplicationRecord
   KINDS = %w[cis_rules advisories].freeze
-  STATES = %w[queued running finished superseded].freeze
+  STATES = %w[queued running finished superseded failed].freeze
   UNFINISHED = %w[queued running].freeze
+  # A later run that covers one of these supersedes it.
+  SUPERSEDABLE = (UNFINISHED + %w[failed]).freeze
   BATCH_SIZE = 1_000
   KEPT = 30.days
 
@@ -41,25 +47,51 @@ class EvaluationRun < ApplicationRecord
     run
   end
 
-  # The newest unfinished run evaluating the rule, for its page.
-  def self.unfinished_for_rule(rule_id)
-    unfinished.where(kind: "cis_rules").where("scope -> 'rule_ids' @> ?", [ rule_id ].to_json).order(id: :desc).first
+  # The run to show on the rule's page: the newest run evaluating the rule, when it is unfinished or failed.
+  def self.shown_for_rule(rule_id)
+    run = where(kind: "cis_rules").where("scope -> 'rule_ids' @> ?", [ rule_id ].to_json).order(id: :desc).first
+    run if run&.shown?
   end
 
-  # The newest unfinished re-matching run, for the Advisory data sources page.
-  def self.unfinished_advisories = unfinished.where(kind: "advisories").order(id: :desc).first
+  # The run to show on the Advisory data sources page: the newest unfinished re-matching run, or else the newest
+  # failed one (a later run covering it would have superseded it).
+  def self.shown_for_advisories
+    runs = where(kind: "advisories").order(id: :desc)
+    runs.unfinished.first || runs.find_by(state: "failed")
+  end
+
+  # Stops a run whose fan-out or a batch failed every retry (the jobs' after_discard). Its remaining batches are
+  # deleted, so their jobs do nothing; what its finished batches changed is refreshed.
+  def self.fail!(run_id)
+    transaction do
+      run = lock.find_by(id: run_id)
+      next unless run&.unfinished?
+
+      run.batches.delete_all
+      run.state = "failed"
+      run.finished_at = Time.current
+      FleetBroadcast.refresh if run.shown_changed
+      run.save!
+    end
+  end
 
   def work = (kind == "cis_rules" ? CisRules : Advisories).new(scope)
 
   def unfinished? = UNFINISHED.include?(state)
 
+  def failed? = state == "failed"
+
+  def shown? = unfinished? || failed?
+
   # Splits a queued run into batches and supersedes the older runs it covers (EvaluationRunJob). A retried fan-out
   # enqueues the batches still waiting again; a duplicated batch job counts once.
   def fan_out!
     batch_ids = transaction do
-      older = self.class.unfinished.where(kind:).where(id: ...id).select { |run| work.covers?(run.work) }.map(&:id)
-      # Every run row this takes, in id order, so two fan-outs never deadlock (this run has the highest id).
-      self.class.where(id: older + [ id ]).order(:id).lock.load
+      candidates = self.class.where(kind:, state: SUPERSEDABLE).where(id: ...id).select { |run| work.covers?(run.work) }.map(&:id)
+      # Every run row this takes, in id order, so two fan-outs never deadlock (this run has the highest id). The states
+      # are read again under the locks: a candidate that finished meanwhile is left alone (review of #204).
+      locked = self.class.where(id: candidates + [ id ]).order(:id).lock.to_a
+      older = locked.select { |run| run.id != id && SUPERSEDABLE.include?(run.state) }.map(&:id)
       reload
       next [] unless unfinished?
 
@@ -114,7 +146,7 @@ class EvaluationRun < ApplicationRecord
     return if older.empty?
 
     superseded = self.class.where(id: older)
-    self.shown_changed ||= superseded.where(shown_changed: true).exists?
+    self.shown_changed ||= superseded.where(shown_changed: true, state: UNFINISHED).exists? # a failed run refreshed when it failed
     EvaluationBatch.where(evaluation_run_id: older).delete_all
     superseded.update_all(state: "superseded", superseded_by_id: id, finished_at: Time.current, updated_at: Time.current)
     save!

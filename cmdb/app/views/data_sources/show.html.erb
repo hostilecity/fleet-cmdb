@@ -100,7 +100,7 @@
 
 <section aria-labelledby="imps">
   <h2 id="imps">Recent imports</h2>
-  <% if @matching %><%= render "evaluation_runs/progress", run: @matching, doing: "Re-matching the hosts the latest import affects" %><% end %>
+  <% if @matching %><%= render "evaluation_runs/progress", run: @matching, tick: 0 %><% end %>
   <% if @imports.empty? %>
     <div class="sheet empty" id="no_imports"><p><strong>No advisory data has been imported yet.</strong></p>
       <p><%= @feed.source ? "Refresh now, or upload an advisory file." : "Upload an advisory file." %> Until then no host's vulnerabilities can be evaluated.</p></div>

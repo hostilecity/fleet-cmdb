@@ -28,7 +28,7 @@ class RulesController < ApplicationController
     @authors = version_authors(authored)
     @records = AuditLog::Records.for(@entries + authored)
     @fact_users = CisRuleVersion.where(id: CisRule.select(:current_version_id), fact: @version.fact).count
-    @evaluation = EvaluationRun.unfinished_for_rule(@rule.id) # #197: progress of the fleet-wide run after a change
+    @evaluation = EvaluationRun.shown_for_rule(@rule.id) # #197: progress of the fleet-wide run after a change
   end
 
   def new

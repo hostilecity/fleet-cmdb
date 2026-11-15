@@ -1,7 +1,7 @@
 # Fleet-wide CIS evaluation and advisory re-matching, split into batches (#197, P2-S06, P2-S11). A run is one
 # trigger (a rule change, an advisory import); its batches are keyset ranges of host ids, each a job of its own.
 # A batch row is deleted when its job finishes, so a retried or duplicated job counts once; the run keeps the
-# counts the dashboard shows as progress.
+# counts the dashboard shows as progress. A run whose fan-out or a batch failed every retry is failed (review of #204).
 class CreateEvaluationRuns < ActiveRecord::Migration[8.1]
   def change
     create_table :evaluation_runs do |t|
@@ -18,7 +18,7 @@ class CreateEvaluationRuns < ActiveRecord::Migration[8.1]
       t.datetime :finished_at
       t.timestamps
       t.check_constraint "kind IN ('cis_rules', 'advisories')", name: "evaluation_runs_kind_valid"
-      t.check_constraint "state IN ('queued', 'running', 'finished', 'superseded')", name: "evaluation_runs_state_valid"
+      t.check_constraint "state IN ('queued', 'running', 'finished', 'superseded', 'failed')", name: "evaluation_runs_state_valid"
       t.index %i[kind state], where: "state IN ('queued', 'running')", name: "index_evaluation_runs_unfinished"
       t.index :finished_at
     end

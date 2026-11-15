@@ -96,6 +96,71 @@ RSpec.describe EvaluationRun do
       expect { perform_batch(first) }.not_to(change { [ run.reload.attributes, cis_history ] }) # a duplicate after the end
     end
 
+    # The guard itself (review of #204): two executions of one batch that both did the work count it once, even while
+    # the run is still running, with batches of unequal size so a double count would show in hosts_done too.
+    it "counts a batch once when two executions of it finish while the run is still running" do
+      run = described_class.start!("cis_rules", "rule_ids" => rules.map(&:id))
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      first, *rest = run.batches.order(:position).to_a
+      expect(run.batches.order(:position).pluck(:host_count)).to eq([ 2, 2, 2, 1 ])
+      2.times { described_class.batch_done!(first, []) } # both found the batch row before either deleted it
+      expect(run.reload).to have_attributes(state: "running", batches_done: 1, hosts_done: 2)
+      rest.reverse_each { |batch| 2.times { described_class.batch_done!(batch, []) } }
+      expect(run.reload).to have_attributes(state: "finished", batches_done: 4, hosts_done: 7)
+    end
+
+    it "fails the run when a batch fails every retry, so its page stops, and only a run that covers it supersedes it" do
+      run = described_class.start!("cis_rules", "rule_ids" => rules.first(2).map(&:id))
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      broken = run.batches.order(:position).first.host_range
+      calls = 0
+      allow(CisEvaluation).to receive(:evaluate!).and_wrap_original do |original, ids, **options|
+        next original.call(ids, **options) unless broken.cover?(ids.first)
+
+        calls += 1
+        raise ActiveRecord::StatementInvalid, "boom" # the first batch, every attempt
+      end
+      expect { perform_evaluation_jobs }.to raise_error(ActiveRecord::StatementInvalid, "boom")
+      expect(run.reload).to have_attributes(state: "failed", batches_done: 3, hosts_done: 5, finished_at: be_present) # the others ran between its retries
+      expect(run.batches).to be_empty
+      perform_evaluation_jobs
+      expect(run.reload).to have_attributes(state: "failed", batches_done: 3)
+      expect(calls).to eq(ApplicationJob::ATTEMPTS)
+      expect(described_class.unfinished).not_to include(run)
+      expect(described_class.shown_for_rule(rules.first.id)).to eq(run)
+
+      RSpec::Mocks.space.proxy_for(CisEvaluation).reset
+      partial = run_fleet_evaluation("cis_rules", "rule_ids" => [ rules.first.id ]) # covers only one of its rules
+      expect(run.reload.state).to eq("failed")
+      expect(described_class.shown_for_rule(rules.first.id)).to be_nil # its newest run finished
+      expect(described_class.shown_for_rule(rules.second.id)).to eq(run) # still part-checked
+      expect(partial.reload.state).to eq("finished")
+
+      described_class.where(id: run.id).update_all(finished_at: 40.days.ago)
+      covering = run_fleet_evaluation("cis_rules", "rule_ids" => rules.first(2).map(&:id)) # as "Check every host again" starts
+      expect(run.reload).to have_attributes(state: "superseded", superseded_by: covering) # a failed run is kept until superseded
+      expect(described_class.shown_for_rule(rules.second.id)).to be_nil
+    end
+
+    it "fails the run when its fan-out fails every retry" do
+      run = described_class.start!("cis_rules", "rule_ids" => rules.map(&:id))
+      allow_any_instance_of(described_class).to receive(:split!).and_raise(ActiveRecord::StatementInvalid, "boom") # rubocop:disable RSpec/AnyInstance
+      expect { perform_evaluation_jobs }.to raise_error(ActiveRecord::StatementInvalid)
+      expect(run.reload.state).to eq("failed")
+      expect(described_class.fail!(run.id)).to be_nil # already ended: nothing more
+    end
+
+    it "leaves alone an older run that finished between the read and the locks (review of #204)" do
+      older = described_class.start!("cis_rules", "rule_ids" => [ rules.first.id ])
+      newer = described_class.start!("cis_rules", "rule_ids" => [ rules.first.id ])
+      allow_any_instance_of(EvaluationRun::CisRules).to receive(:covers?).and_wrap_original do |original, other| # rubocop:disable RSpec/AnyInstance
+        older.update_columns(state: "finished", finished_at: 1.minute.ago) # finished meanwhile
+        original.call(other)
+      end
+      newer.fan_out!
+      expect(older.reload).to have_attributes(state: "finished", superseded_by_id: nil)
+    end
+
     it "lets the latest edit win: a run for the edited rule supersedes the unfinished one, whose remaining batches do nothing" do
       rule = rules.first
       older = described_class.start!("cis_rules", "rule_ids" => [ rule.id ])
@@ -222,19 +287,21 @@ RSpec.describe EvaluationRun do
     end
   end
 
-  it "finds the unfinished run for a rule's page and the data sources page, and deletes runs finished long ago" do
+  it "finds the run to show on a rule's page and the data sources page, and deletes runs finished long ago, never a failed one" do
     rule, = define_cis_rules(cis_rule_hash)
     other, = define_cis_rules(cis_rule_hash(key: "other"))
     old = described_class.create!(kind: "advisories", state: "finished", finished_at: 31.days.ago)
     recent = described_class.create!(kind: "advisories", state: "finished", finished_at: 1.day.ago)
-    expect(described_class.unfinished_for_rule(rule.id).scope).to eq("rule_ids" => [ rule.id ])
-    expect(described_class.unfinished_for_rule(other.id).scope).to eq("rule_ids" => [ other.id ])
-    expect(described_class.unfinished_advisories).to be_nil
-    advisories = described_class.start!("advisories", "packages" => {})
-    expect(described_class.unfinished_advisories).to eq(advisories)
-    expect(described_class.where(id: [ old.id, recent.id ]).pluck(:id)).to eq([ recent.id ])
+    failed = described_class.create!(kind: "advisories", scope: { "packages" => { "Debian:13" => [ "curl" ] } }, state: "failed", finished_at: 31.days.ago)
+    expect(described_class.shown_for_rule(rule.id).scope).to eq("rule_ids" => [ rule.id ])
+    expect(described_class.shown_for_rule(other.id).scope).to eq("rule_ids" => [ other.id ])
+    expect(described_class.shown_for_advisories).to eq(failed)
+    advisories = described_class.start!("advisories", "packages" => { "Debian:13" => [ "vim" ] })
+    expect(described_class.shown_for_advisories).to eq(advisories) # unfinished comes first
+    expect(described_class.where(id: [ old.id, recent.id, failed.id ]).pluck(:id)).to contain_exactly(recent.id, failed.id)
     perform_evaluation_jobs
-    expect(described_class.unfinished_for_rule(rule.id)).to be_nil
+    expect(described_class.shown_for_rule(rule.id)).to be_nil
+    expect(described_class.shown_for_advisories).to eq(failed) # a run of other sources does not cover it
   end
 
   it "refuses an unknown kind or state" do
