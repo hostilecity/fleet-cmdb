@@ -2,13 +2,19 @@
 
 How to put the agent on a VM, enroll it, keep it updated, roll back, and remove it. The server must be installed with at least one release imported first ([install-server.md](install-server.md)). **Install agents from the first release that includes Cloudflare's Origin CA roots ([agent/trust](../../agent/trust/README.md), ADR 0024)**: older agents do not trust the server's certificate. The agent's own reference (every option, exit code, file, and the update mechanism) is [agent/README.md](../../agent/README.md); this page is the operator's path through it.
 
-**VM requirements:** Debian 13 on x86_64 with systemd ([DEC-01](../decisions/0001-fleet-profile.md)), root, `curl`, and HTTPS access to the agent hostname (`fleet-vm.example.com`) on port 443. The VM must resolve the agent hostname through the LAN DNS, and its clock must be right (`timedatectl` shows `System clock synchronized: yes`).
+**VM requirements:** Debian 13 on x86_64 with systemd ([DEC-01](../decisions/0001-fleet-profile.md)), root, `curl` and `minisign` (both Debian packages), HTTPS access to the agent hostname (`fleet-vm.example.com`) on port 443, and HTTPS access to GitHub (`raw.githubusercontent.com`) for the release public key. The VM must resolve the agent hostname through the LAN DNS, and its clock must be right (`timedatectl` shows `System clock synchronized: yes`).
 
 ## Install one VM (approved in the dashboard)
 
-The primary path is the dashboard's **Agents > Install an agent** page. It shows the exact commands for the newest imported release, with its download URL and SHA-256 filled in. Copy them from there; the shape is:
+The primary path is the dashboard's **Agents > Install an agent** page. It shows the exact commands for the newest imported release, with its version filled in. Copy them from there; the shape is:
 
-1. **Download** the agent on the VM, from the agent hostname:
+1. **Download** the agent on the VM. Install the tools first if the VM does not have them:
+
+   ```sh
+   sudo apt-get update && sudo apt-get install -y curl minisign
+   ```
+
+   Then download the binary, its signed manifest, and the manifest's signature from the agent hostname:
 
    ```sh
    cat > fleet-server-ca.pem <<'EOF'
@@ -17,17 +23,56 @@ The primary path is the dashboard's **Agents > Install an agent** page. It shows
    -----END CERTIFICATE-----
    EOF
    curl -fL --cacert fleet-server-ca.pem -o fleet-agent https://fleet-vm.example.com/api/v1/releases/1.2.0/binary
+   curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json https://fleet-vm.example.com/api/v1/releases/1.2.0/manifest
+   curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json.minisig https://fleet-vm.example.com/api/v1/releases/1.2.0/signature
    ```
 
-   curl knows only the VM's system trust store, and the server's certificate comes from Cloudflare's Origin CA (ADR 0024), so the command hands curl that one authority for this download. The VM's trust store is not changed. The agent itself trusts the authority from its build.
+   curl knows only the VM's system trust store, and the server's certificate comes from Cloudflare's Origin CA (ADR 0024), so the command hands curl that one authority for these downloads. The VM's trust store is not changed. The agent itself trusts the authority from its build.
 
-2. **Check** it against the SHA-256 on the page (the page fills it in):
+2. **Check the signature.** Get the release public key from the repository on GitHub, at the release's own tag, not from the server:
 
    ```sh
-   echo "<sha256 from the page>  fleet-agent" | sha256sum -c
+   curl -fsSL -o fleet-release-key.pub https://raw.githubusercontent.com/hostilecity/fleet-cmdb/refs/tags/agent-v1.2.0/agent/release-keys/current.pub
    ```
 
-   It must print `fleet-agent: OK`. If it does not, do not run it: download it again.
+   Then check the manifest's signature with that key, and the binary against the SHA-256 in the manifest it has just verified:
+
+   ```sh
+   minisign -V -p fleet-release-key.pub -m fleet-agent.manifest.json -o | sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1  fleet-agent/p' | sha256sum -c
+   ```
+
+   It must print exactly these three lines, with the version you are installing:
+
+   ```text
+   Signature and comment signature verified
+   Trusted comment: fleet-agent 1.2.0 x86_64-unknown-linux-musl release manifest
+   fleet-agent: OK
+   ```
+
+   Anything else means the files are not that release as it was signed, and nothing has run. Do not run the agent: delete the files and start again. If it fails again, treat the server as suspect. Typical failures:
+
+   | Output | Meaning |
+   |---|---|
+   | `fleet-agent: FAILED` | The binary is not the one the signed manifest names (changed, or the download was cut short) |
+   | `Signature verification failed` | The manifest or its signature was changed |
+   | `Signature key id in fleet-agent.manifest.json.minisig is … but the key id in the public key is …` | The release was signed by a key that is not the repository's |
+   | `curl: (22) … 404` on the key | No such release tag on GitHub, or the VM cannot reach GitHub (below) |
+
+   **Why this way.** The server could be wrong or compromised, and so could anyone who can present a certificate for the agent hostname (ADR 0024). A checksum the server shows next to a binary it serves proves nothing about either. The release key is never on the server (ADR 0018), so a binary that passes this check is one the release workflow signed. The key comes from the release's own tag, so it is the key that signed that release, before and after a [key rotation](../releases.md#rotation). The page shows the address; check that it names `hostilecity/fleet-cmdb`. To check the key by hand as well, compare `fleet-release-key.pub` with the keys printed in [docs/releases.md](../releases.md#where-they-are). They are, today:
+
+   | Key | ID | Public key |
+   |---|---|---|
+   | current | `7E51EF010B459985` | `RWSFmUULAe9RfnlQTNeEW6nsdcGfhgNJPuipo3oDnhdS+7UrsuOUg1WL` |
+   | next | `E23D49AE6F91A17B` | `RWR7oZFvrkk94qBZYEVnm1cgefAWGIpPGSGyzROt/C6FqaiaBCXIMEEU` |
+
+   **A VM without access to GitHub:** write the key by hand instead of downloading it, from the table above (the key whose ID the page names), and run the same check:
+
+   ```sh
+   printf '%s\n' 'untrusted comment: minisign public key 7E51EF010B459985' 'RWSFmUULAe9RfnlQTNeEW6nsdcGfhgNJPuipo3oDnhdS+7UrsuOUg1WL' > fleet-release-key.pub
+   ```
+
+   The page warns in red when the server's configured release keys differ from the repository's. A release it accepted only with such a key fails this check. Fix the keys ([docs/releases.md](../releases.md#generating-the-keys-once-by-the-owner)); if nobody changed them, treat the server as compromised.
+
 3. **Run the installer** as root:
 
    ```sh
@@ -57,7 +102,7 @@ If anything fails, the installer says what happened and what to do next, and exi
 For cloud-init, templates, and scripts, where nobody is at the terminal to approve:
 
 1. In the dashboard, **Pre-register host** on the Fleet page: enter the name and hostname. The page shows a **one-time token**, once, valid for 24 hours (`FLEET_ENROLLMENT_TOKEN_TTL_HOURS`). The host appears as **Pending**.
-2. On the VM, download and check the agent as above, then run the installer with the token on standard input, never on the command line:
+2. On the VM, download and check the agent as above (steps 1 and 2), then run the installer with the token on standard input, never on the command line:
 
    ```sh
    chmod +x fleet-agent && sudo ./fleet-agent install --server https://fleet-vm.example.com --token-stdin
@@ -65,7 +110,7 @@ For cloud-init, templates, and scripts, where nobody is at the terminal to appro
 
    On a terminal it asks for the token with the input hidden; a provisioning tool pipes it in instead. The token is never accepted as a command-line value, so it cannot end up in the process list or shell history.
 
-   The **Unattended** tab of the install page has a ready cloud-init snippet. A token works once: a template that clones many VMs needs one pre-registration per VM.
+   The **Unattended** tab of the install page has a ready cloud-init snippet. It installs `curl` and `minisign` with cloud-init's `packages`, then runs the same download and check as one `sh -ec` script, so a failed check stops it before the agent runs. Check the key's address in it (`hostilecity/fleet-cmdb`, the tag of the release) before you put it in a template: from then on the template, not the server, decides where the key comes from. A token works once: a template that clones many VMs needs one pre-registration per VM.
 
 **Check:** as for one VM; the host moves from **Pending** to **Online**.
 
@@ -98,7 +143,7 @@ On an enrolled VM it keeps the credential and every setting, installs the new bi
 ## Roll back
 
 - **Automatic.** A remote update that does not confirm (no heartbeat accepted by the server within `update_confirm_seconds`, default 300), whose service fails to start, or that is interrupted by a reboot, is rolled back to the previous version by the agent itself, which reports `rolled_back` with the reason. Nothing to do but read the reason ([troubleshooting.md](troubleshooting.md#an-update-was-rolled-back)).
-- **By hand.** The server never offers an older version (no downgrades, ADR 0018). To go back on one VM, run the installer of the older release you trust: download and check it from GitHub or the install page's `?version=` link, then `sudo ./fleet-agent install`. To withdraw a bad release from the whole fleet, publish a newer, fixed release and roll it out.
+- **By hand.** The server never offers an older version (no downgrades, ADR 0018). To go back on one VM, run the installer of the older release you trust: download and check it as in [Install one VM](#install-one-vm-approved-in-the-dashboard), from the install page's `?version=` link or from its GitHub release ([docs/releases.md](../releases.md#verifying-a-download-by-hand)), then `sudo ./fleet-agent install`. To withdraw a bad release from the whole fleet, publish a newer, fixed release and roll it out.
 
 ## Uninstall
 
