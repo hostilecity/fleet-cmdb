@@ -35,6 +35,6 @@ end
 RSpec.configure do |config|
   config.include LiveRefreshHelpers
   # Specs without a transaction (the concurrency specs) commit their refresh requests. A marker left behind would
-  # hold back the next example's flush for a minute, so every example ends with none.
-  config.after { PendingRefresh.delete_all }
+  # hold back the next example's flush for a minute, so they end with none. Other examples roll theirs back.
+  config.after { PendingRefresh.delete_all unless self.class.use_transactional_tests }
 end
