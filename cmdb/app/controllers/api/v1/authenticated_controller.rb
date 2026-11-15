@@ -6,10 +6,17 @@ module Api
     # request: no endpoint takes a host identifier, so one host cannot read or write another's data (AC-1.6).
     # Missing, malformed, unknown, revoked, and retired-host credentials all get the same 401, and there is
     # no authentication cache, so revocation takes effect on the next request (AC-1.5).
+    #
+    # One transaction per request (#189). For the actions a controller declares `atomic`, the transaction opens
+    # before authentication and closes after the action, so authentication, the host lock (AgentHostLock), the
+    # writes, and the credential's last use commit once. Authentication still comes first, before the body is
+    # read, and takes no lock; the action locks the host and re-checks the credential under that lock.
     class AuthenticatedController < BaseController
       # Whether a request updates the credential's last_used_at. Heartbeats opt out: they record
       # hosts.last_seen_at instead and must stay a single write (P1-S07, review of #50).
       class_attribute :records_credential_use, default: true
+      # The actions that run in one transaction, authentication included (see .atomic).
+      class_attribute :atomic_actions, default: [].freeze
 
       # Refusals found under the host row lock (AgentHostLock), mapped to the documented errors.
       REFUSALS = {
@@ -20,8 +27,15 @@ module Api
 
       rescue_from(AgentHostLock::Refused) { |refusal| render_api_error(REFUSALS.fetch(refusal.reason).new) }
 
+      # Declared first, so it wraps authentication and every later callback as well as the action.
+      around_action :in_request_transaction
       before_action :authenticate_agent!
       limits_rate "agent", AgentApi.config.rate_limit, by: -> { current_credential.key_id }
+
+      # Unlike BaseController.atomic, which wraps only the action, the transaction here starts before authentication.
+      def self.atomic(*actions)
+        self.atomic_actions = (atomic_actions + actions.map(&:to_s)).freeze
+      end
 
       private
 
@@ -32,6 +46,18 @@ module Api
       def authenticate_agent!
         @current_credential = AgentCredential.authenticate(request.authorization) or raise AgentApi::Unauthorized
         Current.host_id = current_credential.host_id
+      end
+
+      # The credential's last use is written after the action, in its transaction: every atomic action has locked
+      # the host by then, so the credential row is taken after the host row, as revocation takes them.
+      def in_request_transaction(&)
+        return run_and_record_use(&) unless atomic_actions.include?(action_name)
+
+        ApplicationRecord.transaction { run_and_record_use(&) }
+      end
+
+      def run_and_record_use
+        yield
         current_credential.record_use! if records_credential_use
       end
 

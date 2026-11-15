@@ -34,6 +34,8 @@ class Setting < ApplicationRecord
   AGENT_INTERVAL_KEYS = { heartbeat_seconds: "agent.heartbeat_seconds", inventory_seconds: "agent.inventory_seconds" }.freeze
 
   validates :key, inclusion: { in: DEFINITIONS.keys }
+  # The agent API caches some settings per process (#189); a change clears this process's copy at once.
+  after_commit { SettingsCache.clear }
 
   def self.get(key)
     definition = DEFINITIONS.fetch(key)
@@ -82,8 +84,8 @@ class Setting < ApplicationRecord
     end
   end
 
-  # The intervals to send agents, one SELECT: { heartbeat_seconds: 120 }, with only the ones that are set. Read on
-  # every heartbeat.
+  # The intervals to send agents, one SELECT: { heartbeat_seconds: 120 }, with only the ones that are set. Heartbeats
+  # read it through SettingsCache.
   def self.agent_intervals
     stored = where(key: AGENT_INTERVAL_KEYS.values).pluck(:key, :value).to_h
     AGENT_INTERVAL_KEYS.filter_map { |name, key| [ name, stored[key] ] if stored.key?(key) }.to_h
