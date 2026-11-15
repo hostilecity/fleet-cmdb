@@ -2,6 +2,27 @@
 
 Start with the two logs: the agent's on the VM (`journalctl -u fleet-agent -n 50`) and the server's (`docker logs --since 1h fleet-cmdb` on the server VM). Every API error the agent logs carries a `request_id`; search the server log for it to see the server's side of the same request ([health-and-jobs.md](health-and-jobs.md#logs)).
 
+## The deploy fails
+
+Open the failed run in **Actions > Deploy**. The first error line names the problem.
+
+- **`set the variable …` or `set the secret …`:** that setting is missing from the `production` environment. Add it as the kind the message names ([install-server.md](install-server.md#2-create-the-github-environment)), then run the workflow again.
+- **A warning that a setting `is set as a secret, which the deploy does not read`:** `FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT`, `FLEET_DASHBOARD_HOST`, and `FLEET_AGENT_HOST` are variables. Delete the secret, add a variable with the same name, and run the workflow again.
+- **`… holds a line break`:** a variable has more than one line. For a release key, use only the second line of the `.pub` file.
+- **A `git` error, such as `not a git repository`:** the runner has no `git`, and an older `cd.yml` needed it. The current workflow does not. Deploy from the newest `main`.
+- **`FLEET_TLS_CERT is not signed by a certificate authority agents trust`:** the secret does not hold a Cloudflare Origin CA certificate, or holds the key instead. Copy the **Origin Certificate** again, from `-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----`.
+- **`the Docker network … does not exist`:** start the PostgreSQL container first, or fix `FLEET_DB_NETWORK`.
+- **`the app did not answer /up` or `does not answer HTTPS on 3443`:** the log printed after it says why. The usual causes are a key that does not match the certificate, a certificate without `FLEET_AGENT_HOST` in it, or a wrong `DATABASE_PASSWORD`.
+- **The run is skipped:** it was started from a branch other than `main`. Only `main` deploys.
+
+## Imports are refused: no release key
+
+The **Agents** page says **No release key is configured**, and every import is refused. The server reads the release keys from the `production` environment's **variables**, never from its secrets.
+
+1. In **Settings > Environments > production**, delete any secret named `FLEET_RELEASE_KEY_CURRENT` or `FLEET_RELEASE_KEY_NEXT`.
+2. Add `FLEET_RELEASE_KEY_CURRENT` as a **variable**. Its value is the second line of `agent/release-keys/current.pub`, the one that starts with `RW`.
+3. Run **Actions > Deploy**. The Agents page no longer shows the notice. Import the release again.
+
 ## The agent hostname certificate is not trusted
 
 The installer stops with `presented a certificate this VM does not trust`, or the agent logs TLS errors and the host goes offline.
@@ -34,6 +55,25 @@ The agent logs `the server rejected this agent's credential (it may have been re
 
 `403 reenrollment_required` means a re-enrollment was started for the host; finish it on the VM with the command the dashboard showed.
 
+## VMs cloned from one template
+
+VMs cloned from one template all have the same machine ID (`/etc/machine-id`), unless the template was prepared for cloning. The approval page then says the new VM has the same machine ID as a host you already have.
+
+- **When you approve,** choose **A new host**. It is the default when the hostnames differ. Choosing the existing host instead re-enrolls it: the new VM takes over that host, and the old VM's agent stops working.
+- **Give each clone its own machine ID,** before installing the agent if you can. On the clone, as root:
+
+  ```sh
+  old=$(cat /etc/machine-id)
+  rm -f /etc/machine-id /var/lib/dbus/machine-id
+  systemd-machine-id-setup
+  if [ -d /var/lib/dbus ]; then ln -s /etc/machine-id /var/lib/dbus/machine-id; fi
+  [ "$(cat /etc/machine-id)" != "$old" ] && echo "new machine ID"
+  ```
+
+  Remove both files: `systemd-machine-id-setup` does nothing while `/etc/machine-id` is there, and copies the old ID back from `/var/lib/dbus/machine-id` if that file holds it.
+- **If the agent is already installed,** restart it (`systemctl restart fleet-agent`). The host page then warns that the credential was used from another machine. To clear it, re-enroll the VM: `fleet-agent install --reenroll`, and approve it as a re-enrollment of the same host.
+- **To fix the template,** empty its machine ID just before you shut it down for the last time: `truncate -s 0 /etc/machine-id`, then `rm -f /var/lib/dbus/machine-id` and, if `/var/lib/dbus` exists, `ln -s /etc/machine-id /var/lib/dbus/machine-id`. Each clone then makes its own ID when it first boots.
+
 ## The clock is off
 
 The agent logs `this host's clock differs from the server's`. The server always uses its own clock for liveness and audit times, so a wrong VM clock does not make a host look offline, but report timestamps are off and, if it is far off, TLS fails (above). Enable time synchronisation on the VM (`timedatectl set-ntp true`; check `timedatectl` shows `System clock synchronized: yes`). The agent logs `this host's clock agrees with the server's again` once fixed. Check the server's clock the same way.
@@ -52,10 +92,10 @@ The installer stops with `the onboarding request expired before an operator appr
 
 A rollout halts when any host reports `failed` or `rolled_back`, or when a host sent the update has not reported within 30 minutes (`unconfirmed`). It then offers the update to no further host until an operator resumes or cancels it ([install-agent.md](install-agent.md#remotely-in-a-rollout)).
 
-1. Read why: `Rollout.order(:id).last.halt_reason` in the console, and the `update.*` and `rollout.*` entries in the audit log.
+1. Read why: the **Agents** page shows the halted rollout with its reason, and each host's result. The audit log has the `update.*` and `rollout.*` entries.
 2. For each host that did not succeed, read its log on the VM: `journalctl -u fleet-agent | grep -i update`. `failed` means the update was refused before anything changed (a download, signature, checksum, free-space, or self-test failure: the reason says which); the VM still runs the old version.
 3. `unconfirmed` usually means the host was offline or could not reach the release download; once it is back, it reports, and the result is recorded.
-4. Fix the cause, then resume. If the release itself is bad, cancel the rollout and publish a fixed, newer release; never try to push an older one.
+4. Fix the cause, then choose **Resume** on the Agents page. If the release itself is bad, choose **Cancel rollout** and publish a fixed, newer release; never try to push an older one.
 
 ## An update was rolled back
 
@@ -68,6 +108,36 @@ cat /var/lib/fleet-agent/update-result.json   # only until the server has accept
 ```
 
 The new version's own log lines, before the rollback, say why it did not confirm: often it could not reach the server, or a config option it does not accept. Fix that and run a new rollout, or upgrade that VM by hand ([install-agent.md](install-agent.md#by-hand-on-one-vm)).
+
+## Package updates succeed, but vulnerabilities stay open
+
+**Apply package updates** succeeds, yet the host's **Vulnerabilities** tab still lists findings with a fixed version. Debian publishes most security fixes in its security repository. If the VM's APT sources leave it out, `apt-get upgrade` never sees those fixes. VMs built from a minimal template often lack it.
+
+1. On the VM, check that the repository is there:
+
+   ```sh
+   apt-cache policy | grep -- -security     # should list trixie-security
+   ```
+
+2. If nothing is listed, add it. On Debian 13, in `/etc/apt/sources.list.d/debian.sources`:
+
+   ```
+   Types: deb
+   URIs: http://security.debian.org/debian-security
+   Suites: trixie-security
+   Components: main
+   Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+   ```
+
+3. Run **Apply package updates** on the host again. Its package report follows, and the fixed findings close.
+4. If some stay open, the fix may be held back. The task respects holds, installs no new packages, and removes none, so a fix that needs a new dependency is left alone. On the VM:
+
+   ```sh
+   apt-mark showhold                         # packages you have held
+   apt-get -s upgrade | grep -A20 'kept back' # fixes that need a new or removed package
+   ```
+
+   Install those by hand (`apt-get install <package>`) once you have checked what they change.
 
 ## `/health` is unhealthy
 

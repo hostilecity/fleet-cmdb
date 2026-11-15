@@ -30,10 +30,12 @@
   </section>
 <% end %>
 
+<% if @factor %>
 <section class="sheet" aria-labelledby="lost_heading">
   <h2 id="lost_heading">Lost your authenticator?</h2>
   <p><strong>If you still have recovery codes</strong>, each one works once in place of a 6-digit code. Use one to <%= link_to "move to a new phone", setup_second_factor_path, data: { turbo: false } %>.</p>
   <p><strong>If you have neither your phone nor a recovery code</strong>, it cannot be reset from the dashboard, on purpose: someone who took over your Google session could otherwise reset it too. Ask the server's administrator to run this on the server:</p>
-  <pre class="code">bin/rails second_factor:reset EMAIL=<%= current_operator.email %></pre>
+  <pre class="code">docker exec fleet-cmdb bin/rails second_factor:reset EMAIL=<%= current_operator.email %></pre>
   <p>It removes your authenticator and recovery codes and records an audit entry. You then set up a new one here.</p>
 </section>
+<% end %>

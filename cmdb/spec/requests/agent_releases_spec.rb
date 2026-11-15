@@ -40,6 +40,8 @@ RSpec.describe "Agent releases", :signed_in, type: :request do
       get "/agents"
       expect(page.at_css("#no_releases")).to be_present
       expect(page.at_css(".notice.error strong").text).to eq("No release key is configured.")
+      # A GitHub secret never reaches the server: the deploy passes this setting only as a variable.
+      expect(page.at_css(".notice.error p").text.squish).to include("set the variable (not a secret) FLEET_RELEASE_KEY_CURRENT", "second line of agent/release-keys/current.pub")
       expect(page.at_css("#no_imports")).to be_present
     end
   end

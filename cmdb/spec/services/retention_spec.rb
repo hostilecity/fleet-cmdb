@@ -64,8 +64,8 @@ RSpec.describe Retention do
       old = [ snapshot(host, 120), snapshot(host, 100), status_event(host, 95, to: "stale"), receipt(host, 91),
               package_snapshot(host, 120), package_receipt(host, 91), config_snapshot(host, 120), config_receipt(host, 91),
               report_request(host, 91), refresh_attempt(91) ]
-      kept = [ snapshot(host, 89), snapshot(host, 5), status_event(host, 10, to: "offline"), receipt(host, 89),
-               package_snapshot(host, 89), package_receipt(host, 89), config_snapshot(host, 89), config_receipt(host, 89),
+      kept = [ snapshot(host, 89), snapshot(host, 5), status_event(host, 10, to: "offline"), receipt(host, 6),
+               package_snapshot(host, 89), package_receipt(host, 6), config_snapshot(host, 89), config_receipt(host, 6),
                report_request(host, 89), refresh_attempt(89) ]
 
       counts = described_class.prune!(now:)
@@ -76,6 +76,26 @@ RSpec.describe Retention do
                            "advisory_refresh_attempts" => 1, "vulnerability_findings" => 0)
       expect(old.map { |row| row.class.exists?(row.id) }).to all(be(false))
       expect(kept.map { |row| row.class.exists?(row.id) }).to all(be(true))
+    end
+
+    it "keeps report ids for 7 days, not the whole retention window: they only need to outlive retries (scale assessment)" do
+      old = [ receipt(host, 8), package_receipt(host, 30), config_receipt(other, 89) ]
+      kept = [ receipt(host, 6), package_receipt(host, 1), config_receipt(other, 6.9) ]
+      allow(Rails.logger).to receive(:info)
+
+      counts = described_class.prune!(now:)
+
+      expect(counts.values_at("inventory_report_receipts", "package_report_receipts", "config_report_receipts")).to eq([ 1, 1, 1 ])
+      expect(old.map { |row| row.class.exists?(row.id) }).to all(be(false))
+      expect(kept.map { |row| row.class.exists?(row.id) }).to all(be(true))
+      expect(Rails.logger).to have_received(:info).with(/older than 2026-08-03T12:00:00Z \(inventory_report_receipts older than 2026-10-25T12:00:00Z, package_report_receipts/)
+    end
+
+    it "prunes report ids by the retention window when that is shorter than 7 days" do
+      expect(described_class.targets.find { |t| t.model == InventoryReportReceipt }.max_age).to eq(7.days)
+      old = receipt(host, 6)
+      expect(described_class.prune!(now:, window: 5.days)["inventory_report_receipts"]).to eq(1)
+      expect(InventoryReportReceipt.exists?(old.id)).to be(false)
     end
 
     it "always keeps the newest package snapshot of each host, whatever its age (P2-S08)" do

@@ -15,6 +15,7 @@
   <body data-controller="live-status">
     <header class="bar">
       <% if current_operator %>
+        <a class="skip-link" href="#main" data-turbo="false">Skip to content</a>
         <%= link_to root_path, class: "brand" do %><span class="lamp online" aria-hidden="true"></span>Fleet CMDB<% end %>
         <nav aria-label="Main">
           <%= link_to "Fleet", root_path, "aria-current": (controller_name == "hosts" ? "page" : nil) %>
@@ -35,7 +36,7 @@
         <span class="brand"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</span>
       <% end %>
     </header>
-    <main>
+    <main id="main" tabindex="-1">
       <div class="notice" role="status" data-live-status-target="banner" hidden>
         <strong>Live updates paused. Statuses on this page may be out of date.</strong>
         <p>Reconnecting. The page catches up by itself when the connection returns.</p>

@@ -134,6 +134,8 @@ module Advisories
         changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
         # Targeted re-matching (P2-S11), after commit; it also evaluates hosts that had no advisory data yet.
         VulnerabilityMatchJob.after_import(changed) if changed.any? || @ecosystems.any?
+        # A changed severity queued its hosts' compliance summaries for a recount, after commit (#193, ADR 0026).
+        ComplianceSummaryRecountJob.after_import
         Result.new(import:, changed_packages: changed)
       end
     end

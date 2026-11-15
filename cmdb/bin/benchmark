@@ -1,0 +1,4 @@
+#!/bin/sh
+# Scale benchmark (bin/benchmark --help, docs/operations/benchmark.md). Development and test databases only.
+cd "$(dirname "$0")/.." || exit 1
+exec bin/rails runner script/benchmark/run.rb "$@"

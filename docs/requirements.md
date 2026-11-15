@@ -99,6 +99,7 @@ Build these in Phase 1 and reuse them unchanged in Phases 2 and 3.
 - Reports carry a stable report identifier and a schema version (an integer) so retries are safe and future changes are detectable.
 - Errors return a consistent JSON shape with a machine-readable code and a human-readable message. A failed request must never leave a half-written record.
 - The server applies per-host rate limits generous enough for normal reporting but tight enough to stop a malfunctioning agent from filling the database. Request bodies have a maximum size per endpoint.
+  - The per-credential limit is counted in each server process's memory, with no database write per request, so with several web processes a client can get up to that many times the limit; a limit that must hold across processes belongs at the edge, in front of the agent hostname. A client address that fails authentication too often is refused before authentication, also per process (60 failures a minute by default). (proposed, #191, server finding S-5)
 - When an agent is older than the server's supported minimum, the server returns a dedicated error code (decided: HTTP 426, code `agent_version_unsupported`) that the agent logs plainly. (decided, DEC-08)
 
 ### FR-S.3 Audit log
@@ -161,6 +162,7 @@ Retiring a host keeps its history and audit trail but removes it from the active
 - A heartbeat contains the host identity, agent version, agent uptime, and the agent's current time.
 - Heartbeats are cheap: they update `last_seen_at` and liveness only. Full inventory travels in the separate report in FR-1.3. Heartbeats do not write audit entries.
 - The heartbeat response carries the server time and an extensible envelope for server-to-agent signals: `directives`, an object keyed by directive name in which every directive is optional and agents ignore names they do not know, so new directives never break older agents. In Phase 1 it carries the agent-update directive (FR-S.5) and the heartbeat and report intervals the server wants, which the agent adopts so fleet-wide load can be adjusted without an agent release. (decided, DEC-08, DEC-18, DEC-19, DEC-20)
+  - A change to the intervals, or to the task poll hint, reaches agents within 10 seconds: each server process keeps these values for at most 10 seconds, and the process that saves a change uses it at once. (proposed, #189)
 - On failure, the agent retries with exponential backoff and jitter, caps the backoff, and keeps running. A server outage must never crash or exit the agent. The agent does not queue or replay missed heartbeats or reports; it sends current state once the server is reachable again.
 
 ### FR-1.3 Inventory report
@@ -182,7 +184,7 @@ Retiring a host keeps its history and audit trail but removes it from the active
 
 ### FR-1.5 Dashboard — Phase 1
 
-- **Fleet list:** every active host with name, hostname, tags, operating system, agent version, liveness status, and last seen. Sortable, searchable by name and hostname, and filterable by tag and status. Fleet counts by status appear at the top.
+- **Fleet list:** every active host with name, hostname, tags, operating system, agent version, liveness status, and last seen. Sortable, searchable by name and hostname, and filterable by tag and status. Fleet counts by status appear at the top. A fleet larger than 100 hosts is shown in pages of 100, with Previous and Next keeping the sort and filters (#193, scope change: owner approval needed).
 - **Host detail:** full current inventory, inventory history with field-level change highlighting, enrollment and credential state, status history, and the host's audit entries.
 - **Operator actions:** approve or reject onboarding requests (with the host's name, tags, description, and notes), pre-register a host for an unattended install, edit name, description, notes and tags, revoke a credential, issue a new enrollment token, and retire a host.
 - **Agent install and updates:** the install commands for the current release, the target agent version and rollout progress, and each host's update history (FR-S.5).
@@ -252,7 +254,7 @@ Phase 2 starts only after Phase 1 is accepted.
 ### FR-2.5 Dashboard — Phase 2 additions
 
 - Host detail gains three views: configuration (latest facts, CIS results, snapshot diff), packages (current set, snapshot diff), and vulnerabilities (open and resolved findings).
-- A fleet compliance view lists every host with its CIS pass rate, open CIS failures by severity, and open vulnerability findings by severity.
+- A fleet compliance view lists every host with its CIS pass rate, open CIS failures by severity, and open vulnerability findings by severity, in pages of 100 with Previous and Next (#193).
 - Rules are managed in the dashboard: list and filter, view versions, add one rule from a form and edit a rule, each with a preview of the hosts that would change result before saving, enable and disable, and import a file with a preview of what would change. Rules with several conditions are added by importing a file.
 - Advisory data is managed in the dashboard: sources (OSV and the distribution's triage source), last import, an upload, and a manual feed refresh that is limited to one every 5 minutes.
 
@@ -342,6 +344,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 ### NFR-3 Performance and scale
 
 - The system stays responsive with 50 hosts reporting on the default intervals: dashboard fleet list loads in under 2 seconds on the homelab server, and heartbeat handling stays under 200 ms at the 95th percentile and does not degrade as snapshots accumulate. (proposed figure)
+- The fleet list and the compliance page cost about the same whatever the fleet size: they read precomputed per-host summaries in pages, never every host's results and findings on a view ([ADR 0026](decisions/0026-dashboard-summaries-and-keyset-pages.md), #193). Acceptance stays at 50 hosts (ADR 0019); `bin/benchmark` measures larger fleets.
 - Snapshot growth is bounded by retention settings, not by manual database cleanup.
 
 ### NFR-4 Observability and operability

@@ -52,4 +52,7 @@ RSpec.configure do |config|
   config.include AgentApiHelpers
   config.include ActiveSupport::Testing::TimeHelpers
   config.before { AgentApi.rate_limit_store.clear }
+  config.before { [ AgentApi.credential_rate_limiter, AgentApi.failed_auth_rate_limiter ].each(&:clear) } # in memory (#191)
+  # Per-process state (#189): a test's settings must not reach the next test through the cache.
+  config.before { SettingsCache.clear }
 end

@@ -52,7 +52,18 @@ jobs:
           persist-credentials: false
 
       - name: Check the deploy settings
+        env:
+          # Only to warn: settings the app reads as variables are never passed on when they are set as secrets. Each is
+          # tested for being set, and no value is printed.
+          MISPLACED_RELEASE_KEY_CURRENT: ${{ secrets.FLEET_RELEASE_KEY_CURRENT }}
+          MISPLACED_RELEASE_KEY_NEXT: ${{ secrets.FLEET_RELEASE_KEY_NEXT }}
+          MISPLACED_DASHBOARD_HOST: ${{ secrets.FLEET_DASHBOARD_HOST }}
+          MISPLACED_AGENT_HOST: ${{ secrets.FLEET_AGENT_HOST }}
         run: |
+          for name in RELEASE_KEY_CURRENT RELEASE_KEY_NEXT DASHBOARD_HOST AGENT_HOST; do
+            misplaced="MISPLACED_$name"
+            [ -z "${!misplaced}" ] || echo "::warning::FLEET_$name is set as a secret, which the deploy does not read: set it as a variable of the production environment instead"
+          done
           echo "DEPLOY_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"
           echo "Deploying $GITHUB_SHA"
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]] || { echo "::error::set the variable DEPLOY_HOST"; exit 1; }
@@ -124,8 +135,11 @@ jobs:
             [[ "${!name}" != *$'\n'* ]] || { echo "::error::$name holds a line break"; exit 1; }
             if [ -n "${!name}" ]; then lines+=("$name=${!name}"); fi
           done
-          for name in SECRET_KEY_BASE FLEET_ENCRYPTION_KEY DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET FLEET_DASHBOARD_HOST FLEET_AGENT_HOST; do
-            [ -n "${!name}" ] || { echo "::error::set $name in the production environment"; exit 1; }
+          for name in SECRET_KEY_BASE FLEET_ENCRYPTION_KEY DATABASE_PASSWORD GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
+            [ -n "${!name}" ] || { echo "::error::set the secret $name in the production environment"; exit 1; }
+          done
+          for name in FLEET_DASHBOARD_HOST FLEET_AGENT_HOST; do
+            [ -n "${!name}" ] || { echo "::error::set the variable $name in the production environment"; exit 1; }
           done
           # The certificate and key are PEM files with line breaks; docker takes one line per value, so they are base64.
           for name in FLEET_TLS_CERT FLEET_TLS_KEY; do
@@ -159,7 +173,9 @@ jobs:
           docker stop -t 30 fleet-cmdb-jobs >/dev/null 2>&1 || true
           docker rm -f fleet-cmdb-jobs >/dev/null 2>&1 || true
           docker rm -f fleet-cmdb >/dev/null 2>&1 || true
+          # No capabilities and no privilege gain (setuid): the app binds ports above 1024 and needs neither.
           docker run -d --name fleet-cmdb -p 443:3443 --network "$network" --restart unless-stopped \
+            --cap-drop ALL --security-opt no-new-privileges \
             -v fleet-cmdb_storage:/rails/storage --env-file fleet-cmdb.env "fleet-cmdb:$sha" >/dev/null
           echo "==> wait for /up (the first start creates and migrates the databases)"
           for _ in $(seq 1 60); do
