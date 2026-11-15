@@ -154,6 +154,7 @@ Release files and the backup status file are in the Docker volume `fleet-cmdb_st
 ## Security notes
 
 - **Port 443 is the only published port**, and only the tunnel VM and the VMs that run agents need it. Docker's published ports bypass `ufw`'s usual rules, so limit it in the `DOCKER-USER` chain (after Docker's DNAT the port is the container's, 3443), for example `iptables -I DOCKER-USER -p tcp --dport 3443 ! -s 192.0.2.0/24 -j DROP`.
+- **The container runs with as little as it needs.** The app runs as uid 1000 with no Linux capabilities and cannot gain privileges (`--cap-drop ALL --security-opt no-new-privileges`). It can write only `storage/` (the volume), `tmp/`, and `log/`; its code and gems belong to root, so a compromised app process cannot change what it runs. The image has no test or development gems. Deploy CI checks each of these.
 - **The dashboard through the internal hostname.** A client on your network can connect to `fleet-vm.example.com` while naming `fleet.example.com` as the host. It then reaches the dashboard without passing Cloudflare Access; Google sign-in and the operator allowlist still apply.
 - **This repository is public, and the runner is self-hosted.** A pull request from a fork runs its own workflows and could ask for `runs-on: self-hosted`, which would run code on your LAN.
   - In **Settings > Actions > General**, require approval for fork pull request workflows from **all outside collaborators**.

@@ -208,23 +208,28 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match "zzz" with open unknown vulnerability findings.))
     end
 
-    it "pages a large fleet" do
+    it "pages a large fleet by keyset, keeping the filters and the sort in every link (#193)" do
       stub_const("FleetCompliance::PER_PAGE", 3)
       get "/compliance", params: { sort: "name" }
       expect(row_names).to eq([ "Backup target", "Build runner", "DNS resolver" ])
-      expect(words(page.at_css("#compliance_pager"))).to eq("Hosts 1–3 of 4 Previous · Page 1 of 2 · Next")
-      expect(query(page.at_css("#compliance_pager a[rel=next]"))).to eq("sort" => "name", "page" => "2")
-      get "/compliance", params: { sort: "name", page: 2, tag: "lab" }
-      expect(words(page.at_css("#compliance_pager"))).to eq("1 of 4 active hosts.")
-      get "/compliance", params: { sort: "name", page: 2 }
+      expect(words(page.at_css("#compliance_pager"))).to eq("Previous 3 hosts shown of 4 Next")
+      expect(page.at_css("#compliance_pager span.off[aria-disabled=true]").text).to eq("Previous")
+      expect(query(page.at_css("#compliance_pager a[rel=next]"))).to eq("sort" => "name", "after" => dns.id.to_s)
+      get "/compliance", params: { sort: "name", after: web.id, tag: "lab" }
+      expect(row_names).to be_empty
+      expect(words(page.at_css("#page_gone"))).to eq("No hosts are left on this page. The hosts it listed have changed or left these filters. Go to the first page")
+      expect(query(page.at_css("#page_gone a"))).to eq("tag" => "lab", "sort" => "name")
+      get "/compliance", params: { sort: "name", after: dns.id }
       expect(row_names).to eq([ "Web A" ])
-      expect(words(page.at_css("#compliance_pager"))).to eq("Hosts 4–4 of 4 Previous · Page 2 of 2 · Next")
-      expect(query(page.at_css("#compliance_pager a[rel=prev]"))).to eq("sort" => "name")
+      expect(words(page.at_css("#compliance_pager"))).to eq("Previous 1 host shown of 4 Next")
+      expect(query(page.at_css("#compliance_pager a[rel=prev]"))).to eq("sort" => "name", "before" => web.id.to_s)
+      get "/compliance", params: { sort: "name", before: web.id }
+      expect(row_names).to eq([ "Backup target", "Build runner", "DNS resolver" ])
       stub_const("FleetCompliance::PER_PAGE", 1)
-      get "/compliance", params: { page: 3, status: "attention" }
-      expect(words(page.at_css("#compliance_pager"))).to eq("Hosts 2–2 of 2 matching Previous · Page 2 of 2 · Next")
-      get "/compliance", params: { page: 3, sort: "name" }
-      expect(query(page.at_css("#compliance_pager a[rel=prev]"))).to eq("sort" => "name", "page" => "2")
+      get "/compliance", params: { status: "attention" }
+      expect(words(page.at_css("#compliance_pager"))).to eq("Previous 1 host shown of 2 matching Next")
+      get "/compliance", params: { sort: "name", tag: "lab" }
+      expect(words(page.at_css("#compliance_pager"))).to eq("1 of 4 active hosts.")
     end
 
     it "says CIS-aligned and passes N of M checks, never compliant" do

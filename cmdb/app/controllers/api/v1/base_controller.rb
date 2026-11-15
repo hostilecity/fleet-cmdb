@@ -17,6 +17,14 @@ module Api
     # - Unexpected errors return 500 internal_error without internals.
     class BaseController < ActionController::API
       JSON_MAX_NESTING = 16
+      # The most digits a number in a body may have in a row. JSON.parse makes a longer integer a Bignum, whose cost
+      # grows faster than its length and holds the interpreter lock: a 4 MB number took about 0.7 s with GMP and 4 s
+      # without, inside the body and rate limits. The longest number docs/api allows has 16 digits (2^53 - 1), so this
+      # leaves room for any valid value, fraction and exponent digits included.
+      MAX_NUMBER_DIGITS = 32
+      LONG_DIGITS = /[0-9]{#{MAX_NUMBER_DIGITS + 1}}/no
+      # One whole JSON string (unterminated: to the end), so digits inside strings do not count. Matched on the bytes.
+      JSON_STRING = /"(?:[^"\\]|\\.)*+"?/mn
       # Tells an agent its host is waiting for a new enrollment token to be redeemed (docs/api/README.md).
       ENROLLMENT_STATE_HEADER = "Fleet-Enrollment-State"
 
@@ -78,12 +86,36 @@ module Api
           raise AgentApi::ValidationFailed.new("The request body must be JSON (Content-Type: application/json).")
         end
 
-        data = JSON.parse(read_body, max_nesting: JSON_MAX_NESTING)
+        body = read_body
+        raise AgentApi::ValidationFailed.new("The request body has a number longer than #{MAX_NUMBER_DIGITS} digits.") if long_number?(body)
+
+        data = JSON.parse(body, max_nesting: JSON_MAX_NESTING)
         raise AgentApi::ValidationFailed.new("The request body must be a JSON object.") unless data.is_a?(Hash)
 
         data
       rescue JSON::ParserError, JSON::NestingError, EncodingError
         raise AgentApi::ValidationFailed.new("The request body is not valid JSON.")
+      end
+
+      # Whether the body has more than MAX_NUMBER_DIGITS digits in a row outside its strings, checked before parsing.
+      # Read as bytes, so the scan itself never fails on invalid UTF-8: the body then goes to JSON.parse and the endpoint
+      # unchanged, and each handles encoding as before (task output keeps invalid UTF-8 and scrubs it, docs/api/README.md).
+      # A body that is not JSON gets some answer here and is refused by JSON.parse.
+      def long_number?(body)
+        bytes = body.b
+        # The usual case, and fast (a few ms for 4 MB): no such run anywhere, strings included.
+        return false unless bytes.tr("0-9", "0").include?("0" * (MAX_NUMBER_DIGITS + 1))
+
+        # One linear pass: skip to the next quote or digit, then over one whole string or one run of digits.
+        scanner = StringScanner.new(bytes)
+        until scanner.eos?
+          scanner.skip(/[^"0-9]+/n)
+          next if scanner.skip(JSON_STRING)
+          return true if scanner.skip(LONG_DIGITS)
+
+          scanner.skip(/[0-9]+/n)
+        end
+        false
       end
 
       # Reads at most max_body_bytes, whether or not Content-Length is sent, decompressing a gzip body first
