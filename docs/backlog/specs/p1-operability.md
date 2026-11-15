@@ -56,12 +56,14 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - Mission Control Jobs was not added: the failed-jobs page is a small read-only view of Solid Queue's own failed executions (`FailedJobsController`, `JobHealth`), behind the same operator sign-in as every dashboard page, so there is no second engine and no second authentication path to harden. Retrying or discarding a failed job is not offered yet; failures older than 24 hours stay listed but no longer count toward the banner or `/health`.
 - `ApplicationJob` retries any error 5 times with polynomial backoff (about 3 s, 18 s, 83 s, 4 min); then Solid Queue keeps the execution as failed.
+- **Queues (S-7, [ADR 0025](../../decisions/0025-first-scale-step.md), proposed):** the every-minute jobs (`LivenessEvaluationJob`, `TaskLeaseJob`, `TaskExpiryJob`, `RolloutTimeoutJob`, `ReportRequestExpiryJob`) and the live-refresh broadcasts (`FleetBroadcastJob`, `TaskBroadcastJob`, at a lower priority) are on the `realtime` queue. `config/queue.yml` runs a worker for that queue alone (`JOB_REALTIME_THREADS`, default 1) beside the worker for every queue (`JOB_THREADS`, default 3; `JOB_CONCURRENCY` processes, default 1), so long jobs on `default` cannot delay them. `spec/config/queue_spec.rb` runs both workers with every default thread held and checks that the liveness job still runs, and that it would not with the single worker used before.
 
 ### Acceptance criteria
 
 - [x] A job forced to fail retries with backoff, then appears in the operator-visible failed list
 - [x] The banner or indicator shows a nonzero failed count and links to details
 - [x] The failed-jobs view requires operator sign-in
+- [x] A long job on the default queue cannot delay the every-minute jobs (S-7, `spec/config/queue_spec.rb`)
 
 ## P1-S12: Server security hardening: output escaping, CSP, parameter filtering
 

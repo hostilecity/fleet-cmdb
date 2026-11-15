@@ -34,7 +34,7 @@ module CisRules
     module_function
 
     def call(rule, facts, os, manifest: ConfigManifest.current)
-      return not_readable("The host has not reported its operating system.") unless os.is_a?(Hash) && os["id"].is_a?(String) && os["id"].present?
+      return not_readable("The host has not reported its operating system.") unless os_known?(os)
       return Outcome.new(result: "not_applicable", observed: nil, reason: applicability(rule, os)) unless applies?(rule.applies_to, os)
 
       fact = manifest.fact(rule.fact)
@@ -53,6 +53,11 @@ module CisRules
       not_readable("Matching the value took longer than allowed, so it was not evaluated.")
     end
 
+    # Whether the host reported an operating system to match applies_to against.
+    def os_known?(os) = os.is_a?(Hash) && os["id"].is_a?(String) && os["id"].present?
+
+    # Whether a rule's applies_to matches the host's os-release id and version_id (CisEvaluation reads facts only
+    # where it does).
     def applies?(platforms, os)
       platforms.any? { |platform| platform["distribution"] == os["id"] && (platform["versions"].nil? || platform["versions"].include?(os["version_id"])) }
     end
@@ -129,6 +134,6 @@ module CisRules
 
     def not_readable(reason) = Outcome.new(result: "not_readable", observed: nil, reason: reason.to_s.truncate(REASON_MAX))
 
-    private_class_method :applies?, :applicability, :holds?, :select, :operate, :comparable, :entries, :matches?, :out_of_time!, :mode_at_most?, :observed, :not_readable
+    private_class_method :applicability, :holds?, :select, :operate, :comparable, :entries, :matches?, :out_of_time!, :mode_at_most?, :observed, :not_readable
   end
 end

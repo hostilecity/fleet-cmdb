@@ -42,16 +42,20 @@ RSpec.describe CisDryRun do
   def listed(preview) = preview.changes.to_h { |change| [ change.host_name, [ change.from, change.to ] ] }
 
   # What saving the definition records, as the dashboard and an import save it: CisRule.define! (and the flag, as
-  # CisRules::Import sets it), then the evaluation jobs that enqueues, if any. Returns the changes written, by host name.
+  # CisRules::Import sets it), then the fleet-wide run that starts, if any, every batch of it (#197). Returns the
+  # changes written, by host name.
   def save(definition)
     before = CisResultChange.maximum(:id) || 0
-    jobs = enqueued.size
+    runs = EvaluationRun.maximum(:id) || 0
     CisRule.transaction do
       CisRule.define!(CisRules::Definition.from_h(definition), actor: Audit::SYSTEM, enabled: definition["enabled"] != false)
       stored = CisRule.find_by!(key: definition["key"])
       definition["enabled"] ? stored.enable!(actor: Audit::SYSTEM) : stored.disable!(actor: Audit::SYSTEM) unless definition["enabled"].nil?
     end
-    enqueued.drop(jobs).each { |arguments| CisEvaluationJob.new.perform(**arguments) }
+    EvaluationRun.where("id > ?", runs).order(:id).each do |run|
+      run.fan_out!
+      run.batches.order(:position).each { |batch| EvaluationBatchJob.perform_now(batch.id) }
+    end
     CisResultChange.where("cis_result_changes.id > ?", before).joins(:host).order(:id)
                    .pluck("hosts.name", :from_result, :to_result, :observed, :reason).to_h { |name, *rest| [ name, rest ] }
   end

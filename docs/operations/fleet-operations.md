@@ -61,7 +61,7 @@ It removes their authenticator and recovery codes, ends any step-up window, and 
 **Settings > Tasks** holds the server's side of what tasks may do (P3-S06). Every change asks for a code from your authenticator app and is recorded in the audit log with the values before and after.
 
 - **Services that can be restarted:** empty at first, so the "Restart a service" task refuses everything (ADR 0015). Add a full unit name such as `nginx.service`, for every host or for the hosts with one tag. Each VM must also list it in `[tasks] allowed_services` in `/etc/fleet-agent/config.toml`. The agent's own units, SSH, `systemd-*`, networking, and D-Bus are refused, here and on every VM; restart them from the console.
-- **Limits:** the most hosts in one batch (up to 25), the output kept per task (4 KiB to 1 MiB), the poll interval agents are asked to use, and how long each task type may wait before it expires (1 hour to 7 days, 24 hours by default). Changes apply to what happens next; tasks already queued keep their expiry.
+- **Limits:** the most hosts in one batch (up to 25), the output kept per task (4 KiB to 1 MiB), the poll interval agents are asked to use (300 s by default; a heartbeat tells an agent at once when a task is waiting, so this only bounds how late a task starts if that is missed), and how long each task type may wait before it expires (1 hour to 7 days, 24 hours by default). Changes apply to what happens next; tasks already queued keep their expiry.
 
 Removing a service, revoking a host's credential, re-enrolling it, or retiring it never runs anything: queued restarts of a removed service are refused when their agent picks them up, and a host's queued tasks are cancelled when it is revoked, re-enrolled, or retired.
 

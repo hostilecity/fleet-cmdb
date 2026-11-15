@@ -68,7 +68,7 @@
     <%= @preview.excluded.map { |exclusion| host = hosts_by_id.fetch(exclusion.host_id); "#{host.name} (#{task_exclusion_short(exclusion.reason, host)})" }.join(", ") %>. <%= link_to "Reasons", targets_link + "#excluded" %></p>
 <% end %>
 <p class="muted">
-  <% if count > 1 %>All hosts run their task within about a minute of each other: each agent picks up its task when it next asks for work, and hosts do not wait for each other.<% end %>
+  <% if count > 1 %>All hosts run their task within <%= task_pickup_spread %> of each other: each agent picks up its task when it next asks for work, and hosts do not wait for each other.<% end %>
   <% if restart %>A VM that does not list <span class="mono"><%= parameters["service"] %></span> in its own allowlist refuses it.<% end %>
 </p>
 
