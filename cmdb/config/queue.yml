@@ -1,11 +1,15 @@
-# Solid Queue's processes (S-7, #198, docs/operations/scaling.md). Two workers, each its own process:
+# Solid Queue's processes (S-7, #198, #197, docs/operations/scaling.md). Three workers, each its own process:
 #
 # - realtime: only the realtime queue, with JOB_REALTIME_THREADS threads (default 1). The jobs that run every
 #   minute (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live
 #   refreshes are on it, and no other job is, so a long advisory refresh, import, or matching run can never hold
-#   its thread. spec/config/queue_spec.rb runs both workers and checks that.
-# - every queue ("*", realtime included), with JOB_THREADS threads (default 3) in each of JOB_CONCURRENCY
-#   processes (default 1): everything else, and realtime jobs too when it has a free thread.
+#   its thread. spec/config/queue_spec.rb runs the workers and checks that.
+# - default, solid_queue_recurring, then realtime, with JOB_THREADS threads (default 3) in each of JOB_CONCURRENCY
+#   processes (default 1): everything else (solid_queue_recurring is Solid Queue's own, for recurring commands such
+#   as clearing finished jobs), and realtime jobs too when it has a free thread. The queues are listed, not "*",
+#   because Solid Queue cannot leave one queue out of "*", and this worker must not take evaluation batches.
+# - evaluation: fleet-wide CIS evaluation and advisory re-matching in batches (#197), with EVALUATION_THREADS
+#   threads (default 2), so a fleet-wide run never holds the threads that per-host work and imports need.
 #
 # The database pool follows these counts (config/database.yml, lib/sizing/process_sizing.rb).
 default: &default
@@ -17,9 +21,13 @@ default: &default
       threads: <%= ProcessSizing.realtime_threads %>
       processes: 1
       polling_interval: 1
-    - queues: "*"
+    - queues: [ default, solid_queue_recurring, realtime ]
       threads: <%= ProcessSizing.job_threads %>
       processes: <%= ProcessSizing.job_processes %>
+      polling_interval: 1
+    - queues: evaluation
+      threads: <%= ProcessSizing.evaluation_threads %>
+      processes: 1
       polling_interval: 1
 
 development:

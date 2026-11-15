@@ -146,9 +146,10 @@ jobs:
           failed=0
           expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; failed=1; fi; }
           queue() { docker exec postgres psql -U postgres -d cmdb_production_queue -Atc "$1"; }
-          # Solid Queue's workers inside the app container, as deployed by default: one for realtime, one for every queue.
-          for _ in $(seq 1 30); do [ "$(queue "SELECT count(*) FROM solid_queue_processes WHERE kind = 'Worker'")" = 2 ] && break; sleep 2; done
-          expect "the app container runs a realtime worker and one for every queue" "*,realtime" \
+          # Solid Queue's workers inside the app container, as deployed by default: one for realtime, one for the default queue
+          # (and Solid Queue's recurring commands, and realtime when free), and one for fleet-wide evaluation (#197).
+          for _ in $(seq 1 30); do [ "$(queue "SELECT count(*) FROM solid_queue_processes WHERE kind = 'Worker'")" = 3 ] && break; sleep 2; done
+          expect "the app container runs a realtime, a default, and an evaluation worker" "default,solid_queue_recurring,realtime,evaluation,realtime" \
             "$(queue "SELECT string_agg(metadata::json->>'queues', ',' ORDER BY metadata::json->>'queues') FROM solid_queue_processes WHERE kind = 'Worker'")"
 
           docker rm -f fleet-cmdb >/dev/null
@@ -173,7 +174,7 @@ jobs:
           expect "the liveness evaluation ran on the realtime queue" realtime \
             "$(queue "SELECT string_agg(DISTINCT queue_name, ',') FROM solid_queue_jobs WHERE class_name = 'LivenessEvaluationJob' AND finished_at IS NOT NULL")"
           expect "every Solid Queue process is in the jobs container" "$jobs_host" "$(queue "SELECT string_agg(DISTINCT hostname, ',') FROM solid_queue_processes")"
-          expect "the jobs container runs a realtime worker and one for every queue" "*,realtime" \
+          expect "the jobs container runs a realtime, a default, and an evaluation worker" "default,solid_queue_recurring,realtime,evaluation,realtime" \
             "$(queue "SELECT string_agg(metadata::json->>'queues', ',' ORDER BY metadata::json->>'queues') FROM solid_queue_processes WHERE kind = 'Worker'")"
           expect "the jobs container is running" "true 0" "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' fleet-cmdb-jobs)"
           health="$(docker exec fleet-cmdb curl -s http://localhost:3000/health)"
