@@ -97,9 +97,18 @@ module ReportRequests
   # The report_request directive for a heartbeat, or nil when nothing is outstanding. Marks the requests a
   # heartbeat carries for the first time as sent, at now (server clock) and agent_time (the heartbeat's own
   # agent_time, the agent's clock). Runs in the heartbeat's transaction, under the host row lock. A host with
-  # nothing outstanding costs one indexed SELECT and no write.
+  # nothing outstanding costs one indexed SELECT and no write. The heartbeat reads outstanding_scope in one statement
+  # with its other directives (HeartbeatDirectives, #189) and builds the directive with directive_from.
   def directive_for(host_id:, agent_time:, now: Time.current)
-    rows = ReportRequest.outstanding(now).where(host_id:).pluck(:id, :report_type, :sent_at)
+    directive_from(outstanding_scope(host_id:, now:).pluck(:id, :report_type, :sent_at), agent_time:, now:)
+  end
+
+  # The host's outstanding requests; directive_from takes their [id, report_type, sent_at].
+  def outstanding_scope(host_id:, now:) = ReportRequest.outstanding(now).where(host_id:)
+
+  # The directive for the host's outstanding requests as [id, report_type, sent_at] rows (only whether sent_at is
+  # nil matters), or nil for none.
+  def directive_from(rows, agent_time:, now:)
     return nil if rows.empty?
 
     unsent = rows.filter_map { |id, _type, sent_at| id if sent_at.nil? }

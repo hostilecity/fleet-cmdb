@@ -52,4 +52,6 @@ RSpec.configure do |config|
   config.include AgentApiHelpers
   config.include ActiveSupport::Testing::TimeHelpers
   config.before { AgentApi.rate_limit_store.clear }
+  # Per-process state (#189): a test's settings must not reach the next test through the cache.
+  config.before { SettingsCache.clear }
 end
