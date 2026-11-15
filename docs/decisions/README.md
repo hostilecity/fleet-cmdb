@@ -30,5 +30,6 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0024](0024-cloudflare-origin-ca-for-the-server.md) | The server's certificate comes from Cloudflare's Origin CA, and agents trust it from their build | #137 |
 | [0025](0025-first-scale-step.md) | First scale step: process sizing, a realtime job queue, and an optional jobs container (proposed) | #198 |
 | [0026](0026-dashboard-summaries-and-keyset-pages.md) | The dashboard reads per-host summaries kept by the database, in keyset pages (proposed) | #193 |
+| [0029](0029-heartbeat-state-in-a-narrow-table.md) | Heartbeat state lives in a narrow table of its own, so heartbeats stay heap-only (proposed) | #192 |
 
 Not an ADR: [`phase-3-threat-model.md`](phase-3-threat-model.md) is the Phase 3 threat model ([P3-X01](../backlog/specs/p3-security.md)). It decides nothing by itself; its proposals become binding only through a spec or an ADR.

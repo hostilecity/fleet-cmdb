@@ -8,6 +8,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - `POST /api/v1/heartbeat` accepting host identity, agent version, agent uptime, and the agent's current time.
 - Updates only `last_seen_at` (server time), agent version, agent schema version, and the agent-reported time (stored separately, never used for liveness). Sets `first_seen_at` on the first successful heartbeat.
+- Storage (#192, [ADR 0029](../../decisions/0029-heartbeat-state-in-a-narrow-table.md)): `last_seen_at`, the liveness status, and the agent-reported time are in `host_liveness`, one narrow row per host that has sent a heartbeat, with no index but its key, so the heartbeat's update is heap-only (HOT). The agent version, schema version, task capabilities, and `first_seen_at` stay on `hosts` and are written only when they change, so a steady heartbeat does not write the `hosts` row.
 - If the host was not `online`, it becomes `online` in the same transaction and a status history row is written ([P1-S09](p1-heartbeat.md) owns the table), so recovery shows immediately rather than after the next job run.
 - Response: `{"server_time": ..., "directives": {}}` per [DEC-08](../../decisions/0008-api-conventions.md) as amended by [DEC-20](../../decisions/0020-named-heartbeat-directives.md): `directives` is an object keyed by directive name, empty until [P1-UPDATES](p1-updates.md) adds `intervals` and `agent_update`.
 - No audit entries and no loads of snapshot tables. One cheap write per request.
@@ -25,7 +26,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - `Setting` model (typed key/value with defaults) holding the online and stale thresholds (defaults 3 and 15 minutes) with validation that online is less than stale. Changes are audited ([P1-S03](p1-hosts.md)) and made with `bin/rails settings:liveness`. The dashboard settings form moved to [P1-DASH-FLEET](p1-dash-fleet.md), so it is built from the approved settings mockup.
 - `host_status_events` table (host, from, to, occurred at, reason), separate from the audit log.
-- Recurring Solid Queue job (at least once per minute) that evaluates every active host from `last_seen_at` and writes events only when status changes. Idempotent and safe to run concurrently or twice. Runs are serialised by a session-level advisory lock, and transitions are written in transactions of at most 1,000 hosts, so a heartbeat never waits behind a fleet-wide transition (for example every host going offline after a server outage).
+- Recurring Solid Queue job (at least once per minute) that evaluates every active host from `last_seen_at` and writes events only when status changes. It reads the narrow `host_liveness` table once per run, not `hosts`, and locks only the host rows it moves (#192). Idempotent and safe to run concurrently or twice. Runs are serialised by a session-level advisory lock, and transitions are written in transactions of at most 1,000 hosts, so a heartbeat never waits behind a fleet-wide transition (for example every host going offline after a server outage).
 - Status of hosts that are not `active` is not evaluated (they show their enrollment state).
 - Hosts that have never sent a heartbeat stay out of `online` and are shown as awaiting first contact rather than offline.
 
