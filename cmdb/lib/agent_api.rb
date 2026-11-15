@@ -49,4 +49,6 @@ module AgentApi
   AgentVersionUnsupported = error(:upgrade_required, "agent_version_unsupported", "This agent version is no longer supported. Upgrade the agent.")
   RateLimited = error(:too_many_requests, "rate_limited", "Too many requests. Retry later.")
   InternalError = error(:internal_server_error, "internal_error", "Something went wrong on the server.")
+  # Report load shedding (#200): too many reports in flight. Answered by ReportLoadShedder with Retry-After.
+  Overloaded = error(:service_unavailable, "overloaded", "The server is busy. Retry after the Retry-After delay.")
 end

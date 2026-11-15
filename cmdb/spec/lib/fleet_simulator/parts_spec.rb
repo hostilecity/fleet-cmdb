@@ -93,6 +93,13 @@ RSpec.describe "fleet simulator parts (P1-O04)" do
       expect(page).to have_been_requested
     end
 
+    it "waits out a 503's Retry-After (report load shedding, #200), and only a 503 that has one" do
+      response = ->(status, headers = {}) { FleetSimulator::Response.new(status:, body: "", headers:, ms: 1) }
+      expect(response.(503, "retry-after" => "45").retry_after).to eq(45)
+      expect(response.(503).retry_after).to be_nil
+      expect(response.(500, "retry-after" => "45").retry_after).to be_nil
+    end
+
     it "reports a failed connection as status 0 and opens a new connection next time" do
       stub_request(:post, "http://127.0.0.1:3000/api/v1/enroll").to_raise(Errno::ECONNREFUSED).then.to_return(status: 201, body: "{}")
       expect(transport.post_api("/api/v1/enroll", {})).to have_attributes(status: 0, body: "Errno::ECONNREFUSED")

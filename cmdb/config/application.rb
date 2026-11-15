@@ -43,6 +43,10 @@ module Cmdb
     require Rails.root.join("lib/middleware/agent_api_request_guard").to_s
     config.middleware.insert_after ActionDispatch::RequestId, AgentApiRequestGuard
 
+    # Report load shedding (#200): 503 with Retry-After when too many reports are in flight in this process.
+    require Rails.root.join("lib/middleware/report_load_shedder").to_s
+    config.middleware.insert_before AgentApiRequestGuard, ReportLoadShedder
+
     # The request id on every log line of the request, and JSON log lines (NFR-4, P1-S11).
     require Rails.root.join("lib/middleware/request_context").to_s
     config.middleware.insert_after AgentApiRequestGuard, RequestContext
