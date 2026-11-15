@@ -8,7 +8,14 @@ RSpec.describe TaskSettings do
   def entries(action) = AuditEntry.where(action:).order(:id)
 
   describe "limits" do
-    it "starts at the defaults: 25 hosts, 64 KiB, 30 seconds, and the catalog's 24 hours per type" do
+    it "defaults the poll hint to the task-poll.response schema's default, within its range (#190, shared with the agent)" do
+      property = ApiContract.schema("task-poll.response", "v1").dig("properties", "poll_seconds")
+      definition = Setting::DEFINITIONS.fetch("tasks.poll_seconds")
+      expect(definition[:default]).to eq(property.fetch("default"))
+      expect(definition[:range]).to eq(property.fetch("minimum")..property.fetch("maximum"))
+    end
+
+    it "starts at the defaults: 25 hosts, 64 KiB, 300 seconds, and the catalog's 24 hours per type" do
       limits = described_class.limits
       expect(limits.to_h).to eq("max_hosts_per_batch" => 25, "output_limit_kib" => 64, "poll_seconds" => 300,
                                 "expiry_hours" => TaskCatalog.current.types.index_with(24))

@@ -20,7 +20,7 @@
     <section class="result amber" aria-labelledby="result_title" id="result">
       <h2 id="result_title">Running, cancel requested at <%= task_time(task.cancel_requested_at) %> by <%= task.cancel_requested_by&.email || "an operator" %></h2>
       <% if task.interruptible? %>
-        <p><%= entry.name %> can be stopped safely. The agent gets the cancel on its next poll or progress report and stops; the task then ends as cancelled.</p>
+        <p><%= entry.name %> can be stopped safely. The agent gets the cancel with its next progress report (about every 15 seconds) and stops; the task then ends as cancelled.</p>
       <% else %>
         <p><%= entry&.name || task.task_type %> cannot be stopped safely once started, so it runs to completion (by <%= task_time(task_deadline(task)) %> at the latest). Its result is recorded as usual.<% if batch_words %> No other task of <%= batch_words %> will start.<% end %></p>
       <% end %>

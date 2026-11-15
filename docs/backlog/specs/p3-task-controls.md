@@ -9,7 +9,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Recurring jobs (at least every minute): expire queued tasks past their expiry; return claimed-but-unstarted tasks to `queued` when the lease lapses; mark started tasks `failed` with `lease_expired` if the agent stops reporting; mark `running` tasks `timed_out` after the deadline plus a grace period if no result arrives.
 - Cancellation:
   - `queued` or claimed-but-unstarted: becomes `cancelled` immediately and is never delivered or, if already delivered, the agent's start acknowledgement is refused and the agent is told to drop it.
-  - `running` and interruptible: a cancel directive is delivered on the agent's next poll or progress response.
+  - `running` and interruptible: a cancel directive is delivered in the response to the agent's next progress report (every 15 s).
   - `running` and not interruptible: the task keeps running; `cancel_requested` is recorded and no further queued task of the same batch is started. The dashboard says this plainly.
 - All state changes by jobs are audited ([P3-S07](p3-task-controls.md)) with the system as actor.
 - **Confirmed by the owner (2026-11-08, mockup Q17):** FR-3.2 says that for non-interruptible running tasks "cancellation takes effect before the next task starts". This reads as: the running task is not stopped, it keeps its real state with "cancel requested" beside it, and no task of the same batch that has not started will start. Recorded in [DEC-14](../../decisions/0014-task-trust-model.md).
