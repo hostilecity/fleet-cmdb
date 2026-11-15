@@ -110,7 +110,7 @@
   covers: [FR-1.5, FR-S.4, FR-1.4, NFR-3, AC-1.1, FR-1.3, FR-S.3, AC-1.3, AC-1.2]
   goal: "Operators see the fleet and each host's inventory, history, and status in the dashboard, updating live, built from mockups they have approved."
   done:
-    - "The fleet list sorts, searches, and filters by tag and status with counts on top, and loads in under 2 s at 50 hosts."
+    - "The fleet list sorts, searches, and filters by tag and status with counts on top, pages a fleet larger than 100 hosts (#193), and loads in under 2 s at 50 hosts."
     - "Host detail shows inventory matching the VM, field-level history diffs, status history, and audit entries (AC-1.3)."
     - "A status change appears in an open browser within 30 seconds without a reload."
   blocked_by: [P1-ACCESS, P1-HOSTS, P1-HEARTBEAT, P1-INVENTORY]
