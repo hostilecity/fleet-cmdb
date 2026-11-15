@@ -4,12 +4,12 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 
 | Guide | What it covers |
 |---|---|
-| [install-server.md](install-server.md) | Prerequisites, the GitHub environment, the Cloudflare tunnel and Access, deploying with GitHub Actions, the first operator, logs, upgrading and rolling back, security notes, uninstalling |
+| [install-server.md](install-server.md) | Prerequisites, the GitHub environment, the Cloudflare tunnel and Access, deploying with GitHub Actions, the first operator, logs, upgrading and rolling back, first steps in the dashboard, security notes, uninstalling |
 | [configuration.md](configuration.md) | Every server setting, its default, and the outbound access the server needs |
 | [scaling.md](scaling.md) | Sizing Puma and the job workers, running jobs in their own container, the connection budget, PgBouncer, and the steps past the homelab |
 | [backup-and-restore.md](backup-and-restore.md) | What is backed up, scheduling, restore, and the restore drill |
 | [install-agent.md](install-agent.md) | Installing the agent with approval or a one-time token, remote and manual updates, rollback, uninstall |
-| [fleet-operations.md](fleet-operations.md) | Revoke, re-enroll, retire, lost credentials, liveness thresholds, operators, the audit log |
+| [fleet-operations.md](fleet-operations.md) | Revoke, re-enroll, retire, lost credentials, liveness thresholds, operators, task settings, running a task and what each result means, the audit log |
 | [compliance-summaries.md](compliance-summaries.md) | The per-host summaries behind the fleet list and the compliance page: what keeps them right, checking, and rebuilding |
 | [health-and-jobs.md](health-and-jobs.md) | `/health`, failed jobs, the server log format, data retention, advisory data, and how Debian triage works |
 | [cis-rules.md](cis-rules.md) | The starter CIS-aligned rules, adding and tuning a rule, and the licensing rules for rule text |
@@ -17,7 +17,7 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 | [agent-config-facts.md](agent-config-facts.md) | What the agent reads for each configuration fact, and how to check a report |
 | [agent-task-privileges.md](agent-task-privileges.md) | What each remote task type may do on a VM, how the agent gets that privilege under its unit, and the transient task units (P3-A05) |
 | [agent-packages.md](agent-packages.md) | Where the agent's package list comes from, `skipped`, `unsupported`, `unreadable`, and checking it against a host (AC-2.3) |
-| [troubleshooting.md](troubleshooting.md) | Certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates |
+| [troubleshooting.md](troubleshooting.md) | A failed deploy, refused release imports, certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates, missing security updates |
 
 For development and testing: [running-locally.md](running-locally.md), [fleet-simulator.md](fleet-simulator.md), [benchmark.md](benchmark.md) (the scale benchmark), and [agent-soak.md](agent-soak.md).
 

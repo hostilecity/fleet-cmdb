@@ -37,9 +37,10 @@ Rejected:
   - CIS evaluation: 66 to 67 ms a host, against 61 to 71 ms;
   - steady heartbeats and matching: no change beyond noise;
   - the whole fleet going offline at once: 21.6 s against 19.8 s (best of 3), +10%. The first version took 45.0 s on the same run, +127%.
+  - re-measured after #186, where liveness moves hosts in transactions of 1,000 and each commit recounts its own batch: 16.2 s against 14.9 s (best of 6, alternating), +9%. The medians overlap (18.7 to 39.3 s against 15.4 to 17.6 s on the shared machine).
 
   A commit that changes a host waits only while another commit recounts that host.
-- **The migration runs outside a transaction**, so agents keep working. It creates the triggers (short locks), fills the rows in batches of 1,000, then builds the indexes concurrently and adds the foreign key `NOT VALID` before validating it. At 100,000 hosts it took 48 s, and a probe heartbeat every 20 ms never waited more than 36 ms. The first version, in one transaction, blocked a heartbeat for its whole run (266 s on the same machine).
+- **The migration runs outside a transaction**, so agents keep working. It creates the triggers (short locks), fills the rows in batches of 1,000, then builds the indexes concurrently and adds the foreign key `NOT VALID` before validating it. At 100,000 hosts it took 48 s, and a probe heartbeat every 20 ms never waited more than 36 ms. The first version, in one transaction, blocked a heartbeat for its whole run (266 s on the same machine). On `main` after #186 and #204 it took 53 s, and the longest heartbeat wait was 293 ms, with none over 1 s.
 - The summaries are derived data: a database restored with triggers disabled must be rebuilt (`docs/operations/compliance-summaries.md`). `compliance_summaries:check` leaves out hosts still queued for a recount.
 - "Last seen" stays a sort of the filtered fleet. At 100,000 hosts it is the one sort that grows with the fleet; moving `last_seen_at` off the `hosts` row (#192) would let it have an index.
 - The fleet list and the compliance page show "N hosts shown of M" with Previous and Next, not page numbers.

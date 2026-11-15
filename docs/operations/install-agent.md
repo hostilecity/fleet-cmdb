@@ -76,23 +76,12 @@ For cloud-init, templates, and scripts, where nobody is at the terminal to appro
 Agents update themselves only to a newer release signed by the release key, verified on the VM, with automatic rollback if the new version does not confirm within 5 minutes ([ADR 0018](../decisions/0018-signed-agent-updates.md)). A rollout offers a release in stages: canary hosts first, then a percentage of the rest, then all; any failure or rollback halts it.
 
 1. Import the new release on the **Agents** page.
-2. Start the rollout. Its dashboard view arrives with [P1-UPDATES](../backlog/specs/p1-updates.md) (issue #59); until then it is started from the server console, and each action is audited with your account as the actor:
+2. Under **Start a rollout** on the same page, choose the release, the canary hosts (a tag, or hosts you pick), and the later stages (by default `25, 100`). Choose **Start rollout…** and confirm. Every action is in the audit log with your account as the actor.
 
-   ```sh
-   docker exec -it fleet-cmdb bin/rails console
-   ```
+   The next stage opens by itself when all hosts of the current one have confirmed. **Advance to the next stage** opens it now.
+3. **Check:** the Agents page shows each stage's progress live. Each host's agent version on the Fleet page changes to the new release, and its page lists the update as succeeded. On a VM: `fleet-agent --version` and `journalctl -u fleet-agent | grep -i update`.
 
-   ```ruby
-   me = Operator.find_by!(email: "you@example.com")
-   release = AgentRelease.find_by!(version: "1.3.0")
-   rollout = Rollouts.start!(release:, actor: me, canary_tag: "canary")   # or canary_host_ids: [12, 15]
-   rollout.rollout_hosts.group(:stage, :state).count                      # progress
-   ```
-
-   The next stage opens by itself when all hosts of the current one have confirmed; `Rollouts.advance!(rollout, actor: me)` opens it now. Default stages: the canaries, then 25%, then 100% of the hosts running an older version.
-3. **Check:** each host's agent version on the Fleet page changes to the new release, and its page lists the update as succeeded. On a VM: `fleet-agent --version` and `journalctl -u fleet-agent | grep -i update`.
-
-**When a rollout halts** (a host reported `failed` or `rolled_back`, or did not report within 30 minutes): no further host is offered the update. Find out why, `Rollout.order(:id).last.halt_reason`, and the host's audit entries and `journalctl -u fleet-agent` on that VM ([troubleshooting.md](troubleshooting.md#a-rollout-halted)). Then either `Rollouts.resume!(rollout, actor: me)` or `Rollouts.cancel!(rollout, actor: me)`. A halted rollout never resumes by itself.
+**When a rollout halts** (a host reported `failed` or `rolled_back`, or did not report within 30 minutes): no further host is offered the update. The Agents page shows why, and which hosts did not succeed ([troubleshooting.md](troubleshooting.md#a-rollout-halted)). Then choose **Resume** or **Cancel rollout**. A halted rollout never resumes by itself.
 
 ### By hand, on one VM
 
