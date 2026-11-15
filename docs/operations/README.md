@@ -10,6 +10,7 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 | [backup-and-restore.md](backup-and-restore.md) | What is backed up, scheduling, restore, and the restore drill |
 | [install-agent.md](install-agent.md) | Installing the agent with approval or a one-time token, remote and manual updates, rollback, uninstall |
 | [fleet-operations.md](fleet-operations.md) | Revoke, re-enroll, retire, lost credentials, liveness thresholds, operators, task settings, running a task and what each result means, the audit log |
+| [compliance-summaries.md](compliance-summaries.md) | The per-host summaries behind the fleet list and the compliance page: what keeps them right, checking, and rebuilding |
 | [health-and-jobs.md](health-and-jobs.md) | `/health`, failed jobs, the server log format, data retention, advisory data, and how Debian triage works |
 | [cis-rules.md](cis-rules.md) | The starter CIS-aligned rules, adding and tuning a rule, and the licensing rules for rule text |
 | [config-facts.md](config-facts.md) | The configuration fact manifest and how to add a fact |

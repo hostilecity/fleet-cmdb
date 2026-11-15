@@ -10,7 +10,7 @@
 
 <h2>Releases</h2>
 <% if @keys.empty? %>
-  <div class="notice error" role="alert"><strong>No release key is configured.</strong><p>Set <code>FLEET_RELEASE_KEY_CURRENT</code> on the server to the public key in <code>agent/release-keys/current.pub</code>. Until then every import is refused.</p></div>
+  <div class="notice error" role="alert"><strong>No release key is configured.</strong><p>Every import is refused until it is. In GitHub, set the variable (not a secret) <code>FLEET_RELEASE_KEY_CURRENT</code> of the <code>production</code> environment to the second line of <code>agent/release-keys/current.pub</code>, then run the Deploy workflow.</p></div>
 <% end %>
 <% if @releases.empty? %>
   <div class="sheet empty" id="no_releases"><p><strong>No release imported yet.</strong></p><p>Import one from GitHub below, or upload its three files. The install page needs a release.</p></div>
@@ -31,7 +31,7 @@
 <h2>Import a release</h2>
 <%= form_with url: import_agent_release_path, method: :post, class: "filters", id: "import_form", data: { controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
   <% invalid = @errors&.key?(:import) %>
-  <label for="version">From GitHub (<span class="mono"><%= Releases.config.github_repository %></span>)
+  <label for="version"><span>From GitHub (<span class="mono"><%= Releases.config.github_repository %></span>)</span>
     <%= text_field_tag :version, @version, id: "version", placeholder: "1.2.0", required: true, maxlength: 80, class: "mono",
           "aria-invalid": (invalid ? "true" : nil), "aria-describedby": (invalid ? "import_error" : nil) %>
   </label>

@@ -3,7 +3,8 @@ module FleetSimulator
   # load it (FR-1.5, NFR-3):
   #
   # - the fleet list, by default and sorted by status. Each sample notes how many of the simulated hosts the page
-  #   listed, so a fast but incomplete page cannot pass for a fast one;
+  #   listed, so a fast but incomplete page cannot pass for a fast one; the list pages by 100 (#193), so a larger
+  #   fleet must fill the first page;
   # - with Phase 2 (P2-S12), the pages given as extra: the fleet compliance view, one host's vulnerabilities, and
   #   its package comparison. Each must answer 200 and contain the text expected of it.
   class FleetListProbe
@@ -35,8 +36,9 @@ module FleetSimulator
     def probe(path, now)
       response = @transport.get_dashboard(path, cookie: @cookie)
       listed = response.success? ? @host_names.count { |name| response.body.include?(">#{name}<") } : 0
-      note = "#{path} listed #{listed}/#{@host_names.size}"
-      status = listed == @host_names.size ? response.status : "incomplete"
+      expected = [ @host_names.size, FleetList::PER_PAGE ].min
+      note = "#{path} listed #{listed}/#{expected}"
+      status = listed >= expected ? response.status : "incomplete"
       @stats.record(kind: :fleet_list, host: nil, status:, ms: response.ms, at: now, note:)
     end
 

@@ -64,7 +64,12 @@
       <%= link_to "Show every host", compliance_path(@compliance.params_with(cis: nil, vuln: nil)) %>
     </p>
   <% end %>
-  <% if @rows.empty? %>
+  <% if @rows.empty? && @compliance.cursor? && @total.positive? %>
+    <div class="sheet empty" id="page_gone">
+      <p><strong>No hosts are left on this page.</strong> The hosts it listed have changed or left these filters.</p>
+      <p><%= link_to "Go to the first page", compliance_path(@compliance.params_with) %></p>
+    </div>
+  <% elsif @rows.empty? %>
     <div class="sheet empty" id="no_matches">
       <p><strong>No hosts match <%= [ (@compliance.q && %("#{@compliance.q}")), (@compliance.tag && %(tag "#{@compliance.tag}")),
                                        (@compliance.ecosystem && "distribution #{@compliance.ecosystem}"),
@@ -92,17 +97,15 @@
         <%= render partial: "compliance/row", collection: @rows, as: :row, locals: { rules_defined: @rules_defined } %>
       </tbody>
     </table></div>
-    <% if @compliance.pages > 1 %>
+    <% page = @compliance.page %>
+    <% if page.previous || page.next %>
       <nav class="pager" aria-label="Host pages" id="compliance_pager">
-        <span>Hosts <%= number_with_delimiter(@compliance.first_row) %>&ndash;<%= number_with_delimiter(@compliance.last_row) %> of <%= number_with_delimiter(@compliance.total) %><%= " matching" if @compliance.filtered? %></span>
-        <span>
-          <% if @compliance.page > 1 %><%= link_to "Previous", compliance_path(@compliance.params_with(page: (@compliance.page - 1 if @compliance.page > 2))), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
-          &middot; Page <%= @compliance.page %> of <%= @compliance.pages %> &middot;
-          <% if @compliance.page < @compliance.pages %><%= link_to "Next", compliance_path(@compliance.params_with(page: @compliance.page + 1)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
-        </span>
+        <% if page.previous %><%= link_to "Previous", compliance_path(@compliance.params_with.merge(page.previous)), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+        <span class="muted"><%= pluralize(number_with_delimiter(@rows.size), "host") %> shown of <%= number_with_delimiter(@total) %><%= " matching" if @compliance.filtered? %></span>
+        <% if page.next %><%= link_to "Next", compliance_path(@compliance.params_with.merge(page.next)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
       </nav>
     <% else %>
-      <p class="pager" id="compliance_pager"><span><%= @compliance.total %> of <%= pluralize(totals.hosts, "active host") %>.</span></p>
+      <p class="pager" id="compliance_pager"><span><%= @rows.size %> of <%= pluralize(totals.hosts, "active host") %>.</span></p>
     <% end %>
   <% end %>
 <% end %>

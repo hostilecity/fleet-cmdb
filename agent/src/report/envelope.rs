@@ -781,4 +781,75 @@ mod tests {
         assert!(envelope.ignored.iter().all(|n| !n.contains('\n')));
         assert!(envelope.ignored.iter().all(|n| n.chars().count() < 100));
     }
+
+    #[test]
+    fn hostile_heartbeat_responses_never_panic_and_bad_parts_do_nothing() {
+        let keys = [
+            "server_time",
+            "directives",
+            "intervals",
+            "heartbeat_seconds",
+            "inventory_seconds",
+            "agent_update",
+            "rollout_id",
+            "version",
+            "manifest_url",
+            "signature_url",
+            "binary_url",
+            "report_request",
+            "types",
+            TASK_HINT,
+        ];
+        crate::test_support::hostile::each(&keys, |body| {
+            let envelope = parse(body);
+            // An update offer only ever gets through whole and well formed.
+            if let Some(update) = &envelope.agent_update {
+                assert!(update.is_object());
+                assert!(agent_update_problem(update.as_object().unwrap()).is_none());
+            }
+            assert!(envelope.report_types.len() <= MAX_REPORT_TYPES);
+            assert!(envelope.ignored.len() <= 4 * (MAX_LISTED + 1));
+        });
+    }
+
+    #[test]
+    fn a_valid_heartbeat_response_changed_one_field_at_a_time_never_lets_a_bad_part_through() {
+        let valid = json!({
+            "server_time": "2026-11-14T12:00:00Z",
+            "directives": {
+                "intervals": {"heartbeat_seconds": 60, "inventory_seconds": 900},
+                "agent_update": {
+                    "rollout_id": 7,
+                    "version": "1.2.3",
+                    "manifest_url": "https://fleet-vm.example.com/m",
+                    "signature_url": "https://fleet-vm.example.com/s",
+                    "binary_url": "https://fleet-vm.example.com/b",
+                },
+                "report_request": {"types": ["config", "packages"]},
+                TASK_HINT: {},
+            },
+        });
+        assert!(
+            parse(&valid).agent_update.is_some(),
+            "the valid response has an update"
+        );
+        let keys = ["rollout_id", "version", "types", "heartbeat_seconds"];
+        let (mut updates, mut refused) = (0, 0);
+        crate::test_support::hostile::each_mutation(&valid, &keys, |body| {
+            let envelope = parse(body);
+            match &envelope.agent_update {
+                Some(update) => {
+                    assert!(agent_update_problem(update.as_object().unwrap()).is_none());
+                    assert_eq!(update, &body["directives"]["agent_update"]);
+                    updates += 1;
+                }
+                None => refused += 1,
+            }
+            assert!(envelope.report_types.len() <= MAX_REPORT_TYPES);
+        });
+        assert!(
+            updates > 0 && refused > 0,
+            "{updates} updates, {refused} refused"
+        );
+    }
 }

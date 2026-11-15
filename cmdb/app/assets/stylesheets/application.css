@@ -155,6 +155,10 @@ ins { text-decoration: none; background: #dcefdf; color: #1d5a2b; padding: 0 0.1
 .bar form { margin: 0; }
 .bar .live[hidden] { display: none; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Keyboard users skip the top bar's links (WCAG 2.4.1); shown only while focused. */
+.skip-link { position: absolute; left: -10000px; }
+.skip-link:focus { left: 1rem; top: 0.5rem; z-index: 10; background: var(--sheet); color: var(--petrol); padding: 0.5rem 0.75rem; border-radius: 4px; }
+main:focus { outline: none; }
 .flash { margin: 0 0 1.25rem; }
 .sign-in { max-width: 28rem; margin: 3rem auto; }
 .sign-in-logo { display: block; margin: 0 0 1rem; }

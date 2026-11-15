@@ -36,7 +36,7 @@ The primary path is the dashboard's **Agents > Install an agent** page. It shows
 
    It checks the VM (Debian 13, systemd, a server certificate it trusts) and changes nothing if a check fails. Then it installs the binary under `/usr/lib/fleet-agent`, writes the systemd unit, and prints an approval link and a code such as `WDJB-MJHT`, then waits (10 minutes by default).
 
-4. **Approve** in the dashboard: open the link, or **Approve a VM** on the Fleet page. Check that the code matches the terminal, review what the VM reported, fill in the host's name, tags, and notes, and choose **Approve**. If the VM's machine ID or hostname matches an existing host, choose whether this is a re-enrollment of that host or a new one.
+4. **Approve** in the dashboard: open the link, or **Approve a VM** on the Fleet page. Check that the code matches the terminal, review what the VM reported, fill in the host's name, tags, and notes, and choose **Approve**. If the VM's machine ID or hostname matches an existing host, choose whether this is a re-enrollment of that host or a new one. A VM cloned from a template usually has the template's machine ID: choose **A new host**, and see [VMs cloned from one template](troubleshooting.md#vms-cloned-from-one-template).
 
 The installer then saves the credential to `/etc/fleet-agent/config.toml` (mode 0600), starts `fleet-agent.service`, waits for the service's first accepted heartbeat, and ends with `Done. fleet-agent is installed, enrolled, and running.`
 
