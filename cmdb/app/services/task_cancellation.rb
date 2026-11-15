@@ -6,7 +6,8 @@
 #   the agent has not started is refused when its start arrives (run: false), and the agent drops it (threat model
 #   L3).
 # - running, interruptible: the request is recorded (task.cancel_requested) and the cancel directive goes to the
-#   agent in its next poll or progress response; the task becomes cancelled when the agent reports it stopped.
+#   agent in its next progress response (every 15 s; a poll response carries it too, but the agent polls only between
+#   tasks); the task becomes cancelled when the agent reports it stopped.
 # - running, not interruptible: the request is recorded beside its real state and the task runs to completion.
 #   No task of its batch that has not started will start: those are cancelled now (Q17).
 #

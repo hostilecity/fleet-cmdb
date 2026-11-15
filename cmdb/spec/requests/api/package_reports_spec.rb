@@ -17,6 +17,14 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
 
   def gzip(text) = ActiveSupport::Gzip.compress(text)
 
+  # The INSERT, UPDATE, and DELETE statements on host_packages that the block sends.
+  def package_writes
+    statements = []
+    counter = ->(*, payload) { statements << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)[^"]*"host_packages"/) }
+    ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { yield }
+    statements
+  end
+
   it "stores the reported set exactly, with no package added or missing, and its first snapshot (AC-2.3)" do
     payload = report
     send_report(payload)
@@ -67,6 +75,31 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(diff.removed.map(&:name)).to eq([ "vim" ])
       expect(diff.changed.map { |c| [ c.name, c.from.version, c.to.version, c.direction ] }).to eq([ [ "openssl", "3.5.1-1+deb13u1", "3.5.1-1+deb13u2", :upgrade ] ])
       expect(PackageDiff.for(first).installed.size).to eq(8)
+    end
+
+    it "writes only the packages that changed: the others keep their rows (scale assessment)" do
+      send_report(report)
+      kept = HostPackage.where(host:).where.not(name: %w[vim openssl tzdata]).pluck(:name, :architecture, :id)
+      packages = example["packages"].reject { |p| p["name"] == "vim" }
+                                    .map { |p| p["name"] == "openssl" ? p.merge("version" => "3.5.1-1+deb13u2") : p }
+                                    .map { |p| p["name"] == "tzdata" ? p.merge("source" => "tzdata-legacy") : p }
+      packages << { "name" => "curl", "version" => "8.14.1-2", "architecture" => "amd64", "source" => nil }
+
+      statements = package_writes { send_report(report(packages:)) }
+
+      expect(stored_packages).to eq(sorted(packages))
+      expect(HostPackage.where(host:).where.not(name: %w[vim openssl tzdata curl]).pluck(:name, :architecture, :id)).to match_array(kept)
+      expect(HostPackage.find_by!(host:, name: "tzdata")).to have_attributes(source: "tzdata-legacy")
+      expect(statements.size).to eq(2) # one DELETE of vim, one upsert of openssl, tzdata, and curl
+      expect(statements.join).not_to include("libc6")
+    end
+
+    it "writes no package rows when only the skipped names changed" do
+      send_report(report)
+      statements = package_writes do
+        expect { send_report(report(skipped: [ { "name" => "vim", "reason" => "unpacked" } ])) }.to change(PackageSnapshot, :count).by(1)
+      end
+      expect(statements).to eq([]) # no DELETE, and no upsert rewriting unchanged rows (review of #185)
     end
   end
 

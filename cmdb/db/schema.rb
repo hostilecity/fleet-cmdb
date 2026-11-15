@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -276,6 +276,35 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
   end
 
+  create_table "evaluation_batches", force: :cascade do |t|
+    t.bigint "evaluation_run_id", null: false
+    t.integer "position", null: false
+    t.bigint "first_host_id", null: false
+    t.bigint "last_host_id", null: false
+    t.integer "host_count", null: false
+    t.index ["evaluation_run_id", "position"], name: "index_evaluation_batches_on_evaluation_run_id_and_position", unique: true
+  end
+
+  create_table "evaluation_runs", force: :cascade do |t|
+    t.string "kind", limit: 16, null: false
+    t.jsonb "scope", default: {}, null: false
+    t.string "state", limit: 16, default: "queued", null: false
+    t.integer "batch_count", default: 0, null: false
+    t.integer "batches_done", default: 0, null: false
+    t.integer "host_count", default: 0, null: false
+    t.integer "hosts_done", default: 0, null: false
+    t.boolean "shown_changed", default: false, null: false
+    t.bigint "superseded_by_id"
+    t.datetime "started_at"
+    t.datetime "finished_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["finished_at"], name: "index_evaluation_runs_on_finished_at"
+    t.index ["kind", "state"], name: "index_evaluation_runs_unfinished", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
+    t.check_constraint "kind::text = ANY (ARRAY['cis_rules'::character varying, 'advisories'::character varying]::text[])", name: "evaluation_runs_kind_valid"
+    t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'finished'::character varying, 'superseded'::character varying, 'failed'::character varying]::text[])", name: "evaluation_runs_state_valid"
+  end
+
   create_table "host_configs", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.jsonb "facts", null: false
@@ -332,8 +361,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.string "architecture", limit: 32, null: false
     t.string "version", limit: 256, null: false
     t.string "source", limit: 128
+    t.index "COALESCE(source, name), host_id", name: "index_host_packages_on_source_package"
     t.index ["host_id", "name", "architecture"], name: "index_host_packages_on_host_id_and_name_and_architecture", unique: true
-    t.index ["source"], name: "index_host_packages_on_source"
   end
 
   create_table "host_status_events", force: :cascade do |t|
@@ -783,6 +812,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
+    t.index ["ecosystem", "source", "host_id"], name: "index_vulnerability_findings_on_ecosystem_and_source"
     t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
     t.index ["host_id", "source"], name: "index_vulnerability_findings_on_host_id_and_source"
     t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
@@ -814,6 +844,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_10_320000) do
   add_foreign_key "config_report_receipts", "hosts"
   add_foreign_key "config_snapshots", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
+  add_foreign_key "evaluation_batches", "evaluation_runs", on_delete: :cascade
+  add_foreign_key "evaluation_runs", "evaluation_runs", column: "superseded_by_id", on_delete: :nullify
   add_foreign_key "host_configs", "hosts"
   add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_package_sets", "hosts"
