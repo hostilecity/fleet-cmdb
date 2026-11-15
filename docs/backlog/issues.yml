@@ -67,7 +67,7 @@
   done:
     - "A token is redeemable exactly once, and after re-enrollment or revocation the old credential gets 401 immediately (AC-1.5)."
     - "A credential for host A cannot read or modify host B on any endpoint (AC-1.6)."
-    - "Every error path returns the documented envelope, and a failed request leaves no partial records."
+    - "Every error path returns the documented envelope, and a failed request leaves no partial records: a write request is one transaction, authentication and the credential's last use included (#189)."
   blocked_by: [P0-CONTRACT, P1-HOSTS]
 
 - key: P1-HEARTBEAT
