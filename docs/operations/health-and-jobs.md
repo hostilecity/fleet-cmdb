@@ -14,6 +14,10 @@ Served on the agent hostname and on localhost, never the dashboard hostname. No 
 | `failed_jobs` | a background job failed all its retries in the last 24 hours |
 | `job_liveness` | the recurring liveness evaluation has not succeeded in the last 5 minutes: the scheduler, a worker, or the queue database is down, or the evaluation keeps raising (an attempt that raised and was retried does not count) |
 
+## Job queues
+
+The app's jobs use two queues (`cmdb/config/queue.yml`). `realtime` holds the jobs that run every minute (liveness, task leases and expiry, rollout timeouts, report request expiry) and the dashboard's live refreshes, and has a worker of its own, so a long advisory refresh, upload import, or matching run never delays them. `default` holds everything else; its worker also takes realtime jobs when it has a free thread. The failed-jobs page shows each job's queue. Sizing the workers: [scaling.md](scaling.md).
+
 ## Failed jobs
 
 Every job is retried 5 times with a growing delay (about 3 s, 18 s, 83 s, 4 min). After the last failure the job is kept as failed. Signed in, the dashboard shows a red banner with the count of jobs that failed in the last 24 hours, linking to **Failed jobs** (`/jobs/failed`): the time, job, queue, and error of each, newest first (the newest 100). The page is read-only. Retrying or discarding a failed job is done from the server console for now.
