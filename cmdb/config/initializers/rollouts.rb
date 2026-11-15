@@ -7,6 +7,11 @@ Rails.application.configure do
   # default, at least three requests per update). 300 seconds fits about 100 hosts per address.
   rollouts.spread ||= Integer(ENV.fetch("FLEET_ROLLOUT_SPREAD_SECONDS", "300")).clamp(1..)
 
+  # A large stage spreads over a longer window, so its hosts download at most about this many releases a second on
+  # average (#199): the window is the larger of the spread above and the stage's hosts divided by this. At the
+  # default a homelab stage keeps the 300 seconds; 75,000 hosts take about 2 hours.
+  rollouts.downloads_per_second ||= Integer(ENV.fetch("FLEET_ROLLOUT_DOWNLOADS_PER_SECOND", "10")).clamp(1..)
+
   # A host that was sent the directive and has not reported a result within this long is marked unconfirmed,
   # which halts the rollout. The agent's own rollback deadline is 5 minutes (ADR 0018).
   rollouts.confirmation_timeout ||= Integer(ENV.fetch("FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES", "30")).clamp(1..).minutes

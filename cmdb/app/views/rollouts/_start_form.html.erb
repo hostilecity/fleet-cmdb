@@ -43,7 +43,7 @@
   <div class="field">
     <label for="stages">Later stages</label>
     <%= text_field_tag :stages, start[:stages], id: "stages", class: "mono", maxlength: 100, disabled:, "aria-describedby": "stages_hint", **invalid.(:stages) %>
-    <p class="hint" id="stages_hint">Percentages of the hosts on an older version, ending at 100. With 25, 100 the canaries are followed by 25% of hosts and then everyone else. A stage moves on when all its hosts confirm.</p>
+    <p class="hint" id="stages_hint">Percentages of the hosts on an older version, ending at 100. With 25, 100 the canaries are followed by 25% of hosts and then everyone else. The default is 25, 100, or 1, 10, 50, 100 from <%= number_with_delimiter(Rollouts::LARGE_FLEET) %> active hosts. A stage moves on when all its hosts confirm.</p>
   </div>
   <div class="actions"><button class="btn" type="submit"<%= " disabled" if disabled %>>Start rollout…</button></div>
 <% end %>

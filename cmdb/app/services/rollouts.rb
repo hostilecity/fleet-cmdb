@@ -8,9 +8,11 @@
 # - expire_unconfirmed! (run every minute by RolloutTimeoutJob) halts a rollout whose hosts never reported.
 #
 # Stages: stage 0 is the canaries (an explicit list of hosts, or a tag); stage n then brings the rollout to
-# stage_percents[n - 1] percent of the hosts that run an older version. A stage's hosts are chosen when it
-# opens. A stage advances by itself when all its hosts have confirmed, or when an operator advances it. Only
-# a running rollout sends directives; a halted one resumes only by operator action.
+# stage_percents[n - 1] percent of the hosts that run an older version. The default stages follow the fleet's
+# size (default_stages, #199): 25 and 100 percent for a homelab, 1, 10, 50, and 100 from LARGE_FLEET active hosts.
+# A stage's hosts are chosen when it opens, in batches of OPEN_BATCH, and its offers are spread over a window that
+# grows with the stage (stage_spread). A stage advances by itself when all its hosts have confirmed, or when an
+# operator advances it. Only a running rollout sends directives; a halted one resumes only by operator action.
 module Rollouts
   # field names the start form's control the problem is with (:release, :canary_tag, :stages), or nil.
   class Invalid < StandardError
@@ -24,6 +26,16 @@ module Rollouts
 
   CANARY_TAG_LIMIT = 32 # rollouts.canary_tag
   DEFAULT_STAGES = [ 25, 100 ].freeze
+  # From this many active hosts the default stages are LARGE_FLEET_STAGES (#199), so the first stage after the
+  # canaries is 1% of the fleet rather than a quarter of it.
+  LARGE_FLEET = 1_000
+  LARGE_FLEET_STAGES = [ 1, 10, 50, 100 ].freeze
+  # Hosts chosen and inserted per statement when a stage opens (#199).
+  OPEN_BATCH = 10_000
+  # A fixed offset per host and rollout inside its stage's spread window (stage_spread), from a hash of the two, so it
+  # is spread evenly and never moves: 0 to spread - 1 seconds. Binds: the rollout id, then the spread in seconds.
+  # hashtextextended is the hash PostgreSQL's hash partitioning relies on, so it is stable across versions.
+  OFFER_DELAY_SQL = "make_interval(secs => (hashtextextended(?::text || ':' || hosts.id, 0) & 9223372036854775807) % ?)".freeze
   DIRECTIVE_FILES = { manifest_url: "manifest", signature_url: "signature", binary_url: "binary" }.freeze
   OUTCOME_STATES = { "succeeded" => "confirmed", "failed" => "failed", "rolled_back" => "rolled_back" }.freeze
   OUTCOME_ACTIONS = { "succeeded" => Audit::Actions::UPDATE_SUCCEEDED, "failed" => Audit::Actions::UPDATE_FAILED,
@@ -39,7 +51,7 @@ module Rollouts
   # Starts a rollout of release. canary_host_ids and canary_tag name the first stage; stage_percents are the
   # later stages, each higher than the one before and ending at 100. Raises Invalid, changing nothing, when a
   # rollout is already open, the stages are wrong, or no canary is an active host running an older version.
-  def start!(release:, actor:, canary_host_ids: [], canary_tag: nil, stage_percents: DEFAULT_STAGES)
+  def start!(release:, actor:, canary_host_ids: [], canary_tag: nil, stage_percents: default_stages)
     percents = stage_percents!(stage_percents)
     ids, tag = canaries!(canary_host_ids, canary_tag)
 
@@ -62,6 +74,14 @@ module Rollouts
     raise Invalid, "A rollout is already open. Finish or cancel it first."
   end
 
+  # The default stages after the canaries for a fleet of active_hosts active hosts (#199).
+  def default_stages(active_hosts = Host.active.count) = active_hosts >= LARGE_FLEET ? LARGE_FLEET_STAGES : DEFAULT_STAGES
+
+  # The window a stage of hosts hosts spreads its offers over (#199): FLEET_ROLLOUT_SPREAD_SECONDS, or longer
+  # when the stage is large, so that offers, and so downloads, come at most FLEET_ROLLOUT_DOWNLOADS_PER_SECOND a
+  # second on average. 750,000 hosts at 10 a second take about 21 hours rather than 5 minutes.
+  def stage_spread(hosts) = [ config.spread, (hosts.to_f / config.downloads_per_second).ceil ].max
+
   # The stages after the canaries, from a list ([25, 100]) or the dashboard's text ("25, 100"): increasing
   # percentages ending at 100. Raises Invalid otherwise.
   def stage_percents!(input)
@@ -79,7 +99,7 @@ module Rollouts
   # when no canary is named.
   def canary_hosts(release:, canary_host_ids: [], canary_tag: nil)
     ids, tag = canaries!(canary_host_ids, canary_tag)
-    Host.where(id: hosts_older_than(release.semver).keys & canary_ids(ids, tag))
+    older_hosts(release.semver).where(id: canary_ids(ids, tag))
   end
 
   # The operator opens the next stage now, without waiting for the current one to confirm.
@@ -128,16 +148,23 @@ module Rollouts
   # reports a result, and the first time marks the host as updating and audits the request for that host. One
   # indexed SELECT when there is none.
   #
-  # Runs inside the heartbeat's transaction. The matching rollout row is read FOR SHARE and stays locked until that
-  # transaction commits, so a halt, cancel, or advance (which take the row FOR UPDATE) waits for heartbeats already
-  # offering, and a heartbeat that arrives during one waits and then re-reads the row: once a halt commits, no
-  # heartbeat offers the update. Heartbeats only share the lock, so they never wait for one another. Lock order is
-  # host row (the heartbeat's), then rollout, then rollout host, the same as record_result!.
+  # Runs inside the heartbeat's transaction, and reads the rollout row without locking it (#199). Before, every
+  # heartbeat of a host in an open stage took the row FOR SHARE: at scale, hundreds of thousands of share lockers of
+  # one row (a MultiXact per combination), and a halt waiting for all of them while new heartbeats queued behind it.
+  # Now a halt, cancel, or advance never waits for heartbeats. What that allows, and why it is safe:
+  # - A heartbeat whose read began before a halt committed may still send the directive, at most milliseconds after
+  #   the halt. It is at most one offer per host (pending to updating is one conditional UPDATE, audited once), and
+  #   it is the offer the host would have had a moment earlier: the agent verifies the release itself (ADR 0018).
+  # - Every heartbeat that starts after the halt commits reads it and offers nothing.
+  # - The result of such an offer is still accepted (record_result! takes the rollout FOR UPDATE and stores late
+  #   results), a failure still halts a running rollout, and an offered host that never reports is marked
+  #   unconfirmed by expire_unconfirmed! once the rollout runs again.
+  # The stage gate (rollout_hosts.stage <= rollouts.current_stage) is read in the same statement as the state, so an
+  # advance is seen whole or not at all. Lock order elsewhere is host row, then rollout, then rollout host.
   def directive_for(host_id:, agent_version:, now: Time.current)
     row = RolloutHost.joins(rollout: :agent_release)
                      .where(host_id:, state: %w[pending updating], rollouts: { state: "running" })
                      .where("rollout_hosts.stage <= rollouts.current_stage AND rollout_hosts.offer_at <= ?", now)
-                     .lock("FOR SHARE OF rollouts")
                      .pick("rollout_hosts.id", "rollout_hosts.state", "rollouts.id", "agent_releases.version")
     return nil unless row
 
@@ -268,36 +295,65 @@ module Rollouts
   private_class_method :advance_stage!
 
   # Chooses the hosts of the rollout's current stage and returns how many. Hosts that are not active, have
-  # not reported a version, or already run the release (or newer) are never chosen.
+  # not reported a version, or already run the release (or newer) are never chosen. Hosts are chosen in host id
+  # order, one host-id range of at most OPEN_BATCH hosts per INSERT ... SELECT (#199), so no statement and no Ruby
+  # array holds the whole fleet. All batches are in the caller's transaction, so a stage opens whole or not at all.
   def open_stage!(rollout, now)
     stage = rollout.current_stage
-    included = rollout.rollout_hosts.pluck(:host_id)
-    versions = hosts_older_than(rollout.agent_release.semver)
-    candidates = versions.keys - included
-    chosen = if stage.zero?
-      candidates & canary_ids(rollout.canary_host_ids, rollout.canary_tag)
+    older = older_hosts(rollout.agent_release.semver)
+    older = older.where(id: canary_ids(rollout.canary_host_ids, rollout.canary_tag)) if stage.zero?
+    included = rollout.rollout_hosts.count
+    # Older hosts not in the rollout yet. A join, so a new rollout's missing statistics cannot make it quadratic.
+    candidates = older.count - rollout.rollout_hosts.joins(:host).merge(older).count
+    wanted = if stage.zero?
+      candidates
     else
-      total = candidates.size + included.size
-      wanted = (total * rollout.stage_percents.fetch(stage - 1) / 100.0).ceil - included.size
-      candidates.sort.first([ wanted, 0 ].max)
+      [ ((candidates + included) * rollout.stage_percents.fetch(stage - 1) / 100.0).ceil - included, 0 ].max
     end
-    rows = chosen.map do |host_id|
-      { rollout_id: rollout.id, host_id:, stage:, state: "pending", offer_at: now + offer_delay(rollout, host_id),
-        from_version: versions.fetch(host_id), created_at: now, updated_at: now }
-    end
-    RolloutHost.insert_all!(rows) if rows.any?
-    rows.size
+    insert_stage_rows!(rollout, older, stage:, wanted:, spread: stage_spread(wanted), now:)
   end
   private_class_method :open_stage!
 
-  # Active hosts that run an older version than target, as { host id => the version they run }.
-  def hosts_older_than(target)
-    Host.active.where.not(agent_version: nil).pluck(:id, :agent_version).each_with_object({}) do |(id, version), older|
-      semver = AgentApi::AgentVersion.parse(version)
-      older[id] = version if semver && semver < target
+  # Inserts the first wanted older hosts that are not in the rollout yet, in host id order. Each statement takes the
+  # next range of at most OPEN_BATCH older hosts, never more than are still wanted, and inserts them; the unique
+  # index on (rollout_id, host_id) skips those already chosen (ON CONFLICT DO NOTHING), with no anti-join for the
+  # planner to get wrong: a new rollout's id has no statistics, and as a join that was quadratic (32 s for the third
+  # batch of 10,000). Earlier stages took the lowest ids, so the skipped hosts come first and cost one pass. Each
+  # host's offer time is the opening time plus its offset (OFFER_DELAY_SQL), computed in the same statement.
+  def insert_stage_rows!(rollout, older, stage:, wanted:, spread:, now:)
+    added = 0
+    after = 0
+    while added < wanted
+      size = [ OPEN_BATCH, wanted - added ].min
+      upper = older.where("hosts.id > ?", after).order(:id).offset(size - 1).limit(1).pick(:id)
+      range = older.where("hosts.id > ?", after)
+      range = range.where("hosts.id <= ?", upper) if upper
+      rows = range.select(Arel.sql(ApplicationRecord.sanitize_sql_array(
+        [ "?, hosts.id, ?, 'pending', ?::timestamp + #{OFFER_DELAY_SQL}, hosts.agent_version, ?::timestamp, ?::timestamp",
+          rollout.id, stage, now, rollout.id, spread, now, now ]
+      )))
+      added += RolloutHost.connection.exec_update(
+        "INSERT INTO rollout_hosts (rollout_id, host_id, stage, state, offer_at, from_version, created_at, updated_at) " \
+        "#{rows.to_sql} ON CONFLICT (rollout_id, host_id) DO NOTHING"
+      )
+      break unless upper # no older host is left
+
+      after = upper
     end
+    added
   end
-  private_class_method :hosts_older_than
+  private_class_method :insert_stage_rows!
+
+  # Active hosts that run an older version than target. Versions are compared in Ruby, but only the fleet's
+  # distinct versions (a handful) are read; the hosts stay a query.
+  def older_hosts(target)
+    versions = Host.active.where.not(agent_version: nil).distinct.pluck(:agent_version).select do |version|
+      semver = AgentApi::AgentVersion.parse(version)
+      semver && semver < target
+    end
+    Host.active.where(agent_version: versions)
+  end
+  private_class_method :older_hosts
 
   def canary_ids(ids, tag)
     tagged = tag ? Host.active.tagged(tag).pluck(:id) : []
@@ -316,9 +372,6 @@ module Rollouts
   end
   private_class_method :canaries!
 
-  # A fixed offset per host and rollout inside the spread window, so a retry or a second stage never moves it.
-  def offer_delay(rollout, host_id) = (Zlib.crc32("#{rollout.id}:#{host_id}") % config.spread).seconds
-  private_class_method :offer_delay
 
   def reject!(pointer, problem)
     raise AgentApi::ValidationFailed.new(details: [ { "pointer" => pointer, "problem" => problem } ])

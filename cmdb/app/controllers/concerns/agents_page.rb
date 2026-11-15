@@ -33,14 +33,14 @@ module AgentsPage
 
   # The start form's choices: canary tags among active hosts, with their counts, and active hosts to pick.
   # A refused start keeps what the operator chose (@start); otherwise the newest release, the tag "canary" when
-  # some active host has it, and the default stages.
+  # some active host has it, and the default stages for the fleet's size (Rollouts.default_stages).
   def load_start_form
     active = Host.active
     @canary_tags = active.group(Arel.sql("unnest(hosts.tags)")).order(Arel.sql("unnest(hosts.tags)")).count
-    @start ||= { release: @releases.first&.version, canary_tag: ("canary" if @canary_tags.key?("canary")), canary_host_ids: [],
-                 stages: Rollouts::DEFAULT_STAGES.join(", ") }
-    @canary_choices = active.order(:name, :id).limit(CANARY_CHOICE_LIMIT).to_a
     @active_total = active.count
+    @start ||= { release: @releases.first&.version, canary_tag: ("canary" if @canary_tags.key?("canary")), canary_host_ids: [],
+                 stages: Rollouts.default_stages(@active_total).join(", ") }
+    @canary_choices = active.order(:name, :id).limit(CANARY_CHOICE_LIMIT).to_a
   end
 
   # The reason each host gave with its latest result, by host id.

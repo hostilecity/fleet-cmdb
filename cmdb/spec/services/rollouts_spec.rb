@@ -15,6 +15,12 @@ RSpec.describe Rollouts do
 
   def directive(host, version = "0.2.0") = Host.transaction { Rollouts.directive_for(host_id: host.id, agent_version: version) }
 
+  # The offer offset Rollouts::OFFER_DELAY_SQL gives a host, in seconds.
+  def offer_offset(rollout, host_id, spread)
+    sql = Rollouts::OFFER_DELAY_SQL.sub("hosts.id", "?::bigint")
+    ActiveRecord::Base.connection.select_value(ActiveRecord::Base.sanitize_sql_array([ "SELECT EXTRACT(EPOCH FROM #{sql})::int", rollout.id, host_id, spread ]))
+  end
+
   describe ".start!" do
     it "opens stage 0 with the canaries that run an older version and audits it" do
       canary, = host_running("0.2.0")
@@ -82,6 +88,43 @@ RSpec.describe Rollouts do
       start_rollout(release:, canaries: [ host ])
       expect { release.destroy! }.to raise_error(ActiveRecord::DeleteRestrictionError)
       expect { release.delete }.to raise_error(ActiveRecord::StatementInvalid, /rollouts/) # the foreign key; the error class varies with PostgreSQL's version
+    end
+  end
+
+  describe "default stages (#199)" do
+    it "keeps 25 and 100 percent for a homelab, and uses 1, 10, 50, and 100 from 1,000 active hosts" do
+      expect(Rollouts.default_stages(50)).to eq([ 25, 100 ])
+      expect(Rollouts.default_stages(999)).to eq([ 25, 100 ])
+      expect(Rollouts.default_stages(1_000)).to eq([ 1, 10, 50, 100 ])
+      expect(Rollouts.default_stages(1_000_000)).to eq([ 1, 10, 50, 100 ])
+    end
+
+    it "chooses them by the fleet's active hosts when a rollout starts without stages" do
+      canary, = host_running("0.2.0")
+      host_running("0.3.0")
+      stub_const("Rollouts::LARGE_FLEET", 2) # two active hosts
+      expect(start_rollout(release:, canaries: [ canary ]).stage_percents).to eq([ 1, 10, 50, 100 ])
+    end
+  end
+
+  describe "opening a stage in batches (#199)" do
+    it "chooses the same hosts, in host id order, however small the batch, and inserts a batch at a time" do
+      canary, = host_running("0.2.0")
+      others = Array.new(9) { host_running("0.2.0").first }
+      host_running("0.3.0") # already on the release: never chosen
+      stub_const("Rollouts::OPEN_BATCH", 2)
+      rollout = start_rollout(release:, canaries: [ canary ], stage_percents: [ 50, 100 ])
+      inserts = []
+      callback = ->(*, payload) { inserts << payload[:sql] if payload[:sql].start_with?("INSERT INTO rollout_hosts") }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { Rollouts.advance!(rollout, actor: operator) }
+      # 50% of the 10 older hosts is 5; the canary is one, so 4 more, the lowest ids. Ranges of at most 2 older hosts:
+      # the canary's range adds 1 (the canary is skipped), then 2, then 1.
+      expect(rollout.rollout_hosts.where(stage: 1).order(:host_id).pluck(:host_id)).to eq(others.map(&:id).sort.first(4))
+      expect(inserts.size).to eq(3)
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { Rollouts.advance!(rollout, actor: operator) }
+      expect(rollout.rollout_hosts.count).to eq(10)
+      expect(rollout.rollout_hosts.pluck(:host_id).uniq.size).to eq(10)
+      expect(inserts.size).to eq(8) # 5 more: one pass over the 5 hosts already chosen, then 2, 2, and 1
     end
   end
 
@@ -200,11 +243,21 @@ RSpec.describe Rollouts do
       expect(AuditEntry.where(target_type: "Host", target_id: host.id).pluck(:action)).to include(Audit::Actions::UPDATE_REQUESTED)
     end
 
-    it "reads the rollout row FOR SHARE, so halts and offers are serialised (spec/services/rollout_concurrency_spec.rb)" do
+    it "reads the rollout without a row lock (#199; spec/services/rollout_concurrency_spec.rb)" do
       queries = []
-      callback = ->(*, payload) { queries << payload[:sql] if payload[:sql].include?("rollout_hosts") }
+      callback = ->(*, payload) { queries << payload[:sql] if payload[:sql].include?("rollout") }
       ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { directive(host) }
-      expect(queries.first).to include("FOR SHARE OF rollouts")
+      expect(queries).not_to be_empty
+      expect(queries).to all(satisfy { |sql| !sql.match?(/\bFOR (SHARE|UPDATE|NO KEY UPDATE|KEY SHARE)\b/) })
+    end
+
+    it "accepts the result of an offer made just before a halt, and does not halt again" do
+      directive(host)
+      Rollouts.halt!(rollout, actor: operator)
+      expect(directive(host)).to be_nil
+      report(rollout, host, outcome: "failed", reason: "x")
+      expect(rollout.rollout_hosts.find_by(host_id: host.id).state).to eq("failed")
+      expect(AuditEntry.where(action: Audit::Actions::ROLLOUT_HALTED).count).to eq(1)
     end
 
     it "validates against the contract" do
@@ -245,6 +298,22 @@ RSpec.describe Rollouts do
       expect(directive(host)).to be_nil
     end
 
+    it "spreads a large stage over a longer window, so downloads come at most about the configured rate (#199)" do
+      Rails.configuration.x.rollouts.spread = 300
+      Rails.configuration.x.rollouts.downloads_per_second = 2
+      expect(Rollouts.stage_spread(10)).to eq(300)
+      expect(Rollouts.stage_spread(600)).to eq(300)
+      expect(Rollouts.stage_spread(601)).to eq(301)
+      expect(Rollouts.stage_spread(750_000)).to eq(375_000)
+      Rails.configuration.x.rollouts.spread = 1
+      Rollouts.cancel!(rollout, actor: operator)
+      hosts = Array.new(6) { host_running("0.2.0").first }
+      spread = start_rollout(release:, canaries: hosts) # 6 hosts at 2 a second: 3 seconds
+      offsets = spread.rollout_hosts.map { |member| (member.offer_at - spread.started_at).round }
+      expect(offsets).to all(be_between(0, 2))
+      expect(offsets).to eq(spread.rollout_hosts.map { |member| offer_offset(spread, member.host_id, 3) })
+    end
+
     it "spreads a stage over the configured window, one fixed offset per host" do
       Rails.configuration.x.rollouts.spread = 300
       Rollouts.cancel!(rollout, actor: operator)
@@ -253,7 +322,7 @@ RSpec.describe Rollouts do
       offsets = spread.rollout_hosts.map { |member| (member.offer_at - spread.started_at).round }
       expect(offsets).to all(be_between(0, 299))
       expect(offsets.uniq.size).to be > 1
-      again = spread.rollout_hosts.map { |member| Rollouts.send(:offer_delay, spread, member.host_id).to_i }
+      again = spread.rollout_hosts.map { |member| offer_offset(spread, member.host_id, 300) }
       expect(again).to eq(offsets)
     end
   end

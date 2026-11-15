@@ -1,8 +1,9 @@
 require "rails_helper"
 
-# P1-UPDATES: a heartbeat offering an update and an operator's halt are serialised on the rollout row
-# (Rollouts.directive_for reads it FOR SHARE; halt, cancel, and advance take it FOR UPDATE). Runs outside the test
-# transaction so each thread commits on its own connection.
+# P1-UPDATES, #199: Rollouts.directive_for reads the rollout row without a lock, so heartbeats and an operator's
+# halt never wait for each other. A heartbeat that read the rollout before a halt committed may still offer once;
+# every heartbeat after the commit offers nothing. Runs outside the test transaction so each thread commits on its
+# own connection.
 RSpec.describe "Concurrent rollout offers and halts" do
   self.use_transactional_tests = false
 
@@ -27,7 +28,7 @@ RSpec.describe "Concurrent rollout offers and halts" do
     end
   end
 
-  it "makes a halt wait for a heartbeat that is already offering the update" do
+  it "lets a halt commit while a heartbeat that is offering the update is still open" do
     offered = Queue.new
     release = Queue.new
     heartbeat = Thread.new do
@@ -41,16 +42,16 @@ RSpec.describe "Concurrent rollout offers and halts" do
     expect(offered.pop).to be_present
 
     halt = Thread.new { ActiveRecord::Base.connection_pool.with_connection { Rollouts.halt!(Rollout.find(@rollout.id), actor: operator) } }
-    expect(halt.join(1)).to be_nil # blocked on the heartbeat's share lock
+    expect(halt.join(10)).to be_truthy # no share lock to wait for (#199)
+    expect(@rollout.reload.state).to eq("halted")
     release << :go
     heartbeat.join
-    expect(halt.join(10)).to be_truthy
-    expect(@rollout.reload.state).to eq("halted")
+    expect(@rollout.rollout_hosts.sole.state).to eq("updating") # the offer made before the halt stands
   ensure
     release << :go if release&.empty?
   end
 
-  it "makes a heartbeat that arrives during a halt wait, then offer nothing" do
+  it "does not make a heartbeat wait for a halt in progress, and offers nothing once the halt commits" do
     locked = Queue.new
     release = Queue.new
     halting = Thread.new do
@@ -64,13 +65,15 @@ RSpec.describe "Concurrent rollout offers and halts" do
     end
     locked.pop
 
-    heartbeat = Thread.new { offer }
-    expect(heartbeat.join(1)).to be_nil # waits for the halt to commit
+    # Before the halt commits, a heartbeat reads the rollout as running and does not wait (#199).
+    during = Thread.new { offer }
+    expect(during.join(10)&.value).to be_present
     release << :go
     halting.join
-    expect(heartbeat.join(10)&.value).to be_nil # re-read the row: halted, so no directive
-    expect(@rollout.rollout_hosts.sole.state).to eq("pending")
-    expect(AuditEntry.where(action: Audit::Actions::UPDATE_REQUESTED)).to be_empty
+
+    expect(@rollout.reload.state).to eq("halted")
+    expect(offer).to be_nil # every heartbeat after the commit reads the halt
+    expect(AuditEntry.where(action: Audit::Actions::UPDATE_REQUESTED).count).to eq(1)
   ensure
     release << :go if release&.empty?
   end
