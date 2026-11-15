@@ -45,9 +45,15 @@ class EvaluationRun
 
     def supported = packages.select { |ecosystem, sources| Ecosystems.supported?(ecosystem) && sources.any? }
 
-    def unevaluated
-      evaluated = HostVulnerabilityEvaluation.where.not(reason: "no_advisory_data").or(HostVulnerabilityEvaluation.where(reason: nil)).select(:host_id)
-      Host.in_fleet.where.not(id: evaluated)
-    end
+    # Hosts with no evaluation that had advisory data: none at all, or "no advisory data". A correlated NOT EXISTS, an
+    # anti-join on the evaluations' host_id index, so it stays cheap per batch and over the fleet whatever work_mem
+    # is; NOT IN (subquery) falls back to scanning every evaluation for each host once its hash no longer fits
+    # (review of #204).
+    UNEVALUATED = <<~SQL.squish.freeze
+      NOT EXISTS (SELECT 1 FROM host_vulnerability_evaluations evaluations
+                  WHERE evaluations.host_id = hosts.id AND evaluations.reason IS DISTINCT FROM 'no_advisory_data')
+    SQL
+
+    def unevaluated = Host.in_fleet.where(UNEVALUATED)
   end
 end
