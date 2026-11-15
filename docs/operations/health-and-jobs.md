@@ -13,7 +13,7 @@ Served on the agent hostname and on localhost, never the dashboard hostname. No 
 | `backup` | the last complete backup is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` ([backup-and-restore.md](backup-and-restore.md)) |
 | `failed_jobs` | a background job failed all its retries in the last 24 hours |
 | `job_liveness` | the recurring liveness evaluation has not succeeded in the last 5 minutes: the scheduler, a worker, or the queue database is down, or the evaluation keeps raising (an attempt that raised and was retried does not count) |
-| `live_updates` | this process's Solid Cable listener has stopped, so it delivers no live update to any open page until the server restarts, while the pages still look connected (#194). The log says `[health] Solid Cable's listener thread has stopped`. Restart the app container. With several Puma processes, each answers for itself |
+| `live_updates` | this process's Solid Cable listener has stopped, so it delivers no live update to any open page until the server restarts, while the pages still look connected (#194). The log says `[health] Solid Cable's listener thread has stopped`. Restart the app container. A PostgreSQL restart is survived: the listener retries its connection for about 28 s (`reconnect_attempts` in `config/cable.yml`), so only a longer outage stops it. With several Puma processes, each answers for itself |
 
 ## Job queues
 
