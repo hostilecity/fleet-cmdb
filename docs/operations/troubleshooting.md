@@ -34,6 +34,25 @@ The agent logs `the server rejected this agent's credential (it may have been re
 
 `403 reenrollment_required` means a re-enrollment was started for the host; finish it on the VM with the command the dashboard showed.
 
+## VMs cloned from one template
+
+VMs cloned from one template all have the same machine ID (`/etc/machine-id`), unless the template was prepared for cloning. The approval page then says the new VM has the same machine ID as a host you already have.
+
+- **When you approve,** choose **A new host**. It is the default when the hostnames differ. Choosing the existing host instead re-enrolls it: the new VM takes over that host, and the old VM's agent stops working.
+- **Give each clone its own machine ID,** before installing the agent if you can. On the clone, as root:
+
+  ```sh
+  old=$(cat /etc/machine-id)
+  rm -f /etc/machine-id /var/lib/dbus/machine-id
+  systemd-machine-id-setup
+  if [ -d /var/lib/dbus ]; then ln -s /etc/machine-id /var/lib/dbus/machine-id; fi
+  [ "$(cat /etc/machine-id)" != "$old" ] && echo "new machine ID"
+  ```
+
+  Remove both files: `systemd-machine-id-setup` does nothing while `/etc/machine-id` is there, and copies the old ID back from `/var/lib/dbus/machine-id` if that file holds it.
+- **If the agent is already installed,** restart it (`systemctl restart fleet-agent`). The host page then warns that the credential was used from another machine. To clear it, re-enroll the VM: `fleet-agent install --reenroll`, and approve it as a re-enrollment of the same host.
+- **To fix the template,** empty its machine ID just before you shut it down for the last time: `truncate -s 0 /etc/machine-id`, then `rm -f /var/lib/dbus/machine-id` and, if `/var/lib/dbus` exists, `ln -s /etc/machine-id /var/lib/dbus/machine-id`. Each clone then makes its own ID when it first boots.
+
 ## The clock is off
 
 The agent logs `this host's clock differs from the server's`. The server always uses its own clock for liveness and audit times, so a wrong VM clock does not make a host look offline, but report timestamps are off and, if it is far off, TLS fails (above). Enable time synchronisation on the VM (`timedatectl set-ntp true`; check `timedatectl` shows `System clock synchronized: yes`). The agent logs `this host's clock agrees with the server's again` once fixed. Check the server's clock the same way.

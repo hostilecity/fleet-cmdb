@@ -9,18 +9,23 @@
 #   build    no secrets; refuses a run that is not on main, a version that is not SemVer, already released, or
 #            not newer than every earlier release; builds the binary reproducibly with the version compiled in
 #            (FLEET_AGENT_VERSION, scripts/build-release.sh) and shows its SHA-256 in the job summary
-#   rebuild  builds the same commit again on a separate runner, as an independent witness
+#   rebuild  builds the same commit again on a separate runner, as an independent witness, and writes the
+#            manifest it expects for its own binary
 #   sign     the only job with the release key: bound to the protected `release` environment, so it
-#            waits for the owner's approval; signs only if both builds produced the identical binary,
-#            sees only the manifest, runs no repository code, and holds the key in a file only for
-#            the one minisign command
-#   publish  verifies the signature with the agent's own `verify-release` and with minisign against
-#            the current key in the repository, records build provenance for the binary (SLSA, `gh
-#            attestation verify`), then creates the tag on the run's commit and the release
+#            waits for the owner's approval; signs only if both builds produced the identical binary and
+#            the manifest to sign is byte for byte the one the rebuild expects; sees only the manifest,
+#            runs no repository code, and holds the key in a file only for the one minisign command
+#   publish  first checks the binary is the one the rebuild made, before running anything from the
+#            build job's files; then verifies the signature with the agent's own `verify-release` and
+#            with minisign against the current key in the repository, records build provenance for the
+#            binary (SLSA, `gh attestation verify`), then creates the tag on the run's commit and the release
 #
 # Why two builds (review of #72): building runs every dependency's build script. A signature only proves
 # the binary came out of our build job; requiring a byte-identical binary from a second, independent
-# runner means a tampered build would have to compromise both identically.
+# runner means a tampered build would have to compromise both identically. That holds only if what is signed
+# and published is checked against the rebuild too, not only the build job's reported SHA-256: a tampered build
+# job controls its own outputs and artefacts, so the sign and publish jobs take the manifest's bytes and the
+# binary's SHA-256 from the rebuild, and the file names from the run's input.
 #
 # There is no other trigger, so other builds (Agent CI) are never signed. The tag is created by this workflow
 # only after the owner approved the signature, so an `agent-v*` tag always names a published release. Actions
@@ -214,6 +219,9 @@ jobs:
       contents: read
     outputs:
       sha256: ${{ steps.rebuild.outputs.sha256 }}
+      # The SHA-256 of the manifest this rebuild would write. The sign job signs the build job's manifest
+      # only if it is byte for byte this one, so one tampered runner cannot get a different manifest signed.
+      manifest_sha256: ${{ steps.rebuild.outputs.manifest_sha256 }}
     defaults:
       run:
         working-directory: agent
@@ -238,8 +246,21 @@ jobs:
           set -eu
           bin=$(scripts/build-release.sh "$TARGET")
           sha=$(sha256sum "$bin" | cut -d ' ' -f 1)
-          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
-          echo "Independent rebuild: \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
+          manifest="$RUNNER_TEMP/manifest.json"
+          scripts/release-manifest.sh "$FLEET_AGENT_VERSION" "$TARGET" "$bin" > "$manifest"
+          manifest_sha=$(sha256sum "$manifest" | cut -d ' ' -f 1)
+          {
+            echo "sha256=$sha"
+            echo "manifest_sha256=$manifest_sha"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "Independent rebuild: \`$sha\`"
+            echo
+            echo "The manifest it expects (the sign job refuses any other):"
+            echo '```json'
+            cat "$manifest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   sign:
     name: Sign (needs the owner's approval)
@@ -272,14 +293,32 @@ jobs:
           name: manifest
           path: dist
 
+      - name: Require the manifest the independent rebuild expects
+        # The manifest comes from the build job alone, and so do its outputs: a tampered build job could
+        # report the honest SHA-256 above and still upload a manifest naming another binary. So the bytes
+        # to be signed must be exactly the manifest the rebuild wrote for its own binary. The file name
+        # comes from the input, not from the build job.
+        env:
+          EXPECTED: ${{ needs.rebuild.outputs.manifest_sha256 }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          manifest="dist/fleet-agent-$VERSION-$TARGET.manifest.json"
+          actual=$(sha256sum "$manifest" | cut -d ' ' -f 1)
+          if [ -z "$EXPECTED" ] || [ "$actual" != "$EXPECTED" ]; then
+            echo "::error::the manifest to sign ($actual) is not the one the independent rebuild expects ($EXPECTED); nothing is signed"
+            exit 1
+          fi
+          cat "$manifest"
+
       - name: Sign the manifest
         # The secrets reach only this step. The key line is written to a file readable only by this
         # user and removed when the step ends, however it ends; nothing here prints it.
         env:
           SIGNING_KEY: ${{ secrets.AGENT_RELEASE_SIGNING_KEY }}
           SIGNING_KEY_PASSWORD: ${{ secrets.AGENT_RELEASE_SIGNING_KEY_PASSWORD }}
-          VERSION: ${{ needs.build.outputs.version }}
-          MANIFEST: ${{ needs.build.outputs.manifest }}
+          VERSION: ${{ inputs.version }}
+          MANIFEST: fleet-agent-${{ inputs.version }}-${{ env.TARGET }}.manifest.json
         run: |
           set -eu
           if [ -z "$SIGNING_KEY" ]; then
@@ -298,13 +337,13 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: signature
-          path: dist/${{ needs.build.outputs.manifest }}.minisig
+          path: dist/fleet-agent-${{ inputs.version }}-${{ env.TARGET }}.manifest.json.minisig
           if-no-files-found: error
           retention-days: 7
 
   publish:
     name: Verify and publish
-    needs: [build, sign]
+    needs: [build, rebuild, sign]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -332,15 +371,24 @@ jobs:
           path: dist
 
       - name: Verify
+        # The release files come from the build job alone, so nothing in them is run or trusted until the
+        # binary is shown to be the one the independent rebuild made. The names come from the input.
         env:
-          SHA256: ${{ needs.build.outputs.sha256 }}
-          VERSION: ${{ needs.build.outputs.version }}
-          BINARY: ${{ needs.build.outputs.binary }}
-          MANIFEST: ${{ needs.build.outputs.manifest }}
+          SHA256: ${{ needs.rebuild.outputs.sha256 }}
+          VERSION: ${{ inputs.version }}
+          BINARY: fleet-agent-${{ inputs.version }}-${{ env.TARGET }}
+          MANIFEST: fleet-agent-${{ inputs.version }}-${{ env.TARGET }}.manifest.json
         run: |
           set -eu
           cd dist
-          sha256sum -c SHA256SUMS
+          actual=$(sha256sum "$BINARY" | cut -d ' ' -f 1)
+          if [ -z "$SHA256" ] || [ "$actual" != "$SHA256" ]; then
+            echo "::error::the binary to publish ($actual) is not the one the independent rebuild made ($SHA256); nothing is published"
+            exit 1
+          fi
+          # Written here rather than taken from the build job, so it lists exactly what is published.
+          sha256sum "$BINARY" "$MANIFEST" > SHA256SUMS
+          cat SHA256SUMS
           chmod 0755 "$BINARY"
           # 1. As an agent will: the keys built into this very binary, then size and SHA-256.
           "./$BINARY" verify-release --manifest "$MANIFEST" --signature "$MANIFEST.minisig" --binary "$BINARY"
@@ -358,17 +406,17 @@ jobs:
         # Operators check it with `gh attestation verify <binary> --repo hostilecity/fleet-cmdb`.
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/${{ needs.build.outputs.binary }}
+          subject-path: dist/fleet-agent-${{ inputs.version }}-${{ env.TARGET }}
 
       - name: Create the tag and publish the GitHub release
         # The tag agent-v<version> is created here, on the run's commit, only now that the signature is
         # verified; the tag ruleset lets GitHub Actions create it and nothing move or delete it.
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: agent-v${{ needs.build.outputs.version }}
-          VERSION: ${{ needs.build.outputs.version }}
-          BINARY: ${{ needs.build.outputs.binary }}
-          MANIFEST: ${{ needs.build.outputs.manifest }}
+          TAG: agent-v${{ inputs.version }}
+          VERSION: ${{ inputs.version }}
+          BINARY: fleet-agent-${{ inputs.version }}-${{ env.TARGET }}
+          MANIFEST: fleet-agent-${{ inputs.version }}-${{ env.TARGET }}.manifest.json
         run: |
           set -eu
           cd dist

@@ -91,6 +91,7 @@ The files of a signed release the server has imported ([docs/releases.md](../rel
   - Unknown fields are ignored and logged, so schemas do not set `additionalProperties: false`.
   - Wrong types, out-of-range values, and unknown values of enumerated fields are rejected.
   - Formats such as timestamps, UUIDs and credentials are checked with `pattern`, not `format`, so every validator agrees. Patterns cannot express every calendar rule (for example 30 February), so the server also parses timestamps and addresses when it implements an endpoint.
+  - Before the body is parsed, the server refuses a number with more than 32 digits in a row outside strings (`400 validation_failed`). No field allows one (the longest number any schema allows has 16 digits), and parsing a very long one is slow.
 - **Identifiers:**
   - Every report carries a `report_id`: a UUIDv4, generated per report and reused on retry.
   - A report whose `report_id` was already processed is answered `200` with `duplicate: true` and changes nothing.
@@ -126,7 +127,7 @@ Every `4xx` and `5xx` response has the body `{"error": {"code", "message", "requ
 | 410 | `onboarding_expired` | Onboarding device code unknown, expired, or already used to collect a credential. Same body for each case; the installer starts again |
 | 413 | `payload_too_large` | Body over the endpoint's size limit |
 | 426 | `agent_version_unsupported` | `agent_version` is older than the server's minimum. The agent logs this plainly and backs off. Never sent by `heartbeat`, `update-results`, or the release downloads (the update path) |
-| 429 | `rate_limited` | Too many requests, too many onboarding requests open, onboarding polled faster than its `interval`, or too many release downloads from one address. Honour the `Retry-After` header |
+| 429 | `rate_limited` | Too many requests, too many failed authentications from one address, onboarding polled faster than its `interval`, or too many release downloads from one address. Honour the `Retry-After` header |
 | 500 | `internal_error` | Unexpected failure. The message never contains internals |
 
 P1-API-AUTH implements these. If it changes a code or status, it must update this table in the same pull request.
