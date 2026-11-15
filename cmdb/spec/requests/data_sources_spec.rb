@@ -44,6 +44,19 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
                                                                          "comes through the scheduled feed or bin/rails advisories:import")
     end
 
+    it "shows the progress of re-matching after an import while it runs (#197)" do
+      debian_host(packages: [ [ "curl", "8.14.1-1", "curl" ] ])
+      import_advisories(osv_record(id: "DSA-1-1", package: "curl"))
+      get "/data-sources"
+      expect(page.at_css("#evaluation_progress").text).to eq("Re-matching the hosts the latest import affects: starting.")
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      get "/data-sources"
+      expect(page.at_css("#evaluation_progress").text).to eq("Re-matching the hosts the latest import affects: 0 of 1 host done.")
+      perform_evaluation_jobs
+      get "/data-sources"
+      expect(page.at_css("#evaluation_progress")).to be_nil
+    end
+
     it "shows freshness, current and withdrawn advisories, and hosts per ecosystem, counted in the database" do
       debian_host
       debian_host

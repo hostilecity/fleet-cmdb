@@ -1,0 +1,3 @@
+<%# An unfinished fleet-wide evaluation (#197), in plain text; the page refreshes itself until it is done. locals: run, doing (what it does). %>
+<%= tag.p evaluation_progress_text(run, doing), id: "evaluation_progress", class: "muted", role: "status",
+          data: { controller: "refresh-after", refresh_after_seconds_value: EvaluationRunsHelper::PROGRESS_REFRESH_SECONDS } %>
