@@ -388,11 +388,13 @@ install_release() {
 }
 
 # run_install_commands NAME: runs install_commands NAME as root in a new /root/install-NAME in the guest, with the
-# CA file the page's heredoc writes and the release key the page's key command would fetch. Prints the output.
+# CA file the page's heredoc writes and the release key the page's key command would fetch. The downloads' output
+# (curl's progress) goes to stderr; the check's output, which the page says it must print, to stdout.
 run_install_commands() {
     local d=/root/install-$1
     vm "rm -rf $d && mkdir $d && cp /tmp/ca.pem $d/fleet-server-ca.pem && cp /tmp/release-key.pub $d/fleet-release-key.pub"
-    vm "set -e; cd $d; $(install_commands "$1")" 2>&1
+    vm "set -e; cd $d; $(install_commands "$1" | sed '$d')" >&2 2>&1
+    vm "cd $d && $(install_commands "$1" | tail -n 1)" 2>&1
 }
 
 # First install (#181): the commands refuse a binary that is not the signed one, and a manifest signed by a key
