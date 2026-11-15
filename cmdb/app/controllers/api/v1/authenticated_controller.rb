@@ -25,14 +25,18 @@ module Api
         host_not_active: AgentApi::HostNotActive
       }.freeze
 
-      # The failed-authentication counter's key, per client address (S-5).
+      # The failed-authentication counters' keys: per client address (an IPv6 address per /64, which one host can
+      # hold whole), and per recently authenticated key id (S-5, review of #211).
       FAILED_AUTH_KEY = "failed-auth:%s".freeze
+      FAILED_AUTH_KEY_ID = "failed-auth-key:%s".freeze
 
       rescue_from(AgentHostLock::Refused) { |refusal| render_api_error(REFUSALS.fetch(refusal.reason).new) }
 
       # S-5 (#191): an address that failed authentication too often in the window is refused before anything else,
-      # with no database work, until the window ends. Only failures are counted, but once an address is over the
-      # limit its requests with a valid credential are refused too.
+      # with no database work, until the window ends. Only failures are counted. A request whose key id authenticated
+      # in this process recently (AgentApi.recent_credentials) still goes on to authentication, so a client sharing
+      # the agents' address (a NAT, a proxy) cannot lock them out; that key id's own failures are counted, and past
+      # the limit it no longer passes (review of #211).
       before_action :refuse_after_failed_authentications
       # Declared before authentication, so it wraps authentication and every later callback as well as the action.
       around_action :in_request_transaction
@@ -53,17 +57,47 @@ module Api
 
       def authenticate_agent!
         @current_credential = AgentCredential.authenticate(request.authorization) or failed_authentication!
+        AgentApi.recent_credentials.remember(current_credential.key_id, expires_in: AgentApi::RECENT_CREDENTIAL_TTL)
         Current.host_id = current_credential.host_id
       end
 
+      # touch: a blocked address that keeps trying stays the most recently used key, so failures from other addresses
+      # cannot push it out of the limiter and reset its block (review of #211).
       def refuse_after_failed_authentications
         limit = AgentApi.config.failed_auth_rate_limit
-        rate_limited!(limit[:within]) if AgentApi.failed_auth_rate_limiter.count(format(FAILED_AUTH_KEY, request.remote_ip)) >= limit[:to]
+        return if AgentApi.failed_auth_rate_limiter.count(format(FAILED_AUTH_KEY, client_address), touch: true) < limit[:to]
+        return if recent_key_id && AgentApi.failed_auth_rate_limiter.count(format(FAILED_AUTH_KEY_ID, recent_key_id)) < limit[:to]
+
+        rate_limited!(limit[:within])
       end
 
+      # Counted per address, and per key id when that key id authenticated recently (only those, so random key ids
+      # cannot fill the limiter).
       def failed_authentication!
-        AgentApi.failed_auth_rate_limiter.increment(format(FAILED_AUTH_KEY, request.remote_ip), 1, expires_in: AgentApi.config.failed_auth_rate_limit[:within])
+        within = AgentApi.config.failed_auth_rate_limit[:within]
+        AgentApi.failed_auth_rate_limiter.increment(format(FAILED_AUTH_KEY, client_address), 1, expires_in: within)
+        AgentApi.failed_auth_rate_limiter.increment(format(FAILED_AUTH_KEY_ID, recent_key_id), 1, expires_in: within) if recent_key_id
         raise AgentApi::Unauthorized
+      end
+
+      # The key id in the Authorization header, read without the database, if it authenticated in this process within
+      # AgentApi::RECENT_CREDENTIAL_TTL; otherwise nil.
+      def recent_key_id
+        return @recent_key_id if defined?(@recent_key_id)
+
+        key_id = AgentCredential::BEARER.match(request.authorization.to_s)&.captures&.first
+        @recent_key_id = key_id if key_id && AgentApi.recent_credentials.live?(key_id)
+      end
+
+      # The address the failed-authentication limit counts: the client's IPv4 address, or its IPv6 /64.
+      def client_address
+        @client_address ||= begin
+          ip = IPAddr.new(request.remote_ip)
+          ip = ip.native if ip.ipv4_mapped?
+          ip.ipv6? ? "#{ip.mask(64)}/64" : ip.to_s
+        rescue IPAddr::Error
+          request.remote_ip.to_s
+        end
       end
 
       # The credential's last use is written after the action, in its transaction: every atomic action has locked
