@@ -44,15 +44,17 @@ RSpec.describe "Concurrent live refreshes" do
     expect(PendingRefresh.where("stream LIKE 'fleet:host:%'").count).to eq(2000)
   end
 
-  # Follow-up to the review of #212: the flush held one transaction across its broadcasts, so a change made meanwhile
-  # waited on the marker row until every broadcast was done (3.7 s with 2 s broadcasts), in every app process.
-  it "lets a change made during a slow broadcast return at once, and schedules its flush when the broadcast is done" do
+  # Follow-up to the review of #212: the flush held one transaction while it sent, so a change made meanwhile waited
+  # on the marker row until the flush was done. Solid Cable's broadcast itself only queues the message in memory
+  # (review of #218), so what makes a flush slow is anything else that holds it up mid-send: many streams, a
+  # paused VM, a long collection. The stub stands in for that.
+  it "lets a change made while a flush is held up mid-send return at once, and schedules its flush when it is done" do
     LiveRefresh.request([ TaskBroadcast::STREAM ])
     adapter.enqueued_jobs.clear
     sending = Queue.new
     allow(Turbo::StreamsChannel).to receive(:broadcast_refresh_to) do
       sending << true
-      sleep 2 # a slow cable database, still within its 2 s statement timeout
+      sleep 2 # the flush is held up for 2 s mid-send
     end
     flush = Thread.new { ActiveRecord::Base.connection_pool.with_connection { LiveRefresh.flush } }
     sending.pop
@@ -83,13 +85,16 @@ RSpec.describe "Concurrent live refreshes" do
     end
     holding.pop
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    LiveRefresh.request([ FleetBroadcast::STREAM ])
+    # In a thread with a time limit, so a missing lock timeout fails this example instead of hanging it (review of #218).
+    request = Thread.new { ActiveRecord::Base.connection_pool.with_connection { LiveRefresh.request([ FleetBroadcast::STREAM ]) } }
+    expect(request.join(3)).to be_truthy, "the request was still waiting for the lock after 3 s"
     waited = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
     expect(waited).to be_between(0.4, 1.5)
     expect(Rails.error).to have_received(:report).with(an_instance_of(ActiveRecord::LockWaitTimeout), hash_including(handled: true))
   ensure
     done&.<< true
     holder&.join(5)
+    request&.join(5)
   end
 
   it "schedules nothing for a change made while a flush fails: its retry is the only next flush" do
