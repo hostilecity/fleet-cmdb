@@ -5,6 +5,9 @@ class ApplicationJob < ActiveJob::Base
   # dashboard banner, on the failed-jobs page, and in /health. Jobs that retry differently declare their own
   # retry_on, which takes precedence (AgentReleaseImportJob).
   ATTEMPTS = 5
+  # Solid Queue runs a queue's lower numbers first; jobs that set none have 0. The live-refresh broadcasts share
+  # the realtime queue with the every-minute jobs and wait behind them (S-7).
+  BROADCAST_PRIORITY = 10
 
   retry_on StandardError, wait: :polynomially_longer, attempts: ATTEMPTS
 end
