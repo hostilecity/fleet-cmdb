@@ -158,9 +158,11 @@ pub enum ApiError {
         retry_after: Option<Duration>,
         request_id: Option<String>,
     },
-    /// Any `5xx`.
+    /// Any `5xx`. A `503` may carry `Retry-After` (in seconds): the server is shedding load and says
+    /// when to come back (#200). On any other status the header is ignored.
     Server {
         status: u16,
+        retry_after: Option<Duration>,
         request_id: Option<String>,
     },
     /// Any other unsuccessful status, for example `400 validation_failed` or `404 not_found`.
@@ -416,6 +418,7 @@ impl Client {
             }),
             s if status.is_server_error() => Err(ApiError::Server {
                 status: s,
+                retry_after: retry_after(&response).filter(|_| s == 503),
                 request_id: header(&response, "X-Request-Id"),
             }),
             s => Err(ApiError::Rejected {
@@ -529,6 +532,7 @@ fn read_response(mut response: Response<ureq::Body>) -> Result<ApiResponse, ApiE
         },
         s if s.is_server_error() => ApiError::Server {
             status: s.as_u16(),
+            retry_after: retry_after.filter(|_| s == StatusCode::SERVICE_UNAVAILABLE),
             request_id,
         },
         s => ApiError::Rejected {
@@ -767,7 +771,7 @@ pub(crate) mod tests {
     #[test]
     fn maps_error_statuses_and_envelopes() {
         let id = || Some("00000000-0000-4000-8000-000000000001".to_owned());
-        let cases: [(&str, &[&str], String, ApiError); 9] = [
+        let cases: [(&str, &[&str], String, ApiError); 11] = [
             (
                 "401 Unauthorized",
                 &[],
@@ -832,7 +836,30 @@ pub(crate) mod tests {
                 "<html>down</html>".into(),
                 ApiError::Server {
                     status: 503,
+                    retry_after: None,
                     request_id: None,
+                },
+            ),
+            // The server shedding report load (#200): a 503 that says when to come back.
+            (
+                "503 Service Unavailable",
+                &["Retry-After: 90"],
+                error_body("overloaded", "busy"),
+                ApiError::Server {
+                    status: 503,
+                    retry_after: Some(Duration::from_secs(90)),
+                    request_id: id(),
+                },
+            ),
+            // Retry-After means nothing on any other 5xx.
+            (
+                "500 Internal Server Error",
+                &["Retry-After: 90"],
+                error_body("internal_error", "oops"),
+                ApiError::Server {
+                    status: 500,
+                    retry_after: None,
+                    request_id: id(),
                 },
             ),
             (

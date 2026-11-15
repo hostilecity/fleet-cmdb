@@ -509,6 +509,7 @@ mod tests {
             }),
             Err(ApiError::Server {
                 status: 503,
+                retry_after: None,
                 request_id: None,
             }),
             ok(json!({"task": {"id": "x"}})),

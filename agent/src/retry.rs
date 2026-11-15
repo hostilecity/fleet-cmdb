@@ -5,13 +5,16 @@
 //! because of a server-side failure; it waits and tries again.
 //!
 //! - Transient failures (unreachable server, TLS failure, timeouts, `5xx`, and other errors) use
-//!   exponential backoff with "equal jitter": the n-th consecutive failure waits a random time in
-//!   `[d/2, d]` where `d = min(base * 2^(n-1), cap)`. The wait never exceeds `cap` and never drops
-//!   below `base / 2`, so there is no tight loop.
+//!   exponential backoff with "full jitter": the n-th consecutive failure waits a random time in
+//!   `[floor, d]` where `d = min(base * 2^(n-1), cap)`. The wait never exceeds `cap` and never drops
+//!   below `floor` (1 s), so there is no tight loop. Full jitter rather than "equal jitter" (`[d/2, d]`)
+//!   spreads a fleet that failed together over the whole of `d`, so after an outage the agents come
+//!   back over the 5 minutes of the cap, not the last 2.5 (P-16, #200).
 //! - `401`, `403` (including `reenrollment_required`), and `426` cannot be fixed by retrying soon,
 //!   so they wait a long interval (`long`, minus up to 10% jitter).
-//! - `429` waits at least the server's `Retry-After` plus a little jitter (only a broken header over a day is capped), and at least the
-//!   normal backoff.
+//! - `429`, and a `503` with `Retry-After` (the server shedding report load, #200), wait at least the
+//!   server's `Retry-After` plus a little jitter (only a broken header over a day is capped), and at
+//!   least the normal backoff. A `503` without `Retry-After` (a proxy's error page) is transient.
 //!
 //! Randomness comes from an injected [`Rng`], so tests are deterministic.
 
@@ -75,6 +78,8 @@ pub struct RetryPolicy {
     pub base: Duration,
     /// Upper bound of any wait after a transient failure.
     pub cap: Duration,
+    /// Lower bound of any wait after a transient failure, so full jitter never retries at once.
+    pub floor: Duration,
     /// Wait after `401`, `403`, or `426`.
     pub long: Duration,
     /// A safety ceiling on `Retry-After`, only against a broken header (a server bug sending years
@@ -88,6 +93,7 @@ impl Default for RetryPolicy {
         Self {
             base: Duration::from_secs(5),
             cap: Duration::from_secs(5 * 60),
+            floor: Duration::from_secs(1),
             long: Duration::from_secs(30 * 60),
             retry_after_max: Duration::from_secs(24 * 60 * 60),
         }
@@ -113,6 +119,12 @@ impl RetryClass {
             | ApiError::Forbidden { .. }
             | ApiError::AgentVersionUnsupported { .. } => Self::Long,
             ApiError::RateLimited {
+                retry_after: Some(after),
+                ..
+            } => Self::After(*after),
+            // The server shedding load (#200): a 503 that says when to come back.
+            ApiError::Server {
+                status: 503,
                 retry_after: Some(after),
                 ..
             } => Self::After(*after),
@@ -166,17 +178,13 @@ impl<R: Rng> Backoff<R> {
     pub fn next_delay(&mut self, class: RetryClass) -> Duration {
         self.failures = self.failures.saturating_add(1);
         match class {
-            Class::Transient => {
-                let ceiling = self.transient_ceiling();
-                self.subtract_jitter(ceiling, ceiling / 2)
-            }
+            Class::Transient => self.full_jitter(),
             Class::Long => {
                 let long = self.policy.long;
                 self.subtract_jitter(long, long / 10)
             }
             Class::After(after) => {
-                let ceiling = self.transient_ceiling();
-                let backoff = self.subtract_jitter(ceiling, ceiling / 2);
+                let backoff = self.full_jitter();
                 // Never earlier than the server asked, but spread above it (up to 10%, at most a
                 // minute) so a fleet throttled together does not retry together (review of #65).
                 let after = after.min(self.policy.retry_after_max);
@@ -184,6 +192,13 @@ impl<R: Rng> Backoff<R> {
                 self.add_jitter(after, spread).max(backoff)
             }
         }
+    }
+
+    /// A random wait in `[floor, min(base * 2^(failures - 1), cap)]` ("full jitter").
+    fn full_jitter(&mut self) -> Duration {
+        let ceiling = self.transient_ceiling();
+        let floor = self.policy.floor.min(ceiling);
+        self.subtract_jitter(ceiling, ceiling - floor)
     }
 
     /// `min(base * 2^(failures - 1), cap)`.
@@ -272,6 +287,17 @@ fn log_failure(error: &ApiError, delay: Duration) {
             retry_in_seconds,
             "the server refused the request as too large"
         ),
+        ApiError::Server {
+            retry_after: Some(after),
+            ..
+        } => tracing::warn!(
+            status,
+            code = "overloaded",
+            request_id,
+            retry_after_seconds = after.as_secs(),
+            retry_in_seconds,
+            "the fleet server is busy and asked the agent to retry later; waiting before retrying"
+        ),
         ApiError::Server { .. } => tracing::warn!(
             status,
             request_id,
@@ -349,17 +375,20 @@ mod tests {
             "a wait exceeded the cap"
         );
         assert!(
-            delays.iter().all(|d| *d >= policy.base / 2),
-            "a wait was too short"
+            delays.iter().all(|d| *d >= policy.floor),
+            "a wait was shorter than the floor"
         );
-        // Once capped, waits fall in [cap/2, cap] and are not all equal: jitter is applied.
+        // Once capped, waits fall anywhere in [floor, cap] ("full jitter", #200) and are not all equal.
         let capped = &delays[10..];
-        assert!(capped.iter().all(|d| *d >= policy.cap / 2));
         let first = capped[0];
         assert!(capped.iter().any(|d| *d != first), "no jitter");
-        // About one attempt every 225 s on average once capped: no tight loop.
         assert!(
-            delays.len() < 24 * 3600 / 150,
+            capped.iter().any(|d| *d < policy.cap / 2),
+            "full jitter reaches below half the cap"
+        );
+        // About one attempt every 150 s on average once capped: no tight loop.
+        assert!(
+            delays.len() < 24 * 3600 / 120,
             "{} attempts in a day",
             delays.len()
         );
@@ -367,6 +396,106 @@ mod tests {
         b.failures = u32::MAX - 1;
         assert!(b.next_delay(Class::Transient) <= policy.cap);
         assert!(b.next_delay(Class::Transient) <= policy.cap);
+    }
+
+    #[test]
+    fn full_jitter_stays_within_its_bounds_and_spreads_over_them() {
+        // #200: the n-th failure waits uniformly in [floor, min(base * 2^(n-1), cap)], across a fleet.
+        let policy = RetryPolicy::default();
+        for failures in 1..=12u32 {
+            let ceiling = policy
+                .base
+                .saturating_mul(1 << (failures - 1))
+                .min(policy.cap);
+            let delays: Vec<Duration> = (0..2_000u64)
+                .map(|seed| {
+                    let mut b = backoff(SplitMix64::new(seed));
+                    b.failures = failures - 1;
+                    b.next_delay(Class::Transient)
+                })
+                .collect();
+            assert!(
+                delays.iter().all(|d| *d >= policy.floor && *d <= ceiling),
+                "failure {failures}: outside [{:?}, {ceiling:?}]",
+                policy.floor
+            );
+            // Uniform: the mean is near the middle and both ends of the range are reached.
+            let mean = delays.iter().sum::<Duration>() / delays.len() as u32;
+            let middle = (policy.floor + ceiling) / 2;
+            let slack = (ceiling - policy.floor) / 20;
+            assert!(
+                mean >= middle - slack && mean <= middle + slack,
+                "failure {failures}: mean {mean:?}, middle {middle:?}"
+            );
+            let low = policy.floor + (ceiling - policy.floor) / 10;
+            let high = ceiling - (ceiling - policy.floor) / 10;
+            assert!(delays.iter().any(|d| *d <= low), "failure {failures}");
+            assert!(delays.iter().any(|d| *d >= high), "failure {failures}");
+        }
+    }
+
+    #[test]
+    fn a_fleet_back_from_an_outage_spreads_over_the_whole_cap() {
+        // #200: agents that have all reached the cap come back spread over [floor, cap], not crowded
+        // into its second half as with equal jitter: no 30 s window holds much more than its share.
+        let policy = RetryPolicy::default();
+        let mut buckets = [0u32; 10];
+        for seed in 0..10_000u64 {
+            let mut b = backoff(SplitMix64::new(seed));
+            b.failures = 20;
+            let d = b.next_delay(Class::Transient);
+            buckets[((d.as_millis() * 10 / (policy.cap.as_millis() + 1)) as usize).min(9)] += 1;
+        }
+        assert!(
+            buckets.iter().all(|n| (800..=1_200).contains(n)),
+            "{buckets:?}"
+        );
+    }
+
+    #[test]
+    fn a_503_with_retry_after_is_honoured_and_spread() {
+        // #200: the server sheds report load with 503 and Retry-After; the agent waits at least that
+        // long, spread above it, and a fleet does not come back in the same second.
+        let shed = ApiError::Server {
+            status: 503,
+            retry_after: Some(secs(60)),
+            request_id: None,
+        };
+        assert_eq!(RetryClass::of(&shed), Class::After(secs(60)));
+        let delays: Vec<Duration> = (0..200)
+            .map(|seed| logs_of(|| backoff(SplitMix64::new(seed)).on_failure(&shed)).0)
+            .collect();
+        assert!(
+            delays.iter().all(|d| *d >= secs(60) && *d <= secs(66)),
+            "{delays:?}"
+        );
+        let distinct: std::collections::BTreeSet<_> = delays.iter().collect();
+        assert!(
+            distinct.len() > 100,
+            "only {} distinct delays",
+            distinct.len()
+        );
+        let (_, logs) = logs_of(|| backoff(SplitMix64::new(1)).on_failure(&shed));
+        assert!(
+            logs.contains("busy and asked the agent to retry later"),
+            "{logs}"
+        );
+        assert!(logs.contains("retry_after_seconds=60"), "{logs}");
+        // Without the header (a proxy's error page), or on another 5xx, it is an ordinary transient.
+        for error in [
+            ApiError::Server {
+                status: 503,
+                retry_after: None,
+                request_id: None,
+            },
+            ApiError::Server {
+                status: 500,
+                retry_after: Some(secs(60)),
+                request_id: None,
+            },
+        ] {
+            assert_eq!(RetryClass::of(&error), Class::Transient, "{error:?}");
+        }
     }
 
     #[test]
@@ -552,6 +681,7 @@ mod tests {
             ApiError::PayloadTooLarge { request_id: None },
             ApiError::Server {
                 status: 503,
+                retry_after: None,
                 request_id: None,
             },
             ApiError::Rejected {
