@@ -534,7 +534,17 @@ recovery_mode() {
     echo "$FAULTY is installed and confirmed; now host state makes its normal mode fail at every start"
     since=$(date +%s.%N)
     vm "touch $STATE/$POISON && chmod 0600 $STATE/$POISON && systemctl restart fleet-agent"
-    wait_until "recovery mode to start" 240 vm_ok 'systemctl is-active --quiet fleet-agent-recovery'
+    local end=$((SECONDS + 240 * slow))
+    until heartbeat_in_mode "$FAULTY" recovery; do
+        if ((SECONDS >= end)); then
+            # In the job log, not only the artifact: what systemd and the units did.
+            vm "systemctl show -p ActiveState -p SubState -p Result -p NRestarts fleet-agent fleet-agent-recovery fleet-agent-rollback
+                journalctl -b --no-pager -o short-iso -u fleet-agent -u fleet-agent-rollback -u fleet-agent-recovery | grep -v 'DEBUG' | tail -n 120" 2>&1 || true
+            fail "gave up after $((240 * slow))s waiting for a heartbeat in recovery mode from $FAULTY"
+        fi
+        sleep 2
+    done
+    vm_ok 'systemctl is-active --quiet fleet-agent-recovery' || fail "heartbeats in recovery mode, but fleet-agent-recovery.service is not active"
     vm_ok '! systemctl is-active --quiet fleet-agent' || fail "fleet-agent.service is active beside recovery mode"
     # This boot's journal: no earlier scenario has the fault build (the guest's clock is not the runner's).
     # systemd 255 and later start the recovery unit after every failed start; recovery mode must go on only
@@ -543,7 +553,6 @@ recovery_mode() {
     panics=$(vm "journalctl -b -u fleet-agent --no-pager -o cat" | grep -c "vm-test fault" || true)
     [ "$panics" -ge 4 ] || fail "recovery mode went on after $panics failed starts, before the start limit"
     echo "fleet-agent.service failed $panics times before recovery mode went on"
-    wait_until "a heartbeat in recovery mode from $FAULTY" 120 heartbeat_in_mode "$FAULTY" recovery
     local reason pid caps exe entered
     reason=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.reason' "$events")
     entered=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.entered_at' "$events")
