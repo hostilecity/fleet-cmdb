@@ -3,8 +3,8 @@
 #
 # Recovery mode (ADR 0030). Started by fleet-agent.service's OnFailure=, after
 # fleet-agent-rollback.service has had its turn. systemd 255 and later start it on every
-# failed start, so the agent first checks the service: if systemd is still restarting it, or
-# a rollback restarted it, recovery mode exits at once. Only when the service has stopped
+# failed start, so the agent first checks the service: if it runs (a rollback restarted it),
+# recovery mode exits; while a restart is pending, it waits. Only when the service has stopped
 # for good (its start limit) does it go on: the agent kept failing on a version it had
 # already confirmed, and nothing could be rolled back. `run --recovery` only authenticates,
 # heartbeats with a "recovery" status and the reason, and installs a signed update offered

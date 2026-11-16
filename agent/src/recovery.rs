@@ -10,8 +10,8 @@
 //! collector, sends no report, and polls for no task.
 //!
 //! systemd 255 and later run `OnFailure=` on every failed start, not only once the start limit is hit,
-//! so recovery mode first checks the service ([`needed`]): it goes on only if the service has stopped
-//! for good, and otherwise exits at once, leaving systemd to restart it.
+//! so recovery mode first checks the service ([`verdict`]): it goes on only if the service has stopped
+//! for good. It exits if the service runs, and waits out a pending restart to see how it ends.
 //!
 //! It leaves recovery mode when `fleet-agent.service` runs again, which it checks every
 //! [`WATCH_EVERY`]: after an update (the supervisor restarts the service), when an operator starts it,
@@ -51,18 +51,37 @@ pub const HEALTHY_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often recovery mode checks whether `fleet-agent.service` runs again.
 pub const WATCH_EVERY: Duration = Duration::from_secs(3);
 
-/// Whether recovery mode is needed, from the service's `ActiveState` and `SubState`
-/// (`systemctl show`): only when it has stopped for good, `failed` (as after its start limit) or
-/// `inactive`, with no restart pending. systemd 254 and later report a service waiting for its automatic
-/// restart as `failed` with `SubState` `auto-restart` (or `auto-restart-queued`): not stopped for good.
-/// `activating` or `active` (a rollback restarted it) are not either.
-pub fn needed(active: &str, sub: &str) -> bool {
-    matches!(active, "failed" | "inactive") && !sub.starts_with("auto-restart")
+/// What recovery mode makes of the service's `ActiveState` and `SubState` when it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Stopped for good (`failed`, as after its start limit, or `inactive`): go on.
+    Recover,
+    /// A restart is pending or under way: look again shortly. systemd 254 and later report a service
+    /// waiting for its automatic restart as `failed` with `SubState` `auto-restart`, and the start-limit
+    /// failure that follows is then no new failure, so `OnFailure=` does not start this unit again:
+    /// the one already running must wait to see how the restart ends.
+    Wait,
+    /// It runs (a rollback restarted it, or the restart worked), or its state cannot be read: exit.
+    NotNeeded,
+}
+
+/// How long recovery mode waits for a pending restart to end before it leaves it to systemd. Longer
+/// than `RestartSec=10s` and a start, with room to spare.
+pub const DECIDE_WITHIN: Duration = Duration::from_secs(5 * 60);
+
+pub fn verdict(active: &str, sub: &str) -> Verdict {
+    if sub.starts_with("auto-restart") || active == "activating" {
+        Verdict::Wait
+    } else if matches!(active, "failed" | "inactive") {
+        Verdict::Recover
+    } else {
+        Verdict::NotNeeded
+    }
 }
 
 /// `ActiveState` and `SubState` of the service, from `systemctl show --property=ActiveState
 /// --property=SubState --value` (one per line). Unreadable is `("unknown", "unknown")`, which is not
-/// [`needed`]: recovery mode does not start on a guess.
+/// [`Verdict::Recover`]: recovery mode does not start on a guess.
 pub fn parse_states(output: Result<String, String>) -> (String, String) {
     let Ok(text) = output else {
         return ("unknown".into(), "unknown".into());
@@ -276,8 +295,8 @@ mod tests {
     #[test]
     fn recovery_mode_goes_on_only_once_the_service_has_stopped_for_good() {
         // The start limit was hit, or it is stopped.
-        assert!(needed("failed", "failed"));
-        assert!(needed("inactive", "dead"));
+        assert_eq!(verdict("failed", "failed"), Verdict::Recover);
+        assert_eq!(verdict("inactive", "dead"), Verdict::Recover);
         // A restart is pending (systemd 254 and later say `failed` meanwhile), or it runs.
         for (active, sub) in [
             ("failed", "auto-restart"),
@@ -289,8 +308,13 @@ mod tests {
             ("deactivating", "stop-sigterm"),
             ("unknown", "unknown"),
         ] {
-            assert!(!needed(active, sub), "{active} {sub}");
+            assert_ne!(verdict(active, sub), Verdict::Recover, "{active} {sub}");
         }
+        assert_eq!(verdict("failed", "auto-restart"), Verdict::Wait);
+        assert_eq!(verdict("activating", "start"), Verdict::Wait);
+        assert_eq!(verdict("failed", "failed"), Verdict::Recover);
+        assert_eq!(verdict("active", "running"), Verdict::NotNeeded);
+        assert_eq!(verdict("unknown", "unknown"), Verdict::NotNeeded);
         assert_eq!(
             parse_states(Ok("failed\nauto-restart\n".into())),
             ("failed".into(), "auto-restart".into())

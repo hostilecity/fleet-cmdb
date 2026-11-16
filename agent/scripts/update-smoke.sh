@@ -148,6 +148,7 @@ inventory_from() {
     event_exists "[.[] | select(.kind == \"inventory\" and .agent_version == \"$1\" and .status == ${2:-200} and .at > $since)] | length > 0"
 }
 running_is() { [ "$(running_version)" = "$1" ]; }
+recovery_stopped() { ! systemctl is-active --quiet fleet-agent-recovery; }
 # journal_has UNIT TEXT: TEXT was logged by UNIT since the scenario started (an earlier scenario may have
 # logged the same).
 journal_has() { journalctl -u "$1" --since "@${since%.*}" --no-pager -o cat 2> /dev/null | grep -Fq -- "$2"; }
@@ -182,7 +183,7 @@ reset() {
 expect_old_running() {
     running_is "$OLD" || fail "$1: the running version is $(running_version), not $OLD"
     service_active || fail "$1: the service is not active"
-    ! systemctl is-active --quiet fleet-agent-recovery || fail "$1: recovery mode runs beside the rolled-back agent"
+    wait_until "$1: recovery mode to see the service running and exit" 30 recovery_stopped
     since=$(date +%s.%N)
     wait_until "$1: a heartbeat from $OLD after the result" 60 heartbeat_from "$OLD"
 }
