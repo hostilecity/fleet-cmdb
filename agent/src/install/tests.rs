@@ -129,18 +129,19 @@ impl Systemd for FakeSystemd {
 /// A clock that advances only when slept on; can simulate Ctrl-C after a number of sleeps.
 struct FakeClock {
     start: Instant,
-    offset: Cell<Duration>,
+    /// Shared with the fixture, so a test can see how long the installer waited.
+    offset: Arc<Mutex<Duration>>,
     sleeps: Cell<usize>,
     interrupt_after: Option<usize>,
 }
 
 impl Clock for FakeClock {
     fn now(&self) -> Instant {
-        self.start + self.offset.get()
+        self.start + *self.offset.lock().unwrap()
     }
     fn sleep(&self, duration: Duration) -> bool {
         self.sleeps.set(self.sleeps.get() + 1);
-        self.offset.set(self.offset.get() + duration);
+        *self.offset.lock().unwrap() += duration;
         self.interrupted()
     }
     fn interrupted(&self) -> bool {
@@ -158,6 +159,8 @@ struct Fixture {
     machine: String,
     interrupt_after: Option<usize>,
     env_token: Option<String>,
+    /// How long the fake clock has slept, over every run of this fixture.
+    slept: Arc<Mutex<Duration>>,
 }
 
 impl Fixture {
@@ -200,7 +203,13 @@ impl Fixture {
             machine: "x86_64".into(),
             interrupt_after: None,
             env_token: None,
+            slept: Arc::default(),
         }
+    }
+
+    /// How long the fake clock has slept so far.
+    fn slept(&self) -> Duration {
+        *self.slept.lock().unwrap()
     }
 
     fn paths(&self) -> Paths {
@@ -220,7 +229,7 @@ impl Fixture {
             systemd: Box::new(self.systemd.clone()),
             clock: Box::new(FakeClock {
                 start: Instant::now(),
-                offset: Cell::new(Duration::ZERO),
+                offset: Arc::clone(&self.slept),
                 sleeps: Cell::new(0),
                 interrupt_after: self.interrupt_after,
             }),
@@ -1097,6 +1106,98 @@ fn network_errors_while_waiting_are_retried_and_429_slows_polling() {
         "{}",
         outcome.out
     );
+}
+
+/// A `429 rate_limited` as the server sends it, with `Retry-After`.
+fn rate_limited(after: u64) -> String {
+    http_reply(
+        "429 Too Many Requests",
+        &["X-Request-Id: req-1", &format!("Retry-After: {after}")],
+        r#"{"error":{"code":"rate_limited","message":"x","request_id":"r"}}"#,
+    )
+}
+
+#[test]
+fn the_onboarding_poll_keeps_honouring_the_servers_retry_after() {
+    // #223 changed how the service's loops treat a 429; the installer's poll still waits out the
+    // server's Retry-After (and slows down by 5 s, RFC 8628).
+    let elapsed = |poll: String| {
+        let fx = Fixture::new();
+        let server = fx.server(vec![
+            probe(),
+            onboarding_started(),
+            poll,
+            approved(CREDENTIAL),
+            heartbeat_ok(),
+        ]);
+        let outcome = fx.install(&options(&server), Mode::Human);
+        server.finish();
+        outcome.ok();
+        fx.slept()
+    };
+    let pending = elapsed(pending());
+    // A pending poll waits the 5 s interval; a 429 waits its 30 s Retry-After instead.
+    assert_eq!(elapsed(rate_limited(30)) - pending, Duration::from_secs(25));
+    // A Retry-After shorter than the slowed-down interval (10 s) waits the interval.
+    assert_eq!(elapsed(rate_limited(2)) - pending, Duration::from_secs(5));
+}
+
+#[test]
+fn the_first_heartbeat_after_enrollment_keeps_honouring_the_servers_retry_after() {
+    // #223: the installer's confirming heartbeat waits out the server's short Retry-After, up to a
+    // minute, and then succeeds.
+    let elapsed = |replies: Vec<String>| {
+        let mut fx = Fixture::new();
+        fx.env_token = Some(TOKEN.into());
+        let mut all = vec![probe(), enrolled_by_token()];
+        all.extend(replies);
+        let server = fx.server(all);
+        let opts = InstallOptions {
+            token: Some(TokenSource::Env),
+            ..options(&server)
+        };
+        let outcome = fx.install(&opts, Mode::Human);
+        let requests = server.finish();
+        outcome.ok();
+        let heartbeats = requests
+            .iter()
+            .filter(|r| path_of(r) == "/api/v1/heartbeat")
+            .count();
+        (fx.slept(), heartbeats)
+    };
+    let (direct, beats) = elapsed(vec![heartbeat_ok()]);
+    assert_eq!(beats, 1);
+    let (limited, beats) = elapsed(vec![rate_limited(20), heartbeat_ok()]);
+    assert_eq!(beats, 2);
+    assert_eq!(limited - direct, Duration::from_secs(20));
+    // A longer one waits a minute at most.
+    let (long, beats) = elapsed(vec![rate_limited(86_400), heartbeat_ok()]);
+    assert_eq!(beats, 2);
+    assert_eq!(long - direct, Duration::from_secs(60));
+}
+
+#[test]
+fn enrollment_refused_by_the_servers_rate_limit_says_how_long_to_wait() {
+    // #223: the installer still passes on the server's Retry-After when enrollment is limited.
+    let mut fx = Fixture::new();
+    fx.env_token = Some(TOKEN.into());
+    let server = fx.server(vec![probe(), rate_limited(45)]);
+    let opts = InstallOptions {
+        token: Some(TokenSource::Env),
+        ..options(&server)
+    };
+    let outcome = fx.install(&opts, Mode::Human);
+    server.finish();
+    assert_eq!(outcome.failure().failure, Failure::Server);
+    assert!(
+        outcome
+            .err
+            .contains("limiting enrollment requests from this address"),
+        "{}",
+        outcome.err
+    );
+    assert!(outcome.err.contains("Wait 45 seconds"), "{}", outcome.err);
+    assert_nothing_enrolled(&fx);
 }
 
 #[test]

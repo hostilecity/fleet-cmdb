@@ -12,8 +12,13 @@
 //!   back over the 5 minutes of the cap, not the last 2.5 (P-16, #200).
 //! - `401`, `403` (including `reenrollment_required`), and `426` cannot be fixed by retrying soon,
 //!   so they wait a long interval (`long`, minus up to 10% jitter).
-//! - `429` waits at least the server's `Retry-After` plus a little jitter (only a broken header over a
-//!   day is capped), and at least the normal backoff.
+//! - A `429 rate_limited` with `Retry-After` is the server's own limit (per credential, failed
+//!   authentication, release downloads, enrollment, onboarding: all a minute or less). Every loop waits
+//!   at least that long plus a little jitter, and at least the normal backoff, but for at most
+//!   [`RATE_LIMITED_MAX`] (15 minutes). A `429` with another code or none (a load balancer, proxy, or
+//!   CDN in front of the server) is an ordinary transient failure, whatever its `Retry-After` says: a
+//!   heartbeat that waited out a day would show the host offline, and an agent just updated would miss
+//!   its confirmation deadline and roll back (#223).
 //! - A `503 overloaded` with `Retry-After` is the server shedding report load (#200). Only the report
 //!   loops honour it ([`RetryPolicy::reports`]), and for at most [`OVERLOADED_MAX`] (15 minutes): the
 //!   server never sheds heartbeats, task calls, or update results, so for them, as for any other `503`
@@ -80,6 +85,11 @@ impl Rng for SplitMix64 {
 /// asks for at most 1.5 times `FLEET_REPORT_RETRY_AFTER_SECONDS`, which is at most 600: 900 seconds.
 pub const OVERLOADED_MAX: Duration = Duration::from_secs(15 * 60);
 
+/// The longest any loop waits for a `429 rate_limited` `Retry-After` (#223). The server's own limits
+/// ask for at most a minute, so this only bounds a broken header; it is far below a day, so heartbeats
+/// and update confirmations carry on.
+pub const RATE_LIMITED_MAX: Duration = Duration::from_secs(15 * 60);
+
 /// The retry timings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -91,10 +101,6 @@ pub struct RetryPolicy {
     pub floor: Duration,
     /// Wait after `401`, `403`, or `426`.
     pub long: Duration,
-    /// A safety ceiling on `Retry-After`, only against a broken header (a server bug sending years
-    /// would otherwise silence the fleet until restarted). Any realistic load-shedding delay is honoured
-    /// in full (ADR 0019, review of #65).
-    pub retry_after_max: Duration,
     /// The longest a `503 overloaded` `Retry-After` is honoured, or `None` to treat that `503` as
     /// transient. Only the report loops honour it ([`RetryPolicy::reports`]).
     pub overloaded_max: Option<Duration>,
@@ -107,7 +113,6 @@ impl Default for RetryPolicy {
             cap: Duration::from_secs(5 * 60),
             floor: Duration::from_secs(1),
             long: Duration::from_secs(30 * 60),
-            retry_after_max: Duration::from_secs(24 * 60 * 60),
             overloaded_max: None,
         }
     }
@@ -154,6 +159,8 @@ impl RetryClass {
     }
 
     /// How `error` is retried by a loop that does not honour load shedding: every `5xx` is transient.
+    /// A `429 rate_limited` with `Retry-After` is waited out, for at most [`RATE_LIMITED_MAX`]; any
+    /// other `429` is transient (#223).
     pub fn of(error: &ApiError) -> Self {
         match error {
             ApiError::Unauthorized { .. }
@@ -161,12 +168,11 @@ impl RetryClass {
             | ApiError::Forbidden { .. }
             | ApiError::AgentVersionUnsupported { .. } => Self::Long,
             ApiError::RateLimited {
+                code,
                 retry_after: Some(after),
                 ..
-            } => Self::After(*after),
-            ApiError::RateLimited {
-                retry_after: None, ..
-            }
+            } if code == "rate_limited" => Self::After((*after).min(RATE_LIMITED_MAX)),
+            ApiError::RateLimited { .. }
             | ApiError::Transport(_)
             | ApiError::Server { .. }
             | ApiError::PayloadTooLarge { .. }
@@ -223,8 +229,10 @@ impl<R: Rng> Backoff<R> {
             Class::After(after) => {
                 let backoff = self.full_jitter();
                 // Never earlier than the server asked, but spread above it (up to 10%, at most a
-                // minute) so a fleet throttled together does not retry together (review of #65).
-                let after = after.min(self.policy.retry_after_max);
+                // minute) so a fleet throttled together does not retry together (review of #65). The
+                // classes that wait are already capped at 15 minutes (#221, #223); so is anything
+                // else, so no loop can be held for longer.
+                let after = after.min(OVERLOADED_MAX.max(RATE_LIMITED_MAX));
                 let spread = (after / 10).clamp(Duration::from_secs(1), Duration::from_secs(60));
                 self.add_jitter(after, spread).max(backoff)
             }
@@ -309,13 +317,27 @@ fn log_failure(error: &ApiError, delay: Duration, class: RetryClass) {
             server_message = message.as_str(),
             "the server no longer supports this agent version; upgrade fleet-agent. The agent keeps running and will retry"
         ),
-        ApiError::RateLimited { retry_after, .. } => tracing::warn!(
+        ApiError::RateLimited {
+            code, retry_after, ..
+        } if code == "rate_limited" => {
+            tracing::warn!(
+                status,
+                code = "rate_limited",
+                request_id,
+                retry_after_seconds = retry_after.map(|d| d.as_secs()),
+                retry_in_seconds,
+                "the server is rate limiting this agent; waiting before retrying"
+            )
+        }
+        ApiError::RateLimited {
+            code, retry_after, ..
+        } => tracing::warn!(
             status,
-            code = "rate_limited",
+            code = code.as_str(),
             request_id,
             retry_after_seconds = retry_after.map(|d| d.as_secs()),
             retry_in_seconds,
-            "the server is rate limiting this agent; waiting before retrying"
+            "too many requests (429), but not the fleet server's own rate limit (perhaps a proxy or load balancer in front of it); will retry"
         ),
         ApiError::PayloadTooLarge { .. } => tracing::error!(
             status,
@@ -661,25 +683,84 @@ mod tests {
             b.next_delay(Class::Transient);
         }
         assert_eq!(b.next_delay(Class::After(secs(1))), secs(300));
-        // Long load-shedding delays are honoured in full (ADR 0019, review of #65).
-        assert_eq!(b.next_delay(Class::After(secs(7200))), secs(7200));
-        assert_eq!(b.next_delay(Class::After(secs(20 * 3600))), secs(20 * 3600));
-        // Only a broken header beyond a day is limited.
-        assert_eq!(b.next_delay(Class::After(secs(86_400 * 30))), secs(86_400));
-        assert_eq!(
-            RetryClass::of(&ApiError::RateLimited {
-                retry_after: Some(secs(9)),
-                request_id: None
-            }),
-            Class::After(secs(9))
-        );
-        assert_eq!(
-            RetryClass::of(&ApiError::RateLimited {
-                retry_after: None,
-                request_id: None
-            }),
-            Class::Transient
-        );
+        // Delays up to 15 minutes are honoured in full; nothing waits longer (#221, #223).
+        assert_eq!(b.next_delay(Class::After(secs(900))), secs(900));
+        assert_eq!(b.next_delay(Class::After(secs(7200))), secs(900));
+        assert_eq!(b.next_delay(Class::After(secs(86_400 * 30))), secs(900));
+    }
+
+    fn limited(code: &str, after: Option<u64>) -> ApiError {
+        ApiError::RateLimited {
+            code: code.into(),
+            retry_after: after.map(secs),
+            request_id: None,
+        }
+    }
+
+    #[test]
+    fn only_a_429_rate_limited_retry_after_is_honoured_and_for_at_most_15_minutes() {
+        // #223: the server's own 429s ask for a minute or less; a 429 from a proxy, load balancer, or
+        // CDN in front of it must not hold any loop for a day. The same under every loop's policy.
+        for policy in [RetryPolicy::default(), RetryPolicy::reports()] {
+            let class = |error: &ApiError| RetryClass::under(&policy, error);
+            assert_eq!(
+                class(&limited("rate_limited", Some(9))),
+                Class::After(secs(9))
+            );
+            assert_eq!(
+                class(&limited("rate_limited", Some(60))),
+                Class::After(secs(60))
+            );
+            assert_eq!(
+                class(&limited("rate_limited", Some(86_400))),
+                Class::After(RATE_LIMITED_MAX)
+            );
+            // No header, another code, or no envelope at all: transient, whatever the header says.
+            assert_eq!(class(&limited("rate_limited", None)), Class::Transient);
+            assert_eq!(class(&limited("", Some(86_400))), Class::Transient);
+            assert_eq!(class(&limited("", Some(9))), Class::Transient);
+            assert_eq!(class(&limited("slow_down", Some(60))), Class::Transient);
+            assert_eq!(class(&limited("Rate_Limited", Some(60))), Class::Transient);
+
+            // A day-long header waits at most 15 minutes plus the spread (a minute), and no less
+            // than 15 minutes.
+            for seed in 0..50 {
+                let (wait, logs) = logs_of(|| {
+                    Backoff::new(policy, SplitMix64::new(seed))
+                        .on_failure(&limited("rate_limited", Some(86_400)))
+                });
+                assert!(
+                    wait >= RATE_LIMITED_MAX && wait <= RATE_LIMITED_MAX + secs(60),
+                    "{wait:?}"
+                );
+                assert!(
+                    logs.contains("the server is rate limiting this agent"),
+                    "{logs}"
+                );
+            }
+            // The server's own short window: at least what it asked, spread a little above it.
+            let short = logs_of(|| {
+                Backoff::new(policy, SplitMix64::new(4))
+                    .on_failure(&limited("rate_limited", Some(60)))
+            })
+            .0;
+            assert!(short >= secs(60) && short <= secs(66), "{short:?}");
+
+            // A proxy's 429: the normal backoff, at most 5 s on the first failure and 5 minutes ever,
+            // and logged as not the server's limit.
+            let mut b = Backoff::new(policy, SplitMix64::new(2));
+            let (first, logs) = logs_of(|| b.on_failure(&limited("", Some(86_400))));
+            assert!(first <= secs(5), "{first:?}");
+            assert!(
+                logs.contains("not the fleet server's own rate limit"),
+                "{logs}"
+            );
+            assert!(logs.contains("retry_after_seconds=86400"), "{logs}");
+            for _ in 0..20 {
+                let wait = logs_of(|| b.on_failure(&limited("", Some(86_400)))).0;
+                assert!(wait <= policy.cap, "{wait:?}");
+            }
+        }
     }
 
     #[test]
@@ -698,9 +779,9 @@ mod tests {
             "only {} distinct delays",
             distinct.len()
         );
-        // The spread is at most a minute even for long delays.
-        let long = backoff(SplitMix64::new(3)).next_delay(Class::After(secs(7200)));
-        assert!(long >= secs(7200) && long <= secs(7260), "{long:?}");
+        // The spread is at most a minute even for the longest delay.
+        let long = backoff(SplitMix64::new(3)).next_delay(Class::After(secs(900)));
+        assert!(long >= secs(900) && long <= secs(960), "{long:?}");
     }
 
     #[test]
@@ -744,10 +825,8 @@ mod tests {
         let errors = [
             transient(),
             ApiError::Unauthorized { request_id: None },
-            ApiError::RateLimited {
-                retry_after: Some(secs(30)),
-                request_id: None,
-            },
+            limited("rate_limited", Some(30)),
+            limited("", Some(30)),
             ApiError::PayloadTooLarge { request_id: None },
             ApiError::Server {
                 status: 503,
