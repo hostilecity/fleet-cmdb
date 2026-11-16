@@ -51,11 +51,27 @@ pub const HEALTHY_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often recovery mode checks whether `fleet-agent.service` runs again.
 pub const WATCH_EVERY: Duration = Duration::from_secs(3);
 
-/// Whether recovery mode is needed, from `systemctl is-active fleet-agent.service`: only when the
-/// service has stopped for good (`failed`, as after its start limit, or `inactive`). `activating` (systemd
-/// is about to restart it) or `active` (a rollback restarted it) mean it is not.
-pub fn needed(service_state: &str) -> bool {
-    matches!(service_state, "failed" | "inactive")
+/// Whether recovery mode is needed, from the service's `ActiveState` and `SubState`
+/// (`systemctl show`): only when it has stopped for good, `failed` (as after its start limit) or
+/// `inactive`, with no restart pending. systemd 254 and later report a service waiting for its automatic
+/// restart as `failed` with `SubState` `auto-restart` (or `auto-restart-queued`): not stopped for good.
+/// `activating` or `active` (a rollback restarted it) are not either.
+pub fn needed(active: &str, sub: &str) -> bool {
+    matches!(active, "failed" | "inactive") && !sub.starts_with("auto-restart")
+}
+
+/// `ActiveState` and `SubState` of the service, from `systemctl show --property=ActiveState
+/// --property=SubState --value` (one per line). Unreadable is `("unknown", "unknown")`, which is not
+/// [`needed`]: recovery mode does not start on a guess.
+pub fn parse_states(output: Result<String, String>) -> (String, String) {
+    let Ok(text) = output else {
+        return ("unknown".into(), "unknown".into());
+    };
+    let mut lines = text.lines().map(str::trim);
+    match (lines.next(), lines.next()) {
+        (Some(active), Some(sub)) if !active.is_empty() => (active.to_owned(), sub.to_owned()),
+        _ => ("unknown".into(), "unknown".into()),
+    }
 }
 
 /// Whether the service runs again, so recovery mode must end.
@@ -259,17 +275,32 @@ mod tests {
 
     #[test]
     fn recovery_mode_goes_on_only_once_the_service_has_stopped_for_good() {
-        assert!(needed("failed"));
-        assert!(needed("inactive"));
-        for state in [
-            "activating",
-            "active",
-            "reloading",
-            "deactivating",
-            "unknown",
-            "",
+        // The start limit was hit, or it is stopped.
+        assert!(needed("failed", "failed"));
+        assert!(needed("inactive", "dead"));
+        // A restart is pending (systemd 254 and later say `failed` meanwhile), or it runs.
+        for (active, sub) in [
+            ("failed", "auto-restart"),
+            ("failed", "auto-restart-queued"),
+            ("activating", "auto-restart"),
+            ("activating", "start"),
+            ("active", "running"),
+            ("reloading", "reload"),
+            ("deactivating", "stop-sigterm"),
+            ("unknown", "unknown"),
         ] {
-            assert!(!needed(state), "{state}");
+            assert!(!needed(active, sub), "{active} {sub}");
+        }
+        assert_eq!(
+            parse_states(Ok("failed\nauto-restart\n".into())),
+            ("failed".into(), "auto-restart".into())
+        );
+        assert_eq!(
+            parse_states(Ok("failed\nfailed".into())),
+            ("failed".into(), "failed".into())
+        );
+        for output in [Ok(String::new()), Ok("failed".into()), Err("no bus".into())] {
+            assert_eq!(parse_states(output), ("unknown".into(), "unknown".into()));
         }
         for state in ["active", "activating", "reloading"] {
             assert!(service_back(state), "{state}");

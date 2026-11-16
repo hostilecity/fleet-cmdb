@@ -430,14 +430,21 @@ fn recover(path: &Path) -> ExitCode {
     // systemd 255 and later start this unit on every failed start of the service: go on only if it has
     // stopped for good, and leave it to systemd otherwise.
     let systemctl = install::Systemctl::default();
-    let state = {
+    let (active, sub) = {
         use install::Systemd;
-        systemctl.state()
+        recovery::parse_states(systemctl.systemctl(&[
+            "show",
+            "--property=ActiveState",
+            "--property=SubState",
+            "--value",
+            install::UNIT_NAME,
+        ]))
     };
-    if !recovery::needed(&state) {
+    if !recovery::needed(&active, &sub) {
         tracing::info!(
-            service_state = state.as_str(),
-            "recovery mode is not needed: fleet-agent.service is {state} (systemd is restarting it, or it runs)"
+            active_state = active.as_str(),
+            sub_state = sub.as_str(),
+            "recovery mode is not needed: fleet-agent.service is {active} ({sub}): systemd is restarting it, or it runs"
         );
         return ExitCode::SUCCESS;
     }
