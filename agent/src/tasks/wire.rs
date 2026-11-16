@@ -509,6 +509,7 @@ mod tests {
             }),
             Err(ApiError::Server {
                 status: 503,
+                code: String::new(),
                 retry_after: None,
                 request_id: None,
             }),

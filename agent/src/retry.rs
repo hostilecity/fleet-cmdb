@@ -12,9 +12,14 @@
 //!   back over the 5 minutes of the cap, not the last 2.5 (P-16, #200).
 //! - `401`, `403` (including `reenrollment_required`), and `426` cannot be fixed by retrying soon,
 //!   so they wait a long interval (`long`, minus up to 10% jitter).
-//! - `429`, and a `503` with `Retry-After` (the server shedding report load, #200), wait at least the
-//!   server's `Retry-After` plus a little jitter (only a broken header over a day is capped), and at
-//!   least the normal backoff. A `503` without `Retry-After` (a proxy's error page) is transient.
+//! - `429` waits at least the server's `Retry-After` plus a little jitter (only a broken header over a
+//!   day is capped), and at least the normal backoff.
+//! - A `503 overloaded` with `Retry-After` is the server shedding report load (#200). Only the report
+//!   loops honour it ([`RetryPolicy::reports`]), and for at most [`OVERLOADED_MAX`] (15 minutes): the
+//!   server never sheds heartbeats, task calls, or update results, so for them, as for any other `503`
+//!   (a load balancer or a maintenance page in front of the server), it is an ordinary transient
+//!   failure. A heartbeat that waited out a day-long `Retry-After` would show the host offline, and an
+//!   agent just updated would miss its confirmation deadline and roll back (review of #208).
 //!
 //! Randomness comes from an injected [`Rng`], so tests are deterministic.
 
@@ -71,6 +76,10 @@ impl Rng for SplitMix64 {
     }
 }
 
+/// The longest a report loop waits for a `503 overloaded` `Retry-After` (review of #208). The server
+/// asks for at most 1.5 times `FLEET_REPORT_RETRY_AFTER_SECONDS`, which is at most 600: 900 seconds.
+pub const OVERLOADED_MAX: Duration = Duration::from_secs(15 * 60);
+
 /// The retry timings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -86,6 +95,9 @@ pub struct RetryPolicy {
     /// would otherwise silence the fleet until restarted). Any realistic load-shedding delay is honoured
     /// in full (ADR 0019, review of #65).
     pub retry_after_max: Duration,
+    /// The longest a `503 overloaded` `Retry-After` is honoured, or `None` to treat that `503` as
+    /// transient. Only the report loops honour it ([`RetryPolicy::reports`]).
+    pub overloaded_max: Option<Duration>,
 }
 
 impl Default for RetryPolicy {
@@ -96,6 +108,18 @@ impl Default for RetryPolicy {
             floor: Duration::from_secs(1),
             long: Duration::from_secs(30 * 60),
             retry_after_max: Duration::from_secs(24 * 60 * 60),
+            overloaded_max: None,
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// The report loops' policy: the default, and a `503 overloaded` with `Retry-After` waited out for
+    /// up to [`OVERLOADED_MAX`] (#200, review of #208).
+    pub fn reports() -> Self {
+        Self {
+            overloaded_max: Some(OVERLOADED_MAX),
+            ..Self::default()
         }
     }
 }
@@ -112,6 +136,24 @@ pub enum RetryClass {
 }
 
 impl RetryClass {
+    /// How `error` is retried under `policy`: as [`RetryClass::of`], except that a `503 overloaded`
+    /// with `Retry-After` is waited out, up to the policy's `overloaded_max`, when it has one.
+    pub fn under(policy: &RetryPolicy, error: &ApiError) -> Self {
+        match (policy.overloaded_max, error) {
+            (
+                Some(max),
+                ApiError::Server {
+                    status: 503,
+                    code,
+                    retry_after: Some(after),
+                    ..
+                },
+            ) if code == "overloaded" => Self::After((*after).min(max)),
+            _ => Self::of(error),
+        }
+    }
+
+    /// How `error` is retried by a loop that does not honour load shedding: every `5xx` is transient.
     pub fn of(error: &ApiError) -> Self {
         match error {
             ApiError::Unauthorized { .. }
@@ -119,12 +161,6 @@ impl RetryClass {
             | ApiError::Forbidden { .. }
             | ApiError::AgentVersionUnsupported { .. } => Self::Long,
             ApiError::RateLimited {
-                retry_after: Some(after),
-                ..
-            } => Self::After(*after),
-            // The server shedding load (#200): a 503 that says when to come back.
-            ApiError::Server {
-                status: 503,
                 retry_after: Some(after),
                 ..
             } => Self::After(*after),
@@ -169,8 +205,9 @@ impl<R: Rng> Backoff<R> {
 
     /// Call after a failed request: logs it plainly and returns how long to wait before retrying.
     pub fn on_failure(&mut self, error: &ApiError) -> Duration {
-        let delay = self.next_delay(RetryClass::of(error));
-        log_failure(error, delay);
+        let class = RetryClass::under(&self.policy, error);
+        let delay = self.next_delay(class);
+        log_failure(error, delay, class);
         delay
     }
 
@@ -229,7 +266,7 @@ impl<R: Rng> Backoff<R> {
 use RetryClass as Class;
 
 /// One plain log line per failure, saying what happened and what the operator can do.
-fn log_failure(error: &ApiError, delay: Duration) {
+fn log_failure(error: &ApiError, delay: Duration, class: RetryClass) {
     let status = error.status();
     let request_id = error.request_id().unwrap_or("");
     let retry_in_seconds = delay.as_secs();
@@ -290,7 +327,7 @@ fn log_failure(error: &ApiError, delay: Duration) {
         ApiError::Server {
             retry_after: Some(after),
             ..
-        } => tracing::warn!(
+        } if matches!(class, RetryClass::After(_)) => tracing::warn!(
             status,
             code = "overloaded",
             request_id,
@@ -453,17 +490,55 @@ mod tests {
     }
 
     #[test]
-    fn a_503_with_retry_after_is_honoured_and_spread() {
-        // #200: the server sheds report load with 503 and Retry-After; the agent waits at least that
-        // long, spread above it, and a fleet does not come back in the same second.
-        let shed = ApiError::Server {
+    fn only_the_report_loops_honour_a_503_overloaded_and_for_at_most_15_minutes() {
+        // #200, review of #208: the server sheds report load with 503 overloaded and Retry-After.
+        let shed = |after: u64, code: &str| ApiError::Server {
             status: 503,
+            code: code.into(),
+            retry_after: Some(secs(after)),
+            request_id: None,
+        };
+        let reports = RetryPolicy::reports();
+        let others = RetryPolicy::default();
+        assert_eq!(reports.overloaded_max, Some(OVERLOADED_MAX));
+        assert_eq!(others.overloaded_max, None);
+        assert_eq!(
+            RetryClass::under(&reports, &shed(60, "overloaded")),
+            Class::After(secs(60))
+        );
+        // Capped at 15 minutes, not the day a broken header could ask for.
+        assert_eq!(
+            RetryClass::under(&reports, &shed(86_400, "overloaded")),
+            Class::After(OVERLOADED_MAX)
+        );
+        // Heartbeats, task calls, and update results: transient, whatever the header says.
+        assert_eq!(
+            RetryClass::under(&others, &shed(86_400, "overloaded")),
+            Class::Transient
+        );
+        // A 503 that is not the server's shedding (a proxy page, another code), or another 5xx.
+        assert_eq!(RetryClass::under(&reports, &shed(60, "")), Class::Transient);
+        assert_eq!(
+            RetryClass::under(&reports, &shed(60, "internal_error")),
+            Class::Transient
+        );
+        let other_5xx = ApiError::Server {
+            status: 500,
+            code: "overloaded".into(),
             retry_after: Some(secs(60)),
             request_id: None,
         };
-        assert_eq!(RetryClass::of(&shed), Class::After(secs(60)));
+        assert_eq!(RetryClass::under(&reports, &other_5xx), Class::Transient);
+
+        // In the report loops: at least Retry-After, spread above it, so a fleet does not come back
+        // together; and logged as the server being busy.
         let delays: Vec<Duration> = (0..200)
-            .map(|seed| logs_of(|| backoff(SplitMix64::new(seed)).on_failure(&shed)).0)
+            .map(|seed| {
+                logs_of(|| {
+                    Backoff::new(reports, SplitMix64::new(seed)).on_failure(&shed(60, "overloaded"))
+                })
+                .0
+            })
             .collect();
         assert!(
             delays.iter().all(|d| *d >= secs(60) && *d <= secs(66)),
@@ -475,27 +550,22 @@ mod tests {
             "only {} distinct delays",
             distinct.len()
         );
-        let (_, logs) = logs_of(|| backoff(SplitMix64::new(1)).on_failure(&shed));
+        let (long, logs) = logs_of(|| {
+            Backoff::new(reports, SplitMix64::new(1)).on_failure(&shed(86_400, "overloaded"))
+        });
+        assert!(long <= OVERLOADED_MAX + secs(60), "{long:?}");
         assert!(
             logs.contains("busy and asked the agent to retry later"),
             "{logs}"
         );
-        assert!(logs.contains("retry_after_seconds=60"), "{logs}");
-        // Without the header (a proxy's error page), or on another 5xx, it is an ordinary transient.
-        for error in [
-            ApiError::Server {
-                status: 503,
-                retry_after: None,
-                request_id: None,
-            },
-            ApiError::Server {
-                status: 500,
-                retry_after: Some(secs(60)),
-                request_id: None,
-            },
-        ] {
-            assert_eq!(RetryClass::of(&error), Class::Transient, "{error:?}");
-        }
+
+        // In the heartbeat loop the first retry is the normal backoff, at most 5 s, and is logged as a
+        // server error, not as a wait the agent does not do.
+        let (beat, logs) = logs_of(|| {
+            Backoff::new(others, SplitMix64::new(1)).on_failure(&shed(86_400, "overloaded"))
+        });
+        assert!(beat <= secs(5), "{beat:?}");
+        assert!(logs.contains("had an internal error; will retry"), "{logs}");
     }
 
     #[test]
@@ -681,6 +751,7 @@ mod tests {
             ApiError::PayloadTooLarge { request_id: None },
             ApiError::Server {
                 status: 503,
+                code: String::new(),
                 retry_after: None,
                 request_id: None,
             },

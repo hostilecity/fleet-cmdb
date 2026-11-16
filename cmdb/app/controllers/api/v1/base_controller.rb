@@ -167,7 +167,7 @@ module Api
       end
 
       def render_api_error(error)
-        response.set_header("Retry-After", @retry_after.to_s) if error.is_a?(AgentApi::RateLimited) && @retry_after
+        response.set_header("Retry-After", @retry_after.to_s) if (error.is_a?(AgentApi::RateLimited) || error.is_a?(AgentApi::Overloaded)) && @retry_after
         response.set_header(ENROLLMENT_STATE_HEADER, "pending") if error.is_a?(AgentApi::ReenrollmentRequired)
         body = { code: error.code, message: error.message, request_id: request.request_id, details: error.details.presence }
         render json: { error: body.compact }, status: error.status

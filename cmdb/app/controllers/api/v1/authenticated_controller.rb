@@ -17,6 +17,8 @@ module Api
       class_attribute :records_credential_use, default: true
       # The actions that run in one transaction, authentication included (see .atomic).
       class_attribute :atomic_actions, default: [].freeze
+      # Report endpoints: shed when too many reports are in flight in this process (AgentApi::ReportShedding, #200).
+      class_attribute :sheds_report_load, default: false
 
       # Refusals found under the host row lock (AgentHostLock), mapped to the documented errors.
       REFUSALS = {
@@ -38,6 +40,8 @@ module Api
       # the agents' address (a NAT, a proxy) cannot lock them out; that key id's own failures are counted, and past
       # the limit it no longer passes (review of #211).
       before_action :refuse_after_failed_authentications
+      # After the failed-authentication check, before authentication and the transaction (review of #208).
+      around_action :shed_report_load, if: :sheds_report_load
       # Declared before authentication, so it wraps authentication and every later callback as well as the action.
       around_action :in_request_transaction
       before_action :authenticate_agent!
@@ -54,6 +58,15 @@ module Api
       attr_reader :current_credential
 
       def current_host = current_credential.host
+
+      def shed_report_load(&)
+        taken, wait = AgentApi::ReportShedding.within_limit(&)
+        return if taken
+
+        logger.warn("[agent_api] shed #{request.path}: #{AgentApi::ReportShedding::GAUGE.count} reports in flight; retry after #{wait}s")
+        @retry_after = wait
+        raise AgentApi::Overloaded
+      end
 
       def authenticate_agent!
         @current_credential = AgentCredential.authenticate(request.authorization) or failed_authentication!
