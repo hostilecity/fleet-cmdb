@@ -32,6 +32,9 @@ pub const RECORD_FILE: &str = "update.json";
 pub const MARKER_FILE: &str = "update-confirmed.json";
 pub const RESULT_FILE: &str = "update-result.json";
 pub const LOCK_FILE: &str = "update.lock";
+/// Held by an agent process while its updater stages an offer or relaunches a supervisor, so the service
+/// and recovery mode (ADR 0030), if they ever overlap, never both work on an update (review of #222).
+pub const UPDATER_LOCK_FILE: &str = "updater.lock";
 
 #[derive(Debug, Clone)]
 pub struct Layout {

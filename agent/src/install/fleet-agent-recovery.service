@@ -1,17 +1,19 @@
 # Written by `fleet-agent install`; re-running the installer replaces this file and
 # `fleet-agent uninstall` removes it. Do not edit it.
 #
-# Recovery mode (ADR 0030). Started by fleet-agent.service's OnFailure=, after
-# fleet-agent-rollback.service has had its turn. systemd 255 and later start it on every
-# failed start, so the agent first watches the service for 20 seconds: if systemd restarts it
-# (or a rollback did), recovery mode exits. Only when the service has stopped
-# for good (its start limit) does it go on: the agent kept failing on a version it had
-# already confirmed, and nothing could be rolled back. `run --recovery` only authenticates,
+# Recovery mode (ADR 0030). Started by fleet-agent.service's OnFailure= once the service
+# has given up (RestartMode=direct), after fleet-agent-rollback.service has had its turn.
+# As a fallback the agent checks the service for 20 seconds: it exits if the service runs (a
+# rollback restarted it) or a person stopped or disabled it, and goes on only if it stays
+# failed: the agent kept failing on a version it had already confirmed, and nothing could
+# be rolled back. `run --recovery` only authenticates,
 # heartbeats with a "recovery" status and the reason, and installs a signed update offered
 # through the usual path (ADR 0018). No collectors, no reports, no tasks. The server cannot
 # start it. It never stops for good: no start limit, and a long, growing delay between
 # restarts. Once fleet-agent.service runs again (a confirmed update, an operator, or the
-# agent itself trying normal mode again every hour), recovery mode sees it and exits.
+# agent itself trying normal mode again every hour), or a person stops or disables it,
+# recovery mode sees it and exits. To stop the agent altogether during an episode:
+# systemctl stop fleet-agent-recovery.
 #
 # The sandbox is fleet-agent.service's, tighter: no capabilities at all (no collector needs
 # CAP_DAC_READ_SEARCH), home directories hidden, and no netlink socket (no interface list).

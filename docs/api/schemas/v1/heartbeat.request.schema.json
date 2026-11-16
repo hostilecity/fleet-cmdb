@@ -117,13 +117,13 @@
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
         },
         "reason": {
-          "description": "Why the agent kept failing, as plain text from the agent: its own record of why it stopped (for example a loop that panicked) and what systemd said. One line, no control or bidirectional formatting characters. Shown to operators as agent text.",
+          "description": "Why the agent kept failing, as plain text from the agent: its own record of why it stopped (for example a loop that panicked) and what systemd said. One line: no C0 or C1 control characters, no line or paragraph separator (U+2028, U+2029), and no bidirectional formatting characters (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). Shown to operators as agent text.",
           "type": "string",
           "minLength": 1,
           "maxLength": 256,
           "not": {
-            "description": "No control characters (so one line) and no bidirectional formatting characters. Written as a search, not an anchored pattern, because validators disagree on what ^ and $ match around a newline.",
-            "pattern": "[\\u0000-\\u001f\\u007f\\u202a-\\u202e\\u2066-\\u2069]"
+            "description": "The characters the description rules out. Written as a search, not an anchored pattern, because validators disagree on what ^ and $ match around a newline.",
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]"
           }
         },
         "retry_at": {

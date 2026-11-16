@@ -1784,11 +1784,14 @@ fn uninstall_removes_everything_install_created_and_nothing_else() {
             .calls()
             .contains(&"disable --now fleet-agent.service".to_owned())
     );
-    // Recovery mode runs the agent too, so it is stopped (ADR 0030), and its unit removed.
+    // Recovery mode runs the agent too, so it is stopped (ADR 0030), before the service, and its unit
+    // removed.
+    let calls = fx.systemd.calls();
+    let at = |call: &str| calls.iter().position(|c| c == call);
     assert!(
-        fx.systemd
-            .calls()
-            .contains(&"stop fleet-agent-recovery.service".to_owned())
+        at("stop fleet-agent-recovery.service") < at("disable --now fleet-agent.service")
+            && at("stop fleet-agent-recovery.service").is_some(),
+        "{calls:?}"
     );
     assert!(!fx.paths().recovery_unit().exists());
     assert!(

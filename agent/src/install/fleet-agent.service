@@ -27,6 +27,10 @@ Type=exec
 ExecStart=/usr/lib/fleet-agent/current/fleet-agent run
 Restart=on-failure
 RestartSec=10s
+# OnFailure= only once the service has given up (its start limit, or exit status 78), not on every
+# failed start (systemd 254 and later; earlier versions ignore the line and, from 239, already behave
+# so). The rollback and recovery units then run once per crash loop (ADR 0030).
+RestartMode=direct
 # Exit status 78 (EX_CONFIG) means the config is invalid; restarting cannot fix that.
 RestartPreventExitStatus=78
 StateDirectory=fleet-agent

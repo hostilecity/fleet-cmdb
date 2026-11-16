@@ -48,6 +48,21 @@ pub fn uninstall(host: &Host, options: &UninstallOptions, ui: &mut Ui) -> Result
     // Read before anything is removed: a custom state directory is named only in the config.
     let config = Config::load_as(&paths.config(), uid).ok();
 
+    // Recovery mode first (ADR 0030): it runs the agent too, and could start the service (its hourly try)
+    // or an update supervisor while the files are being removed (review of #222).
+    let recovery = paths.recovery_unit();
+    let recovery_is_ours = fs::read_to_string(&recovery).is_ok_and(|t| t.starts_with(UNIT_MARKER))
+        && fsx::check_file(&recovery, uid).is_none();
+    if recovery_is_ours && host.systemd.unavailable().is_none() {
+        match host.systemd.systemctl(&["stop", RECOVERY_UNIT_NAME]) {
+            Ok(_) => {
+                let _ = host
+                    .systemd
+                    .systemctl(&["reset-failed", RECOVERY_UNIT_NAME]);
+            }
+            Err(e) => return Err(failed(format!("cannot stop {RECOVERY_UNIT_NAME}: {e}"))),
+        }
+    }
     // The service.
     let unit = paths.unit();
     let unit_is_ours = fs::read_to_string(&unit).is_ok_and(|t| t.starts_with(UNIT_MARKER))
@@ -64,21 +79,7 @@ pub fn uninstall(host: &Host, options: &UninstallOptions, ui: &mut Ui) -> Result
             }
         }
     }
-    // The rollback and recovery units the service's OnFailure= starts, with the same rule. Recovery mode
-    // runs the agent too (ADR 0030), so it is stopped before its unit goes.
-    let recovery = paths.recovery_unit();
-    let recovery_is_ours = fs::read_to_string(&recovery).is_ok_and(|t| t.starts_with(UNIT_MARKER))
-        && fsx::check_file(&recovery, uid).is_none();
-    if recovery_is_ours && host.systemd.unavailable().is_none() {
-        match host.systemd.systemctl(&["stop", RECOVERY_UNIT_NAME]) {
-            Ok(_) => {
-                let _ = host
-                    .systemd
-                    .systemctl(&["reset-failed", RECOVERY_UNIT_NAME]);
-            }
-            Err(e) => return Err(failed(format!("cannot stop {RECOVERY_UNIT_NAME}: {e}"))),
-        }
-    }
+    // The rollback and recovery units the service's OnFailure= starts, with the same rule as the service.
     for (unit, ours) in [
         (paths.rollback_unit(), None),
         (recovery, Some(recovery_is_ours)),

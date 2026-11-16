@@ -365,25 +365,40 @@ fn end_recovery_episode_when_healthy(state_dir: &Path, shutdown: &Shutdown) {
     }
 }
 
-/// Ends recovery mode once `fleet-agent.service` runs again (checked every [`recovery::WATCH_EVERY`]), so
-/// the two never run together for longer than that: after an update, an operator's start, or recovery
-/// mode's own try of normal mode.
+/// One look at `fleet-agent.service` ([`recovery::look`]): `systemctl is-active` and `is-enabled`. Both
+/// print their answer on stdout and exit non-zero for most answers, so either result is read; an error
+/// of `systemctl` itself is unreadable, never "stopped".
+fn look_at_the_service(systemctl: &install::Systemctl) -> (recovery::Look, String) {
+    use install::Systemd;
+    let answer = |args: &[&str]| match systemctl.systemctl(args) {
+        Ok(text) | Err(text) => text.lines().next().unwrap_or("").trim().to_owned(),
+    };
+    let active = answer(&["is-active", install::UNIT_NAME]);
+    let enabled = answer(&["is-enabled", install::UNIT_NAME]);
+    let shown = format!("{active}, {enabled}");
+    (recovery::look(&active, &enabled), shown)
+}
+
+/// Ends recovery mode once `fleet-agent.service` runs again, or once a person stops or disables it
+/// (checked every [`recovery::WATCH_EVERY`]), so the two never run together for longer than that: after
+/// an update, an operator's start, or recovery mode's own try of normal mode.
 fn watch_for_the_service(shutdown: &Shutdown) {
     let shutdown = shutdown.clone();
     let spawned = std::thread::Builder::new()
         .name("fleet-agent-recovery-watch".into())
         .spawn(move || {
-            use install::Systemd;
             let systemctl = install::Systemctl::default();
             while !shutdown.wait(recovery::WATCH_EVERY) {
-                let state = systemctl.state();
-                if recovery::service_back(&state) {
-                    tracing::info!(
-                        service_state = state.as_str(),
-                        "fleet-agent.service runs again; leaving recovery mode"
-                    );
-                    shutdown.request();
-                }
+                let (look, shown) = look_at_the_service(&systemctl);
+                let why = match look {
+                    recovery::Look::Runs => "fleet-agent.service runs again",
+                    recovery::Look::OperatorStopped => {
+                        "fleet-agent.service was stopped or disabled by a person, who is left in charge"
+                    }
+                    _ => continue,
+                };
+                tracing::info!(service = shown.as_str(), "{why}; leaving recovery mode");
+                shutdown.request();
             }
         });
     if let Err(e) = spawned {
@@ -427,24 +442,38 @@ fn recover(path: &Path) -> ExitCode {
         }
     };
     recovery::install_panic_hook();
-    // systemd 255 and later start this unit on every failed start of the service: go on only if it stays
-    // stopped for longer than its RestartSec=, and leave it to systemd otherwise.
+    // Go on only for a service that has stopped for good: `failed` and still enabled, for all of SETTLE
+    // (a fallback: with RestartMode=direct, OnFailure= starts this unit only once the service gave up).
+    // It runs, or a person stopped or disabled it: stay out, for good (exit 0). systemctl cannot say:
+    // fail, so systemd tries again later, rather than leaving the agent dark.
     let systemctl = install::Systemctl::default();
     let deciding = Instant::now();
     loop {
-        let state = {
-            use install::Systemd;
-            systemctl.state()
-        };
-        if !recovery::stopped(&state) {
-            tracing::info!(
-                service_state = state.as_str(),
-                "recovery mode is not needed: fleet-agent.service is {state} (systemd restarted it, or it runs)"
-            );
-            return ExitCode::SUCCESS;
-        }
-        if deciding.elapsed() >= recovery::SETTLE {
-            break;
+        let (look, shown) = look_at_the_service(&systemctl);
+        match look {
+            recovery::Look::Runs => {
+                tracing::info!(
+                    service = shown.as_str(),
+                    "recovery mode is not needed: fleet-agent.service runs"
+                );
+                return ExitCode::SUCCESS;
+            }
+            recovery::Look::OperatorStopped => {
+                tracing::info!(
+                    service = shown.as_str(),
+                    "fleet-agent.service was stopped or disabled by a person; recovery mode stays out"
+                );
+                return ExitCode::SUCCESS;
+            }
+            recovery::Look::Failed if deciding.elapsed() >= recovery::SETTLE => break,
+            recovery::Look::Unreadable if deciding.elapsed() >= recovery::SETTLE => {
+                tracing::error!(
+                    service = shown.as_str(),
+                    "cannot read the state of fleet-agent.service; systemd will start recovery mode again later"
+                );
+                return ExitCode::FAILURE;
+            }
+            _ => {}
         }
         if shutdown.wait(std::time::Duration::from_secs(1)) {
             return ExitCode::SUCCESS;
@@ -476,6 +505,13 @@ fn recover(path: &Path) -> ExitCode {
     updater.start_watchdog();
     let try_normal = || {
         use install::Systemd;
+        // Never start a service a person stopped or disabled: only a failed, enabled one.
+        let (look, shown) = look_at_the_service(&systemctl);
+        if look != recovery::Look::Failed {
+            return Err(format!(
+                "fleet-agent.service is not failed and enabled ({shown}); not starting it"
+            ));
+        }
         // A service stopped by its start limit refuses to start until it is reset.
         let _ = systemctl.systemctl(&["reset-failed", install::UNIT_NAME]);
         // `--no-block`: the watcher below ends this process once the service runs.

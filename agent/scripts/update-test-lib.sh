@@ -31,8 +31,8 @@ mkrelease() {
 }
 
 # mkscript FILE VERSION RUN_BODY: a "release" that passes its self-test and does RUN_BODY when run. Run as
-# `run --recovery` (the recovery unit, which systemd 255 and later start after every failed start), it exits at
-# once, as the real agent does while the service is still being restarted or was rolled back (ADR 0030).
+# `run --recovery` (the recovery unit, which OnFailure= starts after the rollback unit), it exits at once, as
+# the real agent does once a rollback has restarted the service (ADR 0030).
 mkscript() {
     cat > "$1" << EOF
 #!/bin/sh

@@ -219,6 +219,8 @@ mod tests {
             [format!("{ROLLBACK_UNIT_NAME} {RECOVERY_UNIT_NAME}")]
         );
         assert_eq!(values("Restart"), ["on-failure"]);
+        // Review of #222: OnFailure= only once the restarts have ended, not after every failed start.
+        assert_eq!(values("RestartMode"), ["direct"]);
     }
 
     /// The values of `key=` in the recovery unit, in order.
@@ -237,9 +239,9 @@ mod tests {
             recovery_values("ExecStart"),
             ["/usr/lib/fleet-agent/current/fleet-agent run --recovery"]
         );
-        // The rollback unit has its turn first. No Conflicts=: systemd 255 and later start this unit on
-        // every failed start, and a conflict would cancel the service's own restart. The agent itself
-        // checks the service instead (`recovery::needed`, the watcher in `main::recover`).
+        // The rollback unit has its turn first. No Conflicts=: on a systemd that starts this unit after
+        // every failed start, a conflict would cancel the service's own restart. The agent itself checks
+        // the service instead (`recovery::look`, used by `main::recover` and its watcher).
         assert_eq!(
             recovery_values("After"),
             [format!("network-online.target {ROLLBACK_UNIT_NAME}")]
@@ -288,6 +290,7 @@ mod tests {
                     "Restart",
                     "RestartSec",
                     "RestartPreventExitStatus",
+                    "RestartMode",
                 ]
                 .contains(&key)
             {

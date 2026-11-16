@@ -34,8 +34,8 @@
 #                            back (by the failure hook, as nothing else runs)
 #
 # Every scenario also checks that recovery mode (fleet-agent-recovery.service, ADR 0030) is not running
-# once it settles: the recovery unit that OnFailure= starts after every failed start must exit at once while
-# systemd still restarts the service, or after a rollback restarted it.
+# once it settles: OnFailure= starts it only once the service has given up (RestartMode=direct), and it exits
+# at once when a rollback has restarted the service.
 #
 # Before them, one check of the package report (P2-AGENT-PACKAGES, AC-2.3): the report the agent sends
 # at startup, under the real unit on the real image, lists exactly the VM's own dpkg listing, with the
@@ -60,10 +60,10 @@
 # (src/vm_fault.rs; `VM_FAULT=1 update-smoke-build.sh`), and fleet-agent-1.1.1, a normal build:
 #
 #   crash loop on a confirmed version   1.1.0 is installed and confirmed; then a file in the state
-#                            directory makes its normal mode panic at every start. systemd stops
-#                            restarting it (after at least four failed starts: recovery mode exits at
-#                            once while systemd still restarts the service), the rollback unit finds
-#                            nothing to roll back, and recovery mode goes on: heartbeats that say why,
+#                            directory makes its normal mode panic at every start. After exactly four
+#                            failed starts systemd's start limit ends the restarts; only then does
+#                            OnFailure= run (once), the rollback unit finds nothing to roll back, and
+#                            recovery mode goes on: heartbeats that say why,
 #                            from the same binary, with no
 #                            capabilities, and no report or task poll. The server offers 1.1.1 (the
 #                            "fixed release"): recovery mode installs it through the signed path, 1.1.1
@@ -533,7 +533,13 @@ recovery_mode() {
     expect_one_version "$FAULTY" "$OLD"
     echo "$FAULTY is installed and confirmed; now host state makes its normal mode fail at every start"
     since=$(date +%s.%N)
-    vm "touch $STATE/$POISON && chmod 0600 $STATE/$POISON && systemctl restart fleet-agent"
+    # Everything the journal says from here on is this scenario's (the guest's clock is not the runner's).
+    local cursor
+    cursor=$(vm "journalctl -n 1 --show-cursor --no-pager -o cat | sed -n 's/^-- cursor: //p'")
+    [ -n "$cursor" ] || fail "cannot read the journal's cursor"
+    # reset-failed also resets the start counter, so the update's own start does not count towards the limit:
+    # the crash loop is exactly StartLimitBurst=4 failed starts.
+    vm "touch $STATE/$POISON && chmod 0600 $STATE/$POISON && systemctl reset-failed fleet-agent && systemctl restart fleet-agent"
     local end=$((SECONDS + 240 * slow))
     until heartbeat_in_mode "$FAULTY" recovery; do
         if ((SECONDS >= end)); then
@@ -546,19 +552,22 @@ recovery_mode() {
     done
     vm_ok 'systemctl is-active --quiet fleet-agent-recovery' || fail "heartbeats in recovery mode, but fleet-agent-recovery.service is not active"
     vm_ok '! systemctl is-active --quiet fleet-agent' || fail "fleet-agent.service is active beside recovery mode"
-    # This boot's journal: no earlier scenario has the fault build (the guest's clock is not the runner's).
-    # systemd 255 and later start the recovery unit after every failed start; recovery mode must go on only
-    # once the start limit has stopped the service (four starts in five minutes, the update's own included),
-    # and exit while systemd still restarts it.
-    local panics journal
-    journal=$(vm "journalctl -b -u fleet-agent -u fleet-agent-recovery --no-pager -o cat")
+    # Only this scenario's journal (after the cursor). With RestartMode=direct, OnFailure= starts the recovery
+    # unit once, after systemd's start limit has ended the restarts: four failed starts, then the limit, then
+    # recovery mode, in that order (review of #222).
+    local panics journal limit_at recovery_at starts
+    journal=$(vm "journalctl --after-cursor='$cursor' -u fleet-agent -u fleet-agent-recovery --no-pager -o cat")
     panics=$(grep -c "vm-test fault" <<< "$journal" || true)
-    grep -q "Start request repeated too quickly" <<< "$journal" \
-        || fail "recovery mode went on before systemd's start limit stopped the service"
-    grep -q "recovery mode is not needed" <<< "$journal" \
-        || fail "no recovery unit started by an earlier failure exited while systemd restarted the service"
-    [ "$panics" -ge 2 ] || fail "only $panics failed starts before recovery mode"
-    echo "fleet-agent.service failed $panics times, then hit its start limit; recovery mode exited until then"
+    starts=$(grep -c "Starting fleet-agent-recovery.service" <<< "$journal" || true)
+    limit_at=$(grep -n -m1 "Start request repeated too quickly" <<< "$journal" | cut -d: -f1)
+    recovery_at=$(grep -n -m1 "fleet-agent started in recovery mode" <<< "$journal" | cut -d: -f1)
+    [ "$panics" -eq 4 ] || fail "$panics failed starts before recovery mode, expected StartLimitBurst=4"
+    [ -n "$limit_at" ] || fail "systemd's start limit is not in the journal"
+    [ -n "$recovery_at" ] || fail "recovery mode's start is not in the journal"
+    [ "$limit_at" -lt "$recovery_at" ] || fail "recovery mode went on (line $recovery_at) before the start limit (line $limit_at)"
+    [ "$starts" -eq 1 ] || fail "the recovery unit was started $starts times in the crash loop, expected once"
+    ! grep -q "recovery mode is not needed" <<< "$journal" || fail "the recovery unit was started while systemd still restarted the service"
+    echo "fleet-agent.service failed $panics times, then hit its start limit; recovery mode was started once, after it"
     local reason pid caps exe entered
     reason=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.reason' "$events")
     entered=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.entered_at' "$events")

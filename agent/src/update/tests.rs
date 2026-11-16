@@ -803,6 +803,33 @@ fn the_watchdog_does_not_race_this_process_handing_an_update_over() {
 }
 
 #[test]
+fn only_one_agent_process_works_on_an_update_at_a_time() {
+    // Review of #222: if the service and recovery mode ever overlap, the other process's offer and
+    // watchdog wait for the updater lock; its `busy` and `last_launch` are its own.
+    let rig = Rig::new();
+    let other = Lock::file(&rig.world.state().join(layout::UPDATER_LOCK_FILE))
+        .unwrap()
+        .unwrap();
+    rig.updater.process_now(&rig.offer(NEW, 5));
+    assert!(
+        Record::read(rig.world.state()).unwrap().is_none(),
+        "nothing staged"
+    );
+    assert!(rig.world.pending().is_none(), "nothing reported");
+    let mut record = rig.world.stage_release(NEW, &binary(100), 6);
+    record.phase = Phase::Switched;
+    record.write(rig.world.state()).unwrap();
+    rig.updater.tick(&FakeTransport::new(vec![]));
+    assert!(
+        rig.launcher.started.lock().unwrap().is_empty(),
+        "no supervisor started"
+    );
+    drop(other);
+    rig.updater.tick(&FakeTransport::new(vec![]));
+    assert_eq!(rig.launcher.started.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn an_update_without_a_supervisor_gets_one_and_a_live_supervisor_is_left_alone() {
     let rig = Rig::new();
     let mut record = rig.world.stage_release(NEW, &binary(100), 5);

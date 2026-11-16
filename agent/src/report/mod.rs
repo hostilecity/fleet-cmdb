@@ -304,6 +304,11 @@ fn run_with(
 /// not be started): it keeps heartbeating meanwhile.
 pub const RECOVERY_RETRY_AGAIN: Duration = Duration::from_secs(60 * 60);
 
+/// Longest an offer being worked on (`busy`) may put off the try of normal mode once it is due. A
+/// server that sends a new offer on every heartbeat could otherwise keep the agent in recovery mode for
+/// good (review of #222). An update record (an update past staging) still always defers it.
+pub const RECOVERY_DEFER_AT_MOST: Duration = Duration::from_secs(60 * 60);
+
 /// Recovery mode (#180, ADR 0030): the heartbeat loop alone, on the calling thread, until shutdown. No
 /// collector, report, or task loop runs. Each heartbeat carries `status`; an `agent_update` directive
 /// goes to `updater` as in normal mode, and its outcomes are posted. Once `retry_after` has passed and
@@ -332,11 +337,14 @@ pub fn run_recovery(
     .in_recovery(status);
     let mut retry_at = started + retry_after;
     while !shutdown.is_requested() {
+        // Looked at before the beat: an offer the beat hands over sets `busy` at once.
+        let idle = updater.idle();
         let hostname = crate::collect::hostname();
         let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());
         updater.tick(transport);
         let now = Instant::now();
-        if now >= retry_at && updater.idle() {
+        let overdue = now.saturating_duration_since(retry_at) >= RECOVERY_DEFER_AT_MOST;
+        if now >= retry_at && (idle || (overdue && !updater.update_recorded())) {
             retry_at = now + RECOVERY_RETRY_AGAIN;
             heartbeat.set_recovery_retry_at(rfc3339(SystemTime::now() + RECOVERY_RETRY_AGAIN));
             match try_normal() {
@@ -1361,5 +1369,56 @@ pub(crate) mod tests {
         assert!(updater.idle());
         run_for(Duration::ZERO);
         assert_eq!(tries.get(), 1);
+    }
+
+    #[test]
+    fn offers_put_off_the_try_of_normal_mode_for_an_hour_at_most() {
+        // Review of #222: a server that sends a new offer every heartbeat keeps `busy` set, which alone
+        // must not keep the agent in recovery mode for good. An update record still always defers it.
+        let dir = TempDir::new();
+        let config = Config {
+            state_dir: dir.path("state"),
+            ..Config::from_toml(&cfg::minimal()).unwrap()
+        };
+        std::fs::create_dir(&config.state_dir).unwrap();
+        let transport = FakeTransport::new(vec![]);
+        transport.set_accepting(true);
+        let updater = Updater::inert(&config.state_dir);
+        let tries = std::cell::Cell::new(0);
+        let try_normal = || {
+            tries.set(tries.get() + 1);
+            Err("start refused".to_owned())
+        };
+        let run_since = |started: Instant| {
+            let shutdown = Shutdown::default();
+            let stopper = shutdown.clone();
+            let stop = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(1_500));
+                stopper.request();
+            });
+            run_recovery(
+                &config,
+                &transport,
+                &shutdown,
+                started,
+                &updater,
+                recovery_status(),
+                Duration::ZERO,
+                &try_normal,
+            );
+            stop.join().unwrap();
+        };
+        let Some(long_ago) = Instant::now().checked_sub(RECOVERY_DEFER_AT_MOST * 2) else {
+            return; // a clock that started less than two hours ago cannot express this
+        };
+        updater.set_busy(true);
+        run_since(Instant::now());
+        assert_eq!(tries.get(), 0, "due, but an offer is being worked on");
+        run_since(long_ago);
+        assert_eq!(tries.get(), 1, "overdue by more than the cap");
+        std::fs::write(config.state_dir.join("update.json"), "{}").unwrap();
+        run_since(long_ago);
+        assert_eq!(tries.get(), 1, "an update record always defers it");
+        updater.set_busy(false);
     }
 }

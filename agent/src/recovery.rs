@@ -9,12 +9,14 @@
 //! results, and installs a signed update offered through the usual path (ADR 0018). It runs no
 //! collector, sends no report, and polls for no task.
 //!
-//! systemd 255 and later run `OnFailure=` on every failed start, not only once the start limit is hit,
-//! so recovery mode first watches the service for [`SETTLE`]: it goes on only if the service stays
-//! stopped, and exits as soon as systemd restarts it.
+//! `fleet-agent.service` sets `RestartMode=direct`, so `OnFailure=` runs only once it has given up;
+//! without it, systemd 254 and later run it after every failed start. As a fallback recovery mode still
+//! checks the service for [`SETTLE`] ([`look`]): it goes on only if the service stays `failed` and
+//! enabled, exits if it runs or a person stopped or disabled it, and fails (so systemd retries it later)
+//! if `systemctl` cannot say. It never starts a service a person stopped or disabled.
 //!
-//! It leaves recovery mode when `fleet-agent.service` runs again, which it checks every
-//! [`WATCH_EVERY`]: after an update (the supervisor restarts the service), when an operator starts it,
+//! It leaves recovery mode when `fleet-agent.service` runs again, or a person stops or disables it,
+//! which it checks every [`WATCH_EVERY`]: after an update (the supervisor restarts the service), when an operator starts it,
 //! or when recovery mode itself tries normal mode again, [`RETRY_AFTER`] after it started.
 //!
 //! This module keeps two records in the state directory:
@@ -51,21 +53,65 @@ pub const HEALTHY_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often recovery mode checks whether `fleet-agent.service` runs again.
 pub const WATCH_EVERY: Duration = Duration::from_secs(3);
 
-/// How long recovery mode watches the service before it decides: longer than the service's
-/// `RestartSec=10s`. systemd 255 and later start the recovery unit after every failed start, while the
-/// service still waits for its automatic restart (and reports `failed` meanwhile); only a service that
-/// is still stopped after this long has stopped for good, at its start limit.
+/// How long recovery mode watches the service before it decides. With `RestartMode=direct` in
+/// `fleet-agent.service` (systemd 254 and later) `OnFailure=` starts this unit only once the service has
+/// given up, so this is a fallback: longer than the service's `RestartSec=10s`, for a systemd that starts
+/// it while a restart is still pending (and reports the service `failed` meanwhile).
 pub const SETTLE: Duration = Duration::from_secs(20);
 
-/// Whether `systemctl is-active fleet-agent.service` says it is stopped (`failed` or `inactive`).
-/// Anything else, including a state that cannot be read, is not: recovery mode does not start on a guess.
-pub fn stopped(service_state: &str) -> bool {
-    matches!(service_state, "failed" | "inactive")
+/// What `systemctl is-active fleet-agent.service` says, as recovery mode reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    /// `active`, `activating`, `reloading`, `refreshing`: it runs, or systemd is starting it.
+    Runs,
+    /// `failed`: what a crash loop that hit the start limit (or an exit 78) leaves.
+    Failed,
+    /// `inactive`: what a person's `systemctl stop` (or `reset-failed`) leaves. Recovery mode stays out.
+    Stopped,
+    /// Anything else, including an error or a timeout of `systemctl` itself.
+    Unreadable,
 }
 
-/// Whether the service runs again, so recovery mode must end.
-pub fn service_back(service_state: &str) -> bool {
-    matches!(service_state, "active" | "activating" | "reloading")
+pub fn service_of(is_active: &str) -> Service {
+    match is_active.trim() {
+        "active" | "activating" | "reloading" | "refreshing" => Service::Runs,
+        "failed" => Service::Failed,
+        "inactive" => Service::Stopped,
+        _ => Service::Unreadable,
+    }
+}
+
+/// Whether `systemctl is-enabled fleet-agent.service` says a person disabled or masked it (`Some(true)`),
+/// that it is enabled (`Some(false)`), or cannot be read (`None`).
+pub fn disabled_by_operator(is_enabled: &str) -> Option<bool> {
+    match is_enabled.trim() {
+        "disabled" | "masked" | "masked-runtime" => Some(true),
+        "enabled" | "enabled-runtime" | "static" | "indirect" | "generated" | "alias"
+        | "linked" | "linked-runtime" | "transient" => Some(false),
+        _ => None,
+    }
+}
+
+/// One look at the service, as recovery mode decides what to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    /// It runs or is starting: recovery mode is not needed (or must end).
+    Runs,
+    /// A person stopped or disabled it: recovery mode stays out, and never starts it.
+    OperatorStopped,
+    /// Failed and still enabled: what recovery mode is for.
+    Failed,
+    /// Cannot tell (`systemctl` failed, timed out, or said something else): look again.
+    Unreadable,
+}
+
+pub fn look(is_active: &str, is_enabled: &str) -> Look {
+    match (service_of(is_active), disabled_by_operator(is_enabled)) {
+        (Service::Runs, _) => Look::Runs,
+        (Service::Stopped, _) | (_, Some(true)) => Look::OperatorStopped,
+        (Service::Failed, Some(false)) => Look::Failed,
+        _ => Look::Unreadable,
+    }
 }
 
 /// A recorded failure older than this did not cause this crash loop.
@@ -115,11 +161,27 @@ fn write<T: Serialize>(state_dir: &Path, name: &str, value: &T) -> io::Result<()
     crate::state::write_record(state_dir, name, &bytes)
 }
 
-/// `text` as a reason: one line of plain text, no bidirectional controls, at most
-/// [`MAX_REASON_CHARS`] characters, never empty.
+/// `text` as a reason: one line of plain text, at most [`MAX_REASON_CHARS`] characters, never empty. No
+/// C0 or C1 control (replaced by a space, as `logging::sanitize` does), no line or paragraph separator
+/// (a space too), and no bidirectional formatting character (removed), as `heartbeat.request` requires.
 pub fn reason_text(text: &str) -> String {
-    let bidi = |c: char| matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    let plain: String = text.chars().filter(|c| !bidi(*c)).collect();
+    let bidi = |c: char| {
+        matches!(
+            c,
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+    };
+    let plain: String = text
+        .chars()
+        .filter(|c| !bidi(*c))
+        .map(|c| {
+            if matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     let line = crate::logging::sanitize(&plain, MAX_REASON_CHARS);
     match line.trim() {
         "" => "no reason was recorded".to_owned(),
@@ -263,24 +325,36 @@ mod tests {
     }
 
     #[test]
-    fn recovery_mode_goes_on_only_once_the_service_has_stopped_for_good() {
-        assert!(stopped("failed"));
-        assert!(stopped("inactive"));
-        for state in [
-            "activating",
-            "active",
-            "reloading",
-            "deactivating",
-            "unknown",
-            "",
+    fn recovery_mode_goes_on_only_for_a_failed_enabled_service_and_never_on_a_guess() {
+        // Only a clear answer decides anything; an error from systemctl is not "stopped".
+        for (active, enabled, expected) in [
+            ("active", "enabled", Look::Runs),
+            ("activating", "disabled", Look::Runs),
+            ("reloading", "", Look::Runs),
+            ("failed", "enabled", Look::Failed),
+            ("failed", "static", Look::Failed),
+            ("inactive", "enabled", Look::OperatorStopped),
+            ("failed", "disabled", Look::OperatorStopped),
+            ("failed", "masked", Look::OperatorStopped),
+            (
+                "failed",
+                "Failed to connect to bus: No such file or directory",
+                Look::Unreadable,
+            ),
+            (
+                "Failed to connect to bus: No such file or directory",
+                "enabled",
+                Look::Unreadable,
+            ),
+            (
+                "systemctl is-active fleet-agent.service did not finish within 60 seconds and was stopped",
+                "enabled",
+                Look::Unreadable,
+            ),
+            ("deactivating", "enabled", Look::Unreadable),
+            ("", "", Look::Unreadable),
         ] {
-            assert!(!stopped(state), "{state}");
-        }
-        for state in ["active", "activating", "reloading"] {
-            assert!(service_back(state), "{state}");
-        }
-        for state in ["failed", "inactive", "deactivating", "unknown"] {
-            assert!(!service_back(state), "{state}");
+            assert_eq!(look(active, enabled), expected, "{active:?} {enabled:?}");
         }
     }
 
@@ -292,6 +366,11 @@ mod tests {
             reason_text("abc\u{202e}fed\u{2066}x\u{2069}"),
             "abcfedx",
             "bidirectional controls would make the dashboard show something else"
+        );
+        assert_eq!(
+            reason_text("a\u{85}b\u{2028}c\u{200f}d\u{61c}e\u{9f}"),
+            "a b cde",
+            "C1 controls and separators become spaces; marks are removed"
         );
         let long = "x".repeat(1000);
         assert_eq!(reason_text(&long).chars().count(), MAX_REASON_CHARS);
