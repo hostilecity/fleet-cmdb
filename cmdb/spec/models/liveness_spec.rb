@@ -11,6 +11,8 @@ RSpec.describe Liveness do
 
   def evaluate_at(time) = travel_to(time) { LivenessEvaluationJob.perform_now }
 
+  def heartbeat_at_for(target, time) = travel_to(time) { record_heartbeat(target, agent_time: time) }
+
   it "moves a host online, stale, then offline at the default thresholds, and back online on a heartbeat (AC-1.2)" do
     heartbeat_at(start)
     { 2.minutes => "online", 3.minutes => "stale", 14.minutes => "stale", 15.minutes => "offline", 60.minutes => "offline" }.each do |elapsed, expected|
@@ -59,6 +61,29 @@ RSpec.describe Liveness do
     host.revoke!(actor: Audit::SYSTEM)
     expect { evaluate_at(start + 1.hour) }.not_to change(HostStatusEvent, :count)
     expect(host.reload.display_status).to eq("revoked")
+  end
+
+  it "never finds revoked or retired hosts again, and evaluates a host again once it is active (review of #220)" do
+    revoked, retired, other = Array.new(3) { enrolled_host.first }
+    [ host, revoked, retired, other ].each { |h| heartbeat_at_for(h, start) }
+    revoked.revoke!(actor: Audit::SYSTEM)
+    retired.retire!(actor: Audit::SYSTEM)
+    expect(HostLiveness.where(host_id: [ revoked, retired ]).pluck(:evaluated)).to eq([ false, false ])
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(2) # host and other
+
+    statements = []
+    callback = ->(*, payload) { statements << payload }
+    quiet = ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { travel_to(start + 20.minutes) { described_class.evaluate! } }
+    expect(quiet).to eq(0)
+    expect(statements.count { |payload| payload[:name] == "Liveness candidates" }).to eq(1)
+    expect(statements.map { |payload| payload[:sql] }.grep(/\bFROM "?hosts"?\b/)).to be_empty # no lookup of the hosts left behind
+    expect(HostLiveness.where(host_id: [ revoked, retired ]).pluck(:liveness_status)).to eq(%w[online online]) # not evaluated
+
+    revoked.begin_reenrollment!(actor: Audit::SYSTEM)
+    revoked.activate!(actor: Audit::SYSTEM)
+    expect(revoked.reload.liveness.evaluated).to be(true)
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(1)
+    expect(revoked.reload.liveness_status).to eq("offline")
   end
 
   it "reads the clock and thresholds only after taking the evaluation lock" do

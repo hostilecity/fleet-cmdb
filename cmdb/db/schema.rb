@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -399,6 +399,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
     t.string "liveness_status", null: false
     t.datetime "last_seen_at", null: false
     t.datetime "agent_reported_at"
+    t.boolean "evaluated", default: true, null: false
     t.check_constraint "liveness_status::text = ANY (ARRAY['online'::text, 'stale'::text, 'offline'::text])", name: "host_liveness_status_valid"
   end
 
@@ -1464,6 +1465,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
       $function$
   SQL
 
+  create_function :host_liveness_follow_enrollment, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.host_liveness_follow_enrollment()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- Only active hosts are evaluated (FR-1.4, #192). A host's host_liveness row records whether it is, so the liveness
+        -- run never finds revoked, pending, or retired hosts again: retired is terminal and hosts are never deleted, so
+        -- without this every run would read them all, forever. Runs in the transaction that changed the enrollment state,
+        -- which holds the host row lock, as every writer of host_liveness does.
+        UPDATE host_liveness
+           SET evaluated = (NEW.enrollment_state = 'active')
+         WHERE host_id = NEW.id AND evaluated IS DISTINCT FROM (NEW.enrollment_state = 'active');
+        RETURN NULL;
+      END;
+      $function$
+  SQL
+
   create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
       CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
   SQL
@@ -1562,6 +1581,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_197001) do
 
   create_trigger :host_vulnerability_evaluations_no_truncate, sql_definition: <<-SQL
       CREATE TRIGGER host_vulnerability_evaluations_no_truncate BEFORE TRUNCATE ON public.host_vulnerability_evaluations FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
+  SQL
+
+  create_trigger :host_liveness_follow_enrollment, sql_definition: <<-SQL
+      CREATE TRIGGER host_liveness_follow_enrollment AFTER UPDATE OF enrollment_state ON public.hosts FOR EACH ROW WHEN (((old.enrollment_state)::text IS DISTINCT FROM (new.enrollment_state)::text)) EXECUTE FUNCTION host_liveness_follow_enrollment()
   SQL
 
   create_trigger :host_compliance_summaries_hosts_insert, sql_definition: <<-SQL

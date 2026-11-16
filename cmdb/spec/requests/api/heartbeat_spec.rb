@@ -306,6 +306,17 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
       expect(host.reload).to have_attributes(agent_version: "0.2.0", task_capabilities_reported_at: reported + 2.minutes)
     end
 
+    it "sets or clears the capabilities' time when only it is out of step with the report (review of #220)" do
+      heartbeat(body(tasks:))
+      host.update_columns(task_capabilities_reported_at: nil) # the lists already as reported, but no time
+      heartbeat(body(tasks:))
+      expect(host.reload.task_capabilities_reported_at).to be_present
+      # The lists already as a report without capabilities leaves them, but with a time.
+      host.update_columns(task_catalog_version: nil, task_types_supported: [], task_types_enabled: [], task_services_allowed: [])
+      heartbeat
+      expect(host.reload.task_capabilities_reported_at).to be_nil
+    end
+
     it "leaves out a restart of a service the VM's own allowlist does not name (P3-D01 Q7)" do
       heartbeat(body(tasks:))
       expect(host.reload.task_exclusion_reason(restart, { "service" => "postgresql.service" })).to eq("not_allowed_locally")

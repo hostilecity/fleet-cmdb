@@ -1,5 +1,6 @@
 # What a heartbeat changes every time it arrives (FR-1.2, FR-1.4, #192): the server's time of the host's last
-# heartbeat, its liveness status, and the agent's reported time. One row per host that has sent a heartbeat; none for a
+# heartbeat, its liveness status, and the agent's reported time, and whether the liveness run evaluates the host
+# (evaluated: only while it is active, kept by a trigger on hosts). One row per host that has sent a heartbeat; none for a
 # host awaiting first contact.
 #
 # A narrow table of its own, with no index but its primary key and half of each page kept free (fillfactor 50), so a

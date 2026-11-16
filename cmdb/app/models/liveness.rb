@@ -145,14 +145,17 @@ module Liveness
   private_class_method :transition_all!
 
   # One batch: the next BATCH_SIZE hosts whose status is not the one their last heartbeat implies, found in the narrow
-  # host_liveness alone; then the active ones' host rows locked (FOR NO KEY UPDATE, which a heartbeat's lock waits for),
-  # skipping rows a heartbeat holds, for the next run. Hosts that are not active are found but never moved. The statuses are then read again under those locks, by a new statement
+  # host_liveness alone, among the rows of active hosts (evaluated, which a trigger on hosts keeps in step with the
+  # enrollment state, so revoked and retired hosts are never read again; review of #220); then their host rows locked
+  # (FOR NO KEY UPDATE, which a heartbeat's lock waits for, and active checked again under it), skipping rows a
+  # heartbeat holds, for the next run. The statuses are then read again under those locks, by a new statement
   # that sees every heartbeat committed before them, and moved. Returns [ids found, ids moved].
   def transition_batch!(target, now, after:)
     Host.transaction do
       connection = HostLiveness.connection
       found = connection.select_values(HostLiveness.sanitize_sql_array([ <<~SQL, { after:, limit: BATCH_SIZE } ]), "Liveness candidates")
-        SELECT l.host_id FROM host_liveness l WHERE l.host_id > :after AND l.liveness_status <> #{target} ORDER BY l.host_id LIMIT :limit
+        SELECT l.host_id FROM host_liveness l
+         WHERE l.evaluated AND l.host_id > :after AND l.liveness_status <> #{target} ORDER BY l.host_id LIMIT :limit
       SQL
       locked = found.empty? ? [] : Host.where(id: found).active.order(:id).lock("FOR NO KEY UPDATE SKIP LOCKED").pluck(:id)
       next [ found, [] ] if locked.empty?
