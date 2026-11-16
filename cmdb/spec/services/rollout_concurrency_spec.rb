@@ -85,4 +85,59 @@ RSpec.describe "Concurrent rollout offers and halts" do
     expect(offer).to be_nil
     expect(@rollout.rollout_hosts.sole.state).to eq("pending")
   end
+
+  describe "two prepares of the same stage at once (review of #215)" do
+    # Ten more hosts on the old version, and stages [10, 100]: stage 1 brings the rollout to 2 of its 11 hosts.
+    before do
+      @others = Array.new(10) { |i| host_running("0.2.0", hostname: "race-stage-#{i}.example.lan").first }
+      Rollout.find(@rollout.id).update_columns(stage_percents: [ 10, 100 ])
+      @rollout.rollout_hosts.sole.update_columns(state: "confirmed")
+      stub_const("Rollouts::OPEN_BATCH", 2)
+    end
+
+    # Runs `second` while the first advance is inside its prepare, holding the prepare lock.
+    def with_a_prepare_in_progress(second)
+      inside = Queue.new
+      go = Queue.new
+      allow(Rollouts).to receive(:insert_stage_rows!).and_wrap_original do |original, *args, **kwargs|
+        if Thread.current[:first_prepare]
+          inside << :in
+          go.pop
+        end
+        original.call(*args, **kwargs)
+      end
+      first = Thread.new do
+        Thread.current[:first_prepare] = true
+        ActiveRecord::Base.connection_pool.with_connection { Rollouts.advance_confirmed!(@rollout.id, from: 0) }
+      end
+      inside.pop
+      result = Thread.new { ActiveRecord::Base.connection_pool.with_connection { second.call } }.value
+      go << :go
+      first.join(10)
+      result
+    ensure
+      go << :go if go&.empty?
+    end
+
+    it "lets one of them choose the stage: the other does nothing, and the stage keeps its exact size" do
+      second = with_a_prepare_in_progress(-> { Rollouts.advance_confirmed!(@rollout.id, from: 0) })
+      expect(second).to be_nil
+      rollout = Rollout.find(@rollout.id)
+      expect(rollout.current_stage).to eq(1)
+      expect(rollout.rollout_hosts.where(stage: 1).count).to eq(1)
+      expect(rollout.rollout_hosts.count).to eq(2) # ceil(11 * 10%) = 2: the canary and one more
+      expect(AuditEntry.where(action: Audit::Actions::ROLLOUT_ADVANCED).count).to eq(1)
+    end
+
+    it "refuses an operator's advance while the stage is being chosen, and chooses it once" do
+      advance = lambda do
+        Rollouts.advance!(Rollout.find(@rollout.id), actor: operator)
+      rescue Rollouts::Invalid => e
+        e.message
+      end
+      second = with_a_prepare_in_progress(advance)
+      expect(second).to eq("The next stage's hosts are being chosen right now. Try again in a minute.")
+      expect(Rollout.find(@rollout.id).rollout_hosts.count).to eq(2)
+    end
+  end
 end

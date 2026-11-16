@@ -33,10 +33,14 @@ module Rollouts
   LARGE_FLEET_STAGES = [ 1, 10, 50, 100 ].freeze
   # Hosts chosen and inserted per statement when a stage opens (#199).
   OPEN_BATCH = 10_000
+  # The advisory lock key that serialises a rollout's stage prepares: "roll" in ASCII, with the rollout id.
+  PREPARE_LOCK_KEY = 0x726f6c6c
   # A fixed offset per host and rollout inside its stage's spread window (stage_spread), from a hash of the two, so it
   # is spread evenly and never moves: 0 to spread - 1 seconds. Binds: the rollout id, then the spread in seconds.
   # hashtextextended is the hash PostgreSQL's hash partitioning relies on, so it is stable across versions.
   OFFER_DELAY_SQL = "make_interval(secs => (hashtextextended(?::text || ':' || hosts.id, 0) & 9223372036854775807) % ?)".freeze
+  # The same offset for a row already chosen (Rollouts.retime_stage!).
+  RETIME_DELAY_SQL = "make_interval(secs => (hashtextextended(?::text || ':' || rollout_hosts.host_id, 0) & 9223372036854775807) % ?)".freeze
   # When an offer is due: its offer time moved on by the time the rollout has spent halted (#199), so a resume
   # releases the stage over what is left of its window, not all at once.
   OFFER_DUE_SQL = "rollout_hosts.offer_at + rollouts.halted_seconds * interval '1 second'".freeze
@@ -67,7 +71,7 @@ module Rollouts
       now = Time.current
       rollout = Rollout.create!(agent_release: release, started_by: actor, canary_host_ids: ids, canary_tag: tag,
                                 stage_percents: percents, started_at: now, stage_opened_at: now)
-      added = prepare_stage!(rollout, 0)
+      added = prepare_stage!(rollout, 0).to_i # a new rollout: nothing else can be preparing it
       raise Invalid.new("None of the canaries is an active host running an older version than #{release.version}.", field: :canary_tag) if added.zero?
 
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_STARTED, target: rollout,
@@ -120,7 +124,9 @@ module Rollouts
     rollout.reload
     check_advance!(rollout, expected_stage)
     expected = rollout.current_stage
-    prepare_stage!(rollout, expected + 1)
+    unless prepare_stage!(rollout, expected + 1)
+      raise Invalid, "The next stage's hosts are being chosen right now. Try again in a minute."
+    end
     in_state!(rollout, "running") do
       check_advance!(rollout, expected_stage || expected)
       advance_stage!(rollout, actor:, reason: "advanced by an operator")
@@ -134,7 +140,7 @@ module Rollouts
     rollout = Rollout.find_by(id: rollout_id)
     return unless rollout && advanceable?(rollout, from)
 
-    prepare_stage!(rollout, from + 1)
+    return unless prepare_stage!(rollout, from + 1) # another prepare is running; the backstop retries
     rollout.with_lock do
       next unless advanceable?(rollout, from)
 
@@ -143,11 +149,13 @@ module Rollouts
     end
   end
 
-  # The running rollout's current stage, if every host of it has confirmed and it is not the last: a backstop for
-  # an advance job that was lost (RolloutTimeoutJob runs this every minute).
+  # Enqueues RolloutAdvanceJob for a running rollout whose current stage has confirmed and is not the last: a backstop
+  # for an advance job that was lost, run every minute by RolloutTimeoutJob. It only enqueues: that job runs on the
+  # realtime queue, which no long job may delay (S-7), and a stage's prepare can take minutes (review of #215). A
+  # duplicate job is harmless: prepares are serialised and the advance re-checks the stage.
   def advance_confirmed_stages!
     Rollout.where(state: "running").find_each do |rollout|
-      advance_confirmed!(rollout.id, from: rollout.current_stage) if advanceable?(rollout, rollout.current_stage)
+      RolloutAdvanceJob.perform_later(rollout.id, rollout.current_stage) if advanceable?(rollout, rollout.current_stage)
     end
   end
 
@@ -369,51 +377,95 @@ module Rollouts
   end
   private_class_method :advance_stage!
 
-  # Chooses the hosts of stage `stage` and returns how many it has. Runs before the stage opens and without the
+  # Chooses the hosts of stage `stage` and returns how many it has, or nil when another prepare of this rollout is
+  # running (the caller gives up; the backstop tries again a minute later). Runs before the stage opens and without the
   # rollout lock (the stage gate, rollout_hosts.stage <= rollouts.current_stage, hides them until advance_stage!), in
   # its own short transactions, so update results and the timeout check never wait for it (review of #215). Hosts
-  # that are not active, have not reported a version, or already run the release (or newer) are never chosen. A
-  # stage chosen before and not opened (an advance that found the rollout halted) is chosen again from where it was.
+  # that are not active, have not reported a version, or already run the release (or newer) are never chosen.
+  #
+  # Prepares of one rollout are serialised by a session-level advisory lock (with_prepare_lock): the advance job, the
+  # backstop, a job delivered twice, and an operator's Advance would otherwise each add a full quota, and a 1% stage
+  # would open at 2% or more (review of #215). Under it the quota is taken from the database in every batch. A stage
+  # prepared before and not opened (an advance refused by a halt) is re-timed from now first, so its offers do not
+  # all fall due the moment it opens.
+  #
+  # Uncached: each batch's INSERT runs inside a SELECT (a CTE), which does not clear Active Record's query cache, and the
+  # quota must be counted afresh in every batch.
   def prepare_stage!(rollout, stage)
-    older = older_hosts(rollout.agent_release.semver)
-    older = older.merge(canary_scope(rollout.canary_host_ids, rollout.canary_tag)) if stage.zero?
-    percent = stage.zero? ? 100 : rollout.stage_percents.fetch(stage - 1)
-    # The 100% stage takes every older host still left, however many there are by then (review of #215); a partial
-    # stage takes enough to reach its share of the older hosts and those already in the rollout.
-    wanted = if percent == 100
-      nil
-    else
-      included = rollout.rollout_hosts.count
-      candidates = older.count - rollout.rollout_hosts.joins(:host).merge(older).count
-      [ ((candidates + included) * percent / 100.0).ceil - included, 0 ].max
-    end
-    spread = stage_spread(wanted || older.count)
-    # Offer times count from now; halted_seconds is subtracted so a past halt does not delay this stage (OFFER_DUE_SQL).
-    base = Time.current - rollout.halted_seconds
-    insert_stage_rows!(rollout, older, stage:, wanted:, spread:, base:)
-    rollout.rollout_hosts.where(stage:).count
+    ApplicationRecord.uncached { with_prepare_lock(rollout) { prepare_locked!(rollout, stage) } }
   end
   private_class_method :prepare_stage!
 
-  # Inserts up to wanted (or all) older hosts that are not in the rollout yet, in host id order. Each statement takes
-  # the next OPEN_BATCH older hosts after a cursor and inserts them; the unique index on (rollout_id, host_id) skips
-  # those already chosen (ON CONFLICT DO NOTHING), with no anti-join for the planner to get wrong: a new rollout's id
-  # has no statistics, and as a join that was quadratic (32 s for the third batch of 10,000). The batch, the insert,
-  # and the next cursor come from one statement, so one snapshot (review of #215); a batch that adds more than are
-  # still wanted has its highest extra rows deleted by id in the same transaction. Each host's offer time is base plus
-  # its offset (OFFER_DELAY_SQL).
-  def insert_stage_rows!(rollout, older, stage:, wanted:, spread:, base:)
-    added = 0
+  def prepare_locked!(rollout, stage)
+    begin
+      older = older_hosts(rollout.agent_release.semver)
+      older = older.merge(canary_scope(rollout.canary_host_ids, rollout.canary_tag)) if stage.zero?
+      percent = stage.zero? ? 100 : rollout.stage_percents.fetch(stage - 1)
+      members = rollout.rollout_hosts
+      # Older hosts not in the rollout yet. A join, so a new rollout's missing statistics cannot make it quadratic.
+      candidates = older.count - members.joins(:host).merge(older).count
+      in_stage = members.where(stage:).count
+      # The 100% stage takes every older host left (review of #215); a partial stage brings the rollout to its share
+      # of the older hosts and those already in it: a total, so each batch can check it against the database.
+      target = (((candidates + members.count) * percent / 100.0).ceil unless percent == 100)
+      size = in_stage + (target ? [ target - members.count, 0 ].max : candidates)
+      spread = stage_spread(size)
+      # Offer times count from now; halted_seconds is subtracted so a past halt does not delay this stage (OFFER_DUE_SQL).
+      base = Time.current - rollout.halted_seconds
+      retime_stage!(rollout, stage, base:, spread:) if in_stage.positive?
+      insert_stage_rows!(rollout, older, stage:, target:, spread:, base:)
+      members.where(stage:).count
+    end
+  end
+  private_class_method :prepare_locked!
+
+  # Runs the block holding this rollout's prepare lock, or returns nil without running it when another session holds
+  # it. Session-level, so it spans the prepare's own transactions; released first in ensure, and if that fails the
+  # connection is closed and dropped from the pool, which releases it (as Liveness.evaluate! does).
+  def with_prepare_lock(rollout)
+    connection = Rollout.connection
+    key = ApplicationRecord.sanitize_sql_array([ "?, ?::int", PREPARE_LOCK_KEY, rollout.id ])
+    return nil unless connection.select_value("SELECT pg_try_advisory_lock(#{key})")
+
+    begin
+      yield
+    ensure
+      begin
+        connection.select_value("SELECT pg_advisory_unlock(#{key})")
+      rescue ActiveRecord::ActiveRecordError
+        connection.throw_away!
+      end
+    end
+  end
+  private_class_method :with_prepare_lock
+
+  # Gives a prepared stage's pending hosts their offer times again, from base (review of #215).
+  def retime_stage!(rollout, stage, base:, spread:)
+    RolloutHost.where(rollout_id: rollout.id, stage:, state: "pending")
+               .update_all([ "offer_at = ?::timestamp + #{RETIME_DELAY_SQL}, updated_at = ?", base, rollout.id, spread, Time.current ])
+  end
+  private_class_method :retime_stage!
+
+  # Inserts older hosts that are not in the rollout yet, in host id order, until the rollout has target hosts (or, for
+  # the 100% stage, target nil, until none is left). Each statement takes the next OPEN_BATCH older hosts after a
+  # cursor and inserts them; the unique index on (rollout_id, host_id) skips those already chosen (ON CONFLICT DO
+  # NOTHING), with no anti-join for the planner to get wrong: a new rollout's id has no statistics, and as a join that
+  # was quadratic (32 s for the third batch of 10,000). The batch, the insert, and the next cursor come from one
+  # statement, so one snapshot. What is still wanted is the target less the rollout's rows, counted in the batch's own
+  # transaction, and a batch that adds more has its highest extra rows deleted by id there (review of #215). Each
+  # host's offer time is base plus its offset (OFFER_DELAY_SQL).
+  def insert_stage_rows!(rollout, older, stage:, target:, spread:, base:)
     after = 0
     loop do
-      break if wanted && added >= wanted
+      last = RolloutHost.transaction do
+        wanted = target && (target - rollout.rollout_hosts.count)
+        next nil if wanted && wanted <= 0
 
-      batch = older.where("hosts.id > ?", after).order(:id).limit(OPEN_BATCH).select(:id, :agent_version)
-      values = ApplicationRecord.sanitize_sql_array(
-        [ "?, batch.id, ?, 'pending', ?::timestamp + #{OFFER_DELAY_SQL.sub('hosts.id', 'batch.id')}, batch.agent_version, ?::timestamp, ?::timestamp",
-          rollout.id, stage, base, rollout.id, spread, Time.current, Time.current ]
-      )
-      row = RolloutHost.transaction do
+        batch = older.where("hosts.id > ?", after).order(:id).limit(OPEN_BATCH).select(:id, :agent_version)
+        values = ApplicationRecord.sanitize_sql_array(
+          [ "?, batch.id, ?, 'pending', ?::timestamp + #{OFFER_DELAY_SQL.sub('hosts.id', 'batch.id')}, batch.agent_version, ?::timestamp, ?::timestamp",
+            rollout.id, stage, base, rollout.id, spread, Time.current, Time.current ]
+        )
         last, inserted = RolloutHost.connection.select_rows(<<~SQL.squish).first
           WITH batch AS (#{batch.to_sql}),
           inserted AS (
@@ -424,19 +476,13 @@ module Rollouts
           SELECT (SELECT max(id) FROM batch), (SELECT json_agg(json_build_array(host_id, id)) FROM inserted)
         SQL
         rows = inserted ? JSON.parse(inserted).sort : []
-        if wanted && added + rows.size > wanted
-          RolloutHost.where(id: rows.drop(wanted - added).map(&:last)).delete_all
-          rows = rows.first(wanted - added)
-        end
-        [ last, rows.size ]
+        RolloutHost.where(id: rows.drop(wanted).map(&:last)).delete_all if wanted && rows.size > wanted
+        last
       end
-      last, count = row
-      added += count
-      break unless last # no older host is left
+      break unless last # the target is reached, or no older host is left
 
       after = last
     end
-    added
   end
   private_class_method :insert_stage_rows!
 

@@ -208,6 +208,34 @@ RSpec.describe Rollouts do
     end
   end
 
+  describe "the prepare lock (review of #215)" do
+    let!(:canary) { host_running("0.2.0").first }
+    let!(:rollout) { start_rollout(release:, canaries: [ canary ], stage_percents: [ 100 ]) }
+
+    def held = ActiveRecord::Base.connection.select_value(
+      "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = #{Rollouts::PREPARE_LOCK_KEY} AND objid = #{rollout.id} AND pid = pg_backend_pid()"
+    )
+
+    it "is released after the prepare, also when the prepare fails" do
+      Rollouts.send(:prepare_stage!, rollout, 1)
+      expect(held).to eq(0)
+      allow(Rollouts).to receive(:insert_stage_rows!).and_raise("boom")
+      expect { Rollouts.send(:prepare_stage!, rollout, 1) }.to raise_error("boom")
+      expect(held).to eq(0)
+    end
+
+    it "closes the connection when the lock cannot be released, so the lock goes with it" do
+      connection = Rollout.connection
+      allow(connection).to receive(:select_value).and_call_original
+      allow(connection).to receive(:select_value).with(/pg_advisory_unlock/).and_raise(ActiveRecord::ConnectionFailed)
+      allow(connection).to receive(:throw_away!)
+      Rollouts.send(:prepare_stage!, rollout, 1)
+      expect(connection).to have_received(:throw_away!)
+    ensure
+      connection&.execute("SELECT pg_advisory_unlock_all()") # throw_away! was stubbed, so the test's connection still holds it
+    end
+  end
+
   describe "the advance after a confirmed stage (#199)" do
     include ActiveJob::TestHelper
 
@@ -226,16 +254,23 @@ RSpec.describe Rollouts do
       expect { Rollouts.advance_confirmed!(0, from: 0) }.not_to raise_error
     end
 
-    it "is opened by RolloutTimeoutJob every minute if the job was lost", rollout_jobs: :enqueued do
+    it "is enqueued again by RolloutTimeoutJob every minute if the job was lost, never prepared on its queue", rollout_jobs: :enqueued do
       canary, = host_running("0.2.0")
       Array.new(3) { host_running("0.2.0") }
       rollout = start_rollout(release:, canaries: [ canary ], stage_percents: [ 50, 100 ]) # stage 1: one more host
       report(rollout, canary)
       clear_enqueued_jobs
-      RolloutTimeoutJob.perform_now
+      statements = []
+      callback = ->(*, payload) { statements << payload[:sql] }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { RolloutTimeoutJob.perform_now }
+      expect(statements.grep(/INSERT INTO rollout_hosts|pg_try_advisory_lock/)).to be_empty # the realtime queue only enqueues (S-7)
+      expect(rollout.reload.current_stage).to eq(0)
+      expect(enqueued_jobs.map { |job| [ job["job_class"], job["arguments"], job["queue_name"] ] }).to eq([ [ "RolloutAdvanceJob", [ rollout.id, 0 ], "default" ] ])
+      perform_enqueued_jobs(only: RolloutAdvanceJob)
       expect(rollout.reload.current_stage).to eq(1)
-      RolloutTimeoutJob.perform_now # an unconfirmed stage stays
-      expect(rollout.reload.current_stage).to eq(1)
+      clear_enqueued_jobs
+      RolloutTimeoutJob.perform_now # an unconfirmed stage enqueues nothing
+      expect(enqueued_jobs).to be_empty
     end
 
     it "does not advance a rollout that halted, or an operator moved on, before the job ran", rollout_jobs: :enqueued do
@@ -272,6 +307,38 @@ RSpec.describe Rollouts do
       # The rest follow over the 290 seconds the window had left.
       expect(due.(Time.current + 150.seconds)).to eq(offsets.values.count { |offset| offset <= 160 })
       expect(due.(Time.current + 290.seconds)).to eq(40)
+    end
+
+    it "re-times a stage prepared for an advance that was refused, so its offers stay spread when it opens" do
+      canary, = host_running("0.2.0")
+      hosts = Array.new(40) { host_running("0.2.0").first }
+      t0 = Time.current.change(usec: 0)
+      travel_to(t0)
+      rollout = start_rollout(release:, canaries: [ canary ], stage_percents: [ 100 ])
+      Rollouts.send(:prepare_stage!, rollout, 1) # chosen, then the advance was refused (a halt committed meanwhile)
+      Rollouts.halt!(rollout, actor: operator)
+      travel_to(t0 + 1.hour)
+      Rollouts.resume!(rollout.reload, actor: operator)
+      travel_to(t0 + 7.hours)
+      Rollouts.advance!(rollout.reload, actor: operator)
+      expect(rollout.reload.current_stage).to eq(1)
+      due = ->(at) { hosts.count { |host| Rollouts.offer_scope(host_id: host.id, now: at).exists? } }
+      expect(due.(Time.current)).to be < 40 # not every offer due the moment the stage opens
+      expect(due.(Time.current + 300.seconds)).to eq(40)
+    end
+
+    it "sizes the 100% stage's window from the hosts it adds, not the older hosts already in the rollout" do
+      Rails.configuration.x.rollouts.spread = 1
+      Rails.configuration.x.rollouts.downloads_per_second = 1
+      canary, = host_running("0.2.0")
+      Array.new(9) { host_running("0.2.0") }
+      rollout = start_rollout(release:, canaries: [ canary ], stage_percents: [ 50, 100 ])
+      Rollouts.advance!(rollout, actor: operator) # stage 1: 5 of the 10 hosts, still pending (older)
+      allow(Rollouts).to receive(:stage_spread).and_call_original
+      Rollouts.advance!(rollout.reload, actor: operator)
+      expect(Rollouts).to have_received(:stage_spread).with(5) # the 5 added, not the 10 older hosts
+      offsets = rollout.rollout_hosts.where(stage: 2).map { |member| (member.offer_at + rollout.reload.halted_seconds - member.created_at).round }
+      expect(offsets).to all(be_between(0, 4))
     end
 
     it "does not delay a stage opened after a halt by the time halted before it" do
