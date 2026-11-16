@@ -31,7 +31,11 @@ class CreateHostLiveness < ActiveRecord::Migration[8.1]
   # Half of each page free, for the next version of every row on it (see ADR 0029 for the measurements).
   STORAGE = "fillfactor = 50, autovacuum_vacuum_scale_factor = 0.01".freeze
   MOVED = "liveness_status, last_seen_at, agent_reported_at".freeze
-  FUNCTIONS = %i[host_compliance_summaries_changed host_compliance_summaries_flush host_compliance_summaries_sync].freeze
+  # Each function's version going up, and the one down restores. host_compliance_summaries_changed v02 is #226's, whose
+  # transition-table queries run through EXECUTE (#224); v03 keeps that, so a rollback must not bring back v01's static
+  # queries and their cached plans.
+  FUNCTIONS = { host_compliance_summaries_changed: [ 3, 2 ], host_compliance_summaries_flush: [ 2, 1 ],
+                host_compliance_summaries_sync: [ 2, 1 ] }.freeze
   TRIGGERS = %i[host_compliance_summaries_liveness_insert_delete host_compliance_summaries_liveness_update host_liveness_no_truncate].freeze
 
   def up
@@ -51,7 +55,7 @@ class CreateHostLiveness < ActiveRecord::Migration[8.1]
             "SELECT id, COALESCE(liveness_status, 'online'), last_seen_at, agent_reported_at, enrollment_state = 'active' " \
             "FROM hosts WHERE last_seen_at IS NOT NULL"
     # The copied statuses are those the summaries already rank by, so the triggers come after the copy.
-    FUNCTIONS.each { |name| execute Rails.root.join("db/functions/#{name}_v02.sql").read }
+    FUNCTIONS.each { |name, (up, _down)| execute function_sql(name, up) }
     TRIGGERS.each { |name| create_trigger name, on: :host_liveness }
     execute Rails.root.join("db/functions/host_liveness_follow_enrollment_v01.sql").read
     create_trigger :host_liveness_follow_enrollment, on: :hosts
@@ -74,7 +78,11 @@ class CreateHostLiveness < ActiveRecord::Migration[8.1]
     add_check_constraint :hosts, "liveness_status IS NULL OR (liveness_status::text = ANY (ARRAY['online'::character varying::text, " \
                                  "'stale'::character varying::text, 'offline'::character varying::text]))", name: "hosts_liveness_status_valid"
     add_index :hosts, :liveness_status
-    FUNCTIONS.each { |name| execute Rails.root.join("db/functions/#{name}_v01.sql").read }
+    FUNCTIONS.each { |name, (_up, down)| execute function_sql(name, down) }
     drop_table :host_liveness # its triggers go with it
   end
+
+  private
+
+  def function_sql(name, version) = Rails.root.join("db/functions/#{name}_v#{format('%02d', version)}.sql").read
 end

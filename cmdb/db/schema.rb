@@ -1365,16 +1365,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
       BEGIN
         -- Notes the hosts whose summaries a change can move (#193), for host_compliance_summaries_flush at commit. No
         -- summary row is locked here. Statement triggers pick out the rows that changed in a way the summary can see.
+        --
+        -- Every query over a transition table (old_rows, new_rows) runs through EXECUTE, so it is planned for the rows this
+        -- statement changed (v02, #224). A static query keeps the plan it got the first time in the session: one without
+        -- parameters always reuses its generic plan, and the transition tables' size is frozen into it. So after a one-row
+        -- update, a 20,000-row UPDATE of hosts ran a nested loop for 29 to 40 s instead of a merge join for about 0.1 s.
 
         -- hosts (statement): a new host, or a change to a field the fleet list shows, sorts, or filters by (a sync).
+        -- Liveness is in host_liveness (v03, #192; its transition-table queries run through EXECUTE as in v02, #224).
         IF TG_TABLE_NAME = 'hosts' THEN
           IF TG_OP = 'INSERT' THEN
-            PERFORM host_compliance_summaries_mark(ARRAY(SELECT n.id FROM new_rows n), 1::smallint);
+            EXECUTE 'SELECT ARRAY(SELECT n.id FROM new_rows n)' INTO host_ids;
+            PERFORM host_compliance_summaries_mark(host_ids, 1::smallint);
           ELSE
-            PERFORM host_compliance_summaries_mark(ARRAY(
-              SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
-               WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
-                     IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state)), 1::smallint);
+            EXECUTE $q$
+              SELECT ARRAY(SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
+                            WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
+                                  IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state))
+            $q$ INTO host_ids;
+            PERFORM host_compliance_summaries_mark(host_ids, 1::smallint);
           END IF;
           RETURN NULL;
         END IF;
@@ -1397,12 +1406,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
         -- be the whole fleet. Those hosts are queued, not recounted here: an import is one long transaction, and must not
         -- hold their summary rows. ComplianceSummaryRecountJob recounts them in short sorted batches after it commits.
         IF TG_TABLE_NAME = 'advisories' THEN
-          INSERT INTO host_compliance_recounts (host_id)
-          SELECT DISTINCT f.host_id
-            FROM old_rows o JOIN new_rows n ON n.id = o.id
-            JOIN vulnerability_findings f ON f.advisory_id = n.id
-           WHERE o.severity <> n.severity AND f.state = ANY (open_states)
-          ON CONFLICT DO NOTHING;
+          EXECUTE $q$
+            INSERT INTO host_compliance_recounts (host_id)
+            SELECT DISTINCT f.host_id
+              FROM old_rows o JOIN new_rows n ON n.id = o.id
+              JOIN vulnerability_findings f ON f.advisory_id = n.id
+             WHERE o.severity <> n.severity AND f.state = ANY ($1)
+            ON CONFLICT DO NOTHING
+          $q$ USING open_states;
           RETURN NULL;
         END IF;
 
@@ -1419,30 +1430,34 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
         -- counted under changed.
         ELSIF TG_TABLE_NAME = 'cis_results' THEN
           IF TG_OP = 'INSERT' THEN
-            host_ids := ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.result = ANY (counted));
+            EXECUTE 'SELECT ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.result = ANY ($1))' INTO host_ids USING counted;
           ELSIF TG_OP = 'DELETE' THEN
-            host_ids := ARRAY(SELECT DISTINCT o.host_id FROM old_rows o WHERE o.result = ANY (counted));
+            EXECUTE 'SELECT ARRAY(SELECT DISTINCT o.host_id FROM old_rows o WHERE o.result = ANY ($1))' INTO host_ids USING counted;
           ELSE
-            host_ids := ARRAY(
-              SELECT DISTINCT v.host_id
-                FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
-               WHERE o.host_id <> n.host_id OR o.cis_rule_id <> n.cis_rule_id
-                  OR (o.result <> n.result AND (o.result = ANY (counted) OR n.result = ANY (counted)))
-                  OR (n.result = 'fail' AND o.cis_rule_version_id IS DISTINCT FROM n.cis_rule_version_id));
+            EXECUTE $q$
+              SELECT ARRAY(
+                SELECT DISTINCT v.host_id
+                  FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
+                 WHERE o.host_id <> n.host_id OR o.cis_rule_id <> n.cis_rule_id
+                    OR (o.result <> n.result AND (o.result = ANY ($1) OR n.result = ANY ($1)))
+                    OR (n.result = 'fail' AND o.cis_rule_version_id IS DISTINCT FROM n.cis_rule_version_id))
+            $q$ INTO host_ids USING counted;
           END IF;
 
         -- vulnerability_findings (statement): a finding opened, reopened, or resolved, or an open one moved.
         ELSIF TG_TABLE_NAME = 'vulnerability_findings' THEN
           IF TG_OP = 'INSERT' THEN
-            host_ids := ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY (open_states));
+            EXECUTE 'SELECT ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY ($1))' INTO host_ids USING open_states;
           ELSIF TG_OP = 'DELETE' THEN
-            host_ids := ARRAY(SELECT DISTINCT o.host_id FROM old_rows o WHERE o.state = ANY (open_states));
+            EXECUTE 'SELECT ARRAY(SELECT DISTINCT o.host_id FROM old_rows o WHERE o.state = ANY ($1))' INTO host_ids USING open_states;
           ELSE
-            host_ids := ARRAY(
-              SELECT DISTINCT v.host_id
-                FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
-               WHERE (o.state = ANY (open_states) OR n.state = ANY (open_states))
-                 AND ((o.state = ANY (open_states)) <> (n.state = ANY (open_states)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id));
+            EXECUTE $q$
+              SELECT ARRAY(
+                SELECT DISTINCT v.host_id
+                  FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
+                 WHERE (o.state = ANY ($1) OR n.state = ANY ($1))
+                   AND ((o.state = ANY ($1)) <> (n.state = ANY ($1)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id))
+            $q$ INTO host_ids USING open_states;
           END IF;
         END IF;
 
@@ -1583,12 +1598,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
       CREATE TRIGGER host_vulnerability_evaluations_no_truncate BEFORE TRUNCATE ON public.host_vulnerability_evaluations FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
   SQL
 
-  create_trigger :host_liveness_follow_enrollment, sql_definition: <<-SQL
-      CREATE TRIGGER host_liveness_follow_enrollment AFTER UPDATE OF enrollment_state ON public.hosts FOR EACH ROW WHEN (((old.enrollment_state)::text IS DISTINCT FROM (new.enrollment_state)::text)) EXECUTE FUNCTION host_liveness_follow_enrollment()
-  SQL
-
   create_trigger :host_compliance_summaries_hosts_insert, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_hosts_insert AFTER INSERT ON public.hosts REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_liveness_follow_enrollment, sql_definition: <<-SQL
+      CREATE TRIGGER host_liveness_follow_enrollment AFTER UPDATE OF enrollment_state ON public.hosts FOR EACH ROW WHEN (((old.enrollment_state)::text IS DISTINCT FROM (new.enrollment_state)::text)) EXECUTE FUNCTION host_liveness_follow_enrollment()
   SQL
 
   create_trigger :host_compliance_summaries_hosts_update, sql_definition: <<-SQL
@@ -1599,24 +1614,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
       CREATE TRIGGER host_compliance_summaries_findings_insert AFTER INSERT ON public.vulnerability_findings REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
-  create_trigger :host_compliance_summaries_findings_update, sql_definition: <<-SQL
-      CREATE TRIGGER host_compliance_summaries_findings_update AFTER UPDATE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
-  SQL
-
-  create_trigger :vulnerability_findings_no_truncate, sql_definition: <<-SQL
-      CREATE TRIGGER vulnerability_findings_no_truncate BEFORE TRUNCATE ON public.vulnerability_findings FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
-  SQL
-
-  create_trigger :host_compliance_summaries_liveness_insert_delete, sql_definition: <<-SQL
-      CREATE TRIGGER host_compliance_summaries_liveness_insert_delete AFTER INSERT OR DELETE ON public.host_liveness FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
-  SQL
-
   create_trigger :host_liveness_no_truncate, sql_definition: <<-SQL
       CREATE TRIGGER host_liveness_no_truncate BEFORE TRUNCATE ON public.host_liveness FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
   SQL
 
   create_trigger :host_compliance_summaries_liveness_update, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_liveness_update AFTER UPDATE OF liveness_status ON public.host_liveness FOR EACH ROW WHEN (((old.liveness_status)::text IS DISTINCT FROM (new.liveness_status)::text)) EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_liveness_insert_delete, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_liveness_insert_delete AFTER INSERT OR DELETE ON public.host_liveness FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_findings_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_findings_update AFTER UPDATE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :vulnerability_findings_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER vulnerability_findings_no_truncate BEFORE TRUNCATE ON public.vulnerability_findings FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_truncate_guard()
   SQL
 
   create_trigger :host_compliance_summaries_findings_delete, sql_definition: <<-SQL

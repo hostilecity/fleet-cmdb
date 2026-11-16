@@ -51,15 +51,7 @@ module FleetBenchmark
 
     def log(message) = puts("[seed] #{message}")
 
-    # Each phase starts with no cached plans, and plans with parameters are always made for their values (#192). The
-    # compliance summaries' triggers plan for what they see: a query over a trigger's transition tables has no
-    # parameters, so PL/pgSQL keeps the first plan it made in the session, and one made for the template's one-row
-    # updates (a nested loop) took over 20 minutes on the 100,000-row UPDATE of hosts. A query with an array of host
-    # ids switches to a generic plan, made for an array of about 10, after five runs; the CIS results copy then ran
-    # for over 30 minutes.
     def phase(name)
-      run_sql("DISCARD PLANS")
-      run_sql("SET plan_cache_mode = force_custom_plan")
       started = FleetBenchmark.clock
       yield
       log format("%-22s %8.1f s", name, FleetBenchmark.clock - started)
