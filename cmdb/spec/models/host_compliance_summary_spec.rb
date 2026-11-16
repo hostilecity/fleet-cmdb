@@ -36,7 +36,8 @@ RSpec.describe HostComplianceSummary do
     expect(summary(host)).to have_attributes(status_rank: 0, agent_key: [ 1, 10, 2 ], os_name: "Debian GNU/Linux 13 (trixie)")
     host.edit!({ name: "Web B", hostname: "vm-03.example.lan", tags: "web" }, actor: Audit::SYSTEM)
     expect(summary(host)).to have_attributes(name_key: "web b", hostname: "vm-03.example.lan", tags_key: "web")
-    Host.where(id: host.id).update_all(agent_version: "not a version", liveness_status: "offline")
+    Host.where(id: host.id).update_all(agent_version: "not a version")
+    HostLiveness.where(host_id: host.id).update_all(liveness_status: "offline")
     expect(summary(host)).to have_attributes(agent_key: nil, status_rank: 2)
     host.revoke!(actor: Audit::SYSTEM)
     expect(summary(host)).to have_attributes(enrollment_state: "revoked", status_rank: 5)
@@ -179,7 +180,7 @@ RSpec.describe HostComplianceSummary do
     record_heartbeat(host)
     findings!(host, "low")
     before = summary(host).attributes
-    Host.where(id: host.id).update_all(liveness_status: "offline")
+    HostLiveness.where(host_id: host.id).update_all(liveness_status: "offline")
     expect(summary(host).attributes).to eq(before.merge("status_rank" => 2))
     expect_consistent(host)
   end

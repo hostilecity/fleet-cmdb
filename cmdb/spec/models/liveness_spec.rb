@@ -11,6 +11,8 @@ RSpec.describe Liveness do
 
   def evaluate_at(time) = travel_to(time) { LivenessEvaluationJob.perform_now }
 
+  def heartbeat_at_for(target, time) = travel_to(time) { record_heartbeat(target, agent_time: time) }
+
   it "moves a host online, stale, then offline at the default thresholds, and back online on a heartbeat (AC-1.2)" do
     heartbeat_at(start)
     { 2.minutes => "online", 3.minutes => "stale", 14.minutes => "stale", 15.minutes => "offline", 60.minutes => "offline" }.each do |elapsed, expected|
@@ -61,9 +63,32 @@ RSpec.describe Liveness do
     expect(host.reload.display_status).to eq("revoked")
   end
 
+  it "never finds revoked or retired hosts again, and evaluates a host again once it is active (review of #220)" do
+    revoked, retired, other = Array.new(3) { enrolled_host.first }
+    [ host, revoked, retired, other ].each { |h| heartbeat_at_for(h, start) }
+    revoked.revoke!(actor: Audit::SYSTEM)
+    retired.retire!(actor: Audit::SYSTEM)
+    expect(HostLiveness.where(host_id: [ revoked, retired ]).pluck(:evaluated)).to eq([ false, false ])
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(2) # host and other
+
+    statements = []
+    callback = ->(*, payload) { statements << payload }
+    quiet = ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { travel_to(start + 20.minutes) { described_class.evaluate! } }
+    expect(quiet).to eq(0)
+    expect(statements.count { |payload| payload[:name] == "Liveness candidates" }).to eq(1)
+    expect(statements.map { |payload| payload[:sql] }.grep(/\bFROM "?hosts"?\b/)).to be_empty # no lookup of the hosts left behind
+    expect(HostLiveness.where(host_id: [ revoked, retired ]).pluck(:liveness_status)).to eq(%w[online online]) # not evaluated
+
+    revoked.begin_reenrollment!(actor: Audit::SYSTEM)
+    revoked.activate!(actor: Audit::SYSTEM)
+    expect(revoked.reload.liveness.evaluated).to be(true)
+    expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(1)
+    expect(revoked.reload.liveness_status).to eq("offline")
+  end
+
   it "reads the clock and thresholds only after taking the evaluation lock" do
     record_heartbeat(host, agent_time: Time.current)
-    host.update_columns(last_seen_at: 20.minutes.ago)
+    set_liveness(host, last_seen_at: 20.minutes.ago)
     locked_at = nil
     callback = ->(*, payload) { locked_at ||= Time.current if payload[:sql].include?("pg_try_advisory_lock") }
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { described_class.evaluate! }
@@ -75,27 +100,25 @@ RSpec.describe Liveness do
     others = Array.new(3) { enrolled_host.first }
     ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
     expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(4)
-    expect(Host.active.pluck(:liveness_status).uniq).to eq([ "offline" ])
+    expect(HostLiveness.where(host_id: [ host, *others ]).pluck(:liveness_status).uniq).to eq([ "offline" ])
   end
 
   it "moves hosts in transactions of at most BATCH_SIZE hosts, each with its own events (scale assessment)" do
     stub_const("Liveness::BATCH_SIZE", 2)
     others = Array.new(4) { enrolled_host.first }
     ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
-    batches = []
-    callback = lambda do |*, payload|
-      next unless payload[:sql].include?("FOR UPDATE SKIP LOCKED")
-
-      binds = payload[:type_casted_binds].respond_to?(:call) ? payload[:type_casted_binds].call : payload[:type_casted_binds]
-      batches << "#{payload[:sql]} #{Array(binds).join(' ')}"
-    end
+    statements = []
+    callback = ->(*, payload) { statements << payload }
     written = ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { travel_to(start + 20.minutes) { described_class.evaluate! } }
 
     expect(written).to eq(5)
-    expect(Host.active.pluck(:liveness_status).uniq).to eq([ "offline" ])
+    expect(HostLiveness.where(host_id: [ host, *others ]).pluck(:liveness_status).uniq).to eq([ "offline" ])
     expect(HostStatusEvent.where(reason: "evaluation", to_status: "offline").count).to eq(5)
-    expect(batches.count { |sql| sql.include?("offline") }).to eq(3) # 2 + 2 + 1, then the short batch ends the bucket
-    expect(batches.size).to eq(5) # and one query each for the online and stale buckets, which have nothing to move
+    # One pass over host_liveness, 2 + 2 + 1, the short batch ending the run; each batch locks only the hosts it found.
+    expect(statements.count { |payload| payload[:name] == "Liveness candidates" }).to eq(3)
+    expect(statements.count { |payload| payload[:sql].include?("FOR NO KEY UPDATE SKIP LOCKED") }).to eq(3)
+    expect(statements.count { |payload| payload[:name] == "Liveness transitions" }).to eq(3)
+    expect(statements.select { |payload| payload[:sql].match?(/\bFROM "?hosts"?\b/) }.map { |payload| payload[:sql] }).to all(include("SKIP LOCKED"))
   end
 
   it "refreshes the fleet pages for the batches that committed when a later batch fails, then releases the lock (review of #186)" do
@@ -111,7 +134,7 @@ RSpec.describe Liveness do
     allow(FleetBroadcast).to receive(:hosts_changed)
 
     expect { travel_to(start + 20.minutes) { described_class.evaluate! } }.to raise_error(ActiveRecord::StatementInvalid)
-    first = Host.where(liveness_status: "offline").pluck(:id)
+    first = HostLiveness.where(liveness_status: "offline").pluck(:host_id)
     expect(first.size).to eq(1) # the first batch committed; the second rolled back
     expect(FleetBroadcast).to have_received(:hosts_changed).with(first)
     expect(travel_to(start + 20.minutes) { described_class.evaluate! }).to eq(2) # the lock was released; the next run does the rest

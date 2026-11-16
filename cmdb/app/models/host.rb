@@ -39,14 +39,18 @@ class Host < ApplicationRecord
   has_many :agent_updates, dependent: :restrict_with_exception
   has_many :report_requests, dependent: :restrict_with_exception
   has_many :tasks, dependent: :restrict_with_exception
+  # Per-heartbeat state, in a narrow table so heartbeats leave this row alone (#192); nil until the first heartbeat.
+  has_one :liveness, class_name: "HostLiveness", dependent: :restrict_with_exception
 
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
   validates :hostname, presence: true, length: { maximum: 253 }, format: { with: HOSTNAME_FORMAT, allow_blank: true }
   validates :description, length: { maximum: 1_000 }, format: { without: CONTROL_CHARACTERS_EXCEPT_WHITESPACE }
   validates :notes, length: { maximum: 10_000 }, format: { without: CONTROL_CHARACTERS_EXCEPT_WHITESPACE }
   validates :enrollment_state, inclusion: { in: ENROLLMENT_STATES }
-  validates :liveness_status, inclusion: { in: LIVENESS_STATUSES }, allow_nil: true
   validate :tags_are_valid
+
+  # Read from host_liveness; nil for a host that has never sent a heartbeat. Lists preload :liveness.
+  delegate :liveness_status, :last_seen_at, :agent_reported_at, to: :liveness, allow_nil: true
 
   before_create :require_pending_state
   before_update :require_transition_for_state_change
@@ -57,7 +61,7 @@ class Host < ApplicationRecord
   scope :active, -> { where(enrollment_state: "active") }
   scope :with_enrollment_state, ->(state) { where(enrollment_state: state) }
   # Liveness applies to active hosts only.
-  scope :with_liveness, ->(status) { active.where(liveness_status: status) }
+  scope :with_liveness, ->(status) { active.joins(:liveness).where(host_liveness: { liveness_status: status }) }
   scope :tagged, ->(tag) { where("hosts.tags @> ARRAY[?]::varchar[]", normalize_tag(tag)) }
 
   def self.normalize_tag(tag)

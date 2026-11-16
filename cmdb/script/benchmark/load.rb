@@ -21,6 +21,11 @@ module FleetBenchmark
     # Requests per agent per hour on the default intervals.
     MIX = { "heartbeat" => 60.0, "poll" => 120.0, "inventory" => 4.0, "config" => 1 / 6.0, "packages" => 1 / 6.0 }.freeze
     POOL = 97 # distinct bodies per kind (a prime, so a host meets the same report id again only after POOL x hosts requests)
+    # The tables a heartbeat writes (#192); one that does not exist in this schema is left out.
+    TRACKED = %w[hosts host_liveness].freeze
+    # A backend reports its table statistics when it goes idle, at most every 10 s (PGSTAT_IDLE_INTERVAL), so the
+    # counters are read this long after the last request.
+    STATS_SETTLE = 11
 
     def initialize(url:, kind: "heartbeat", threads: 8, duration: 30, hosts: 20_000, first_host: 1001, agent_host: nil, warm: false)
       @uri = URI(url)
@@ -38,10 +43,15 @@ module FleetBenchmark
       check_hosts!
       bodies = KINDS.keys.select { |k| @kind == "mix" || k == @kind }.without("inventory").to_h { |k| [ k, build_bodies(k) ] }
       warm_inventories if @warm
+      sleep STATS_SETTLE if @warm
       before = db_counters
+      wal = WalWindow.open(ApplicationRecord.connection)
       samples = run(bodies)
+      wal.stop
+      sleep STATS_SETTLE
       after = db_counters
-      print_results(samples, after.to_h { |key, value| [ key, value - before.fetch(key, 0) ] })
+      wal = wal.finish
+      print_results(samples, after.to_h { |key, value| [ key, value.is_a?(Hash) ? value.to_h { |k, v| [ k, v - before.dig(key, k).to_i ] } : value - before.fetch(key, 0) ] }, wal)
     end
 
     private
@@ -148,12 +158,14 @@ module FleetBenchmark
     def read_counters(conn)
       db = conn.select_one("SELECT xact_commit, xact_rollback, tup_inserted, tup_updated, tup_deleted, blks_read, blks_hit, deadlocks " \
                            "FROM pg_stat_database WHERE datname = current_database()")
-      hosts = conn.select_one("SELECT n_tup_upd, n_tup_hot_upd, n_dead_tup FROM pg_stat_user_tables WHERE relname = 'hosts'")
-      db.transform_values(&:to_i).merge("hosts_updates" => hosts["n_tup_upd"].to_i, "hosts_hot_updates" => hosts["n_tup_hot_upd"].to_i,
-                                        "hosts_dead_tuples" => hosts["n_dead_tup"].to_i)
+      tables = conn.select_rows(<<~SQL).to_h { |name, *values| [ name, %w[updates hot_updates dead_tuples heap_bytes index_bytes].zip(values.map(&:to_i)).to_h ] }
+        SELECT relname, n_tup_upd, n_tup_hot_upd, n_dead_tup, pg_relation_size(relid), pg_indexes_size(relid)
+          FROM pg_stat_user_tables WHERE relname IN (#{TRACKED.map { |t| conn.quote(t) }.join(', ')})
+      SQL
+      db.transform_values(&:to_i).merge(tables)
     end
 
-    def print_results(samples, db)
+    def print_results(samples, db, wal)
       puts format("load: %s, %d threads, %d s, %d hosts, against %s%s", @kind, @threads, @duration, @hosts, @uri, @warm ? ", inventories warmed" : "")
       if !@warm && %w[inventory mix].include?(@kind)
         puts "note: without --warm, a host's first inventory report in this database writes a snapshot (seeded inventories are the template's)"
@@ -161,11 +173,27 @@ module FleetBenchmark
       puts format("%-10s %8s %8s %8s %8s %8s %8s  %-22s %9s %9s", "kind", "requests", "req/s", "p50 ms", "p90 ms", "p99 ms", "max ms", "statuses", "bytes in", "bytes out")
       samples.group_by(&:first).sort_by { |kind, _| KINDS.keys.index(kind) }.each { |kind, rows| print_row(kind, rows) }
       print_row("all", samples) if @kind == "mix"
-      puts "database during the run (deltas): " + db.map { |key, value| "#{key}=#{value}" }.join(" ")
+      tables, totals = db.partition { |_, value| value.is_a?(Hash) }.map(&:to_h)
+      puts "database during the run (deltas): " + totals.map { |key, value| "#{key}=#{value}" }.join(" ")
       ok = [ samples.count { |s| s[1].between?(200, 299) }, 1 ].max
-      puts format("per successful request: %.2f commits, %.2f rows updated, %.2f rows inserted, %.1f buffer hits; hosts HOT updates %.0f%%",
-                  db["xact_commit"].fdiv(ok), db["tup_updated"].fdiv(ok), db["tup_inserted"].fdiv(ok), db["blks_hit"].fdiv(ok),
-                  100 * db["hosts_hot_updates"].fdiv([ db["hosts_updates"], 1 ].max))
+      puts format("per successful request: %.2f commits, %.2f rows updated, %.2f rows inserted, %.1f buffer hits",
+                  totals["xact_commit"].fdiv(ok), totals["tup_updated"].fdiv(ok), totals["tup_inserted"].fdiv(ok), totals["blks_hit"].fdiv(ok))
+      tables.each do |name, t|
+        puts format("  %-14s %.2f updates a request, HOT %.1f%%, dead tuples %+d, heap %+.1f KB, indexes %+.1f KB",
+                    name, t["updates"].fdiv(ok), 100 * t["hot_updates"].fdiv([ t["updates"], 1 ].max), t["dead_tuples"],
+                    t["heap_bytes"] / 1024.0, t["index_bytes"] / 1024.0)
+      end
+      print_wal(wal, ok)
+    end
+
+    def print_wal(wal, ok)
+      unless wal.key?("wal_bytes")
+        return puts(format("WAL: %.0f bytes a request, cluster-wide (other databases included)", wal["wal_cluster_bytes"].fdiv(ok)))
+      end
+
+      puts format("WAL in this database: %.0f bytes a request (%.0f of them full-page images), %.1f records a request; cluster-wide %.0f",
+                  wal["wal_bytes"].fdiv(ok), wal["wal_fpi_bytes"].fdiv(ok), wal["wal_records"].fdiv(ok), wal["wal_cluster_bytes"].fdiv(ok))
+      puts "  by relation, bytes a request: " + wal["wal_by_relation"].map { |name, bytes| format("%s %.0f", name, bytes.fdiv(ok)) }.join(", ")
     end
 
     def print_row(kind, rows)

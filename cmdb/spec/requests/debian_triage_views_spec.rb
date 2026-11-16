@@ -529,7 +529,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 200")
     queries = tab.call(large)
     expect(queries).to eq(tab.call(small))
-    expect(queries).to be <= 24 + 5
+    expect(queries).to be <= 24 + 6 # +1: the host's liveness, in its own table since #192
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
     expect(filtered).to be <= queries + 2 # the open findings again, for the chip's count
@@ -538,7 +538,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
 
     package = ->(host) { count_queries { get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "acme1" } } }
     expect(package.call(large)).to eq(package.call(small))
-    expect(package.call(large)).to be <= 24 + 5
+    expect(package.call(large)).to be <= 24 + 6
     puts format("\n  500 findings: tab %d queries, %.0f ms (best of 3); package page %d queries", queries, timings.min * 1000, package.call(large)) if ENV["SHOW_TIMINGS"]
   end
 end

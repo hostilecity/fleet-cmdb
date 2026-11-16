@@ -175,7 +175,8 @@ module TaskBatches
     hosts
   end
 
-  def locked(scope, lock) = lock ? scope.lock("FOR SHARE") : scope
+  # The hosts' liveness is preloaded for the pages that show it; only the host rows are locked.
+  def locked(scope, lock) = (lock ? scope.lock("FOR SHARE") : scope).preload(:liveness)
 
   # Q13: the hosts the batch would run on must be the ones the operator confirmed.
   def check_expected(preview, expected_host_ids)

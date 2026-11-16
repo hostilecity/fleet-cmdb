@@ -13,7 +13,7 @@ module Api
     # read, and takes no lock; the action locks the host and re-checks the credential under that lock.
     class AuthenticatedController < BaseController
       # Whether a request updates the credential's last_used_at. Heartbeats opt out: they record
-      # hosts.last_seen_at instead and must stay a single write (P1-S07, review of #50).
+      # host_liveness.last_seen_at instead (#192) and must stay a single write (P1-S07, review of #50).
       class_attribute :records_credential_use, default: true
       # The actions that run in one transaction, authentication included (see .atomic).
       class_attribute :atomic_actions, default: [].freeze

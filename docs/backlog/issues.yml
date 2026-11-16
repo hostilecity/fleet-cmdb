@@ -79,6 +79,7 @@
   done:
     - "Stopping heartbeats moves a host online, stale, then offline at the configured thresholds, and resuming returns it to online (AC-1.2)."
     - "Agent-reported time never affects liveness, and heartbeat p95 stays under 200 ms with 50 hosts."
+    - "A steady heartbeat writes one narrow, heap-only `host_liveness` row and not the `hosts` row, and the liveness job reads that table, not `hosts` (#192, ADR 0029)."
   blocked_by: [P1-API-AUTH, P1-HOSTS]
 
 - key: P1-INVENTORY

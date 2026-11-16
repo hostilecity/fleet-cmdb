@@ -144,7 +144,7 @@ RSpec.describe ReportRequests do
     it "does not let a delayed heartbeat make a report collected before the request clear it (review of #111)" do
       # Synchronised clocks. A heartbeat stamped 12:00:00 is recorded at 12:00:05 (network or lock delay),
       # carrying nothing; the request is made at 12:00:06; a report collected at 12:00:03 is accepted on retry.
-      host.update_columns(last_seen_at: now + 5.seconds, agent_reported_at: now)
+      set_liveness(host, last_seen_at: now + 5.seconds, agent_reported_at: now)
       ReportRequest.where(host:).update_all(requested_at: now + 6.seconds)
       expect(satisfy("config", now + 3.seconds, at: now + 7.seconds)).to eq(0)
       # The next heartbeat delivers it; the old report retried again still does not count.

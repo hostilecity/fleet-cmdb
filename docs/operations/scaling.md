@@ -58,7 +58,7 @@ Off by default. Set it to 2 (one less than `RAILS_MAX_THREADS`) once one process
 
 - Raise `JOB_CONCURRENCY` (processes) before `JOB_THREADS` (threads in each): the long jobs (advisory refresh and import, per-host matching) are Ruby work and hold the global lock like requests do. Do it when jobs wait on the default queue: in the console, `SolidQueue::ReadyExecution.group(:queue_name).count` shows how many are waiting on each queue.
 - Raise `EVALUATION_THREADS` when fleet-wide runs after advisory imports take too long: re-matching costs about 10 ms a host, and the batches of one run spread over the threads. A rule change costs well under a millisecond a host and gains little from more threads.
-- Raise `JOB_REALTIME_THREADS` to 2 when the liveness evaluation takes more than a few seconds (it scans every active host, #192), so the lease and expiry jobs scheduled in the same minute do not wait behind it.
+- Raise `JOB_REALTIME_THREADS` to 2 when the liveness evaluation takes more than a few seconds (it reads every host's narrow `host_liveness` row each minute, #192), so the lease and expiry jobs scheduled in the same minute do not wait behind it.
 - Each is a whole number from 1 to 64; anything else stops the boot with a message naming the setting.
 
 ### Solid Queue in its own container: `FLEET_JOBS_CONTAINER`

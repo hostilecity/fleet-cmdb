@@ -79,7 +79,7 @@ RSpec.describe TaskLeases do
 
     it "times out a running task with no result after its deadline and grace when its agent is still heard from (AC-3.5)" do
       task = task_for("running", started: 20.minutes.ago) # refresh_reports: 10 minutes, plus 5 of grace
-      host.update_columns(last_seen_at: 1.minute.ago)
+      set_liveness(host, last_seen_at: 1.minute.ago)
       expect(described_class.lapse!(now: task.lease_expires_at - 1.second)).to eq({})
       expect(described_class.lapse!).to eq("timed_out" => 1)
       expect(task.reload).to have_attributes(state: "timed_out", reason: nil, lease_expires_at: nil, result_digest: nil)
@@ -95,7 +95,7 @@ RSpec.describe TaskLeases do
 
     it "fails a running task with lease_expired when its agent stopped reporting (FR-3.2, threat model L4)" do
       task = task_for("running", started: 20.minutes.ago)
-      host.update_columns(last_seen_at: 19.minutes.ago) # last heard before the deadline
+      set_liveness(host, last_seen_at: 19.minutes.ago) # last heard before the deadline
       expect(described_class.lapse!).to eq("failed" => 1)
       expect(task.reload).to have_attributes(state: "failed", reason: "lease_expired")
       entry = system_entries(Audit::Actions::TASK_FAILED).sole

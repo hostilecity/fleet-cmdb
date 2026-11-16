@@ -39,6 +39,11 @@ module FleetBenchmark
           FleetCompliance.rows_for(hosts.select { |h| h.enrollment_state == "active" })
           FleetCompliance.totals
         },
+        # The one sort without an index (ADR 0026, #192): the first page, and the page after it.
+        "fleet list sorted by last seen (first and second page)" => lambda {
+          first = FleetList.new(sort: "last_seen").hosts.to_a
+          FleetList.new(sort: "last_seen", after: first.last.id.to_s).hosts.to_a
+        },
         "compliance /compliance (one page view)" => lambda {
           c = FleetCompliance.new
           FleetCompliance.totals

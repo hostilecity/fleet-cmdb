@@ -43,7 +43,7 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
   %w[stale offline].each do |status|
     it "returns a #{status} host to online and records the transition" do
       heartbeat
-      host.reload.update_column(:liveness_status, status)
+      set_liveness(host, liveness_status: status)
       heartbeat
       expect(host.reload.liveness_status).to eq("online")
       expect(host.status_events.chronological.last).to have_attributes(from_status: status, to_status: "online", reason: "heartbeat")
@@ -74,16 +74,16 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     callback = ->(*, payload) { queries << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:sql].match?(/\A(BEGIN|COMMIT|SAVEPOINT|RELEASE|ROLLBACK)/) }
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat }
     expect(response).to have_http_status(:ok)
-    writes = queries.grep(/\A\s*(INSERT|UPDATE|DELETE)/i)
+    writes = queries.grep(/\A\s*(INSERT|UPDATE|DELETE|WITH\b.*\bUPDATE\b)/im)
     expect(writes.size).to eq(1), writes.inspect
-    expect(writes.first).to match(/UPDATE "hosts"/)
+    expect(writes.first).to match(/UPDATE host_liveness/) # not the hosts row (#192)
     # #189: the credential with its host (authentication), the host FOR UPDATE joined to the credential (the re-check
     # under the lock), the UPDATE, and one SELECT for the rollout offer (P1-UPDATES), outstanding report requests
     # (P2-S03), and a waiting task (P3-S03). The intervals setting comes from the per-process cache.
     expect(queries.size).to eq(4), queries.inspect
     expect(queries[0]).to match(/FROM "agent_credentials" LEFT OUTER JOIN "hosts"/)
     expect(queries[1]).to match(/FROM "hosts" INNER JOIN "agent_credentials".*FOR UPDATE OF hosts FOR SHARE OF agent_credentials/m)
-    expect(queries[2]).to match(/\AUPDATE "hosts"/)
+    expect(queries[2]).to match(/\AWITH previous AS .*UPDATE host_liveness/m)
     expect(queries[3]).to match(/rollout_hosts.*report_requests.*EXISTS \(SELECT 1 FROM "tasks"/m)
     expect(queries[3]).not_to match(/FOR (SHARE|UPDATE)/) # no rollout row lock per heartbeat (#199)
     expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events|settings/)
@@ -121,13 +121,28 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     last_used = credential_record.reload.last_used_at
     travel(AgentCredential::LAST_USED_RESOLUTION + 1.minute) do
       writes = []
-      callback = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)/i) }
+      callback = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE|WITH\b.*\bUPDATE\b)/im) }
       ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat }
       expect(response).to have_http_status(:ok)
       expect(writes.size).to eq(1), writes.inspect
-      expect(writes.first).to match(/UPDATE "hosts"/)
+      expect(writes.first).to match(/UPDATE host_liveness/)
     end
     expect(credential_record.reload.last_used_at).to eq(last_used)
+  end
+
+  # #192: what a steady heartbeat changes lives in host_liveness, with no index but its key, so the update stays
+  # heap-only (no index entry written) and the wide hosts row, with its seven indexes, is not written at all.
+  it "keeps a steady heartbeat's update heap-only, and leaves the hosts row alone (#192)" do
+    heartbeat
+    counts = lambda do
+      ActiveRecord::Base.connection.select_rows("SELECT relname, n_tup_upd, n_tup_hot_upd FROM pg_stat_xact_user_tables " \
+                                                "WHERE relname IN ('hosts', 'host_liveness')").to_h { |name, *values| [ name, values.map(&:to_i) ] }
+    end
+    before = counts.call
+    3.times { heartbeat }
+    after = counts.call
+    expect(after["host_liveness"].zip(before["host_liveness"]).map { |a, b| a - b }).to eq([ 3, 3 ]) # 3 updates, all HOT
+    expect(after["hosts"]).to eq(before["hosts"])
   end
 
   it "reads the server clock only after locking the host row" do
@@ -142,7 +157,7 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
   it "never moves last_seen_at backwards behind a newer committed heartbeat" do
     heartbeat
     newer = 2.seconds.from_now.floor(6)
-    host.reload.update_columns(last_seen_at: newer)
+    set_liveness(host, last_seen_at: newer)
     heartbeat
     expect(host.reload.last_seen_at).to eq(newer)
     expect(host.first_seen_at).to be <= host.last_seen_at
@@ -261,7 +276,7 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     end
     let(:restart) { TaskCatalog.current.entry("restart_service") }
 
-    it "records what the agent supports and enables, in the heartbeat's one UPDATE" do
+    it "records what the agent supports and enables, in one UPDATE of the host row" do
       freeze_time do
         heartbeat(body(tasks: tasks.merge(future_field: true)))
         expect(response).to have_http_status(:ok)
@@ -271,6 +286,36 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
                                                task_capabilities_reported_at: Time.current)
       end
       expect(host.task_exclusion_reason(restart, { "service" => "nginx.service" })).to be_nil
+    end
+
+    it "writes the host row only when the agent version or the capabilities change (#192)" do
+      reported = Time.current.floor
+      host_writes = []
+      callback = ->(*, payload) { host_writes << payload[:sql] if payload[:sql].match?(/\AUPDATE "hosts"/) }
+      travel_to(reported) { heartbeat(body(tasks:)) }
+      travel_to(reported + 1.minute) { ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat(body(tasks:)) } }
+      expect(host_writes).to be_empty
+      # The capabilities' time is when they were first reported as they are; the last report is the last heartbeat.
+      expect(host.reload).to have_attributes(task_capabilities_reported_at: reported, last_seen_at: reported + 1.minute)
+
+      travel_to(reported + 2.minutes) { heartbeat(body(tasks: tasks.merge(enabled: %w[refresh_reports]))) }
+      expect(host.reload.task_capabilities_reported_at).to eq(reported + 2.minutes)
+      travel_to(reported + 3.minutes) do
+        ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat(body(agent_version: "0.2.0", tasks: tasks.merge(enabled: %w[refresh_reports]))) }
+      end
+      expect(host_writes.size).to eq(1)
+      expect(host.reload).to have_attributes(agent_version: "0.2.0", task_capabilities_reported_at: reported + 2.minutes)
+    end
+
+    it "sets or clears the capabilities' time when only it is out of step with the report (review of #220)" do
+      heartbeat(body(tasks:))
+      host.update_columns(task_capabilities_reported_at: nil) # the lists already as reported, but no time
+      heartbeat(body(tasks:))
+      expect(host.reload.task_capabilities_reported_at).to be_present
+      # The lists already as a report without capabilities leaves them, but with a time.
+      host.update_columns(task_catalog_version: nil, task_types_supported: [], task_types_enabled: [], task_services_allowed: [])
+      heartbeat
+      expect(host.reload.task_capabilities_reported_at).to be_nil
     end
 
     it "leaves out a restart of a service the VM's own allowlist does not name (P3-D01 Q7)" do

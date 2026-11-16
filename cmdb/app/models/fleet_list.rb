@@ -19,13 +19,18 @@ class FleetList
   STATUS_RANKS = STATUSES.keys.each_with_index.to_h.freeze
 
   IN_FLEET = "summaries.enrollment_state <> 'retired'".freeze
+  # The host's heartbeat state, for the "last seen" sort (#192). LEFT: a host awaiting first contact has none. The
+  # planner drops the join from every query that does not read it.
+  LIVENESS = "LEFT JOIN host_liveness liveness ON liveness.host_id = hosts.id".freeze
 
   # Each sort's key and whether it can be NULL (sorted last in either direction); ties go by name, then id. Every key
-  # but last seen (which changes on every heartbeat) has an index on host_compliance_summaries in each direction.
+  # but last seen has an index on host_compliance_summaries in each direction. Last seen sorts the filtered fleet by
+  # host_liveness.last_seen_at, which changes on every heartbeat: an index on it would make every heartbeat a
+  # non-HOT update with two index entries, so it has none (ADR 0029).
   SORTS = {
     "name" => [ "summaries.name_key", false ],
     "status" => [ "summaries.status_rank", false ],
-    "last_seen" => [ "hosts.last_seen_at", true ],
+    "last_seen" => [ "liveness.last_seen_at", true ],
     "hostname" => [ "summaries.hostname", false ],
     "os" => [ "lower(summaries.os_name)", true ],
     # Numeric by release (0.10.0 after 0.9.0), pre-release and build suffixes ignored (review of #53).
@@ -51,7 +56,7 @@ class FleetList
     @cursor = KeysetPage.cursor(params)
   end
 
-  def self.base_scope = Host.in_fleet.joins(FleetCompliance::SUMMARIES).where(IN_FLEET).select(*COLUMNS)
+  def self.base_scope = Host.in_fleet.joins(FleetCompliance::SUMMARIES).joins(LIVENESS).where(IN_FLEET).select(*COLUMNS)
 
   # The fleet in the filters, unordered.
   def scope
@@ -69,11 +74,11 @@ class FleetList
   end
 
   def page
-    @page ||= KeysetPage.new(scope:, keys:, lookup: Host.joins(FleetCompliance::SUMMARIES), per_page: PER_PAGE, **@cursor)
+    @page ||= KeysetPage.new(scope:, keys:, lookup: Host.joins(FleetCompliance::SUMMARIES).joins(LIVENESS), per_page: PER_PAGE, **@cursor)
   end
 
-  # This page's hosts, with os_name and the compliance counts.
-  def hosts = page.rows
+  # This page's hosts, with os_name, the compliance counts, and their liveness (one more query for the page).
+  def hosts = @hosts ||= page.rows.tap { |rows| ActiveRecord::Associations::Preloader.new(records: rows, associations: :liveness).call }
 
   # Hosts matching the filters: the page's "of N" when the list is filtered (the status strip counts the whole fleet).
   def total = @total ||= scope.count(:all)

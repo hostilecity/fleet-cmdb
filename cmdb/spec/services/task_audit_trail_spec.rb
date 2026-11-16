@@ -81,7 +81,7 @@ RSpec.describe "Task audit trail" do
     poll
     start(timed_out)
     travel(16.minutes) do
-      host.update_columns(last_seen_at: Time.current)
+      set_liveness(host, last_seen_at: Time.current)
       expect(step(timed_out) { TaskLeases.lapse! }).to eq([ [ a::TASK_TIMED_OUT, "system" ] ])
     end
 

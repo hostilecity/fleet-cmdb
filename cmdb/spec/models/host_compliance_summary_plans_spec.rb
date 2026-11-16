@@ -27,7 +27,8 @@ RSpec.describe "Compliance summary trigger plans" do
     definition = connection.select_value("SELECT pg_get_functiondef('host_compliance_summaries_changed'::regproc)")
     static = definition.lines.grep(/\b(old_rows|new_rows)\b/).grep_v(/EXECUTE|\A\s*(SELECT|FROM|WHERE|AND|OR|JOIN|INSERT|ON CONFLICT)\b|\$q\$/)
     expect(static).to be_empty
-    # Statements, not mentions in comments (review of #226): 2 for hosts, 1 for advisories, 3 each for cis_results and
+    # Statements, not mentions in comments (review of #226): 2 for hosts (new hosts, and a changed field the summaries
+    # copy; v03 left liveness to host_liveness's row triggers, #192), 1 for advisories, 3 each for cis_results and
     # vulnerability_findings.
     expect(definition.scan(/^\s*EXECUTE\b/).size).to eq(9)
   end

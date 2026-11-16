@@ -90,12 +90,16 @@ module FleetBenchmark
       SQL
       t = Host.find(@template)
       run_sql(<<~SQL)
-        UPDATE hosts SET enrollment_state = 'active', liveness_status = 'online', first_seen_at = now() - interval '100 days',
-               last_seen_at = now() - random() * interval '50 seconds', agent_version = #{q(t.agent_version)},
-               agent_schema_version = #{t.agent_schema_version}, agent_reported_at = now(), task_catalog_version = #{t.task_catalog_version.to_i},
+        UPDATE hosts SET enrollment_state = 'active', first_seen_at = now() - interval '100 days', agent_version = #{q(t.agent_version)},
+               agent_schema_version = #{t.agent_schema_version}, task_catalog_version = #{t.task_catalog_version.to_i},
                task_types_supported = #{q_array(t.task_types_supported)}, task_types_enabled = #{q_array(t.task_types_enabled)},
                task_services_allowed = #{q_array(t.task_services_allowed)}, task_capabilities_reported_at = now()
         WHERE name LIKE 'bench-%' AND id <> #{@template}
+      SQL
+      # Online, each heard from within the last 50 seconds (#192: the heartbeat state is in host_liveness).
+      run_sql(<<~SQL)
+        INSERT INTO host_liveness (host_id, liveness_status, last_seen_at, agent_reported_at)
+        SELECT id, 'online', now() - random() * interval '50 seconds', now() FROM hosts WHERE name LIKE 'bench-%' AND id <> #{@template}
       SQL
       run_sql(<<~SQL)
         INSERT INTO agent_credentials (host_id, key_id, secret_digest, state, created_at, updated_at)

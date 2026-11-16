@@ -32,6 +32,7 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0026](0026-dashboard-summaries-and-keyset-pages.md) | The dashboard reads per-host summaries kept by the database, in keyset pages (proposed) | #193 |
 | [0027](0027-time-partitioned-history.md) | Time-partitioned history tables; retention drops whole partitions (proposed) | #195 |
 | [0028](0028-content-addressed-package-sets.md) | Each distinct package set stored once, in content-addressed chunks, matched once per chunk (proposed) | #196 |
+| [0029](0029-heartbeat-state-in-a-narrow-table.md) | Heartbeat state lives in a narrow table of its own, so heartbeats stay heap-only (proposed) | #192 |
 | [0030](0030-agent-recovery-mode.md) | An agent that keeps failing on a confirmed version runs in recovery mode instead of stopping for good (proposed; amends 0018) | #180 |
 
 Not an ADR: [`phase-3-threat-model.md`](phase-3-threat-model.md) is the Phase 3 threat model ([P3-X01](../backlog/specs/p3-security.md)). It decides nothing by itself; its proposals become binding only through a spec or an ADR.

@@ -113,6 +113,7 @@ class FleetCompliance
   def self.rows_for(hosts)
     return {} if hosts.empty?
 
+    ActiveRecord::Associations::Preloader.new(records: hosts, associations: :liveness).call # the status lamps
     details = Host.where(id: hosts.map(&:id)).joins(DETAILS)
                   .pluck(:id, "hve.state", "hve.reason", "hve.ecosystem", "hc.received_at", "hps.received_at").to_h { |id, *rest| [ id, rest ] }
     unmatched = hosts.reject { |host| details.dig(host.id, 0) }.map(&:id)
