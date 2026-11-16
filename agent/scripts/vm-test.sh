@@ -548,11 +548,17 @@ recovery_mode() {
     vm_ok '! systemctl is-active --quiet fleet-agent' || fail "fleet-agent.service is active beside recovery mode"
     # This boot's journal: no earlier scenario has the fault build (the guest's clock is not the runner's).
     # systemd 255 and later start the recovery unit after every failed start; recovery mode must go on only
-    # once the start limit has stopped the service, after at least four of them.
-    local panics
-    panics=$(vm "journalctl -b -u fleet-agent --no-pager -o cat" | grep -c "vm-test fault" || true)
-    [ "$panics" -ge 4 ] || fail "recovery mode went on after $panics failed starts, before the start limit"
-    echo "fleet-agent.service failed $panics times before recovery mode went on"
+    # once the start limit has stopped the service (four starts in five minutes, the update's own included),
+    # and exit while systemd still restarts it.
+    local panics journal
+    journal=$(vm "journalctl -b -u fleet-agent -u fleet-agent-recovery --no-pager -o cat")
+    panics=$(grep -c "vm-test fault" <<< "$journal" || true)
+    grep -q "Start request repeated too quickly" <<< "$journal" \
+        || fail "recovery mode went on before systemd's start limit stopped the service"
+    grep -q "recovery mode is not needed" <<< "$journal" \
+        || fail "no recovery unit started by an earlier failure exited while systemd restarted the service"
+    [ "$panics" -ge 2 ] || fail "only $panics failed starts before recovery mode"
+    echo "fleet-agent.service failed $panics times, then hit its start limit; recovery mode exited until then"
     local reason pid caps exe entered
     reason=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.reason' "$events")
     entered=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.entered_at' "$events")
