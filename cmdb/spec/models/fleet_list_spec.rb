@@ -64,6 +64,30 @@ RSpec.describe FleetList do
       expect(names(tag: " LAB ")).to eq([ "Build runner", "Lab sandbox", "Media server" ])
     end
 
+    it "filters to the hosts without recovery mode, with the other filters (#232)" do
+      # Media server reports it set up, web A not set up, Build runner does not report it; DNS resolver has sent no
+      # heartbeat, and pending and revoked hosts are not active, so the question does not arise for them.
+      media.update_columns(agent_units_recovery: true)
+      web.update_columns(agent_units_recovery: false)
+      [ pending, revoked ].each { |h| h.update_columns(agent_units_recovery: false, first_seen_at: 1.day.ago) }
+      expect(names(recovery: "missing")).to eq([ "Build runner", "web A" ])
+      expect(names(recovery: "missing", tag: "lab")).to eq([ "Build runner" ])
+      expect(names(recovery: "missing", status: "online")).to eq([])
+      list = described_class.new(recovery: "missing", sort: "status")
+      expect([ list.filtered?, list.total ]).to eq([ true, 2 ])
+      expect(list.list_params).to eq(recovery: "missing", sort: "status")
+      expect(list.sort_params("name")).to eq(recovery: "missing", sort: "name", dir: "asc")
+      expect(described_class.new(recovery: "everything").recovery).to be_nil
+    end
+
+    it "uses the partial index for the recovery-mode filter (#232)" do
+      Host.connection.execute("SET enable_seqscan = off") # a test database this small would be read whole
+      plan = Host.connection.select_values("EXPLAIN #{Host.where(FleetList::WITHOUT_RECOVERY_MODE).select(:id).to_sql}").join("\n")
+      expect(plan).to include("index_hosts_without_recovery_mode")
+    ensure
+      Host.connection.execute("RESET enable_seqscan")
+    end
+
     it "ignores unknown statuses, sorts, and directions" do
       list = described_class.new(status: "retired", sort: "secret_digest", dir: "sideways")
       expect([ list.status, list.sort, list.direction ]).to eq([ nil, "name", "asc" ])

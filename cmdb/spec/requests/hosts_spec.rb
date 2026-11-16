@@ -76,6 +76,21 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(page.at_css(".empty a")["href"]).to eq("/")
       end
 
+      it "filters to the hosts without recovery mode, with a labelled select and plain wording (#232)" do
+        get "/"
+        select = page.at_css("label select[name=recovery]")
+        expect(select.parent.text.squish).to start_with("Recovery mode")
+        expect(select.css("option").map { |o| [ o["value"], o.text ] }).to eq([ [ "", "Any" ], %w[missing Not\ set\ up] ])
+        expect(select.at_css("option[selected]")).to be_nil
+        get "/", params: { recovery: "missing", sort: "status" }
+        expect(row_names).to eq([ "Media server" ]) # it does not report recovery mode
+        expect(page.at_css("select[name=recovery] option[selected]")["value"]).to eq("missing")
+        expect(query(page.at_css("th a[href*='sort=name']"))).to include("recovery" => "missing")
+        media.update_columns(agent_units_recovery: true)
+        get "/", params: { recovery: "missing", tag: "media" }
+        expect(page.at_css(".empty strong").text).to eq(%(No hosts match tag "media" with recovery mode not set up.))
+      end
+
       it "draws no pager when the fleet fits one page, as on the approved mockup" do
         get "/"
         expect(page.at_css("#fleet_pager")).to be_nil
@@ -280,6 +295,29 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       host.revoke!(actor: operator)
       get "/hosts/#{host.id}"
       expect(page.at_css("#recovery_host_#{host.id}")).to be_nil
+    end
+
+    it "says whether recovery mode is set up, and what to do when it is not (#232)" do
+      section = -> { page.at_css("#agent_updates #recovery_coverage_host_#{host.id}") }
+      get "/hosts/#{host.id}"
+      expect(section.call).to be_nil # no heartbeat yet
+      record_heartbeat(host)
+      get "/hosts/#{host.id}"
+      expect(words(section.call)).to include("This agent does not report whether recovery mode is set up.", "Agent version 0.1.0 is older",
+                                             "stops until someone starts it on the VM", "sudo fleet-agent install", "may need two updates")
+      expect(section.call["role"]).to eq("status")
+      expect(section.call.at_css("a")["href"]).to eq("/agents")
+      host.update_columns(agent_units_recovery: false)
+      get "/hosts/#{host.id}"
+      expect(words(section.call)).to start_with("Recovery mode is not set up on this host.")
+      expect(words(section.call)).to include("sudo fleet-agent install")
+      host.update_columns(agent_units_recovery: true)
+      get "/hosts/#{host.id}"
+      expect(words(section.call)).to start_with("Recovery mode is set up.")
+      expect(section.call["class"]).to be_nil
+      host.revoke!(actor: operator)
+      get "/hosts/#{host.id}"
+      expect(section.call).to be_nil
     end
 
     it "shows unreadable facts as not available with the agent's warning" do

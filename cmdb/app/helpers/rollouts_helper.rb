@@ -105,7 +105,9 @@ module RolloutsHelper
     detail = case member.state
     when "confirmed"
       took = (update.received_at - member.offered_at).round if update && member.offered_at
-      took ? "Confirmed in #{took < 60 ? pluralize(took, 'second') : human_duration(took)}" : "Confirmed"
+      confirmed = took ? "Confirmed in #{took < 60 ? pluralize(took, 'second') : human_duration(took)}" : "Confirmed"
+      # A succeeded result may carry a note, such as units the agent could not refresh after the update (#232).
+      [ confirmed, update&.reason.presence ].compact.join("; ")
     when "rolled_back", "failed"
       # The version the agent reported with the result is what it ran then, unlike from_version (a snapshot).
       [ update&.reason.presence, ("reported by #{update.reported_agent_version}" if update&.reported_agent_version.present?) ]

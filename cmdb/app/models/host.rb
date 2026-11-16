@@ -158,6 +158,16 @@ class Host < ApplicationRecord
   # confirmed, so it only heartbeats and installs a signed update; it sends no reports and runs no tasks.
   def recovering? = enrollment_state == "active" && agent_recovery_since.present?
 
+  # Whether recovery mode is set up on the VM (#232, ADR 0030), as the last heartbeat's `units.recovery` said: :set_up,
+  # :not_set_up, or :not_reported (an agent that does not say). nil for a host that is not active or has sent no
+  # heartbeat, where the question does not arise. A host without it stops for good after a crash loop on a confirmed
+  # version, until its units are refreshed.
+  def recovery_mode_coverage
+    return unless enrollment_state == "active" && first_seen_at
+
+    { true => :set_up, false => :not_set_up }.fetch(agent_units_recovery, :not_reported)
+  end
+
   # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an
   # active host that has not sent a heartbeat yet, and the enrollment state for everything else.
   def display_status
