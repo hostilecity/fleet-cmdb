@@ -237,13 +237,14 @@ mod tests {
             recovery_values("ExecStart"),
             ["/usr/lib/fleet-agent/current/fleet-agent run --recovery"]
         );
-        // The rollback unit has its turn first; restarting the service (a rollback, a confirmed update,
-        // an operator, the agent's hourly retry) stops recovery mode, so the two never run together.
+        // The rollback unit has its turn first. No Conflicts=: systemd 255 and later start this unit on
+        // every failed start, and a conflict would cancel the service's own restart. The agent itself
+        // checks the service instead (`recovery::needed`, the watcher in `main::recover`).
         assert_eq!(
             recovery_values("After"),
             [format!("network-online.target {ROLLBACK_UNIT_NAME}")]
         );
-        assert_eq!(recovery_values("Conflicts"), [UNIT_NAME]);
+        assert!(recovery_values("Conflicts").is_empty());
         // Never stopped for good: no start limit, restarts after a long delay, whatever the exit status.
         assert_eq!(recovery_values("StartLimitIntervalSec"), ["0"]);
         assert_eq!(recovery_values("Restart"), ["on-failure"]);

@@ -365,6 +365,32 @@ fn end_recovery_episode_when_healthy(state_dir: &Path, shutdown: &Shutdown) {
     }
 }
 
+/// Ends recovery mode once `fleet-agent.service` runs again (checked every [`recovery::WATCH_EVERY`]), so
+/// the two never run together for longer than that: after an update, an operator's start, or recovery
+/// mode's own try of normal mode.
+fn watch_for_the_service(shutdown: &Shutdown) {
+    let shutdown = shutdown.clone();
+    let spawned = std::thread::Builder::new()
+        .name("fleet-agent-recovery-watch".into())
+        .spawn(move || {
+            use install::Systemd;
+            let systemctl = install::Systemctl::default();
+            while !shutdown.wait(recovery::WATCH_EVERY) {
+                let state = systemctl.state();
+                if recovery::service_back(&state) {
+                    tracing::info!(
+                        service_state = state.as_str(),
+                        "fleet-agent.service runs again; leaving recovery mode"
+                    );
+                    shutdown.request();
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::error!("cannot start the recovery watcher: {e}");
+    }
+}
+
 /// `run --recovery`: recovery mode (#180, ADR 0030), started only by `fleet-agent-recovery.service`
 /// after systemd stopped restarting the agent and there was nothing to roll back. Heartbeats with the
 /// reason, update results, and signed updates only; see [`recovery`].
@@ -401,6 +427,21 @@ fn recover(path: &Path) -> ExitCode {
         }
     };
     recovery::install_panic_hook();
+    // systemd 255 and later start this unit on every failed start of the service: go on only if it has
+    // stopped for good, and leave it to systemd otherwise.
+    let systemctl = install::Systemctl::default();
+    let state = {
+        use install::Systemd;
+        systemctl.state()
+    };
+    if !recovery::needed(&state) {
+        tracing::info!(
+            service_state = state.as_str(),
+            "recovery mode is not needed: fleet-agent.service is {state} (systemd is restarting it, or it runs)"
+        );
+        return ExitCode::SUCCESS;
+    }
+    watch_for_the_service(&shutdown);
     let now = SystemTime::now();
     let episode = recovery::begin(
         &config.state_dir,
@@ -424,12 +465,11 @@ fn recover(path: &Path) -> ExitCode {
     let config_path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
     let updater = update::Updater::from_config(&config, &config_path);
     updater.start_watchdog();
-    let systemctl = install::Systemctl::default();
     let try_normal = || {
         use install::Systemd;
         // A service stopped by its start limit refuses to start until it is reset.
         let _ = systemctl.systemctl(&["reset-failed", install::UNIT_NAME]);
-        // `--no-block`: starting it stops this process (Conflicts=), which must not wait on that.
+        // `--no-block`: the watcher below ends this process once the service runs.
         systemctl
             .systemctl(&["start", "--no-block", install::UNIT_NAME])
             .map(drop)

@@ -9,8 +9,12 @@
 //! results, and installs a signed update offered through the usual path (ADR 0018). It runs no
 //! collector, sends no report, and polls for no task.
 //!
-//! It leaves recovery mode when `fleet-agent.service` starts again, which stops the recovery unit
-//! (`Conflicts=`): after an update (the supervisor restarts the service), when an operator starts it,
+//! systemd 255 and later run `OnFailure=` on every failed start, not only once the start limit is hit,
+//! so recovery mode first checks the service ([`needed`]): it goes on only if the service has stopped
+//! for good, and otherwise exits at once, leaving systemd to restart it.
+//!
+//! It leaves recovery mode when `fleet-agent.service` runs again, which it checks every
+//! [`WATCH_EVERY`]: after an update (the supervisor restarts the service), when an operator starts it,
 //! or when recovery mode itself tries normal mode again, [`RETRY_AFTER`] after it started.
 //!
 //! This module keeps two records in the state directory:
@@ -43,6 +47,21 @@ pub const RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
 /// How long normal mode must run before the episode is over. Longer than systemd's start-limit window
 /// (300 s), so an agent that keeps failing never gets this far.
 pub const HEALTHY_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// How often recovery mode checks whether `fleet-agent.service` runs again.
+pub const WATCH_EVERY: Duration = Duration::from_secs(3);
+
+/// Whether recovery mode is needed, from `systemctl is-active fleet-agent.service`: only when the
+/// service has stopped for good (`failed`, as after its start limit, or `inactive`). `activating` (systemd
+/// is about to restart it) or `active` (a rollback restarted it) mean it is not.
+pub fn needed(service_state: &str) -> bool {
+    matches!(service_state, "failed" | "inactive")
+}
+
+/// Whether the service runs again, so recovery mode must end.
+pub fn service_back(service_state: &str) -> bool {
+    matches!(service_state, "active" | "activating" | "reloading")
+}
 
 /// A recorded failure older than this did not cause this crash loop.
 const FAILURE_FRESH_FOR: Duration = Duration::from_secs(15 * 60);
@@ -236,6 +255,28 @@ mod tests {
 
     fn at(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn recovery_mode_goes_on_only_once_the_service_has_stopped_for_good() {
+        assert!(needed("failed"));
+        assert!(needed("inactive"));
+        for state in [
+            "activating",
+            "active",
+            "reloading",
+            "deactivating",
+            "unknown",
+            "",
+        ] {
+            assert!(!needed(state), "{state}");
+        }
+        for state in ["active", "activating", "reloading"] {
+            assert!(service_back(state), "{state}");
+        }
+        for state in ["failed", "inactive", "deactivating", "unknown"] {
+            assert!(!service_back(state), "{state}");
+        }
     }
 
     #[test]

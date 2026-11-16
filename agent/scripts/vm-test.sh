@@ -34,8 +34,8 @@
 #                            back (by the failure hook, as nothing else runs)
 #
 # Every scenario also checks that recovery mode (fleet-agent-recovery.service, ADR 0030) is not running
-# once it settles: a rollback restarts the service, which cancels the recovery unit the same OnFailure=
-# queued.
+# once it settles: the recovery unit that OnFailure= starts after every failed start must exit at once while
+# systemd still restarts the service, or after a rollback restarted it.
 #
 # Before them, one check of the package report (P2-AGENT-PACKAGES, AC-2.3): the report the agent sends
 # at startup, under the real unit on the real image, lists exactly the VM's own dpkg listing, with the
@@ -61,8 +61,10 @@
 #
 #   crash loop on a confirmed version   1.1.0 is installed and confirmed; then a file in the state
 #                            directory makes its normal mode panic at every start. systemd stops
-#                            restarting it, the rollback unit finds nothing to roll back, and recovery
-#                            mode starts: heartbeats that say why, from the same binary, with no
+#                            restarting it (after at least four failed starts: recovery mode exits at
+#                            once while systemd still restarts the service), the rollback unit finds
+#                            nothing to roll back, and recovery mode goes on: heartbeats that say why,
+#                            from the same binary, with no
 #                            capabilities, and no report or task poll. The server offers 1.1.1 (the
 #                            "fixed release"): recovery mode installs it through the signed path, 1.1.1
 #                            confirms in normal mode, and recovery mode has stopped.
@@ -535,8 +537,12 @@ recovery_mode() {
     wait_until "recovery mode to start" 240 vm_ok 'systemctl is-active --quiet fleet-agent-recovery'
     vm_ok '! systemctl is-active --quiet fleet-agent' || fail "fleet-agent.service is active beside recovery mode"
     # This boot's journal: no earlier scenario has the fault build (the guest's clock is not the runner's).
-    vm "journalctl -b -u fleet-agent --no-pager -o cat" | grep -q "vm-test fault" \
-        || fail "the crash loop was not the fault's"
+    # systemd 255 and later start the recovery unit after every failed start; recovery mode must go on only
+    # once the start limit has stopped the service, after at least four of them.
+    local panics
+    panics=$(vm "journalctl -b -u fleet-agent --no-pager -o cat" | grep -c "vm-test fault" || true)
+    [ "$panics" -ge 4 ] || fail "recovery mode went on after $panics failed starts, before the start limit"
+    echo "fleet-agent.service failed $panics times before recovery mode went on"
     wait_until "a heartbeat in recovery mode from $FAULTY" 120 heartbeat_in_mode "$FAULTY" recovery
     local reason pid caps exe entered
     reason=$(jq -rs '[.[] | select(.kind == "heartbeat" and .recovery != null)] | last | .recovery.reason' "$events")
@@ -548,7 +554,9 @@ recovery_mode() {
     [ "$exe" = "$LIB/versions/$FAULTY/fleet-agent" ] || fail "recovery mode runs $exe, expected version $FAULTY"
     caps=$(vm "awk '/^CapBnd:/ { print \$2 }' /proc/$pid/status")
     [ "$caps" = 0000000000000000 ] || fail "recovery mode has capabilities (CapBnd $caps)"
-    # Two more heartbeat intervals: recovery mode sends no report and polls for no task.
+    # Two more heartbeat intervals: recovery mode sends no report and polls for no task (the normal-mode starts
+    # before it, which may have, are before this).
+    since=$(date +%s.%N)
     sleep $((25 * slow))
     event_exists "[.[] | select((.kind == \"inventory\" or .kind == \"packages\" or .kind == \"task_poll\") and .at > $since and .agent_version == \"$FAULTY\")] | length == 0" \
         || fail "recovery mode sent a report or polled for a task"

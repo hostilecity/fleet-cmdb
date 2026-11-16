@@ -15,7 +15,9 @@ At the scale the project aims for (ADR 0019), one server response that triggers 
 
 ## Decision
 
-**Detection is systemd's, and only systemd's.** The start limit stays as it is, so a crash loop still reaches the rollback unit first. `OnFailure=` now names two units, in order: `fleet-agent-rollback.service fleet-agent-recovery.service`. The recovery unit has `After=fleet-agent-rollback.service`, so it waits until the rollback unit has finished, and `Conflicts=fleet-agent.service`. When the rollback unit rolls an unconfirmed update back, it restarts the service, and that start cancels the queued recovery unit. Otherwise (a confirmed version, or no `previous` to run the rollback from) recovery mode starts. Recovery mode does not depend on `previous` or on the rollback unit's binary, so it also works on a fresh install and on the first release that has it.
+**Detection is systemd's, and only systemd's.** The start limit stays as it is, so a crash loop still reaches the rollback unit first. `OnFailure=` now names two units, in order: `fleet-agent-rollback.service fleet-agent-recovery.service`. The recovery unit has `After=fleet-agent-rollback.service`, so it waits until the rollback unit has finished. systemd 255 and later run `OnFailure=` on every failed start, not only when the start limit ends the restarts (seen in CI, and noted for the rollback unit in `agent/contrib/README.md`). So the first thing recovery mode does is ask systemd about the service: it goes on only if `fleet-agent.service` is `failed` or `inactive`, that is stopped for good. While systemd is still restarting it (`activating`), or after a rollback restarted it (`active`), recovery mode exits at once and the unit stays stopped. So it goes on only after the start limit, on a confirmed version or with no `previous` to run the rollback from. Recovery mode does not depend on `previous` or on the rollback unit's binary, so it also works on a fresh install and on the first release that has it.
+
+The unit has no `Conflicts=fleet-agent.service`: with `OnFailure=` on every failed start, a conflict would stop the service's own pending restart after a single failure. Instead recovery mode watches the service every 3 seconds and exits once it runs again.
 
 Nothing the server sends can start recovery mode: no directive, no response field, and no file the agent writes on the server's behalf. It is not an agent-side counter either: a counter in the state directory would need its own threshold and window beside systemd's, and could disagree with it.
 
@@ -30,7 +32,7 @@ It runs no collector and sends no inventory, configuration, or package report. I
 
 **Privileges: the same sandbox, tighter.** The recovery unit has every sandbox option of `fleet-agent.service` and tightens three: `CapabilityBoundingSet=` (none; no collector needs `CAP_DAC_READ_SEARCH`), `ProtectHome=yes`, and `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` (no netlink, which only the interface list needs). Its `systemd-analyze security` exposure is 1.6, against the service's unchanged 1.9; `scripts/check-unit.sh` fails CI if it is ever higher than the service's. `AF_UNIX` stays, for `systemd-run` (the update supervisor) and to start the service again.
 
-**Leaving recovery mode.** Anything that starts `fleet-agent.service` stops the recovery unit (`Conflicts=`):
+**Leaving recovery mode.** Recovery mode checks the service every 3 seconds and exits once it runs again (`active` or `activating`), so the two overlap for at most that long. Anything that starts `fleet-agent.service` therefore ends it:
 
 - **a fixed release:** the supervisor restarts the service into the new version, which confirms in normal mode as any update does. If the new version also fails before confirming, the usual rollback returns to the failing version, which fails again, and recovery mode starts again;
 - **an operator on the VM:** `systemctl reset-failed fleet-agent` and `systemctl start fleet-agent`;
@@ -48,6 +50,7 @@ Normal mode removes `recovery.json` and `last-failure.json` once it has run for 
 - A `fleet-agent-restart.timer`: the same darkness, and a second schedule to keep in step with the start limit.
 - Recovery decided by the agent from its own crash counter: a second, disagreeing definition of a crash loop, and one that must be written before the code that crashes.
 - A server directive to enter or leave recovery mode: it would let a server, or anyone who can impersonate it (ADR 0024), switch collectors off fleet-wide. The hourly try of normal mode covers the case a remote "leave" would.
+- `Conflicts=fleet-agent.service` on the recovery unit: on systemd 255 and later, which start `OnFailure=` units after every failed start, it cancelled the service's own restart after one failure (found by the VM test).
 - Recovery mode inside `fleet-agent.service` (a flag file read at start): it would share the service's start limit and stop for good in the same way, and could not have its own, tighter sandbox.
 
 ## Consequences

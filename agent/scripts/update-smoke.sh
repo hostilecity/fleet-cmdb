@@ -176,9 +176,9 @@ reset() {
     wait_until "a heartbeat from $OLD" 60 heartbeat_from "$OLD"
 }
 
-# A refusal or rollback leaves the old version running and reports why. A rollback restarted the service,
-# which cancels the recovery unit the same OnFailure= queued after the rollback unit (ADR 0030), so recovery
-# mode never runs beside it.
+# A refusal or rollback leaves the old version running and reports why. The recovery unit the same OnFailure=
+# starts after the rollback unit finds the service running again and exits (ADR 0030), so recovery mode never
+# runs beside it.
 expect_old_running() {
     running_is "$OLD" || fail "$1: the running version is $(running_version), not $OLD"
     service_active || fail "$1: the service is not active"

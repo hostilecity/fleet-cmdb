@@ -208,10 +208,10 @@ An agent older than the server's minimum version still updates: the update path 
 
 When the agent keeps failing on a version it has already confirmed, there is nothing to roll back ([ADR 0030](../docs/decisions/0030-agent-recovery-mode.md), #180). Instead of staying stopped, it runs in recovery mode so the server can still reach it:
 
-- **Start.** `OnFailure=` starts `fleet-agent-rollback.service` and then `fleet-agent-recovery.service`, which waits for it. A rollback restarts the service, which cancels recovery mode (`Conflicts=`). Otherwise the recovery unit runs `current/fleet-agent run --recovery`. Only systemd starts it; nothing the server sends can.
+- **Start.** `OnFailure=` starts `fleet-agent-rollback.service` and then `fleet-agent-recovery.service`, which waits for it and runs `current/fleet-agent run --recovery`. systemd 255 and later do that after every failed start, so recovery mode first asks systemd: it goes on only if `fleet-agent.service` has stopped for good (its start limit), and otherwise exits at once. Only systemd starts it; nothing the server sends can.
 - **What it does.** Heartbeats only, each with a `recovery` object: since when, why (the agent's own record of why it last stopped, `last-failure.json`, with what systemd says), and when it will try normal mode again. It posts update results and installs a signed update exactly as normal mode does. No collector, no report, no task poll; it confirms nothing. The episode is kept in `recovery.json`.
 - **Sandbox.** The service's, with no capabilities, no netlink socket, and home directories hidden (exposure 1.6 against 1.9).
-- **End.** Starting `fleet-agent.service` stops it: the supervisor after an update, an operator (`sudo systemctl reset-failed fleet-agent && sudo systemctl start fleet-agent`), or recovery mode itself once an hour has passed and no update is in progress. Normal mode removes the episode's records after 10 minutes of running.
+- **End.** It checks the service every 3 seconds and exits once it runs again: the supervisor after an update, an operator (`sudo systemctl reset-failed fleet-agent && sudo systemctl start fleet-agent`), or recovery mode itself once an hour has passed and no update is in progress. Normal mode removes the episode's records after 10 minutes of running.
 - **If it fails too.** No start limit; restarted after 5 minutes, growing to an hour.
 - **Release ordering.** It needs the recovery unit, which only `fleet-agent install` writes: re-run the installer with a release that has it.
 

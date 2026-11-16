@@ -1,16 +1,17 @@
 # Written by `fleet-agent install`; re-running the installer replaces this file and
 # `fleet-agent uninstall` removes it. Do not edit it.
 #
-# Recovery mode (ADR 0030). Started by fleet-agent.service's OnFailure= when systemd stops
-# restarting the agent, after fleet-agent-rollback.service has had its turn. If that rolled
-# an unconfirmed update back, it restarted the service, which cancels this unit (Conflicts=).
-# Otherwise the agent kept failing on a version it had already confirmed, and nothing could
-# be rolled back: this runs the same binary as `run --recovery`, which only authenticates,
+# Recovery mode (ADR 0030). Started by fleet-agent.service's OnFailure=, after
+# fleet-agent-rollback.service has had its turn. systemd 255 and later start it on every
+# failed start, so the agent first checks the service: if systemd is still restarting it, or
+# a rollback restarted it, recovery mode exits at once. Only when the service has stopped
+# for good (its start limit) does it go on: the agent kept failing on a version it had
+# already confirmed, and nothing could be rolled back. `run --recovery` only authenticates,
 # heartbeats with a "recovery" status and the reason, and installs a signed update offered
 # through the usual path (ADR 0018). No collectors, no reports, no tasks. The server cannot
 # start it. It never stops for good: no start limit, and a long, growing delay between
-# restarts. Starting fleet-agent.service (a confirmed update, an operator, or the agent
-# itself trying normal mode again every hour) stops it.
+# restarts. Once fleet-agent.service runs again (a confirmed update, an operator, or the
+# agent itself trying normal mode again every hour), recovery mode sees it and exits.
 #
 # The sandbox is fleet-agent.service's, tighter: no capabilities at all (no collector needs
 # CAP_DAC_READ_SEARCH), home directories hidden, and no netlink socket (no interface list).
@@ -19,7 +20,6 @@
 Description=Fleet CMDB agent recovery mode
 Wants=network-online.target
 After=network-online.target fleet-agent-rollback.service
-Conflicts=fleet-agent.service
 StartLimitIntervalSec=0
 
 [Service]

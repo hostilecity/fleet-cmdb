@@ -16,8 +16,8 @@ Wants=network-online.target
 After=network-online.target
 # Four starts within five minutes is a crash loop: the service stops being restarted and fails, which
 # starts the rollback unit and then the recovery unit (ADR 0030). The rollback unit only acts on an
-# agent update the new version has not confirmed; restarting this service then cancels the recovery
-# unit (its Conflicts=). Otherwise recovery mode keeps the agent reachable for a fixed release.
+# agent update the new version has not confirmed. Recovery mode goes on only if this service has
+# stopped for good, and keeps the agent reachable for a fixed release.
 StartLimitIntervalSec=300
 StartLimitBurst=4
 OnFailure=fleet-agent-rollback.service fleet-agent-recovery.service

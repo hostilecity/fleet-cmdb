@@ -307,8 +307,8 @@ pub const RECOVERY_RETRY_AGAIN: Duration = Duration::from_secs(60 * 60);
 /// Recovery mode (#180, ADR 0030): the heartbeat loop alone, on the calling thread, until shutdown. No
 /// collector, report, or task loop runs. Each heartbeat carries `status`; an `agent_update` directive
 /// goes to `updater` as in normal mode, and its outcomes are posted. Once `retry_after` has passed and
-/// no update is in progress, `try_normal` is called to start `fleet-agent.service` again, which stops
-/// this mode (the recovery unit's `Conflicts=`); if it does not, it is tried again
+/// no update is in progress, `try_normal` is called to start `fleet-agent.service` again, which ends
+/// this mode (the watcher in `main::recover` sees the service running); if it does not, it is tried again
 /// [`RECOVERY_RETRY_AGAIN`] later.
 #[allow(clippy::too_many_arguments)]
 pub fn run_recovery(
@@ -1281,7 +1281,7 @@ pub(crate) mod tests {
         let tries = std::cell::Cell::new(0);
         let try_normal = || {
             tries.set(tries.get() + 1);
-            // systemd stops recovery mode when the service starts (Conflicts=).
+            // Recovery mode's watcher stops it once the service runs.
             shutdown.request();
             Ok(())
         };
