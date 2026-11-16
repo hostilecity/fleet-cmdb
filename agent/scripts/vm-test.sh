@@ -577,6 +577,8 @@ recovery_mode() {
         || fail "recovery mode sent a report or polled for a task"
     echo "recovery mode heartbeats as $FAULTY with no capabilities, and sends nothing else; now the server offers $FIXED"
     rollout=$(($1 + 1000))
+    local offered
+    offered=$(date +%s.%N)
     offer fixed "$FIXED"
     expect_result succeeded "$FIXED"
     # One version runs (recovery mode, `current/fleet-agent run --recovery`, would be a second process).
@@ -585,6 +587,9 @@ recovery_mode() {
     wait_until "a heartbeat in normal mode from $FIXED" 90 heartbeat_in_mode "$FIXED" normal
     # The cause is still there; the fixed release runs normally with it, reports included.
     vm_ok "test -e $STATE/$POISON" || fail "the poison file is gone"
+    # Its startup report may come before the checks above end (a random splay of up to 60 s): count from
+    # the offer.
+    since=$offered
     wait_until "an inventory report from $FIXED" 150 inventory_since "$FIXED"
     vm "rm -f $STATE/$POISON"
     echo "recovery mode installed $FIXED, which confirmed and runs normally; recovery mode has stopped"
