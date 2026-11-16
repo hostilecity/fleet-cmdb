@@ -10,16 +10,16 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 | [scaling.md](scaling.md) | Sizing Puma and the job workers, running jobs in their own container, the connection budget, PgBouncer, and the steps past the homelab |
 | [backup-and-restore.md](backup-and-restore.md) | What is backed up, scheduling, restore, and the restore drill |
 | [install-agent.md](install-agent.md) | Installing the agent with approval or a one-time token, remote and manual updates, rollback, uninstall |
-| [fleet-operations.md](fleet-operations.md) | Revoke, re-enroll, retire, lost credentials, liveness thresholds, operators, task settings, running a task and what each result means, the audit log |
+| [fleet-operations.md](fleet-operations.md) | Revoke, re-enroll, retire, lost credentials, liveness thresholds, operators; remote tasks: turning task types on for a VM, the server's allowlist and limits, the second-factor step-up, running and cancelling a task, and what each result and reason means; the audit log |
 | [compliance-summaries.md](compliance-summaries.md) | The per-host summaries behind the fleet list and the compliance page: what keeps them right, checking, and rebuilding |
 | [health-and-jobs.md](health-and-jobs.md) | `/health`, failed jobs, the server log format, data retention, advisory data, and how Debian triage works |
 | [cis-rules.md](cis-rules.md) | The starter CIS-aligned rules, adding and tuning a rule, and the licensing rules for rule text |
 | [config-facts.md](config-facts.md) | The configuration fact manifest and how to add a fact |
 | [agent-config-facts.md](agent-config-facts.md) | What the agent reads for each configuration fact, and how to check a report |
-| [agent-task-privileges.md](agent-task-privileges.md) | What each remote task type may do on a VM, how the agent gets that privilege under its unit, and the transient task units (P3-A05) |
+| [agent-task-privileges.md](agent-task-privileges.md) | The privilege model: what each remote task type may do on a VM, as which user and in which unit, how the agent gets that privilege under its unit, the transient task units, and where each claim is in the code (P3-A05) |
 | [agent-packages.md](agent-packages.md) | Where the agent's package list comes from, `skipped`, `unsupported`, `unreadable`, and checking it against a host (AC-2.3) |
-| [troubleshooting.md](troubleshooting.md) | A failed deploy, refused release imports, certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates, hosts without recovery mode or where it could not be checked, missing security updates |
+| [troubleshooting.md](troubleshooting.md) | A failed deploy, refused release imports, certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates, hosts without recovery mode or where it could not be checked, missing security updates, a package database left half-configured by an interrupted package update |
 
-For development and testing: [running-locally.md](running-locally.md), [fleet-simulator.md](fleet-simulator.md), [benchmark.md](benchmark.md) (the scale benchmark), and [agent-soak.md](agent-soak.md).
+For development and testing: [running-locally.md](running-locally.md), [fleet-simulator.md](fleet-simulator.md), [benchmark.md](benchmark.md) (the scale benchmark), and [agent-soak.md](agent-soak.md). Phase 3 acceptance on a disposable VM: [phase-3-acceptance.md](phase-3-acceptance.md).
 
 Agent internals (options, files, exit codes, the update mechanism): [agent/README.md](../../agent/README.md). Releases and the release keys: [docs/releases.md](../releases.md).
