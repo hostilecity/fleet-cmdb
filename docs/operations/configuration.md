@@ -31,7 +31,7 @@ Keep a copy of each with your other secrets (GitHub never shows a secret again),
 | Setting | Default | |
 |---|---|---|
 | `FLEET_RELEASE_KEY_CURRENT`, `FLEET_RELEASE_KEY_NEXT` | none | The release public keys: the second (base64) line of `agent/release-keys/current.pub` and `next.pub`, or both lines. A malformed key, or a next key without a current one, stops the boot. With no current key every import is refused, so no agent can be installed. The server never holds a private key. After a key rotation, update these with `current.pub` ([docs/releases.md](../releases.md#rotation)) |
-| `FLEET_RELEASE_REPOSITORY` | `hostilecity/fleet-cmdb` | GitHub repository releases are imported from (tag `agent-v<version>`) |
+| `FLEET_RELEASE_REPOSITORY` | `hostilecity/fleet-cmdb` | GitHub repository releases are imported from (tag `agent-v<version>`). Not where the install commands take the release public key and certificate authority from: that is always `hostilecity/fleet-cmdb`, fixed in code (`Releases::SOURCE_REPOSITORY`), so no setting can change it (#181) |
 | `FLEET_RELEASES_DIR` | `/rails/storage/releases`, in the Docker volume `fleet-cmdb_storage` | Release binaries. Uploaded releases exist only here |
 | `FLEET_RELEASE_DOWNLOAD_RATE_LIMIT_PER_MINUTE` | `60` | Release downloads per client address |
 | `FLEET_ROLLOUT_SPREAD_SECONDS` | `300` | Window over which opening a rollout stage spreads the update directive, so VMs behind one address do not hit the download limit together |
