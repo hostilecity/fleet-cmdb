@@ -8,6 +8,10 @@ Rails.application.configure do
   releases.current_key ||= ENV["FLEET_RELEASE_KEY_CURRENT"].presence
   releases.next_key ||= ENV["FLEET_RELEASE_KEY_NEXT"].presence
 
+  # The repository's agent/release-keys (the keys compiled into the agent), copied into the image; the install page
+  # warns when the keys above differ from them (#181).
+  releases.repository_keys_dir ||= Pathname(ENV.fetch("FLEET_AGENT_RELEASE_KEYS_DIR") { Rails.root.join("../agent/release-keys").to_s }).expand_path
+
   # Imported binaries live here, on a persistent volume, not in the database (Active Storage is not used).
   releases.storage_dir ||= Pathname(ENV.fetch("FLEET_RELEASES_DIR") { Rails.root.join("storage/releases").to_s }).expand_path
 
@@ -22,5 +26,6 @@ Rails.application.configure do
 
     # A key that is set but unusable stops the boot, as the agent's build does (agent/src/release).
     Releases.keys
+    Releases.repository_keys
   end
 end

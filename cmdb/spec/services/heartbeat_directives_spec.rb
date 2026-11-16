@@ -21,7 +21,8 @@ RSpec.describe HeartbeatDirectives, "statement" do
     end
     expect(calls.size).to eq(2)
     expect(calls.map { |c| c[:sql] }.uniq.size).to eq(1)
-    expect(calls.first[:sql]).to include("$1").and(include("FOR SHARE OF rollouts")).and(include("EXISTS"))
+    expect(calls.first[:sql]).to include("$1").and(include("rollout_hosts")).and(include("EXISTS"))
+    expect(calls.first[:sql]).not_to match(/FOR (SHARE|UPDATE)/) # no rollout row lock per heartbeat (#199)
     expect(calls.first[:sql]).not_to match(/'\d{4}-\d\d-\d\d|= 11\b/) # no inlined time or host id
     expect(calls.map { |c| c[:binds].map(&:value) }).to all(include(11).or(include(12)))
     prepared = ApplicationRecord.connection.select_values("SELECT statement FROM pg_prepared_statements")

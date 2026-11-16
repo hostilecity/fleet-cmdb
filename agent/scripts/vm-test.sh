@@ -13,9 +13,14 @@
 # The VM runs under QEMU with KVM when /dev/kvm is usable, and falls back to TCG (with longer
 # timeouts) when not. It is configured by a cloud-init NoCloud seed with an SSH key generated here.
 # scripts/update-stub.py runs on the runner as the agent API and release channel; the guest reaches it
-# at QEMU's host address 10.0.2.2 under the name agent.example.lan. The agent is installed with the
-# real installer (`fleet-agent install --token-stdin`), so the units, the layout, the config, and the
-# credential are the ones a real install makes.
+# at QEMU's host address 10.0.2.2 under the name agent.example.lan. The agent is installed as the
+# dashboard's install page says (#181): curl and minisign from Debian, the binary, manifest, and signature
+# downloaded from the stub, the signature checked with minisign and the binary against the signed
+# manifest, then the real installer (`fleet-agent install --token-stdin`), so the units, the layout, the
+# config, and the credential are the ones a real install makes. The page fetches the release public key
+# from the repository on GitHub; these releases are signed with a throwaway key, so the guest gets that
+# key as the file the page's key command would write. Scenario 290 checks that the same commands refuse a
+# tampered binary, a manifest signed by another key, and an older signed release, with nothing run.
 #
 # Every scenario starts from 1.0.0 installed and running, and ends by checking that exactly one working
 # version runs: `current` and `previous` as expected, only those versions installed, the service
@@ -386,9 +391,82 @@ expect_one_version() {
     echo "one version runs: $version (previous: $previous); heartbeat acknowledged; configuration and credential unchanged; state record as expected"
 }
 
+# --- The install page's commands (#181) ---------------------------------------------------------------
+
+# Exactly the text of the dashboard's commands (cmdb/app/helpers/agent_releases_helper.rb), for a server whose
+# certificate authority curl must be given, as with Cloudflare's Origin CA; cmdb/spec/requests/agent_installs_spec.rb
+# fails if they drift apart. INSTALL_TOOLS runs as root, so without sudo.
+INSTALL_TOOLS='apt-get update && apt-get install -y curl minisign'
+# install_commands NAME: the download and check commands for the stub's release NAME (in place of the version in the
+# URLs), checking for release $OLD. The page's first two lines (a new private directory, and the CA certificate from
+# GitHub) are replaced by run_install_commands: the test's CA is a throwaway one, not on GitHub.
+install_commands() {
+    local s="https://$SERVER_NAME:$PORT" n=$1 e=${OLD//./\\.}
+    cat << EOF
+curl -fL --cacert fleet-server-ca.pem -o fleet-agent $s/api/v1/releases/$n/binary
+curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json $s/api/v1/releases/$n/manifest
+curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json.minisig $s/api/v1/releases/$n/signature
+minisign -V -p fleet-release-key.pub -m fleet-agent.manifest.json -o | sed -n 's/^{"format":"fleet-agent-release-manifest\/1","version":"$e","target":"x86_64-unknown-linux-musl","sha256":"\([0-9a-f]\{64\}\)","size":[0-9]*}$/\1  fleet-agent/p' | sha256sum -c
+EOF
+}
+
+# install_release NAME BINARY KEY [VERSION]: release VERSION (default $OLD) signed with KEY as the release workflow
+# signs it (its trusted comment), as the stub's release NAME.
+install_release() {
+    local d=$stub/releases/$1 version=${4:-$OLD}
+    mkdir -p "$d"
+    cp "$2" "$d/fleet-agent"
+    "$here/release-manifest.sh" "$version" "$UPDATE_TEST_TARGET" "$d/fleet-agent" > "$d/manifest.json"
+    minisign -S -s "$3" -m "$d/manifest.json" -x "$d/manifest.json.minisig" \
+        -t "fleet-agent $version $UPDATE_TEST_TARGET release manifest" > /dev/null
+}
+
+# run_install_commands NAME: runs install_commands NAME as root in a new /root/install-NAME in the guest, with the
+# CA file and the release key the page's commands would fetch from GitHub (/root is root-only, as the page's
+# `mktemp -d` directory is private). The downloads' output
+# (curl's progress) goes to stderr; the check's output, which the page says it must print, to stdout.
+run_install_commands() {
+    local d=/root/install-$1
+    vm "rm -rf $d && mkdir $d && cp /tmp/ca.pem $d/fleet-server-ca.pem && cp /tmp/release-key.pub $d/fleet-release-key.pub"
+    vm "set -e; cd $d; $(install_commands "$1" | sed '$d')" >&2 2>&1
+    vm "cd $d && $(install_commands "$1" | tail -n 1)" 2>&1
+}
+
+# First install (#181): the commands refuse a binary that is not the signed one, a manifest signed by a key other
+# than the repository's, and an older release signed with the right key but served under this release's URLs
+# (review of #219), and nothing has run. Each refused binary would leave a marker if it ran.
+install_refusals() {
+    local name output expected
+    for name in tampered other-key older; do
+        if output=$(run_install_commands "$name-$OLD"); then
+            fail "the install commands accepted the $name release: $output"
+        fi
+        echo "$name: refused:"
+        printf '%s\n' "$output"
+        [[ $output != *"fleet-agent: OK"* ]] || fail "the $name release printed fleet-agent: OK"
+        case $name in
+            tampered) expected="fleet-agent: FAILED" ;;
+            other-key) expected="Signature key id in fleet-agent.manifest.json.minisig is" ;;
+            older) expected="no properly formatted checksum lines found" ;;
+        esac
+        [[ $output == *"$expected"* ]] || fail "the $name release was not refused with: $expected"
+        vm_ok "test ! -e /tmp/refused-ran" || fail "the refused $name binary ran"
+    done
+    printf '%s' "a tampered binary, another key's manifest, and an older release refused, nothing run" > "$tmp/last-result"
+}
+
 # --- Setup --------------------------------------------------------------------------------------------
 
 make_certs "$tmp" "$SERVER_NAME"
+install_release "$OLD" "$dir/fleet-agent-$OLD" "$dir/test.key"
+# The refused releases: a script that would leave a marker if it ran, changed after it was signed, and signed with
+# another throwaway key.
+mkscript "$tmp/refused.sh" "$OLD" "touch /tmp/refused-ran"
+install_release "tampered-$OLD" "$tmp/refused.sh" "$dir/test.key"
+printf '# changed after signing\n' >> "$stub/releases/tampered-$OLD/fleet-agent"
+minisign -G -W -p "$tmp/other.pub" -s "$tmp/other.key" > /dev/null
+install_release "other-key-$OLD" "$tmp/refused.sh" "$tmp/other.key"
+install_release "older-$OLD" "$tmp/refused.sh" "$dir/test.key" 0.9.0
 mkrelease "$stub/releases" good "$NEW" "$dir/fleet-agent-$NEW" "$dir/test.key"
 mkscript "$tmp/loops.sh" "$LOOPING" "echo \"vm-test: release $LOOPING started\" >&2; sleep 2; exit 1"
 mkrelease "$stub/releases" crash_loop "$LOOPING" "$tmp/loops.sh" "$dir/test.key"
@@ -409,10 +487,18 @@ echo "vm-test: booted in $((SECONDS - started))s: $(vm '. /etc/os-release; echo 
 
 # Journals from earlier boots are wanted when a scenario fails after a reboot.
 vm 'mkdir -p /var/log/journal && systemd-tmpfiles --create --prefix /var/log/journal && systemctl restart systemd-journald'
-put "$dir/fleet-agent-$OLD" /tmp/fleet-agent
 put "$tmp/ca.pem" /tmp/ca.pem
-echo "vm-test: installing $OLD with the real installer"
-vm "printf '%s\n' '$ENROLL_TOKEN' | /tmp/fleet-agent install --server https://$SERVER_NAME:$PORT --ca-file /tmp/ca.pem --token-stdin"
+put "$dir/test.pub" /tmp/release-key.pub
+echo "vm-test: installing $OLD as the install page says"
+vm "DEBIAN_FRONTEND=noninteractive $INSTALL_TOOLS > /dev/null"
+check_output=$(run_install_commands "$OLD") || fail "the install commands refused release $OLD: $check_output"
+expected_output="Signature and comment signature verified
+Trusted comment: fleet-agent $OLD $UPDATE_TEST_TARGET release manifest
+fleet-agent: OK"
+[ "$check_output" = "$expected_output" ] || fail "the check printed '$check_output', expected '$expected_output'"
+echo "vm-test: the check printed what the page says:"
+printf '%s\n' "$check_output"
+vm "cd /root/install-$OLD && chmod +x fleet-agent && printf '%s\n' '$ENROLL_TOKEN' | ./fleet-agent install --server https://$SERVER_NAME:$PORT --ca-file fleet-server-ca.pem --token-stdin"
 # Shorter intervals than production, so the test takes minutes: a heartbeat every 10 s and a minute to
 # confirm an update.
 vm "printf '%s\n' '' 'update_confirm_seconds = 60' '' '[heartbeat]' 'interval_seconds = 10' 'min_seconds = 10' 'max_seconds = 60' \
@@ -821,13 +907,14 @@ os="Debian 13"
 record_header() {
     echo "## Agent update failure tests on a VM (P1-A12)"
     echo
-    echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with \`fleet-agent install\`."
+    echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with the install page's commands (curl and minisign, the signature checked with the release key, then \`fleet-agent install\`)."
     echo "The package report check (AC-2.3) compares the agent's startup package report with \`dpkg-query --show\` on the VM."
     echo "The package update scenarios (P3-AGENT-UPDATES) run the real apply_package_updates task against a local repository of test packages built in the guest."
     echo "The recovery mode scenario (#180, ADR 0030) makes a confirmed $FAULTY (the VM fault build) crash-loop and checks that recovery mode installs $FIXED."
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
+scenario 290 "First install refuses a tampered binary, another key, and an older release (#181)" install_refusals
 scenario 300 "Package report matches dpkg-query (AC-2.3)" package_report_matches_dpkg
 scenario 301 "Supervisor killed before the switch" kill_before_switch
 scenario 302 "Supervisor killed after the switch" kill_after_switch

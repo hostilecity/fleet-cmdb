@@ -40,6 +40,39 @@ module Releases
 
   def store = Store.new(config.storage_dir)
 
+  # The release public keys published in the repository (agent/release-keys/current.pub and next.pub, the files
+  # compiled into the agent), as copied into this server's build: { "current" => PublicKey or nil, "next" => ... }.
+  # The install page compares them with the configured keys above (#181). A missing file is no key, as a file of
+  # comments is; raises KeyError if a file is not a key.
+  def repository_keys
+    %w[current next].index_with do |role|
+      path = config.repository_keys_dir.join("#{role}.pub")
+      PublicKey.parse(path.exist? ? path.read : nil, role:)
+    end
+  end
+
+  # The configured keys that differ from the repository's, by role ("current", "next"): releases this server
+  # accepts with such a key fail the install check on the VM, which uses the repository's key.
+  def keys_unlike_repository
+    configured = { "current" => PublicKey.parse(config.current_key, role: "current"), "next" => PublicKey.parse(config.next_key, role: "next") }
+    repository = repository_keys
+    configured.keys.reject { |role| configured[role]&.line == repository[role]&.line }
+  end
+
+  # The repository whose files vouch for a first install (#181): the release public key and the server's certificate
+  # authority are fetched from it on GitHub. A constant, not a setting (FLEET_RELEASE_REPOSITORY is only where imports
+  # come from), so that the page can tell readers which repository to expect and no configuration can change it; a
+  # fork changes it here, in reviewed code.
+  SOURCE_REPOSITORY = "hostilecity/fleet-cmdb".freeze
+
+  # A file of the repository at the release's own tag, on GitHub, not on this server. The release workflow signs with
+  # exactly the key in agent/release-keys/current.pub of the commit it tags (docs/releases.md), so that file is the
+  # key that signed the release, before and after a key rotation. refs/tags/ so that a branch of the same name
+  # cannot stand in for the tag.
+  def source_url(version, path) = "https://raw.githubusercontent.com/#{SOURCE_REPOSITORY}/refs/tags/agent-v#{version}/#{path}"
+
+  def public_key_url(version) = source_url(version, "agent/release-keys/current.pub")
+
   # The agent API, as agents and the installer reach it.
   def agent_server_url = "https://#{HostSeparation.agent_host}"
 

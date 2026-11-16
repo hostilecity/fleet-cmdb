@@ -1,8 +1,8 @@
 # The heartbeat's host-specific directives (DEC-20), read in one statement (#189): the rollout offer (Rollouts,
 # agent_update), the outstanding report requests (ReportRequests, report_request), and whether a task is waiting
 # (AgentTasks, tasks_available). Each service keeps its own query and builds its own directive; this only runs the
-# three queries as scalar subqueries of one SELECT. The rollout row is still read FOR SHARE (Rollouts.directive_for)
-# and the host row is already locked, so the lock order is unchanged.
+# three queries as scalar subqueries of one SELECT. The rollout row is read without a lock (Rollouts.directive_for,
+# #199), and the host row is already locked.
 #
 # The writes stay where they were and happen only when there is something new: marking a host updating on its first
 # offer, and marking report requests sent the first time a heartbeat carries them.
@@ -30,7 +30,7 @@ module HeartbeatDirectives
     # Composed with Arel, not with to_sql, so every value stays a bind parameter ($1, $2, ...) and the statement text
     # is the same on every heartbeat: PostgreSQL then prepares it once per connection instead of planning it on every
     # heartbeat (review of #209). Active Record would not prepare it by itself, because the scopes hold SQL text (the
-    # FOR SHARE clause, the stage comparison) and it prepares no statement with SQL literals, as they might carry
+    # stage comparison, the offer's due time) and it prepares no statement with SQL literals, as they might carry
     # values. Here they are constants, so the text is compiled once per call with the connection's visitor and passed
     # as preparable. spec/services/heartbeat_directives_spec.rb checks that the statement is prepared.
     select = Arel::SelectManager.new.project(Arel::Nodes::Grouping.new(rollout.arel).as("rollout"),
