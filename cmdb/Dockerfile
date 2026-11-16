@@ -3,9 +3,9 @@
 
 # This Dockerfile is designed for production, not development. .github/workflows/cd.yml builds and runs it on the
 # server (docs/operations/install-server.md). Build it from cmdb/ with the agent API schemas from docs/api and the
-# agent's compiled-in certificate authorities from agent/trust passed in as named build contexts (read at runtime;
-# P1-API-AUTH, ADR 0024):
-# docker build --build-context api=../docs/api --build-context trust=../agent/trust -t cmdb .
+# agent's compiled-in certificate authorities from agent/trust and its release public keys from agent/release-keys passed
+# in as named build contexts (read at runtime; P1-API-AUTH, ADR 0024, #181):
+# docker build --build-context api=../docs/api --build-context trust=../agent/trust --build-context release-keys=../agent/release-keys -t cmdb .
 
 # For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
 
@@ -31,7 +31,8 @@ ENV RAILS_ENV="production" \
     FLEET_API_SCHEMAS_DIR="/rails/api-schemas" \
     FLEET_RULES_SCHEMA_DIR="/rails/api-rules" \
     FLEET_TASK_CATALOG_DIR="/rails/api-tasks" \
-    FLEET_AGENT_TRUST_DIR="/rails/agent-trust"
+    FLEET_AGENT_TRUST_DIR="/rails/agent-trust" \
+    FLEET_AGENT_RELEASE_KEYS_DIR="/rails/agent-release-keys"
 
 # Throw-away build stage to reduce size of final image
 FROM base AS build
@@ -65,6 +66,9 @@ COPY --from=api tasks/task-catalog.json tasks/task-catalog.schema.json ./api-tas
 # The certificate authorities compiled into the agent (ADR 0024), the same files: the install page gives curl the one
 # that signed the server's certificate (named build context "trust").
 COPY --from=trust *.pem ./agent-trust/
+# The release public keys compiled into the agent (agent/release-keys, named build context "release-keys"): the install
+# page warns when the configured FLEET_RELEASE_KEY_* differ from them, since the install check uses these (#181).
+COPY --from=release-keys *.pub ./agent-release-keys/
 
 # Precompile bootsnap code for faster boot times.
 # -j 1 disable parallel compilation to avoid a QEMU bug: https://github.com/rails/bootsnap/issues/495

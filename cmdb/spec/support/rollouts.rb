@@ -27,11 +27,25 @@ end
 
 RSpec.configure do |config|
   config.include RolloutHelpers
-  # One-second spread: every offer time is the opening time, so directives are due at once.
+  # A confirmed stage opens in RolloutAdvanceJob (#199). Specs run that job as soon as it is enqueued, as a worker
+  # would, unless tagged rollout_jobs: :enqueued to look at it before it runs.
+  config.around do |example|
+    adapter = ActiveJob::Base.queue_adapter
+    next example.run if example.metadata[:rollout_jobs] == :enqueued || !adapter.is_a?(ActiveJob::QueueAdapters::TestAdapter)
+
+    saved = [ adapter.perform_enqueued_jobs, adapter.filter ]
+    adapter.perform_enqueued_jobs = true
+    adapter.filter = [ RolloutAdvanceJob ]
+    example.run
+  ensure
+    adapter.perform_enqueued_jobs, adapter.filter = saved if saved
+  end
+  # One-second spread, whatever the stage's size: every offer time is the opening time, so directives are due at once.
   config.around do |example|
     rollouts = Rails.configuration.x.rollouts
-    saved = rollouts.to_h.slice(:spread, :confirmation_timeout)
+    saved = rollouts.to_h.slice(:spread, :confirmation_timeout, :downloads_per_second, :large_fleet_hosts)
     rollouts.spread = 1
+    rollouts.downloads_per_second = 1_000_000
     example.run
   ensure
     saved.each { |key, value| rollouts.public_send(:"#{key}=", value) }

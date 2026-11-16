@@ -1,5 +1,5 @@
 # Deploy (P1-O03): builds and runs the server on its VM (docs/operations/install-server.md). On a self-hosted runner
-# on the LAN it connects to the VM over SSH, ships the commit's cmdb/, docs/api/, and agent/trust/ (tar), builds the image there, and replaces the
+# on the LAN it connects to the VM over SSH, ships the commit's cmdb/, docs/api/, agent/trust/, and agent/release-keys/ (tar), builds the image there, and replaces the
 # fleet-cmdb container, which joins the existing PostgreSQL container's Docker network and publishes port 443: HTTPS
 # with the server's Cloudflare Origin CA certificate, for agents and the Cloudflare tunnel (ADR 0024). Settings come
 # from the "production" environment; secret values travel only on SSH standard input into a mode-0600 env file for
@@ -104,7 +104,7 @@ jobs:
 
       - name: Ship the code
         run: |
-          tar -cf - cmdb docs/api agent/trust | ssh -F "$SSH_CONFIG" server \
+          tar -cf - cmdb docs/api agent/trust agent/release-keys | ssh -F "$SSH_CONFIG" server \
             "rm -rf '$DEPLOY_DIR/build-$DEPLOY_SHA' && mkdir -p '$DEPLOY_DIR/build-$DEPLOY_SHA' && tar -xf - -C '$DEPLOY_DIR/build-$DEPLOY_SHA'"
 
       - name: Write the app's env file on the server
@@ -165,7 +165,7 @@ jobs:
           echo "==> storage volume"
           docker volume create fleet-cmdb_storage >/dev/null
           echo "==> build fleet-cmdb:$sha"
-          docker build --pull -q --build-context api="build-$sha/docs/api" --build-context trust="build-$sha/agent/trust" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
+          docker build --pull -q --build-context api="build-$sha/docs/api" --build-context trust="build-$sha/agent/trust" --build-context release-keys="build-$sha/agent/release-keys" -t "fleet-cmdb:$sha" -t fleet-cmdb:latest "build-$sha/cmdb"
           echo "==> replace the container"
           # The jobs container goes first, so no job of the old commit runs against the new commit's migrations. It is
           # removed when FLEET_JOBS_CONTAINER is off too, which goes back to one container. Stopped first (SIGTERM, up to

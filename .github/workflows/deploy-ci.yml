@@ -65,7 +65,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/cd.yml .github/workflows/deploy-ci.yml
 
       - name: Build the image (as cd.yml does)
-        run: docker build -q --build-context api=docs/api --build-context trust=agent/trust -t fleet-cmdb:ci cmdb
+        run: docker build -q --build-context api=docs/api --build-context trust=agent/trust --build-context release-keys=agent/release-keys -t fleet-cmdb:ci cmdb
 
       - name: Start PostgreSQL with the role cmdb and its four databases
         run: |

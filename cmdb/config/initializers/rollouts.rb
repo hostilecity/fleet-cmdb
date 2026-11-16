@@ -7,6 +7,29 @@ Rails.application.configure do
   # default, at least three requests per update). 300 seconds fits about 100 hosts per address.
   rollouts.spread ||= Integer(ENV.fetch("FLEET_ROLLOUT_SPREAD_SECONDS", "300")).clamp(1..)
 
+  # A large stage spreads over a longer window, so its hosts download at most about this many releases a second on
+  # average (#199): the window is the larger of the spread above and the stage's hosts divided by this. At the
+  # default a homelab stage keeps the 300 seconds; 75,000 hosts take about 2 hours.
+  # A whole number from 1 to 100,000; anything else stops the server from starting.
+  rollouts.downloads_per_second ||= begin
+    value = ENV.fetch("FLEET_ROLLOUT_DOWNLOADS_PER_SECOND", "10")
+    rate = Integer(value, 10, exception: false)
+    raise "FLEET_ROLLOUT_DOWNLOADS_PER_SECOND must be a whole number of downloads a second from 1 to 100000 (got #{value.inspect})" unless rate&.between?(1, 100_000)
+
+    rate
+  end
+
+  # From this many active hosts a rollout's default stages are 1, 10, 50, and 100 percent rather than 25 and 100
+  # (Rollouts.default_stages, #199). A whole number from 1 to 100,000,000; anything else stops the server from
+  # starting, rather than silently choosing other stages.
+  rollouts.large_fleet_hosts ||= begin
+    value = ENV.fetch("FLEET_ROLLOUT_LARGE_FLEET_HOSTS", "1000")
+    hosts = Integer(value, 10, exception: false)
+    raise "FLEET_ROLLOUT_LARGE_FLEET_HOSTS must be a whole number of hosts from 1 to 100000000 (got #{value.inspect})" unless hosts&.between?(1, 100_000_000)
+
+    hosts
+  end
+
   # A host that was sent the directive and has not reported a result within this long is marked unconfirmed,
   # which halts the rollout. The agent's own rollback deadline is 5 minutes (ADR 0018).
   rollouts.confirmation_timeout ||= Integer(ENV.fetch("FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES", "30")).clamp(1..).minutes

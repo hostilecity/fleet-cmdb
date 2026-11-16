@@ -30,6 +30,19 @@ RSpec.describe "Release downloads", type: :request do
     expect(response.headers).to include("ETag" => %("#{release.sha256}"), "Accept-Ranges" => "bytes")
   end
 
+  it "streams the binary in chunks with the SHA-256 stored at import, never hashing or reading it whole per request (#199)" do
+    allow(OpenSSL::Digest::SHA256).to receive(:hexdigest).and_call_original
+    allow(File).to receive(:binread).and_call_original
+    reads = []
+    allow_any_instance_of(File).to receive(:read).and_wrap_original { |original, *args| reads << args.first; original.call(*args) } # rubocop:disable RSpec/AnyInstance
+    download("binary")
+    expect(response.body.b).to eq(release.binary.b)
+    expect(OpenSSL::Digest::SHA256).not_to have_received(:hexdigest)
+    expect(File).not_to have_received(:binread)
+    expect(reads).to all(be <= Api::V1::ReleasesController::CHUNK)
+    expect(reads.size).to be >= release.binary.bytesize / Api::V1::ReleasesController::CHUNK
+  end
+
   it "answers a matching If-None-Match with 304 and no body" do
     %w[manifest signature binary].each do |file|
       download(file)
