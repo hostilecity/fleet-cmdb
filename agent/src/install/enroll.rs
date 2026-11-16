@@ -533,6 +533,7 @@ pub fn confirm(
             agent_time: rfc3339(SystemTime::now()),
             // As the service reports them, so the server does not clear them in between (P3-A01).
             tasks: crate::tasks::Capabilities::of(&config.tasks),
+            recovery: None,
         };
         let error = match client.post_json(HEARTBEAT_PATH, &body) {
             Ok(response) if response.status == 200 => {

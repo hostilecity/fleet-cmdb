@@ -1,6 +1,6 @@
 # ADR 0018: Signed remote agent updates with automatic rollback
 
-- Status: Accepted (owner, scope change #54)
+- Status: Accepted (owner, scope change #54); amended by [ADR 0030](0030-agent-recovery-mode.md): a crash loop with nothing to roll back to ends in recovery mode, not a stopped agent
 - Decision issue: DEC-18
 - Requirements: `FR-S.5`, `FR-1.5`, `FR-1.6`, `NFR-1`, `NFR-4`, `NFR-5`, `AC-1.9`, `AC-1.10`
 - Amends: [ADR 0003](0003-agent-privilege.md) and [ADR 0014](0014-task-trust-model.md) (consequences only; see below). Lifts the "agent self-update" exclusion in `docs/requirements.md` section 1.

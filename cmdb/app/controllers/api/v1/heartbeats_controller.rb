@@ -17,7 +17,9 @@ module Api
     #
     # The request's `tasks` object, the agent's task capabilities (P3-A01), is stored in the same UPDATE, so tasks
     # are created only for hosts that support and enable the type (Host#task_exclusion_reason, P3-S02). It allows up
-    # to 64 type ids in each of two lists, hence the larger body limit.
+    # to 64 type ids in each of two lists, hence the larger body limit. Its `recovery` object, present only while the agent
+    # runs in recovery mode (#180, ADR 0030), is stored in the same UPDATE too, and the dashboard shows the host as
+    # recovering. Nothing in the response can put an agent into recovery mode or take it out.
     class HeartbeatsController < AuthenticatedController
       self.max_body_bytes = 32.kilobytes
       self.records_credential_use = false
@@ -31,7 +33,7 @@ module Api
         agent_time = Time.iso8601(payload["agent_time"])
         recorded_at = Liveness.record_heartbeat!(host_id: current_host.id, credential_id: current_credential.id,
                                                  agent_version: payload["agent_version"], agent_schema_version: payload["schema_version"],
-                                                 agent_time:, task_capabilities: payload["tasks"])
+                                                 agent_time:, task_capabilities: payload["tasks"], recovery: payload["recovery"])
         render json: { server_time: recorded_at.utc.iso8601, directives: directives(recorded_at, agent_time) }
       end
 

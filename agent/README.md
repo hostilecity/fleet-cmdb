@@ -38,6 +38,7 @@ fleet-agent 0.1.0 (agent schema 1)
 
 ```
 fleet-agent [run] [--config PATH]          run the agent (the default command)
+fleet-agent run --recovery [--config PATH] recovery mode: started only by fleet-agent-recovery.service (see Recovery mode)
 fleet-agent check-config [--config PATH]   validate the config and trusted certificates; never contacts the server
 fleet-agent install [OPTIONS]              install, enroll, and start the agent (see below)
 fleet-agent uninstall [--keep-state]       stop and remove the agent (see below)
@@ -203,9 +204,20 @@ The agent updates itself only through the signed release channel ([ADR 0018](../
 
 An agent older than the server's minimum version still updates: the update path uses only `heartbeat`, `update-results`, and the public release downloads, none of which are refused with `426` (NFR-5). Two versions are kept; older ones are removed after a confirmed update. `fleet-agent self-test` can be run by hand to check a binary against this host's config. No release verifies until the owner has put real keys in `release-keys/` ([Releases](#releases)).
 
+### Recovery mode
+
+When the agent keeps failing on a version it has already confirmed, there is nothing to roll back ([ADR 0030](../docs/decisions/0030-agent-recovery-mode.md), #180). Instead of staying stopped, it runs in recovery mode so the server can still reach it:
+
+- **Start.** The service sets `RestartMode=direct`, so `OnFailure=` runs once, when it has given up (its start limit), and starts `fleet-agent-rollback.service` and then `fleet-agent-recovery.service`, which waits for it and runs `current/fleet-agent run --recovery`. As a fallback, recovery mode checks the service for 20 seconds: it goes on only if it stays `failed` and enabled, exits if it runs (a rollback restarted it) or a person stopped or disabled it, and fails (systemd retries in 5 minutes) if `systemctl` cannot say. Only systemd starts it; nothing the server sends can.
+- **What it does.** Heartbeats only, each with a `recovery` object: since when, why (the agent's own record of why it last stopped, `last-failure.json`, with what systemd says), and when it will try normal mode again. It posts update results and installs a signed update exactly as normal mode does. No collector, no report, no task poll; it confirms nothing. The episode is kept in `recovery.json`.
+- **Sandbox.** The service's, with no capabilities, no netlink socket, and home directories hidden (exposure 1.6 against 1.9).
+- **End.** It checks the service every 3 seconds and exits once it runs again, or once a person disables, masks, or `reset-failed`s it. A plain `systemctl stop fleet-agent` is not seen (a `failed` unit stays `failed`), so to keep the agent off during an episode use one of those, or `sudo systemctl stop fleet-agent-recovery`. It ends: the supervisor after an update, an operator (`sudo systemctl reset-failed fleet-agent && sudo systemctl start fleet-agent`), or recovery mode itself once an hour has passed and no update is in progress. Normal mode removes the episode's records after 10 minutes of running.
+- **If it fails too.** No start limit; restarted after 5 minutes, growing to an hour.
+- **Release ordering.** It needs the recovery unit and the new `OnFailure=` and `RestartMode=` lines, which only `fleet-agent install` writes: re-run the installer with a release that has it (#232 tracks refreshing the units on update).
+
 `scripts/update-smoke.sh` is the end-to-end test CI runs on systemd with throwaway keys (see the spec's "As built"), on every change under `agent/` and every push to main, as three parallel jobs (`refusals`, `rollbacks`, `recovery`: pass the group as a second argument to run one part). It rewrites `/usr/lib/fleet-agent`, `/etc/fleet-agent`, and `/etc/systemd/system`, so it refuses to run outside CI unless `UPDATE_SMOKE_DISPOSABLE=yes`, and never where an agent is installed.
 
-`scripts/vm-test.sh` (workflow "Agent VM tests") is the failure test on a disposable Debian 13 VM under QEMU. It installs the agent with the real installer, then kills the supervisor and restarts the VM in the middle of updates, and each time checks that exactly one working version runs (see the spec's "Recorded runs"). It needs only QEMU, runs as an unprivileged user, and uploads its results as the `vm-test-results` artifact.
+`scripts/vm-test.sh` (workflow "Agent VM tests") is the failure test on a disposable Debian 13 VM under QEMU. It installs the agent with the real installer, then kills the supervisor and restarts the VM in the middle of updates, and each time checks that exactly one working version runs (see the spec's "Recorded runs"). Last, it makes a confirmed version crash-loop with a test-only fault build (`--cfg fleet_vm_fault`, `src/vm_fault.rs`) and checks that recovery mode installs a fixed release. It needs only QEMU, runs as an unprivileged user, and uploads its results as the `vm-test-results` artifact.
 
 ## Systemd unit
 
@@ -227,6 +239,8 @@ An agent older than the server's minimum version still updates: the update path 
 | `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup, `flock` locks | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |
 | `update` | Updater: download, verify, and stage (`stage`, `fetch`), supervised switch and rollback (`supervise`), the agent's side and the `self-test`, `update-supervise`, and `update-rollback` commands | P1-AGENT-UPDATE |
+| `recovery` | Recovery mode's records (`recovery.json`, `last-failure.json`), its reason, and the panic summary; the loop is `report::run_recovery` | #180, ADR 0030 |
+| `vm_fault` | The VM test's crash-loop fault; only in unit tests and the `fleet_vm_fault` build, never in a release | #180 |
 | `install` | `install` and `uninstall`: preflight, layout, onboarding and token enrollment, systemd unit | P1-AGENT-INSTALL, P1-PACKAGING (unit hardening) |
 | `tasks` | The compiled-in task catalog, the `[tasks]` settings, the capabilities reported in each heartbeat, the poller, the durable ledger, and the executor seam; see [Tasks](#tasks) | P3-A01, P3-A02 |
 | `release` | Release manifest, the release public keys built in from `release-keys/`, signature and checksum verification, `verify-release` | P1-PACKAGING |

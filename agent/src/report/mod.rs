@@ -300,6 +300,71 @@ fn run_with(
     })
 }
 
+/// How soon recovery mode tries normal mode again when its last try did not stop it (the service could
+/// not be started): it keeps heartbeating meanwhile.
+pub const RECOVERY_RETRY_AGAIN: Duration = Duration::from_secs(60 * 60);
+
+/// Longest an offer being worked on (`busy`) may put off the try of normal mode once it is due. A
+/// server that sends a new offer on every heartbeat could otherwise keep the agent in recovery mode for
+/// good (review of #222). An update record (an update past staging) still always defers it.
+pub const RECOVERY_DEFER_AT_MOST: Duration = Duration::from_secs(60 * 60);
+
+/// Recovery mode (#180, ADR 0030): the heartbeat loop alone, on the calling thread, until shutdown. No
+/// collector, report, or task loop runs. Each heartbeat carries `status`; an `agent_update` directive
+/// goes to `updater` as in normal mode, and its outcomes are posted. Once `retry_after` has passed and
+/// no update is in progress, `try_normal` is called to start `fleet-agent.service` again, which ends
+/// this mode (the watcher in `main::recover` sees the service running); if it does not, it is tried again
+/// [`RECOVERY_RETRY_AGAIN`] later.
+#[allow(clippy::too_many_arguments)]
+pub fn run_recovery(
+    config: &Config,
+    transport: &dyn Transport,
+    shutdown: &Shutdown,
+    started: Instant,
+    updater: &Updater,
+    status: crate::recovery::Status,
+    retry_after: Duration,
+    try_normal: &dyn Fn() -> Result<(), String>,
+) {
+    let intervals = Intervals::new(config.heartbeat, config.inventory);
+    let mut heartbeat = Heartbeat::new(
+        &intervals,
+        Backoff::new(RetryPolicy::default(), seeded(1)),
+        seeded(2),
+        started,
+    )
+    .with_updater(updater)
+    .in_recovery(status);
+    let mut retry_at = started + retry_after;
+    while !shutdown.is_requested() {
+        // Looked at before the beat: an offer the beat hands over sets `busy` at once.
+        let idle = updater.idle();
+        let hostname = crate::collect::hostname();
+        let wait = heartbeat.beat(transport, hostname, Instant::now(), SystemTime::now());
+        updater.tick(transport);
+        let now = Instant::now();
+        let overdue = now.saturating_duration_since(retry_at) >= RECOVERY_DEFER_AT_MOST;
+        if now >= retry_at && (idle || (overdue && !updater.update_recorded())) {
+            retry_at = now + RECOVERY_RETRY_AGAIN;
+            heartbeat.set_recovery_retry_at(rfc3339(SystemTime::now() + RECOVERY_RETRY_AGAIN));
+            match try_normal() {
+                Ok(()) => tracing::warn!(
+                    "trying normal mode again: started fleet-agent.service, which ends recovery mode"
+                ),
+                Err(e) => tracing::error!(
+                    "cannot start fleet-agent.service to try normal mode again ({e}); staying in recovery mode"
+                ),
+            }
+        }
+        let until_retry = retry_at
+            .saturating_duration_since(now)
+            .max(Duration::from_secs(1));
+        if shutdown.wait(wait.min(until_retry)) {
+            break;
+        }
+    }
+}
+
 /// Starts the thread of one loop, `fleet-agent-<name>`.
 fn spawn_loop<'scope, 'env>(
     scope: &'scope thread::Scope<'scope, 'env>,
@@ -398,6 +463,9 @@ fn inventory_loop(
     requests: &ReportRequests,
     refresh: &Refresh,
 ) {
+    // The VM test's crash loop on a confirmed version (#180): only its fault build has this.
+    #[cfg(fleet_vm_fault)]
+    crate::vm_fault::check(state_dir);
     let mut reporter = Reporter::new(
         intervals,
         state_dir.to_owned(),
@@ -1194,5 +1262,163 @@ pub(crate) mod tests {
                 "the {name} loop could not start, but the agent kept running"
             );
         }
+    }
+
+    fn recovery_status() -> crate::recovery::Status {
+        crate::recovery::Status {
+            entered_at: "2026-01-01T12:00:00.000Z".into(),
+            reason: "a loop of the agent failed: panicked in fleet-agent-inventory".into(),
+            retry_at: "2026-01-01T13:00:00.000Z".into(),
+        }
+    }
+
+    #[test]
+    fn recovery_mode_only_heartbeats_and_hands_back_to_normal_mode_after_its_time() {
+        // #180, ADR 0030: no collector, report, or task loop; every heartbeat says why; after
+        // `retry_after`, with no update in progress, it starts the service again, which ends it.
+        let dir = TempDir::new();
+        let config = Config {
+            state_dir: dir.path("state"),
+            ..Config::from_toml(&cfg::minimal()).unwrap()
+        };
+        std::fs::create_dir(&config.state_dir).unwrap();
+        let transport = FakeTransport::new(vec![]);
+        transport.set_accepting(true);
+        let shutdown = Shutdown::default();
+        let updater = Updater::inert(&config.state_dir);
+        let tries = std::cell::Cell::new(0);
+        let try_normal = || {
+            tries.set(tries.get() + 1);
+            // Recovery mode's watcher stops it once the service runs.
+            shutdown.request();
+            Ok(())
+        };
+        let started = Instant::now();
+        run_recovery(
+            &config,
+            &transport,
+            &shutdown,
+            started,
+            &updater,
+            recovery_status(),
+            Duration::ZERO,
+            &try_normal,
+        );
+        assert_eq!(tries.get(), 1);
+        let sent = transport.sent();
+        assert!(!sent.is_empty());
+        for (path, body) in &sent {
+            assert_eq!(path, heartbeat::HEARTBEAT_PATH, "recovery mode sent {path}");
+            crate::collect::contract::assert_conforms("v1", "heartbeat.request", body);
+            assert_eq!(body["recovery"]["reason"], recovery_status().reason);
+            assert_eq!(body["recovery"]["entered_at"], "2026-01-01T12:00:00.000Z");
+            assert_eq!(body["recovery"]["retry_at"], "2026-01-01T13:00:00.000Z");
+            // No task is offered to a host in recovery mode.
+            assert!(body.get("tasks").is_none());
+        }
+        // It confirms nothing: no record of an acknowledged heartbeat for `install` either.
+        assert!(!config.state_dir.join(ACK_RECORD).exists());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn recovery_mode_does_not_try_normal_mode_during_an_update_or_before_its_time() {
+        let dir = TempDir::new();
+        let config = Config {
+            state_dir: dir.path("state"),
+            ..Config::from_toml(&cfg::minimal()).unwrap()
+        };
+        std::fs::create_dir(&config.state_dir).unwrap();
+        let transport = FakeTransport::new(vec![]);
+        transport.set_accepting(true);
+        let updater = Updater::inert(&config.state_dir);
+        let tries = std::cell::Cell::new(0);
+        let try_normal = || {
+            tries.set(tries.get() + 1);
+            Err("start refused".to_owned())
+        };
+        let run_for = |retry_after: Duration| {
+            let shutdown = Shutdown::default();
+            let stopper = shutdown.clone();
+            let stop = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(1_500));
+                stopper.request();
+            });
+            run_recovery(
+                &config,
+                &transport,
+                &shutdown,
+                Instant::now(),
+                &updater,
+                recovery_status(),
+                retry_after,
+                &try_normal,
+            );
+            stop.join().unwrap();
+        };
+        // Not yet time.
+        run_for(Duration::from_secs(3_600));
+        assert_eq!(tries.get(), 0);
+        // Time, but an update is in progress (its record exists): the service must not restart under it.
+        std::fs::write(config.state_dir.join("update.json"), "{}").unwrap();
+        assert!(!updater.idle());
+        run_for(Duration::ZERO);
+        assert_eq!(tries.get(), 0);
+        // Time and idle: tried once, and after a failed try not again at once (an hour later).
+        std::fs::remove_file(config.state_dir.join("update.json")).unwrap();
+        assert!(updater.idle());
+        run_for(Duration::ZERO);
+        assert_eq!(tries.get(), 1);
+    }
+
+    #[test]
+    fn offers_put_off_the_try_of_normal_mode_for_an_hour_at_most() {
+        // Review of #222: a server that sends a new offer every heartbeat keeps `busy` set, which alone
+        // must not keep the agent in recovery mode for good. An update record still always defers it.
+        let dir = TempDir::new();
+        let config = Config {
+            state_dir: dir.path("state"),
+            ..Config::from_toml(&cfg::minimal()).unwrap()
+        };
+        std::fs::create_dir(&config.state_dir).unwrap();
+        let transport = FakeTransport::new(vec![]);
+        transport.set_accepting(true);
+        let updater = Updater::inert(&config.state_dir);
+        let tries = std::cell::Cell::new(0);
+        let try_normal = || {
+            tries.set(tries.get() + 1);
+            Err("start refused".to_owned())
+        };
+        let run_since = |started: Instant| {
+            let shutdown = Shutdown::default();
+            let stopper = shutdown.clone();
+            let stop = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(1_500));
+                stopper.request();
+            });
+            run_recovery(
+                &config,
+                &transport,
+                &shutdown,
+                started,
+                &updater,
+                recovery_status(),
+                Duration::ZERO,
+                &try_normal,
+            );
+            stop.join().unwrap();
+        };
+        let Some(long_ago) = Instant::now().checked_sub(RECOVERY_DEFER_AT_MOST * 2) else {
+            return; // a clock that started less than two hours ago cannot express this
+        };
+        updater.set_busy(true);
+        run_since(Instant::now());
+        assert_eq!(tries.get(), 0, "due, but an offer is being worked on");
+        run_since(long_ago);
+        assert_eq!(tries.get(), 1, "overdue by more than the cap");
+        std::fs::write(config.state_dir.join("update.json"), "{}").unwrap();
+        run_since(long_ago);
+        assert_eq!(tries.get(), 1, "an update record always defers it");
+        updater.set_busy(false);
     }
 }

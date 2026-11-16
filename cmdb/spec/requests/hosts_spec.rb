@@ -43,6 +43,15 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(page.css("#fleet_counts .count").map(&:text)).to eq(%w[1 0 0 0 1 0])
       end
 
+      it "marks a host whose agent is in recovery mode beside its status (#180)" do
+        media.update_columns(agent_recovery_since: Time.current, agent_recovery_reason: "the agent kept failing")
+        get "/"
+        status = page.at_css("tr#row_host_#{media.id} td:nth-child(2)")
+        expect(status.text.squish).to eq("OnlineRecovering")
+        expect(status.at_css(".recovering")["title"]).to include("recovery mode")
+        expect(page.css(".recovering").size).to eq(1)
+      end
+
       it "marks unreported values as unavailable" do
         get "/"
         cells = page.css("tr#row_host_#{pending.id} td").map { |td| td.text.squish }
@@ -240,6 +249,37 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       network = section("Inventory").css("table").last.css("tbody tr").map { |tr| tr.css("td").map { |td| td.xpath(".//text()").map(&:text).join(" ").squish } }
       expect(network).to eq([ [ "ens18", "192.0.2.10/24 2001:db8::10/64", "Default route" ], [ "ens19", "198.51.100.10/24", "No" ] ])
       expect(response.body).not_to match(/style=/)
+    end
+
+    it "explains recovery mode, the agent's reason (escaped), and the next step (#180, ADR 0030)" do
+      record_heartbeat(host)
+      get "/hosts/#{host.id}"
+      expect(page.at_css("#recovery_host_#{host.id}")).to be_nil
+      expect(page.at_css(".recovering")).to be_nil
+      since = Time.utc(2026, 11, 15, 9, 30)
+      host.update_columns(agent_recovery_since: since, agent_recovery_retry_at: Time.utc(2026, 11, 15, 10, 30),
+                          agent_recovery_reason: "a loop of the agent failed: <script>alert(1)</script>")
+      get "/hosts/#{host.id}"
+      expect(page.at_css("#status_host_#{host.id} .recovering").text).to eq("Recovering")
+      notice = page.at_css("#recovery_host_#{host.id}")
+      expect(notice.text.squish).to include(
+        "The agent is in recovery mode.", "It kept failing on version 0.1.0", "Since 2026-11-15 09:30 UTC",
+        "The agent says: a loop of the agent failed: <script>alert(1)</script>",
+        "roll out a release newer than 0.1.0", "sudo systemctl start fleet-agent", "(next around 2026-11-15 10:30 UTC by the VM's clock)"
+      )
+      expect(notice.at_css("a")["href"]).to eq("/agents")
+      expect(response.body).not_to include("<script>alert(1)</script>")
+      expect(notice.css("script")).to be_empty
+
+      # No retry time recorded: the hourly retry is still explained.
+      host.update_columns(agent_recovery_retry_at: nil)
+      get "/hosts/#{host.id}"
+      expect(page.at_css("#recovery_host_#{host.id}").text.squish).to include("about once an hour.")
+
+      # A host that is no longer active is not shown as recovering, whatever its last heartbeat said.
+      host.revoke!(actor: operator)
+      get "/hosts/#{host.id}"
+      expect(page.at_css("#recovery_host_#{host.id}")).to be_nil
     end
 
     it "shows unreadable facts as not available with the agent's warning" do

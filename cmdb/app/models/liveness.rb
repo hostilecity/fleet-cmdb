@@ -22,17 +22,21 @@ module Liveness
   # Records a heartbeat: locks the host row and re-checks the host and credential under that lock
   # (AgentHostLock, raising AgentHostLock::Refused), then writes the host's host_liveness row in one statement, plus
   # a status event only when the host was not already online. The hosts row is written only when something it holds
-  # changed: the agent version or schema version, the task capabilities, or the first heartbeat's first_seen_at. Must
-  # run inside a transaction (the request's). Returns the server time it recorded. task_capabilities is the
-  # heartbeat's `tasks` object (P3-A01), compared with the host's capability columns (task_capability_columns).
-  def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil)
+  # changed: the agent version or schema version, the task capabilities, the recovery-mode columns, or the first
+  # heartbeat's first_seen_at. Must run inside a transaction (the request's). Returns the server time it recorded.
+  # task_capabilities is the heartbeat's `tasks` object (P3-A01), compared with the host's capability columns
+  # (task_capability_columns); recovery is its `recovery` object (#180, ADR 0030), compared the same way
+  # (recovery_columns).
+  def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil,
+                        recovery: nil)
     host = AgentHostLock.lock!(host_id:, credential_id:)
 
     # The clock is read only now, after the lock, and last_seen_at never moves backwards: a heartbeat that waited for
     # the row cannot write an older time than the one it waited for.
     now, was = touch(host.id, Time.current, agent_time)
     capabilities = task_capability_columns(task_capabilities)
-    updates = { agent_version:, agent_schema_version:, **capabilities }.reject { |column, value| host[column] == value }
+    updates = { agent_version:, agent_schema_version:, **capabilities, **recovery_columns(recovery, host, now) }
+              .reject { |column, value| host[column] == value }
     if updates.keys.intersect?(capabilities.keys) || task_capabilities.nil? != host.task_capabilities_reported_at.nil?
       updates[:task_capabilities_reported_at] = task_capabilities && now
     end
@@ -41,9 +45,10 @@ module Liveness
     unless was == "online"
       HostStatusEvent.insert!({ host_id: host.id, from_status: was, to_status: "online", reason: "heartbeat", occurred_at: now })
     end
-    # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05) and a new agent
-    # version, such as the one an update installed (P1-D09).
-    FleetBroadcast.hosts_changed([ host.id ]) unless was == "online" && !updates.key?(:agent_version)
+    # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05), a new agent
+    # version, such as the one an update installed (P1-D09), and entering or leaving recovery mode (#180).
+    unchanged = was == "online" && !updates.key?(:agent_version) && host.agent_recovery_since.nil? == recovery.nil?
+    FleetBroadcast.hosts_changed([ host.id ]) unless unchanged
     now
   end
 
@@ -64,6 +69,22 @@ module Liveness
     [ now, nil ]
   end
   private_class_method :touch
+
+  # The host columns for a heartbeat's `recovery` object (#180, ADR 0030). Absent (normal mode) clears them. Present,
+  # agent_recovery_since keeps the server time of the episode's first such heartbeat, which is what makes the host
+  # "recovering"; the agent's times and reason replace the last ones. The reason is agent text: stored as sent, after the
+  # schema's check (one line, no control or bidirectional formatting characters, at most 256 characters), and only ever
+  # shown escaped. record_heartbeat! writes only the columns that changed, so a steady recovery episode, like a steady
+  # normal one, leaves the hosts row alone.
+  def recovery_columns(recovery, host, now)
+    if recovery.nil?
+      return { agent_recovery_since: nil, agent_recovery_entered_at: nil, agent_recovery_retry_at: nil, agent_recovery_reason: nil }
+    end
+
+    { agent_recovery_since: host.agent_recovery_since || now, agent_recovery_entered_at: Time.iso8601(recovery["entered_at"]),
+      agent_recovery_retry_at: Time.iso8601(recovery["retry_at"]), agent_recovery_reason: recovery["reason"] }
+  end
+  private_class_method :recovery_columns
 
   # The host columns for a heartbeat's `tasks` object (FR-3.1, P3-A01): the catalog version compiled into the agent,
   # the types it implements, the types its VM enables, and the services its VM allows restarting, which

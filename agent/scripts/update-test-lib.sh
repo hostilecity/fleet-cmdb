@@ -30,14 +30,16 @@ mkrelease() {
     minisign -S -s "$key" -m "$d/manifest.json" -x "$d/manifest.json.minisig" -t "update test $2" > /dev/null
 }
 
-# mkscript FILE VERSION RUN_BODY: a "release" that passes its self-test and does RUN_BODY when run.
+# mkscript FILE VERSION RUN_BODY: a "release" that passes its self-test and does RUN_BODY when run. Run as
+# `run --recovery` (the recovery unit, which OnFailure= starts after the rollback unit), it exits at once, as
+# the real agent does once a rollback has restarted the service (ADR 0030).
 mkscript() {
     cat > "$1" << EOF
 #!/bin/sh
 case "\$1" in
     self-test) echo "self-test OK: fleet-agent $2 (agent schema 1)" ;;
     --version) echo "fleet-agent $2 (agent schema 1)" ;;
-    run) $3 ;;
+    run) [ "\${2:-}" != --recovery ] || exit 0; $3 ;;
 esac
 EOF
     chmod 0755 "$1"

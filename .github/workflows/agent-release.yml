@@ -386,6 +386,18 @@ jobs:
             echo "::error::the binary to publish ($actual) is not the one the independent rebuild made ($SHA256); nothing is published"
             exit 1
           fi
+          # No fault-injection code (threat model S7; review of #222): build-release.sh sets RUSTFLAGS itself,
+          # but CARGO_ENCODED_RUSTFLAGS would take precedence over it. Every hook, and the VM test's fault
+          # (agent/src/vm_fault.rs), keeps this marker, which agent/scripts/check-no-fault-hooks.sh proves.
+          marker=$(sed -n 's/^pub const FAULT_HOOK_MARKER: &str = "\(.*\)";$/\1/p' ../agent/src/test_support.rs)
+          if [ -z "$marker" ]; then
+            echo "::error::FAULT_HOOK_MARKER not found in agent/src/test_support.rs"
+            exit 1
+          fi
+          if grep -aqF "$marker" "$BINARY"; then
+            echo "::error::the binary to publish contains fault-injection code; nothing is published"
+            exit 1
+          fi
           # Written here rather than taken from the build job, so it lists exactly what is published.
           sha256sum "$BINARY" "$MANIFEST" > SHA256SUMS
           cat SHA256SUMS

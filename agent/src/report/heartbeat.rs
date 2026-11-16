@@ -42,6 +42,9 @@ pub struct HeartbeatRequest {
     /// catalog cannot be used, which the server reads as "offer nothing".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks: Option<Capabilities>,
+    /// Present only in recovery mode (#180, ADR 0030): why, and since when. Absent means normal mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<crate::recovery::Status>,
 }
 
 /// The state record of this process's first accepted heartbeat (in the state directory). `install`
@@ -70,6 +73,8 @@ pub struct Heartbeat<'a, R: Rng> {
     capabilities: Option<Capabilities>,
     /// Where the task hint goes, if anywhere (P3-A02).
     task_hint: Option<&'a TaskHint>,
+    /// Sent as `recovery` in every heartbeat in recovery mode ([`Heartbeat::in_recovery`]).
+    recovery: Option<crate::recovery::Status>,
     backoff: Backoff<R>,
     rng: R,
     started: Instant,
@@ -88,6 +93,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             intervals,
             capabilities: None,
             task_hint: None,
+            recovery: None,
             backoff,
             rng,
             started,
@@ -132,6 +138,21 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         self
     }
 
+    /// Recovery mode (ADR 0030): every heartbeat carries `status`, and the first acknowledged one neither
+    /// writes [`ACK_RECORD`] nor confirms an update. Only the service in normal mode confirms a version:
+    /// recovery mode proves nothing about it.
+    pub fn in_recovery(mut self, status: crate::recovery::Status) -> Self {
+        self.recovery = Some(status);
+        self
+    }
+
+    /// Recovery mode moved its next try of normal mode: later heartbeats say when.
+    pub fn set_recovery_retry_at(&mut self, retry_at: String) {
+        if let Some(status) = &mut self.recovery {
+            status.retry_at = retry_at;
+        }
+    }
+
     fn record_ack(&self, wall: SystemTime) {
         let Some(dir) = &self.ack_dir else { return };
         let ack = Ack {
@@ -164,6 +185,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             uptime_seconds: now.saturating_duration_since(self.started).as_secs(),
             agent_time: rfc3339(wall),
             tasks: self.capabilities.clone(),
+            recovery: self.recovery.clone(),
         }
     }
 
@@ -192,7 +214,12 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                 let failures = self.backoff.failures();
                 self.backoff.on_success();
                 let request_id = response.request_id.as_deref().unwrap_or("");
-                if !self.accepted_once {
+                if !self.accepted_once && self.recovery.is_some() {
+                    tracing::info!(
+                        request_id,
+                        "first heartbeat in recovery mode accepted by the server"
+                    );
+                } else if !self.accepted_once {
                     tracing::info!(request_id, "first heartbeat accepted by the server");
                     self.record_ack(wall);
                     if let Some(updater) = self.updater {
@@ -395,6 +422,58 @@ mod tests {
             serde_json::to_value(&request)
                 .unwrap()
                 .get("tasks")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_in_recovery_mode_says_so_and_confirms_nothing() {
+        // #180, ADR 0030: every heartbeat carries the status; the first acknowledged one writes no
+        // acknowledgement record and does not confirm an update.
+        let intervals = intervals();
+        let dir = crate::test_support::TempDir::new();
+        let status = crate::recovery::Status {
+            entered_at: "2026-01-01T12:00:00.000Z".into(),
+            reason: "the inventory loop failed".into(),
+            retry_at: "2026-01-01T13:00:00.000Z".into(),
+        };
+        let mut hb = heartbeat(&intervals, Instant::now())
+            .record_first_ack_in(dir.root().to_owned())
+            .in_recovery(status);
+        let transport = FakeTransport::new(vec![ok(envelope(json!({}))), ok(envelope(json!({})))]);
+        let (_, logs) = logs_of(|| {
+            hb.beat(&transport, None, Instant::now(), wall());
+            hb.beat(&transport, None, Instant::now(), wall());
+        });
+        assert!(
+            logs.contains("first heartbeat in recovery mode accepted"),
+            "{logs}"
+        );
+        assert!(!dir.root().join(ACK_RECORD).exists());
+        for (_, body) in transport.sent() {
+            assert_conforms("v1", "heartbeat.request", &body);
+            assert_eq!(
+                body["recovery"],
+                json!({
+                    "entered_at": "2026-01-01T12:00:00.000Z",
+                    "reason": "the inventory loop failed",
+                    "retry_at": "2026-01-01T13:00:00.000Z"
+                })
+            );
+        }
+        // A later try of normal mode is what the next heartbeats say.
+        hb.set_recovery_retry_at("2026-01-01T14:00:00.000Z".into());
+        let request = hb.request(None, Instant::now(), wall());
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["recovery"]["retry_at"],
+            "2026-01-01T14:00:00.000Z"
+        );
+        // Normal mode sends no `recovery` at all.
+        let request = heartbeat(&intervals, Instant::now()).request(None, Instant::now(), wall());
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("recovery")
                 .is_none()
         );
     }

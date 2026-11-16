@@ -361,6 +361,49 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     end
   end
 
+  describe "recovery mode (#180, ADR 0030)" do
+    let(:recovery) do
+      { entered_at: "2026-01-01T11:00:00Z", reason: "a loop of the agent failed: panicked in fleet-agent-inventory",
+        retry_at: "2026-01-01T12:00:00Z" }
+    end
+
+    it "records the episode in the heartbeat's one UPDATE, keeps when it began, and clears it in normal mode" do
+      allow(FleetBroadcast).to receive(:hosts_changed)
+      heartbeat
+      expect(host.reload).not_to be_recovering
+      started = 1.minute.from_now.change(usec: 0) # after the first heartbeat's last_seen_at, which never moves back
+      travel_to(started) { heartbeat(body(recovery: recovery.merge(future_field: 1))) }
+      expect(response).to have_http_status(:ok)
+      expect(host.reload).to be_recovering
+      expect(host).to have_attributes(agent_recovery_since: started, agent_recovery_reason: recovery[:reason],
+                                      agent_recovery_entered_at: Time.utc(2026, 1, 1, 11), agent_recovery_retry_at: Time.utc(2026, 1, 1, 12),
+                                      liveness_status: "online")
+      # The agent's own times and reason are replaced; the server's start of the episode is kept.
+      travel_to(started + 10.minutes) { heartbeat(body(recovery: recovery.merge(reason: "recovery mode failed: a panic"))) }
+      expect(host.reload).to have_attributes(agent_recovery_since: started, agent_recovery_reason: "recovery mode failed: a panic")
+      heartbeat
+      expect(host.reload).to have_attributes(agent_recovery_since: nil, agent_recovery_reason: nil, agent_recovery_entered_at: nil,
+                                             agent_recovery_retry_at: nil)
+      expect(host).not_to be_recovering
+      # Broadcast when it goes into recovery mode and when it leaves, not on every heartbeat in it.
+      expect(FleetBroadcast).to have_received(:hosts_changed).with([ host.id ]).exactly(3).times
+    end
+
+    it "sends a host in recovery mode its agent_update directive like any other host" do
+      release = release_for_rollout("0.3.0")
+      rollout = start_rollout(release:, canaries: [ host ].each { |h| h.update_columns(agent_version: "0.2.0") })
+      heartbeat(body(agent_version: "0.2.0", recovery:))
+      expect(json.dig("directives", "agent_update")).to include("rollout_id" => rollout.id, "version" => "0.3.0")
+    end
+
+    it "rejects a malformed recovery object without changing what was stored" do
+      heartbeat(body(recovery:))
+      heartbeat(body(recovery: recovery.merge(reason: "two\nlines")))
+      expect_error(:bad_request, "validation_failed")
+      expect(host.reload.agent_recovery_reason).to eq(recovery[:reason])
+    end
+  end
+
   it_behaves_like "the docs/api contract examples", "heartbeat.request", accepted: :ok do
     def submit_example(data, valid:) = heartbeat(data)
   end

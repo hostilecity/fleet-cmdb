@@ -33,8 +33,8 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::layout::{
-    LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, SUPERVISOR_UNIT, free_bytes,
-    link_version, parse_version,
+    LOCK_FILE, Layout, MARKER_FILE, RECORD_FILE, RESULT_FILE, SUPERVISOR_UNIT, UPDATER_LOCK_FILE,
+    free_bytes, link_version, parse_version,
 };
 use super::record::{
     Marker, Outcome, PendingResult, Phase, PreviousLink, Record, StateFile, reason,
@@ -656,7 +656,15 @@ pub fn prune_versions(layout: &Layout) {
 
 /// The updater's own records, which are never part of a state backup.
 fn is_update_file(name: &str) -> bool {
-    [RECORD_FILE, MARKER_FILE, RESULT_FILE, LOCK_FILE].contains(&name) || name.starts_with('.')
+    [
+        RECORD_FILE,
+        MARKER_FILE,
+        RESULT_FILE,
+        LOCK_FILE,
+        UPDATER_LOCK_FILE,
+    ]
+    .contains(&name)
+        || name.starts_with('.')
 }
 
 /// Copies the state records (the regular files directly in the state directory) to `update/backup`,

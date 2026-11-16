@@ -56,7 +56,7 @@ use crate::report::{Transport, rfc3339};
 use crate::{AGENT_SCHEMA_VERSION, AGENT_VERSION};
 
 use fetch::{Fetch, FetchError, Opened, Resume};
-use layout::{LOCK_FILE, Layout, SUPERVISOR_UNIT, parse_version};
+use layout::{LOCK_FILE, Layout, SUPERVISOR_UNIT, UPDATER_LOCK_FILE, parse_version};
 use record::{Marker, Outcome, PendingResult, Phase, Record, StateFile, reason};
 use stage::{Directive, StageError, Stager};
 use supervise::{Intent, STALE_AFTER, Supervisor, SystemClock, unix};
@@ -413,6 +413,23 @@ impl Updater {
         }
     }
 
+    /// No update is being prepared or in progress (no update record), so the service may be restarted
+    /// without cutting one short: recovery mode's hourly try of normal mode waits for this (ADR 0030).
+    pub fn idle(&self) -> bool {
+        !self.inner.busy.load(Ordering::SeqCst) && !self.update_recorded()
+    }
+
+    /// Marks an offer as being worked on, as `on_directive` does (tests).
+    #[cfg(test)]
+    pub fn set_busy(&self, busy: bool) {
+        self.inner.busy.store(busy, Ordering::SeqCst);
+    }
+
+    /// An update record exists: an update is past staging and a supervisor owns it, or will.
+    pub fn update_recorded(&self) -> bool {
+        !matches!(Record::read(&self.inner.state_dir), Ok(None))
+    }
+
     /// Once per heartbeat round: posts the outcome waiting to be accepted, and makes sure an update in
     /// progress has a supervisor.
     pub fn tick(&self, transport: &dyn Transport) {
@@ -476,7 +493,32 @@ impl Inner {
         remember(&mut memory.noted, note.to_owned())
     }
 
+    /// [`UPDATER_LOCK_FILE`], if no other agent process holds it. The service and recovery mode never
+    /// run together for long (recovery mode leaves within seconds of the service starting), but the
+    /// updater's other guards (`busy`, `last_launch`) are per process: this one is not. A process that
+    /// cannot take it does nothing this time; the offer comes again, and the watchdog runs again.
+    fn updater_lock(&self) -> Option<Lock> {
+        match Lock::file(&self.state_dir.join(UPDATER_LOCK_FILE)) {
+            Ok(Some(lock)) => Some(lock),
+            Ok(None) => {
+                if self.note_once("updater lock held") {
+                    tracing::info!(
+                        "another agent process is working on an update; leaving it to that process"
+                    );
+                }
+                None
+            }
+            Err(e) => {
+                tracing::warn!("cannot take the updater lock: {e}");
+                None
+            }
+        }
+    }
+
     fn process(&self, directive: &Directive) {
+        let Some(_updater) = self.updater_lock() else {
+            return;
+        };
         let key = (directive.rollout_id, directive.version.to_string());
         let in_progress = matches!(Record::read(&self.state_dir), Ok(Some(_)))
             || matches!(PendingResult::read(&self.state_dir), Ok(Some(_)));
@@ -705,6 +747,14 @@ impl Inner {
         if self.busy.load(Ordering::SeqCst) {
             return;
         }
+        // Another agent process staging or relaunching (the service and recovery mode overlapping for
+        // a moment) is left to finish; only one process acts on the record at a time.
+        if !self.state_dir.join(layout::RECORD_FILE).exists() {
+            return;
+        }
+        let Some(_updater) = self.updater_lock() else {
+            return;
+        };
         match Record::read(&self.state_dir) {
             Ok(Some(_)) => {}
             Ok(None) => return,
