@@ -5,6 +5,7 @@ module Api
     # report writes nothing. A retried report (same report_id) is answered with duplicate: true. The body may be
     # gzip. The response carries the server's manifest version, so an agent with an older copy fetches it again.
     class ConfigReportsController < AuthenticatedController
+      self.sheds_report_load = true
       # Decompressed. A report at every limit of the current manifest is about 1.1 MiB of plain JSON (four
       # lists of up to 1,000 entries); a typical one is a few kilobytes. The compressed body is limited by
       # AgentApiRequestGuard.

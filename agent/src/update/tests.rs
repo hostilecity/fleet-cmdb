@@ -727,6 +727,7 @@ fn a_result_is_retried_with_the_same_report_id_until_the_server_accepts_it() {
         Err(ApiError::Transport("connection refused".into())),
         Err(ApiError::Server {
             status: 503,
+            code: String::new(),
             retry_after: None,
             request_id: None,
         }),

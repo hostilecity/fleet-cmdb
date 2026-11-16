@@ -1,88 +1,50 @@
 require "rails_helper"
 
-# Report load shedding (#200): lib/middleware/report_load_shedder.rb, FLEET_REPORT_MAX_IN_FLIGHT.
-RSpec.describe ReportLoadShedder do
-  describe "the middleware" do
+# Report load shedding (#200, review of #208): AgentApi::ReportShedding, applied by Api::V1::AuthenticatedController
+# (sheds_report_load) after the failed-authentication check and before authentication. FLEET_REPORT_MAX_IN_FLIGHT and
+# FLEET_REPORT_RETRY_AFTER_SECONDS.
+RSpec.describe AgentApi::ReportShedding do
+  let(:settings) { AgentApi.config }
+
+  around do |example|
+    before = settings.report_shedding
+    settings.report_shedding = { max_in_flight: 1, retry_after: 30 }
+    example.run
+  ensure
+    settings.report_shedding = before
+  end
+
+  describe ".within_limit" do
     let(:gauge) { described_class::Gauge.new }
-    let(:settings) { { max_in_flight: 2, retry_after: 30 } }
-    let(:seen) { [] }
-    # The downstream app records the in-flight count it saw; a nested call stands for a concurrent request.
-    let(:inner) { ->(env) { seen << gauge.count; env["nested"] ? env["nested"].call : [ 200, {}, [ "ok" ] ] } }
-    let(:shedder) { described_class.new(inner, gauge:, settings: -> { settings }, random: Random.new(1)) }
 
-    def env_for(path, method: "POST", nested: nil)
-      Rack::MockRequest.env_for(path, method:).merge("action_dispatch.request_id" => "req-1", "nested" => nested)
-    end
-
-    # Calls the shedder with `depth` reports in flight already, each still being handled.
-    def call_nested(depth, path = "/api/v1/reports/packages")
-      innermost = -> { shedder.call(env_for(path)) }
-      depth.times.reduce(innermost) { |call, _| -> { shedder.call(env_for("/api/v1/reports/config", nested: call)) } }.call
-    end
-
-    it "passes reports through while fewer than the limit are in flight, counting each one" do
-      status, _headers, body = call_nested(1)
-      expect(status).to eq(200)
-      expect(body).to eq([ "ok" ])
-      expect(seen).to eq([ 1, 2 ])
+    it "runs the block with a slot taken, and frees it after, also when the block raises" do
+      expect(described_class.within_limit(gauge:) { gauge.count }).to eq([ true, 1 ])
+      expect(gauge.count).to eq(0)
+      expect { described_class.within_limit(gauge:) { raise "boom" } }.to raise_error("boom")
       expect(gauge.count).to eq(0)
     end
 
-    it "answers 503 overloaded with a spread Retry-After once the limit is in flight, and frees the slots after" do
-      status, headers, body = call_nested(2)
-      expect(status).to eq(503)
-      expect(headers["retry-after"].to_i).to be_between(30, 60)
-      error = JSON.parse(body.join)
-      expect(error).to eq("error" => { "code" => "overloaded", "message" => AgentApi::Overloaded.default_message, "request_id" => "req-1" })
-      expect(ApiContract.errors("error.response", "v1", error)).to eq([])
-      expect(seen).to eq([ 1, 2 ])
-      expect(gauge.count).to eq(0)
-    end
-
-    it "spreads Retry-After over [retry_after, 2 * retry_after] so a fleet turned away together returns apart" do
-      waits = Array.new(200) { call_nested(2)[1]["retry-after"].to_i }
-      expect(waits).to all(be_between(30, 60))
-      expect(waits.uniq.size).to be > 20
-    end
-
-    it "never sheds heartbeats, task calls, or GETs, even with every slot taken" do
-      2.times { gauge.enter(2) }
-      expect(shedder.call(env_for("/api/v1/heartbeat")).first).to eq(200)
-      expect(shedder.call(env_for("/api/v1/tasks/poll")).first).to eq(200)
-      expect(shedder.call(env_for("/api/v1/reports/inventory", method: "GET")).first).to eq(200)
-      expect(shedder.call(env_for("/api/v1/reports/inventory")).first).to eq(503)
+    it "returns a Retry-After between retry_after and 1.5 times that when every slot is taken, without running the block" do
+      gauge.enter(1)
+      ran = false
+      waits = Array.new(200) { |seed| described_class.within_limit(gauge:, random: Random.new(seed)) { ran = true } }
+      expect(ran).to be(false)
+      expect(waits.map(&:first)).to all(be(false))
+      expect(waits.map(&:last)).to all(be_between(30, 45))
+      expect(waits.map(&:last).uniq.size).to be > 10
     end
 
     it "is off with a limit of 0" do
-      settings[:max_in_flight] = 0
-      expect(call_nested(5).first).to eq(200)
-      expect(seen).to all(eq(0))
-    end
-
-    it "frees its slot when the request raises" do
-      failing = described_class.new(->(_env) { raise "boom" }, gauge:, settings: -> { settings })
-      expect { failing.call(env_for("/api/v1/reports/inventory")) }.to raise_error("boom")
-      expect(gauge.count).to eq(0)
-    end
-
-    it "logs each shed request with the path, the count, and the request id" do
-      log = captured_log { call_nested(2) }
-      expect(log).to match(%r{\[agent_api\] shed /api/v1/reports/packages: 2 reports in flight; retry after \d+s request_id=req-1})
+      settings.report_shedding = { max_in_flight: 0, retry_after: 30 }
+      gauge.enter(1_000)
+      expect(described_class.within_limit(gauge:) { :ran }).to eq([ true, :ran ])
     end
   end
 
   describe "in the app", type: :request do
     let!(:enrolled) { enrolled_host }
     let(:credential) { enrolled.last }
-    let(:shedding) { Rails.configuration.x.agent_api }
-
-    around do |example|
-      before = shedding.report_shedding
-      shedding.report_shedding = { max_in_flight: 1, retry_after: 30 }
-      example.run
-    ensure
-      shedding.report_shedding = before
-    end
+    let(:gauge) { described_class::GAUGE }
 
     def inventory = inventory_example.merge("report_id" => SecureRandom.uuid)
 
@@ -91,38 +53,93 @@ RSpec.describe ReportLoadShedder do
                                       agent_time: "2026-01-01T12:00:00Z" }, credential)
     end
 
-    it "runs before the body guard, after the request id" do
-      stack = Rails.application.middleware.map(&:klass)
-      expect(stack.index(described_class)).to eq(stack.index(AgentApiRequestGuard) - 1)
-      expect(stack.index(described_class)).to be > stack.index(ActionDispatch::RequestId)
+    def statements_of
+      statements = []
+      callback = ->(*, payload) { statements << payload[:sql] unless payload[:name] == "SCHEMA" }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { yield }
+      statements
     end
 
-    it "answers a report with 503 and Retry-After while the process is at its limit, keeps heartbeats, and stores nothing" do
-      described_class::GAUGE.enter(1)
+    it "answers a report with 503 and Retry-After while the process is at its limit, with no database work, and keeps heartbeats" do
+      gauge.enter(1)
       begin
         payload = inventory
-        expect { post_api("/api/v1/reports/inventory", payload, credential) }.not_to change(InventoryReportReceipt, :count)
+        statements = statements_of { post_api("/api/v1/reports/inventory", payload, credential) }
         expect_error(:service_unavailable, "overloaded")
-        expect(response.headers["Retry-After"].to_i).to be_between(30, 60)
-
+        expect(response.headers["Retry-After"].to_i).to be_between(30, 45)
+        expect(statements).to be_empty # no authentication, no transaction
         heartbeat
         expect(response).to have_http_status(:ok)
       ensure
-        described_class::GAUGE.leave
+        gauge.leave
       end
 
       # The agent retries the same report later, and it is accepted.
       post_api("/api/v1/reports/inventory", payload, credential)
       expect(response).to have_http_status(:ok)
       expect(json).to eq("report_id" => payload["report_id"], "duplicate" => false)
+      expect(gauge.count).to eq(0)
     end
 
-    it "sheds before authentication, so a 503 says nothing about the credential" do
-      described_class::GAUGE.enter(1)
-      post_api("/api/v1/reports/config", inventory, "not-a-credential")
-      expect_error(:service_unavailable, "overloaded")
+    it "logs each shed request with its path and the count" do
+      gauge.enter(1)
+      log = captured_log { post_api("/api/v1/reports/packages", {}, credential) }
+      expect(log).to match(%r{\[agent_api\] shed /api/v1/reports/packages: 1 reports in flight; retry after \d+s})
     ensure
-      described_class::GAUGE.leave
+      gauge.leave
+    end
+
+    it "counts nothing for an address the failed-authentication limit refuses: it gets 429, not a slot" do
+      wrong = "fa_EXAMPLEunknownkey000.#{'x' * 43}"
+      AgentApi.config.failed_auth_rate_limit[:to].times { post_api("/api/v1/reports/config", inventory, wrong) }
+      allow(described_class).to receive(:within_limit).and_call_original
+      post_api("/api/v1/reports/config", inventory, wrong)
+      expect_error(:too_many_requests, "rate_limited")
+      expect(described_class).not_to have_received(:within_limit)
+    end
+
+    it "sheds every report endpoint and nothing else, and serves no .json variant that could skip it" do
+      gauge.enter(1)
+      begin
+        %w[inventory config packages].each do |type|
+          post_api("/api/v1/reports/#{type}", inventory, credential)
+          expect_error(:service_unavailable, "overloaded")
+          post_api("/api/v1/reports/#{type}.json", inventory, credential)
+          expect_error(:not_found, "not_found")
+        end
+        post_api("/api/v1/tasks/poll", { "schema_version" => 1, "agent_version" => "0.3.0" }, credential)
+        expect(response).to have_http_status(:ok)
+      ensure
+        gauge.leave
+      end
+    end
+  end
+
+  describe "the settings at boot" do
+    def boot_with(env)
+      saved = env.keys.index_with { |key| ENV.fetch(key, nil) }
+      env.each { |key, value| ENV[key] = value }
+      settings.delete(:report_shedding)
+      load Rails.root.join("config/initializers/agent_api.rb")
+      settings.report_shedding
+    ensure
+      saved.each { |key, value| ENV[key] = value }
+    end
+
+    it "is off with a 30 s Retry-After by default, and takes whole numbers within the bounds" do
+      expect(boot_with("FLEET_REPORT_MAX_IN_FLIGHT" => nil, "FLEET_REPORT_RETRY_AFTER_SECONDS" => nil)).to eq(max_in_flight: 0, retry_after: 30)
+      expect(boot_with("FLEET_REPORT_MAX_IN_FLIGHT" => "2", "FLEET_REPORT_RETRY_AFTER_SECONDS" => "600")).to eq(max_in_flight: 2, retry_after: 600)
+    end
+
+    it "stops the server at boot, naming the setting, for anything else" do
+      [ "", "-1", "10001", "1.5", "two" ].each do |value|
+        expect { boot_with("FLEET_REPORT_MAX_IN_FLIGHT" => value, "FLEET_REPORT_RETRY_AFTER_SECONDS" => nil) }
+          .to raise_error(RuntimeError, "FLEET_REPORT_MAX_IN_FLIGHT must be a whole number from 0 (off) to 10000 (got #{value.inspect})")
+      end
+      [ "", "0", "601", "3600", "30s" ].each do |value|
+        expect { boot_with("FLEET_REPORT_MAX_IN_FLIGHT" => nil, "FLEET_REPORT_RETRY_AFTER_SECONDS" => value) }
+          .to raise_error(RuntimeError, "FLEET_REPORT_RETRY_AFTER_SECONDS must be a whole number of seconds from 1 to 600 (got #{value.inspect})")
+      end
     end
   end
 end

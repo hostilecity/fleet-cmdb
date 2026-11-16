@@ -4,6 +4,7 @@ module Api
     # checked (AgentApi::InventoryReport), then stored by InventoryRecorder in the request transaction, so an
     # invalid report writes nothing. A retried report (same report_id) is answered with duplicate: true.
     class InventoryReportsController < AuthenticatedController
+      self.sheds_report_load = true
       # 64 disks and 64 interfaces of 32 addresses each fit well within this.
       self.max_body_bytes = 256.kilobytes
 

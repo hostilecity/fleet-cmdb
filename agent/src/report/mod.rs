@@ -461,7 +461,7 @@ fn inventory_loop(
     let mut reporter = Reporter::new(
         intervals,
         state_dir.to_owned(),
-        Backoff::new(RetryPolicy::default(), seeded(3)),
+        Backoff::new(RetryPolicy::reports(), seeded(3)),
         seeded(4),
     )
     .first_report_at(first_at);
@@ -499,7 +499,7 @@ fn config_loop(
     let mut reporter = config::Reporter::new(
         host,
         interval,
-        Backoff::new(RetryPolicy::default(), seeded(5)),
+        Backoff::new(RetryPolicy::reports(), seeded(5)),
         seeded(6),
     )
     .first_report_at(first_at)
@@ -538,7 +538,7 @@ fn packages_loop(
     let mut reporter = packages::Reporter::new(
         host,
         interval,
-        Backoff::new(RetryPolicy::default(), seeded(7)),
+        Backoff::new(RetryPolicy::reports(), seeded(7)),
         seeded(8),
     )
     .first_report_at(first_at)

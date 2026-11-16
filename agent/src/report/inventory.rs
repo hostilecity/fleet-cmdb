@@ -179,6 +179,9 @@ pub struct Reporter<'a, R: Rng> {
     tick_started: Instant,
     /// No startup report is built before this (the startup splay, #200). A request is not held back.
     first_at: Option<Instant>,
+    /// The real time since the tick began; [`Reporter::without_real_time`] makes it zero in tests that
+    /// must depend on simulated time only.
+    elapsed: fn(Instant) -> Duration,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -214,6 +217,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             requested_done: None,
             tick_started: Instant::now(),
             first_at: None,
+            elapsed: |started| started.elapsed(),
         }
     }
 
@@ -232,6 +236,14 @@ impl<'a, R: Rng> Reporter<'a, R> {
     /// replaces any report still waiting for its retry (that one was collected before the request).
     pub fn request(&mut self) {
         self.requested = true;
+    }
+
+    /// Counts a failure's backoff from the tick's simulated `now` alone, without the real time the tick
+    /// took, so a test's timeline does not move on a loaded machine (review of #208).
+    #[cfg(test)]
+    pub fn without_real_time(mut self) -> Self {
+        self.elapsed = |_| Duration::ZERO;
+        self
     }
 
     /// The report id waiting to be sent, if any.
@@ -446,7 +458,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             }
             Err(error) => {
                 // The collection and the request took real time: the backoff starts now, not at `now`.
-                let failed = super::failed_at(now, self.tick_started);
+                let failed = now + (self.elapsed)(self.tick_started);
                 self.retry_at = Some(failed + self.backoff.on_failure(&error));
             }
         }
