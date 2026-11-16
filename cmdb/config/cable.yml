@@ -9,6 +9,10 @@ development:
       writing: cable
   polling_interval: 0.1.seconds
   message_retention: 1.day
+  # The listener retries a lost connection after these pauses (seconds), then stops for good; Solid Cable's default
+  # is one immediate retry, which a PostgreSQL restart outlasts (review of #218). With the 2 s connect timeout
+  # (database.yml) this rides out about 28 s without the database. A poll that succeeds starts the count again.
+  reconnect_attempts: [ 0, 1, 2, 5, 10 ]
 
 test:
   adapter: test
@@ -20,5 +24,9 @@ production:
       writing: cable
   polling_interval: 0.1.seconds
   message_retention: 1.day
+  # The listener retries a lost connection after these pauses (seconds), then stops for good; Solid Cable's default
+  # is one immediate retry, which a PostgreSQL restart outlasts (review of #218). With the 2 s connect timeout
+  # (database.yml) this rides out about 28 s without the database. A poll that succeeds starts the count again.
+  reconnect_attempts: [ 0, 1, 2, 5, 10 ]
   writer_batch_size: 4
   writer_batch_delay: 0.001.seconds
