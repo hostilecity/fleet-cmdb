@@ -557,7 +557,8 @@ recovery_mode() {
     # recovery mode, in that order (review of #222).
     local panics journal limit_at recovery_at starts
     journal=$(vm "journalctl --after-cursor='$cursor' -u fleet-agent -u fleet-agent-recovery --no-pager -o cat")
-    panics=$(grep -c "vm-test fault" <<< "$journal" || true)
+    # The panic hook's own line: recovery mode's start line repeats the panic in its reason.
+    panics=$(grep -c "panicked at src/vm_fault.rs" <<< "$journal" || true)
     starts=$(grep -c "Starting fleet-agent-recovery.service" <<< "$journal" || true)
     limit_at=$(grep -n -m1 "Start request repeated too quickly" <<< "$journal" | cut -d: -f1)
     recovery_at=$(grep -n -m1 "fleet-agent started in recovery mode" <<< "$journal" | cut -d: -f1)
