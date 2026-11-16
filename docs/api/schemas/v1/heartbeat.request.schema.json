@@ -100,6 +100,39 @@
           ]
         }
       }
+    },
+    "recovery": {
+      "description": "Present only while the agent runs in recovery mode (#180, ADR 0030): it kept failing on a version it had already confirmed, so there was nothing to roll back, and systemd started fleet-agent-recovery.service. In recovery mode the agent only sends heartbeats and update results and installs a signed agent update; it sends no report and polls for no task. Absent means normal mode. Only systemd on the VM starts recovery mode; no response field can.",
+      "type": "object",
+      "required": [
+        "entered_at",
+        "reason",
+        "retry_at"
+      ],
+      "properties": {
+        "entered_at": {
+          "description": "When this recovery episode began, by the agent's clock (RFC 3339 UTC). Kept while the agent tries normal mode again and falls back. Display only.",
+          "type": "string",
+          "maxLength": 35,
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+        },
+        "reason": {
+          "description": "Why the agent kept failing, as plain text from the agent: its own record of why it stopped (for example a loop that panicked) and what systemd said. One line: no C0 or C1 control characters, no line or paragraph separator (U+2028, U+2029), and no bidirectional formatting characters (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). Shown to operators as agent text.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "not": {
+            "description": "The characters the description rules out. Written as a search, not an anchored pattern, because validators disagree on what ^ and $ match around a newline.",
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]"
+          }
+        },
+        "retry_at": {
+          "description": "When the agent will next try normal mode again by itself (about an hour after recovery mode started), by the agent's clock. Display only.",
+          "type": "string",
+          "maxLength": 35,
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+        }
+      }
     }
   }
 }

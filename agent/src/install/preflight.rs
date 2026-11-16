@@ -203,12 +203,17 @@ fn check_paths(host: &Host) -> Result<(), InstallError> {
             "The agent's state directory must be a real directory owned by root with mode 0700. If it is the agent's own, fix it with `chmod 700` or `chown root:root`; otherwise move it away.",
         ));
     }
-    for file in [paths.ca(), paths.unit(), paths.rollback_unit()] {
+    for file in [
+        paths.ca(),
+        paths.unit(),
+        paths.rollback_unit(),
+        paths.recovery_unit(),
+    ] {
         if let Some(reason) = fsx::check_file(&file, uid) {
             return Err(unsafe_path(&file, reason, own_dir_fix));
         }
     }
-    for unit in [paths.unit(), paths.rollback_unit()] {
+    for unit in [paths.unit(), paths.rollback_unit(), paths.recovery_unit()] {
         if let Ok(text) = fs::read_to_string(&unit)
             && !text.starts_with(UNIT_MARKER)
         {

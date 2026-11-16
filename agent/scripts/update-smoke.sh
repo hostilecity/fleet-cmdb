@@ -54,7 +54,7 @@ if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${UPDATE_SMOKE_DISPOSABLE:-}" != yes 
     echo "update-smoke: this rewrites $LIB, $ETC, $STATE and $UNITS; run it on a disposable machine and set UPDATE_SMOKE_DISPOSABLE=yes" >&2
     exit 2
 fi
-for path in "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service"; do
+for path in "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service"; do
     if [ -e "$path" ]; then
         echo "update-smoke: $path exists; an agent is installed here, and this test would destroy it" >&2
         exit 2
@@ -74,7 +74,7 @@ events=$tmp/events.jsonl
 # --- Reporting a failure ------------------------------------------------------------------------------
 
 diagnostics() {
-    for unit in fleet-agent fleet-agent-update fleet-agent-rollback; do
+    for unit in fleet-agent fleet-agent-update fleet-agent-rollback fleet-agent-recovery; do
         echo "--- journal: $unit"
         journalctl -u "$unit" --no-pager -o cat 2>&1 | tail -n 60
     done
@@ -100,10 +100,10 @@ fail() {
 }
 
 cleanup() {
-    systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback 2>/dev/null || true
-    systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback 2>/dev/null || true
+    systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
+    systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
     [ -z "$stub_pid" ] || kill "$stub_pid" 2>/dev/null || true
-    rm -rf "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$tmp"
+    rm -rf "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service" "$tmp"
     systemctl daemon-reload 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -148,6 +148,7 @@ inventory_from() {
     event_exists "[.[] | select(.kind == \"inventory\" and .agent_version == \"$1\" and .status == ${2:-200} and .at > $since)] | length > 0"
 }
 running_is() { [ "$(running_version)" = "$1" ]; }
+recovery_stopped() { ! systemctl is-active --quiet fleet-agent-recovery; }
 # journal_has UNIT TEXT: TEXT was logged by UNIT since the scenario started (an earlier scenario may have
 # logged the same).
 journal_has() { journalctl -u "$1" --since "@${since%.*}" --no-pager -o cat 2> /dev/null | grep -Fq -- "$2"; }
@@ -164,8 +165,8 @@ release() {
 
 # reset: the installed 1.0.0 running, no update in progress, the stub offering nothing.
 reset() {
-    systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback 2>/dev/null || true
-    systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback 2>/dev/null || true
+    systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
+    systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
     find "$LIB/versions" -mindepth 1 -maxdepth 1 ! -name "$OLD" -exec rm -rf {} +
     rm -f "$LIB/previous"
     ln -sfn "versions/$OLD" "$LIB/current"
@@ -176,10 +177,13 @@ reset() {
     wait_until "a heartbeat from $OLD" 60 heartbeat_from "$OLD"
 }
 
-# A refusal or rollback leaves the old version running and reports why.
+# A refusal or rollback leaves the old version running and reports why. The recovery unit the same OnFailure=
+# starts after the rollback unit finds the service running again and exits (ADR 0030), so recovery mode never
+# runs beside it.
 expect_old_running() {
     running_is "$OLD" || fail "$1: the running version is $(running_version), not $OLD"
     service_active || fail "$1: the service is not active"
+    wait_until "$1: recovery mode to see the service running and exit" 30 recovery_stopped
     since=$(date +%s.%N)
     wait_until "$1: a heartbeat from $OLD after the result" 60 heartbeat_from "$OLD"
 }
@@ -248,6 +252,7 @@ EOF
 )
 install -m 0644 "$agent_dir/src/install/fleet-agent.service" "$UNITS/fleet-agent.service"
 install -m 0644 "$agent_dir/src/install/fleet-agent-rollback.service" "$UNITS/fleet-agent-rollback.service"
+install -m 0644 "$agent_dir/src/install/fleet-agent-recovery.service" "$UNITS/fleet-agent-recovery.service"
 systemctl daemon-reload
 config_before=$(sha256sum "$ETC/config.toml" "$ETC/ca.pem")
 

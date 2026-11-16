@@ -62,3 +62,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 lto = true
 codegen-units = 1
 strip = true
+
+# `fleet_vm_fault` is set only by the VM test's fault build (src/vm_fault.rs, #180); never by a release.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fleet_vm_fault)"] }

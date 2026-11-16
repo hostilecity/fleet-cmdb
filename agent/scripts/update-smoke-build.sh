@@ -4,6 +4,10 @@
 #
 #   scripts/update-smoke-build.sh VERSION PUBKEY OUT [TARGET_DIR]      (run from agent/)
 #
+# With VM_FAULT=1 it builds the VM test's fault build instead (`--cfg fleet_vm_fault`, src/vm_fault.rs,
+# #180): a normal build with the fault that makes it crash-loop when the VM test asks. Never a release:
+# it skips scripts/build-release.sh, and should use a TARGET_DIR of its own (its flags differ).
+#
 # The sources (and the task catalog they compile in) are copied to a fixed directory first, with the package version and release-keys/current.pub
 # changed there, so the working tree is never touched and no key can end up committed. The same directory
 # and RUSTFLAGS are used for every version, so after the first build only the agent itself is compiled.
@@ -37,7 +41,14 @@ awk -v v="$version" '
 ' "$work/Cargo.lock" > "$work/Cargo.lock.new"
 mv "$work/Cargo.lock.new" "$work/Cargo.lock"
 
-built=$(cd "$work" && scripts/build-release.sh "$target" "$target_dir")
+if [ "${VM_FAULT:-}" = 1 ]; then
+    mkdir -p "$target_dir"
+    (cd "$work" && RUSTFLAGS="--cfg fleet_vm_fault" CARGO_INCREMENTAL=0 \
+        cargo build --release --locked --target "$target" --target-dir "$target_dir" >&2)
+    built=$target_dir/$target/release/fleet-agent
+else
+    built=$(cd "$work" && scripts/build-release.sh "$target" "$target_dir")
+fi
 install -D -m 0755 "$built" "$out"
 "$out" --version | grep -Fx "fleet-agent $version (agent schema 1)" > /dev/null
 echo "built $out (fleet-agent $version, trusts $(basename "$pubkey"))" >&2

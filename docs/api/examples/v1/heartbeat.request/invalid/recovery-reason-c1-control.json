@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "agent_version": "1.4.0",
+  "hostname": "vm-01.example.lan",
+  "uptime_seconds": 120,
+  "agent_time": "2026-01-01T12:02:00.000Z",
+  "recovery": {
+    "entered_at": "2026-01-01T12:00:00.000Z",
+    "reason": "abc\u0085def",
+    "retry_at": "2026-01-01T13:00:00.000Z"
+  }
+}

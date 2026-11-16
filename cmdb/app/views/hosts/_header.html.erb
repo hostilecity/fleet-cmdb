@@ -36,5 +36,14 @@
 <% elsif host.retired? %>
   <div class="notice" role="status"><strong>This host is retired.</strong><p>It no longer appears in the fleet. Its history is kept.</p></div>
 <% end %>
+<% if host.recovering? %>
+  <%# Recovery mode (#180, ADR 0030). The reason is the agent's text, escaped like all output. %>
+  <div class="notice" role="status" id="<%= dom_id(host, :recovery) %>">
+    <strong>The agent is in recovery mode.</strong>
+    <p>It kept failing on version <code><%= host.agent_version %></code>, which it had already confirmed, so there was nothing to roll back. Since <%= utc(host.agent_recovery_since) %> it only sends heartbeats and installs agent updates: inventory, configuration, packages, and tasks are paused, and what is shown here is from before.</p>
+    <p>The agent says: <span class="agent-text"><%= host.agent_recovery_reason %></span></p>
+    <p><strong>Next step:</strong> roll out a release newer than <code><%= host.agent_version %></code> that fixes this to the host from <%= link_to "Agents", agents_path %>; it installs through the usual signed update and the agent returns to normal once the new version confirms. If the cause is on the VM, fix it there and run <code>sudo systemctl reset-failed fleet-agent</code> and <code>sudo systemctl start fleet-agent</code>. The agent also tries normal mode again by itself about once an hour<% if host.agent_recovery_retry_at %> (next around <%= utc(host.agent_recovery_retry_at) %> by the VM's clock)<% end %>.</p>
+  </div>
+<% end %>
 <%= render "hosts/summary", host:, summary: %>
 <%= host_tabs(host, summary, current: tab) %>

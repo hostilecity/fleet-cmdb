@@ -69,6 +69,8 @@ impl Systemd for FakeSystemd {
         self.calls.lock().unwrap().push(call.clone());
         match args {
             ["daemon-reload"] | ["reset-failed", _] => Ok(String::new()),
+            // Recovery mode (ADR 0030) is stopped before its unit is removed.
+            ["stop", systemd::RECOVERY_UNIT_NAME] => Ok(String::new()),
             ["enable", _] => {
                 *self.enabled.lock().unwrap() = true;
                 Ok(String::new())
@@ -486,6 +488,12 @@ fn onboarding_install_end_to_end() {
         systemd::ROLLBACK_UNIT
     );
     assert_eq!(mode(&p.rollback_unit()), 0o644);
+    // And recovery mode, which it starts after the rollback unit (ADR 0030).
+    assert_eq!(
+        fs::read_to_string(p.recovery_unit()).unwrap(),
+        systemd::RECOVERY_UNIT
+    );
+    assert_eq!(mode(&p.recovery_unit()), 0o644);
 
     // The config: root only, holding the credential, loadable by the agent.
     assert_eq!(mode(&p.config()), 0o600);
@@ -1776,6 +1784,16 @@ fn uninstall_removes_everything_install_created_and_nothing_else() {
             .calls()
             .contains(&"disable --now fleet-agent.service".to_owned())
     );
+    // Recovery mode runs the agent too, so it is stopped (ADR 0030), before the service, and its unit
+    // removed.
+    let calls = fx.systemd.calls();
+    let at = |call: &str| calls.iter().position(|c| c == call);
+    assert!(
+        at("stop fleet-agent-recovery.service") < at("disable --now fleet-agent.service")
+            && at("stop fleet-agent-recovery.service").is_some(),
+        "{calls:?}"
+    );
+    assert!(!fx.paths().recovery_unit().exists());
     assert!(
         outcome.out.contains("Done. fleet-agent is uninstalled."),
         "{}",
@@ -1813,6 +1831,7 @@ fn uninstall_keep_state_keeps_the_config_for_a_reinstall() {
         !fx.paths().lib_dir().exists()
             && !fx.paths().unit().exists()
             && !fx.paths().rollback_unit().exists()
+            && !fx.paths().recovery_unit().exists()
             && !fx.paths().bin_link().exists()
     );
     let last: Value = serde_json::from_str(outcome.out.lines().last().unwrap()).unwrap();

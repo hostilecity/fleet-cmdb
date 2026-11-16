@@ -178,6 +178,9 @@ impl Paths {
     pub fn rollback_unit(&self) -> PathBuf {
         self.unit_dir().join(systemd::ROLLBACK_UNIT_NAME)
     }
+    pub fn recovery_unit(&self) -> PathBuf {
+        self.unit_dir().join(systemd::RECOVERY_UNIT_NAME)
+    }
     pub fn os_release(&self) -> [PathBuf; 2] {
         [self.at("/etc/os-release"), self.at("/usr/lib/os-release")]
     }

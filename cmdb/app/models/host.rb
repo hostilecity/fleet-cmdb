@@ -150,6 +150,10 @@ class Host < ApplicationRecord
     "not_allowed_locally" if entry.type == "restart_service" && !task_services_allowed.include?(parameters["service"])
   end
 
+  # The agent runs in recovery mode (#180, ADR 0030): its last heartbeat said so. It kept failing on a version it had
+  # confirmed, so it only heartbeats and installs a signed update; it sends no reports and runs no tasks.
+  def recovering? = enrollment_state == "active" && agent_recovery_since.present?
+
   # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an
   # active host that has not sent a heartbeat yet, and the enrollment state for everything else.
   def display_status

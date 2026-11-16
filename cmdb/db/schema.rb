@@ -476,6 +476,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_022401) do
     t.string "task_types_enabled", default: [], null: false, array: true
     t.datetime "task_capabilities_reported_at"
     t.string "task_services_allowed", default: [], null: false, array: true
+    t.datetime "agent_recovery_since"
+    t.datetime "agent_recovery_entered_at"
+    t.datetime "agent_recovery_retry_at"
+    t.string "agent_recovery_reason", limit: 256
     t.index ["agent_version"], name: "index_hosts_in_fleet_on_agent_version", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
