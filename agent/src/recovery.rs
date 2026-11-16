@@ -12,8 +12,9 @@
 //! `fleet-agent.service` sets `RestartMode=direct`, so `OnFailure=` runs only once it has given up;
 //! without it, systemd 254 and later run it after every failed start. As a fallback recovery mode still
 //! checks the service for [`SETTLE`] ([`look`]): it goes on only if the service stays `failed` and
-//! enabled, exits if it runs or a person stopped or disabled it, and fails (so systemd retries it later)
-//! if `systemctl` cannot say. It never starts a service a person stopped or disabled.
+//! enabled, exits if it runs or a person disabled, masked, or reset it, and fails (so systemd retries it
+//! later) if `systemctl` cannot say. It never starts a service a person disabled, masked, or reset. A
+//! plain `systemctl stop` of the failed service is not seen (it stays `failed`).
 //!
 //! It leaves recovery mode when `fleet-agent.service` runs again, or a person stops or disables it,
 //! which it checks every [`WATCH_EVERY`]: after an update (the supervisor restarts the service), when an operator starts it,

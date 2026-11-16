@@ -512,8 +512,11 @@ fn recover(path: &Path) -> ExitCode {
                 "fleet-agent.service is not failed and enabled ({shown}); not starting it"
             ));
         }
-        // A service stopped by its start limit refuses to start until it is reset.
-        let _ = systemctl.systemctl(&["reset-failed", install::UNIT_NAME]);
+        // No `reset-failed` first: it would make the service `inactive`, which the watcher reads as a
+        // person's stop, so a `start` that then failed would leave nothing running (review of #222). It is
+        // not needed either: an hour on, the start limit's 5-minute window has long passed, so systemd
+        // starts the `failed` service as it is. If the start fails, the service stays `failed` and recovery
+        // mode stays, to try again an hour later.
         // `--no-block`: the watcher below ends this process once the service runs.
         systemctl
             .systemctl(&["start", "--no-block", install::UNIT_NAME])
