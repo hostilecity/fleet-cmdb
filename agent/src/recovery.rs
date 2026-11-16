@@ -10,8 +10,8 @@
 //! collector, sends no report, and polls for no task.
 //!
 //! systemd 255 and later run `OnFailure=` on every failed start, not only once the start limit is hit,
-//! so recovery mode first checks the service ([`verdict`]): it goes on only if the service has stopped
-//! for good. It exits if the service runs, and waits out a pending restart to see how it ends.
+//! so recovery mode first watches the service for [`SETTLE`]: it goes on only if the service stays
+//! stopped, and exits as soon as systemd restarts it.
 //!
 //! It leaves recovery mode when `fleet-agent.service` runs again, which it checks every
 //! [`WATCH_EVERY`]: after an update (the supervisor restarts the service), when an operator starts it,
@@ -51,46 +51,16 @@ pub const HEALTHY_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often recovery mode checks whether `fleet-agent.service` runs again.
 pub const WATCH_EVERY: Duration = Duration::from_secs(3);
 
-/// What recovery mode makes of the service's `ActiveState` and `SubState` when it starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
-    /// Stopped for good (`failed`, as after its start limit, or `inactive`): go on.
-    Recover,
-    /// A restart is pending or under way: look again shortly. systemd 254 and later report a service
-    /// waiting for its automatic restart as `failed` with `SubState` `auto-restart`, and the start-limit
-    /// failure that follows is then no new failure, so `OnFailure=` does not start this unit again:
-    /// the one already running must wait to see how the restart ends.
-    Wait,
-    /// It runs (a rollback restarted it, or the restart worked), or its state cannot be read: exit.
-    NotNeeded,
-}
+/// How long recovery mode watches the service before it decides: longer than the service's
+/// `RestartSec=10s`. systemd 255 and later start the recovery unit after every failed start, while the
+/// service still waits for its automatic restart (and reports `failed` meanwhile); only a service that
+/// is still stopped after this long has stopped for good, at its start limit.
+pub const SETTLE: Duration = Duration::from_secs(20);
 
-/// How long recovery mode waits for a pending restart to end before it leaves it to systemd. Longer
-/// than `RestartSec=10s` and a start, with room to spare.
-pub const DECIDE_WITHIN: Duration = Duration::from_secs(5 * 60);
-
-pub fn verdict(active: &str, sub: &str) -> Verdict {
-    if sub.starts_with("auto-restart") || active == "activating" {
-        Verdict::Wait
-    } else if matches!(active, "failed" | "inactive") {
-        Verdict::Recover
-    } else {
-        Verdict::NotNeeded
-    }
-}
-
-/// `ActiveState` and `SubState` of the service, from `systemctl show --property=ActiveState
-/// --property=SubState --value` (one per line). Unreadable is `("unknown", "unknown")`, which is not
-/// [`Verdict::Recover`]: recovery mode does not start on a guess.
-pub fn parse_states(output: Result<String, String>) -> (String, String) {
-    let Ok(text) = output else {
-        return ("unknown".into(), "unknown".into());
-    };
-    let mut lines = text.lines().map(str::trim);
-    match (lines.next(), lines.next()) {
-        (Some(active), Some(sub)) if !active.is_empty() => (active.to_owned(), sub.to_owned()),
-        _ => ("unknown".into(), "unknown".into()),
-    }
+/// Whether `systemctl is-active fleet-agent.service` says it is stopped (`failed` or `inactive`).
+/// Anything else, including a state that cannot be read, is not: recovery mode does not start on a guess.
+pub fn stopped(service_state: &str) -> bool {
+    matches!(service_state, "failed" | "inactive")
 }
 
 /// Whether the service runs again, so recovery mode must end.
@@ -294,37 +264,17 @@ mod tests {
 
     #[test]
     fn recovery_mode_goes_on_only_once_the_service_has_stopped_for_good() {
-        // The start limit was hit, or it is stopped.
-        assert_eq!(verdict("failed", "failed"), Verdict::Recover);
-        assert_eq!(verdict("inactive", "dead"), Verdict::Recover);
-        // A restart is pending (systemd 254 and later say `failed` meanwhile), or it runs.
-        for (active, sub) in [
-            ("failed", "auto-restart"),
-            ("failed", "auto-restart-queued"),
-            ("activating", "auto-restart"),
-            ("activating", "start"),
-            ("active", "running"),
-            ("reloading", "reload"),
-            ("deactivating", "stop-sigterm"),
-            ("unknown", "unknown"),
+        assert!(stopped("failed"));
+        assert!(stopped("inactive"));
+        for state in [
+            "activating",
+            "active",
+            "reloading",
+            "deactivating",
+            "unknown",
+            "",
         ] {
-            assert_ne!(verdict(active, sub), Verdict::Recover, "{active} {sub}");
-        }
-        assert_eq!(verdict("failed", "auto-restart"), Verdict::Wait);
-        assert_eq!(verdict("activating", "start"), Verdict::Wait);
-        assert_eq!(verdict("failed", "failed"), Verdict::Recover);
-        assert_eq!(verdict("active", "running"), Verdict::NotNeeded);
-        assert_eq!(verdict("unknown", "unknown"), Verdict::NotNeeded);
-        assert_eq!(
-            parse_states(Ok("failed\nauto-restart\n".into())),
-            ("failed".into(), "auto-restart".into())
-        );
-        assert_eq!(
-            parse_states(Ok("failed\nfailed".into())),
-            ("failed".into(), "failed".into())
-        );
-        for output in [Ok(String::new()), Ok("failed".into()), Err("no bus".into())] {
-            assert_eq!(parse_states(output), ("unknown".into(), "unknown".into()));
+            assert!(!stopped(state), "{state}");
         }
         for state in ["active", "activating", "reloading"] {
             assert!(service_back(state), "{state}");

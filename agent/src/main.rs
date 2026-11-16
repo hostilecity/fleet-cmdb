@@ -427,37 +427,27 @@ fn recover(path: &Path) -> ExitCode {
         }
     };
     recovery::install_panic_hook();
-    // systemd 255 and later start this unit on every failed start of the service: go on only if it has
-    // stopped for good, and leave it to systemd otherwise.
+    // systemd 255 and later start this unit on every failed start of the service: go on only if it stays
+    // stopped for longer than its RestartSec=, and leave it to systemd otherwise.
     let systemctl = install::Systemctl::default();
-    let states = || {
-        use install::Systemd;
-        recovery::parse_states(systemctl.systemctl(&[
-            "show",
-            "--property=ActiveState",
-            "--property=SubState",
-            "--value",
-            install::UNIT_NAME,
-        ]))
-    };
     let deciding = Instant::now();
     loop {
-        let (active, sub) = states();
-        match recovery::verdict(&active, &sub) {
-            recovery::Verdict::Recover => break,
-            recovery::Verdict::Wait if deciding.elapsed() < recovery::DECIDE_WITHIN => {
-                if shutdown.wait(std::time::Duration::from_secs(1)) {
-                    return ExitCode::SUCCESS;
-                }
-            }
-            _ => {
-                tracing::info!(
-                    active_state = active.as_str(),
-                    sub_state = sub.as_str(),
-                    "recovery mode is not needed: fleet-agent.service is {active} ({sub})"
-                );
-                return ExitCode::SUCCESS;
-            }
+        let state = {
+            use install::Systemd;
+            systemctl.state()
+        };
+        if !recovery::stopped(&state) {
+            tracing::info!(
+                service_state = state.as_str(),
+                "recovery mode is not needed: fleet-agent.service is {state} (systemd restarted it, or it runs)"
+            );
+            return ExitCode::SUCCESS;
+        }
+        if deciding.elapsed() >= recovery::SETTLE {
+            break;
+        }
+        if shutdown.wait(std::time::Duration::from_secs(1)) {
+            return ExitCode::SUCCESS;
         }
     }
     watch_for_the_service(&shutdown);
