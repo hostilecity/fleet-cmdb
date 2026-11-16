@@ -103,6 +103,30 @@ pub enum Ended {
     Failed,
 }
 
+/// Refreshes the systemd units from the new version once it has confirmed (#232), so a remote update
+/// brings the units of the version it installs, as `fleet-agent install` does. Behind a trait so tests
+/// need not run a binary.
+pub trait RefreshUnits {
+    /// Runs `binary install --refresh-units`. `Err` says why it did not work.
+    fn refresh(&self, binary: &Path) -> Result<(), String>;
+}
+
+/// Longest `install --refresh-units` may take: it may run `daemon-reload`, which the installer allows a
+/// minute, plus its checks.
+pub const REFRESH_UNITS_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The real refresh: the new, confirmed, signed binary runs `install --refresh-units --quiet`, outside the
+/// sandbox like the supervisor itself, with an empty environment and a time limit. ADR 0018's trust model
+/// already covers this: the next update's supervisor runs that binary as root outside the sandbox too.
+pub struct RunRefresh;
+
+impl RefreshUnits for RunRefresh {
+    fn refresh(&self, binary: &Path) -> Result<(), String> {
+        let args = ["install", "--refresh-units", "--quiet"].map(std::ffi::OsStr::new);
+        super::stage::run_bounded(binary, &args, REFRESH_UNITS_TIMEOUT).map(drop)
+    }
+}
+
 pub struct Supervisor<'a> {
     pub layout: &'a Layout,
     pub keys: &'a [ReleaseKey],
@@ -116,6 +140,8 @@ pub struct Supervisor<'a> {
     pub boot_id: Option<String>,
     /// Swaps `current` (`fsx::replace_symlink`; a test can make it fail after the rename).
     pub swap_current: fn(&Path, &Path) -> io::Result<()>,
+    /// Refreshes the units from the new version after it confirmed ([`RunRefresh`]).
+    pub units: &'a dyn RefreshUnits,
 }
 
 /// How long an update may wait between being staged and the switch before it is abandoned.
@@ -547,11 +573,40 @@ impl Supervisor<'_> {
         Ok(())
     }
 
+    /// The new version confirmed: its units are written (#232), the outcome recorded, older versions
+    /// pruned, and the record removed, in that order. A supervisor killed before the record is gone does
+    /// all of it again, and the refresh changes nothing the second time.
     fn finish_confirmed(&self, rec: &Record) -> Result<(), String> {
-        self.report(rec, Outcome::Succeeded, None)?;
+        let note = self.refresh_units(rec);
+        self.report(rec, Outcome::Succeeded, note)?;
         prune_versions(self.layout);
         self.clean_up(rec, false, true);
         Ok(())
+    }
+
+    /// Runs the new version's `install --refresh-units`. The service is not restarted: systemd uses the new
+    /// unit settings at its next start, and `OnFailure=` and `RestartMode=` once reloaded. A failure does not
+    /// undo the update, which has confirmed and runs under the old units: it is logged and returned as the
+    /// note for the update result, so the dashboard shows it.
+    fn refresh_units(&self, rec: &Record) -> Option<String> {
+        match self.units.refresh(&self.layout.binary(&rec.version)) {
+            Ok(()) => {
+                tracing::info!(
+                    version = rec.version.as_str(),
+                    "refreshed the systemd units from the new version"
+                );
+                None
+            }
+            Err(why) => {
+                tracing::warn!(
+                    version = rec.version.as_str(),
+                    "cannot refresh the systemd units from the new version ({why}); the update stands, under the old units"
+                );
+                Some(format!(
+                    "the update succeeded, but its systemd units were not installed (the old units run it; `sudo fleet-agent install` on the VM installs them): {why}"
+                ))
+            }
+        }
     }
 
     /// An update that stopped before the switch: nothing is running that was not before.

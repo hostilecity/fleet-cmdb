@@ -184,6 +184,23 @@ impl Systemd for FakeSystemd {
     }
 }
 
+/// Records the binaries the supervisor asked to refresh the units from (#232), and fails if told to.
+#[derive(Default)]
+pub struct FakeUnits {
+    pub refreshed: RefCell<Vec<PathBuf>>,
+    pub fail: RefCell<Option<String>>,
+}
+
+impl supervise::RefreshUnits for FakeUnits {
+    fn refresh(&self, binary: &Path) -> Result<(), String> {
+        self.refreshed.borrow_mut().push(binary.to_owned());
+        match self.fail.borrow().clone() {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
+    }
+}
+
 /// A machine with version [`old`] installed and running, in a temporary directory.
 pub struct World {
     pub _dir: TempDir,
@@ -195,6 +212,7 @@ pub struct World {
     pub running: semver::Version,
     /// How the supervisor swaps `current`.
     pub swap_current: Cell<fn(&Path, &Path) -> io::Result<()>>,
+    pub units: FakeUnits,
 }
 
 pub const OLD_BINARY: &[u8] = b"#!/bin/sh\n# the old agent\n";
@@ -232,6 +250,7 @@ impl World {
             systemd,
             running: semver::Version::parse(old()).unwrap(),
             swap_current: Cell::new(crate::fsx::replace_symlink),
+            units: FakeUnits::default(),
         }
     }
 
@@ -249,6 +268,7 @@ impl World {
             poll: Duration::from_secs(1),
             boot_id: self.systemd.boot.borrow().clone(),
             swap_current: self.swap_current.get(),
+            units: &self.units,
         }
     }
 

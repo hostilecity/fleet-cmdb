@@ -29,6 +29,78 @@ pub const RECOVERY_UNIT: &str = include_str!("fleet-agent-recovery.service");
 /// it is neither replaced nor removed.
 pub const UNIT_MARKER: &str = "# Written by `fleet-agent install`";
 
+/// Where `install` writes the units.
+pub const UNIT_DIR: &str = "/etc/systemd/system";
+
+/// Most of a unit file [`recovery_covered`] reads (the units are about 3 KiB).
+const MAX_UNIT_BYTES: u64 = 64 * 1024;
+
+/// What the heartbeat reports about the installed units (#232): whether recovery mode is set up (ADR
+/// 0030). Read from the files in `unit_dir` on every heartbeat, so a refresh after an update (which does
+/// not restart the service) shows at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Units {
+    pub recovery: bool,
+}
+
+/// Whether recovery mode is set up in `unit_dir`: the recovery unit is there and carries the installer's
+/// marker, and the service names it in `OnFailure=` (#232). Both files are readable inside the sandbox
+/// (`ProtectSystem=strict` keeps `/etc` readable). A missing file is `Ok(false)`; a file that cannot be
+/// read is an error, which the heartbeat reports as `false` (it cannot tell that recovery mode is set
+/// up). Drop-ins are not read: the installer writes none, and the dashboard's answer is only a guide.
+pub fn recovery_covered(unit_dir: &Path) -> Result<bool, String> {
+    let read = |name: &str| -> Result<Option<String>, String> {
+        let path = unit_dir.join(name);
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_UNIT_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    let Some(recovery) = read(RECOVERY_UNIT_NAME)? else {
+        return Ok(false);
+    };
+    if !recovery.starts_with(UNIT_MARKER) {
+        return Ok(false);
+    }
+    let Some(service) = read(UNIT_NAME)? else {
+        return Ok(false);
+    };
+    Ok(on_failure(&service).contains(&RECOVERY_UNIT_NAME))
+}
+
+/// The units `OnFailure=` names in the `[Unit]` section of `unit`, as systemd reads them: each line adds
+/// to the list, and an empty value clears it.
+fn on_failure(unit: &str) -> Vec<&str> {
+    let mut section = "";
+    let mut units = Vec::new();
+    for line in unit.lines().map(str::trim) {
+        if line.starts_with('[') {
+            section = line;
+            continue;
+        }
+        if section != "[Unit]" {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "OnFailure" {
+            continue;
+        }
+        if value.trim().is_empty() {
+            units.clear();
+        }
+        units.extend(value.split_whitespace());
+    }
+    units
+}
+
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const SYSTEMD_RUN: &str = "/usr/bin/systemd-run";
 
@@ -387,6 +459,62 @@ mod tests {
         // The one capability: searching directories root does not own, for statvfs and reads.
         assert_eq!(values("CapabilityBoundingSet"), ["CAP_DAC_READ_SEARCH"]);
         assert!(values("AmbientCapabilities").is_empty());
+    }
+
+    #[test]
+    fn recovery_mode_is_covered_only_by_the_installers_unit_named_in_on_failure() {
+        // #232: what heartbeats report as `units.recovery`.
+        let dir = crate::test_support::TempDir::new();
+        let units = dir.path("units");
+        std::fs::create_dir_all(&units).unwrap();
+        let write = |name: &str, text: &str| std::fs::write(units.join(name), text).unwrap();
+        // Nothing installed, then only the service.
+        assert_eq!(recovery_covered(&units), Ok(false));
+        assert_eq!(recovery_covered(&dir.path("missing")), Ok(false));
+        write(UNIT_NAME, UNIT);
+        assert_eq!(recovery_covered(&units), Ok(false));
+        // This release's units.
+        write(RECOVERY_UNIT_NAME, RECOVERY_UNIT);
+        assert_eq!(recovery_covered(&units), Ok(true));
+        // A service from before recovery mode: OnFailure= names only the rollback unit.
+        let old = UNIT.replace(
+            &format!("OnFailure={ROLLBACK_UNIT_NAME} {RECOVERY_UNIT_NAME}"),
+            &format!("OnFailure={ROLLBACK_UNIT_NAME}"),
+        );
+        assert_ne!(old, UNIT);
+        write(UNIT_NAME, &old);
+        assert_eq!(recovery_covered(&units), Ok(false));
+        // Added on a line of its own, as systemd adds them; an empty value clears what came before.
+        write(
+            UNIT_NAME,
+            &format!("{old}\n[Unit]\nOnFailure={RECOVERY_UNIT_NAME}\n"),
+        );
+        assert_eq!(recovery_covered(&units), Ok(true));
+        write(UNIT_NAME, &format!("{UNIT}\n[Unit]\nOnFailure=\n"));
+        assert_eq!(recovery_covered(&units), Ok(false));
+        // Named outside [Unit], or in a comment, does not count.
+        write(
+            UNIT_NAME,
+            &format!("{old}\n[Service]\nOnFailure={RECOVERY_UNIT_NAME}\n"),
+        );
+        assert_eq!(recovery_covered(&units), Ok(false));
+        write(
+            UNIT_NAME,
+            &format!("{old}\n[Unit]\n# OnFailure={RECOVERY_UNIT_NAME}\n"),
+        );
+        assert_eq!(recovery_covered(&units), Ok(false));
+        // A recovery unit someone wrote by hand is not the installer's.
+        write(UNIT_NAME, UNIT);
+        write(
+            RECOVERY_UNIT_NAME,
+            &RECOVERY_UNIT.replacen(UNIT_MARKER, "# my copy", 1),
+        );
+        assert_eq!(recovery_covered(&units), Ok(false));
+        // A file that cannot be read is an error, not a guess.
+        std::fs::remove_file(units.join(RECOVERY_UNIT_NAME)).unwrap();
+        std::fs::create_dir(units.join(RECOVERY_UNIT_NAME)).unwrap();
+        let error = recovery_covered(&units).unwrap_err();
+        assert!(error.contains(RECOVERY_UNIT_NAME), "{error}");
     }
 
     fn fake(script: &str, timeout: Duration) -> (crate::test_support::TempDir, Systemctl) {

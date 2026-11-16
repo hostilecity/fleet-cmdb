@@ -313,15 +313,28 @@ journal_has fleet-agent-rollback "update supervisor finished ended=RolledBack" \
     || fail "the rollback was not done by the OnFailure rollback unit"
 expect_old_running "killed supervisor, crash-looping release"
 
-echo "== success: a good release is installed and its result is retried"
+echo "== success: a good release is installed, refreshes the units, and its result is retried"
 reset
+# #232: units from before recovery mode (no recovery unit, OnFailure= names only the rollback unit); the confirmed
+# update writes the new version's.
+sed -e 's/^OnFailure=fleet-agent-rollback.service fleet-agent-recovery.service$/OnFailure=fleet-agent-rollback.service/' \
+    -e '/^RestartMode=direct$/d' "$agent_dir/src/install/fleet-agent.service" > "$UNITS/fleet-agent.service"
+rm -f "$UNITS/fleet-agent-recovery.service"
+systemctl daemon-reload
 offer good "$NEW" '{"results_503": 2}'
 wait_until "the update to be reported" 150 result_accepted
 expect_result "success" succeeded "$NEW"
+[ "$(result_field reason)" = null ] || fail "success: the result has a reason: $(result_field reason)"
+for unit in fleet-agent.service fleet-agent-recovery.service; do
+    cmp -s "$agent_dir/src/install/$unit" "$UNITS/$unit" || fail "success: $UNITS/$unit is not the new version's"
+done
+systemctl show -p OnFailure --value fleet-agent | grep -q fleet-agent-recovery.service || fail "success: systemd was not reloaded"
 running_is "$NEW" || fail "success: running $(running_version)"
 [ "$(readlink "$LIB/previous")" = "versions/$OLD" ] || fail "success: previous is $(readlink "$LIB/previous"), not versions/$OLD"
 since=$(date +%s.%N)
 wait_until "a heartbeat from $NEW" 60 heartbeat_from "$NEW"
+wait_until "a heartbeat from $NEW that says recovery mode is set up" 60 \
+    event_exists "[.[] | select(.kind == \"heartbeat\" and .agent_version == \"$NEW\" and .units.recovery == true and .at > $since)] | length > 0"
 statuses=$(jq -rs "[.[] | select(.kind == \"result\" and .body.rollout_id == $rollout) | .status] | map(tostring) | join(\",\")" "$events")
 [ "$statuses" = "503,503,200" ] || fail "success: the result was posted with statuses $statuses, expected 503,503,200"
 [ "$(sha256sum "$ETC/config.toml" "$ETC/ca.pem")" = "$config_before" ] || fail "success: the configuration changed"

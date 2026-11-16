@@ -156,8 +156,17 @@ pub fn install(host: &Host, ui: &mut Ui) -> Result<Installed, InstallError> {
 
     prune_versions(host, ui)?;
 
-    // The units, built into this binary: the service, and the rollback and recovery units its
-    // `OnFailure=` starts (ADR 0018, ADR 0030).
+    if write_units(host, ui)? {
+        changed = true;
+    }
+    Ok(Installed { changed })
+}
+
+/// The units built into this binary: the service, and the rollback and recovery units its `OnFailure=`
+/// starts (ADR 0018, ADR 0030). Each is written only if it differs, then `daemon-reload` once if any was.
+/// Returns whether any was written.
+pub fn write_units(host: &Host, ui: &mut Ui) -> Result<bool, InstallError> {
+    let paths = &host.paths;
     let mut wrote_unit = false;
     for (unit, text) in [
         (paths.unit(), UNIT),
@@ -187,9 +196,108 @@ pub fn install(host: &Host, ui: &mut Ui) -> Result<Installed, InstallError> {
                 paths.unit_dir().display()
             ))
         })?;
-        changed = true;
     }
-    Ok(Installed { changed })
+    Ok(wrote_unit)
+}
+
+/// Everything `install --refresh-units` checks before it writes a unit (#232). Nothing is changed when one
+/// fails.
+///
+/// - `current` is this version and its binary is this one: the units name `current/fleet-agent` and the
+///   arguments of this version (an older binary would refuse `run --recovery`, ADR 0030).
+/// - No update is in progress, other than a confirmed one of this version: the supervisor runs the refresh
+///   after the confirmation and before it removes the record. An unconfirmed version may still be rolled
+///   back, and its units would then run the older binary.
+/// - Each unit file is safe to replace (owned by root, not writable by others, not a link), and carries
+///   the installer's marker. The rollback and recovery units may be missing (an install from before they
+///   existed), and are then written. The service unit must be there and be the installer's: without it
+///   this is not an installed agent, and a unit in `/etc/systemd/system` would hide a packaged one. A unit
+///   without the marker is someone's local copy: it is left alone, and so are the others.
+pub fn check_refresh(host: &Host) -> Result<(), InstallError> {
+    let paths = &host.paths;
+    let refuse = |what: String, next: &str| InstallError::new(Failure::Preflight, what, next);
+    let version_rel = PathBuf::from("versions").join(AGENT_VERSION);
+    let current =
+        fsx::kind(&paths.current()).map_err(|e| io_failed("inspect", &paths.current(), e))?;
+    let this_version = current == Kind::Symlink(version_rel.clone())
+        && fsx::same_contents(
+            &host.exe,
+            &paths.lib_dir().join(&version_rel).join("fleet-agent"),
+        )
+        .unwrap_or(false);
+    if !this_version {
+        return Err(refuse(
+            format!(
+                "{} is not this fleet-agent {AGENT_VERSION}; only the version that runs may write its units",
+                paths.current().display()
+            ),
+            "Run the command with the installed binary: `sudo /usr/lib/fleet-agent/current/fleet-agent install --refresh-units`, or upgrade with `sudo fleet-agent install`.",
+        ));
+    }
+    let mut dirs = vec![paths.state_dir()];
+    if let Ok(config) = crate::config::Config::load_as(&paths.config(), host.owner_uid) {
+        let other = paths.state_dir_of(&config);
+        if !dirs.contains(&other) {
+            dirs.push(other);
+        }
+    }
+    for dir in dirs {
+        crate::update::check_refresh_units(&dir).map_err(|why| {
+            InstallError::new(
+                Failure::Failed,
+                why,
+                "Wait for the update to finish; a confirmed update refreshes the units itself.",
+            )
+        })?;
+    }
+    if let Some(reason) = fsx::check_dir(&paths.unit_dir(), host.owner_uid) {
+        return Err(refuse(
+            format!("{} {reason}", paths.unit_dir().display()),
+            "The unit directory must be owned by root and not writable by others.",
+        ));
+    }
+    for (unit, required) in [
+        (paths.unit(), true),
+        (paths.rollback_unit(), false),
+        (paths.recovery_unit(), false),
+    ] {
+        let local_copy = "Move it away (keep local changes in a drop-in made with `systemctl edit`), then run the command again.";
+        match fsx::kind(&unit).map_err(|e| io_failed("inspect", &unit, e))? {
+            Kind::Missing if !required => continue,
+            Kind::Missing => {
+                return Err(refuse(
+                    format!(
+                        "{} is missing; this VM has no installed agent to refresh",
+                        unit.display()
+                    ),
+                    "Install the agent with `sudo fleet-agent install`.",
+                ));
+            }
+            Kind::File => {}
+            _ => {
+                return Err(refuse(
+                    format!("{} is not a regular file", unit.display()),
+                    local_copy,
+                ));
+            }
+        }
+        if let Some(reason) = fsx::check_file(&unit, host.owner_uid) {
+            return Err(refuse(format!("{} {reason}", unit.display()), local_copy));
+        }
+        let marked = fs::read(&unit)
+            .map_err(|e| io_failed("read", &unit, e))?
+            .starts_with(super::systemd::UNIT_MARKER.as_bytes());
+        if !marked {
+            return Err(refuse(
+                format!(
+                    "{} was not written by fleet-agent install; no unit was changed",
+                    unit.display()
+                ),
+                local_copy,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Keeps the versions `current` and `previous` point to and removes the others (ADR 0018 retention).

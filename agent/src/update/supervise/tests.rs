@@ -51,6 +51,8 @@ fn an_update_the_new_version_confirms_is_installed_kept_and_reported() {
     assert_eq!(result.report_id, record.report_id);
     assert_eq!((result.rollout_id, result.version.as_str()), (5, NEW));
     assert_eq!(result.reason, None);
+    // #232: the units were refreshed once, by the new binary, after it confirmed.
+    assert_eq!(*world.units.refreshed.borrow(), [world.layout.binary(NEW)]);
     // The credential and state are untouched, the update is over, and nothing is left behind.
     assert_eq!(
         world.inventory(),
@@ -89,11 +91,96 @@ fn a_release_that_exits_at_start_is_rolled_back_and_reported() {
             .unwrap()
             .contains("failed to start or kept failing")
     );
+    // #232: a version that did not confirm never writes its units.
+    assert!(world.units.refreshed.borrow().is_empty());
     assert!(Record::read(world.state()).unwrap().is_none());
     assert_eq!(
         world.inventory(),
         r#"{"v":"old"}"#,
         "the state the old version last saw is back"
+    );
+}
+
+#[test]
+fn a_unit_refresh_that_fails_is_noted_and_the_update_still_succeeds() {
+    // #232: the new version confirmed and runs under the old units, so the update stands; the result says
+    // what did not work and what to do, and nothing is restarted for it.
+    let world = World::new();
+    *world.units.fail.borrow_mut() = Some(
+        "it exited with exit status: 3: /etc/systemd/system/fleet-agent.service was not written by fleet-agent install".into(),
+    );
+    staged(&world);
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::Confirmed));
+    assert_eq!(world.current().as_deref(), Some(NEW));
+    assert_eq!(world.systemd.restarts(), 1);
+    let result = world.pending().unwrap();
+    assert_eq!(result.outcome, Outcome::Succeeded);
+    let reason = result.reason.unwrap();
+    assert!(
+        reason.starts_with("the update succeeded, but its systemd units were not installed"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("sudo fleet-agent install")
+            && reason.contains("was not written by fleet-agent install"),
+        "{reason}"
+    );
+    assert!(reason.chars().count() <= crate::update::record::MAX_REASON_CHARS);
+    assert!(Record::read(world.state()).unwrap().is_none());
+}
+
+#[test]
+fn a_supervisor_resumed_after_the_confirmation_refreshes_the_units_before_it_removes_the_record() {
+    // #232: killed between the confirmation and the end, the next supervisor refreshes again (which changes
+    // nothing the second time) and only then reports and removes the record.
+    let world = World::new();
+    let mut record = staged(&world);
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::Confirmed));
+    world.units.refreshed.borrow_mut().clear();
+    record.phase = Phase::Confirmed;
+    record.write(world.state()).unwrap();
+    assert_eq!(world.run(Intent::Resume), Ok(Ended::Confirmed));
+    assert_eq!(*world.units.refreshed.borrow(), [world.layout.binary(NEW)]);
+    assert_eq!(world.pending().unwrap().outcome, Outcome::Succeeded);
+}
+
+#[test]
+fn the_real_refresh_runs_the_new_binary_with_refresh_units_and_an_empty_environment() {
+    use crate::update::supervise::{RefreshUnits, RunRefresh};
+    use std::os::unix::fs::PermissionsExt;
+    let dir = crate::test_support::TempDir::new();
+    let seen = dir.path("seen");
+    let script = |name: &str, body: &str| {
+        let path = dir.write(name, &format!("#!/bin/sh\n{body}\n"));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    };
+    let ok = script(
+        "ok",
+        &format!(
+            "echo \"$* FLEET_ENROLLMENT_TOKEN=${{FLEET_ENROLLMENT_TOKEN:-unset}}\" > {}",
+            seen.display()
+        ),
+    );
+    assert_eq!(RunRefresh.refresh(&ok), Ok(()));
+    assert_eq!(
+        fs::read_to_string(&seen).unwrap(),
+        "install --refresh-units --quiet FLEET_ENROLLMENT_TOKEN=unset\n"
+    );
+    let refused = script(
+        "refused",
+        "echo 'fleet-agent: a unit was not written by fleet-agent install' >&2; exit 3",
+    );
+    let why = RunRefresh.refresh(&refused).unwrap_err();
+    assert!(
+        why.contains("exit status: 3") && why.contains("was not written by fleet-agent install"),
+        "{why}"
+    );
+    assert!(
+        RunRefresh
+            .refresh(&dir.path("missing"))
+            .unwrap_err()
+            .contains("cannot run it")
     );
 }
 

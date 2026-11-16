@@ -45,6 +45,10 @@ pub struct HeartbeatRequest {
     /// Present only in recovery mode (#180, ADR 0030): why, and since when. Absent means normal mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<crate::recovery::Status>,
+    /// Which of the installer's units are set up (#232): whether recovery mode is. Absent only where the
+    /// loop was not told where the units are (tests).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub units: Option<crate::install::Units>,
 }
 
 /// The state record of this process's first accepted heartbeat (in the state directory). `install`
@@ -75,6 +79,10 @@ pub struct Heartbeat<'a, R: Rng> {
     task_hint: Option<&'a TaskHint>,
     /// Sent as `recovery` in every heartbeat in recovery mode ([`Heartbeat::in_recovery`]).
     recovery: Option<crate::recovery::Status>,
+    /// Where the systemd units are, for `units` ([`Heartbeat::with_units_in`]).
+    units_dir: Option<std::path::PathBuf>,
+    /// The last unit check that failed, logged once until it changes.
+    units_problem: std::cell::RefCell<Option<String>>,
     backoff: Backoff<R>,
     rng: R,
     started: Instant,
@@ -94,6 +102,8 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             capabilities: None,
             task_hint: None,
             recovery: None,
+            units_dir: None,
+            units_problem: std::cell::RefCell::default(),
             backoff,
             rng,
             started,
@@ -146,6 +156,36 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         self
     }
 
+    /// Reports in every heartbeat whether recovery mode is set up in `dir` (#232), read from the unit files
+    /// each time: a confirmed update refreshes them without restarting the service.
+    pub fn with_units_in(mut self, dir: std::path::PathBuf) -> Self {
+        self.units_dir = Some(dir);
+        self
+    }
+
+    /// `units` for one heartbeat. A unit file that cannot be read reports `recovery: false` (it cannot be
+    /// shown to be set up), with a warning logged once.
+    fn units(&self) -> Option<crate::install::Units> {
+        let dir = self.units_dir.as_deref()?;
+        let recovery = match crate::install::recovery_covered(dir) {
+            Ok(covered) => {
+                self.units_problem.borrow_mut().take();
+                covered
+            }
+            Err(why) => {
+                let mut last = self.units_problem.borrow_mut();
+                if last.as_deref() != Some(why.as_str()) {
+                    tracing::warn!(
+                        "cannot tell whether recovery mode is set up ({why}); heartbeats say it is not"
+                    );
+                    *last = Some(why);
+                }
+                false
+            }
+        };
+        Some(crate::install::Units { recovery })
+    }
+
     /// Recovery mode moved its next try of normal mode: later heartbeats say when.
     pub fn set_recovery_retry_at(&mut self, retry_at: String) {
         if let Some(status) = &mut self.recovery {
@@ -186,6 +226,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             agent_time: rfc3339(wall),
             tasks: self.capabilities.clone(),
             recovery: self.recovery.clone(),
+            units: self.units(),
         }
     }
 
@@ -393,6 +434,45 @@ mod tests {
             assert_eq!(value["agent_time"], "2026-01-01T12:00:00.000Z");
             assert_eq!(value["agent_version"], AGENT_VERSION);
         }
+    }
+
+    #[test]
+    fn every_heartbeat_reports_whether_recovery_mode_is_set_up_as_the_unit_files_say_now() {
+        // #232: read on every heartbeat, so a refresh after a confirmed update (no restart) shows at once.
+        use crate::install::{RECOVERY_UNIT, UNIT};
+        let intervals = intervals();
+        let started = Instant::now();
+        let dir = crate::test_support::TempDir::new();
+        let units = dir.path("units");
+        std::fs::create_dir_all(&units).unwrap();
+        let hb = heartbeat(&intervals, started).with_units_in(units.clone());
+        let recovery = |hb: &Heartbeat<'_, SplitMix64>| {
+            let body = serde_json::to_value(hb.request(None, started, wall())).unwrap();
+            assert_conforms("v1", "heartbeat.request", &body);
+            body["units"].clone()
+        };
+        assert_eq!(recovery(&hb), json!({"recovery": false}));
+        std::fs::write(units.join("fleet-agent.service"), UNIT).unwrap();
+        std::fs::write(units.join("fleet-agent-recovery.service"), RECOVERY_UNIT).unwrap();
+        assert_eq!(recovery(&hb), json!({"recovery": true}));
+        // Unreadable: reported as not set up, and logged once, not on every heartbeat.
+        std::fs::remove_file(units.join("fleet-agent-recovery.service")).unwrap();
+        std::fs::create_dir(units.join("fleet-agent-recovery.service")).unwrap();
+        let ((), logs) = logs_of(|| {
+            assert_eq!(recovery(&hb), json!({"recovery": false}));
+            assert_eq!(recovery(&hb), json!({"recovery": false}));
+        });
+        assert_eq!(
+            logs.matches("cannot tell whether recovery mode is set up")
+                .count(),
+            1,
+            "{logs}"
+        );
+        // Without a unit directory (tests elsewhere) the field is left out.
+        let body =
+            serde_json::to_value(heartbeat(&intervals, started).request(None, started, wall()))
+                .unwrap();
+        assert!(body.get("units").is_none());
     }
 
     #[test]

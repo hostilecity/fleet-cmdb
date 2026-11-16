@@ -48,7 +48,9 @@ use crate::AGENT_VERSION;
 use crate::config::Config;
 use crate::shutdown::Shutdown;
 
-pub use systemd::{Systemctl, Systemd, UNIT_NAME};
+#[cfg(test)]
+pub use systemd::{RECOVERY_UNIT, UNIT};
+pub use systemd::{Systemctl, Systemd, UNIT_DIR, UNIT_NAME, Units, recovery_covered};
 pub use token::TokenSource;
 pub use ui::{Mode, Ui};
 
@@ -170,7 +172,7 @@ impl Paths {
         self.at(crate::config::DEFAULT_STATE_DIR)
     }
     pub fn unit_dir(&self) -> PathBuf {
-        self.at("/etc/systemd/system")
+        self.at(systemd::UNIT_DIR)
     }
     pub fn unit(&self) -> PathBuf {
         self.unit_dir().join(systemd::UNIT_NAME)
@@ -277,6 +279,8 @@ pub struct UninstallOptions {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Install(InstallOptions, Mode),
+    /// `install --refresh-units` (#232): write this version's units, and nothing else.
+    RefreshUnits(Mode),
     Uninstall(UninstallOptions, Mode),
     Help(&'static str),
 }
@@ -296,6 +300,9 @@ Options:
   --token-stdin     Read the one-time token from standard input
                     (or set FLEET_ENROLLMENT_TOKEN; the token is never accepted on the command line)
   --reenroll        Start onboarding again, for a lost or revoked credential
+  --refresh-units   Only write this version's systemd units (those the installer wrote) and
+                    reload systemd; nothing else is changed and the service is not restarted.
+                    A confirmed agent update runs this itself
   --quiet           Print only errors and the approval page and code
   --json            Print one JSON object per line, for scripts
   -h, --help        Print this help
@@ -334,6 +341,7 @@ const KNOWN_OPTIONS: &[&str] = &[
     "--token",
     "--token-stdin",
     "--reenroll",
+    "--refresh-units",
     "--keep-state",
     "--quiet",
     "--json",
@@ -370,6 +378,7 @@ pub fn parse(args: &[OsString], env_token: bool) -> Result<Command, InstallError
         Ok(())
     };
     let mut install = InstallOptions::default();
+    let mut refresh_units = false;
     let mut uninstall = UninstallOptions::default();
     let mut parser = lexopt::Parser::from_args(rest.iter().cloned());
     let lexopt_error = |e: lexopt::Error| usage(crate::cli::error_text(e), command);
@@ -386,6 +395,7 @@ pub fn parse(args: &[OsString], env_token: bool) -> Result<Command, InstallError
             Long("json") => set_mode(Mode::Json)?,
             Long("keep-state") if !is_install => uninstall.keep_state = true,
             Long("reenroll") if is_install => install.reenroll = true,
+            Long("refresh-units") if is_install => refresh_units = true,
             Long(flag @ ("server" | "ca-file")) if is_install => {
                 let flag = format!("--{flag}");
                 let value = parser.value().map_err(lexopt_error)?;
@@ -440,6 +450,16 @@ pub fn parse(args: &[OsString], env_token: bool) -> Result<Command, InstallError
     let mode = mode.unwrap_or(Mode::Human);
     if command == "uninstall" {
         return Ok(Command::Uninstall(uninstall, mode));
+    }
+    if refresh_units {
+        // FLEET_ENROLLMENT_TOKEN is ignored: nothing is enrolled.
+        if install != InstallOptions::default() {
+            return Err(usage(
+                "--refresh-units only writes the units; it takes no --server, --ca-file, --token, --token-stdin, or --reenroll",
+                command,
+            ));
+        }
+        return Ok(Command::RefreshUnits(mode));
     }
     if env_token {
         if install.token.is_some() {
@@ -511,7 +531,9 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
             println!("{text}");
             return ExitCode::SUCCESS;
         }
-        Command::Install(_, mode) | Command::Uninstall(_, mode) => *mode,
+        Command::Install(_, mode) | Command::RefreshUnits(mode) | Command::Uninstall(_, mode) => {
+            *mode
+        }
     };
     let mut ui = Ui::new(
         mode,
@@ -541,6 +563,7 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
     };
     let result = match &command {
         Command::Install(options, _) => install(&host, options, &mut ui),
+        Command::RefreshUnits(_) => refresh_units(&host, &mut ui),
         Command::Uninstall(options, _) => uninstall::uninstall(&host, options, &mut ui),
         Command::Help(_) => unreachable!(),
     };
@@ -645,6 +668,49 @@ pub fn install(host: &Host, options: &InstallOptions, ui: &mut Ui) -> Result<(),
             ("Config", host.paths.config().display().to_string()),
         ],
         serde_json::json!({"server_url": enrolled.config.server_url, "key_id": enrolled.config.credential.key_id()}),
+    );
+    Ok(())
+}
+
+/// Runs `install --refresh-units` on `host` (#232): writes this version's units over the installer's own,
+/// and the rollback and recovery units if they are missing, then `daemon-reload` if any changed. Nothing
+/// else is touched: no config, credential, state, or version link, and the service is not restarted
+/// (systemd uses the new settings at its next start; `OnFailure=` and `RestartMode=` apply once reloaded).
+/// The supervisor of an agent update runs it from the new, confirmed, signed binary (ADR 0018, ADR 0030).
+/// Every check comes first ([`layout::check_refresh`]), so a refusal changes nothing.
+pub fn refresh_units(host: &Host, ui: &mut Ui) -> Result<(), InstallError> {
+    ui.title(&format!(
+        "fleet-agent {AGENT_VERSION}: refresh the systemd units"
+    ));
+    if !host.is_root {
+        return Err(InstallError::new(
+            Failure::Preflight,
+            "--refresh-units must run as root: it writes the agent's systemd units",
+            format!("Run it again with sudo: {}", host.sudo_command),
+        ));
+    }
+    if let Some(why) = host.systemd.unavailable() {
+        return Err(InstallError::new(
+            Failure::Preflight,
+            why,
+            "The agent's units need systemd; nothing was changed.",
+        ));
+    }
+    let _lock = layout::lock(host)?;
+    layout::check_refresh(host)?;
+    let wrote = layout::write_units(host, ui)?;
+    ui.summary(
+        if wrote {
+            "Done. The systemd units are this version's; systemd was reloaded."
+        } else {
+            "Done. The systemd units were already this version's."
+        },
+        "units_refreshed",
+        &[
+            ("Version", AGENT_VERSION.to_owned()),
+            ("Units", host.paths.unit_dir().display().to_string()),
+        ],
+        serde_json::json!({"changed": wrote}),
     );
     Ok(())
 }

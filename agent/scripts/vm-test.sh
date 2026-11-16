@@ -37,6 +37,11 @@
 #                            failed, 1.0.0 runs
 #   crash loop and reboot    a release that crash-loops, switched to, then the VM restarts: rolled
 #                            back (by the failure hook, as nothing else runs)
+#   units refreshed          1.0.0 runs under units from before recovery mode (no recovery unit,
+#                            OnFailure= names only the rollback unit); the confirmed update to 1.0.1
+#                            writes the new version's units (`install --refresh-units`, #232), reloads
+#                            systemd without restarting the service again, and 1.0.1's heartbeats
+#                            report units.recovery true
 #
 # Every scenario also checks that recovery mode (fleet-agent-recovery.service, ADR 0030) is not running
 # once it settles: OnFailure= starts it only once the service has given up (RestartMode=direct), and it exits
@@ -509,6 +514,9 @@ config_sum=$(vm 'sha256sum /etc/fleet-agent/config.toml')
 state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -size +0 ! -name 'update*' -printf '%f '")
 empty_state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -empty ! -name 'update*' -printf '%f '")
 echo "vm-test: installed; state files: $state_files; empty: $empty_state_files"
+# The units this branch's installer writes, which every build here carries (#232).
+UNIT_DIR=/etc/systemd/system
+units_sum=$(vm "cd $UNIT_DIR && sha256sum fleet-agent.service fleet-agent-rollback.service fleet-agent-recovery.service")
 
 # --- Scenarios ----------------------------------------------------------------------------------------
 
@@ -592,6 +600,44 @@ crash_loop_and_reboot() {
     expect_one_version "$OLD" - # `previous` put back as it was before the update (none)
     vm "journalctl -b -u fleet-agent-rollback --no-pager -o cat" | grep -q "update supervisor finished" \
         || fail "the failure hook did not run after the reboot"
+}
+
+# heartbeat_units VERSION true|false: an acknowledged heartbeat from VERSION since $since whose units.recovery is that.
+heartbeat_units() {
+    event_exists "[.[] | select(.kind == \"heartbeat\" and .agent_version == \"$1\" and .status == 200 and .at > $since and .units.recovery == $2)] | length > 0"
+}
+
+# #232: an agent whose units are from before recovery mode gets this release's units from a confirmed update, without
+# another restart, and its heartbeats then say recovery mode is set up.
+units_refreshed() {
+    rollout=$1
+    reset
+    vm "sed -i -e 's/^OnFailure=fleet-agent-rollback.service fleet-agent-recovery.service\$/OnFailure=fleet-agent-rollback.service/' \
+            -e '/^RestartMode=direct\$/d' $UNIT_DIR/fleet-agent.service
+        rm -f $UNIT_DIR/fleet-agent-recovery.service
+        systemctl daemon-reload && systemctl restart fleet-agent"
+    vm_ok "! systemctl show -p OnFailure --value fleet-agent | grep -q fleet-agent-recovery" || fail "the old units still name the recovery unit"
+    since=$(date +%s.%N)
+    wait_until "a heartbeat from $OLD saying recovery mode is not set up" 90 heartbeat_units "$OLD" false
+    local cursor starts
+    cursor=$(vm "journalctl -n 1 --show-cursor --no-pager -o cat | sed -n 's/^-- cursor: //p'")
+    [ -n "$cursor" ] || fail "cannot read the journal's cursor"
+    offer good "$NEW"
+    expect_result succeeded "$NEW"
+    [ "$(cat "$tmp/last-result")" = succeeded ] || fail "the result has a note: $(cat "$tmp/last-result")"
+    expect_one_version "$NEW" "$OLD"
+    [ "$(vm "cd $UNIT_DIR && sha256sum fleet-agent.service fleet-agent-rollback.service fleet-agent-recovery.service")" = "$units_sum" ] \
+        || fail "the units are not the new version's after the update"
+    vm_ok "systemctl show -p OnFailure --value fleet-agent | grep -q fleet-agent-recovery" || fail "systemd was not reloaded after the refresh"
+    vm "journalctl --after-cursor='$cursor' -u fleet-agent-update --no-pager -o cat" | grep -q "refreshed the systemd units from the new version" \
+        || fail "the supervisor did not log the refresh"
+    # The supervisor's restart into the new version is the only start: the refresh restarts nothing.
+    starts=$(vm "journalctl --after-cursor='$cursor' -u fleet-agent --no-pager -o cat" | grep -c "^Started fleet-agent.service" || true)
+    [ "$starts" = 1 ] || fail "fleet-agent.service was started $starts times during the update, expected once"
+    since=$(date +%s.%N)
+    wait_until "a heartbeat from $NEW saying recovery mode is set up" 90 heartbeat_units "$NEW" true
+    echo "the confirmed update wrote $NEW's units and reloaded systemd; one start; heartbeats say recovery mode is set up"
+    printf '%s' "succeeded: units refreshed, units.recovery true" > "$tmp/last-result"
 }
 
 # heartbeat_in_mode VERSION recovery|normal: an acknowledged heartbeat from VERSION since $since, in that mode.
@@ -910,6 +956,7 @@ record_header() {
     echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with the install page's commands (curl and minisign, the signature checked with the release key, then \`fleet-agent install\`)."
     echo "The package report check (AC-2.3) compares the agent's startup package report with \`dpkg-query --show\` on the VM."
     echo "The package update scenarios (P3-AGENT-UPDATES) run the real apply_package_updates task against a local repository of test packages built in the guest."
+    echo "The units scenario (#232) starts from units older than recovery mode and checks that the confirmed update writes the new version's."
     echo "The recovery mode scenario (#180, ADR 0030) makes a confirmed $FAULTY (the VM fault build) crash-loop and checks that recovery mode installs $FIXED."
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
@@ -922,6 +969,7 @@ scenario 303 "Hard reset after the switch, before confirmation" reset_after_swit
 scenario 304 "Reboot after confirmation" reboot_after_confirmation
 scenario 305 "Reboot before the switch" reboot_before_switch
 scenario 306 "Crash-looping release across a reboot" crash_loop_and_reboot
+scenario 308 "Confirmed update refreshes the units (#232)" units_refreshed
 scenario 370 "Package updates applied, no reboot (AC-3.4, AC-3.5)" packages_upgraded
 scenario 371 "Package manager lock held: lock_timeout" lock_contention
 scenario 372 "Agent restarted during the upgrade (L8)" agent_restart_mid_upgrade

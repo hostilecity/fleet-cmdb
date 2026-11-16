@@ -564,6 +564,10 @@ pub fn confirm(
             // As the service reports them, so the server does not clear them in between (P3-A01).
             tasks: crate::tasks::Capabilities::of(&config.tasks),
             recovery: None,
+            // As the service reports them, from the units step 2 wrote (#232).
+            units: Some(super::Units {
+                recovery: super::recovery_covered(&host.paths.unit_dir()).unwrap_or(false),
+            }),
         };
         let error = match client.post_json(HEARTBEAT_PATH, &body) {
             Ok(response) if response.status == 200 => {

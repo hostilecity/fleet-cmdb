@@ -334,6 +334,7 @@ pub fn run_recovery(
         started,
     )
     .with_updater(updater)
+    .with_units_in(std::path::PathBuf::from(crate::install::UNIT_DIR))
     .in_recovery(status);
     let mut retry_at = started + retry_after;
     while !shutdown.is_requested() {
@@ -410,6 +411,7 @@ fn heartbeat_loop(
     .with_updater(updater)
     .with_requests(requests)
     .with_capabilities(crate::tasks::Capabilities::of(&config.tasks))
+    .with_units_in(std::path::PathBuf::from(crate::install::UNIT_DIR))
     .with_task_hint(hint);
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();

@@ -487,6 +487,30 @@ pub fn hold_for_install(state_dir: &Path) -> Result<Option<Lock>, String> {
     }
 }
 
+/// For `fleet-agent install --refresh-units` (#232): whether the units may be refreshed now, given the update
+/// record in `state_dir`. With no record, yes. With one, only once it is confirmed and for this version:
+/// the supervisor runs the refresh then, from the new binary, before it removes the record. Before
+/// that the update may still be rolled back, and the new units would then run the older binary. The update
+/// lock is not taken: the supervisor that runs the refresh holds it.
+pub fn check_refresh_units(state_dir: &Path) -> Result<(), String> {
+    if !state_dir.is_dir() {
+        return Ok(());
+    }
+    match Record::read(state_dir) {
+        Ok(None) => Ok(()),
+        Ok(Some(rec)) if rec.phase == Phase::Confirmed && rec.version == AGENT_VERSION => Ok(()),
+        Ok(Some(rec)) => Err(format!(
+            "an agent update to {} is in progress on this VM and not confirmed yet (recorded in {})",
+            crate::logging::sanitize(&rec.version, 64),
+            state_dir.join(layout::RECORD_FILE).display()
+        )),
+        Err(e) => Err(format!(
+            "the agent update record in {} is unreadable ({e})",
+            state_dir.display()
+        )),
+    }
+}
+
 impl Inner {
     fn note_once(&self, note: &str) -> bool {
         let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
@@ -981,6 +1005,7 @@ fn supervise_main(config_path: &Path, intent: Intent) -> ExitCode {
         poll: Duration::from_secs(1),
         boot_id: layout::boot_id(),
         swap_current: crate::fsx::replace_symlink,
+        units: &supervise::RunRefresh,
     };
     match supervisor.run(intent) {
         Ok(ended) => {
