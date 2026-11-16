@@ -140,7 +140,9 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     expect(page.text).not_to match(/\b\h{64}\b/) # no checksum from this server to compare against
     docs = Rails.root.join("../docs/operations/install-agent.md").read
     expect(docs).to include(command("tools_command"), command("key_command"), command("check_command"), *command("check_output").lines.map(&:chomp)) # the guide shows the same
-    expect(command("compare_with_guide")).to include("matches the install guide on GitHub", "hostilecity/fleet-cmdb")
+    expect(command("compare_with_guide")).to include("open the install guide on GitHub yourself, not from a link here", "github.com/hostilecity/fleet-cmdb",
+                                                     "before you press Enter, check what you pasted in the terminal against the guide")
+    expect(page.at_css("#compare_with_guide a")).to be_nil # no server-rendered link to the guide
     expect(command("check_failed")).to include("Do not run the agent: delete the files and start again. If it fails again, treat the server as suspect.")
     expect(docs).to include("Do not run the agent: delete the files and start again. If it fails again, treat the server as suspect.")
   end

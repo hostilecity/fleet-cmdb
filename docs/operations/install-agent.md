@@ -6,7 +6,7 @@ How to put the agent on a VM, enroll it, keep it updated, roll back, and remove 
 
 ## Install one VM (approved in the dashboard)
 
-The primary path is the dashboard's **Agents > Install an agent** page. It shows the exact commands for the newest imported release, with its version filled in. The page comes from the server, so before you paste a command, check that it matches this guide (on GitHub, in `hostilecity/fleet-cmdb`): only the server's address and the version may differ. Paste one step at a time. The steps are:
+The primary path is the dashboard's **Agents > Install an agent** page. It shows the exact commands for the newest imported release, with its version filled in. The page comes from the server, and what you copy from it can differ from what it shows (hidden text, or a script that changes what is copied). So open this guide on GitHub yourself (`docs/operations/install-agent.md` in `github.com/hostilecity/fleet-cmdb`), not from a link on the page. Paste one step at a time and, before you press Enter, check what you pasted in the terminal against this guide: only the server's address and the version may differ. (Debian 13's bash waits for Enter after a paste.) The steps are:
 
 1. **Install the tools** on the VM, as a user who can use sudo:
 
@@ -14,7 +14,7 @@ The primary path is the dashboard's **Agents > Install an agent** page. It shows
    sudo apt-get update && sudo apt-get install -y curl minisign && sudo -k
    ```
 
-   `sudo -k` makes sudo forget your password again. Steps 2 and 3 never need root and never ask for a password: if one does, stop, because something in it is not from this guide.
+   `sudo -k` makes sudo forget your password, so a `sudo` hidden in a later pasted command cannot reuse it. Steps 2 and 3 never need root and never ask for a password: if one does, stop, because something in it is not from this guide. It is not a full defence: a hidden command could, for example, define its own `sudo` that catches your password at step 4. Checking what you pasted against this guide is what protects you.
 
 2. **Download** the agent into a new private directory: the binary, its signed manifest, and the manifest's signature, from the agent hostname:
 
@@ -112,7 +112,7 @@ For cloud-init, templates, and scripts, where nobody is at the terminal to appro
 
    On a terminal it asks for the token with the input hidden; a provisioning tool pipes it in instead. The token is never accepted as a command-line value, so it cannot end up in the process list or shell history.
 
-   The **Unattended** tab of the install page has a ready cloud-init snippet. It installs `curl` and `minisign` with cloud-init's `packages`, then runs the same download and check as one `sh -ec` script, so a failed check stops it before the agent runs. It works in `/root`, which only root can write to. Check it against this guide before you put it in a template: from then on the template, not the server, decides which release (the version is written into the check) and which key a new VM gets. A token works once: a template that clones many VMs needs one pre-registration per VM.
+   The **Unattended** tab of the install page has a ready cloud-init snippet. It installs `curl` and `minisign` with cloud-init's `packages`, then runs the same download and check as one `sh -ec` script, so a failed check stops it before the agent runs. It works in `/root`, which only root can write to. Check the template file itself against this guide before you use it: from then on the template, not the server, decides which release (the version is written into the check) and which key a new VM gets. A token works once: a template that clones many VMs needs one pre-registration per VM.
 
 **Check:** as for one VM; the host moves from **Pending** to **Online**.
 

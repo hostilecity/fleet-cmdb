@@ -11,12 +11,11 @@
       <p>The check on the VM uses the public key in the repository (<span class="mono">agent/release-keys/</span>), not this server's. A release this server accepts only with its own key fails that check, and so does not install. Set the keys as in <span class="mono">docs/releases.md</span> ("Release keys"), then deploy. If you did not change them, treat this server as compromised.</p></div>
   <% end %>
   <section id="one" class="sheet">
-    <% guide = "https://github.com/#{Releases::SOURCE_REPOSITORY}/blob/main/docs/operations/install-agent.md" %>
-    <p id="compare_with_guide">This page comes from the server, so check that every command below matches <a href="<%= guide %>">the install guide on GitHub</a> (<span class="mono">docs/operations/install-agent.md</span> in <span class="mono">hostilecity/fleet-cmdb</span>) before you paste it. Only the server's address and the version differ. Paste one step at a time.</p>
+    <p id="compare_with_guide">This page comes from the server, and what you copy from it can differ from what it shows. So open the install guide on GitHub yourself, not from a link here: <span class="mono">docs/operations/install-agent.md</span> in <span class="mono">github.com/hostilecity/fleet-cmdb</span>. Paste one step at a time and, before you press Enter, check what you pasted in the terminal against the guide. Only the server's address and the version may differ.</p>
     <ol class="steps">
       <li><h3>Install the tools</h3><p>On the VM, as a user who can use sudo:</p>
         <div class="token" id="tools_command"><%= install_tools_command %></div>
-        <p class="muted"><code>sudo -k</code> makes sudo forget your password again. The next two steps never need root and never ask for a password: if one does, stop.</p></li>
+        <p class="muted"><code>sudo -k</code> makes sudo forget your password, so a hidden command cannot reuse it. The next two steps never need root and never ask for a password: if one does, stop. It does not protect against everything a hidden command could do; checking what you pasted against the guide does.</p></li>
       <li><h3>Download the agent</h3><p>Into a new private directory: the agent, its signed manifest, and the signature, from <span class="mono"><%= agent_host %></span>:</p>
         <div class="token" id="download_command"><%= install_download_command(@release) %></div></li>
       <li><h3>Check the signature</h3><p>Get the release public key from the repository on GitHub:</p>
@@ -45,7 +44,7 @@
     <p class="muted">Paste the token when asked, so it never appears in the process list or shell history.</p>
     <p>Or with cloud-init, replacing <code><%= AgentReleasesHelper::TOKEN_PLACEHOLDER %></code> with the token:</p>
     <div class="terminal" id="cloud_init"><%= install_cloud_init(@release) %></div>
-    <p class="muted">It installs curl and minisign, downloads and checks the agent as above (in <code>/root</code>), and stops before running anything if the check fails. Before you put it in a template, check it against the install guide on GitHub, as above: from then on the template, not this server, decides which release and which key a new VM gets.</p>
+    <p class="muted">It installs curl and minisign, downloads and checks the agent as above (in <code>/root</code>), and stops before running anything if the check fails. Before you put it in a template, check the template file itself against the install guide on GitHub, as above: from then on the template, not this server, decides which release and which key a new VM gets.</p>
     <p class="muted">The token works once. A template that clones many VMs needs one pre-registration per VM.</p>
   </section>
   <h2>Afterwards</h2>

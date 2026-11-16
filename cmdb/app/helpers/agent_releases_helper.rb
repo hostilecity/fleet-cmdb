@@ -17,8 +17,10 @@ module AgentReleasesHelper
   # replacing it fails on the VM before contacting the server.
   TOKEN_PLACEHOLDER = "<one-time token>".freeze
 
-  # `sudo -k` makes sudo forget the password again, so no later command pasted from this page can use cached
-  # credentials: the download and check steps never need root, and a sudo hidden in them would ask for the password.
+  # `sudo -k` makes sudo forget the password again, so a sudo hidden in a later pasted command cannot reuse the cached
+  # credentials: the download and check steps never need root, and such a sudo would ask for the password. It does not
+  # stop a hidden shell function named sudo from catching the password at step 4; comparing what was pasted with the
+  # guide is the control for that (threat model C16).
   def install_tools_command(sudo: true)
     return "apt-get update && apt-get install -y #{INSTALL_PACKAGES.join(' ')}" unless sudo
 
