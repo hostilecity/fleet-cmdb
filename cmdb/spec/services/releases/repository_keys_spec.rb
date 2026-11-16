@@ -47,6 +47,6 @@ RSpec.describe "Releases.repository_keys" do
 
   it "fetches the install check's key from the release's own tag on GitHub, never from this server" do
     expect(Releases.public_key_url("1.3.0-rc.1")).to eq("https://raw.githubusercontent.com/hostilecity/fleet-cmdb/refs/tags/agent-v1.3.0-rc.1/agent/release-keys/current.pub")
-    expect(Releases.public_key_url("1.2.0", repository: "example/fork")).to start_with("https://raw.githubusercontent.com/example/fork/refs/tags/agent-v1.2.0/")
+    expect(Releases.source_url("1.2.0", "agent/trust/cloudflare-origin-rsa.pem")).to eq("https://raw.githubusercontent.com/hostilecity/fleet-cmdb/refs/tags/agent-v1.2.0/agent/trust/cloudflare-origin-rsa.pem")
   end
 end

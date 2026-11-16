@@ -59,13 +59,19 @@ module Releases
     configured.keys.reject { |role| configured[role]&.line == repository[role]&.line }
   end
 
-  # Where the install commands fetch the release public key from (#181): the repository's current.pub at the
-  # release's own tag, on GitHub, not from this server. The release workflow signs with exactly the key in
-  # current.pub of the commit it tags (docs/releases.md), so this is the key that signed the release, before
-  # and after a key rotation. refs/tags/ so that a branch of the same name cannot stand in for the tag.
-  def public_key_url(version, repository: config.github_repository)
-    "https://raw.githubusercontent.com/#{repository}/refs/tags/agent-v#{version}/agent/release-keys/current.pub"
-  end
+  # The repository whose files vouch for a first install (#181): the release public key and the server's certificate
+  # authority are fetched from it on GitHub. A constant, not a setting (FLEET_RELEASE_REPOSITORY is only where imports
+  # come from), so that the page can tell readers which repository to expect and no configuration can change it; a
+  # fork changes it here, in reviewed code.
+  SOURCE_REPOSITORY = "hostilecity/fleet-cmdb".freeze
+
+  # A file of the repository at the release's own tag, on GitHub, not on this server. The release workflow signs with
+  # exactly the key in agent/release-keys/current.pub of the commit it tags (docs/releases.md), so that file is the
+  # key that signed the release, before and after a key rotation. refs/tags/ so that a branch of the same name
+  # cannot stand in for the tag.
+  def source_url(version, path) = "https://raw.githubusercontent.com/#{SOURCE_REPOSITORY}/refs/tags/agent-v#{version}/#{path}"
+
+  def public_key_url(version) = source_url(version, "agent/release-keys/current.pub")
 
   # The agent API, as agents and the installer reach it.
   def agent_server_url = "https://#{HostSeparation.agent_host}"

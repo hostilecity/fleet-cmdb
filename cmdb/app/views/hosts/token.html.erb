@@ -17,7 +17,7 @@
     <div class="token"><%= install_tools_command(sudo: false) %></div>
     <div class="token"><%= install_download_command(release) %></div>
     <div class="token"><%= install_key_command(release) %></div>
-    <div class="token"><%= install_check_command %></div>
+    <div class="token"><%= install_check_command(release) %></div>
     <p>Then:</p>
   <% else %>
     <p>Download and check the agent as on <%= link_to "Install an agent", agent_install_path %>, then on <span class="mono"><%= @host.hostname %></span>, as root:</p>

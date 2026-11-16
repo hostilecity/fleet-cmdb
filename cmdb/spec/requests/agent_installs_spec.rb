@@ -26,11 +26,16 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     skip "minisign is not installed"
   end
 
-  # What the commands download: the app's own answers for the agent hostname, and github_key for the key on GitHub.
-  # replace swaps in other bytes for a URL, as a hostile server (or GitHub) would.
+  # What the commands download: the app's own answers for the agent hostname; from GitHub, github_key for the key and
+  # the repository's own agent/trust file for a certificate authority. replace swaps in other bytes for a URL, as a
+  # hostile server (or GitHub) would.
   def web(commands, github_key: release_key.public_file, replace: {})
     commands.join("\n").scan(%r{^curl .* (https://\S+)$}).flatten.uniq.to_h do |url|
-      body = url.start_with?("https://raw.githubusercontent.com/") ? github_key : fetch(url)
+      body = case url
+      when %r{\Ahttps://raw\.githubusercontent\.com/hostilecity/fleet-cmdb/refs/tags/agent-v[^/]+/agent/release-keys/current\.pub\z} then github_key
+      when %r{\Ahttps://raw\.githubusercontent\.com/hostilecity/fleet-cmdb/refs/tags/agent-v[^/]+/agent/trust/([a-z-]+\.pem)\z} then Rails.root.join("../agent/trust", $1).read
+      else fetch(url)
+      end
       [ url, replace.fetch(url, body) ]
     end
   end
@@ -69,13 +74,21 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     { "PATH" => "#{bin}:#{ENV.fetch('PATH')}" }
   end
 
-  # Runs the commands as copied, one after another as a person would (each must succeed), in a fresh directory.
-  # Returns the output, whether all succeeded, and the curl requests (URL and CA file).
+  # Runs the commands as copied, one after another, in a fresh directory, as a person pastes them: in a plain shell,
+  # without `set -e`, so the check line itself must fail closed (review of #219). The same commands under `sh -e`
+  # (a script) must end the same way. Returns the plain shell's output, whether its last command (the check)
+  # succeeded, and the curl requests (URL and CA file).
   def run_on_vm(commands, web)
-    Dir.mktmpdir do |dir|
-      vm = FileUtils.mkdir_p(File.join(dir, "vm")).first
-      output, status = Open3.capture2e(fake_curl(dir, web), "sh", "-ec", commands.join("\n"), chdir: vm)
-      [ output, status.success?, File.readlines(File.join(dir, "web/requests"), chomp: true) ]
+    [ "-c", "-ec" ].map do |flags|
+      Dir.mktmpdir do |dir|
+        vm = FileUtils.mkdir_p(File.join(dir, "vm")).first
+        env = fake_curl(dir, web).merge("TMPDIR" => vm)
+        output, status = Open3.capture2e(env, "sh", flags, commands.join("\n"), chdir: vm)
+        [ output, status.success?, File.readlines(File.join(dir, "web/requests"), chomp: true) ]
+      end
+    end.then do |plain, script|
+      expect(script).to eq(plain)
+      plain
     end
   end
 
@@ -112,20 +125,24 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
 
     get "/agents/install"
     expect(page.at_css("#release_version").text).to eq("1.2.0")
-    expect(command("tools_command")).to eq("sudo apt-get update && sudo apt-get install -y curl minisign")
+    expect(command("tools_command")).to eq("sudo apt-get update && sudo apt-get install -y curl minisign && sudo -k")
     expect(command("download_command")).to eq(<<~SH.chomp)
+      cd "$(mktemp -d)"
       curl -fL -o fleet-agent #{server}/api/v1/releases/1.2.0/binary
       curl -fL -o fleet-agent.manifest.json #{server}/api/v1/releases/1.2.0/manifest
       curl -fL -o fleet-agent.manifest.json.minisig #{server}/api/v1/releases/1.2.0/signature
     SH
     expect(command("key_command")).to eq("curl -fsSL -o fleet-release-key.pub #{key_url}")
-    expect(command("check_command")).to eq(%(minisign -V -p fleet-release-key.pub -m fleet-agent.manifest.json -o | sed -n 's/.*"sha256":"\\([0-9a-f]\\{64\\}\\)".*/\\1  fleet-agent/p' | sha256sum -c))
+    expect(command("check_command")).to eq(%(minisign -V -p fleet-release-key.pub -m fleet-agent.manifest.json -o | sed -n 's/^{"format":"fleet-agent-release-manifest\\/1","version":"1\\.2\\.0","target":"x86_64-unknown-linux-musl","sha256":"\\([0-9a-f]\\{64\\}\\)","size":[0-9]*}$/\\1  fleet-agent/p' | sha256sum -c))
     expect(command("check_output")).to eq("Signature and comment signature verified\nTrusted comment: fleet-agent 1.2.0 x86_64-unknown-linux-musl release manifest\nfleet-agent: OK")
     expect(command("install_command")).to eq("chmod +x fleet-agent && sudo ./fleet-agent install --server #{server}")
     expect(command("token_command")).to eq("chmod +x fleet-agent && sudo ./fleet-agent install --server #{server} --token-stdin")
     expect(page.text).not_to match(/\b\h{64}\b/) # no checksum from this server to compare against
     docs = Rails.root.join("../docs/operations/install-agent.md").read
-    expect(docs).to include(command("tools_command"), command("check_command"), *command("check_output").lines.map(&:chomp)) # the guide shows the same
+    expect(docs).to include(command("tools_command"), command("key_command"), command("check_command"), *command("check_output").lines.map(&:chomp)) # the guide shows the same
+    expect(command("compare_with_guide")).to include("matches the install guide on GitHub", "hostilecity/fleet-cmdb")
+    expect(command("check_failed")).to include("Do not run the agent: delete the files and start again. If it fails again, treat the server as suspect.")
+    expect(docs).to include("Do not run the agent: delete the files and start again. If it fails again, treat the server as suspect.")
   end
 
   it "shows the key the check trusts, and no warning while this server's keys are the repository's" do
@@ -133,7 +150,7 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     get "/agents/install"
     expect(page.at_css("#release_key_warning")).to be_nil
     expect(command("release_key_line")).to eq(release_key.public_line)
-    expect(command("release_key")).to include("hostilecity/fleet-cmdb at the tag agent-v1.2.0", "signed with key #{release_key.id_hex}",
+    expect(command("release_key")).to include("hostilecity/fleet-cmdb at the tag agent-v1.2.0 on GitHub", "signed with key #{release_key.id_hex}",
                                               "the repository's current key", "docs/releases.md")
   end
 
@@ -187,6 +204,19 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
       expect(output).to include("Signature verification failed")
       expect(output).not_to include("fleet-agent: OK")
       expect(release.manifest).not_to eq(changed)
+    end
+
+    it "refuses an older release, signed with the same key, served under this release's URLs (review of #219)" do
+      older = signed_release(version: "1.1.0")
+      import_release(signed_release(version: "1.2.0"), operator:)
+      get "/agents/install"
+      files = { "binary" => older.binary, "manifest" => older.manifest, "signature" => older.signature }
+      replace = files.transform_keys { |what| "#{server}/api/v1/releases/1.2.0/#{what}" }
+      output, ok, = run_on_vm(vm_commands, web(vm_commands, replace:))
+      expect(ok).to be(false)
+      expect(output).to include("Trusted comment: fleet-agent 1.1.0 ", "no properly formatted checksum lines found")
+      expect(output).not_to include("fleet-agent: OK")
+      expect(run_cloud_init(web(cloud_init_script, replace:))).to eq([ false, false ])
     end
 
     it "passes for a release signed with the repository's next key, which is current.pub at that release's tag" do
@@ -258,35 +288,39 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     expect(cloud_init.slice("package_update", "packages")).to eq("package_update" => true, "packages" => %w[curl minisign])
     expect(script.first).to eq("cd /root")
     expect(script.last(2)).to eq([ "chmod +x fleet-agent", "FLEET_ENROLLMENT_TOKEN='<one-time token>' ./fleet-agent install --server #{server} --quiet" ])
-    expect(script[1..-3]).to eq(vm_commands.join("\n").lines.map(&:chomp)) # the same download and check as one VM
+    expect(script[1..-3]).to eq(vm_commands.join("\n").lines.drop(1).map(&:chomp)) # the same download and check as one VM, in /root
     expect(command("cloud_init")).to start_with("#cloud-config\n")
   end
 
   describe "with a server certificate from Cloudflare's Origin CA (ADR 0024)" do
-    let(:root) { Rails.root.join("../agent/trust/cloudflare-origin-ecc.pem").read }
+    let(:ca_url) { "https://raw.githubusercontent.com/hostilecity/fleet-cmdb/refs/tags/agent-v1.2.0/agent/trust/cloudflare-origin-ecc.pem" }
 
     around do |example|
-      saved = Rails.configuration.x.server_tls_root
-      Rails.configuration.x.server_tls_root = root
+      saved = Rails.configuration.x.server_tls_root_file
+      Rails.configuration.x.server_tls_root_file = "cloudflare-origin-ecc.pem"
       example.run
     ensure
-      Rails.configuration.x.server_tls_root = saved
+      Rails.configuration.x.server_tls_root_file = saved
     end
 
-    it "writes that certificate authority for the downloads from this server only, without touching the VM's trust store" do
+    it "fetches that certificate authority from the repository on GitHub, for the downloads from this server only" do
       require_minisign
       import_release(signed_release(version: "1.2.0"), operator:)
       get "/agents/install"
       download = command("download_command")
-      expect(download.lines.first.chomp).to eq("cat > fleet-server-ca.pem <<'EOF'")
       files = { "binary" => "fleet-agent", "manifest" => "fleet-agent.manifest.json", "signature" => "fleet-agent.manifest.json.minisig" }
-      expect(download.lines.last(3).map(&:chomp)).to eq(files.map { |what, file| "curl -fL --cacert fleet-server-ca.pem -o #{file} #{server}/api/v1/releases/1.2.0/#{what}" })
+      expect(download.lines.map(&:chomp)).to eq([ %(cd "$(mktemp -d)"), "curl -fsSL -o fleet-server-ca.pem #{ca_url}",
+                                                  *files.map { |what, file| "curl -fL --cacert fleet-server-ca.pem -o #{file} #{server}/api/v1/releases/1.2.0/#{what}" } ])
+      expect(page.text).not_to include("BEGIN CERTIFICATE") # nothing opaque from this server to paste
       expect(vm_commands.join).not_to include("update-ca-certificates", "--insecure", " -k ")
       output, ok, requests = run_on_vm(vm_commands, web(vm_commands))
       expect([ output, ok ]).to eq([ "#{command('check_output')}\n", true ])
       expected = files.keys.to_h { |what| [ "#{server}/api/v1/releases/1.2.0/#{what}", "fleet-server-ca.pem" ] }
-      expect(requests.to_h(&:split)).to eq(expected.merge(key_url => "-")) # GitHub is checked against the system store
-      expect(cloud_init_script).to include("cat > fleet-server-ca.pem <<'EOF'", root.lines[1].chomp)
+      expect(requests.to_h(&:split)).to eq({ ca_url => "-" }.merge(expected, key_url => "-")) # GitHub is checked against the system store
+      expect(cloud_init_script[1]).to eq("curl -fsSL -o fleet-server-ca.pem #{ca_url}")
+      # The guide shows these commands, with its example server.
+      docs = Rails.root.join("../docs/operations/install-agent.md").read
+      expect(docs).to include(*download.gsub(server, "https://fleet-vm.example.com").lines.map(&:chomp))
     end
 
     it "is what agent/scripts/vm-test.sh runs on a Debian 13 VM, word for word" do
@@ -295,10 +329,13 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
       vm_test = Rails.root.join("../agent/scripts/vm-test.sh").read
       tools = vm_test[/^INSTALL_TOOLS='(.*)'$/, 1]
       block = vm_test[/^install_commands\(\) \{\n.*?cat << EOF\n(.*?)^EOF\n/m, 1]
-      expect(tools).to eq(command("tools_command").gsub("sudo ", ""))
-      # An unquoted heredoc expands only $s (the server) and $v (the version) here; its backslashes stay as written.
-      expect(block.gsub("$s", server).gsub("$v", "1.2.0")).to eq([ *command("download_command").lines.last(3).map(&:chomp), command("check_command") ].join("\n") + "\n")
-      expect(vm_test).to include(%(scenario 290 "First install refuses a tampered binary and another key (#181)" install_refusals))
+      expect(tools).to eq(ApplicationController.helpers.install_tools_command(sudo: false))
+      # An unquoted heredoc expands only $s (the server), $n (the stub's release, in place of the version in URLs),
+      # and $e (the version, escaped for sed) here; its backslashes stay as written. The VM test writes the CA file
+      # (a throwaway CA, not on GitHub) into a root-only directory of its own instead of the first two lines.
+      expanded = block.gsub("$s", server).gsub("$n", "1.2.0").gsub("$e", "1\\.2\\.0")
+      expect(expanded).to eq([ *command("download_command").lines.last(3).map(&:chomp), command("check_command") ].join("\n") + "\n")
+      expect(vm_test).to include(%(scenario 290 "First install refuses a tampered binary, another key, and an older release (#181)" install_refusals))
     end
   end
 

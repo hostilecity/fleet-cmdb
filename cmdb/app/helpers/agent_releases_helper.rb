@@ -17,22 +17,29 @@ module AgentReleasesHelper
   # replacing it fails on the VM before contacting the server.
   TOKEN_PLACEHOLDER = "<one-time token>".freeze
 
+  # `sudo -k` makes sudo forget the password again, so no later command pasted from this page can use cached
+  # credentials: the download and check steps never need root, and a sudo hidden in them would ask for the password.
   def install_tools_command(sudo: true)
-    prefix = "sudo " if sudo
-    "#{prefix}apt-get update && #{prefix}apt-get install -y #{INSTALL_PACKAGES.join(' ')}"
+    return "apt-get update && apt-get install -y #{INSTALL_PACKAGES.join(' ')}" unless sudo
+
+    "sudo apt-get update && sudo apt-get install -y #{INSTALL_PACKAGES.join(' ')} && sudo -k"
   end
 
-  # The binary, its manifest, and the manifest's signature, from this server. With a server certificate from a
-  # certificate authority curl does not know (Cloudflare's Origin CA, ADR 0024), the command first writes that
-  # authority's certificate (Rails.configuration.x.server_tls_root, public) next to them and gives it to curl, so
-  # the download is verified without changing the VM's trust store. Nothing here is trusted because of where it
-  # came from: the check command (below) is what vouches for the binary.
-  def install_download_command(release)
-    root = Rails.configuration.x.server_tls_root
+  # Into a new private directory (mktemp -d makes it mode 0700), so no other user can swap a file between the check
+  # and the install, and no file of an earlier attempt is reused. Then the binary, its manifest, and the manifest's
+  # signature, from this server. With a server certificate from a certificate authority curl does not know
+  # (Cloudflare's Origin CA, ADR 0024), the command first fetches that authority's certificate from agent/trust in
+  # the repository on GitHub, at the release's tag, and gives it to curl, so the download is verified without
+  # changing the VM's trust store and without a block of text from this server to inspect. Nothing here is trusted
+  # because of where it came from: the check command (below) is what vouches for the binary.
+  def install_download_command(release, directory: true)
+    root = Rails.configuration.x.server_tls_root_file
     curl = root ? "curl -fL --cacert #{INSTALL_CA_FILE}" : "curl -fL"
     downloads = { INSTALL_FILE => "binary", INSTALL_MANIFEST_FILE => "manifest", INSTALL_SIGNATURE_FILE => "signature" }
       .map { |file, what| "#{curl} -o #{file} #{Releases.download_url(release.version, what)}" }
-    [ ("cat > #{INSTALL_CA_FILE} <<'EOF'\n#{root.strip}\nEOF" if root), *downloads ].compact.join("\n")
+    [ (%(cd "$(mktemp -d)") if directory),
+      ("curl -fsSL -o #{INSTALL_CA_FILE} #{Releases.source_url(release.version, "agent/trust/#{root}")}" if root),
+      *downloads ].compact.join("\n")
   end
 
   # The release public key, from the repository on GitHub at the release's tag, not from this server (#181).
@@ -40,14 +47,22 @@ module AgentReleasesHelper
     "curl -fsSL -o #{INSTALL_KEY_FILE} #{Releases.public_key_url(release.version)}"
   end
 
-  # Checks the manifest's signature with that key, then the binary against the SHA-256 in the manifest minisign
-  # has just verified (-o prints the verified manifest, and nothing if the signature does not verify). Any
-  # failure, including a wrong key, a changed manifest, or a changed binary, makes sha256sum fail, so the
-  # pipeline's status is the check's: it prints "fleet-agent: OK" only for a binary of a signed release. The
-  # pattern reads one line of JSON in the release workflow's fixed format (docs/releases.md).
-  def install_check_command
-    %(minisign -V -p #{INSTALL_KEY_FILE} -m #{INSTALL_MANIFEST_FILE} -o | sed -n 's/.*"sha256":"\\([0-9a-f]\\{64\\}\\)".*/\\1  #{INSTALL_FILE}/p' | sha256sum -c)
+  # Checks the manifest's signature with that key, then the binary against the SHA-256 in the manifest minisign has
+  # just verified (-o prints the verified manifest, and nothing if the signature does not verify). The pattern is the
+  # whole manifest, in the release workflow's fixed one-line format (agent/scripts/release-manifest.sh), with this
+  # release's version and target written in: a manifest of any other release, even one signed with the same key,
+  # yields no checksum line (review of #219: an older signed release served under this release's URLs). Any failure,
+  # including a wrong key, a changed manifest, another release, or a changed binary, makes sha256sum fail, so the
+  # pipeline's status is the check's, with or without `set -e`: it prints "fleet-agent: OK" only for this release.
+  def install_check_command(release)
+    manifest = %({"format":"#{Releases::MANIFEST_FORMAT}","version":"#{release.version}","target":"#{release.target}","sha256":")
+    pattern = "^#{sed_literal(manifest)}\\([0-9a-f]\\{64\\}\\)\",\"size\":[0-9]*}$"
+    %(minisign -V -p #{INSTALL_KEY_FILE} -m #{INSTALL_MANIFEST_FILE} -o | sed -n 's/#{pattern}/\\1  #{INSTALL_FILE}/p' | sha256sum -c)
   end
+
+  # text as a basic regular expression matching itself, inside s/…/…/ in single quotes. Versions and targets hold
+  # only letters, digits, ".", "-", and "_" (SemVer, Releases.valid_version?), and the format a "/".
+  def sed_literal(text) = text.gsub(/[.\/\[\]*^$\\]/) { |char| "\\#{char}" }
 
   # What a passing check prints: minisign's two lines (with the release's own trusted comment), then sha256sum's.
   def install_check_output(release)
@@ -76,9 +91,9 @@ module AgentReleasesHelper
 
   def install_cloud_init_script(release, token: TOKEN_PLACEHOLDER)
     [ "cd /root",
-      install_download_command(release),
+      install_download_command(release, directory: false),
       install_key_command(release),
-      install_check_command,
+      install_check_command(release),
       "chmod +x #{INSTALL_FILE}",
       "FLEET_ENROLLMENT_TOKEN='#{token}' ./#{INSTALL_FILE} install --server #{Releases.agent_server_url} --quiet" ]
   end

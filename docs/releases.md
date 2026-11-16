@@ -72,7 +72,7 @@ It exits `0` and prints the version, the key that signed it (`current` or `next`
 ```sh
 curl -fsSL -o fleet-release-key.pub https://raw.githubusercontent.com/hostilecity/fleet-cmdb/refs/tags/agent-v1.2.0/agent/release-keys/current.pub
 minisign -V -p fleet-release-key.pub -m fleet-agent-1.2.0-x86_64-unknown-linux-musl.manifest.json -o \
-  | sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1  fleet-agent-1.2.0-x86_64-unknown-linux-musl/p' | sha256sum -c
+  | sed -n 's/^{"format":"fleet-agent-release-manifest\/1","version":"1\.2\.0","target":"x86_64-unknown-linux-musl","sha256":"\([0-9a-f]\{64\}\)","size":[0-9]*}$/\1  fleet-agent-1.2.0-x86_64-unknown-linux-musl/p' | sha256sum -c
 ```
 
 This is the check the install page's commands make on a new VM ([install-agent.md](operations/install-agent.md#install-one-vm-approved-in-the-dashboard), #181), with the files under their release names. `SHA256SUMS` alone only shows the download is complete; the signature shows it is a release. `fleet-agent verify-release` cannot vouch for itself: it runs the binary it checks, so use it only from an agent you already trust.
@@ -159,7 +159,20 @@ ADR 0018 makes the owner's GitHub account and the `release` environment the trus
   - Required reviewers: the owner. (Leave "Prevent self-review" off while the owner is the only reviewer, or the owner cannot approve a release they started.)
   - Deployment branches and tags: **Selected branches and tags**, with only the branch `main`, so a run on any other branch or tag cannot use the key.
   - Environment secrets: `AGENT_RELEASE_SIGNING_KEY` and `AGENT_RELEASE_SIGNING_KEY_PASSWORD`, and no others.
-- **Tag ruleset** (Settings > Rules > Rulesets > New tag ruleset): target `agent-v*`; restrict updates, restrict deletions, and block force pushes; bypass list: the owner only. Leave **restrict creations off**: the release workflow creates the tag itself, as GitHub Actions. A published tag then cannot be moved to other code or deleted, except by the owner. A tag someone else creates by hand only uses up that version number: it has no signed release, so nothing imports it. First installs rely on tags too: they take the release public key from `agent/release-keys/current.pub` at the release's tag (#181). The ruleset stops a published tag being moved to a commit with another key. A new tag, though, can name any commit, including one on an unmerged branch with another `current.pub`, so whoever can push tags here could, together with a hostile server, get a first install to trust their key. Only people with write access to the repository can push tags, which is already trust in them (threat model C16).
+- **Tag ruleset** (Settings > Rules > Rulesets > New tag ruleset): target `agent-v*`; restrict updates, restrict deletions, and block force pushes; bypass list: the owner only. Leave **restrict creations off**: the release workflow creates the tag itself, as GitHub Actions. A published tag then cannot be moved to other code or deleted, except by the owner. A tag someone else creates by hand only uses up that version number: it has no signed release, so nothing imports it.
+
+  **First installs rely on this ruleset (#181).** They take the release public key from `agent/release-keys/current.pub`, and the server's certificate authority from `agent/trust/`, at the release's tag `refs/tags/agent-v<version>`. Exactly these settings of the ruleset are what that relies on; check each in **Settings > Rules > Rulesets** (an owner's view: a token without admin rights may see no rulesets at all):
+
+  | Setting | Value | What it protects for a first install |
+  |---|---|---|
+  | Enforcement status | Active | Nothing below applies while it is Disabled or Evaluate |
+  | Target | Tags, include by pattern `agent-v*` | Every release tag, and only those |
+  | Restrict updates | On | A published tag cannot be moved to a commit with another `current.pub` |
+  | Restrict deletions | On | A published tag cannot be deleted and pushed again elsewhere |
+  | Block force pushes | On | The same, by force push |
+  | Bypass list | The owner only | Only the owner can move or delete one (as after a key leak, above) |
+
+  **Restrict creations** stays off, so a *new* tag can name any commit, including one on an unmerged branch with another `current.pub`: whoever can push tags here could, together with a hostile server, get a first install to trust their key. Only people with write access to the repository can push tags, which is already trust in them (threat model C16). Until the owner has confirmed the ruleset as above, a published tag can be moved or deleted by anyone with write access too, so the same is true of every existing release.
 - **Branch protection on `main`:** pull requests required, Agent CI and Server CI required, no force pushes, so "released from `main`" means "reviewed and tested".
 - **Actions:** default workflow permissions read-only (each job asks for what it needs); fork pull requests never get secrets (GitHub's default).
 

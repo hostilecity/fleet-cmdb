@@ -20,7 +20,7 @@
 # config, and the credential are the ones a real install makes. The page fetches the release public key
 # from the repository on GitHub; these releases are signed with a throwaway key, so the guest gets that
 # key as the file the page's key command would write. Scenario 290 checks that the same commands refuse a
-# tampered binary and a manifest signed by another key, with nothing run.
+# tampered binary, a manifest signed by another key, and an older signed release, with nothing run.
 #
 # Every scenario starts from 1.0.0 installed and running, and ends by checking that exactly one working
 # version runs: `current` and `previous` as expected, only those versions installed, the service
@@ -365,30 +365,33 @@ expect_one_version() {
 # certificate authority curl must be given, as with Cloudflare's Origin CA; cmdb/spec/requests/agent_installs_spec.rb
 # fails if they drift apart. INSTALL_TOOLS runs as root, so without sudo.
 INSTALL_TOOLS='apt-get update && apt-get install -y curl minisign'
-# install_commands NAME: the download and check commands for the stub's release NAME (in place of a version).
+# install_commands NAME: the download and check commands for the stub's release NAME (in place of the version in the
+# URLs), checking for release $OLD. The page's first two lines (a new private directory, and the CA certificate from
+# GitHub) are replaced by run_install_commands: the test's CA is a throwaway one, not on GitHub.
 install_commands() {
-    local s="https://$SERVER_NAME:$PORT" v=$1
+    local s="https://$SERVER_NAME:$PORT" n=$1 e=${OLD//./\\.}
     cat << EOF
-curl -fL --cacert fleet-server-ca.pem -o fleet-agent $s/api/v1/releases/$v/binary
-curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json $s/api/v1/releases/$v/manifest
-curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json.minisig $s/api/v1/releases/$v/signature
-minisign -V -p fleet-release-key.pub -m fleet-agent.manifest.json -o | sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1  fleet-agent/p' | sha256sum -c
+curl -fL --cacert fleet-server-ca.pem -o fleet-agent $s/api/v1/releases/$n/binary
+curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json $s/api/v1/releases/$n/manifest
+curl -fL --cacert fleet-server-ca.pem -o fleet-agent.manifest.json.minisig $s/api/v1/releases/$n/signature
+minisign -V -p fleet-release-key.pub -m fleet-agent.manifest.json -o | sed -n 's/^{"format":"fleet-agent-release-manifest\/1","version":"$e","target":"x86_64-unknown-linux-musl","sha256":"\([0-9a-f]\{64\}\)","size":[0-9]*}$/\1  fleet-agent/p' | sha256sum -c
 EOF
 }
 
-# install_release NAME BINARY KEY: release $OLD signed with KEY as the release workflow signs it (its trusted
-# comment), as the stub's release NAME.
+# install_release NAME BINARY KEY [VERSION]: release VERSION (default $OLD) signed with KEY as the release workflow
+# signs it (its trusted comment), as the stub's release NAME.
 install_release() {
-    local d=$stub/releases/$1
+    local d=$stub/releases/$1 version=${4:-$OLD}
     mkdir -p "$d"
     cp "$2" "$d/fleet-agent"
-    "$here/release-manifest.sh" "$OLD" "$UPDATE_TEST_TARGET" "$d/fleet-agent" > "$d/manifest.json"
+    "$here/release-manifest.sh" "$version" "$UPDATE_TEST_TARGET" "$d/fleet-agent" > "$d/manifest.json"
     minisign -S -s "$3" -m "$d/manifest.json" -x "$d/manifest.json.minisig" \
-        -t "fleet-agent $OLD $UPDATE_TEST_TARGET release manifest" > /dev/null
+        -t "fleet-agent $version $UPDATE_TEST_TARGET release manifest" > /dev/null
 }
 
 # run_install_commands NAME: runs install_commands NAME as root in a new /root/install-NAME in the guest, with the
-# CA file the page's heredoc writes and the release key the page's key command would fetch. The downloads' output
+# CA file and the release key the page's commands would fetch from GitHub (/root is root-only, as the page's
+# `mktemp -d` directory is private). The downloads' output
 # (curl's progress) goes to stderr; the check's output, which the page says it must print, to stdout.
 run_install_commands() {
     local d=/root/install-$1
@@ -397,11 +400,12 @@ run_install_commands() {
     vm "cd $d && $(install_commands "$1" | tail -n 1)" 2>&1
 }
 
-# First install (#181): the commands refuse a binary that is not the signed one, and a manifest signed by a key
-# other than the repository's, and nothing has run. Each refused binary would leave a marker if it ran.
+# First install (#181): the commands refuse a binary that is not the signed one, a manifest signed by a key other
+# than the repository's, and an older release signed with the right key but served under this release's URLs
+# (review of #219), and nothing has run. Each refused binary would leave a marker if it ran.
 install_refusals() {
     local name output expected
-    for name in tampered other-key; do
+    for name in tampered other-key older; do
         if output=$(run_install_commands "$name-$OLD"); then
             fail "the install commands accepted the $name release: $output"
         fi
@@ -411,11 +415,12 @@ install_refusals() {
         case $name in
             tampered) expected="fleet-agent: FAILED" ;;
             other-key) expected="Signature key id in fleet-agent.manifest.json.minisig is" ;;
+            older) expected="no properly formatted checksum lines found" ;;
         esac
         [[ $output == *"$expected"* ]] || fail "the $name release was not refused with: $expected"
         vm_ok "test ! -e /tmp/refused-ran" || fail "the refused $name binary ran"
     done
-    printf '%s' "a tampered binary and another key's manifest refused, nothing run" > "$tmp/last-result"
+    printf '%s' "a tampered binary, another key's manifest, and an older release refused, nothing run" > "$tmp/last-result"
 }
 
 # --- Setup --------------------------------------------------------------------------------------------
@@ -429,6 +434,7 @@ install_release "tampered-$OLD" "$tmp/refused.sh" "$dir/test.key"
 printf '# changed after signing\n' >> "$stub/releases/tampered-$OLD/fleet-agent"
 minisign -G -W -p "$tmp/other.pub" -s "$tmp/other.key" > /dev/null
 install_release "other-key-$OLD" "$tmp/refused.sh" "$tmp/other.key"
+install_release "older-$OLD" "$tmp/refused.sh" "$dir/test.key" 0.9.0
 mkrelease "$stub/releases" good "$NEW" "$dir/fleet-agent-$NEW" "$dir/test.key"
 mkscript "$tmp/loops.sh" "$LOOPING" "echo \"vm-test: release $LOOPING started\" >&2; sleep 2; exit 1"
 mkrelease "$stub/releases" crash_loop "$LOOPING" "$tmp/loops.sh" "$dir/test.key"
@@ -775,7 +781,7 @@ record_header() {
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
-scenario 290 "First install refuses a tampered binary and another key (#181)" install_refusals
+scenario 290 "First install refuses a tampered binary, another key, and an older release (#181)" install_refusals
 scenario 300 "Package report matches dpkg-query (AC-2.3)" package_report_matches_dpkg
 scenario 301 "Supervisor killed before the switch" kill_before_switch
 scenario 302 "Supervisor killed after the switch" kill_after_switch
