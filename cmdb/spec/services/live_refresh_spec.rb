@@ -183,11 +183,36 @@ RSpec.describe LiveRefresh, type: :job do
         end
         described_class.request([ FleetBroadcast::STREAM ]) # a change between attempts
       end
-      expect(runs).to eq(ApplicationJob::ATTEMPTS)
+      expect(runs).to eq(LiveRefreshJob::ATTEMPTS)
       expect(jobs).to be_empty
       expect(pending_refreshes).to eq([ FleetBroadcast::STREAM, TaskBroadcast::STREAM ])
       expect(marker).to be_present # held until it is old, then the sweep or the next change takes it over
     end
+  end
+
+  # Review of #218: a flush stalled past the takeover age (a VM pause, a long collection) had its rows given back and
+  # its marker taken over, and then its own release deleted the new owner's marker, so two flushes ran at once.
+  it "lets a flush slower than the takeover finish without deleting the marker of the flush that took over" do
+    described_class.request(%w[a b])
+    clear_enqueued_jobs
+    stalled = true
+    allow(Turbo::StreamsChannel).to receive(:broadcast_refresh_to).and_wrap_original do |original, stream|
+      if stalled
+        stalled = false
+        # Over a minute passes mid-send: the marker is abandoned, the sweep takes it over, and a change comes in.
+        PendingRefresh.where(stream: described_class::SCHEDULED).update_all(requested_at: 2.minutes.ago)
+        expect(described_class.sweep).to be(true)
+        described_class.request(%w[c])
+      end
+      original.call(stream)
+    end
+    described_class.flush # the stalled flush carries on and finishes
+    expect(marker).to be_present # the new owner's, which the stalled flush left alone
+    expect(jobs.size).to eq(1) # the new owner's flush only
+    expect(pending_refreshes).to eq(%w[a b c]) # given back, sent again by the new flush: harmless
+    perform_enqueued_jobs
+    expect(marker).to be_nil
+    expect(pending_refreshes).to be_empty
   end
 
   describe ".sweep (LiveRefreshSweepJob, every minute)" do
@@ -207,10 +232,55 @@ RSpec.describe LiveRefresh, type: :job do
       expect(jobs.size).to eq(1)
     end
 
+    it "gives back the rows a flush took only once that flush no longer owns a live marker, and schedules their flush" do
+      described_class.request(%w[a b])
+      clear_enqueued_jobs
+      described_class.own_and_take("~0badf00d:") # a flush took them, and is still sending (or has died)
+      expect(described_class.sweep).to be(false) # its marker is fresh: it may still be sending
+      expect(PendingRefresh.where("stream LIKE '~%'").count).to eq(2)
+
+      PendingRefresh.where(stream: described_class::SCHEDULED).update_all(requested_at: 2.minutes.ago) # it never finished
+      expect(described_class.sweep).to be(true)
+      expect(PendingRefresh.where("stream LIKE '~%'")).to be_empty
+      perform_enqueued_jobs
+      expect(sent).to eq("a" => 1, "b" => 1)
+    end
+
+    it "gives back the rows of a flush whose marker someone else now holds" do
+      described_class.request(%w[a])
+      described_class.own_and_take("~0badf00d:")
+      PendingRefresh.where(stream: described_class::SCHEDULED).update_all(requested_at: 1.second.from_now) # another stamp
+      described_class.sweep
+      expect(pending_refreshes).to eq(%w[a])
+    end
+
     it "does nothing when nothing is pending" do
       PendingRefresh.insert_all([ { stream: described_class::SCHEDULED, requested_at: 2.minutes.ago } ])
       expect(described_class.sweep).to be(false)
       expect(jobs).to be_empty
+    end
+  end
+
+  it "refuses a stream name too long to take, and reports it, writing nothing" do
+    allow(Rails.error).to receive(:report)
+    expect(PendingRefresh.columns_hash["stream"].limit).to eq(described_class::MAX_STREAM_LENGTH + "~0badf00d:".length)
+    described_class.request([ "tasks", "x" * (described_class::MAX_STREAM_LENGTH + 1) ])
+    expect(Rails.error).to have_received(:report).with(an_instance_of(ArgumentError), hash_including(handled: true))
+    expect(PendingRefresh.count).to eq(0)
+    described_class.request([ "x" * described_class::MAX_STREAM_LENGTH ])
+    expect(described_class.flush).to eq([ "x" * described_class::MAX_STREAM_LENGTH ])
+  end
+
+  it "retries a failed flush 5 s apart, so the whole chain ends inside the marker's takeover age" do
+    allow(Turbo::StreamsChannel).to receive(:broadcast_refresh_to).and_raise("down")
+    described_class.request(%w[a])
+    clear_enqueued_jobs
+    freeze_time do
+      LiveRefreshJob.perform_later
+      ActiveJob::Base.execute(enqueued_jobs.pop)
+      retry_at = Time.iso8601(enqueued_jobs.sole["scheduled_at"])
+      expect(retry_at - Time.current).to be_within(1).of(5) # jitter
+      expect((LiveRefreshJob::ATTEMPTS - 1) * 6).to be < (described_class.window + described_class::ABANDONED_AFTER).to_i
     end
   end
 

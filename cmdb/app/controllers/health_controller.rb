@@ -10,13 +10,16 @@
 # - failed_jobs: no background job has failed all its retries in the last day (JobHealth, P1-O02).
 # - job_liveness: the recurring liveness job has finished within the last few minutes, so the scheduler, a
 #   worker, and the queue database are working (JobHealth).
+# - live_updates: this process's Solid Cable listener, once started, is still running (CableHealth, #194). With
+#   several Puma processes, each answers for itself.
 class HealthController < ActionController::API
   CHECKS = {
     "database" => -> { ActiveRecord::Base.connection.select_value("SELECT 1") == 1 },
     "releases" => -> { Releases::StoreCheck.healthy? },
     "backup" => -> { Backup::Status.fresh? },
     "failed_jobs" => -> { !JobHealth.failing? },
-    "job_liveness" => -> { JobHealth.liveness_recent? }
+    "job_liveness" => -> { JobHealth.liveness_recent? },
+    "live_updates" => -> { CableHealth.listening? }
   }.freeze
 
   def show

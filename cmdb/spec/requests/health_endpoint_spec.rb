@@ -10,7 +10,7 @@ RSpec.describe "GET /health", type: :request do
     liveness_job_ran
   end
 
-  let(:all_ok) { { "database" => "ok", "releases" => "ok", "backup" => "ok", "failed_jobs" => "ok", "job_liveness" => "ok" } }
+  let(:all_ok) { { "database" => "ok", "releases" => "ok", "backup" => "ok", "failed_jobs" => "ok", "job_liveness" => "ok", "live_updates" => "ok" } }
 
   it "is ok when everything is in place, and shows nothing else" do
     import_release(signed_release(version: "1.0.0"))

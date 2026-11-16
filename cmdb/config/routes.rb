@@ -26,9 +26,9 @@ Rails.application.routes.draw do
         post "onboarding", to: "onboardings#create"
         post "onboarding/token", to: "onboardings#token"
         post "heartbeat", to: "heartbeats#create"
-        post "reports/inventory", to: "inventory_reports#create"
-        post "reports/packages", to: "package_reports#create"
-        post "reports/config", to: "config_reports#create"
+        post "reports/inventory", to: "inventory_reports#create", format: false
+        post "reports/packages", to: "package_reports#create", format: false
+        post "reports/config", to: "config_reports#create", format: false
         get "manifest/config", to: "config_manifests#show"
         # Update outcomes (P1-UPDATES): exempt from the minimum version, like heartbeats and release downloads.
         post "update-results", to: "update_results#create"

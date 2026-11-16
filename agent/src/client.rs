@@ -158,10 +158,13 @@ pub enum ApiError {
         retry_after: Option<Duration>,
         request_id: Option<String>,
     },
-    /// Any `5xx`. A `503` may carry `Retry-After` (in seconds): the server is shedding load and says
-    /// when to come back (#200). On any other status the header is ignored.
+    /// Any `5xx`. A `503` may carry `Retry-After` (in seconds); on any other status the header is
+    /// ignored. `code` is the envelope's code, empty when there is none (a proxy's error page). Only
+    /// a `503 overloaded` with `Retry-After` is the server shedding report load (#200), and only the
+    /// report loops honour it ([`crate::retry::RetryPolicy::reports`]).
     Server {
         status: u16,
+        code: String,
         retry_after: Option<Duration>,
         request_id: Option<String>,
     },
@@ -418,6 +421,7 @@ impl Client {
             }),
             s if status.is_server_error() => Err(ApiError::Server {
                 status: s,
+                code: String::new(),
                 retry_after: retry_after(&response).filter(|_| s == 503),
                 request_id: header(&response, "X-Request-Id"),
             }),
@@ -532,6 +536,7 @@ fn read_response(mut response: Response<ureq::Body>) -> Result<ApiResponse, ApiE
         },
         s if s.is_server_error() => ApiError::Server {
             status: s.as_u16(),
+            code: code.clone(),
             retry_after: retry_after.filter(|_| s == StatusCode::SERVICE_UNAVAILABLE),
             request_id,
         },
@@ -863,6 +868,7 @@ pub(crate) mod tests {
                 "<html>down</html>".into(),
                 ApiError::Server {
                     status: 503,
+                    code: String::new(),
                     retry_after: None,
                     request_id: None,
                 },
@@ -874,6 +880,7 @@ pub(crate) mod tests {
                 error_body("overloaded", "busy"),
                 ApiError::Server {
                     status: 503,
+                    code: "overloaded".into(),
                     retry_after: Some(Duration::from_secs(90)),
                     request_id: id(),
                 },
@@ -885,6 +892,7 @@ pub(crate) mod tests {
                 error_body("internal_error", "oops"),
                 ApiError::Server {
                     status: 500,
+                    code: "internal_error".into(),
                     retry_after: None,
                     request_id: id(),
                 },
