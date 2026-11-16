@@ -6,6 +6,7 @@ DECLARE
   counted CONSTANT text[] := ARRAY['pass', 'fail', 'not_readable'];
   open_states CONSTANT text[] := ARRAY['open', 'reopened'];
   host_ids bigint[];
+  status_ids bigint[];
 BEGIN
   -- Notes the hosts whose summaries a change can move (#193), for host_compliance_summaries_flush at commit. No
   -- summary row is locked here. Statement triggers pick out the rows that changed in a way the summary can see.
@@ -22,19 +23,17 @@ BEGIN
       EXECUTE 'SELECT ARRAY(SELECT n.id FROM new_rows n)' INTO host_ids;
       PERFORM host_compliance_summaries_mark(host_ids, 1::smallint);
     ELSE
+      -- One scan of the join for both kinds (review of #226): a field the summary copies changed (a sync), or liveness
+      -- alone did (the status sort key).
       EXECUTE $q$
-        SELECT ARRAY(SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
-                      WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
-                            IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state))
-      $q$ INTO host_ids;
+        SELECT array_agg(n.id) FILTER (WHERE d.synced),
+               array_agg(n.id) FILTER (WHERE NOT d.synced AND o.liveness_status IS DISTINCT FROM n.liveness_status)
+          FROM old_rows o JOIN new_rows n ON n.id = o.id,
+               LATERAL (SELECT (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
+                               IS DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state) AS synced) d
+      $q$ INTO host_ids, status_ids;
       PERFORM host_compliance_summaries_mark(host_ids, 1::smallint);
-      EXECUTE $q$
-        SELECT ARRAY(SELECT n.id FROM old_rows o JOIN new_rows n ON n.id = o.id
-                      WHERE (o.name, o.hostname, o.tags, o.agent_version, o.enrollment_state)
-                            IS NOT DISTINCT FROM (n.name, n.hostname, n.tags, n.agent_version, n.enrollment_state)
-                        AND o.liveness_status IS DISTINCT FROM n.liveness_status)
-      $q$ INTO host_ids;
-      PERFORM host_compliance_summaries_mark(host_ids, 2::smallint);
+      PERFORM host_compliance_summaries_mark(status_ids, 2::smallint);
     END IF;
     RETURN NULL;
   END IF;
