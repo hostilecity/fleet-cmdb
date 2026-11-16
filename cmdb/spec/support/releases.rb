@@ -39,12 +39,25 @@ module ReleaseHelpers
 
   def next_release_key = (@next_release_key ||= TestReleaseKey.new)
 
-  # Trusts the given keys (TestReleaseKey, or a .pub text) for the rest of the example.
+  # Trusts the given keys (TestReleaseKey, or a .pub text) for the rest of the example, and publishes the same keys as
+  # the repository's agent/release-keys (#181), as a correctly configured server has them.
   def trust_release_keys(current: release_key, next_key: nil)
     config = Rails.configuration.x.releases
-    config.current_key = current.respond_to?(:public_file) ? current.public_file : current
-    config.next_key = next_key.respond_to?(:public_file) ? next_key.public_file : next_key
+    config.current_key = pub_text(current)
+    config.next_key = pub_text(next_key)
+    publish_repository_keys(current:, next_key:)
   end
+
+  # Writes the repository's agent/release-keys/current.pub and next.pub, as this server's build has them. nil
+  # writes a file of comments only, as the repository holds before the owner makes the keys.
+  def publish_repository_keys(current: release_key, next_key: nil)
+    dir = Rails.configuration.x.releases.repository_keys_dir
+    { "current" => current, "next" => next_key }.each do |role, key|
+      dir.join("#{role}.pub").write(pub_text(key) || "# no #{role} key yet\n")
+    end
+  end
+
+  def pub_text(key) = key.respond_to?(:public_file) ? key.public_file : key
 
   def manifest_json(version:, binary:, **overrides)
     { "format" => Releases::MANIFEST_FORMAT, "version" => version, "target" => Releases::TARGET,
@@ -66,14 +79,16 @@ end
 
 RSpec.configure do |config|
   config.include ReleaseHelpers
-  # Every example starts with no trusted key and an empty release directory of its own.
+  # Every example starts with no trusted key, an empty release directory of its own, and a repository key directory
+  # of its own (the real agent/release-keys is checked by spec/services/releases/repository_keys_spec.rb).
   config.around do |example|
     releases = Rails.configuration.x.releases
-    saved = releases.to_h.slice(:current_key, :next_key, :storage_dir)
+    saved = releases.to_h.slice(:current_key, :next_key, :storage_dir, :repository_keys_dir)
     Dir.mktmpdir("releases") do |dir|
       releases.current_key = nil
       releases.next_key = nil
       releases.storage_dir = Pathname(dir).join("releases")
+      releases.repository_keys_dir = Pathname(dir).join("release-keys").tap(&:mkpath)
       example.run
     ensure
       saved.each { |key, value| releases.public_send(:"#{key}=", value) }

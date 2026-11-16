@@ -67,14 +67,15 @@ fleet-agent verify-release \
   --binary fleet-agent-1.2.0-x86_64-unknown-linux-musl
 ```
 
-It exits `0` and prints the version, the key that signed it (`current` or `next`), and the binary's SHA-256; `1` with the reason if anything does not match; `2` on a usage error. Without an agent, use minisign and the public key from `agent/release-keys/current.pub` in this repository, then the checksums:
+It exits `0` and prints the version, the key that signed it (`current` or `next`), and the binary's SHA-256; `1` with the reason if anything does not match; `2` on a usage error. Without an agent, use minisign and the public key from `agent/release-keys/current.pub` in this repository, at the release's tag, then the checksum in the manifest minisign has verified:
 
 ```sh
-minisign -V -p current.pub -m fleet-agent-1.2.0-x86_64-unknown-linux-musl.manifest.json
-sha256sum -c SHA256SUMS
+curl -fsSL -o fleet-release-key.pub https://raw.githubusercontent.com/hostilecity/fleet-cmdb/refs/tags/agent-v1.2.0/agent/release-keys/current.pub
+minisign -V -p fleet-release-key.pub -m fleet-agent-1.2.0-x86_64-unknown-linux-musl.manifest.json -o \
+  | sed -n 's/^{"format":"fleet-agent-release-manifest\/1","version":"1\.2\.0","target":"x86_64-unknown-linux-musl","sha256":"\([0-9a-f]\{64\}\)","size":[0-9]*}$/\1  fleet-agent-1.2.0-x86_64-unknown-linux-musl/p' | sha256sum -c
 ```
 
-`SHA256SUMS` alone only shows the download is complete; the signature shows it is a release.
+This is the check the install page's commands make on a new VM ([install-agent.md](operations/install-agent.md#install-one-vm-approved-in-the-dashboard), #181), with the files under their release names. `SHA256SUMS` alone only shows the download is complete; the signature shows it is a release. `fleet-agent verify-release` cannot vouch for itself: it runs the binary it checks, so use it only from an agent you already trust.
 
 ## Release keys
 
@@ -86,6 +87,15 @@ sha256sum -c SHA256SUMS
 | Next public key | `agent/release-keys/next.pub`, compiled into the agent | Everyone |
 | Current private key (encrypted) and its password | The `release` environment's secrets `AGENT_RELEASE_SIGNING_KEY` and `AGENT_RELEASE_SIGNING_KEY_PASSWORD` | Only the `sign` job, after the owner approves the run |
 | Backups of both private keys (encrypted) and their passwords | Offline, with the owner (for example a password manager plus an offline copy) | The owner |
+
+The keys in the repository today, to compare by hand (a key ID is chosen when the key is made, so compare the whole public key, not only the ID):
+
+| Key | ID | Public key |
+|---|---|---|
+| current | `7E51EF010B459985` | `RWSFmUULAe9RfnlQTNeEW6nsdcGfhgNJPuipo3oDnhdS+7UrsuOUg1WL` |
+| next | `E23D49AE6F91A17B` | `RWR7oZFvrkk94qBZYEVnm1cgefAWGIpPGSGyzROt/C6FqaiaBCXIMEEU` |
+
+The same table is in [install-agent.md](operations/install-agent.md#install-one-vm-approved-in-the-dashboard). Server CI fails if either differs from the files (`cmdb/spec/services/releases/repository_keys_spec.rb`), so a rotation updates them in the same pull request.
 
 Each `.pub` file is either exactly the two lines minisign writes, or only `#` comment lines, meaning no key. Until the owner generates the first key the files hold no key: then the agent accepts no release, the release workflow refuses to run, and Agent CI still passes (its dry run uses a throwaway key).
 
@@ -105,7 +115,7 @@ minisign -G -p next.pub -s next.key -c "fleet-agent release key 2"
 2. In **Settings > Environments > release > Environment secrets**, add `AGENT_RELEASE_SIGNING_KEY` with the **second line only** of `current.key` (the base64 line; the workflow adds the comment line back), and `AGENT_RELEASE_SIGNING_KEY_PASSWORD` with its password. A single-line secret is masked reliably in logs. Never add them as repository secrets.
 3. Back up `current.key`, `next.key`, and both passwords offline, then delete the key files from the machine.
 
-The server checks imported releases against the same public keys, from its own configuration ([P1-RELEASES](backlog/specs/p1-releases.md)): set the GitHub **variables** (not secrets) `FLEET_RELEASE_KEY_CURRENT` and `FLEET_RELEASE_KEY_NEXT` of the `production` environment to the second line of `current.pub` and `next.pub`, then run the Deploy workflow ([install-server.md](operations/install-server.md#2-create-the-github-environment), [configuration.md](operations/configuration.md#agent-releases)). After a rotation (below), update the server's keys (the GitHub variables of the same names, then deploy) when `current.pub` changes.
+The server checks imported releases against the same public keys, from its own configuration ([P1-RELEASES](backlog/specs/p1-releases.md)): set the GitHub **variables** (not secrets) `FLEET_RELEASE_KEY_CURRENT` and `FLEET_RELEASE_KEY_NEXT` of the `production` environment to the second line of `current.pub` and `next.pub`, then run the Deploy workflow ([install-server.md](operations/install-server.md#2-create-the-github-environment), [configuration.md](operations/configuration.md#agent-releases)). After a rotation (below), update the server's keys (the GitHub variables of the same names, then deploy) when `current.pub` changes. The server's image also holds a copy of `agent/release-keys/` from the commit it was built from; the dashboard's **Install an agent** page warns when the configured keys differ from that copy, because the install check on the VM uses the repository's key, not the server's (#181).
 
 ### Rotation
 
@@ -118,7 +128,9 @@ An agent trusts only the keys it was built with, so a new key must ship in a rel
 
 Releases are always signed with the key in `current.pub`: the workflow verifies with exactly that key, so a mistake in step 3 stops the release instead of publishing one that agents refuse.
 
-**If the current private key leaks:** remove the environment secrets at once (no release can be signed meanwhile), then do step 3 straight away with the uncompromised next key, and release. Agents that trusted the leaked key keep trusting it until they run that release, so roll it out with priority. The no-downgrade rule stops a leaked key from being used to push an old release, but not a malicious new one; that window is why the next key is kept offline. **If both keys leak**, the remote update path cannot be trusted: stop rollouts and reinstall agents by hand with a release built with new keys.
+**First installs need nothing for a rotation.** The install commands fetch `current.pub` at the release's own tag (`agent-v<version>`), which is by the rule above the key that signed that release: a release from before the switch is checked with the old key, one from after with the new key, and both work. What a rotation changes for people is the key table above and in [install-agent.md](operations/install-agent.md#install-one-vm-approved-in-the-dashboard), for checking by hand or on a VM without GitHub: update both in the step 3 pull request (Server CI checks they match the files), and update the server's `FLEET_RELEASE_KEY_CURRENT` and `FLEET_RELEASE_KEY_NEXT`, or the install page warns.
+
+**If the current private key leaks:** remove the environment secrets at once (no release can be signed meanwhile), then do step 3 straight away with the uncompromised next key, and release. Agents that trusted the leaked key keep trusting it until they run that release, so roll it out with priority. The no-downgrade rule stops a leaked key from being used to push an old release, but not a malicious new one; that window is why the next key is kept offline. First installs check a release with `current.pub` at that release's tag, so every tag of a release signed with the leaked key still vouches for it: anyone holding the key and the server could serve a hostile manifest under such a version. Once the new release is out, delete the GitHub releases and `agent-v*` tags signed with the leaked key (the owner can, as the tag ruleset's bypass); the install check then fails for those versions, because their key address answers 404. **If both keys leak**, the remote update path cannot be trusted: stop rollouts and reinstall agents by hand with a release built with new keys.
 
 ## Making a release
 
@@ -136,7 +148,7 @@ A failed run publishes nothing and creates no tag; fix the cause and run the wor
 
 ## Getting a release to the fleet
 
-Once the release is published, an operator imports it on the dashboard's **Agents** page, by version from GitHub, or by uploading the binary, the manifest, and the `.minisig` for a server without internet access. The server verifies it as an agent would, refuses it with the reason if anything does not match, and audits either outcome. It then serves the three files on the agent hostname (`/api/v1/releases/<version>/...`), and **Install an agent** shows the commands for it. To update running agents, start a rollout on the same page ([install-agent.md](operations/install-agent.md#remotely-in-a-rollout)).
+Once the release is published, an operator imports it on the dashboard's **Agents** page, by version from GitHub, or by uploading the binary, the manifest, and the `.minisig` for a server without internet access. The server verifies it as an agent would, refuses it with the reason if anything does not match, and audits either outcome. It then serves the three files on the agent hostname (`/api/v1/releases/<version>/...`), and **Install an agent** shows the commands for it: download the three files from the server, then check the signature with the release public key from this repository on GitHub, so the server is not trusted for a first install either (#181). To update running agents, start a rollout on the same page ([install-agent.md](operations/install-agent.md#remotely-in-a-rollout)).
 
 ## Repository settings the release relies on
 
@@ -148,6 +160,19 @@ ADR 0018 makes the owner's GitHub account and the `release` environment the trus
   - Deployment branches and tags: **Selected branches and tags**, with only the branch `main`, so a run on any other branch or tag cannot use the key.
   - Environment secrets: `AGENT_RELEASE_SIGNING_KEY` and `AGENT_RELEASE_SIGNING_KEY_PASSWORD`, and no others.
 - **Tag ruleset** (Settings > Rules > Rulesets > New tag ruleset): target `agent-v*`; restrict updates, restrict deletions, and block force pushes; bypass list: the owner only. Leave **restrict creations off**: the release workflow creates the tag itself, as GitHub Actions. A published tag then cannot be moved to other code or deleted, except by the owner. A tag someone else creates by hand only uses up that version number: it has no signed release, so nothing imports it.
+
+  **First installs rely on this ruleset (#181).** They take the release public key from `agent/release-keys/current.pub`, and the server's certificate authority from `agent/trust/`, at the release's tag `refs/tags/agent-v<version>`. Exactly these settings of the ruleset are what that relies on; check each in **Settings > Rules > Rulesets** (an owner's view: a token without admin rights may see no rulesets at all):
+
+  | Setting | Value | What it protects for a first install |
+  |---|---|---|
+  | Enforcement status | Active | Nothing below applies while it is Disabled or Evaluate |
+  | Target | Tags, include by pattern `agent-v*` | Every release tag, and only those |
+  | Restrict updates | On | A published tag cannot be moved to a commit with another `current.pub` |
+  | Restrict deletions | On | A published tag cannot be deleted and pushed again elsewhere |
+  | Block force pushes | On | The same, by force push |
+  | Bypass list | The owner only | Only the owner can move or delete one (as after a key leak, above) |
+
+  **Restrict creations** stays off, so a *new* tag can name any commit, including one on an unmerged branch with another `current.pub`: whoever can push tags here could, together with a hostile server, get a first install to trust their key. Only people with write access to the repository can push tags, which is already trust in them (threat model C16). Until the owner has confirmed the ruleset as above, a published tag can be moved or deleted by anyone with write access too, so the same is true of every existing release.
 - **Branch protection on `main`:** pull requests required, Agent CI and Server CI required, no force pushes, so "released from `main`" means "reviewed and tested".
 - **Actions:** default workflow permissions read-only (each job asks for what it needs); fork pull requests never get secrets (GitHub's default).
 

@@ -41,9 +41,11 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). The release
 ### Scope
 
 - **A dashboard page "Install an agent"**, following the approved mockups in [P1-D06](p1-dash-actions.md). It shows the current release and the exact commands to copy:
-  - download from the agent hostname;
-  - check the SHA-256;
+  - download the binary, its manifest, and the manifest's signature from the agent hostname;
+  - check the signature with `minisign` and the release public key from the repository on GitHub (`agent/release-keys/current.pub` at the release's tag), then the binary against the signed manifest's SHA-256 (#181, owner 2026-11-15: the server's own checksum is not a check);
   - run `sudo ./fleet-agent install --server …`.
+
+  It shows the key the check trusts, and warns when the server's configured release keys differ from the repository's.
 
   It also shows the pre-registered-token variant for unattended installs, and what to expect next (the approval URL and code).
 - **Clear enough to use without other documentation (NFR-4).** Validated by following it on a clean VM.
@@ -51,4 +53,5 @@ Decided in [ADR 0018](../../decisions/0018-signed-agent-updates.md). The release
 ### Acceptance criteria
 
 - [ ] Copying the commands from the page onto a clean Debian 13 VM installs the agent with no other instructions
-- [ ] The page shows the checksum of exactly the release it links to
+- [ ] The page's commands name exactly the release it links to
+- [ ] The commands refuse a changed binary and a manifest signed by a key other than the repository's, before anything runs (#181)
