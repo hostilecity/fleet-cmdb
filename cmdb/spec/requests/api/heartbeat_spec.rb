@@ -84,7 +84,8 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     expect(queries[0]).to match(/FROM "agent_credentials" LEFT OUTER JOIN "hosts"/)
     expect(queries[1]).to match(/FROM "hosts" INNER JOIN "agent_credentials".*FOR UPDATE OF hosts FOR SHARE OF agent_credentials/m)
     expect(queries[2]).to match(/\AUPDATE "hosts"/)
-    expect(queries[3]).to match(/rollout_hosts.*FOR SHARE OF rollouts.*report_requests.*EXISTS \(SELECT 1 FROM "tasks"/m)
+    expect(queries[3]).to match(/rollout_hosts.*report_requests.*EXISTS \(SELECT 1 FROM "tasks"/m)
+    expect(queries[3]).not_to match(/FOR (SHARE|UPDATE)/) # no rollout row lock per heartbeat (#199)
     expect(queries.join).not_to match(/snapshot|audit_entries|host_status_events|settings/)
   end
 

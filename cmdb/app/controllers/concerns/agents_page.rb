@@ -24,8 +24,10 @@ module AgentsPage
     @rollout = Rollout.includes(:agent_release, :started_by, :halted_by, :resumed_by).order(started_at: :desc, id: :desc).first
     return unless @rollout
 
-    @stage_counts = @rollout.rollout_hosts.group(:stage, :state).count
-    @rollout_hosts = @rollout.rollout_hosts.includes(:host).order(:stage, :host_id).limit(ROLLOUT_HOST_LIMIT).to_a
+    # Hosts already chosen for a stage that has not opened yet (Rollouts.prepare_stage!, #199) are not shown.
+    opened = @rollout.rollout_hosts.where(stage: ..@rollout.current_stage)
+    @stage_counts = opened.group(:stage, :state).count
+    @rollout_hosts = opened.includes(:host).order(:stage, :host_id).limit(ROLLOUT_HOST_LIMIT).to_a
     @rollout_host_total = @stage_counts.values.sum
     @canary_names = @rollout.rollout_hosts.where(stage: 0).joins(:host).order("hosts.name").limit(4).pluck("hosts.name")
     @update_reasons = latest_reasons(@rollout.agent_updates.where(host_id: @rollout_hosts.map(&:host_id)))
@@ -33,14 +35,14 @@ module AgentsPage
 
   # The start form's choices: canary tags among active hosts, with their counts, and active hosts to pick.
   # A refused start keeps what the operator chose (@start); otherwise the newest release, the tag "canary" when
-  # some active host has it, and the default stages.
+  # some active host has it, and the default stages for the fleet's size (Rollouts.default_stages).
   def load_start_form
     active = Host.active
     @canary_tags = active.group(Arel.sql("unnest(hosts.tags)")).order(Arel.sql("unnest(hosts.tags)")).count
-    @start ||= { release: @releases.first&.version, canary_tag: ("canary" if @canary_tags.key?("canary")), canary_host_ids: [],
-                 stages: Rollouts::DEFAULT_STAGES.join(", ") }
-    @canary_choices = active.order(:name, :id).limit(CANARY_CHOICE_LIMIT).to_a
     @active_total = active.count
+    @start ||= { release: @releases.first&.version, canary_tag: ("canary" if @canary_tags.key?("canary")), canary_host_ids: [],
+                 stages: Rollouts.default_stages(@active_total).join(", ") }
+    @canary_choices = active.order(:name, :id).limit(CANARY_CHOICE_LIMIT).to_a
   end
 
   # The reason each host gave with its latest result, by host id.

@@ -76,7 +76,7 @@ For cloud-init, templates, and scripts, where nobody is at the terminal to appro
 Agents update themselves only to a newer release signed by the release key, verified on the VM, with automatic rollback if the new version does not confirm within 5 minutes ([ADR 0018](../decisions/0018-signed-agent-updates.md)). A rollout offers a release in stages: canary hosts first, then a percentage of the rest, then all; any failure or rollback halts it.
 
 1. Import the new release on the **Agents** page.
-2. Under **Start a rollout** on the same page, choose the release, the canary hosts (a tag, or hosts you pick), and the later stages (by default `25, 100`). Choose **Start rollout…** and confirm. Every action is in the audit log with your account as the actor.
+2. Under **Start a rollout** on the same page, choose the release, the canary hosts (a tag, or hosts you pick), and the later stages (by default `25, 100`, or `1, 10, 50, 100` from 1,000 active hosts; set `FLEET_ROLLOUT_LARGE_FLEET_HOSTS` to change that threshold, [configuration.md](configuration.md)). You can type other stages in the form. Choose **Start rollout…** and confirm. Every action is in the audit log with your account as the actor.
 
    The next stage opens by itself when all hosts of the current one have confirmed. **Advance to the next stage** opens it now.
 3. **Check:** the Agents page shows each stage's progress live. Each host's agent version on the Fleet page changes to the new release, and its page lists the update as succeeded. On a VM: `fleet-agent --version` and `journalctl -u fleet-agent | grep -i update`.
