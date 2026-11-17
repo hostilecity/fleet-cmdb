@@ -228,8 +228,7 @@ jobs:
           echo "== install as cd.yml does: the env file (mode 0600), then install.sh"
           (umask 077 && mkdir -p "$HOME/.config/fleet-cmdb" && printf '%s\n' FLEET_DB_NETWORK=fleet-db PGHOST=postgres PGUSER=cmdb \
             "PGPASSWORD=$DB_PASSWORD" "BACKUP_DIR=$backups" BACKUP_PG_IMAGE=postgres:17 > "$HOME/.config/fleet-cmdb/backup.env")
-          contains "install.sh refuses without lingering" "loginctl enable-linger" "$(bash ops/backup/install.sh 2>&1 || true)"
-          sudo loginctl enable-linger "$USER" # the owner's one-time step on the VM
+          sudo loginctl enable-linger "$USER" # the owner's one-time step on the VM (already on for GitHub's runner user)
           bash ops/backup/install.sh
           XDG_RUNTIME_DIR="/run/user/$(id -u)" && export XDG_RUNTIME_DIR
           expect "the timer is enabled" enabled "$(systemctl --user is-enabled fleet-cmdb-backup.timer)"
@@ -256,6 +255,7 @@ jobs:
           wait_backup_ok || failed=1
           echo "/health: $(health)"
           expect "/health reports the backup" ok "$(health | sed -n 's/.*"backup":"\([a-z]*\)".*/\1/p')"
+          expect "and is healthy as a whole" 200 "$(docker exec fleet-cmdb curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health)"
           expect "the database password is not in the backup's log" 0 \
             "$(sudo journalctl --no-pager _SYSTEMD_USER_UNIT=fleet-cmdb-backup.service | grep -cF "$DB_PASSWORD" || true)"
 
@@ -273,7 +273,7 @@ jobs:
           expect "no scratch database is left" 0 "$(dbs "SELECT count(*) FROM pg_database WHERE datname LIKE 'cmdb_restore_drill%'")"
           expect "no scratch volume is left" "" "$(docker volume ls -q --filter name=fleet-cmdb-drill)"
 
-          echo "== recover a lost server: re-provisioned empty databases, a new volume, docker.sh restore"
+          echo "== recover a lost server as backup-and-restore.md says: re-provisioned PostgreSQL, a deploy, then docker.sh restore"
           (umask 077 && { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-cmdb | grep .; echo SOLID_QUEUE_IN_PUMA=1; } > "$RUNNER_TEMP/restore.env")
           docker rm -f fleet-cmdb-jobs fleet-cmdb > /dev/null
           docker volume rm fleet-cmdb_storage > /dev/null
@@ -287,12 +287,25 @@ jobs:
           CREATE DATABASE cmdb_production_queue OWNER cmdb;
           CREATE DATABASE cmdb_production_cable OWNER cmdb;
           SQL
+          start_app() {
+            docker run -d --name fleet-cmdb --network fleet-db --cap-drop ALL --security-opt no-new-privileges \
+              -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/restore.env" fleet-cmdb:ci > /dev/null
+            for _ in $(seq 1 60); do docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null && return 0; sleep 3; done
+            docker logs --tail 100 fleet-cmdb; return 1
+          }
+          docker volume create fleet-cmdb_storage > /dev/null
+          start_app || stop "the app did not start on the new databases" # the deploy of step 3
+          expect "the new app is empty" 0 "$(docker exec fleet-cmdb bin/rails runner 'print Host.count')"
+          contains "the restore refuses while the app runs" "stop the app first" "$("$tool" restore "$set_name" 2>&1 || true)"
+          docker stop fleet-cmdb > /dev/null
+          contains "the restore refuses migrated databases" "holds data" "$("$tool" restore "$set_name" 2>&1 || true)"
+          for db in cmdb_production cmdb_production_queue cmdb_production_cache cmdb_production_cable; do
+            docker exec postgres dropdb -U postgres "$db"
+          done
           "$tool" restore "$set_name" || stop "docker.sh restore failed"
-          contains "a second restore is refused" "holds data" "$("$tool" restore "$set_name" 2>&1 || true)"
-          docker run -d --name fleet-cmdb --network fleet-db --cap-drop ALL --security-opt no-new-privileges \
-            -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/restore.env" fleet-cmdb:ci > /dev/null
-          rm -f "$RUNNER_TEMP/restore.env"
+          docker start fleet-cmdb > /dev/null
           for _ in $(seq 1 60); do docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null && break; sleep 3; done
+          rm -f "$RUNNER_TEMP/restore.env"
           expect "the restored app has the host" 1 "$(docker exec fleet-cmdb bin/rails runner 'print Host.where(hostname: "vm-01.example.lan").count')"
           expect "and the operator" 1 "$(docker exec fleet-cmdb bin/rails runner 'print OperatorAllowlistEntry.count')"
           expect "and the release files" ci "$(docker exec fleet-cmdb cat /rails/storage/releases/deploy-ci-marker)"
