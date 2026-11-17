@@ -4,7 +4,7 @@ Documentation=https://github.com/hostilecity/fleet-cmdb/blob/main/docs/operation
 
 [Service]
 Type=oneshot
-# A user unit of the deploy user, installed by ops/backup/install.sh (the Deploy workflow runs it). Settings, the
-# database password among them, are in ~/.config/fleet-cmdb/backup.env (mode 0600), which docker.sh reads.
+# A user unit of the deploy user, installed by ops/backup/install.sh (the Deploy workflow runs it). Settings are in
+# ~/.config/fleet-cmdb/backup.env (none secret); docker.sh reads the database password from the app container.
 ExecStart=%h/.local/share/fleet-cmdb/backup/docker.sh backup
 TimeoutStartSec=3h

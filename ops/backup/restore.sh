@@ -5,7 +5,8 @@
 #
 # The primary dump goes into <database name>, and the queue, cache, and cable dumps (when the set has them) into
 # <database name>_queue, _cache, and _cable. Each database is created, or reused only if it exists and holds no
-# table yet (as a freshly provisioned PostgreSQL has them). It refuses a database that holds any table and a
+# table, sequence, view, function, or type of its own yet (as a freshly provisioned PostgreSQL has them; objects
+# of extensions do not count). Each database is restored in one transaction, so it is restored whole or not at all. It refuses a database that holds any table and a
 # non-empty release directory, so it cannot overwrite live data. To recover a lost server, run it under the
 # production database name with the app stopped (in the deployment: ops/backup/docker.sh restore), then start the
 # app (docs/operations/backup-and-restore.md). The restore drill runs it against scratch names.
@@ -37,9 +38,17 @@ for ((i = 0; i < ${#targets[@]}; i += 2)); do
   if [ "$(sql -d postgres -c "SELECT count(*) FROM pg_database WHERE datname = '$name'")" = 0 ]; then
     to_create+=("$name")
   else
-    tables="$(sql -d "$name" -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%'")"
-    [ "$tables" = 0 ] || die "database $name already exists and holds data ($tables tables or sequences); nothing was changed"
+    # Objects in user schemas that no extension owns: relations, functions, and enum, domain, and range types.
+    objects="$(sql -d "$name" -c "
+      WITH user_ns AS (SELECT oid FROM pg_namespace WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp%'),
+           ext AS (SELECT classid, objid FROM pg_depend WHERE deptype = 'e')
+      SELECT (SELECT count(*) FROM pg_class c WHERE c.relnamespace IN (SELECT oid FROM user_ns) AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+                AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_class'::regclass AND ext.objid = c.oid))
+           + (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN (SELECT oid FROM user_ns)
+                AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_proc'::regclass AND ext.objid = p.oid))
+           + (SELECT count(*) FROM pg_type t WHERE t.typnamespace IN (SELECT oid FROM user_ns) AND t.typtype IN ('e', 'd', 'r', 'm')
+                AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_type'::regclass AND ext.objid = t.oid))")"
+    [ "$objects" = 0 ] || die "database $name already exists and holds data ($objects tables, sequences, views, functions, or types); nothing was changed"
   fi
 done
 
@@ -52,7 +61,7 @@ if [ "${#to_create[@]}" -gt 0 ]; then
   fi
 fi
 
-created=()
+created=() restored=()
 undo() {
   for name in "${created[@]}"; do dropdb --if-exists "$name" || true; done
 }
@@ -62,10 +71,17 @@ for ((i = 0; i < ${#targets[@]}; i += 2)); do
     createdb "$name"
     created+=("$name")
   fi
-  if ! pg_restore --no-owner --no-privileges --exit-on-error --dbname "$name" "$set_dir/$file"; then
+  if ! pg_restore --no-owner --no-privileges --exit-on-error --single-transaction --dbname "$name" "$set_dir/$file"; then
     undo
-    die "pg_restore of $file into $name failed; the databases this run created were dropped (an existing one it restored into may now be partly filled: drop and re-create it before trying again)"
+    kept=()
+    for done_name in "${restored[@]}"; do [[ " ${created[*]} " == *" $done_name "* ]] || kept+=("$done_name"); done
+    message="pg_restore of $file into $name failed, so nothing of it was restored (one transaction). The databases this run created were dropped"
+    if [ "${#kept[@]}" -gt 0 ]; then
+      message+="; these existed before and are now fully restored: ${kept[*]}. Drop and re-create them (empty) before trying again"
+    fi
+    die "$message"
   fi
+  restored+=("$name")
   echo "restore: $file restored into $name"
 done
 mkdir -p "$releases_dir"

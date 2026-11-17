@@ -4,9 +4,11 @@
 #   - copies ops/backup to ~/.local/share/fleet-cmdb/backup, where the timer runs docker.sh from;
 #   - installs the user units fleet-cmdb-backup.service and fleet-cmdb-backup.timer into ~/.config/systemd/user and
 #     enables the timer (daily at 02:30, with a random delay of up to 10 minutes, caught up after a missed run);
-#   - pulls the PostgreSQL client image, so its patch releases arrive.
-# The deploy user's systemd instance must run without a login: once, as root, `loginctl enable-linger <user>`.
-# No root is needed here.
+#   - pulls the PostgreSQL client image, so its patch releases arrive (a failure only warns: the copy on the VM is
+#     used, and Docker Hub being down never fails a deploy).
+# It runs before the deploy replaces the app, so whatever fails here stops the deploy with the old app still running.
+# It refuses while a restore runs (the backup lock, see docker.sh). The deploy user's systemd instance must run
+# without a login: once, as root, `loginctl enable-linger <user>`. No root is needed here.
 set -euo pipefail
 
 die() { echo "backup install: $*" >&2; exit 1; }
@@ -15,6 +17,11 @@ src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dest="$HOME/.local/share/fleet-cmdb/backup"
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 user="$(id -un)"
+lock_file="$HOME/.local/state/fleet-cmdb/backup.lock"
+
+if [ -f "$lock_file" ] && ! flock -n "$lock_file" true && [[ "$(cat "$lock_file")" == restore* ]]; then
+  die "a restore is in progress ($(cat "$lock_file")): deploy when it has finished"
+fi
 
 [ "$(loginctl show-user "$user" -p Linger --value 2> /dev/null || true)" = yes ] \
   || die "lingering is off for $user, so its backup timer would run only while it is logged in. Run this once on the VM as root: loginctl enable-linger $user"
@@ -36,4 +43,4 @@ install -m 0644 "$src/fleet-cmdb-backup.service" "$src/fleet-cmdb-backup.timer" 
 systemctl --user daemon-reload
 systemctl --user enable --now fleet-cmdb-backup.timer
 systemctl --user list-timers fleet-cmdb-backup.timer --no-pager
-"$dest/docker.sh" pull
+"$dest/docker.sh" pull || true
