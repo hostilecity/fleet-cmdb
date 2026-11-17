@@ -153,8 +153,12 @@ pub enum ApiError {
         message: String,
         request_id: Option<String>,
     },
-    /// `429 rate_limited`, with the `Retry-After` delay when the server sent one in seconds.
+    /// Any `429`, with the `Retry-After` delay when one was sent in seconds. `code` is the envelope's
+    /// code, empty when there is none (a proxy's or load balancer's error page). Only a `429
+    /// rate_limited` is the server's own limit, and only its `Retry-After` is honoured, for at most
+    /// [`crate::retry::RATE_LIMITED_MAX`] (#223).
     RateLimited {
+        code: String,
         retry_after: Option<Duration>,
         request_id: Option<String>,
     },
@@ -415,7 +419,10 @@ impl Client {
                 partial: status.as_u16() == 206,
                 body: response.into_body(),
             }),
+            // The body of a download is not read for an envelope: the updater treats any `429` as
+            // transient and waits its own backoff, not `Retry-After`.
             429 => Err(ApiError::RateLimited {
+                code: String::new(),
                 retry_after: retry_after(&response),
                 request_id: header(&response, "X-Request-Id"),
             }),
@@ -531,6 +538,7 @@ fn read_response(mut response: Response<ureq::Body>) -> Result<ApiResponse, ApiE
             request_id,
         },
         StatusCode::TOO_MANY_REQUESTS => ApiError::RateLimited {
+            code,
             retry_after,
             request_id,
         },
@@ -803,7 +811,7 @@ pub(crate) mod tests {
     #[test]
     fn maps_error_statuses_and_envelopes() {
         let id = || Some("00000000-0000-4000-8000-000000000001".to_owned());
-        let cases: [(&str, &[&str], String, ApiError); 11] = [
+        let cases: [(&str, &[&str], String, ApiError); 12] = [
             (
                 "401 Unauthorized",
                 &[],
@@ -851,11 +859,24 @@ pub(crate) mod tests {
                 &["Retry-After: 120"],
                 error_body("rate_limited", "slow down"),
                 ApiError::RateLimited {
+                    code: "rate_limited".into(),
                     retry_after: Some(Duration::from_secs(120)),
                     request_id: id(),
                 },
             ),
             // By status alone: no envelope, or one that is not JSON.
+            // A 429 from something in front of the server (#223): no code, so its Retry-After is not
+            // honoured, however long.
+            (
+                "429 Too Many Requests",
+                &["Retry-After: 86400"],
+                "<html>slow down</html>".into(),
+                ApiError::RateLimited {
+                    code: String::new(),
+                    retry_after: Some(Duration::from_secs(86_400)),
+                    request_id: None,
+                },
+            ),
             (
                 "413 Payload Too Large",
                 &[],

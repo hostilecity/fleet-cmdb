@@ -969,3 +969,33 @@ fn a_report_shed_with_503_waits_the_servers_retry_after_and_keeps_its_id() {
     assert_eq!(sent[1], first[0], "the same report id");
     assert!(retried_at >= now + secs(120), "retried before Retry-After");
 }
+
+#[test]
+fn a_429_holds_the_inventory_report_for_at_most_15_minutes_and_only_when_it_is_the_servers() {
+    // #223: under the report loops' policy, the server's own 429 rate_limited is waited out for at
+    // most 15 minutes plus the spread, however long its Retry-After; a proxy's 429 is transient.
+    let limited = |code: &str| ApiError::RateLimited {
+        code: code.into(),
+        retry_after: Some(secs(86_400)),
+        request_id: None,
+    };
+    for (code, low, high) in [
+        ("rate_limited", secs(900), secs(960)),
+        ("", Duration::ZERO, secs(5)),
+    ] {
+        let h = Harness::new();
+        let mut reporter = Reporter::new(
+            &h.intervals,
+            h.state_dir(),
+            Backoff::new(RetryPolicy::reports(), SplitMix64::new(7)),
+            SplitMix64::new(8),
+        )
+        .without_real_time();
+        let transport = FakeTransport::new(vec![Err(limited(code))]);
+        let now = h.at(Duration::ZERO);
+        logs_of(|| h.tick(&mut reporter, &transport, now));
+        assert_eq!(ids(&transport).len(), 1);
+        let held = reporter.retry_at.unwrap() - now;
+        assert!(held >= low && held <= high, "{code:?}: {held:?}");
+    }
+}

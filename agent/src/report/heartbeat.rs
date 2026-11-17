@@ -593,17 +593,51 @@ mod tests {
         assert_eq!(last["uptime_seconds"], clock.as_secs());
     }
 
+    fn limited(code: &str, after: u64) -> ApiError {
+        ApiError::RateLimited {
+            code: code.into(),
+            retry_after: Some(secs(after)),
+            request_id: None,
+        }
+    }
+
     #[test]
     fn rate_limiting_waits_for_retry_after() {
         let intervals = intervals();
         let started = Instant::now();
         let mut hb = heartbeat(&intervals, started);
-        let transport = FakeTransport::new(vec![Err(ApiError::RateLimited {
-            retry_after: Some(secs(900)),
-            request_id: None,
-        })]);
+        let transport = FakeTransport::new(vec![Err(limited("rate_limited", 60))]);
+        let (wait, _) = logs_of(|| hb.beat(&transport, None, started, wall()));
+        assert!(wait >= secs(60) && wait <= secs(66), "{wait:?}");
+    }
+
+    #[test]
+    fn a_429_never_holds_heartbeats_for_more_than_15_minutes() {
+        // #223: a day-long Retry-After would show the host offline and make a just-updated agent miss
+        // its confirmation deadline. The server's own 429 waits at most 15 minutes plus the spread.
+        let intervals = intervals();
+        let started = Instant::now();
+        let mut hb = heartbeat(&intervals, started);
+        let transport = FakeTransport::new(vec![Err(limited("rate_limited", 86_400))]);
         let (wait, _) = logs_of(|| hb.beat(&transport, None, started, wall()));
         assert!(wait >= secs(900) && wait <= secs(960), "{wait:?}");
+
+        // A 429 from a proxy in front of the server (no envelope): the normal backoff, then the next
+        // heartbeat goes through.
+        let mut hb = heartbeat(&intervals, started);
+        let transport = FakeTransport::new(vec![Err(limited("", 86_400))]);
+        let (wait, logs) = logs_of(|| hb.beat(&transport, None, started, wall()));
+        assert!(wait <= secs(5), "{wait:?}");
+        assert!(
+            logs.contains("not the fleet server's own rate limit"),
+            "{logs}"
+        );
+        transport.set_accepting(true);
+        let wait = logs_of(|| hb.beat(&transport, None, started + wait, wall())).0;
+        assert!(
+            wait >= secs(54) && wait <= secs(60),
+            "back to the interval: {wait:?}"
+        );
     }
 
     #[test]

@@ -84,10 +84,10 @@ RSpec.describe "fleet simulator parts (P1-O04)" do
     it "addresses the agent API and the dashboard by Host header over one connection address" do
       api = stub_request(:post, "http://127.0.0.1:3000/api/v1/heartbeat")
             .with(headers: { "Host" => "agent.localhost", "Authorization" => "Bearer key.secret", "Content-Type" => "application/json" }, body: { a: 1 }.to_json)
-            .to_return(status: 429, body: "{}", headers: { "Retry-After" => "7" })
+            .to_return(status: 429, body: '{"error":{"code":"rate_limited"}}', headers: { "Retry-After" => "7" })
       page = stub_request(:get, "http://127.0.0.1:3000/").with(headers: { "Host" => "localhost", "Cookie" => "s=1" }).to_return(status: 200, body: "<html>")
       response = transport.post_api("/api/v1/heartbeat", { a: 1 }, credential: "key.secret")
-      expect([ response.status, response.retry_after, response.success?, response.json, response.ms.round ]).to eq([ 429, 7, false, {}, 4 ])
+      expect([ response.status, response.retry_after, response.success?, response.code, response.ms.round ]).to eq([ 429, 7, false, "rate_limited", 4 ])
       expect(transport.get_dashboard("/", cookie: "s=1")).to have_attributes(status: 200, body: "<html>", retry_after: nil)
       expect(api).to have_been_requested
       expect(page).to have_been_requested
@@ -98,6 +98,19 @@ RSpec.describe "fleet simulator parts (P1-O04)" do
       expect(response.(503, "retry-after" => "45").retry_after).to eq(45)
       expect(response.(503).retry_after).to be_nil
       expect(response.(500, "retry-after" => "45").retry_after).to be_nil
+    end
+
+    it "waits out only the server's own 429 rate_limited, as the agent does, and at most 15 minutes (#223)" do
+      response = ->(body, after = "86400") { FleetSimulator::Response.new(status: 429, body:, headers: { "retry-after" => after }, ms: 1) }
+      own = '{"error":{"code":"rate_limited","message":"x"}}'
+      expect(response.(own, "30").retry_after).to eq(30)
+      expect(response.(own).retry_after).to eq(900)
+      expect(FleetSimulator::Response.new(status: 503, body: "", headers: { "retry-after" => "86400" }, ms: 1).retry_after).to eq(900)
+      expect(FleetSimulator::Response.new(status: 429, body: own, headers: {}, ms: 1).retry_after).to be_nil
+      # A proxy's page, another code, an envelope of another shape, or no body: not waited out.
+      [ "<html>Too Many Requests</html>", '{"error":{"code":"slow_down"}}', '{"error":"rate_limited"}', "[]", "" ].each do |body|
+        expect(response.(body).retry_after).to be_nil, body
+      end
     end
 
     it "reports a failed connection as status 0 and opens a new connection next time" do

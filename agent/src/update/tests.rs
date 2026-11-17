@@ -733,6 +733,7 @@ fn a_result_is_retried_with_the_same_report_id_until_the_server_accepts_it() {
         }),
         Err(ApiError::Unauthorized { request_id: None }),
         Err(ApiError::RateLimited {
+            code: "rate_limited".into(),
             retry_after: None,
             request_id: None,
         }),

@@ -75,7 +75,7 @@ RSpec.describe "fleet simulator, Phase 2 (P2-S12)" do
         def post_api(path, payload, **options)
           if path.start_with?("/api/v1/reports/") && !@limited
             @limited = true
-            return FleetSimulator::Response.new(status: 429, body: "{}", headers: { "retry-after" => "20" }, ms: 1)
+            return FleetSimulator::Response.new(status: 429, body: '{"error":{"code":"rate_limited"}}', headers: { "retry-after" => "20" }, ms: 1)
           end
           __getobj__.post_api(path, payload, **options)
         end

@@ -590,3 +590,33 @@ fn the_startup_splay_holds_back_the_startup_report_but_not_a_request() {
         "a request is answered during the splay"
     );
 }
+
+#[test]
+fn a_429_holds_the_package_report_for_at_most_15_minutes_and_only_when_it_is_the_servers() {
+    // #223: under the report loops' policy, the server's own 429 rate_limited is waited out for at
+    // most 15 minutes plus the spread, however long its Retry-After; a proxy's 429 is transient.
+    let limited = |code: &str| ApiError::RateLimited {
+        code: code.into(),
+        retry_after: Some(secs(86_400)),
+        request_id: None,
+    };
+    for (code, low, high) in [
+        ("rate_limited", secs(900), secs(961)),
+        ("", Duration::ZERO, secs(6)),
+    ] {
+        let host = FakeHost::debian13();
+        let transport = transport();
+        transport.push(Err(limited(code)));
+        let mut reporter = Reporter::new(
+            &host,
+            INTERVAL,
+            Backoff::new(RetryPolicy::reports(), SplitMix64::new(1)),
+            SplitMix64::new(2),
+        );
+        let t0 = Instant::now();
+        crate::logging::capture::logs_of(|| reporter.tick(t0, &transport));
+        let held = reporter.retry_at.unwrap() - t0;
+        assert!(held >= low && held <= high, "{code:?}: {held:?}");
+        assert_eq!(posts(&transport).len(), 1);
+    }
+}

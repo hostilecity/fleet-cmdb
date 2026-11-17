@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::collect::contract::assert_conforms;
+use crate::logging::capture::logs_of;
 use crate::retry::{RetryPolicy, SplitMix64};
 use crate::tasks::executor::Execution;
 use crate::tasks::ledger::{DAMAGED_FILE, LEDGER_FILE};
@@ -87,6 +88,8 @@ struct Server {
     starts: RefCell<Vec<String>>,
     results: RefCell<Vec<(String, Value)>>,
     fail_polls: Cell<u32>,
+    /// The error the next poll answers with, once.
+    poll_error: RefCell<Option<ApiError>>,
     /// Polls whose reply is lost after the server claimed the task: a kill mid-poll (P3-X03).
     lose_polls: Cell<u32>,
     fail_starts: Cell<u32>,
@@ -120,6 +123,9 @@ impl Server {
 impl Server {
     fn poll_task(&self) -> Result<wire::PollReply, ApiError> {
         self.polls.set(self.polls.get() + 1);
+        if let Some(error) = self.poll_error.borrow_mut().take() {
+            return Err(error);
+        }
         if self.fail_polls.get() > 0 {
             self.fail_polls.set(self.fail_polls.get() - 1);
             return Err(Self::down());
@@ -731,6 +737,49 @@ fn a_failed_poll_backs_off() {
     assert_eq!(executor.total(), 0);
     poller.tick(&server, t0 + Duration::from_secs(1), wall());
     assert_eq!(executor.runs(A), 1);
+}
+
+#[test]
+fn a_429_holds_polling_for_at_most_15_minutes_and_only_when_it_is_the_servers() {
+    // #223: the server's own 429 rate_limited is waited out, for at most 15 minutes plus the spread
+    // however long its Retry-After; a 429 from a proxy in front of it is an ordinary failure.
+    let limited = |code: &str| ApiError::RateLimited {
+        code: code.into(),
+        retry_after: Some(Duration::from_secs(86_400)),
+        request_id: None,
+    };
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::with(vec![restart(A)]);
+    *server.poll_error.borrow_mut() = Some(limited("rate_limited"));
+    let mut poller = rig.poller(&executor, None);
+    let t0 = Instant::now();
+    logs_of(|| poller.tick(&server, t0, wall()));
+    let held = poller.retry_after.unwrap() - t0;
+    assert!(
+        held >= Duration::from_secs(900) && held <= Duration::from_secs(960),
+        "{held:?}"
+    );
+    poller.tick(&server, t0 + Duration::from_secs(899), wall());
+    assert_eq!(server.polls.get(), 1, "no poll before Retry-After");
+    poller.tick(&server, t0 + Duration::from_secs(961), wall());
+    assert_eq!(executor.runs(A), 1);
+
+    // A second rig: the first poller holds its ledger.
+    let rig = Rig::new(all_enabled());
+    let executor = Counting::new(&["restart_service"]);
+    let server = Server::with(vec![restart(B)]);
+    *server.poll_error.borrow_mut() = Some(limited(""));
+    let mut poller = rig.poller(&executor, None);
+    let (_, logs) = logs_of(|| poller.tick(&server, t0, wall()));
+    assert!(
+        logs.contains("not the fleet server's own rate limit"),
+        "{logs}"
+    );
+    // The rig's backoff is at most 2 ms.
+    assert!(poller.retry_after.unwrap() - t0 <= Duration::from_millis(2));
+    poller.tick(&server, t0 + Duration::from_secs(1), wall());
+    assert_eq!(executor.runs(B), 1);
 }
 
 #[test]
