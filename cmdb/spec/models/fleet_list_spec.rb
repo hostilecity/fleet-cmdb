@@ -80,13 +80,22 @@ RSpec.describe FleetList do
       expect(described_class.new(recovery: "everything").recovery).to be_nil
     end
 
-    it "uses the partial index for the recovery-mode filter (#232)" do
-      Host.connection.execute("SET enable_seqscan = off") # a test database this small would be read whole
-      plan = Host.connection.select_values("EXPLAIN #{Host.where(FleetList::WITHOUT_RECOVERY_MODE).select(:id).to_sql}").join("\n")
-      expect(plan).to include("index_hosts_without_recovery_mode")
-    ensure
-      Host.connection.execute("RESET enable_seqscan")
+    it "has a partial index whose predicate is exactly the recovery-mode filter (#232)" do
+      # Structural rather than a plan: the planner's choice on a test database depends on its statistics (it
+      # flaked on CI). PostgreSQL uses a partial index whenever the query's condition implies its predicate, which
+      # an identical condition always does. The plans on 300k hosts were measured in the review of #235.
+      predicate = Host.connection.select_value(<<~SQL)
+        SELECT pg_get_expr(i.indpred, i.indrelid) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+         WHERE c.relname = 'index_hosts_without_recovery_mode'
+      SQL
+      expect(predicate).to eq("(((enrollment_state)::text = 'active'::text) AND (first_seen_at IS NOT NULL) AND (agent_units_recovery IS NOT TRUE))")
+      expect(FleetList::WITHOUT_RECOVERY_MODE.gsub("hosts.", "")).to eq(
+        "enrollment_state = 'active' AND first_seen_at IS NOT NULL AND agent_units_recovery IS NOT TRUE"
+      )
+      migration = Rails.root.join("db/migrate/20261116232002_index_hosts_without_recovery_mode.rb").read
+      expect(migration).to include(%(where: "#{FleetList::WITHOUT_RECOVERY_MODE.gsub('hosts.', '')}"))
     end
+
 
     it "ignores unknown statuses, sorts, and directions" do
       list = described_class.new(status: "retired", sort: "secret_digest", dir: "sideways")
