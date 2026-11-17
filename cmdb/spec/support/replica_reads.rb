@@ -1,6 +1,15 @@
-# ReplicaReads marks the replica down for 30 s after a database error during its check (#198). A spec that breaks the
-# database on purpose would otherwise send every later page in the run to the primary, and the listed pages would no
-# longer run with writes refused. Each example starts with the replica up.
 RSpec.configure do |config|
+  # The test replica shares the primary's pool (transactional fixtures), so writes on the reading role are refused
+  # only through Rails' prevent_writes, which checks the class the pool is named after. That is ApplicationRecord, the
+  # class ReplicaReads switches, when it loads lazily, but ActiveRecord::Base with eager loading (CI). Name it
+  # ApplicationRecord in both, so every page ReplicaReads lists runs with writes refused (#198). Production needs
+  # none of this: its replica's own pool has replica: true, which refuses every write.
+  config.before(:suite) do
+    ActiveRecord::Base.connection_pool.pool_config.connection_descriptor = ApplicationRecord
+  end
+
+  # ReplicaReads marks the replica down for 30 s after a database error during its check. A spec that breaks the
+  # database on purpose would otherwise send every later page in the run to the primary. Each example starts with the
+  # replica up.
   config.before { ReplicaReads.reset! }
 end
