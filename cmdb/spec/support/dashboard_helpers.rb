@@ -18,10 +18,11 @@ module DashboardHelpers
     sign_in_with_google(email:)
   end
 
-  # Counts the SQL queries a block runs, ignoring schema and transaction statements.
+  # Counts the SQL queries a block runs, ignoring schema and transaction statements, and the two that check a page's
+  # replica has caught up (ReplicaReads, #198), which are the same on every page.
   def count_queries
     count = 0
-    counter = ->(*, payload) { count += 1 unless payload[:name].in?(%w[SCHEMA TRANSACTION]) || payload[:sql].match?(/\A\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)/i) }
+    counter = ->(*, payload) { count += 1 unless payload[:name].in?([ "SCHEMA", "TRANSACTION", "Replica target", "Replica caught up" ]) || payload[:sql].match?(/\A\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)/i) }
     ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { yield }
     count
   end

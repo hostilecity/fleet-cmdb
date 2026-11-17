@@ -4,6 +4,8 @@
 class ApplicationController < ActionController::Base
   # require_second_factor, for the actions that need a recent second factor (P3-S09).
   include SecondFactorRequired
+  # reads_from_replica, for read-only pages that may read a caught-up replica (#198).
+  include ReplicaReads::Controller
 
   # Only allow modern browsers supporting webp images, web push, badges, import maps, CSS nesting, and CSS :has.
   allow_browser versions: :modern
