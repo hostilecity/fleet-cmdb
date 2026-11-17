@@ -38,8 +38,8 @@ module ComplianceHelpers
   def findings!(host, *severities, state: "open")
     severities.each do |severity|
       advisory = Advisory.create!(advisory_id: "DSA-#{SecureRandom.hex(4)}-1", source: "test", severity:, modified_at: Time.current)
-      VulnerabilityFinding.create!(host:, advisory:, package: "acme-#{SecureRandom.hex(3)}", architecture: "amd64", source: "acme", ecosystem: "Debian:13",
-                                   installed_version: "1.0-1", state:, first_seen_at: 1.day.ago,
+      VulnerabilityFinding.create!(host:, advisory:, package: "acme-#{SecureRandom.hex(3)}", architecture: "amd64", last_source: "acme",
+                                   last_installed_version: "1.0-1", state:, first_seen_at: 1.day.ago,
                                    resolution: (state == "resolved" ? "fixed" : nil), resolved_at: (state == "resolved" ? 1.hour.ago : nil))
     end
   end

@@ -30,7 +30,7 @@ class HostVulnerabilitiesController < ApplicationController
 
   def show
     load_evaluation
-    findings = VulnerabilityFinding.where(host_id: @host.id)
+    findings = VulnerabilityFinding.with_details.where(host_id: @host.id)
     @state_counts = { "open" => findings.active.count, "resolved" => findings.where(state: "resolved").count }
     @state_counts["all"] = @state_counts.values.sum
     @state = STATES.include?(params[:state]) ? params[:state] : "open"
@@ -52,11 +52,11 @@ class HostVulnerabilitiesController < ApplicationController
 
   def package
     @package = params[:package].to_s
-    @installed = HostPackage.where(host_id: @host.id, name: @package).order(:architecture).to_a
-    @findings = sorted(VulnerabilityFinding.where(host_id: @host.id, package: @package).includes(:advisory).to_a)
+    load_evaluation
+    @installed = PackageStore.entries(PackageStore.chunk_ids_of(@package_set&.package_set_id), names: [ @package ])
+    @findings = sorted(VulnerabilityFinding.with_details.where(host_id: @host.id, package: @package).preload(:advisory).to_a)
     raise ActiveRecord::RecordNotFound, "the host has no such package and no finding for it" if @installed.empty? && @findings.empty?
 
-    load_evaluation
     @set = @package_set
     @evaluated = @evaluation.present? && !@evaluation.not_evaluated?
     # The package and advisory pairs the matcher could not compare for this package, and whether the list it keeps was cut
@@ -65,7 +65,7 @@ class HostVulnerabilitiesController < ApplicationController
     @unchecked_cut_short = @evaluated && @evaluation.not_evaluated_count > @evaluation.not_evaluated.size
     @ecosystem = @findings.first&.ecosystem || HostVulnerabilityEvaluation.where(host_id: @host.id).pick(:ecosystem)
     sources = (@installed.map(&:source) + @findings.map(&:source)).compact.uniq
-    @siblings = VulnerabilityFinding.where(host_id: @host.id, source: sources).where.not(package: @package).distinct.order(:package).pluck(:package)
+    @siblings = VulnerabilityFinding.with_details.where(host_id: @host.id, source: sources).where.not(package: @package).distinct.order(:package).pluck(:package)
     load_triage_context
     @triage = FindingTriage.load(@findings) # every row, as today's note (T5)
   end
@@ -89,7 +89,7 @@ class HostVulnerabilitiesController < ApplicationController
     return if @state == "resolved"
 
     active = if @state == "open" && @severity.nil? && @query.blank? then shown
-    elsif @state == "open" then findings.active.includes(:advisory).to_a
+    elsif @state == "open" then findings.active.preload(:advisory).to_a
     else shown.reject { |f| f.state == "resolved" }
     end
     @triage = FindingTriage.load(active)
@@ -104,7 +104,7 @@ class HostVulnerabilitiesController < ApplicationController
   end
 
   def filtered(findings)
-    scope = findings.joins(:advisory).includes(:advisory)
+    scope = findings.joins(:advisory).preload(:advisory)
     scope = scope.where(state: @state == "open" ? %w[open reopened] : "resolved") unless @state == "all"
     scope = scope.where(advisories: { severity: @severity }) if @severity
     if @query.present?

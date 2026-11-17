@@ -157,7 +157,7 @@ RSpec.describe HostComplianceSummary do
     before = version_of(host)
     CisEvaluation.evaluate!([ host.id ])
     record_heartbeat(host)
-    VulnerabilityFinding.where(host_id: host.id).update_all(fixed_version: "1.0-2", updated_at: Time.current)
+    VulnerabilityFinding.where(host_id: host.id).update_all(last_fixed_version: "1.0-2", updated_at: Time.current)
     expect(version_of(host)).to eq(before)
   end
 

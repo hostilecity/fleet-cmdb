@@ -99,8 +99,8 @@ RSpec.describe FindingTriage do
     expect(triage[by_package["curl"]]).to have_attributes(reason: "no_entry", detail: "The Debian Security Tracker has no entry for this package and CVE in trixie.")
     expect(triage[by_package["openssl"]]).to have_attributes(reason: "no_cve", cve_ids: [])
 
-    finding = VulnerabilityFinding.create!(host: unmapped, advisory: Advisory.first, package: "curl", architecture: "amd64", source: "curl", ecosystem: "Debian:13",
-                                           installed_version: "8.14.1-2", state: "open", first_seen_at: Time.current)
+    finding = VulnerabilityFinding.create!(host: unmapped, advisory: Advisory.first, package: "curl", architecture: "amd64", last_source: "curl",
+                                           last_installed_version: "8.14.1-2", state: "open", first_seen_at: Time.current)
     expect(described_class.load([ finding ])[finding]).to have_attributes(release: nil, reason: "unmapped_release",
                                                                           detail: "ubuntu 24.04 has no release in the Debian Security Tracker's release table.")
     finding.host.inventory.destroy!

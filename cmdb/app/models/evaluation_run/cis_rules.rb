@@ -10,6 +10,9 @@ class EvaluationRun
 
     def hosts = Host.in_fleet
 
+    # Nothing to prepare: rules are evaluated per host.
+    def prepare! = nil
+
     # The hosts in the range whose shown compliance changed.
     def call(range) = CisEvaluation.evaluate!(hosts.where(id: range).pluck(:id), rule_ids:).changed_host_ids
 
