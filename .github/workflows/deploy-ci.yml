@@ -291,7 +291,7 @@ jobs:
           echo "== the restore drill"
           out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
           echo "$out" | tail -n 3
-          expect "without CREATEDB the drill fails" 1 "$rc"
+          expect "without CREATEDB the drill fails (restore.sh refuses before changing anything: status 3)" 3 "$rc"
           contains "and says what to run" "ALTER ROLE cmdb CREATEDB;" "$out"
           dbs "ALTER ROLE cmdb CREATEDB" > /dev/null # the owner's one-time step in PostgreSQL
           out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
