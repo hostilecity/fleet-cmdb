@@ -61,6 +61,7 @@ The private key goes into the secret `SSH_PRIVATE_KEY`; then delete both files.
 **One-time steps for backups** ([backup-and-restore.md](backup-and-restore.md)). On the VM, as root:
 
 ```sh
+usermod -aG docker deploy                         # first, if not done yet: a user manager started before keeps its old groups
 loginctl enable-linger deploy                     # the deploy user's timer runs without a login
 mkdir -p /var/backups/fleet-cmdb
 # Mount an off-machine location there, for example an NFS export of backup-01.example.lan, in /etc/fstab:
@@ -69,7 +70,9 @@ mount /var/backups/fleet-cmdb
 chown 1000:1000 /var/backups/fleet-cmdb && chmod 0700 /var/backups/fleet-cmdb   # uid 1000 is the app's user in its containers
 ```
 
-With NFS and root squashing, set that owner on the file server instead.
+With NFS and root squashing, set that owner on the file server instead. If a person's account on the VM also has uid 1000, that account can read every set: give the deploy user (or nobody) uid 1000, or keep such accounts off the VM.
+
+If the deploy user was added to `docker` after lingering started its systemd instance, restart that instance once: `systemctl restart user@$(id -u deploy).service`.
 
 The backup refuses a directory that is not a mount point, so the sets cannot quietly land on the VM's own disk beside the database. If you accept that (for example because the whole VM is backed up elsewhere), set the variable `FLEET_BACKUP_ALLOW_LOCAL` to `true` instead of mounting. The export must let uid 1000 write (with NFS, no `all_squash` to another user).
 
@@ -124,10 +127,11 @@ In **Settings > Environments**, create **`production`**. Under **Deployment bran
 | `FLEET_JOBS_CONTAINER` | Variable, optional | `false` (the default) | `true` runs background jobs in a second container, `fleet-cmdb-jobs`; only for larger fleets ([scaling.md](scaling.md)) |
 | `FLEET_BACKUP_DIR` | Variable, optional | `/var/backups/fleet-cmdb` (the default) | Where the backup sets are kept on the VM: the mount point of the backup location |
 | `FLEET_BACKUP_ALLOW_LOCAL` | Variable, optional | `false` (the default) | `true` lets backups go to a directory that is not a mount point |
-| `FLEET_BACKUP_RETENTION_DAYS` | Variable, optional | `14` (the default) | Days a backup set is kept; the newest 3 are always kept |
-| `FLEET_BACKUP_PG_IMAGE` | Variable, optional | `postgres:17` (the default) | The PostgreSQL client image for backups; its major version must be the server's or newer |
+| `FLEET_BACKUP_RETENTION_DAYS` | Variable, optional | `14` (the default) | Days a backup set is kept; the newest 3, and the newest set holding a host, are always kept |
+| `FLEET_BACKUP_PG_IMAGE` | Variable, optional | `postgres:17` (the default) | The PostgreSQL client image for backups; its major version must be the server's or newer. May be pinned by digest (`postgres:17@sha256:…`) |
+| `FLEET_BACKUP_DRILL_HOST` | Variable, optional | unset (the default) | Another PostgreSQL server on the database network for the restore drill's scratch databases, once the database is large ([backup-and-restore.md](backup-and-restore.md#the-restore-drill)) |
 
-The backup uses `DATABASE_PASSWORD` and `FLEET_DB_NETWORK`/`FLEET_DB_HOST` as the app does.
+The backup reads the database host and password from the app container when it runs, so no secret is stored for it.
 
 ## 3. Publish the dashboard through the tunnel
 
@@ -146,12 +150,13 @@ So that Google and anyone else can read the privacy page without passing Access,
 
 Open **Actions > Deploy > Run workflow**, pick branch `main` (a run from any other branch is skipped). The first run takes a few minutes, because the image builds on the VM. The log shows:
 1. the commit;
-2. `database network postgres_default exists` and the build;
-3. `wait for /up` (the first start migrates the databases);
-4. the container's status;
-5. under **Set up backups on the server**: the backup timer's next run, then `no recent backup: take one now` and `backup done` on the first deploy, and `/health` with `"backup":"ok"`.
+2. under **Set up backups on the server**, the backup timer's next run;
+3. `database network postgres_default exists` and the build;
+4. `wait for /up` (the first start migrates the databases);
+5. the container's status;
+6. under **Take the first backup**: `the first backup started in the background` on the first deploy (`already holds sets` on later ones). A minute or two later, `/health` shows `"backup":"ok"`.
 
-The deploy stops with a clear message if the network is missing, a required setting is not set, agents would not trust the certificate, or lingering is off for the deploy user (after the app is replaced, so the app is still updated); a first backup that fails (for example because the backup location is not mounted) shows a warning, and `/health` stays `503`; only names are printed, never values (and the certificate's names and expiry, which are not secret). The server does not start if the key does not match the certificate or the certificate does not cover `FLEET_AGENT_HOST`; `docker logs fleet-cmdb` says which. Secret values reach the VM over SSH standard input, into a mode-0600 env file for `docker run --env-file`, which is deleted once the containers have started. With `FLEET_JOBS_CONTAINER=true`, the jobs container gets a copy without the TLS certificate and key (`FLEET_TLS_*`), which only the app serves. Docker keeps them in the container's configuration (`docker inspect`), which only users in the `docker` group can read.
+The deploy stops with a clear message if the network is missing, a required setting is not set, agents would not trust the certificate, lingering is off for the deploy user, a restore is in progress, or a backup has run for over 30 minutes; in each case before the app is replaced. A first backup that cannot start (for example because the backup location is not mounted) shows a warning, and `/health` stays `503`. Only names are printed, never values (and the certificate's names and expiry, which are not secret). The server does not start if the key does not match the certificate or the certificate does not cover `FLEET_AGENT_HOST`; `docker logs fleet-cmdb` says which. Secret values reach the VM over SSH standard input, into a mode-0600 env file for `docker run --env-file`, which is deleted once the containers have started. With `FLEET_JOBS_CONTAINER=true`, the jobs container gets a copy without the TLS certificate and key (`FLEET_TLS_*`), which only the app serves. Docker keeps them in the container's configuration (`docker inspect`), which only users in the `docker` group can read.
 
 **Check:**
 - `docker exec fleet-cmdb curl -s http://localhost:3000/health` on the VM shows `"backup":"ok"`. Then run the restore drill once and record it ([backup-and-restore.md](backup-and-restore.md#the-restore-drill)): `~/.local/share/fleet-cmdb/backup/docker.sh restore-drill` ends with `Restore drill passed.`
@@ -176,7 +181,7 @@ docker logs -f fleet-cmdb                 # the app: one JSON object per line (h
 docker logs -f fleet-cmdb-jobs            # background jobs, only with FLEET_JOBS_CONTAINER=true
 docker exec fleet-cmdb curl -s http://localhost:3000/health
 systemctl --user list-timers fleet-cmdb-backup.timer   # the next backup
-journalctl --user -u fleet-cmdb-backup.service -n 30   # the last backups
+journalctl --user -u fleet-cmdb-backup.service -n 30   # the last backups (as root, journalctl _SYSTEMD_USER_UNIT=fleet-cmdb-backup.service if the journal is not persistent)
 ```
 
 Release files and the backup status file are in the Docker volume `fleet-cmdb_storage`, which survives every deploy. The database is in your PostgreSQL container, and the backup sets in `/var/backups/fleet-cmdb`.
@@ -186,7 +191,7 @@ Release files and the backup status file are in the Docker volume `fleet-cmdb_st
 - **Upgrade:** merge to `main`; every push to `main` deploys. Migrations run on start (`db:prepare`).
 - **Change a setting:** change the secret or variable in GitHub, then run the workflow.
 - **Renew the certificate:** before it expires (Settings shows when), create a new Origin certificate as in step 1, replace `FLEET_TLS_CERT` and `FLEET_TLS_KEY`, and run the workflow. Agents need nothing.
-- **Roll back:** if `FLEET_JOBS_CONTAINER` is `true` and you go back to a commit from before the jobs container existed, first run `docker stop -t 30 fleet-cmdb-jobs && docker rm fleet-cmdb-jobs` on the VM: that commit's workflow does not know the container and would leave it running new code beside the old app's own jobs. Then open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: then restore the last backup taken before the upgrade ([backup-and-restore.md](backup-and-restore.md#restore)). To be safe, take a backup by hand before a deploy you may roll back: `systemctl --user start fleet-cmdb-backup.service`.
+- **Roll back:** if `FLEET_JOBS_CONTAINER` is `true` and you go back to a commit from before the jobs container existed, first run `docker stop -t 30 fleet-cmdb-jobs && docker rm fleet-cmdb-jobs` on the VM: that commit's workflow does not know the container and would leave it running new code beside the old app's own jobs. Then open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: then restore the last backup taken before the upgrade ([backup-and-restore.md](backup-and-restore.md#restore)), which loses everything written since. To be safe, take a backup by hand before a deploy you may roll back: `~/.local/share/fleet-cmdb/backup/docker.sh backup`.
 - Two deploys never overlap; a second one waits.
 
 ## 8. First steps in the dashboard

@@ -96,7 +96,7 @@ app_settings() {
       DATABASE_PASSWORD=*) PGPASSWORD="${line#DATABASE_PASSWORD=}" ;;
     esac
   done <<< "$env_lines"
-  [ -n "$PGHOST" ] && [ -n "$PGPASSWORD" ] || die "the $app container has no PGHOST or DATABASE_PASSWORD setting"
+  if [ -z "$PGHOST" ] || [ -z "$PGPASSWORD" ]; then die "the $app container has no PGHOST or DATABASE_PASSWORD setting"; fi
   export PGHOST PGPASSWORD PGUSER=cmdb
   app_image="$(docker inspect -f '{{.Config.Image}}' "$app")"
 }

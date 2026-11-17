@@ -14,7 +14,9 @@ Open the failed run in **Actions > Deploy**. The first error line names the prob
 - **`the Docker network … does not exist`:** start the PostgreSQL container first, or fix `FLEET_DB_NETWORK`.
 - **`the app did not answer /up` or `does not answer HTTPS on 3443`:** the log printed after it says why. The usual causes are a key that does not match the certificate, a certificate without `FLEET_AGENT_HOST` in it, or a wrong `DATABASE_PASSWORD`.
 - **The run is skipped:** it was started from a branch other than `main`. Only `main` deploys.
-- **`lingering is off for deploy`** (in **Set up backups on the server**): run `loginctl enable-linger deploy` on the VM as root once, then run the workflow again. The app was already replaced; only the backup timer is missing.
+- **`lingering is off for deploy`** (in **Set up backups on the server**): run `loginctl enable-linger deploy` on the VM as root once, then run the workflow again. The app was not replaced.
+- **`a restore is in progress`:** `docker.sh restore` is running on the VM; the app was not replaced. Deploy when it has finished.
+- **`still busy after 30 minutes`:** a backup has run for over 30 minutes, and the deploy does not replace the app during one (its migrations would queue behind `pg_dump`'s locks). Run the workflow again later.
 
 ## Imports are refused: no release key
 
@@ -146,10 +148,14 @@ The new version's own log lines, before the rollback, say why it did not confirm
 
 ## Backups fail
 
-`/health` reports `"backup":"failing"`, or the deploy warned that the first backup failed. On the VM, as the deploy user, `journalctl --user -u fleet-cmdb-backup.service -n 30` shows the last run's message:
+`/health` reports `"backup":"failing"`, or the deploy warned that the first backup could not start. On the VM, as the deploy user, `journalctl --user -u fleet-cmdb-backup.service -n 30` shows the timer's last run (as root, `journalctl _SYSTEMD_USER_UNIT=fleet-cmdb-backup.service -n 30` if the journal is not persistent), and `~/.local/share/fleet-cmdb/backup/docker.sh backup` runs one with its messages on the terminal:
 
-- **`… does not exist` or `… is not a mount point`:** the backup location is not mounted at `FLEET_BACKUP_DIR`. Mount it ([install-server.md](install-server.md#1-check-the-prerequisites)), or set `FLEET_BACKUP_ALLOW_LOCAL=true` if keeping the sets on the VM is acceptable, then `systemctl --user start fleet-cmdb-backup.service`.
+- **`… does not exist` or `… is not a mount point`:** the backup location is not mounted at `FLEET_BACKUP_DIR`. Mount it ([install-server.md](install-server.md#1-check-the-prerequisites)), or set `FLEET_BACKUP_ALLOW_LOCAL=true` if keeping the sets on the VM is acceptable, then `~/.local/share/fleet-cmdb/backup/docker.sh backup`.
 - **`Permission denied`** under `/backups`: the location does not let uid 1000 write. `chown 1000:1000` it (on the file server, for NFS with root squashing).
 - **`pg_dump is PostgreSQL … but the server is PostgreSQL …`:** set the variable `FLEET_BACKUP_PG_IMAGE` to `postgres:<the server's version>` and run the Deploy workflow.
-- **`password authentication failed`:** `DATABASE_PASSWORD` is wrong; the app would fail too. Fix the secret and run the Deploy workflow, which rewrites the backup's settings.
+- **`password authentication failed`:** `DATABASE_PASSWORD` is wrong; the app would fail too. Fix the secret and run the Deploy workflow: the backup reads the password from the app container.
+- **`refused: the database holds … fewer than the newest set`:** the database is not the one that was backed up, for example the empty databases of a rebuilt server. Restore a set ([backup-and-restore.md](backup-and-restore.md#restore)). If you restored an older set on purpose and the restore did not back it up, run `docker.sh backup --force` once.
+- **`refused: busy with …`:** a restore, drill, deploy, or another backup holds the backup lock. Wait for it; the message names it.
+- **`may not use Docker`:** the deploy user is not in the `docker` group, or its systemd instance started before it was added. Add it, then as root `systemctl restart user@$(id -u deploy).service`.
+- **`there is no fleet-cmdb container`:** the backup reads the database password from the app container. Run the Deploy workflow.
 - **The restore drill says `ALTER ROLE cmdb CREATEDB;`:** run that once in the PostgreSQL container as its superuser ([backup-and-restore.md](backup-and-restore.md#the-restore-drill)).
