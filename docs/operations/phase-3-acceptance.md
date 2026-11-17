@@ -71,6 +71,8 @@ Each run below is on `main` at `78047da` (or, for the VM tests, at `26e5ba9`, af
 
 **Earlier suites and fixtures.** The Phase 1 and Phase 2 specs and agent tests are part of the suites above, and every example in `docs/api/examples/` is run by `spec/contract/api_contract_spec.rb` and `agent/tests/contract.rs`. Earlier agent releases and frozen fixtures from earlier phases are not run (NFR-5, P3-ACCEPT's scope).
 
+**Line references are pinned to `78047da`.** The `path:line` references in [agent-task-privileges.md](agent-task-privileges.md) and in the delivery note's privilege table were checked on that commit. If agent changes merge before you cut the release (open at the time of writing: #233 and #235, which touch `heartbeat.rs`, `install/systemd.rs`, and `update/`), check them again at the commit you release from.
+
 ## 2. The criteria
 
 ### AC-3.1: an unknown type or out-of-schema parameter is refused, with no execution
@@ -86,12 +88,14 @@ const p3 = (body) => fetch('/tasks', { method: 'POST', body,
   headers: { 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
              'Content-Type': 'application/x-www-form-urlencoded' } })
   .then(async (r) => console.log(r.status, new DOMParser().parseFromString(await r.text(), 'text/html').querySelector('#refused')?.innerText));
-p3('type=run_shell&parameters[command]=touch+/tmp/p3-canary&target[host_ids][]=HOST_ID');
+p3('type=run_shell&parameters[command]=touch+/tmp/p3-canary&target[host_ids][]=HOST_ID&second_factor_code=CODE');
 p3('type=restart_service&parameters[service]=p3-demo.service;touch+/tmp/p3-canary&target[host_ids][]=HOST_ID');
-p3('type=refresh_reports&command=touch+/tmp/p3-canary&target[host_ids][]=HOST_ID&second_factor_code=CODE');
+p3('type=refresh_reports&command=touch+/tmp/p3-canary&target[host_ids][]=HOST_ID');
 ```
 
-**Pass:** each answer is `403` or `422`, and its text names the problem: "not a task type in the catalog", the service failing the pattern, "The field command is not accepted" (with the code, the missing confirmation as well). **Tasks** shows no new task. **Audit log**, filtered to "Task creation refused", has three entries with you as the actor and the problems, never the values sent. **Save:** the console output, the audit log page.
+Only the first carries a code (put a fresh one in place of `CODE`). Run the next two right after it, within 5 minutes: the accepted code opens the step-up window, so all three get past the second factor and are refused for what they ask. Without the window, the request is refused for the missing code first, and the audit entry records only that.
+
+**Pass:** each answer is `422`, and its text names two problems: "The confirmation is missing: create tasks from the confirmation page", and then "The task type is not a task type in the catalog", "The service does not have the required form", and "The field command is not accepted". **Tasks** shows no new task. **Audit log**, filtered to "Task creation refused", has three entries with you as the actor, each with the same two problems (`/type is not a task type in the catalog`, `/parameters/service does not have the required form`, `/command is not accepted`), never the values sent. **Save:** the console output, the audit log page.
 
 **(b) Rows written straight into the database** (past the dashboard, its step-up, and its audit, as a database writer would). On the server VM, save this as `p3-insert.rb`:
 
@@ -111,7 +115,7 @@ task = Task.where(host_id: host.id).order(:id).last
 puts [ task.id, task.uuid, task.task_type, task.state ].join(" ")
 ```
 
-Run one **Refresh reports** on the VM from the dashboard first (the helper puts its rows in that task's batch). Then:
+Run one **Refresh reports** on the VM from the dashboard first. The helper puts its rows in that task's batch, so that batch's page lists them under "Refresh reports" whatever their type: harmless on a throwaway server. Then:
 
 ```sh
 p3() { docker exec -i -e P3_HOST=vm-p3.example.lan fleet-cmdb bin/rails runner - "$@" < p3-insert.rb; }
@@ -120,7 +124,7 @@ p3 restart_service '{"service":"p3-demo.service; touch /tmp/p3-canary"}' 600 360
 p3 apply_package_updates '{"packages":"openssh-server=1:7.0"}' 600 3600
 ```
 
-**Pass:** within about a minute (the next heartbeat), each task is **Refused**, `unknown_type` or `invalid_params`, "refused by the server when the agent claimed it · nothing ran", with the system as actor in its audit entries. On the VM, `journalctl -u fleet-agent --since -10min | grep 'task received'` names none of their UUIDs, and `test ! -e /tmp/p3-canary` succeeds. **Save:** the three task pages, the journal excerpt, the canary check.
+**Pass:** within about a minute (the next heartbeat), each task is **Refused**, `unknown_type`, `invalid_params`, `invalid_params`, and the line under the heading says "refused by the server when the agent claimed it · nothing ran", with the system as actor in its `task.refused` entry. The heading itself words these two reasons as the agent's ("the agent does not know this task type ... Its catalog is older than the server's" for `unknown_type`) whichever side refused: a wording bug noted in the pull request; the code line and the audit actor are what count. On the VM, `journalctl -u fleet-agent --since -10min | grep 'task received'` names none of their UUIDs, and `test ! -e /tmp/p3-canary` succeeds. **Save:** the three task pages, the journal excerpt, the canary check.
 
 **(c) A refusal by the agent itself** on the real VM: AC-3.9 below is one (`not_allowed_locally`). For `not_enabled_locally`, do the same steps with `restart_service` removed from `enabled` instead of the service from `allowed_services`. **Pass:** **Refused**, "refused by the agent", nothing ran.
 
@@ -128,16 +132,21 @@ p3 apply_package_updates '{"packages":"openssh-server=1:7.0"}' 600 3600
 
 **CI and review:** [phase-3-security-review.md](../decisions/phase-3-security-review.md) is the review note (every route, every process the agent starts, the searches, the CI checks); the delivery note adds what was re-checked for acceptance. CI: `spec/services/task_batches_spec.rb` "refused requests create nothing (AC-3.2)"; `spec/lib/task_catalog_spec.rb` (the lint); `spec/requests/api/tasks_spec.rb` "delivers only its id, type, parameters, deadline, and catalog version"; "No shell in the task module" in Agent CI.
 
-**By hand**, in a clone at the commit you accept:
+**By hand.** On the server VM:
 
 ```sh
-(cd cmdb && bin/rails routes -g 'tasks|second-factor' | grep -v ' GET ')
-sh agent/scripts/check-task-spawns.sh && sh agent/scripts/check-task-spawns.sh --self-test
+docker exec fleet-cmdb bin/rails routes -g 'tasks|second-factor' | grep -v ' GET '
+```
+
+In a clone at the commit you accept, from its top directory:
+
+```sh
+(cd agent && sh scripts/check-task-spawns.sh && sh scripts/check-task-spawns.sh --self-test)
 grep -rnE '"/bin/(ba)?sh"|"sh"|"bash"|"-c"|popen|libc::exec|libc::system' agent/src --include=*.rs | grep -v tests.rs
 grep -rnE '\bsystem\(|%x|Open3|IO\.popen|Process\.spawn|Kernel\.exec|\beval\(|instance_eval|class_eval' cmdb/app cmdb/lib cmdb/config
 ```
 
-**Pass:** the routes that change anything are the 13 on `78047da`: the four agent endpoints under `/api/v1/tasks` (poll, start, progress, result), `POST /tasks`, the two cancels, the three task settings, and the three second-factor ones (setup, verify, recovery codes, which take only a code). The task ones are the review's section 3. None takes a command, script, path, or program name; the spawn check prints its "no shell" line and the self-test exits 0; the agent grep finds only lines inside `#[cfg(test)]` modules (in `facts/host.rs`, `facts/users.rs`, `main.rs`, and `tasks/wire.rs` on `78047da`); the server grep finds nothing. On a confirmation page, the folded "exact payload" shows only id, type, parameters, timeout, and catalog version. **Save:** the output, a screenshot of the payload.
+**Pass:** the routes that change anything are the 13 on `78047da`: the four agent endpoints under `/api/v1/tasks` (poll, start, progress, result), `POST /tasks`, the two cancels, the three task settings, and the three second-factor ones (setup, verify, recovery codes, which take only a code). The task ones are the review's section 3. None takes a command, script, path, or program name; the spawn check prints its "no shell" line and the self-test exits 0; the agent grep finds only lines inside `#[cfg(test)]` modules (in `facts/host.rs`, `facts/users.rs`, `main.rs`, and `tasks/wire.rs` on `78047da`); the server grep finds nothing. On a confirmation page, the folded "What the server sends each agent" shows only the type, parameters, `timeout_seconds`, and `catalog_version` (the poll adds the task's id). **Save:** the output, a screenshot of that block.
 
 ### AC-3.3: killing and restarting the agent mid-poll and mid-task never runs a task twice
 
@@ -238,7 +247,7 @@ The server leaves out a host whose agent reports that it does not allow the serv
 
 1. `p3-demo.service` is in **Settings > Tasks** and in the VM's `allowed_services` (step 0). Stop the agent: `systemctl stop fleet-agent`.
 2. In `/etc/fleet-agent/config.toml`, change `allowed_services` to `[]` (keep `restart_service` in `enabled`). `fleet-agent check-config` passes.
-3. Create **Restart a service**, `p3-demo.service`, on the VM (it is still targeted, with an offline or stale warning).
+3. Create **Restart a service**, `p3-demo.service`, on the VM (it is still targeted, possibly with an offline or stale warning: the host stays Online for 3 minutes after the agent stops).
 4. `T=$(date '+%F %T'); systemctl start fleet-agent`.
 
 **Pass:** the task is **Refused**, `not_allowed_locally`, "refused by the agent · nothing ran". The agent's journal has `task not run: nothing was started` with `reason="not_allowed_locally"` for its UUID; `journalctl -u p3-demo --since "$T" -o cat | grep -c '^Started p3-demo.service'` is `0`. The host's **Tasks** tab now shows no allowed services, and a new restart task leaves the host out (`not_allowed_locally`). **Save:** the task page, the journal lines, the count, the targets page leaving the host out. Then put `p3-demo.service` back in `allowed_services` if you have steps left.
@@ -249,7 +258,7 @@ Covered by the passes above: **Refresh reports** (step b of AC-3.1, AC-3.6), **R
 
 ## 3. No remote shell, arbitrary command path, automatic reboot, or out-of-scope feature
 
-In a clone at the commit you accept. **Save:** the output of each command.
+In a clone at the commit you accept, from its top directory. **Save:** the output of each command.
 
 1. **No remote shell or command path:** AC-3.2 above, and the review note's sections 3 to 5.
 2. **The agent never reboots:**
@@ -270,10 +279,10 @@ In a clone at the commit you accept. **Save:** the output of each command.
 4. **Nothing out of scope** (requirements, section 1):
 
    ```sh
-   git grep -niE 'esp32|firmware|\bota\b|tenant|kubernetes|hypervisor|remediat' -- cmdb/app cmdb/lib cmdb/config agent/src
+   git grep -niE 'esp32|firmware|\bota\b|tenant|kubernetes|hypervisor|auto.?remediat' -- cmdb/app cmdb/lib cmdb/config agent/src ':!cmdb/config/rules'
    ```
 
-   **Pass:** only test strings (`firmware` as a report type the agent ignores) and the CIS rules' remediation guidance text, which Phase 2 shows and never applies.
+   **Pass:** only test strings in `agent/src/report/envelope.rs` and `agent/src/report/heartbeat.rs` (`firmware` as a report type the agent ignores). CIS remediation guidance text, which Phase 2 shows and never applies, is left out of this search.
 5. **Only catalog types exist:** `docs/api/tasks/task-catalog.json` has three types, and `IMPLEMENTED` in `agent/src/tasks/mod.rs` lists the same three. CI: `spec/lib/task_catalog_spec.rb` "is frozen, so nothing can add an entry at runtime"; `the_production_registry_implements_only_the_built_types`.
 
 ## 4. After the run

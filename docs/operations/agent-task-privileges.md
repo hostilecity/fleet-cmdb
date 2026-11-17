@@ -77,6 +77,8 @@ Against what a real `apt-get upgrade` does (unpacking into `/usr` and `/etc`, `/
 
 ## Where each claim is in the code
 
+Checked on `78047da`. Check the line numbers again when an agent change merges before a release is cut.
+
 | Claim | Code |
 |---|---|
 | The agent's sandbox: root, `CAP_DAC_READ_SEARCH` only, `NoNewPrivileges=yes`, `ProtectSystem=strict`, the address families, the system call filter | `agent/src/install/fleet-agent.service:42`, `:43`, `:48`, `:64`, `:73` |

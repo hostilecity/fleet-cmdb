@@ -142,7 +142,7 @@ The task page shows the state and the reason in words, the reason code beside th
 | | `not_allowed_locally` | The service is not in the VM's `allowed_services` (AC-3.9) |
 | | `protected_service` | This unit is never restarted remotely, by design. Use the console |
 | | `not_allowed_on_server` | The service left the server's allowlist (or this host's tag left its entry) after the task was created; refused by the server when the agent claimed it |
-| | `unknown_type`, `invalid_params` | The type or the parameters fail the catalog. The dashboard never creates these; they mean a task reached the database another way, or a server and an agent with different catalogs. Refused by whichever side checked first |
+| | `unknown_type`, `invalid_params` | The type or the parameters fail the catalog. The dashboard never creates these; they mean a task reached the database another way, or a server and an agent with different catalogs. Refused by whichever side checked first: the line under the heading says which (the heading currently words both as the agent's) |
 | | `not_supported` | The agent cannot run this type here: it is too old ([update it](install-agent.md#update-agents)), or, for package updates, the VM has no `apt` and `dpkg` |
 | **Failed** | `nonzero_exit` | The program failed: a service that did not come back (`systemctl status` is in the output), or apt-get failing. Read the output. After a failed upgrade, see [the package database needs repair](troubleshooting.md#the-package-database-needs-repair) |
 | | `lock_timeout` | Another program held apt's or dpkg's lock for more than 5 minutes (often `unattended-upgrades`). Nothing was upgraded. Run it again later |
