@@ -49,8 +49,9 @@ struct FakeSystemd {
     units: Arc<Mutex<Option<systemd::LoadedUnits>>>,
     /// `systemd-analyze verify` refuses the units with this (review of #235).
     verify_fails: Arc<Mutex<Option<String>>>,
-    /// The unit files `verify` was given, with their text.
+    /// The unit files `verify` was given, with their text, and the directories they were in.
     verified: Arc<Mutex<Vec<(String, String)>>>,
+    verified_dirs: Arc<Mutex<Vec<PathBuf>>>,
     /// During `verify`, whether `update.lock` and `updater.lock` in this state directory could be taken.
     lock_probe: Arc<Mutex<Option<PathBuf>>>,
     probed: Arc<Mutex<Vec<bool>>>,
@@ -82,6 +83,9 @@ impl Systemd for FakeSystemd {
                 let free = crate::fsx::Lock::file(&state.join(name)).unwrap().is_some();
                 self.probed.lock().unwrap().push(free);
             }
+        }
+        if let Some(dir) = files.first().and_then(|f| f.parent()) {
+            self.verified_dirs.lock().unwrap().push(dir.to_owned());
         }
         for file in files {
             let name = file.file_name().unwrap().to_string_lossy().into_owned();
@@ -2870,17 +2874,10 @@ fn refresh_units_refuses_units_systemd_would_not_load_and_changes_nothing() {
             "{name}"
         );
     }
-    // The copies are removed.
-    assert!(
-        fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .flatten()
-            .all(|e| !e
-                .file_name()
-                .to_string_lossy()
-                .starts_with(&format!("fleet-agent-units-{}-", std::process::id()))),
-        "the verify copies were left behind"
-    );
+    // The copies are removed. (Their own directory: other tests in this process verify at the same time.)
+    let dirs = fx.systemd.verified_dirs.lock().unwrap().clone();
+    assert_eq!(dirs.len(), 1);
+    assert!(!dirs[0].exists(), "the verify copies were left behind");
 }
 
 #[test]
