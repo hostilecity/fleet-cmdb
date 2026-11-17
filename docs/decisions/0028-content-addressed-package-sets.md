@@ -1,6 +1,6 @@
 # ADR 0028: Store each distinct package set once, in content-addressed chunks, and match each chunk once
 
-- Status: Proposed (#196; needs the owner's OK)
+- Status: Accepted (approved by the owner, 2026-11-16; built in #196)
 - Decision issue: #196
 - Requirements: `FR-2.3`, `FR-2.4`, `FR-2.5`, `NFR-3`; P2-S08 ([p2-packages.md](../backlog/specs/p2-packages.md)), P2-S11 ([p2-vulns.md](../backlog/specs/p2-vulns.md))
 - Extends: [ADR 0011](0011-vulnerability-data.md) (matching on source package with dpkg ordering) and [ADR 0007](0007-snapshots-and-retention.md) (a package snapshot whenever the set changes). Neither is reversed: what is matched, what a finding is, and when a snapshot is written stay the same. Only storage and the unit of matching change.
