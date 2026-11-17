@@ -136,7 +136,20 @@ The Deploy workflow installs a daily backup on the VM ([backup-and-restore.md](b
 | `PORT` | *fixed* by the image: `3000` | Puma's plain-HTTP port inside the container, for its health checks; not published |
 | `SOLID_QUEUE_IN_PUMA` | *fixed* by the workflow: `1`, or unset with `FLEET_JOBS_CONTAINER=true` | Background jobs and the recurring schedule run inside the app container |
 | `PGHOST` | *fixed* by the workflow: `$FLEET_DB_HOST` | The PostgreSQL server, for all four databases (role `cmdb`, set in `config/database.yml`) |
-| `DATABASE_URL`, `CACHE_DATABASE_URL`, `QUEUE_DATABASE_URL`, `CABLE_DATABASE_URL` | not set | Override a database's connection (the restore drill sets `DATABASE_URL` to its scratch database). Not used by the deployment |
+| `DATABASE_URL`, `CACHE_DATABASE_URL`, `QUEUE_DATABASE_URL`, `CABLE_DATABASE_URL` | not set | Override a database's connection (the restore drill sets `DATABASE_URL` to its scratch database). Not used by the homelab deployment; behind PgBouncer they name its pools ([scaling.md](scaling.md#pgbouncer-in-transaction-mode-fleet_db_pooler-direct_database_url)) |
+
+### Scale settings (#198, steps 2 and 3)
+
+All off by default; the homelab sets none of them. What each is for, and the connection budget: [scaling.md](scaling.md#step-2-up-to-about-100000-agents), ADR 0031. Each is checked at boot, and a bad value stops it with a message naming the setting.
+
+| Setting | Default | |
+|---|---|---|
+| `FLEET_DB_POOLER` | unset: no pooler | `transaction` when the four database URLs go through a transaction-mode pooler such as PgBouncer: prepared statements and Rails' migration advisory lock are off on the pooled databases (and the replica). Needs `DIRECT_DATABASE_URL`, and migrations from one container only (`FLEET_DB_PREPARE`). Any other value stops the boot |
+| `DIRECT_DATABASE_URL` | unset: the primary's own connection | The primary database without the pooler. The liveness evaluation's and a rollout stage prepare's session-level advisory locks are taken on it, and the work still runs through the pooler. Never migrated on its own. Required with `FLEET_DB_POOLER=transaction`. Without a user or password in the URL, it keeps the role `cmdb` and `DATABASE_PASSWORD` |
+| `REPLICA_DATABASE_URL` | unset: every page reads the primary | A streaming replica of the primary. The fleet list, compliance, the audit log, and a host's Configuration, Packages, Vulnerabilities, and Tasks tabs read it, on GET, once it has replayed what the primary had written when the page started. Nothing else does: no agent API path, write, or second-factor check. Never migrated. 2 s connect timeout; a replica that fails is skipped for 30 s |
+| `FLEET_REPLICA_MAX_WAIT_MS` | `100` | How long such a page waits for the replica to catch up before it reads the primary (and logs `[replica] not caught up`). A whole number from 0 to 2000 |
+| `FLEET_NODE_ROLE` | `all` | `agent_api`: serves only the agent hostname (the dashboard hostname gets an empty 404). `dashboard`: serves the dashboard hostname, and only `/up` and `/health` on the agent hostname. `all` serves both, as before. Anything else stops the boot |
+| `FLEET_DB_PREPARE` | `true` | `false`: the container starts without running `bin/rails db:prepare` (create and migrate). Set it on every node but the one that migrates, when there are several nodes or a transaction pooler. Any other value stops the container |
 
 `RAILS_MAX_THREADS`, `JOB_THREADS`, `JOB_CONCURRENCY`, and `JOB_REALTIME_THREADS` are whole numbers from 1 to 64; any other value, an empty one too, stops the boot with a message naming the setting. `WEB_CONCURRENCY` is read by Puma: a number, or `auto` for one process per core, which leaves no core for PostgreSQL on the same VM. Each process's database pool follows them: the largest of `RAILS_MAX_THREADS`, `JOB_THREADS`, and `JOB_REALTIME_THREADS`, plus 2 (5 with the defaults). Before raising any of them, check the connection budget against PostgreSQL's `max_connections` in [scaling.md](scaling.md#connection-budget).
 
