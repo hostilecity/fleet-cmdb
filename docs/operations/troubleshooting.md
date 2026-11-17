@@ -16,7 +16,8 @@ Open the failed run in **Actions > Deploy**. The first error line names the prob
 - **The run is skipped:** it was started from a branch other than `main`. Only `main` deploys.
 - **`lingering is off for deploy`** (in **Set up backups on the server**): run `loginctl enable-linger deploy` on the VM as root once, then run the workflow again. The app was not replaced.
 - **`a restore is in progress`:** `docker.sh restore` is running on the VM; the app was not replaced. Deploy when it has finished.
-- **`still busy after 30 minutes`:** a backup has run for over 30 minutes, and the deploy does not replace the app during one (its migrations would queue behind `pg_dump`'s locks). Run the workflow again later.
+- **`still busy after 20 minutes`:** a backup or the restore drill has held the backup lock for over 20 minutes, and the deploy does not replace the app meanwhile (its migrations would queue behind `pg_dump`'s locks). Run the workflow again later, or after the drill.
+- **`a restore of … did not finish`:** a restore failed or was killed; the app was not replaced. Finish it as backup-and-restore.md's "Restore" says, then deploy.
 
 ## Imports are refused: no release key
 
@@ -154,7 +155,8 @@ The new version's own log lines, before the rollback, say why it did not confirm
 - **`Permission denied`** under `/backups`: the location does not let uid 1000 write. `chown 1000:1000` it (on the file server, for NFS with root squashing).
 - **`pg_dump is PostgreSQL … but the server is PostgreSQL …`:** set the variable `FLEET_BACKUP_PG_IMAGE` to `postgres:<the server's version>` and run the Deploy workflow.
 - **`password authentication failed`:** `DATABASE_PASSWORD` is wrong; the app would fail too. Fix the secret and run the Deploy workflow: the backup reads the password from the app container.
-- **`refused: the database holds … fewer than the newest set`:** the database is not the one that was backed up, for example the empty databases of a rebuilt server. Restore a set ([backup-and-restore.md](backup-and-restore.md#restore)). If you restored an older set on purpose and the restore did not back it up, run `docker.sh backup --force` once.
+- **`refused: the database holds … fewer than the newest set`:** the database is not the one that was backed up. If the server was lost (for example the empty databases of a rebuilt server), restore a set ([backup-and-restore.md](backup-and-restore.md#restore)); do not force. If you emptied the databases on purpose for a fresh start, or restored an older set on purpose and the restore did not back it up, run `docker.sh backup --force` once: that set becomes the one later backups compare against, and the older, bigger sets are kept until you `docker.sh delete` them.
+- **`refused: a restore of … did not finish`:** see backup-and-restore.md's "Restore": finish the restore, or delete the marker it names if you are sure the databases are fine.
 - **`refused: busy with …`:** a restore, drill, deploy, or another backup holds the backup lock. Wait for it; the message names it.
 - **`may not use Docker`:** the deploy user is not in the `docker` group, or its systemd instance started before it was added. Add it, then as root `systemctl restart user@$(id -u deploy).service`.
 - **`there is no fleet-cmdb container`:** the backup reads the database password from the app container. Run the Deploy workflow.
