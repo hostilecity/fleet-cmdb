@@ -97,13 +97,17 @@ The second factor's numbers are fixed by the owner's decisions (P3-S09) and are 
 
 ## Backups and health
 
-Backups are not part of this deployment yet; they get their own issue. Until a backup has run, `/health` reports `503` with `"backup":"failing"`.
+The Deploy workflow installs a daily backup on the VM ([backup-and-restore.md](backup-and-restore.md)); until the first one has run, `/health` reports `503` with `"backup":"failing"`.
 
 | Setting | Default | |
 |---|---|---|
 | `FLEET_BACKUP_MAX_AGE_HOURS` | `26` | `/health` fails its `backup` check when the last complete backup is older than this, or has never run |
 | `FLEET_BACKUP_STATUS_FILE` | `/rails/storage/backup/last_success`, in the Docker volume | Touched by `ops/backup/backup.sh` after each complete backup; the app reads its time |
-| `FLEET_RESTORE_DRILL` | unset; *fixed* to `1` by `restore-drill.sh` | Makes the drill's boot use an in-memory cache, so it never writes to the live cache database |
+| `FLEET_BACKUP_DIR` | `/var/backups/fleet-cmdb` (workflow variable) | Where the backup sets are kept on the VM; must be a mount point that uid 1000 can write |
+| `FLEET_BACKUP_ALLOW_LOCAL` | `false` (workflow variable) | `true` allows a backup directory that is not a mount point (the sets then share the VM's disk with the database) |
+| `FLEET_BACKUP_RETENTION_DAYS` | `14` (workflow variable) | Days a backup set is kept; the newest 3 are always kept |
+| `FLEET_BACKUP_PG_IMAGE` | `postgres:17` (workflow variable) | The PostgreSQL client image the backup runs in; its major version must be the server's or newer |
+| `FLEET_RESTORE_DRILL` | unset; *fixed* to `1` by the restore drill | Makes the drill's boot use an in-memory cache, so it never writes to the live cache database |
 
 **Data retention** (snapshots and status history; default 90 days; report ids are kept 7 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
 
@@ -135,4 +139,4 @@ Backups are not part of this deployment yet; they get their own issue. Until a b
 
 `RAILS_MAX_THREADS`, `JOB_THREADS`, `JOB_CONCURRENCY`, and `JOB_REALTIME_THREADS` are whole numbers from 1 to 64; any other value, an empty one too, stops the boot with a message naming the setting. `WEB_CONCURRENCY` is read by Puma: a number, or `auto` for one process per core, which leaves no core for PostgreSQL on the same VM. Each process's database pool follows them: the largest of `RAILS_MAX_THREADS`, `JOB_THREADS`, and `JOB_REALTIME_THREADS`, plus 2 (5 with the defaults). Before raising any of them, check the connection budget against PostgreSQL's `max_connections` in [scaling.md](scaling.md#connection-budget).
 
-Not settings: `SECRET_KEY_BASE_DUMMY` is used only while building the image, and `BUNDLE_GEMFILE`, `FLEET_API_SCHEMAS_DIR`, `FLEET_RULES_SCHEMA_DIR`, `FLEET_TASK_CATALOG_DIR` (the task catalog, `docs/api/tasks`), `FLEET_AGENT_TRUST_DIR` (the agent's compiled-in certificate authorities, `agent/trust`), and `FLEET_AGENT_RELEASE_KEYS_DIR` (its release public keys, `agent/release-keys`) are set by the image; `PIDFILE` (Puma) is not needed; `CI`, `GITHUB_ACTIONS`, `COVERAGE_MINIMUM`, `NO_COVERAGE`, and `SHOW_TIMINGS` affect only the test suite and CI; the `DEPLOY_*` variables, `SSH_PRIVATE_KEY`, and `FLEET_EXTRA_SETTINGS` belong to the deploy workflow; `BACKUP_*` and the libpq variables `PGUSER`, `PGPASSWORD`, `PGPORT` are read by the scripts in `ops/backup/`; and `EMAIL`, `DISPLAY_NAME`, `VM_HOSTNAME`, `TAGS`, `DESCRIPTION`, `HOST_ID`, `ONLINE_MINUTES`, `STALE_MINUTES`, `DAYS`, `COUNTS`, `FULL`, `ALLOW_WITHDRAWALS`, and `DISABLE_MISSING` are arguments of the `bin/rails` tasks named in these guides.
+Not settings: `SECRET_KEY_BASE_DUMMY` is used only while building the image, and `BUNDLE_GEMFILE`, `FLEET_API_SCHEMAS_DIR`, `FLEET_RULES_SCHEMA_DIR`, `FLEET_TASK_CATALOG_DIR` (the task catalog, `docs/api/tasks`), `FLEET_AGENT_TRUST_DIR` (the agent's compiled-in certificate authorities, `agent/trust`), and `FLEET_AGENT_RELEASE_KEYS_DIR` (its release public keys, `agent/release-keys`) are set by the image; `PIDFILE` (Puma) is not needed; `CI`, `GITHUB_ACTIONS`, `COVERAGE_MINIMUM`, `NO_COVERAGE`, and `SHOW_TIMINGS` affect only the test suite and CI; the `DEPLOY_*` variables, `SSH_PRIVATE_KEY`, and `FLEET_EXTRA_SETTINGS` belong to the deploy workflow; `BACKUP_*`, `FLEET_BACKUP_ENV`, and the libpq variables `PGUSER`, `PGPASSWORD`, `PGPORT` are read by the scripts in `ops/backup/` (in the deployment from `~/.config/fleet-cmdb/backup.env`, which the workflow writes); and `EMAIL`, `DISPLAY_NAME`, `VM_HOSTNAME`, `TAGS`, `DESCRIPTION`, `HOST_ID`, `ONLINE_MINUTES`, `STALE_MINUTES`, `DAYS`, `COUNTS`, `FULL`, `ALLOW_WITHDRAWALS`, and `DISABLE_MISSING` are arguments of the `bin/rails` tasks named in these guides.

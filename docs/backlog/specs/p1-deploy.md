@@ -26,7 +26,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] A request to `/api/v1/*` through the public dashboard hostname fails; the same request on the agent hostname succeeds (Deploy CI checks both over HTTPS)
 - [ ] An agent on a Debian VM verifies the agent hostname certificate with its compiled-in trust and no `ca_file` (#137, ADR 0024)
 - [ ] The certificate's expiry is visible before it lapses (the Settings page, with a warning 30 days ahead; renewal is the owner's, ADR 0024)
-- [ ] Rebuilding the stack from backups restores state (ties into [P1-O01](p1-deploy.md); moved to [#138](https://github.com/hostilecity/fleet-cmdb/issues/138))
+- [ ] Rebuilding the stack from backups restores state (ties into [P1-O01](p1-deploy.md); moved to [#138](https://github.com/hostilecity/fleet-cmdb/issues/138), where Deploy CI rehearses it)
 
 ### As built
 
@@ -56,9 +56,20 @@ NFR-2 requires a documented, restorable backup procedure. A backup that has neve
 - A check that fails loudly if the latest backup is older than expected (surface it in [P1-S11](p1-operability.md) health or documentation of the alert).
 - Delivered as `ops/backup/` (`backup.sh`, `restore.sh`, `restore-drill.sh`, systemd units) and [docs/operations/backup-and-restore.md](../../operations/backup-and-restore.md). The backup touches a status file that `/health` watches (`FLEET_BACKUP_STATUS_FILE`, `FLEET_BACKUP_MAX_AGE_HOURS`); the drill's checks are `bin/rails backup:verify_restore`.
 
+### As built (#138)
+
+Owner decision (2026-11-16): backups run on the **app VM**, set up by `cd.yml`; the PostgreSQL container is provisioned by a separate task and needs only the one-time `ALTER ROLE cmdb CREATEDB;` for the drill.
+
+- **Set:** `fleet-cmdb.dump` and `queue.dump`, `cache.dump`, `cable.dump` (all four databases), `releases.tar`, `counts`, `SHA256SUMS`. `backup.sh` checks first that `pg_dump` is the server's major version or newer.
+- **Where it runs:** the deploy user's systemd **user** timer `fleet-cmdb-backup.timer` (daily 02:30, up to 10 min random delay, `Persistent=true`), installed by `ops/backup/install.sh`, which `cd.yml` runs after each deploy. It needs lingering for the deploy user (one-time root step). `ops/backup/docker.sh backup` checks `BACKUP_DIR` on the VM (it must exist and be a mount point unless `FLEET_BACKUP_ALLOW_LOCAL=true`), then runs `backup.sh` in a throwaway `FLEET_BACKUP_PG_IMAGE` container (default `postgres:17`) on `FLEET_DB_NETWORK`, as uid 1000 with no capabilities, with the storage volume `fleet-cmdb_storage` mounted: it reads the release files there and touches the status file there, so `/health` reports it. The database needs no published port.
+- **Password:** `cd.yml` writes `~/.config/fleet-cmdb/backup.env` (mode 0600) over SSH standard input from the secret `DATABASE_PASSWORD`, as it writes the app's env file; `docker.sh` reads it literally (never sources it) and passes the password to containers by name (`docker run -e PGPASSWORD`).
+- **Kept:** sets in `FLEET_BACKUP_DIR` (default `/var/backups/fleet-cmdb`), retention `FLEET_BACKUP_RETENTION_DAYS` (14) with the newest 3 always kept. The first deploy (any deploy while `/health` reports no recent backup) takes a backup at once; a failure is a warning.
+- **Restore and drill:** `restore.sh` restores every dump of a set, into new databases or existing ones without tables, and refuses any with a table. `docker.sh restore-drill` restores into four scratch databases and a scratch volume with the backup image, then runs `backup:verify_restore` in the deployed image with the running container's settings. `docker.sh restore SET` recovers a lost server with the app stopped.
+- **Verification:** Deploy CI installs it as `cd.yml` does (the runner user as the deploy user, lingering on, a tmpfs mount as the backup location), backs up through the user unit, checks the set and `/health`, runs the drill (it fails with the `CREATEDB` hint, then passes after the grant), and recovers a lost server by the documented procedure (new databases, a deploy, `dropdb`, `docker.sh restore`), checking the host, operator, and release file come back.
+
 ### Acceptance criteria
 
-- [ ] The restore drill is performed and the result recorded on #138
+- [ ] The restore drill is performed and the result recorded on #138 (Deploy CI runs it against the deployed setup on every change; the owner's first drill on the server is still to be recorded)
 - [ ] A restored database boots the app and shows the expected hosts and audit entries
 - [ ] The procedure is in the install and operations documentation ([P1-X03](p1-deploy.md))
 
@@ -80,4 +91,4 @@ NFR-2 requires a documented, restorable backup procedure. A backup that has neve
 
 ### As built
 
-[docs/operations/](../../operations/README.md): `install-server.md` (the GitHub Actions deployment, with HTTPS on the internal hostname from #137; backups in the deployment come with #138), `configuration.md` (every environment variable the server reads, checked against every `ENV` use in `cmdb/`), `install-agent.md`, `fleet-operations.md`, `troubleshooting.md`, with the existing `backup-and-restore.md` and `health-and-jobs.md`. The settings tables formerly in `cmdb/README.md` moved to `configuration.md`. Rollouts are started from the Rails console until their dashboard view ([P1-UPDATES](p1-updates.md), P1-D09) arrives; `install-agent.md` says so and should switch to the dashboard then.
+[docs/operations/](../../operations/README.md): `install-server.md` (the GitHub Actions deployment, with HTTPS on the internal hostname from #137, and backups from #138), `configuration.md` (every environment variable the server reads, checked against every `ENV` use in `cmdb/`), `install-agent.md`, `fleet-operations.md`, `troubleshooting.md`, with the existing `backup-and-restore.md` and `health-and-jobs.md`. The settings tables formerly in `cmdb/README.md` moved to `configuration.md`. Rollouts are started from the Rails console until their dashboard view ([P1-UPDATES](p1-updates.md), P1-D09) arrives; `install-agent.md` says so and should switch to the dashboard then.
