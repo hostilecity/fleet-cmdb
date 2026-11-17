@@ -26,7 +26,7 @@ module FleetBenchmark
     private
 
     def sample_host = @sample_host ||= Host.where("name LIKE 'bench-%'").where.not(name: "bench-0000000").order(:id).first
-    def package_host = @package_host ||= Host.where(id: HostPackage.select(:host_id)).where.not(name: "bench-0000000").order(:id).first
+    def package_host = @package_host ||= Host.where(id: VulnerabilityFinding.select(:host_id)).where.not(name: "bench-0000000").order(:id).first
 
     def probes
       {
@@ -63,10 +63,19 @@ module FleetBenchmark
             Retention.send(:expired_scope, target, Time.current - Setting.retention_window).limit(Retention::DEFAULT_BATCH_SIZE).pluck(:id)
           end
         },
-        "advisory import: hosts with a changed source" => lambda {
+        "advisory import: chunks and hosts with a changed source" => lambda {
           sources = [ FleetSimulator::Phase2.source_name(1) ]
-          HostPackage.where("COALESCE(source, name) IN (?)", sources).distinct.pluck(:host_id)
-          VulnerabilityFinding.where(ecosystem: "Debian:13", source: sources).distinct.pluck(:host_id)
+          PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources).distinct.pluck(:package_chunk_id)
+          HostPackageSet.where(package_set_id: PackageSet.holding_sources(sources)).pluck(:host_id)
+        },
+        "packages tab /hosts/:id/packages (one page)" => lambda {
+          list = HostPackageList.new(package_host.id, page: "9")
+          list.total
+          list.packages
+          list.open_findings
+        },
+        "vulnerabilities tab /hosts/:id/vulnerabilities (findings with details)" => lambda {
+          VulnerabilityFinding.with_details.where(host_id: package_host.id).active.preload(:advisory).to_a
         },
         "CIS evaluation of one host (after a config snapshot)" => -> { CisEvaluation.evaluate!([ sample_host.id ]) },
         "vulnerability matching of one host (after a package snapshot)" => -> { VulnerabilityMatcher.match!([ package_host.id ]) },

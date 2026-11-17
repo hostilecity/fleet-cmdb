@@ -15,6 +15,7 @@ module FleetBenchmark
       inventory_snapshots: 6, # per host, spread over the retention window (a stable-field change every two weeks)
       config_snapshots: 3,
       package_snapshots: 4,   # per package host
+      package_variants: 1,    # distinct package sets the package hosts are spread over (ADR 0028; 1: every host the template's)
       status_events: 12,
       receipts: 12,           # per host and report type; an agent sends 96 inventory receipts a day
       audit_entries: 4,       # per host, besides those the template's tasks write
@@ -75,7 +76,7 @@ module FleetBenchmark
       api.post!("/api/v1/reports/packages", payloads.packages(0), credential: plaintext)
       FleetSimulator::Phase2.evaluate!([ host.id ])
       @template = host.id
-      log "template host #{host.id}: #{HostPackage.where(host_id: host.id).count} packages, #{CisResult.where(host_id: host.id).count} CIS results, " \
+      log "template host #{host.id}: #{HostPackageSet.find_by!(host_id: host.id).package_count} packages, #{CisResult.where(host_id: host.id).count} CIS results, " \
           "#{VulnerabilityFinding.where(host_id: host.id).count} findings"
     end
 
@@ -116,27 +117,52 @@ module FleetBenchmark
       copy("host_configs", "host_id", "facts, content_hash, state_counts, manifest_version, ignored_keys, gen_random_uuid(), schema_version, collected_at, received_at, created_at, updated_at",
            columns: "facts, content_hash, state_counts, manifest_version, ignored_keys, report_id, schema_version, collected_at, received_at, created_at, updated_at")
       copy("host_package_sets", "host_id",
-           "manager, unsupported_reason, package_count, content_hash, warnings, gen_random_uuid(), schema_version, collected_at, received_at, created_at, updated_at, skipped",
-           columns: "manager, unsupported_reason, package_count, content_hash, warnings, report_id, schema_version, collected_at, received_at, created_at, updated_at, skipped")
+           "manager, unsupported_reason, package_count, content_hash, warnings, gen_random_uuid(), schema_version, collected_at, received_at, created_at, updated_at, skipped, package_set_id",
+           columns: "manager, unsupported_reason, package_count, content_hash, warnings, report_id, schema_version, collected_at, received_at, created_at, updated_at, skipped, package_set_id")
       copy("cis_results", "host_id", "cis_rule_id, cis_rule_version_id, NULL, result, observed, reason, evaluated_at, changed_at",
            columns: "cis_rule_id, cis_rule_version_id, config_snapshot_id, result, observed, reason, evaluated_at, changed_at")
       copy("host_vulnerability_evaluations", "host_id", "ecosystem, state, reason, detail, not_evaluated, not_evaluated_count, evaluated_at, created_at, updated_at",
            columns: "ecosystem, state, reason, detail, not_evaluated, not_evaluated_count, evaluated_at, created_at, updated_at")
     end
 
-    # Package rows and findings for the first package_hosts hosts.
+    # Package sets and findings for the first package_hosts hosts (ADR 0028). With package_variants above 1, the hosts are
+    # spread over that many distinct sets derived from the template's, as ADR 0028's prototype was: each upgrades 1 to 12
+    # of the template's source packages and adds up to 2 hand-installed tools, so the sets share most of their chunks.
     def packages
+      @variants = variant_sets
+      ids = "ARRAY[#{@variants.join(',')}]::bigint[]"
+      n = "substr(h.name, 7)::int"
+      run_sql(<<~SQL)
+        UPDATE host_package_sets hps SET package_set_id = (#{ids})[1 + #{n} % #{@variants.size}], content_hash = md5(((#{ids})[1 + #{n} % #{@variants.size}])::text),
+               package_count = (SELECT package_count FROM package_sets s WHERE s.id = (#{ids})[1 + #{n} % #{@variants.size}])
+        FROM hosts h WHERE h.id = hps.host_id AND h.name LIKE 'bench-%' AND h.id <> #{@template} AND #{n} <= #{@o[:package_hosts]}
+      SQL
       limit = "AND substr(h.name, 7)::int <= #{@o[:package_hosts]}"
-      copy("host_packages", "host_id", "name, architecture, version, source", columns: "name, architecture, version, source", where: limit)
       copy("vulnerability_findings", "host_id",
-           "advisory_id, package, architecture, source, ecosystem, installed_version, fixed_version, state, resolution, first_seen_at, resolved_at, reopened_at, created_at, updated_at",
-           columns: "advisory_id, package, architecture, source, ecosystem, installed_version, fixed_version, state, resolution, first_seen_at, resolved_at, reopened_at, created_at, updated_at",
+           "advisory_id, package, architecture, state, resolution, first_seen_at, resolved_at, reopened_at, last_source, last_installed_version, last_fixed_version, created_at, updated_at",
+           columns: "advisory_id, package, architecture, state, resolution, first_seen_at, resolved_at, reopened_at, last_source, last_installed_version, last_fixed_version, created_at, updated_at",
            where: limit)
       # Some resolved findings too, as upgrades leave them: a fifth of the open ones, resolved 30 to 120 days ago.
       run_sql(<<~SQL)
         UPDATE vulnerability_findings SET state = 'resolved', resolution = 'fixed', resolved_at = now() - (30 + (id % 90)) * interval '1 day'
         WHERE id % 5 = 0 AND host_id IN (SELECT id FROM hosts WHERE name LIKE 'bench-%' AND id <> #{@template})
       SQL
+    end
+
+    # The template's set, then package_variants - 1 variants of it, stored through PackageStore; their ids.
+    def variant_sets
+      template = HostPackageSet.find_by!(host_id: @template).package_set_id
+      base = PackageStore.packages(template)
+      sources = base.map { |p| p.source || p.name }.uniq.sort
+      random = Random.new(196)
+      variants = Array.new(@o[:package_variants] - 1) do |k|
+        upgraded = sources.sample(random.rand(1..12), random:).to_set
+        list = base.map { |p| upgraded.include?(p.source || p.name) ? p.with(version: "#{p.version}+b#{k + 1}") : p }
+        list += Array.new(random.rand(0..2)) { |t| AgentApi::PackageReport::Package.new("bench-tool-#{random.rand(20)}-#{t}", "amd64", "1.0-1", nil) }
+        PackageStore.store!(list.uniq(&:key))
+      end
+      log "#{variants.size + 1} package sets: #{PackageChunk.count} chunks, #{PackageChunkEntry.count} chunk entries"
+      [ template, *variants ]
     end
 
     def history
@@ -170,9 +196,10 @@ module FleetBenchmark
       SQL
       run_sql(<<~SQL)
         #{template_row.('package_snapshots')}
-        INSERT INTO package_snapshots (host_id, manager, unsupported_reason, package_count, content_hash, packages, warnings, report_id, collected_at, received_at, skipped,
-                                       stored_at)
-        SELECT h.id, t.manager, t.unsupported_reason, t.package_count, md5(h.id::text || s), t.packages, t.warnings, gen_random_uuid(),
+        INSERT INTO package_snapshots (host_id, manager, unsupported_reason, package_count, content_hash, package_set_id, warnings, report_id, collected_at, received_at,
+                                       skipped, stored_at)
+        SELECT h.id, t.manager, t.unsupported_reason, t.package_count, md5(h.id::text || s),
+               (ARRAY[#{@variants.join(',')}]::bigint[])[1 + (substr(h.name, 7)::int + s) % #{@variants.size}], t.warnings, gen_random_uuid(),
                #{spread.(@o[:package_snapshots])}, #{spread.(@o[:package_snapshots])}, t.skipped, #{spread.(@o[:package_snapshots])}
         FROM hosts h CROSS JOIN t CROSS JOIN generate_series(1, #{@o[:package_snapshots]}) s
         WHERE #{bench} AND substr(h.name, 7)::int BETWEEN 1 AND #{@o[:package_hosts]}

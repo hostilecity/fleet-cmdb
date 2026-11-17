@@ -51,17 +51,26 @@ module FleetBenchmark
     def measurements
       active = Host.active.count
       cis_hosts = bench_hosts.order(:id).limit(@samples).pluck(:id)
-      package_hosts = bench_hosts.where(id: HostPackage.select(:host_id)).order(:id).limit(@samples).pluck(:id)
+      package_hosts = bench_hosts.where(id: VulnerabilityFinding.select(:host_id)).order(:id).limit(@samples).pluck(:id)
       sources = { "Debian:13" => [ FleetSimulator::Phase2.source_name(1) ] }
-      targeted = HostPackage.where("COALESCE(source, name) IN (?)", sources.values.flatten).distinct.count(:host_id)
+      scope = { "packages" => sources, "import_id" => AdvisoryImport.newest_succeeded_id }
+      targeted = Host.in_fleet.where(id: HostPackageSet.where(package_set_id: PackageSet.holding_sources(sources.values.flatten)).select(:host_id)).count
+      chunks = PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources.values.flatten).distinct.count(:package_chunk_id)
       {
         # Both start from a healthy fleet (rolled back afterwards). Steady: nothing changes. Mass: evaluated 20 minutes later,
         # so every host goes offline at once, as after a server outage.
         "liveness evaluation, steady (per active host)" => [ active, -> { Liveness.evaluate! }, -> { fresh_heartbeats } ],
         "liveness evaluation, all go offline (per host)" => [ active, -> { Liveness.evaluate!(now: Time.current + 20.minutes) }, -> { fresh_heartbeats } ],
         "CIS evaluation, every rule (per host)" => [ cis_hosts.size, -> { CisEvaluation.evaluate!(cis_hosts) }, nil, true ],
+        # Transitions only: the warm run matches the chunks (ADR 0028), as the first host on a set does.
         "vulnerability matching, every package (per host)" => [ package_hosts.size, -> { VulnerabilityMatcher.match!(package_hosts) }, nil, true ],
-        "advisory import: one changed source (per affected host)" => [ targeted, -> { EvaluationRun::Advisories.new("packages" => sources).call(Host.minimum(:id)..Host.maximum(:id)) }, nil, true ],
+        "vulnerability matching, every chunk again (per chunk)" => [ ChunkEvaluation.count, -> { rolled_back { VulnerabilityMatcher::Chunks.ensure!(ChunkEvaluation.pluck(:package_chunk_id), "Debian:13", force: true) } } ],
+        "advisory import: one changed source, chunks (per chunk)" => [ chunks, -> { rolled_back { EvaluationRun::Advisories.new(scope).prepare! } } ],
+        "advisory import: one changed source (per affected host)" => [ targeted, lambda {
+          work = EvaluationRun::Advisories.new(scope)
+          work.prepare!
+          work.call(Host.minimum(:id)..Host.maximum(:id))
+        }, nil, true ],
         # Row deletes: the tables that are not partitioned, and the legacy partition of a converted table (ADR 0027).
         "retention prune, row deletes (rolled back; per row deleted)" => [ retention_rows, -> { rolled_back { Retention.prune! } } ],
         # Partitions past the window detached and dropped, each host's newest row moved forward first (ADR 0027).
