@@ -65,7 +65,7 @@ impl Fetch for Client {
 fn describe(error: &ApiError) -> String {
     match error {
         ApiError::Transport(why) => format!("cannot reach the download address ({why})"),
-        ApiError::RateLimited { .. } => "the server is limiting downloads (429)".into(),
+        ApiError::RateLimited { .. } => "downloads are being limited (429)".into(),
         other => match other.status() {
             404 => "the server does not have this release (404)".into(),
             status => format!("the download was refused (HTTP {status})"),

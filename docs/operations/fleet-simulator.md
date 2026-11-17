@@ -18,7 +18,7 @@ bin/simulate-fleet --hosts 50                     # 50 hosts on the default inte
 bin/simulate-fleet --load-check --liveness-check  # NFR-3 and the AC-1.2 check, about 20 minutes
 ```
 
-With the default limits it still works, waiting out each `429` as an agent would; enrolling 50 hosts then takes about five minutes. `bin/simulate-fleet --help` lists every option.
+With the default limits it still works, waiting out each of the server's `429 rate_limited` answers as an agent would (for at most 15 minutes; like the agent, it does not wait out a `429` without that code, #223); enrolling 50 hosts then takes about five minutes. `bin/simulate-fleet --help` lists every option.
 
 Credentials are kept in `tmp/fleet_simulator/credentials.json` (mode 0600), so a rerun brings the same hosts back instead of adding new ones. A host whose saved credential no longer works (revoked, or the database was reset) is enrolled again. To remove the simulated hosts, retire them in the dashboard or reset the development database (`bin/rails db:reset`).
 

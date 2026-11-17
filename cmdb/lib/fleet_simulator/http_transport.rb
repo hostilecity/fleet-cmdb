@@ -1,12 +1,28 @@
 require "net/http"
 
 module FleetSimulator
+  # The longest Retry-After the agent honours (#221, #223).
+  RETRY_AFTER_MAX = 900
+
   Response = Data.define(:status, :body, :headers, :ms) do
     def json = JSON.parse(body.to_s)
     def success? = status.between?(200, 299)
-    # Seconds to wait from the Retry-After of a 429 (DEC-08) or of a 503 that has one (report load shedding, #200),
-    # or nil for any other answer.
-    def retry_after = status == 429 || (status == 503 && headers["retry-after"]) ? [ headers["retry-after"].to_i, 1 ].max : nil
+    # Seconds to wait from the Retry-After of the server's own 429 rate_limited (DEC-08) or of a 503 that has one
+    # (report load shedding, #200), at most 15 minutes, or nil for any other answer. As the agent does (#223), a 429
+    # with another code or none (a proxy in front of the server) is not waited out.
+    def retry_after
+      return unless headers["retry-after"] && ((status == 429 && code == "rate_limited") || status == 503)
+
+      headers["retry-after"].to_i.clamp(1, RETRY_AFTER_MAX)
+    end
+
+    # The error envelope's code, or nil when the body has none.
+    def code
+      parsed = JSON.parse(body.to_s)
+      parsed.dig("error", "code") if parsed.is_a?(Hash) && parsed["error"].is_a?(Hash)
+    rescue JSON::ParserError
+      nil
+    end
   end
 
   # Talks to a running server over HTTP, as agents and browsers do. Requests are addressed by Host header, so

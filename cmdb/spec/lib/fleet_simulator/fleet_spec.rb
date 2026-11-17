@@ -58,7 +58,7 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
     it "waits out rate limits as an agent would" do
       limited = Class.new(SimpleDelegator) do
         def post_api(path, payload, **options)
-          return FleetSimulator::Response.new(status: 429, body: "{}", headers: { "retry-after" => "30" }, ms: 1) if (@limited = !@limited)
+          return FleetSimulator::Response.new(status: 429, body: '{"error":{"code":"rate_limited"}}', headers: { "retry-after" => "30" }, ms: 1) if (@limited = !@limited)
 
           __getobj__.post_api(path, payload, **options)
         end
@@ -76,7 +76,8 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
           if path == "/api/v1/heartbeat" && !@answered
             @answered = true
             # Retry-After only on the 429: a 503 with one is load shedding (#200), which the simulator waits out.
-            next FleetSimulator::Response.new(status:, body: "{}", headers: status == 429 ? { "retry-after" => "5" } : {}, ms: 1)
+            next FleetSimulator::Response.new(status:, body: status == 429 ? '{"error":{"code":"rate_limited"}}' : "{}",
+                                              headers: status == 429 ? { "retry-after" => "5" } : {}, ms: 1)
           end
           __getobj__.post_api(path, payload, **options)
         end
@@ -165,7 +166,7 @@ RSpec.describe "fleet simulator against the agent API (P1-O04)" do
       hosts = enrolled(2)
       limited = Class.new(SimpleDelegator) do
         def post_api(path, payload, **options)
-          return FleetSimulator::Response.new(status: 429, body: "{}", headers: { "retry-after" => "5" }, ms: 1) if (@limited = !@limited)
+          return FleetSimulator::Response.new(status: 429, body: '{"error":{"code":"rate_limited"}}', headers: { "retry-after" => "5" }, ms: 1) if (@limited = !@limited)
 
           __getobj__.post_api(path, payload, **options)
         end

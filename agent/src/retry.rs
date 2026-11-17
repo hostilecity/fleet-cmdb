@@ -86,8 +86,9 @@ impl Rng for SplitMix64 {
 pub const OVERLOADED_MAX: Duration = Duration::from_secs(15 * 60);
 
 /// The longest any loop waits for a `429 rate_limited` `Retry-After` (#223). The server's own limits
-/// ask for at most a minute, so this only bounds a broken header; it is far below a day, so heartbeats
-/// and update confirmations carry on.
+/// ask for at most a minute, so this only bounds a broken or forged header: a host can be offline for
+/// at most about 16 minutes, not a day. Update confirmations (300 s by default) rely on the server's
+/// own windows being a minute or less, not on this cap.
 pub const RATE_LIMITED_MAX: Duration = Duration::from_secs(15 * 60);
 
 /// The retry timings.
