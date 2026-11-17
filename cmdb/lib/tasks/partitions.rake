@@ -32,6 +32,6 @@ namespace :partitions do
 end
 
 # A new or reset database gets its partitions straight away: the schema holds only the partitioned parents.
-%w[db:prepare db:schema:load].each do |name|
+%w[db:prepare db:schema:load db:schema:load:primary].each do |name|
   Rake::Task[name].enhance { Rake::Task["partitions:ensure"].invoke } if Rake::Task.task_defined?(name)
 end

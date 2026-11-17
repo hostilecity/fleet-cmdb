@@ -464,6 +464,42 @@ jobs:
           expect "the drill of the newest set (the restored state) passes" 0 "$rc"
           if [ "$failed" -ne 0 ]; then docker logs --tail 100 fleet-cmdb; exit 1; fi
 
+      - name: The audit log's guard, installed by the superuser, and a restore of a dump that has it (ADR 0027)
+        # The one-time superuser step of docs/operations/install-server.md, on the migrated database: /health's audit_guard
+        # turns from warning to ok, and the app's role can no longer detach an audit partition. Then a dump with the event
+        # triggers restores with ops/backup/restore.sh as the app's role (it leaves them out; only a superuser can create one).
+        run: |
+          failed=0
+          expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; failed=1; fi; }
+          check() { docker exec fleet-cmdb curl -s http://localhost:3000/health | sed -n "s/.*\"$1\":\"\([a-z]*\)\".*/\1/p"; }
+          as_cmdb() { docker exec -e PGPASSWORD="$DB_PASSWORD" "$@"; }
+          expect "/health: the partitions are ok after boot" ok "$(check partitions)"
+          expect "/health: audit_guard warns before the superuser step" warning "$(check audit_guard)"
+          # The command in docs/operations/install-server.md, as the container's superuser whatever it is called.
+          docker exec -i postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
+          docker exec -i postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql # safe to run again
+          expect "/health: audit_guard is ok after it" ok "$(check audit_guard)"
+          partition="$(docker exec postgres psql -U postgres -d cmdb_production -Atc "SELECT inhrelid::regclass FROM pg_inherits WHERE inhparent = 'audit_entries'::regclass LIMIT 1")"
+          expect "the app's role cannot detach an audit partition" 1 \
+            "$(as_cmdb postgres psql -h 127.0.0.1 -U cmdb -d cmdb_production -c "ALTER TABLE audit_entries DETACH PARTITION $partition" 2>&1 | grep -c 'the audit log is append-only')"
+
+          docker exec postgres psql -q -U postgres -c "ALTER ROLE cmdb CREATEDB"
+          docker cp ops/backup/restore.sh postgres:/tmp/restore.sh
+          docker exec postgres sh -c 'rm -rf /tmp/set && mkdir /tmp/set && pg_dump -U postgres -Fc -f /tmp/set/fleet-cmdb.dump cmdb_production && cd /tmp/set \
+            && tar -cf releases.tar -T /dev/null && : > counts && sha256sum fleet-cmdb.dump releases.tar counts > SHA256SUMS'
+          expect "the dump holds the event triggers" 2 "$(docker exec postgres sh -c 'pg_restore --list /tmp/set/fleet-cmdb.dump | grep -c " EVENT TRIGGER "')"
+          as_cmdb -e PGHOST=127.0.0.1 -e PGUSER=cmdb postgres bash /tmp/restore.sh /tmp/set cmdb_restore_ci /tmp/releases
+          expect "the restore has every audit entry" "$(docker exec postgres psql -U postgres -d cmdb_production -Atc 'SELECT count(*) FROM audit_entries')" \
+            "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc 'SELECT count(*) FROM audit_entries')"
+          expect "the restore has no event trigger until the superuser runs the step again" 0 \
+            "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc 'SELECT count(*) FROM pg_event_trigger')"
+          expect "the restore has no copy of the guard's schema owned by the app's role" 0 \
+            "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc "SELECT count(*) FROM pg_namespace WHERE nspname = 'fleet_audit_guard'")"
+          docker exec -i postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_restore_ci' < ops/postgres/audit-guard.sql
+          expect "the superuser step works on the restored database" 2 \
+            "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc 'SELECT count(*) FROM pg_event_trigger')"
+          if [ "$failed" -ne 0 ]; then docker logs --tail 100 fleet-cmdb; exit 1; fi
+
   gate:
     name: Deploy CI
     needs: [changes, image]

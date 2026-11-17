@@ -66,6 +66,14 @@ if [ "${#to_create[@]}" -gt 0 ]; then
   fi
 fi
 
+# The primary dump without the audit log's guard (ADR 0027): its event triggers, which only a superuser can create
+# (this runs as the app's role), and the fleet_audit_guard schema with its functions and table, which would otherwise
+# come back owned by the app's role. After a real restore the superuser installs the guard again
+# (ops/postgres/audit-guard.sql); until then /health shows audit_guard as a warning.
+list="$(mktemp)"
+trap 'rm -f "$list"' EXIT
+pg_restore --list "$set_dir/fleet-cmdb.dump" | grep -v -E ' EVENT TRIGGER | fleet_audit_guard ' > "$list"
+
 created=() restored=()
 undo() {
   for name in "${created[@]}"; do dropdb --if-exists "$name" || true; done
@@ -76,7 +84,9 @@ for ((i = 0; i < ${#targets[@]}; i += 2)); do
     createdb "$name"
     created+=("$name")
   fi
-  if ! pg_restore --no-owner --no-privileges --exit-on-error --single-transaction --dbname "$name" "$set_dir/$file"; then
+  use_list=()
+  if [ "$file" = fleet-cmdb.dump ]; then use_list=(--use-list "$list"); fi
+  if ! pg_restore --no-owner --no-privileges --exit-on-error --single-transaction "${use_list[@]}" --dbname "$name" "$set_dir/$file"; then
     undo
     kept=()
     for done_name in "${restored[@]}"; do [[ " ${created[*]} " == *" $done_name "* ]] || kept+=("$done_name"); done
@@ -92,3 +102,4 @@ done
 mkdir -p "$releases_dir"
 tar -C "$releases_dir" -xf "$set_dir/releases.tar"
 echo "restore: databases and release files in $releases_dir restored from $set_dir"
+echo "restore: for a real restore, the PostgreSQL superuser now runs ops/postgres/audit-guard.sql against $db (docs/operations/backup-and-restore.md)"

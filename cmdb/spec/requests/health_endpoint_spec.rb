@@ -8,9 +8,40 @@ RSpec.describe "GET /health", type: :request do
     trust_release_keys
     FileUtils.touch(Rails.configuration.x.backup.status_file)
     liveness_job_ran
+    allow(Partitions).to receive(:audit_guard_installed?).and_return(true) # installed by the superuser (ops/postgres/audit-guard.sql)
   end
 
-  let(:all_ok) { { "database" => "ok", "releases" => "ok", "backup" => "ok", "failed_jobs" => "ok", "job_liveness" => "ok", "live_updates" => "ok" } }
+  let(:all_ok) do
+    { "database" => "ok", "releases" => "ok", "backup" => "ok", "failed_jobs" => "ok", "job_liveness" => "ok", "live_updates" => "ok",
+      "partitions" => "ok", "audit_guard" => "ok" }
+  end
+
+  # ADR 0027, #195: a warning is shown but does not make the server unhealthy.
+  it "warns, and stays healthy, until the superuser has installed the audit log's guard" do
+    allow(Partitions).to receive(:audit_guard_installed?).and_call_original
+
+    get "/health"
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to eq("status" => "ok", "checks" => all_ok.merge("audit_guard" => "warning"))
+  end
+
+  it "warns about the partitions, and is unhealthy when the audit log has fewer than two months ahead" do
+    allow(Partitions).to receive(:health).and_return(:warning)
+    get "/health"
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to eq("status" => "ok", "checks" => all_ok.merge("partitions" => "warning"))
+
+    allow(Partitions).to receive(:health).and_return(:failing)
+    get "/health"
+    expect(response).to have_http_status(:service_unavailable)
+    expect(response.parsed_body).to eq("status" => "unhealthy", "checks" => all_ok.merge("partitions" => "failing"))
+  end
+
+  it "has partitions ok on a server whose maintenance has run" do
+    get "/health"
+    expect(response.parsed_body["checks"]).to include("partitions" => "ok")
+  end
 
   it "is ok when everything is in place, and shows nothing else" do
     import_release(signed_release(version: "1.0.0"))
@@ -74,7 +105,7 @@ RSpec.describe "GET /health", type: :request do
     expect(response).to have_http_status(:service_unavailable)
     expect(response.parsed_body["checks"]).to include("database" => "failing")
     expect(response.body).not_to include("secret detail")
-    expect(Rails.logger).to have_received(:error).with("[health] a check raised ActiveRecord::ConnectionNotEstablished")
+    expect(Rails.logger).to have_received(:error).with("[health] a check raised ActiveRecord::ConnectionNotEstablished").at_least(:once)
   end
 
   it "is unhealthy when the binary of a running rollout's target is missing, though it is not the newest release" do

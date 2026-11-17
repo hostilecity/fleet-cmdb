@@ -7,7 +7,11 @@ module Backup
   # - inventory snapshots survived: at least as many hosts have one as when the backup was taken (retention
   #   prunes snapshots but keeps each host's newest, so that number never goes down; it may legitimately be 0);
   # - every release row has its binary on disk with the recorded size and SHA-256;
-  # - the newest release downloads through the agent API and matches its recorded SHA-256.
+  # - the newest release downloads through the agent API and matches its recorded SHA-256;
+  # - the history tables' partitions are as /health wants them, and whether the audit log's event triggers are
+  #   installed: a restore never has them (ops/backup/restore.sh leaves them out, since only a superuser can create
+  #   one), so that line is a warning, not a failure, reminding the owner that after a real restore the superuser runs
+  #   ops/postgres/audit-guard.sql (ADR 0027).
   #
   # Counts are compared with "at least" because the live server keeps writing while a backup runs, and hosts and
   # audit entries are never deleted. Nothing here writes to the database.
@@ -15,7 +19,7 @@ module Backup
     Result = Data.define(:lines, :ok) do
       def ok? = ok
 
-      def failures = lines.reject { |line| line.start_with?("ok ") }
+      def failures = lines.select { |line| line.start_with?("FAIL ") }
     end
 
     COUNTED = { "hosts" => Host, "audit_entries" => AuditEntry, "agent_releases" => AgentRelease }.freeze
@@ -33,7 +37,8 @@ module Backup
       check_inventory
       AgentRelease.newest_first.each { |release| check_file(release) }
       check_download(AgentRelease.newest_first.first)
-      Result.new(lines: @lines, ok: @lines.all? { |line| line.start_with?("ok ") })
+      check_partitions
+      Result.new(lines: @lines, ok: @lines.none? { |line| line.start_with?("FAIL ") })
     end
 
     private
@@ -41,6 +46,8 @@ module Backup
     def pass(text) = @lines << "ok   #{text}"
 
     def fail_with(text) = @lines << "FAIL #{text}"
+
+    def warn_with(text) = @lines << "WARN #{text}"
 
     def check(text, passed) = passed ? pass(text) : fail_with(text)
 
@@ -68,6 +75,16 @@ module Backup
       count = InventorySnapshot.distinct.count(:host_id)
       minimum = Integer(@expected.fetch("hosts_with_inventory", 0))
       check "inventory snapshots: #{count} hosts have one, at least #{minimum} expected", count >= minimum
+    end
+
+    def check_partitions
+      health = Partitions.health
+      check "history partitions: #{health} (bin/rails partitions:status lists them)", health != :failing
+      if Partitions.audit_guard_installed?
+        pass "the audit log's event triggers are installed"
+      else
+        warn_with "the audit log's event triggers are not installed: after a real restore, the PostgreSQL superuser runs ops/postgres/audit-guard.sql"
+      end
     end
 
     def check_file(release)
