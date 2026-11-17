@@ -41,7 +41,7 @@ RSpec.describe SessionLock do
     it "does not run the block while another session holds the lock" do
       # A session of its own: the test pins one connection per pool, which would take the lock again (it is re-entrant).
       other = ActiveRecord::ConnectionAdapters::PostgreSQLAdapter.new(ApplicationRecord.connection_db_config.configuration_hash)
-      other.select_value("SELECT pg_advisory_lock(#{KEY})")
+      other.execute("SELECT pg_advisory_lock(#{KEY})")
       ran = false
       expect(described_class.hold(KEY) { ran = true }).to be_nil
       expect(ran).to be(false)
