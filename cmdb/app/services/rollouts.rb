@@ -420,22 +420,10 @@ module Rollouts
   private_class_method :prepare_locked!
 
   # Runs the block holding this rollout's prepare lock, or returns nil without running it when another session holds
-  # it. Session-level, so it spans the prepare's own transactions; released first in ensure, and if that fails the
-  # connection is closed and dropped from the pool, which releases it (as Liveness.evaluate! does).
-  def with_prepare_lock(rollout)
-    connection = Rollout.connection
-    key = ApplicationRecord.sanitize_sql_array([ "?, ?::int", PREPARE_LOCK_KEY, rollout.id ])
-    return nil unless connection.select_value("SELECT pg_try_advisory_lock(#{key})")
-
-    begin
-      yield
-    ensure
-      begin
-        connection.select_value("SELECT pg_advisory_unlock(#{key})")
-      rescue ActiveRecord::ActiveRecordError
-        connection.throw_away!
-      end
-    end
+  # it. Session-level (SessionLock), so it spans the prepare's own transactions; on the direct connection behind a
+  # transaction-mode pooler (#198).
+  def with_prepare_lock(rollout, &)
+    SessionLock.hold(ApplicationRecord.sanitize_sql_array([ "?, ?::int", PREPARE_LOCK_KEY, rollout.id ]), &)
   end
   private_class_method :with_prepare_lock
 

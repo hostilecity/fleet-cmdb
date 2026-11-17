@@ -20,6 +20,8 @@ Bundler.require(*Rails.groups)
 
 # Thread and process counts, read by config/database.yml and config/queue.yml (#198).
 require_relative "../lib/sizing/process_sizing"
+# Optional pooler, direct, replica, and node-role settings, read by config/database.yml and below (#198).
+require_relative "../lib/sizing/deployment_topology"
 
 module Cmdb
   class Application < Rails::Application
@@ -59,6 +61,8 @@ module Cmdb
     # set defaults in their environment files.
     config.x.fleet_hosts.dashboard = ENV["FLEET_DASHBOARD_HOST"]&.downcase.presence
     config.x.fleet_hosts.agent = ENV["FLEET_AGENT_HOST"]&.downcase.presence
+    # What this node serves (FLEET_NODE_ROLE, #198): "all" (default), "agent_api", or "dashboard" (HostSeparation).
+    config.x.fleet_hosts.role = DeploymentTopology.node_role
 
     # Proxies allowed to set X-Forwarded-Host and X-Forwarded-For (the tunnel connector and the agent TLS
     # proxy), as comma-separated addresses or CIDRs. Unset means only loopback is trusted.

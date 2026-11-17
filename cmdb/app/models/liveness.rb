@@ -103,44 +103,32 @@ module Liveness
   private_class_method :task_capability_columns
 
   # Moves every active host to the status its last heartbeat implies. Runs are serialised by a session-level
-  # advisory lock taken before the clock and thresholds are read and released when the run ends, so an older run
-  # can never act after a newer one (review of #50); a run that finds another in progress does nothing, and the
-  # next minute's run catches up. Rows a heartbeat holds are skipped and handled by the next run. Returns the
-  # number of transitions written.
+  # advisory lock (SessionLock) taken before the clock and thresholds are read and released when the run ends, so an
+  # older run can never act after a newer one (review of #50); a run that finds another in progress does nothing, and
+  # the next minute's run catches up. Rows a heartbeat holds are skipped and handled by the next run. Returns the
+  # number of transitions written. Behind a transaction-mode pooler the lock is on the direct connection (#198), and
+  # each batch first checks that connection still holds it.
   #
   # Transitions are written in transactions of at most BATCH_SIZE hosts, each committed before the next, so a
   # heartbeat waits for at most one batch's row locks. In one transaction, every host going offline at once (after
   # a server outage, or a network partition) held every host row until the whole run committed: 12 s for 100,000
   # hosts on the scale benchmark, with every heartbeat of the fleet queued behind it.
   def evaluate!(now: nil, thresholds: nil)
-    Host.connection_pool.with_connection do |connection|
-      next 0 unless connection.select_value("SELECT pg_try_advisory_lock(#{EVALUATION_LOCK_KEY})")
-
-      changed = []
-      begin
-        now ||= Time.current
-        thresholds ||= Setting.liveness_thresholds
-        transition_all!(now, thresholds, changed)
-        changed.size
-      ensure
-        # The lock first, so nothing after it can leave the lock held on a pooled connection (review of #212).
-        unlock(connection)
-        # Also when a later batch fails: the batches before it are committed, and open pages must show them (review of
-        # #186). A failure to request is reported by LiveRefresh, never raised over this run's own error.
-        FleetBroadcast.hosts_changed(changed)
-      end
+    changed = []
+    locked = false
+    SessionLock.hold(EVALUATION_LOCK_KEY.to_s) do |still_held|
+      locked = true
+      now ||= Time.current
+      thresholds ||= Setting.liveness_thresholds
+      transition_all!(now, thresholds, changed, still_held)
     end
+    changed.size
+  ensure
+    # After the lock is released (SessionLock), also when a later batch fails: the batches before it are committed,
+    # and open pages must show them (review of #186). A failure to request is reported by LiveRefresh, never raised
+    # over this run's own error.
+    FleetBroadcast.hosts_changed(changed) if locked
   end
-
-  # A session lock outlives the run if it is not released, and would then block every later run on other
-  # connections. If the unlock itself fails (the connection broke, or a caller's transaction was aborted), the
-  # connection is closed and taken out of the pool, which releases the lock with it.
-  def unlock(connection)
-    connection.select_value("SELECT pg_advisory_unlock(#{EVALUATION_LOCK_KEY})")
-  rescue ActiveRecord::ActiveRecordError
-    connection.throw_away!
-  end
-  private_class_method :unlock
 
   # The status a host's last heartbeat implies, as SQL over host_liveness l.
   def target_sql(now, thresholds)
@@ -152,10 +140,11 @@ module Liveness
   # Every host whose status should change, in batches in id order, each batch's ids added to changed once it has
   # committed. Each batch starts after the last id of the one before, so the run reads host_liveness, not hosts,
   # once however many batches it takes, and a batch smaller than BATCH_SIZE is the last.
-  def transition_all!(now, thresholds, changed)
+  def transition_all!(now, thresholds, changed, still_held)
     target = target_sql(now, thresholds)
     after = 0
     loop do
+      still_held.call
       found, moved = transition_batch!(target, now, after:)
       changed.concat(moved)
       break if found.size < BATCH_SIZE

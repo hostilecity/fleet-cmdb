@@ -20,6 +20,15 @@ default: &default
   # heartbeat (lib/sizing/process_sizing.rb). 5 with the defaults. The connection budget against PostgreSQL's
   # max_connections is in docs/operations/scaling.md.
   max_connections: <%= ProcessSizing.database_pool %>
+  <%# Optional scale settings (#198, lib/sizing/deployment_topology.rb); a bad value stops the boot here. %>
+  <% DeploymentTopology.validate! %>
+  <% if DeploymentTopology.transaction_pooler? %>
+  # Behind a transaction-mode pooler (FLEET_DB_POOLER=transaction) each transaction may get another server connection:
+  # a prepared statement belongs to one server connection, and so does the session-level advisory lock Rails takes
+  # around migrations. With it off, run migrations from one process only (FLEET_DB_PREPARE, scaling.md).
+  prepared_statements: false
+  advisory_locks: false
+  <% end %>
 
 
 # Development mirrors production's layout: the Solid components live in their own databases.
@@ -43,6 +52,23 @@ development:
     # No statement_timeout: a cancelled poll (ActiveRecord::QueryCanceled) is not an error the listener retries, so
     # it would stop the listener thread for good (review of #218). /health's live_updates check reports that.
     connect_timeout: 2
+<% if DeploymentTopology.direct? %>
+  # The primary without the pooler (DIRECT_DATABASE_URL, merged over this entry): the session-level advisory locks
+  # (SessionLock). Never migrated on its own; prepared statements and advisory locks stay on.
+  direct:
+    <<: *primary_development
+    database_tasks: false
+    prepared_statements: true
+    advisory_locks: true
+<% end %>
+<% if DeploymentTopology.replica? %>
+  # A streaming replica of the primary (REPLICA_DATABASE_URL, merged over this entry), read only by the pages in
+  # ReplicaReads once it has caught up. A replica is never migrated.
+  replica:
+    <<: *primary_development
+    replica: true
+    connect_timeout: 2
+<% end %>
 
 
   # The specified database role being used to connect to PostgreSQL.
@@ -85,6 +111,14 @@ test:
     <<: *primary_test
     database: cmdb_test_queue
     migrations_paths: db/queue_migrate
+  # Always present in tests, on the test database itself, so every page ReplicaReads lists runs on the reading role
+  # with writes refused (the transactional fixtures share the writing connection with it).
+  replica:
+    <<: *primary_test
+    replica: true
+<% if ENV["DATABASE_URL"] && !ENV["REPLICA_DATABASE_URL"] %>
+    url: <%= ENV["DATABASE_URL"] %>
+<% end %>
 
 # As with config/credentials.yml, you never want to store sensitive information,
 # like your database password, in your source code. If your source code is
@@ -134,3 +168,20 @@ production:
     # No statement_timeout: a cancelled poll (ActiveRecord::QueryCanceled) is not an error the listener retries, so
     # it would stop the listener thread for good (review of #218). /health's live_updates check reports that.
     connect_timeout: 2
+<% if DeploymentTopology.direct? %>
+  # The primary without the pooler (DIRECT_DATABASE_URL, merged over this entry): the session-level advisory locks
+  # (SessionLock). Never migrated on its own; prepared statements and advisory locks stay on.
+  direct:
+    <<: *primary_production
+    database_tasks: false
+    prepared_statements: true
+    advisory_locks: true
+<% end %>
+<% if DeploymentTopology.replica? %>
+  # A streaming replica of the primary (REPLICA_DATABASE_URL, merged over this entry), read only by the pages in
+  # ReplicaReads once it has caught up. A replica is never migrated.
+  replica:
+    <<: *primary_production
+    replica: true
+    connect_timeout: 2
+<% end %>
