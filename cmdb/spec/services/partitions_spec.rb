@@ -96,6 +96,12 @@ RSpec.describe Partitions do
       expect(described_class.list(receipts).reject(&:default?).last).to eq(last)
     end
 
+    it "creates a missing default partition" do
+      c.execute("DROP TABLE #{receipts}_default")
+      expect(described_class.ensure!(tables: [ receipts ])).to eq(receipts => [ "#{receipts}_default" ])
+      expect(described_class.list(receipts).last).to be_default
+    end
+
     it "skips a table that is not partitioned" do
       allow(described_class).to receive(:partitioned?).and_return(false)
       expect(described_class.ensure!.values).to all(eq([]))

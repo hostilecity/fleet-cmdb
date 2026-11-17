@@ -86,6 +86,27 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
     expect(Partitions.audit_guard_installed?).to be(true)
   end
 
+  it "guards a partition the app's role creates under another name as any other: it gets a truncate guard at once" do
+    c.execute(guard_sql)
+    c.execute("SET ROLE #{role}")
+    from = Partitions.list("audit_entries").last.to
+    attempt("CREATE TABLE fleet_spec_month PARTITION OF audit_entries FOR VALUES FROM (#{c.quote(from)}) TO (#{c.quote(from + 1.month)})")
+    attempt("INSERT INTO audit_entries (actor_type, action, occurred_at) VALUES ('system', 'host.edited', #{c.quote(from + 1.day)})")
+    attempt("CREATE FUNCTION fleet_spec_discard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$")
+
+    refused("TRUNCATE fleet_spec_month", /append-only: TRUNCATE/)
+    refused("DELETE FROM fleet_spec_month", /append-only: DELETE/)
+    refused("DROP TABLE fleet_spec_month")
+    refused("ALTER TABLE fleet_spec_month DISABLE TRIGGER audit_entries_no_update_or_delete")
+    refused("ALTER TABLE fleet_spec_month DISABLE TRIGGER audit_entries_partition_no_truncate")
+    refused("CREATE TRIGGER fleet_spec_discard BEFORE INSERT ON fleet_spec_month FOR EACH ROW EXECUTE FUNCTION fleet_spec_discard()")
+    refused("CREATE RULE fleet_spec_discard AS ON INSERT TO fleet_spec_month DO INSTEAD NOTHING")
+    refused("DROP TRIGGER audit_entries_partition_no_truncate ON fleet_spec_month")
+    refused("ALTER TRIGGER audit_entries_partition_no_truncate ON fleet_spec_month RENAME TO fleet_spec_renamed")
+    refused("ALTER TRIGGER audit_entries_no_update_or_delete ON audit_entries RENAME TO fleet_spec_renamed")
+    expect(c.select_value("SELECT count(*) FROM fleet_spec_month")).to eq(1)
+  end
+
   it "is reported missing when an event trigger is disabled or the guard function is not the superuser's" do
     c.execute(guard_sql)
     c.execute("ALTER EVENT TRIGGER fleet_audit_guard_ddl DISABLE")

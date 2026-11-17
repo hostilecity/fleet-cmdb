@@ -297,7 +297,9 @@ module Partitions
           c.execute("WITH moved AS (DELETE FROM #{c.quote_table_name("#{table.name}_default")} WHERE #{range} RETURNING *) INSERT INTO partition_rows SELECT * FROM moved")
         end
         c.execute("CREATE TABLE #{c.quote_table_name(name)} PARTITION OF #{parent} FOR VALUES FROM (#{c.quote(from)}) TO (#{c.quote(to)})")
-        if table.audit?
+        # Its own truncate guard: a statement trigger is not cloned from the parent. Once the superuser's event trigger is
+        # installed (ops/postgres/audit-guard.sql), it has already added one.
+        if table.audit? && !c.select_value("SELECT 1 FROM pg_trigger WHERE tgrelid = #{c.quote(name)}::regclass AND tgname = #{c.quote(table.truncate_guard)}")
           c.execute("CREATE TRIGGER #{table.truncate_guard} BEFORE TRUNCATE ON #{c.quote_table_name(name)} FOR EACH STATEMENT EXECUTE FUNCTION #{table.name}_append_only()")
         end
         if moving
