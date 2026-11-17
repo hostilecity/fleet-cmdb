@@ -338,7 +338,8 @@ jobs:
           rm -f "$RUNNER_TEMP/next.env"
           docker rmi fleet-cmdb:ci > /dev/null
           wait_up || stop "the replaced app did not start"
-          echo go > "$fifo" && wait "$holder" || true
+          echo go > "$fifo" # releases the deploy's lock
+          wait "$holder" || true
           wait "$waiter" && rc=0 || rc=$?
           cat "$RUNNER_TEMP/backup-138.log"
           expect "the waiting backup succeeds after the deploy" 0 "$rc"
