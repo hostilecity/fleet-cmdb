@@ -15,7 +15,9 @@
 # if this database has fewer of either than the newest set recorded, it is a new or replaced one (for example the
 # empty databases of a rebuilt server). Writing its set would make an empty set the newest one and let retention
 # prune the good ones, so nothing is written, the status file is left alone, and /health turns unhealthy. Set
-# BACKUP_FORCE=1 to back it up anyway (after deliberately restoring an older set).
+# BACKUP_FORCE=1 to back it up anyway: after deliberately restoring an older set, or after a deliberate fresh start
+# with an emptied database. The forced set becomes the newest, so later backups compare against it. The guard
+# relies on hosts and audit entries never being deleted (FR-S.3, ADR 0027 decision 7).
 #
 # Needs pg_dump, pg_restore, psql, tar, sha256sum, GNU date. The database is reached with the standard libpq
 # variables (PGHOST, PGPORT, PGUSER, PGPASSWORD or PGPASSFILE, PGDATABASE is ignored: see BACKUP_DB_NAME). pg_dump
@@ -32,7 +34,9 @@
 #                            BACKUP_NO_STATUS=1, which leaves it to the caller
 #   BACKUP_DB_NAME           default cmdb_production; the other three are <name>_queue, <name>_cache, <name>_cable
 #   BACKUP_RETENTION_DAYS    default 14: sets older than this (by the time in their name) are deleted, but the newest
-#                            BACKUP_KEEP_MIN, and the newest set that holds any host, are always kept
+#                            BACKUP_KEEP_MIN are always kept, and so is any set holding more hosts or more audit
+#                            entries than the newest set (the sets of an earlier, bigger database, after a forced
+#                            backup): those stay until deleted by hand (docker.sh delete)
 #   BACKUP_KEEP_MIN          default 3
 #   BACKUP_FORCE             1: write the set even if the database holds fewer hosts or audit entries (see above)
 set -euo pipefail
@@ -88,7 +92,7 @@ newest="$(sets_newest_first | head -n 1)"
 if [ -n "$newest" ] && [ "${BACKUP_FORCE:-}" != 1 ]; then
   last_hosts="$(count_in "$newest" hosts)" last_audit="$(count_in "$newest" audit_entries)"
   if [ -n "$last_hosts" ] && [ -n "$last_audit" ] && { [ "$hosts" -lt "$last_hosts" ] || [ "$audit_entries" -lt "$last_audit" ]; }; then
-    die "refused: the database holds $hosts hosts and $audit_entries audit entries, fewer than the newest set $(basename "$newest") ($last_hosts and $last_audit). Hosts and audit entries are never deleted, so this is not the database that was backed up (for example the empty databases of a rebuilt server: restore a set first, docs/operations/backup-and-restore.md). Nothing was written and no set was pruned. If you restored an older set on purpose, back up with BACKUP_FORCE=1 (docker.sh backup --force)"
+    die "refused: the database holds $hosts hosts and $audit_entries audit entries, fewer than the newest set $(basename "$newest") ($last_hosts and $last_audit). Hosts and audit entries are never deleted, so this is not the database that was backed up (for example the empty databases of a rebuilt server: restore a set first, docs/operations/backup-and-restore.md). Nothing was written and no set was pruned. If the server was lost, restore a set first. If you restored an older set on purpose, or emptied the database on purpose for a fresh start, back up with BACKUP_FORCE=1 (docker.sh backup --force): the new set becomes the one later backups compare against, and the older sets that hold more are kept until you delete them"
   fi
 fi
 
@@ -125,29 +129,36 @@ trap - EXIT
 log "wrote $final ($(du -sh "$final" | cut -f1))"
 
 # Retention: delete sets older than the window, by the UTC time in their name (a mount's mtimes may not be kept),
-# but never the newest keep_min, and never the newest set that holds any host (the last one with real data).
+# but never the newest keep_min, and never a set that holds more hosts or more audit entries than the one just
+# written: those are the sets of an earlier, bigger database (after a forced backup), kept until deleted by hand.
 now="$(date -u +%s)"
+age_of() { # seconds since the UTC time in a fleet-cmdb-<time> or .incoming-<time> name, or nothing
+  local t="${1##*-}"
+  [[ "$t" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]] || return 0
+  echo $((now - $(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}" +%s)))
+}
 mapfile -t sets < <(sets_newest_first)
-keep_real=""
-for set in "${sets[@]}"; do
-  if [ "$(count_in "$set" hosts)" -gt 0 ] 2> /dev/null; then keep_real="$set"; break; fi
-done
 for i in "${!sets[@]}"; do
   [ "$i" -lt "$keep_min" ] && continue
-  [ "${sets[$i]}" = "$keep_real" ] && continue
-  name="$(basename "${sets[$i]}")" t="${name#fleet-cmdb-}"
-  [[ "$t" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]] || continue
-  taken="$(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}" +%s)"
-  if [ $((now - taken)) -gt $((retention_days * 86400)) ]; then
+  set_hosts="$(count_in "${sets[$i]}" hosts)" set_audit="$(count_in "${sets[$i]}" audit_entries)"
+  if [ "${set_hosts:-0}" -gt "$hosts" ] || [ "${set_audit:-0}" -gt "$audit_entries" ]; then
+    log "kept ${sets[$i]}: it holds more than the newest set (delete it by hand when it is no longer needed)"
+    continue
+  fi
+  age="$(age_of "$(basename "${sets[$i]}")")"
+  if [ -n "$age" ] && [ "$age" -gt $((retention_days * 86400)) ]; then
     rm -rf "${sets[$i]}"
     log "pruned ${sets[$i]}"
   fi
 done
-# A run that was killed leaves its .incoming- directory; remove those older than a day.
+# A run that was killed leaves its .incoming-<time> directory; remove those more than a day old, by that time.
 while IFS= read -r stale; do
-  rm -rf "$stale"
-  log "removed $stale, left by an interrupted run"
-done < <(find "$BACKUP_DIR" -maxdepth 1 -type d -name '.incoming-*' -mmin +1440)
+  age="$(age_of "$(basename "$stale")")"
+  if [ -n "$age" ] && [ "$age" -gt 86400 ]; then
+    rm -rf "$stale"
+    log "removed $stale, left by an interrupted run"
+  fi
+done < <(find "$BACKUP_DIR" -maxdepth 1 -type d -name '.incoming-*')
 
 if [ "${BACKUP_NO_STATUS:-}" = 1 ]; then log "done"; exit 0; fi
 # The server (a non-root user in its container) only needs to stat the status file, but umask 077 would make a

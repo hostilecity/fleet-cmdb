@@ -13,6 +13,8 @@
 #                                  databases) and the storage volume, then a backup of the restored state; the app
 #                                  must be stopped. --force accepts a set that holds no host and no audit entry
 #   docker.sh list                 the backup sets, their sizes, and their counts
+#   docker.sh delete SET           delete one set (not the newest), for example a set retention keeps because it holds
+#                                  more than the newest set after a deliberate fresh start
 #   docker.sh pull                 pull the PostgreSQL client image (install.sh does this; a failure only warns)
 #
 # The PostgreSQL client tools run in a throwaway container of BACKUP_PG_IMAGE (default postgres:17) on the database's
@@ -29,12 +31,15 @@
 #
 # Backup, restore, the drill, and the deploy (ops/deploy/deploy.sh) take one lock, ~/.local/state/fleet-cmdb/backup.lock:
 # a backup or drill waits up to an hour for another holder, and refuses while a restore runs; a restore refuses while
-# anything else runs.
+# anything else runs. Settings and the app's image are read only once the lock is held, so a deploy that ran
+# meanwhile is seen. A restore leaves ~/.local/state/fleet-cmdb/restore-incomplete until it succeeds (removed at once
+# if it refused without changing anything); while it exists, backups, install.sh, and deploys refuse.
 set -euo pipefail
 
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 config="${FLEET_BACKUP_ENV:-$HOME/.config/fleet-cmdb/backup.env}"
 lock_file="$HOME/.local/state/fleet-cmdb/backup.lock"
+restore_marker="$HOME/.local/state/fleet-cmdb/restore-incomplete"
 app=fleet-cmdb
 volume=fleet-cmdb_storage
 
@@ -119,6 +124,11 @@ take_lock() {
   printf '%s since %s, pid %s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock_file"
 }
 
+# A restore that did not finish leaves the databases and the volume in an unknown state.
+check_restore_marker() {
+  [ ! -e "$restore_marker" ] || die "refused: $(cat "$restore_marker"). Run docker.sh restore again (drop the databases its message named first). If you are sure the databases are fine, delete $restore_marker"
+}
+
 # docker run of the PostgreSQL client image on the database network, as uid 1000 with no capabilities, with the
 # libpq variables passed by name. --init, so a docker stop or the unit's timeout reaches the script. Arguments:
 # further docker run options, the image, and the command.
@@ -178,8 +188,9 @@ cmd_backup() {
   case "${1:-}" in --force) force=1 ;; "") ;; *) die "usage: docker.sh backup [--force]" ;; esac
   wait_for_docker
   check_network
-  app_settings
   take_lock backup 3600
+  check_restore_marker
+  app_settings
   do_backup "$force"
 }
 
@@ -201,8 +212,8 @@ cmd_restore_drill() {
   wait_for_docker
   check_network
   [ -d "$BACKUP_DIR" ] || die "$BACKUP_DIR does not exist"
-  app_settings
   take_lock drill 3600
+  app_settings
   local set counts stamp live_size target_host="${BACKUP_DRILL_PGHOST:-}"
   set="$(resolve_set "${1:-}")"
   counts="$(set_counts "$set")" || die "$set has no counts file"
@@ -261,8 +272,8 @@ cmd_restore() {
       die "the $name container is running: stop the app first (docker stop fleet-cmdb-jobs fleet-cmdb)"
     fi
   done
-  app_settings
   take_lock "restore of $1" 0
+  app_settings
   set="$(resolve_set "$1")"
   counts="$(set_counts "$set")" || die "$set has no counts file"
   log "restoring $set: $(printf '%s' "$counts" | tr '\n' ' ')"
@@ -272,8 +283,16 @@ cmd_restore() {
   docker volume create "$volume" > /dev/null
   own_volume "$volume"
   log "restoring $set into $db (and _queue, _cache, _cable) and the volume $volume"
+  mkdir -p "$(dirname "$restore_marker")"
+  printf 'a restore of %s did not finish (started %s)' "$set" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$restore_marker"
+  local rc=0
   pg_run -v "$BACKUP_DIR:/backups:ro" -v "$volume:/storage" --entrypoint bash "$image" \
-    /ops/restore.sh "/backups/$set" "$db" /storage/releases
+    /ops/restore.sh "/backups/$set" "$db" /storage/releases || rc=$?
+  case "$rc" in
+    0) rm -f "$restore_marker" ;;
+    3) rm -f "$restore_marker"; die "the restore refused before changing anything (above)" ;;
+    *) die "the restore failed part-way (above). $restore_marker stays, so backups and deploys refuse until a restore succeeds" ;;
+  esac
   # A backup of the restored state at once, still under the lock: it becomes the newest set, so later backups
   # compare against it, and /health turns healthy. Forced, since an older set may have been restored on purpose.
   log "restored. Backing up the restored state"
@@ -285,6 +304,18 @@ cmd_list() {
   # shellcheck disable=SC2016 # expanded by the container's shell
   pg_run -v "$BACKUP_DIR:/backups:ro" --entrypoint sh "$image" -c \
     'cd /backups && for set in fleet-cmdb-*; do [ -d "$set" ] || continue; printf "%s  %s  %s\n" "$set" "$(du -sh "$set" | cut -f1)" "$(tr "\n" " " < "$set/counts" 2> /dev/null)"; done; true'
+}
+
+cmd_delete() {
+  local set newest
+  [ -n "${1:-}" ] || die "usage: docker.sh delete fleet-cmdb-<UTC time> (docker.sh list shows the sets)"
+  wait_for_docker
+  take_lock "delete of $1" 0
+  set="$(resolve_set "$1")"
+  newest="$(newest_set)"
+  [ "$set" != "$newest" ] || die "$set is the newest set, which later backups compare against: not deleted"
+  pg_run -v "$BACKUP_DIR:/backups" --entrypoint rm "$image" -rf "/backups/$set"
+  log "deleted $set"
 }
 
 cmd_pull() {
@@ -305,6 +336,7 @@ case "$command" in
   restore-drill) cmd_restore_drill "${1:-}" ;;
   restore) cmd_restore "${1:-}" "${2:-}" ;;
   list) cmd_list ;;
+  delete) cmd_delete "${1:-}" ;;
   pull) cmd_pull ;;
-  *) die "usage: docker.sh backup [--force] | first-backup | restore-drill [SET] | restore SET [--force] | list | pull" ;;
+  *) die "usage: docker.sh backup [--force] | first-backup | restore-drill [SET] | restore SET [--force] | list | delete SET | pull" ;;
 esac

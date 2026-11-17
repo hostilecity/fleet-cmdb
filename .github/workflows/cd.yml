@@ -46,7 +46,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: self-hosted
     environment: production
-    timeout-minutes: 30
+    # Above deploy.sh's 20-minute wait for a running backup or drill plus the build, so its own message ends the job.
+    timeout-minutes: 60
     env:
       DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.DEPLOY_USER }}

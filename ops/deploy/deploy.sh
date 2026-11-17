@@ -8,8 +8,9 @@
 # which is deleted once the containers have started.
 #
 # First it takes the backup lock (~/.local/state/fleet-cmdb/backup.lock, ops/backup/docker.sh), held through the build
-# until the new app is up: it refuses at once while a restore runs, and waits up to 30 minutes for a running
-# backup or drill. A running pg_dump holds a share lock on every table, so the new app's migrations would otherwise
+# until the new app is up: it refuses at once while a restore runs, or while an unfinished restore left its marker
+# (~/.local/state/fleet-cmdb/restore-incomplete), and waits up to 20 minutes for a running backup or restore drill,
+# well inside cd.yml's 60-minute job timeout, so its own message is what fails the job. A running pg_dump holds a share lock on every table, so the new app's migrations would otherwise
 # queue behind it, and every query on those tables behind the migrations (#138). The backup timer, in turn, waits for
 # the deploy.
 set -euo pipefail
@@ -28,7 +29,11 @@ if ! flock -n 9; then
     exit 1
   fi
   echo "waiting for: $holder"
-  flock -w 1800 9 || { echo "still busy after 30 minutes: $holder. The app was not replaced" >&2; exit 1; }
+  flock -w 1200 9 || { echo "still busy after 20 minutes: $holder. The app was not replaced; run the workflow again later" >&2; exit 1; }
+fi
+if [ -e "$HOME/.local/state/fleet-cmdb/restore-incomplete" ]; then
+  echo "$(cat "$HOME/.local/state/fleet-cmdb/restore-incomplete"): the app was not replaced. Finish the restore first (docs/operations/backup-and-restore.md)" >&2
+  exit 1
 fi
 printf 'deploy of %s since %s, pid %s\n' "$sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock_file"
 echo "==> database network $network"

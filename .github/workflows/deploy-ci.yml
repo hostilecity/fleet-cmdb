@@ -233,6 +233,7 @@ jobs:
           backups=/var/backups/fleet-cmdb
           tool="$HOME/.local/share/fleet-cmdb/backup/docker.sh"
           lock="$HOME/.local/state/fleet-cmdb/backup.lock"
+          marker="$HOME/.local/state/fleet-cmdb/restore-incomplete"
           deploy_dir="$RUNNER_TEMP/deploy"
           XDG_RUNTIME_DIR="/run/user/$(id -u)" && export XDG_RUNTIME_DIR
 
@@ -319,6 +320,33 @@ jobs:
           echo "== one lock: backup, drill, restore, and the deploy"
           mkdir -p "$deploy_dir/build-$GITHUB_SHA"
           tar -cf - cmdb docs/api agent/trust agent/release-keys ops/backup ops/deploy | tar -xf - -C "$deploy_dir/build-$GITHUB_SHA"
+          echo "-- a backup that waits for a deploy reads the app's settings and image only once it has the lock"
+          # The review's reproduction: while a deploy holds the lock, it replaces the container with a new image and
+          # removes the old tag (deploy.sh does both). A backup that read the image before waiting would then run the
+          # removed fleet-cmdb:ci, which Docker would try to pull, and fail to update the status file.
+          fifo="$RUNNER_TEMP/deploy-holder-138" && mkfifo "$fifo"
+          # shellcheck disable=SC2016 # expanded by sh
+          flock "$lock" sh -c 'echo "deploy of next (Deploy CI)" > "$1"; read -r _ < "$2"' sh "$lock" "$fifo" & holder=$!
+          sleep 2
+          "$tool" backup > "$RUNNER_TEMP/backup-138.log" 2>&1 & waiter=$!
+          sleep 3
+          (umask 077 && docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-cmdb | grep . > "$RUNNER_TEMP/next.env")
+          docker tag fleet-cmdb:ci fleet-cmdb:next
+          docker rm -f fleet-cmdb > /dev/null
+          docker run -d --name fleet-cmdb -p 127.0.0.1:8443:3443 --network fleet-db --cap-drop ALL --security-opt no-new-privileges \
+            -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/next.env" fleet-cmdb:next > /dev/null
+          rm -f "$RUNNER_TEMP/next.env"
+          docker rmi fleet-cmdb:ci > /dev/null
+          wait_up || stop "the replaced app did not start"
+          echo go > "$fifo" && wait "$holder" || true
+          wait "$waiter" && rc=0 || rc=$?
+          cat "$RUNNER_TEMP/backup-138.log"
+          expect "the waiting backup succeeds after the deploy" 0 "$rc"
+          contains "it waited for the deploy" "waiting for: deploy of next" "$(cat "$RUNNER_TEMP/backup-138.log")"
+          contains "and updated the status file with the new image" "status file updated" "$(cat "$RUNNER_TEMP/backup-138.log")"
+          good="$(sets | tail -n 1)" before="$(sets | xargs)"
+          expect "two sets now" 2 "$(sets | grep -c .)"
+          echo "-- a restore holds the lock"
           # shellcheck disable=SC2016 # expanded by sh
           flock "$lock" sh -c 'echo "restore of fleet-cmdb-test (Deploy CI)" > "$1"; sleep 45' sh "$lock" & holder=$!
           sleep 2
@@ -365,7 +393,7 @@ jobs:
           systemctl --user start fleet-cmdb-backup.service && rc=0 || rc=1
           expect "the timer's backup fails" 1 "$rc"
           contains "because the database has fewer hosts than the newest set" "refused: the database holds 0 hosts" "$(journal 10)"
-          expect "no set was written" "$good" "$(sets | xargs)"
+          expect "no set was written" "$before" "$(sets | xargs)"
           expect "/health still says it has no backup" failing "$(backup_check)"
           echo "-- even a forced backup of the empty state cannot be drilled or restored by mistake"
           "$tool" backup --force > /dev/null || stop "the forced backup failed"
@@ -376,11 +404,22 @@ jobs:
           docker stop fleet-cmdb > /dev/null
           contains "the restore refuses an empty set" "holds no host and no audit entry" "$("$tool" restore "$empty" 2>&1 || true)"
           contains "and migrated databases" "holds data" "$("$tool" restore "$good" 2>&1 || true)"
+          expect "a restore that refused before changing anything leaves no marker" no "$([ -e "$marker" ] && echo yes || echo no)"
+          echo "-- a restore that did not finish leaves its marker, and backups and deploys refuse until a restore succeeds"
+          printf 'a restore of %s did not finish (started by Deploy CI)' "$good" > "$marker" # as a killed restore leaves it
+          contains "the backup refuses" "did not finish" "$("$tool" backup 2>&1 || true)"
+          contains "install.sh refuses" "did not finish" "$(bash ops/backup/install.sh 2>&1 || true)"
+          cp "$RUNNER_TEMP/app.env" "$deploy_dir/fleet-cmdb.env"
+          contains "the deploy refuses" "did not finish" \
+            "$(bash "$deploy_dir/build-$GITHUB_SHA/ops/deploy/deploy.sh" "$deploy_dir" "$GITHUB_SHA" fleet-db false 2>&1 || true)"
+          rm -f "$deploy_dir/fleet-cmdb.env"
+          expect "and the stopped app was left alone" false "$(docker inspect -f '{{.State.Running}}' fleet-cmdb)"
           for db in cmdb_production cmdb_production_queue cmdb_production_cache cmdb_production_cable; do
             docker exec postgres dropdb -U postgres "$db"
           done
           out="$("$tool" restore "$good" 2>&1)" || { echo "$out"; stop "docker.sh restore failed"; }
           echo "$out"
+          expect "the successful restore removes the marker" no "$([ -e "$marker" ] && echo yes || echo no)"
           docker start fleet-cmdb > /dev/null
           wait_up || stop "the restored app did not start"
           rm -f "$RUNNER_TEMP/app.env"
@@ -391,7 +430,10 @@ jobs:
           wait_backup_ok || failed=1
           echo "/health: $(health)"
           expect "the restore's own backup makes /health report it again" ok "$(backup_check)"
-          expect "three sets: the good one, the forced empty one, and the restored state" 3 "$(sets | grep -c .)"
+          expect "four sets: the two good ones, the forced empty one, and the restored state" 4 "$(sets | grep -c .)"
+          contains "the newest set cannot be deleted" "is the newest set" "$("$tool" delete "$(sets | tail -n 1)" 2>&1 || true)"
+          "$tool" delete "$empty" > /dev/null || stop "docker.sh delete failed"
+          expect "an older set can" "" "$(sets | grep -x "$empty" || true)"
           out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
           echo "$out" | tail -n 2
           expect "the drill of the newest set (the restored state) passes" 0 "$rc"

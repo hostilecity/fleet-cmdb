@@ -10,20 +10,23 @@
 # non-empty release directory, so it cannot overwrite live data. To recover a lost server, run it under the
 # production database name with the app stopped (in the deployment: ops/backup/docker.sh restore), then start the
 # app (docs/operations/backup-and-restore.md). The restore drill runs it against scratch names.
+# Exit status: 0 restored; 3 refused, nothing changed; 1 failed part-way (see the message).
 # Needs createdb, dropdb, pg_restore, psql, tar, sha256sum, and the libpq variables (PGHOST, PGUSER, PGPASSWORD).
 set -euo pipefail
 
 die() { echo "restore: $*" >&2; exit 1; }
+# Exit status 3: refused before anything was changed (ops/backup/docker.sh then clears its restore marker).
+refuse() { echo "restore: $*" >&2; exit 3; }
 sql() { psql --no-psqlrc -X -At -v ON_ERROR_STOP=1 "$@"; }
 
-[ "$#" -eq 3 ] || die "usage: restore.sh <backup set directory> <database name> <release directory>"
+[ "$#" -eq 3 ] || refuse "usage: restore.sh <backup set directory> <database name> <release directory>"
 set_dir="$1" db="$2" releases_dir="$3"
-[ -d "$set_dir" ] || die "$set_dir is not a directory"
+[ -d "$set_dir" ] || refuse "$set_dir is not a directory"
 # 57 characters at most, so the _queue, _cache, and _cable names stay within PostgreSQL's 63.
-[[ "$db" =~ ^[a-z][a-z0-9_]{0,56}$ ]] || die "the database name must be lowercase letters, digits, and underscores (57 at most)"
-if [ -d "$releases_dir" ] && [ -n "$(ls -A "$releases_dir")" ]; then die "$releases_dir is not empty"; fi
+[[ "$db" =~ ^[a-z][a-z0-9_]{0,56}$ ]] || refuse "the database name must be lowercase letters, digits, and underscores (57 at most)"
+if [ -d "$releases_dir" ] && [ -n "$(ls -A "$releases_dir")" ]; then refuse "$releases_dir is not empty"; fi
 
-(cd "$set_dir" && sha256sum --check --quiet SHA256SUMS) || die "checksum mismatch: this backup set is damaged"
+(cd "$set_dir" && sha256sum --check --quiet SHA256SUMS) || refuse "checksum mismatch: this backup set is damaged"
 
 # Database name => dump file. Sets from before the queue, cache, and cable dumps hold only the primary.
 targets=("$db" fleet-cmdb.dump)
@@ -48,7 +51,7 @@ for ((i = 0; i < ${#targets[@]}; i += 2)); do
                 AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_proc'::regclass AND ext.objid = p.oid))
            + (SELECT count(*) FROM pg_type t WHERE t.typnamespace IN (SELECT oid FROM user_ns) AND t.typtype IN ('e', 'd', 'r', 'm')
                 AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_type'::regclass AND ext.objid = t.oid))")"
-    [ "$objects" = 0 ] || die "database $name already exists and holds data ($objects tables, sequences, views, functions, or types); nothing was changed"
+    [ "$objects" = 0 ] || refuse "database $name already exists and holds data ($objects tables, sequences, views, functions, or types); nothing was changed"
   fi
 done
 
@@ -57,7 +60,7 @@ done
 if [ "${#to_create[@]}" -gt 0 ]; then
   role="$(sql -d postgres -c "SELECT current_user || ' ' || (rolcreatedb OR rolsuper)::text FROM pg_roles WHERE rolname = current_user")"
   if [ "${role##* }" != true ]; then
-    die "the PostgreSQL role ${role% *} may not create databases, which the restore drill (and a restore into missing databases) needs. Run this once as a PostgreSQL superuser: ALTER ROLE ${role% *} CREATEDB;"
+    refuse "the PostgreSQL role ${role% *} may not create databases, which the restore drill (and a restore into missing databases) needs. Run this once as a PostgreSQL superuser: ALTER ROLE ${role% *} CREATEDB;"
   fi
 fi
 
