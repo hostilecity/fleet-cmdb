@@ -31,8 +31,19 @@ use super::token::{DeviceCode, Token};
 use super::ui::Ui;
 use super::{Enrolled, Facts, Failure, Host, InstallError};
 
-/// Longest wait between polls after network errors while waiting for approval.
+/// Longest wait between polls after network errors while waiting for approval, and the longest the
+/// installer waits for the server's own `429 rate_limited` `Retry-After` (its limits ask for a minute
+/// or less, #223).
 const MAX_POLL_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Whether a `429` is the server's own rate limit, whose `Retry-After` the installer honours (#223).
+/// Any other `429` comes from something in front of the server: a proxy, load balancer, or CDN.
+fn servers_own_limit(error: &ApiError) -> bool {
+    matches!(error, ApiError::RateLimited { code, .. } if code == "rate_limited")
+}
+
+/// What to do about a `429` from a proxy, load balancer, or CDN in front of the server (#223).
+const PROXY_LIMIT_NEXT: &str = "Check the rate limits of the proxy, load balancer, or CDN in front of the agent hostname, then run the same command again.";
 
 fn server_error(what: impl Into<String>, next: impl Into<String>) -> InstallError {
     InstallError::new(Failure::Server, what, next)
@@ -55,15 +66,22 @@ fn common_error(error: &ApiError, during: &str) -> InstallError {
             ),
             "Download the current agent from the dashboard's install page and run its install command.",
         ),
-        ApiError::RateLimited { retry_after, .. } => server_error(
+        ApiError::RateLimited { retry_after, .. } if servers_own_limit(error) => server_error(
             format!("the server is limiting {during} requests from this address{id}"),
             format!(
                 "Wait {} and run the same command again. If many VMs are waiting, approve or reject the open requests in the dashboard first.",
                 retry_after.map_or("a minute".to_owned(), |d| format!(
                     "{} seconds",
-                    d.as_secs()
+                    d.min(MAX_POLL_BACKOFF).as_secs().max(1)
                 ))
             ),
+        ),
+        // Not the server's limit: its wait is not repeated, since it may be anything (#223).
+        ApiError::RateLimited { .. } => server_error(
+            format!(
+                "a proxy, load balancer, or CDN in front of the server refused the {during} request as too many requests (HTTP 429, not the server's own limit){id}"
+            ),
+            PROXY_LIMIT_NEXT,
         ),
         ApiError::Transport(message) => server_error(
             format!("lost contact with the server during {during}: {message}"),
@@ -357,7 +375,7 @@ fn by_onboarding(
             parse_onboarding(&response).ok_or_else(|| unexpected("onboarding", &response))?
         }
         Ok(response) => return Err(unexpected("onboarding", &response)),
-        Err(error @ ApiError::RateLimited { .. }) => {
+        Err(error @ ApiError::RateLimited { .. }) if servers_own_limit(&error) => {
             let mut e = common_error(&error, "onboarding");
             e.what
                 .push_str(", or too many onboarding requests are already open");
@@ -451,19 +469,31 @@ fn poll(
                     ));
                 }
                 Err(ApiError::Rejected { status: 410, .. }) => return Err(expired()),
-                Err(ApiError::RateLimited { retry_after, .. }) => {
-                    // RFC 8628 slow_down: poll 5 seconds less often from now on.
+                Err(error @ ApiError::RateLimited { .. }) if servers_own_limit(&error) => {
+                    // RFC 8628 slow_down: poll 5 seconds less often from now on. The server's own
+                    // Retry-After is a minute or less; a broken one is capped (#223).
                     interval = (interval + Duration::from_secs(5)).min(Duration::from_secs(300));
-                    next_poll = now + retry_after.unwrap_or_default().max(interval);
+                    let after = match &error {
+                        ApiError::RateLimited { retry_after, .. } => {
+                            retry_after.unwrap_or_default().min(MAX_POLL_BACKOFF)
+                        }
+                        _ => Duration::ZERO,
+                    };
+                    next_poll = now + after.max(interval);
                 }
+                // A 429 from something in front of the server is retried like a network error, with
+                // a warning, and never waits out its Retry-After: a day-long one would let the request
+                // expire unnoticed while the approval waits (#223).
                 Err(
                     error @ (ApiError::Transport(_)
                     | ApiError::Server { .. }
+                    | ApiError::RateLimited { .. }
                     | ApiError::InvalidResponse(_)),
                 ) => {
                     if failures == 0 {
                         let reason = match &error {
                             ApiError::Transport(message) => message.clone(),
+                            ApiError::RateLimited { .. } => "HTTP 429 from a proxy, load balancer, or CDN in front of the server, not the server's own limit".to_owned(),
                             other => format!("HTTP {}", other.status()),
                         };
                         ui.warn(&format!(
@@ -577,11 +607,12 @@ pub fn confirm(
             | ApiError::RateLimited { .. }
                 if attempt < waits.len() =>
             {
+                // Only the server's own limit's Retry-After is waited, up to a minute (#223).
                 let wait = match &error {
                     ApiError::RateLimited {
                         retry_after: Some(after),
                         ..
-                    } => (*after).min(Duration::from_secs(60)),
+                    } if servers_own_limit(&error) => (*after).min(MAX_POLL_BACKOFF),
                     _ => waits[attempt],
                 };
                 attempt += 1;

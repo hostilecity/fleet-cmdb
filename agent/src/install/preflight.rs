@@ -306,6 +306,16 @@ fn check_server(host: &Host, server_url: &str, ca: Option<&Path>) -> Result<(), 
             ),
             "The server is reachable but failing. Try again in a few minutes; if it persists, check the server logs for the request id.",
         )),
+        Err(ref error @ ApiError::RateLimited { ref code, .. }) if code != "rate_limited" => {
+            Err(InstallError::new(
+                Failure::Server,
+                format!(
+                    "a proxy, load balancer, or CDN in front of {server_url} refused the request as too many requests (HTTP 429, not the server's own limit){}",
+                    request_id(error)
+                ),
+                "Check the rate limits of the proxy, load balancer, or CDN in front of the agent hostname, then run the same command again.",
+            ))
+        }
         Err(error @ ApiError::RateLimited { .. }) => Err(InstallError::new(
             Failure::Server,
             format!(

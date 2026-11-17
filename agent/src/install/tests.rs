@@ -1117,6 +1117,15 @@ fn rate_limited(after: u64) -> String {
     )
 }
 
+/// A `429` from a proxy in front of the server: an HTML page, no envelope, a day-long `Retry-After`.
+fn proxy_429() -> String {
+    http_reply(
+        "429 Too Many Requests",
+        &["Retry-After: 86400", "Content-Type: text/html"],
+        "<html>Too Many Requests</html>",
+    )
+}
+
 #[test]
 fn the_onboarding_poll_keeps_honouring_the_servers_retry_after() {
     // #223 changed how the service's loops treat a 429; the installer's poll still waits out the
@@ -1140,6 +1149,46 @@ fn the_onboarding_poll_keeps_honouring_the_servers_retry_after() {
     assert_eq!(elapsed(rate_limited(30)) - pending, Duration::from_secs(25));
     // A Retry-After shorter than the slowed-down interval (10 s) waits the interval.
     assert_eq!(elapsed(rate_limited(2)) - pending, Duration::from_secs(5));
+    // A broken day-long one waits a minute at most (#223).
+    assert_eq!(
+        elapsed(rate_limited(86_400)) - pending,
+        Duration::from_secs(55)
+    );
+}
+
+#[test]
+fn a_proxy_429_while_waiting_for_approval_is_retried_with_a_warning_not_waited_out() {
+    // Review of #233: a proxy's 429 with Retry-After: 86400 made the installer sleep until the request
+    // expired and report that nobody approved it, while the approval was waiting. Now it is retried
+    // like a network error (the first retry after 10 s), with one warning, and the approval is found.
+    let fx = Fixture::new();
+    let server = fx.server(vec![
+        probe(),
+        onboarding_started(),
+        proxy_429(),
+        proxy_429(),
+        approved(CREDENTIAL),
+        heartbeat_ok(),
+    ]);
+    let outcome = fx.install(&options(&server), Mode::Human);
+    let requests = server.finish();
+    outcome.ok();
+    let polls = requests
+        .iter()
+        .filter(|r| path_of(r) == "/api/v1/onboarding/token")
+        .count();
+    assert_eq!(polls, 3);
+    assert!(
+        outcome.err.contains(
+            "(HTTP 429 from a proxy, load balancer, or CDN in front of the server, not the server's own limit); still trying"
+        ),
+        "{}",
+        outcome.err
+    );
+    assert_eq!(outcome.err.matches("not the server's own limit").count(), 1);
+    assert!(!outcome.all().contains("expired"), "{}", outcome.all());
+    // 5 s to the first poll, then backoffs of 10 s and 20 s: nowhere near the day it asked for.
+    assert!(fx.slept() < Duration::from_secs(120), "{:?}", fx.slept());
 }
 
 #[test]
@@ -1174,6 +1223,10 @@ fn the_first_heartbeat_after_enrollment_keeps_honouring_the_servers_retry_after(
     let (long, beats) = elapsed(vec![rate_limited(86_400), heartbeat_ok()]);
     assert_eq!(beats, 2);
     assert_eq!(long - direct, Duration::from_secs(60));
+    // A proxy's 429 is retried like a network error, after 2 s, whatever its header says (#223).
+    let (proxy, beats) = elapsed(vec![proxy_429(), heartbeat_ok()]);
+    assert_eq!(beats, 2);
+    assert_eq!(proxy - direct, Duration::from_secs(2));
 }
 
 #[test]
@@ -1198,6 +1251,69 @@ fn enrollment_refused_by_the_servers_rate_limit_says_how_long_to_wait() {
     );
     assert!(outcome.err.contains("Wait 45 seconds"), "{}", outcome.err);
     assert_nothing_enrolled(&fx);
+
+    // A broken day-long Retry-After is not repeated as is (#223).
+    let mut fx = Fixture::new();
+    fx.env_token = Some(TOKEN.into());
+    let server = fx.server(vec![probe(), rate_limited(86_400)]);
+    let outcome = fx.install(&opts_for(&server), Mode::Human);
+    server.finish();
+    assert!(outcome.err.contains("Wait 60 seconds"), "{}", outcome.err);
+}
+
+fn opts_for(server: &TlsServer) -> InstallOptions {
+    InstallOptions {
+        token: Some(TokenSource::Env),
+        ..options(server)
+    }
+}
+
+#[test]
+fn a_proxy_429_is_not_blamed_on_the_server_and_its_wait_is_not_repeated() {
+    // Review of #233: a proxy's 429 printed "the server is limiting ... Wait 86400 seconds".
+    let check = |outcome: &Outcome| {
+        assert_eq!(outcome.failure().failure, Failure::Server);
+        let err = &outcome.err;
+        assert!(
+            err.contains("a proxy, load balancer, or CDN in front of"),
+            "{err}"
+        );
+        assert!(err.contains("not the server's own limit"), "{err}");
+        assert!(err.contains("Check the rate limits"), "{err}");
+        assert!(!err.contains("86400"), "{err}");
+        assert!(!err.contains("Wait"), "{err}");
+        assert!(!err.contains("the server is limiting"), "{err}");
+    };
+    // Token enrollment.
+    let mut fx = Fixture::new();
+    fx.env_token = Some(TOKEN.into());
+    let server = fx.server(vec![probe(), proxy_429()]);
+    let outcome = fx.install(&opts_for(&server), Mode::Human);
+    server.finish();
+    check(&outcome);
+    assert!(
+        outcome.err.contains("enrollment request"),
+        "{}",
+        outcome.err
+    );
+    assert_nothing_enrolled(&fx);
+    // Starting onboarding: and no claim that too many requests are open.
+    let fx = Fixture::new();
+    let server = fx.server(vec![probe(), proxy_429()]);
+    let outcome = fx.install(&options(&server), Mode::Human);
+    server.finish();
+    check(&outcome);
+    assert!(
+        !outcome.err.contains("onboarding requests are already open"),
+        "{}",
+        outcome.err
+    );
+    // The first request, which checks the address.
+    let fx = Fixture::new();
+    let server = fx.server(vec![proxy_429()]);
+    let outcome = fx.install(&options(&server), Mode::Human);
+    server.finish();
+    check(&outcome);
 }
 
 #[test]
