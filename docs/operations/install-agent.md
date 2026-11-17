@@ -128,6 +128,10 @@ Agents update themselves only to a newer release signed by the release key, veri
    The next stage opens by itself when all hosts of the current one have confirmed. **Advance to the next stage** opens it now.
 3. **Check:** the Agents page shows each stage's progress live. Each host's agent version on the Fleet page changes to the new release, and its page lists the update as succeeded. On a VM: `fleet-agent --version` and `journalctl -u fleet-agent | grep -i update`.
 
+**The systemd units come with the update** (#232). Once the new version has confirmed, the agent writes that version's units (`fleet-agent.service` and the rollback and recovery units) and reloads systemd, without restarting the service. Unit files you replaced by hand (without the installer's first line, `` # Written by `fleet-agent install` ``) are left alone: keep local changes in a drop-in (`systemctl edit fleet-agent`). If the units cannot be written, the update still succeeds and the host's update history says why. The new units come from the agent being replaced, so a host updated from a release older than this one gets them only at its next update; run the installer by hand to set them up at once.
+
+**Find hosts without recovery mode.** On the **Fleet** page, set **Recovery mode** to **Not set up**: it lists the hosts whose agent would stop for good after a crash loop on a confirmed version ([ADR 0030](../decisions/0030-agent-recovery-mode.md)), including agents too old to say. Each host's page says what to do under **Agent updates**. On a VM: `sudo fleet-agent install --refresh-units` writes the installed version's units and nothing else.
+
 **When a rollout halts** (a host reported `failed` or `rolled_back`, or did not report within 30 minutes): no further host is offered the update. The Agents page shows why, and which hosts did not succeed ([troubleshooting.md](troubleshooting.md#a-rollout-halted)). Then choose **Resume** or **Cancel rollout**. A halted rollout never resumes by itself.
 
 ### By hand, on one VM
@@ -138,7 +142,7 @@ Download and check a newer release as in [Install one VM](#install-one-vm-approv
 sudo ./fleet-agent install
 ```
 
-On an enrolled VM it keeps the credential and every setting, installs the new binary as `current`, keeps the old one as `previous`, and restarts the service. Nothing needs approving. This is also the way to repair an installation, and to update a VM that missed a release key change ([docs/releases.md](../releases.md#rotation)).
+On an enrolled VM it keeps the credential and every setting, installs the new binary as `current`, keeps the old one as `previous`, writes its systemd units, and restarts the service. Nothing needs approving. This is also the way to repair an installation, and to update a VM that missed a release key change ([docs/releases.md](../releases.md#rotation)).
 
 **Check:** `fleet-agent --version` and the host's agent version in the dashboard show the new release.
 

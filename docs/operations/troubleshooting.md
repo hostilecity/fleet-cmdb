@@ -113,6 +113,21 @@ cat /var/lib/fleet-agent/update-result.json   # only until the server has accept
 
 The new version's own log lines, before the rollback, say why it did not confirm: often it could not reach the server, or a config option it does not accept. Fix that and run a new rollout, or upgrade that VM by hand ([install-agent.md](install-agent.md#by-hand-on-one-vm)).
 
+## A host shows "Recovery mode is not set up"
+
+The host's agent reports that its systemd units do not include recovery mode ([ADR 0030](../decisions/0030-agent-recovery-mode.md)): if it keeps failing on a version it has confirmed, it stops until someone starts it on the VM. The Fleet page's **Recovery mode: Not set up** filter lists every such host. On the VM:
+
+```sh
+head -n 1 /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-agent-recovery.service
+systemctl show -p OnFailure fleet-agent       # should name fleet-agent-recovery.service
+journalctl -u fleet-agent-update | grep -i units   # the last update's refresh
+```
+
+- **Units from an older release:** `sudo fleet-agent install --refresh-units` writes the installed version's units (or re-run the installer). An update from an older agent release does not refresh them; the update after it does.
+- **A unit file without the first line `` # Written by `fleet-agent install` ``:** someone replaced it by hand, and the agent never overwrites it. Move it away, keep local changes in a drop-in (`systemctl edit fleet-agent`), and run `sudo fleet-agent install --refresh-units`.
+- **A note in the update history** ("its systemd units were not installed"): the update succeeded but the refresh did not; the note says why.
+- **"does not report"**: the agent is older than the release that reports it. Update it.
+
 ## Package updates succeed, but vulnerabilities stay open
 
 **Apply package updates** succeeds, yet the host's **Vulnerabilities** tab still lists findings with a fixed version. Debian publishes most security fixes in its security repository. If the VM's APT sources leave it out, `apt-get upgrade` never sees those fixes. VMs built from a minimal template often lack it.
