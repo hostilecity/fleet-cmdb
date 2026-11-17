@@ -83,7 +83,7 @@ Recurring jobs are declared in `config/recurring.yml` and run by Solid Queue's s
 
 ### Health and backups
 
-- `GET /health` (agent hostname and localhost, unauthenticated) answers 200 `{"status":"ok"}` or 503 and lists the checks `database`, `releases`, and `backup` as `ok` or `failing`, nothing more. `releases` fails when the newest release's binary is missing from `FLEET_RELEASES_DIR` or has a different size than its row; `backup` fails when `FLEET_BACKUP_STATUS_FILE` (default `storage/backup/last_success`) is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` (default 26). `/up` stays the container liveness check.
+- `GET /health` (agent hostname and localhost, unauthenticated) answers 200 `{"status":"ok"}` or 503 and lists its checks (`database`, `releases`, `backup`, and the others in docs/operations/health-and-jobs.md, including `partitions` and `audit_guard` from #195) as `ok`, `warning`, or `failing`, nothing more; a warning keeps it 200. `releases` fails when the newest release's binary is missing from `FLEET_RELEASES_DIR` or has a different size than its row; `backup` fails when `FLEET_BACKUP_STATUS_FILE` (default `storage/backup/last_success`) is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` (default 26). `/up` stays the container liveness check.
 - `bin/rails backup:verify_restore` is the checking half of the restore drill. The procedure, scripts, and what else must be backed up are in [docs/operations/backup-and-restore.md](../docs/operations/backup-and-restore.md).
 
 ### Hosts and the audit log

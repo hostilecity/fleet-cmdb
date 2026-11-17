@@ -101,7 +101,7 @@
   goal: "The server prunes old data, exposes a health endpoint with traceable logs, surfaces failed jobs, and is hardened against hostile agent data."
   done:
     - "Hostile strings in every agent- and operator-supplied field render escaped in every view under a restrictive CSP."
-    - "Retention prunes expired snapshots but keeps each host's newest and never touches audit entries, and failed jobs appear in an operator-visible list and in `/health`."
+    - "Retention drops expired history by whole partitions but keeps each host's newest and never touches audit entries, guarded even from the app's role after the superuser step (#195, ADR 0027); failed jobs appear in a visible list and in `/health`."
     - "The every-minute jobs run on a queue with a worker of its own, so a long job on the default queue cannot delay them (S-7, ADR 0025)."
   blocked_by: [P1-INVENTORY, P1-HEARTBEAT, P1-ACCESS, P1-DASH-FLEET, P1-DASH-ACTIONS, P1-ONBOARD, P1-UPDATES]
 

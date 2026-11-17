@@ -106,7 +106,7 @@ Build these in Phase 1 and reuse them unchanged in Phases 2 and 3.
 
 - Record at minimum: host created, enrolled, credential revoked, host edited or retired, and — in later phases — evaluation rule changes and every task action.
 - Each entry records actor (operator or agent host), action, target, timestamp, and relevant before/after values for operator edits.
-- Audit entries are append-only in normal use, and the application provides no update or delete path. The dashboard exposes them read-only.
+- Audit entries are append-only in normal use, and the application provides no update or delete path. The dashboard exposes them read-only. The database refuses updates, deletes, and truncation; once the PostgreSQL superuser has run `ops/postgres/audit-guard.sql` (a one-time provisioning step, repeated after a restore), the application's own role can no longer remove or bypass those guards either, nor detach or drop a month of the log ([ADR 0027](decisions/0027-time-partitioned-history.md), #195).
 - Audit retention is independent of snapshot retention (NFR-2): audit entries are not pruned by default.
 
 ### FR-S.4 Dashboard access
@@ -339,7 +339,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 ### NFR-2 Reliability and data safety
 
 - The server database is backed up by a documented, restorable procedure before Phase 1 is considered done. The procedure also covers the Rails master key and any private certificate authority material, without which a restored database is unusable. The restore is tested.
-- Snapshots and host status history are retained for at least 90 days by default (DEC-07); audit entries follow FR-S.3 and are not pruned by default. Pruning is a configurable job.
+- Snapshots and host status history are retained for at least 90 days by default (DEC-07); audit entries follow FR-S.3 and are not pruned by default. Pruning is a configurable job. The history tables are partitioned by time and pruned by dropping whole partitions past the window, so rows are kept for the window plus up to one partition (a day for report ids, a week for the rest), and pruning costs about the same whatever the fleet size ([ADR 0027](decisions/0027-time-partitioned-history.md), #195).
 - A failed background job retries with backoff and surfaces persistent failures somewhere an operator will see them, rather than failing silently.
 
 ### NFR-3 Performance and scale
@@ -351,7 +351,7 @@ Phase 3 starts only after Phase 2 is accepted, and the task catalog starts small
 ### NFR-4 Observability and operability
 
 - Server and agent both emit structured logs with timestamps, host identity where relevant, and request or report identifiers that let one report be traced end to end.
-- A simple health endpoint on the server reports application, database, release-file, backup, and background job status for monitoring.
+- A simple health endpoint on the server reports application, database, release-file, backup, background job, and history partition status for monitoring, each check as ok, warning (shown, still healthy), or failing (#195).
 - Installation is documented well enough that the owner can set up the server and enroll a new VM from the documentation alone: server setup, agent install, enrollment, remote and manual upgrade, rollback, and uninstall. A newcomer can install an agent by following the dashboard's install page without other documentation.
 - Continuous integration runs server and agent tests and linting on every pull request, and builds release agent binaries for the fleet's architectures.
 

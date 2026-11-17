@@ -145,7 +145,7 @@ The new version's own log lines, before the rollback, say why it did not confirm
 
 ## `/health` is unhealthy
 
-`docker exec fleet-cmdb curl -s http://localhost:3000/health` on the server (or `curl --cacert <(cat agent/trust/*.pem) https://fleet-vm.example.com/health` from a VM on your network) names the failing check; [health-and-jobs.md](health-and-jobs.md) explains each. `backup` fails until a backup has run (the first deploy takes one), and `job_liveness` until a minute or two after a start; both are expected. If `backup` stays `failing`, see "Backups fail" below.
+`docker exec fleet-cmdb curl -s http://localhost:3000/health` on the server (or `curl --cacert <(cat agent/trust/*.pem) https://fleet-vm.example.com/health` from a VM on your network) names the failing check; [health-and-jobs.md](health-and-jobs.md) explains each. `backup` fails until a backup has run (the first deploy takes one), and `job_liveness` until a minute or two after a start; both are expected. `audit_guard` is `warning` until the PostgreSQL superuser has run `ops/postgres/audit-guard.sql` ([install-server.md](install-server.md)); it does not make `/health` 503. If `backup` stays `failing`, see "Backups fail" below.
 
 ## Backups fail
 

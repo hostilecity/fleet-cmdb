@@ -71,7 +71,7 @@ Without the deployment (the app run by hand, with PostgreSQL client tools on the
 
 After a complete backup the script touches `FLEET_BACKUP_STATUS_FILE`. `GET /health` (agent hostname or localhost) reports the backup check as failing, and the whole endpoint as 503, when that file is missing or older than `FLEET_BACKUP_MAX_AGE_HOURS` (26). A fresh install therefore reports unhealthy until its first backup, which the first deploy starts in the background. So does a rebuilt server until its restore (the backup refuses its empty databases). The script makes the status directory `0755` and the file `0644`; they hold no data, and the backup sets stay `0700`. Point the uptime monitor that watches `/health` at an alert you will see.
 
-`/health` also reports the release files: it fails when the binary of the newest release, or of the release a running rollout is sending out, is missing from `FLEET_RELEASES_DIR` or has a different size than its database row (an existence and size check only). Its other checks are described in [health-and-jobs.md](health-and-jobs.md). The response names each check as `ok` or `failing` and nothing else; the server log has the detail.
+`/health` also reports the release files: it fails when the binary of the newest release, or of the release a running rollout is sending out, is missing from `FLEET_RELEASES_DIR` or has a different size than its database row (an existence and size check only). Its other checks are described in [health-and-jobs.md](health-and-jobs.md). The response names each check as `ok`, `warning`, or `failing` and nothing else (a warning does not make it 503); the server log has the detail.
 
 ## Restore
 
@@ -102,6 +102,12 @@ While `docker.sh restore` runs, and until one succeeds, `~/.local/state/fleet-cm
 
 **Restoring to roll back** (for example after a migration the old code cannot run on) works the same way, but loses everything written since that backup: hosts enrolled, reports, audit entries, and task results. The restored queue database also brings back the jobs that were pending when the set was taken, and they run again.
 
+**The audit log's guard after a restore (#195, ADR 0027).** `restore.sh` restores everything but the audit log's two event triggers: only a superuser can create one, and the restore runs as the app's role. After a **real** restore the PostgreSQL superuser installs them again, as at install time ([install-server.md](install-server.md), "The audit log's guard"); until then the app works and `/health` shows `audit_guard` as `warning`:
+
+```sh
+docker exec -i postgres psql -v ON_ERROR_STOP=1 -U postgres -d cmdb_production < ops/postgres/audit-guard.sql
+```
+
 ## The restore drill
 
 The drill restores a backup set into **scratch** databases (all four) and a scratch release volume, then boots the deployed image against the scratch **primary** and checks the result. The queue, cache, and cable dumps are proven by restoring them; the app's queue and cable connections stay the live ones, but the drill enqueues no job and opens no cable, and it sets `FLEET_RESTORE_DRILL=1`, which swaps the live Solid Cache database for an in-process store. So it writes nothing live, and it removes its scratch data afterwards.
@@ -123,7 +129,8 @@ It prints one line per check and exits non-zero if any fails:
 - hosts and audit entries are present, and no fewer than `counts` recorded;
 - at least as many hosts have an inventory snapshot as `counts` recorded (retention keeps each host's newest snapshot, so this never goes down);
 - release rows are present and every one has its binary on disk with the recorded size and SHA-256;
-- the newest release downloads through the agent API (`/api/v1/releases/<version>/binary`) and matches its SHA-256.
+- the newest release downloads through the agent API (`/api/v1/releases/<version>/binary`) and matches its SHA-256;
+- the history partitions are not failing, and a `WARN` line (not a failure) that the audit log's event triggers are not installed, which a restore never has (#195).
 
 Deploy CI runs the drill this way on every change to the deployment, with an uploaded release in its data, and once against a second PostgreSQL server. Run it yourself after setting up backups, after any change to the procedure, and on a schedule (quarterly is a reasonable habit); record the date and result below and on [#138](https://github.com/hostilecity/fleet-cmdb/issues/138).
 
