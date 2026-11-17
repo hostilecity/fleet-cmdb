@@ -300,6 +300,9 @@ fn run_with(
     })
 }
 
+/// Longest the heartbeat waits for `systemctl show` when it checks whether recovery mode is set up (#232).
+const UNITS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How soon recovery mode tries normal mode again when its last try did not stop it (the service could
 /// not be started): it keeps heartbeating meanwhile.
 pub const RECOVERY_RETRY_AGAIN: Duration = Duration::from_secs(60 * 60);
@@ -327,6 +330,7 @@ pub fn run_recovery(
     try_normal: &dyn Fn() -> Result<(), String>,
 ) {
     let intervals = Intervals::new(config.heartbeat, config.inventory);
+    let systemctl = crate::install::Systemctl::with_timeout(UNITS_CHECK_TIMEOUT);
     let mut heartbeat = Heartbeat::new(
         &intervals,
         Backoff::new(RetryPolicy::default(), seeded(1)),
@@ -334,7 +338,10 @@ pub fn run_recovery(
         started,
     )
     .with_updater(updater)
-    .with_units_in(std::path::PathBuf::from(crate::install::UNIT_DIR))
+    .with_units_in(
+        std::path::PathBuf::from(crate::install::UNIT_DIR),
+        &systemctl,
+    )
     .in_recovery(status);
     let mut retry_at = started + retry_after;
     while !shutdown.is_requested() {
@@ -401,6 +408,7 @@ fn heartbeat_loop(
     requests: &ReportRequests,
     hint: &TaskHint,
 ) {
+    let systemctl = crate::install::Systemctl::with_timeout(UNITS_CHECK_TIMEOUT);
     let mut heartbeat = Heartbeat::new(
         intervals,
         Backoff::new(RetryPolicy::default(), seeded(1)),
@@ -411,7 +419,10 @@ fn heartbeat_loop(
     .with_updater(updater)
     .with_requests(requests)
     .with_capabilities(crate::tasks::Capabilities::of(&config.tasks))
-    .with_units_in(std::path::PathBuf::from(crate::install::UNIT_DIR))
+    .with_units_in(
+        std::path::PathBuf::from(crate::install::UNIT_DIR),
+        &systemctl,
+    )
     .with_task_hint(hint);
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();

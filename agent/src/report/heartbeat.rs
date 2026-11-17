@@ -79,8 +79,8 @@ pub struct Heartbeat<'a, R: Rng> {
     task_hint: Option<&'a TaskHint>,
     /// Sent as `recovery` in every heartbeat in recovery mode ([`Heartbeat::in_recovery`]).
     recovery: Option<crate::recovery::Status>,
-    /// Where the systemd units are, for `units` ([`Heartbeat::with_units_in`]).
-    units_dir: Option<std::path::PathBuf>,
+    /// Where the systemd units are, and the `systemctl` to ask, for `units` ([`Heartbeat::with_units_in`]).
+    units_dir: Option<(std::path::PathBuf, &'a dyn crate::install::Systemd)>,
     /// The last unit check that failed, logged once until it changes.
     units_problem: std::cell::RefCell<Option<String>>,
     backoff: Backoff<R>,
@@ -156,18 +156,22 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         self
     }
 
-    /// Reports in every heartbeat whether recovery mode is set up in `dir` (#232), read from the unit files
-    /// each time: a confirmed update refreshes them without restarting the service.
-    pub fn with_units_in(mut self, dir: std::path::PathBuf) -> Self {
-        self.units_dir = Some(dir);
+    /// Reports in every heartbeat whether recovery mode is set up in `dir` (#232), as `systemd` has loaded the
+    /// units, asked each time: a confirmed update refreshes them without restarting the service.
+    pub fn with_units_in(
+        mut self,
+        dir: std::path::PathBuf,
+        systemd: &'a dyn crate::install::Systemd,
+    ) -> Self {
+        self.units_dir = Some((dir, systemd));
         self
     }
 
-    /// `units` for one heartbeat. A unit file that cannot be read reports `recovery: false` (it cannot be
-    /// shown to be set up), with a warning logged once.
+    /// `units` for one heartbeat. A unit file that cannot be read, or a `systemctl` that cannot answer,
+    /// reports `recovery: false` (it cannot be shown to be set up), with a warning logged once.
     fn units(&self) -> Option<crate::install::Units> {
-        let dir = self.units_dir.as_deref()?;
-        let recovery = match crate::install::recovery_covered(dir) {
+        let (dir, systemd) = self.units_dir.as_ref()?;
+        let recovery = match crate::install::recovery_covered(dir, *systemd) {
             Ok(covered) => {
                 self.units_problem.borrow_mut().take();
                 covered
@@ -437,15 +441,17 @@ mod tests {
     }
 
     #[test]
-    fn every_heartbeat_reports_whether_recovery_mode_is_set_up_as_the_unit_files_say_now() {
-        // #232: read on every heartbeat, so a refresh after a confirmed update (no restart) shows at once.
+    fn every_heartbeat_reports_whether_recovery_mode_is_set_up_as_systemd_runs_it_now() {
+        // #232: asked on every heartbeat, so a refresh after a confirmed update (no restart) shows at once,
+        // and from what systemd has loaded, not the files (review of #235).
         use crate::install::{RECOVERY_UNIT, UNIT};
         let intervals = intervals();
         let started = Instant::now();
         let dir = crate::test_support::TempDir::new();
         let units = dir.path("units");
         std::fs::create_dir_all(&units).unwrap();
-        let hb = heartbeat(&intervals, started).with_units_in(units.clone());
+        let systemd = crate::install::LoadedUnits::new(units.clone());
+        let hb = heartbeat(&intervals, started).with_units_in(units.clone(), &systemd);
         let recovery = |hb: &Heartbeat<'_, SplitMix64>| {
             let body = serde_json::to_value(hb.request(None, started, wall())).unwrap();
             assert_conforms("v1", "heartbeat.request", &body);
@@ -454,6 +460,9 @@ mod tests {
         assert_eq!(recovery(&hb), json!({"recovery": false}));
         std::fs::write(units.join("fleet-agent.service"), UNIT).unwrap();
         std::fs::write(units.join("fleet-agent-recovery.service"), RECOVERY_UNIT).unwrap();
+        // Written, not yet reloaded: systemd still runs what it had.
+        assert_eq!(recovery(&hb), json!({"recovery": false}));
+        systemd.reload();
         assert_eq!(recovery(&hb), json!({"recovery": true}));
         // Unreadable: reported as not set up, and logged once, not on every heartbeat.
         std::fs::remove_file(units.join("fleet-agent-recovery.service")).unwrap();

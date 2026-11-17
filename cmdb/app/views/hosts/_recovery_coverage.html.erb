@@ -1,17 +1,18 @@
-<%# Whether recovery mode is set up on the VM (#232, ADR 0030), from the last heartbeat's units.recovery. %>
+<%# Whether recovery mode is set up on the VM (#232, ADR 0030), from the last heartbeat's units.recovery: as systemd has
+    loaded the units. Each state has its own next step (review of #235), as in docs/operations/troubleshooting.md. %>
 <% case host.recovery_mode_coverage %>
 <% when :set_up %>
   <p id="<%= dom_id(host, :recovery_coverage) %>"><strong>Recovery mode is set up.</strong> If the agent keeps failing on a version it has confirmed, it goes into recovery mode, so it can still receive a fixed release.</p>
-<% when :not_set_up, :not_reported %>
+<% when :not_set_up %>
   <div class="notice" role="status" id="<%= dom_id(host, :recovery_coverage) %>">
-    <% if host.recovery_mode_coverage == :not_set_up %>
-      <strong>Recovery mode is not set up on this host.</strong>
-      <p>The agent reports that its systemd units do not include recovery mode: they are from an older release, are local copies, or could not be read.</p>
-    <% else %>
-      <strong>This agent does not report whether recovery mode is set up.</strong>
-      <p>Agent version <code><%= host.agent_version %></code> is older than the release that reports it.</p>
-    <% end %>
-    <p>Without recovery mode, an agent that keeps failing on a version it has confirmed stops until someone starts it on the VM.</p>
-    <p><strong>Next step:</strong> run <code>sudo fleet-agent install</code> on the VM, which keeps its credential and settings. Or roll out a newer agent release from <%= link_to "Agents", agents_path %>: an update sets up recovery mode once the version it replaces can refresh the units, so a host on an older release may need two updates.</p>
+    <strong>Recovery mode is not set up on this host.</strong>
+    <p>The agent reports that systemd does not run its recovery unit: the units are from an older release, are local copies, or have not been reloaded. Without recovery mode, an agent that keeps failing on a version it has confirmed stops until someone starts it on the VM.</p>
+    <p><strong>Next step:</strong> on the VM, run <code>sudo fleet-agent install --refresh-units</code>. It writes the installed version's units and reloads systemd, and restarts nothing. If it says a unit was not written by the installer, that file is a local copy: move it away, keep your changes in a drop-in (<code>sudo systemctl edit fleet-agent</code>), and run it again.</p>
+  </div>
+<% when :not_reported %>
+  <div class="notice" role="status" id="<%= dom_id(host, :recovery_coverage) %>">
+    <strong>This agent does not report whether recovery mode is set up.</strong>
+    <p>Agent version <code><%= host.agent_version %></code> is older than the release that reports it, and probably has no recovery mode. Without it, an agent that keeps failing on a version it has confirmed stops until someone starts it on the VM.</p>
+    <p><strong>Next step:</strong> update the agent from <%= link_to "Agents", agents_path %>. The update from this version installs the new release but not its units; the next update installs them. To set it up at once after the first update, run <code>sudo fleet-agent install --refresh-units</code> on the VM.</p>
   </div>
 <% end %>

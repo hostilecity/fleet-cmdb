@@ -36,73 +36,113 @@ pub const UNIT_DIR: &str = "/etc/systemd/system";
 const MAX_UNIT_BYTES: u64 = 64 * 1024;
 
 /// What the heartbeat reports about the installed units (#232): whether recovery mode is set up (ADR
-/// 0030). Read from the files in `unit_dir` on every heartbeat, so a refresh after an update (which does
-/// not restart the service) shows at once.
+/// 0030). Checked on every heartbeat, so a refresh after an update (which does not restart the service)
+/// shows at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Units {
     pub recovery: bool,
 }
 
-/// Whether recovery mode is set up in `unit_dir`: the recovery unit is there and carries the installer's
-/// marker, and the service names it in `OnFailure=` (#232). Both files are readable inside the sandbox
-/// (`ProtectSystem=strict` keeps `/etc` readable). A missing file is `Ok(false)`; a file that cannot be
-/// read is an error, which the heartbeat reports as `false` (it cannot tell that recovery mode is set
-/// up). Drop-ins are not read: the installer writes none, and the dashboard's answer is only a guide.
-pub fn recovery_covered(unit_dir: &Path) -> Result<bool, String> {
-    let read = |name: &str| -> Result<Option<String>, String> {
-        let path = unit_dir.join(name);
-        let file = match std::fs::File::open(&path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
-        };
-        let mut bytes = Vec::new();
-        file.take(MAX_UNIT_BYTES)
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
-    };
-    let Some(recovery) = read(RECOVERY_UNIT_NAME)? else {
-        return Ok(false);
-    };
-    if !recovery.starts_with(UNIT_MARKER) {
-        return Ok(false);
+/// The units whose settings decide recovery mode, in the order [`recovery_covered`] asks systemd about them.
+const COVERAGE_UNITS: [&str; 2] = [UNIT_NAME, RECOVERY_UNIT_NAME];
+
+/// Whether recovery mode is set up, as systemd has loaded it (#232, review of #235): the service's
+/// `OnFailure=` (drop-ins included) names the recovery unit, the recovery unit is loaded from `unit_dir`
+/// and that file carries the installer's marker, and neither unit waits for a `daemon-reload` (otherwise
+/// systemd still runs the settings from before the files changed). Asked with one `systemctl show`, which
+/// works inside the sandbox (`AF_UNIX`; the recovery unit has no capabilities and needs none for it). A
+/// recovery unit that is missing, or not the installer's, is `Ok(false)`; a file that cannot be read or a
+/// `systemctl` that cannot answer is an error, which the heartbeat reports as `false`.
+pub fn recovery_covered(unit_dir: &Path, systemd: &dyn Systemd) -> Result<bool, String> {
+    let fragment = unit_dir.join(RECOVERY_UNIT_NAME);
+    match read_unit(&fragment)? {
+        Some(text) if text.starts_with(UNIT_MARKER) => {}
+        _ => return Ok(false),
     }
-    let Some(service) = read(UNIT_NAME)? else {
-        return Ok(false);
+    let mut args = vec![
+        "show",
+        "--property=OnFailure",
+        "--property=LoadState",
+        "--property=FragmentPath",
+        "--property=NeedDaemonReload",
+    ];
+    args.extend(COVERAGE_UNITS);
+    let output = systemd
+        .systemctl(&args)
+        .map_err(|e| format!("systemctl show failed: {e}"))?;
+    let blocks: Vec<std::collections::HashMap<&str, &str>> = output
+        .split("\n\n")
+        .map(|block| block.lines().filter_map(|l| l.split_once('=')).collect())
+        .collect();
+    let [service, recovery] = blocks.as_slice() else {
+        return Err(format!(
+            "systemctl show answered {} units instead of {}",
+            blocks.len(),
+            COVERAGE_UNITS.len()
+        ));
     };
-    Ok(on_failure(&service).contains(&RECOVERY_UNIT_NAME))
+    let get = |unit: &std::collections::HashMap<&str, &str>, key: &str| -> Result<String, String> {
+        unit.get(key)
+            .map(|v| (*v).to_owned())
+            .ok_or_else(|| format!("systemctl show did not say {key}"))
+    };
+    let named = get(service, "OnFailure")?
+        .split_whitespace()
+        .any(|u| u == RECOVERY_UNIT_NAME);
+    let loaded = get(recovery, "LoadState")? == "loaded"
+        && Path::new(&get(recovery, "FragmentPath")?) == fragment;
+    let reloaded =
+        get(service, "NeedDaemonReload")? == "no" && get(recovery, "NeedDaemonReload")? == "no";
+    Ok(named && loaded && reloaded)
 }
 
-/// The units `OnFailure=` names in the `[Unit]` section of `unit`, as systemd reads them: each line adds
-/// to the list, and an empty value clears it.
-fn on_failure(unit: &str) -> Vec<&str> {
-    let mut section = "";
-    let mut units = Vec::new();
-    for line in unit.lines().map(str::trim) {
-        if line.starts_with('[') {
-            section = line;
-            continue;
-        }
-        if section != "[Unit]" {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "OnFailure" {
-            continue;
-        }
-        if value.trim().is_empty() {
-            units.clear();
-        }
-        units.extend(value.split_whitespace());
+/// The text of a unit file, at most [`MAX_UNIT_BYTES`], or `None` when there is none. Only a regular file is
+/// read, and it is opened without blocking, so a FIFO put in its place cannot hang the heartbeat (review of
+/// #235); anything else there is an error.
+pub fn read_unit(path: &Path) -> Result<Option<String>, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let regular = file.metadata().is_ok_and(|m| m.is_file());
+    if !regular {
+        return Err(format!("{} is not a regular file", path.display()));
     }
-    units
+    let mut bytes = Vec::new();
+    file.take(MAX_UNIT_BYTES)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// Whether systemd has to reload to see the unit files as they are now: `NeedDaemonReload=yes` for any of the
+/// three units, or `systemctl` cannot say (then reloading is the safe choice). A run that wrote the files and
+/// then failed, or was killed, before its reload leaves exactly this (review of #235).
+pub fn needs_reload(systemd: &dyn Systemd) -> bool {
+    match systemd.systemctl(&[
+        "show",
+        "--property=NeedDaemonReload",
+        "--value",
+        UNIT_NAME,
+        ROLLBACK_UNIT_NAME,
+        RECOVERY_UNIT_NAME,
+    ]) {
+        Ok(output) => output
+            .lines()
+            .any(|l| l.trim() != "no" && !l.trim().is_empty()),
+        Err(_) => true,
+    }
 }
 
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const SYSTEMD_RUN: &str = "/usr/bin/systemd-run";
+const SYSTEMD_ANALYZE: &str = "/usr/bin/systemd-analyze";
 
 /// `systemctl`, behind a trait so tests can record the calls and script the answers.
 pub trait Systemd {
@@ -137,6 +177,14 @@ pub trait Systemd {
         self.systemctl(&["is-enabled", UNIT_NAME])
             .is_ok_and(|s| s == "enabled")
     }
+
+    /// `systemd-analyze verify` on unit files (review of #235): `Ok` with what it printed (warnings, which
+    /// systemd only ignores), `Err` when systemd would refuse to load one of them. The fakes of the tests
+    /// accept everything unless a test says otherwise.
+    fn verify(&self, files: &[PathBuf]) -> Result<String, String> {
+        let _ = files;
+        Ok(String::new())
+    }
 }
 
 /// The real `systemctl`, run with a time limit: a wedged systemd or D-Bus must not hang the installer,
@@ -156,6 +204,14 @@ impl Default for Systemctl {
 }
 
 impl Systemctl {
+    /// `systemctl` with a shorter limit, for a call on the heartbeat path ([`recovery_covered`]).
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            path: PathBuf::from(SYSTEMCTL),
+            timeout,
+        }
+    }
+
     /// The same runner (absolute path, fixed environment, time limit) for `systemd-run`, which the
     /// updater uses to start its supervisor outside the agent's sandbox.
     pub fn systemd_run() -> Self {
@@ -174,6 +230,20 @@ const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OUTPUT: u64 = 64 * 1024;
 
 impl Systemd for Systemctl {
+    fn verify(&self, files: &[PathBuf]) -> Result<String, String> {
+        let analyze = Self {
+            path: PathBuf::from(SYSTEMD_ANALYZE),
+            timeout: self.timeout,
+        };
+        if !analyze.path.exists() {
+            return Err(format!("{} is missing", analyze.path.display()));
+        }
+        let paths: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+        let mut args = vec!["verify", "--man=no"];
+        args.extend(paths.iter().map(String::as_str));
+        analyze.systemctl(&args)
+    }
+
     fn unavailable(&self) -> Option<String> {
         // sd_booted(3): systemd is the running init only if this directory exists.
         if !Path::new("/run/systemd/system").is_dir() {
@@ -249,6 +319,138 @@ impl Systemd for Systemctl {
         } else {
             Err(stdout)
         }
+    }
+}
+
+/// A stand-in for what systemd has loaded, for tests (review of #235): the unit files in `dir` as they were
+/// at the last `daemon-reload`, and `systemctl show` answered from that, as systemd does.
+#[cfg(test)]
+#[derive(Clone)]
+pub struct LoadedUnits {
+    pub dir: PathBuf,
+    loaded: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+}
+
+#[cfg(test)]
+impl LoadedUnits {
+    pub fn new(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            loaded: std::sync::Arc::default(),
+        }
+    }
+
+    /// `daemon-reload`: what is on disk now is what systemd runs.
+    pub fn reload(&self) {
+        let mut loaded = self.loaded.lock().unwrap();
+        loaded.clear();
+        for name in [UNIT_NAME, ROLLBACK_UNIT_NAME, RECOVERY_UNIT_NAME] {
+            if let Ok(text) = std::fs::read_to_string(self.dir.join(name)) {
+                loaded.insert(name.to_owned(), text);
+            }
+        }
+    }
+
+    fn on_disk(&self, name: &str) -> Option<String> {
+        std::fs::read_to_string(self.dir.join(name)).ok()
+    }
+
+    fn property(&self, name: &str, key: &str) -> String {
+        let loaded = self.loaded.lock().unwrap().get(name).cloned();
+        match key {
+            "LoadState" => if loaded.is_some() {
+                "loaded"
+            } else {
+                "not-found"
+            }
+            .into(),
+            "FragmentPath" => loaded
+                .as_ref()
+                .map(|_| self.dir.join(name).display().to_string())
+                .unwrap_or_default(),
+            "NeedDaemonReload" => if loaded != self.on_disk(name) {
+                "yes"
+            } else {
+                "no"
+            }
+            .into(),
+            "OnFailure" => {
+                // As systemd reads it: each line adds, an empty value clears; drop-ins are not modelled.
+                let mut units: Vec<String> = Vec::new();
+                let mut section = "";
+                for line in loaded.unwrap_or_default().lines().map(str::trim) {
+                    if line.starts_with('[') {
+                        section = if line == "[Unit]" { "unit" } else { "" };
+                    } else if let Some(value) = line
+                        .strip_prefix("OnFailure=")
+                        .filter(|_| section == "unit")
+                    {
+                        if value.trim().is_empty() {
+                            units.clear();
+                        }
+                        units.extend(value.split_whitespace().map(str::to_owned));
+                    }
+                }
+                units.join(" ")
+            }
+            other => panic!("unexpected property {other}"),
+        }
+    }
+
+    /// Answers `systemctl show` (with `--property=` and maybe `--value`) and `daemon-reload`; `None` for
+    /// anything else, which the caller handles.
+    pub fn answer(&self, args: &[&str]) -> Option<Result<String, String>> {
+        match args {
+            ["daemon-reload"] => {
+                self.reload();
+                Some(Ok(String::new()))
+            }
+            ["show", rest @ ..] => {
+                let keys: Vec<&str> = rest
+                    .iter()
+                    .filter_map(|a| a.strip_prefix("--property="))
+                    .collect();
+                let modelled = ["OnFailure", "LoadState", "FragmentPath", "NeedDaemonReload"];
+                if keys.is_empty() || !keys.iter().all(|k| modelled.contains(k)) {
+                    return None;
+                }
+                let value_only = rest.contains(&"--value");
+                let units: Vec<&str> = rest
+                    .iter()
+                    .copied()
+                    .filter(|a| !a.starts_with("--"))
+                    .collect();
+                let blocks: Vec<String> = units
+                    .iter()
+                    .map(|unit| {
+                        keys.iter()
+                            .map(|key| {
+                                let value = self.property(unit, key);
+                                if value_only {
+                                    value
+                                } else {
+                                    format!("{key}={value}")
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .collect();
+                Some(Ok(blocks.join(if value_only { "\n" } else { "\n\n" })))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Systemd for LoadedUnits {
+    fn unavailable(&self) -> Option<String> {
+        None
+    }
+    fn systemctl(&self, args: &[&str]) -> Result<String, String> {
+        self.answer(args)
+            .unwrap_or_else(|| Err(format!("unexpected systemctl call: {args:?}")))
     }
 }
 
@@ -462,20 +664,24 @@ mod tests {
     }
 
     #[test]
-    fn recovery_mode_is_covered_only_by_the_installers_unit_named_in_on_failure() {
-        // #232: what heartbeats report as `units.recovery`.
+    fn recovery_mode_is_covered_only_as_systemd_has_loaded_the_installers_units() {
+        // #232, review of #235: what heartbeats report as `units.recovery`, from what systemd runs.
         let dir = crate::test_support::TempDir::new();
         let units = dir.path("units");
         std::fs::create_dir_all(&units).unwrap();
+        let systemd = LoadedUnits::new(units.clone());
         let write = |name: &str, text: &str| std::fs::write(units.join(name), text).unwrap();
+        let covered = || recovery_covered(&units, &systemd);
         // Nothing installed, then only the service.
-        assert_eq!(recovery_covered(&units), Ok(false));
-        assert_eq!(recovery_covered(&dir.path("missing")), Ok(false));
+        assert_eq!(covered(), Ok(false));
         write(UNIT_NAME, UNIT);
-        assert_eq!(recovery_covered(&units), Ok(false));
-        // This release's units.
+        systemd.reload();
+        assert_eq!(covered(), Ok(false));
+        // This release's units, written but not reloaded yet: systemd still runs the old settings.
         write(RECOVERY_UNIT_NAME, RECOVERY_UNIT);
-        assert_eq!(recovery_covered(&units), Ok(true));
+        assert_eq!(covered(), Ok(false));
+        systemd.reload();
+        assert_eq!(covered(), Ok(true));
         // A service from before recovery mode: OnFailure= names only the rollback unit.
         let old = UNIT.replace(
             &format!("OnFailure={ROLLBACK_UNIT_NAME} {RECOVERY_UNIT_NAME}"),
@@ -483,38 +689,75 @@ mod tests {
         );
         assert_ne!(old, UNIT);
         write(UNIT_NAME, &old);
-        assert_eq!(recovery_covered(&units), Ok(false));
-        // Added on a line of its own, as systemd adds them; an empty value clears what came before.
-        write(
-            UNIT_NAME,
-            &format!("{old}\n[Unit]\nOnFailure={RECOVERY_UNIT_NAME}\n"),
-        );
-        assert_eq!(recovery_covered(&units), Ok(true));
-        write(UNIT_NAME, &format!("{UNIT}\n[Unit]\nOnFailure=\n"));
-        assert_eq!(recovery_covered(&units), Ok(false));
-        // Named outside [Unit], or in a comment, does not count.
-        write(
-            UNIT_NAME,
-            &format!("{old}\n[Service]\nOnFailure={RECOVERY_UNIT_NAME}\n"),
-        );
-        assert_eq!(recovery_covered(&units), Ok(false));
-        write(
-            UNIT_NAME,
-            &format!("{old}\n[Unit]\n# OnFailure={RECOVERY_UNIT_NAME}\n"),
-        );
-        assert_eq!(recovery_covered(&units), Ok(false));
-        // A recovery unit someone wrote by hand is not the installer's.
+        systemd.reload();
+        assert_eq!(covered(), Ok(false));
+        // The files are new again but systemd was not reloaded (the reviewer's case): not covered until it is.
         write(UNIT_NAME, UNIT);
+        assert_eq!(covered(), Ok(false));
+        systemd.reload();
+        assert_eq!(covered(), Ok(true));
+        // A recovery unit someone wrote by hand is not the installer's.
         write(
             RECOVERY_UNIT_NAME,
             &RECOVERY_UNIT.replacen(UNIT_MARKER, "# my copy", 1),
         );
-        assert_eq!(recovery_covered(&units), Ok(false));
-        // A file that cannot be read is an error, not a guess.
+        systemd.reload();
+        assert_eq!(covered(), Ok(false));
+        // systemctl cannot answer: an error, not a guess.
+        write(RECOVERY_UNIT_NAME, RECOVERY_UNIT);
+        let (_d, broken) = fake("exit 1", Duration::from_secs(5));
+        assert!(recovery_covered(&units, &broken).is_err());
+        // A file that is not a regular one is an error, and a FIFO does not block (review of #235).
+        std::fs::remove_file(units.join(RECOVERY_UNIT_NAME)).unwrap();
+        let fifo =
+            std::ffi::CString::new(units.join(RECOVERY_UNIT_NAME).to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let error = covered().unwrap_err();
+        assert!(error.contains("is not a regular file"), "{error}");
         std::fs::remove_file(units.join(RECOVERY_UNIT_NAME)).unwrap();
         std::fs::create_dir(units.join(RECOVERY_UNIT_NAME)).unwrap();
-        let error = recovery_covered(&units).unwrap_err();
-        assert!(error.contains(RECOVERY_UNIT_NAME), "{error}");
+        assert!(covered().unwrap_err().contains(RECOVERY_UNIT_NAME));
+    }
+
+    #[test]
+    fn systemd_analyze_verify_passes_these_units_and_refuses_one_systemd_cannot_load() {
+        // Review of #235: the check `install --refresh-units` runs before it writes. Skipped where
+        // systemd-analyze is not installed (it is on every CI runner and Debian).
+        if !Path::new(SYSTEMD_ANALYZE).exists() {
+            return;
+        }
+        let dir = crate::test_support::TempDir::new();
+        let files: Vec<PathBuf> = [
+            (UNIT_NAME, UNIT),
+            (ROLLBACK_UNIT_NAME, ROLLBACK_UNIT),
+            (RECOVERY_UNIT_NAME, RECOVERY_UNIT),
+        ]
+        .iter()
+        .map(|(name, text)| {
+            let text = text
+                .replace("/usr/lib/fleet-agent/current/fleet-agent", "/bin/true")
+                .replace("/usr/lib/fleet-agent/previous/fleet-agent", "/bin/true");
+            dir.write(name, &text)
+        })
+        .collect();
+        let systemctl = Systemctl::default();
+        assert_eq!(systemctl.verify(&files).map(drop), Ok(()));
+        // A unit systemd would refuse to start: its command is not an absolute path.
+        let bad = dir.write("broken.service", "[Service]\nExecStart=fleet-agent run\n");
+        let error = systemctl.verify(&[bad]).unwrap_err();
+        assert!(error.contains("broken.service"), "{error}");
+    }
+
+    #[test]
+    fn a_reload_is_needed_until_systemd_has_read_the_files() {
+        let dir = crate::test_support::TempDir::new();
+        let systemd = LoadedUnits::new(dir.path(""));
+        std::fs::write(dir.path(UNIT_NAME), UNIT).unwrap();
+        assert!(needs_reload(&systemd));
+        systemd.reload();
+        assert!(!needs_reload(&systemd));
+        let (_d, broken) = fake("exit 1", Duration::from_secs(5));
+        assert!(needs_reload(&broken), "when systemctl cannot say, reload");
     }
 
     fn fake(script: &str, timeout: Duration) -> (crate::test_support::TempDir, Systemctl) {

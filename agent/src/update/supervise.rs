@@ -575,7 +575,8 @@ impl Supervisor<'_> {
 
     /// The new version confirmed: its units are written (#232), the outcome recorded, older versions
     /// pruned, and the record removed, in that order. A supervisor killed before the record is gone does
-    /// all of it again, and the refresh changes nothing the second time.
+    /// all of it again: the refresh then writes what is still missing and always reloads systemd, so a first
+    /// run killed between its writes and its reload is completed (review of #235).
     fn finish_confirmed(&self, rec: &Record) -> Result<(), String> {
         let note = self.refresh_units(rec);
         self.report(rec, Outcome::Succeeded, note)?;
@@ -584,8 +585,11 @@ impl Supervisor<'_> {
         Ok(())
     }
 
-    /// Runs the new version's `install --refresh-units`. The service is not restarted: systemd uses the new
-    /// unit settings at its next start, and `OnFailure=` and `RestartMode=` once reloaded. A failure does not
+    /// Runs the new version's `install --refresh-units`, which checks the units with `systemd-analyze verify`
+    /// before it writes them. The service is not restarted: systemd uses the new unit settings at its next
+    /// start, and `OnFailure=` and `RestartMode=` once reloaded. So a unit setting that verify passes but that
+    /// breaks the service would show only at that start, after the update can no longer roll back (ADR 0030,
+    /// threat model D9). A failure does not
     /// undo the update, which has confirmed and runs under the old units: it is logged and returned as the
     /// note for the update result, so the dashboard shows it.
     fn refresh_units(&self, rec: &Record) -> Option<String> {
@@ -603,7 +607,7 @@ impl Supervisor<'_> {
                     "cannot refresh the systemd units from the new version ({why}); the update stands, under the old units"
                 );
                 Some(format!(
-                    "the update succeeded, but its systemd units were not installed (the old units run it; `sudo fleet-agent install` on the VM installs them): {why}"
+                    "the update succeeded, but its systemd units were not installed (the old units run it; `sudo fleet-agent install --refresh-units` on the VM installs them): {why}"
                 ))
             }
         }

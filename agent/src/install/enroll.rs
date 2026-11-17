@@ -566,7 +566,8 @@ pub fn confirm(
             recovery: None,
             // As the service reports them, from the units step 2 wrote (#232).
             units: Some(super::Units {
-                recovery: super::recovery_covered(&host.paths.unit_dir()).unwrap_or(false),
+                recovery: super::recovery_covered(&host.paths.unit_dir(), &*host.systemd)
+                    .unwrap_or(false),
             }),
         };
         let error = match client.post_json(HEARTBEAT_PATH, &body) {

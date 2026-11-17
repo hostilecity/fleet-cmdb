@@ -89,6 +89,10 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         media.update_columns(agent_units_recovery: true)
         get "/", params: { recovery: "missing", tag: "media" }
         expect(page.at_css(".empty strong").text).to eq(%(No hosts match tag "media" with recovery mode not set up.))
+        # The filter alone, and every host covered: said as the good news it is (review of #235).
+        get "/", params: { recovery: "missing" }
+        expect(words(page.at_css("#all_recovery_set_up"))).to eq("Every active host that has sent a heartbeat has recovery mode set up. Show the whole fleet")
+        expect(page.at_css("#all_recovery_set_up a")["href"]).to eq("/")
       end
 
       it "draws no pager when the fleet fits one page, as on the approved mockup" do
@@ -297,20 +301,26 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       expect(page.at_css("#recovery_host_#{host.id}")).to be_nil
     end
 
-    it "says whether recovery mode is set up, and what to do when it is not (#232)" do
+    it "says whether recovery mode is set up, with the next step for each case (#232, review of #235)" do
       section = -> { page.at_css("#agent_updates #recovery_coverage_host_#{host.id}") }
       get "/hosts/#{host.id}"
       expect(section.call).to be_nil # no heartbeat yet
       record_heartbeat(host)
       get "/hosts/#{host.id}"
+      # An old agent: update it first; its own installer would only write its old units again.
       expect(words(section.call)).to include("This agent does not report whether recovery mode is set up.", "Agent version 0.1.0 is older",
-                                             "stops until someone starts it on the VM", "sudo fleet-agent install", "may need two updates")
+                                             "stops until someone starts it on the VM", "update the agent from Agents",
+                                             "the next update installs them", "sudo fleet-agent install --refresh-units")
+      expect(words(section.call)).not_to match(/sudo fleet-agent install(?! --refresh-units)/)
       expect(section.call["role"]).to eq("status")
       expect(section.call.at_css("a")["href"]).to eq("/agents")
+      # Not set up: refresh the units on the VM, and what to do about a local copy.
       host.update_columns(agent_units_recovery: false)
       get "/hosts/#{host.id}"
       expect(words(section.call)).to start_with("Recovery mode is not set up on this host.")
-      expect(words(section.call)).to include("sudo fleet-agent install")
+      expect(words(section.call)).to include("run sudo fleet-agent install --refresh-units", "restarts nothing",
+                                             "a local copy: move it away", "sudo systemctl edit fleet-agent")
+      expect(words(section.call)).not_to match(/sudo fleet-agent install(?! --refresh-units)/)
       host.update_columns(agent_units_recovery: true)
       get "/hosts/#{host.id}"
       expect(words(section.call)).to start_with("Recovery mode is set up.")

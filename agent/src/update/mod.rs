@@ -487,28 +487,62 @@ pub fn hold_for_install(state_dir: &Path) -> Result<Option<Lock>, String> {
     }
 }
 
-/// For `fleet-agent install --refresh-units` (#232): whether the units may be refreshed now, given the update
-/// record in `state_dir`. With no record, yes. With one, only once it is confirmed and for this version:
-/// the supervisor runs the refresh then, from the new binary, before it removes the record. Before
-/// that the update may still be rolled back, and the new units would then run the older binary. The update
-/// lock is not taken: the supervisor that runs the refresh holds it.
-pub fn check_refresh_units(state_dir: &Path) -> Result<(), String> {
+/// For `fleet-agent install --refresh-units` (#232): whether the units may be refreshed now, and the locks
+/// that keep it so. The update lock (`update.lock`) is held by a running supervisor; `updater.lock` by an
+/// agent process while it stages an offer or starts a supervisor.
+///
+/// - The update lock is free (run by hand): it and `updater.lock` are taken and kept for the run, so no
+///   update can be staged or supervised meanwhile (review of #235). An update record must then be absent,
+///   or `Confirmed` for this version (its supervisor died after the confirmation). If an agent holds
+///   `updater.lock`, an update is starting: refused.
+/// - The update lock is held: a supervisor is running, which is the case where it runs the refresh itself.
+///   It goes on only when the record is `Confirmed` for this version.
+///
+/// Before the confirmation an update may still be rolled back, and the new units would then run the older
+/// binary. No locks when there is no state directory.
+pub fn hold_for_refresh(state_dir: &Path) -> Result<Vec<Lock>, String> {
     if !state_dir.is_dir() {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let lock = |name: &str| {
+        Lock::file(&state_dir.join(name)).map_err(|e| {
+            format!(
+                "cannot check for an agent update in {}: {e}",
+                state_dir.display()
+            )
+        })
+    };
+    let update = lock(LOCK_FILE)?;
+    let updater = match &update {
+        Some(_) => match lock(UPDATER_LOCK_FILE)? {
+            Some(updater) => Some(updater),
+            None => return Err("an agent update is starting on this VM".into()),
+        },
+        None => None,
+    };
     match Record::read(state_dir) {
-        Ok(None) => Ok(()),
-        Ok(Some(rec)) if rec.phase == Phase::Confirmed && rec.version == AGENT_VERSION => Ok(()),
-        Ok(Some(rec)) => Err(format!(
-            "an agent update to {} is in progress on this VM and not confirmed yet (recorded in {})",
-            crate::logging::sanitize(&rec.version, 64),
-            state_dir.join(layout::RECORD_FILE).display()
-        )),
-        Err(e) => Err(format!(
-            "the agent update record in {} is unreadable ({e})",
-            state_dir.display()
-        )),
+        Ok(None) if update.is_some() => {}
+        Ok(Some(rec)) if rec.phase == Phase::Confirmed && rec.version == AGENT_VERSION => {}
+        Ok(None) => {
+            return Err(
+                "an agent update is in progress on this VM (its supervisor is running)".into(),
+            );
+        }
+        Ok(Some(rec)) => {
+            return Err(format!(
+                "an agent update to {} is in progress on this VM and not confirmed yet (recorded in {})",
+                crate::logging::sanitize(&rec.version, 64),
+                state_dir.join(layout::RECORD_FILE).display()
+            ));
+        }
+        Err(e) => {
+            return Err(format!(
+                "the agent update record in {} is unreadable ({e})",
+                state_dir.display()
+            ));
+        }
     }
+    Ok(update.into_iter().chain(updater).collect())
 }
 
 impl Inner {

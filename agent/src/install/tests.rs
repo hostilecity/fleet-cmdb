@@ -44,7 +44,16 @@ struct FakeSystemd {
     ack_dir: Arc<Mutex<Option<PathBuf>>>,
     silent: Arc<Mutex<bool>>,
     /// `daemon-reload` fails (#232).
-    fail_reload: bool,
+    fail_reload: Arc<Mutex<bool>>,
+    /// What systemd has loaded, which answers `show` and `daemon-reload` (review of #235).
+    units: Arc<Mutex<Option<systemd::LoadedUnits>>>,
+    /// `systemd-analyze verify` refuses the units with this (review of #235).
+    verify_fails: Arc<Mutex<Option<String>>>,
+    /// The unit files `verify` was given, with their text.
+    verified: Arc<Mutex<Vec<(String, String)>>>,
+    /// During `verify`, whether `update.lock` and `updater.lock` in this state directory could be taken.
+    lock_probe: Arc<Mutex<Option<PathBuf>>>,
+    probed: Arc<Mutex<Vec<bool>>>,
 }
 
 /// The fake service's main process id.
@@ -66,11 +75,36 @@ impl Systemd for FakeSystemd {
     fn unavailable(&self) -> Option<String> {
         self.unavailable.clone()
     }
+    fn verify(&self, files: &[PathBuf]) -> Result<String, String> {
+        self.calls.lock().unwrap().push("verify".into());
+        if let Some(state) = self.lock_probe.lock().unwrap().clone() {
+            for name in ["update.lock", "updater.lock"] {
+                let free = crate::fsx::Lock::file(&state.join(name)).unwrap().is_some();
+                self.probed.lock().unwrap().push(free);
+            }
+        }
+        for file in files {
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            let text = fs::read_to_string(file).unwrap();
+            self.verified.lock().unwrap().push((name, text));
+        }
+        match self.verify_fails.lock().unwrap().clone() {
+            Some(why) => Err(why),
+            None => Ok(String::new()),
+        }
+    }
     fn systemctl(&self, args: &[&str]) -> Result<String, String> {
         let call = args.join(" ");
         self.calls.lock().unwrap().push(call.clone());
+        if args == ["daemon-reload"] && *self.fail_reload.lock().unwrap() {
+            return Err("Failed to reload daemon".into());
+        }
+        if let Some(units) = self.units.lock().unwrap().as_ref()
+            && let Some(answer) = units.answer(args)
+        {
+            return answer;
+        }
         match args {
-            ["daemon-reload"] if self.fail_reload => Err("Failed to reload daemon".into()),
             ["daemon-reload"] | ["reset-failed", _] => Ok(String::new()),
             // Recovery mode (ADR 0030) is stopped before its unit is removed.
             ["stop", systemd::RECOVERY_UNIT_NAME] => Ok(String::new()),
@@ -198,6 +232,9 @@ impl Fixture {
         fs::write(dir.path("system-ca.pem"), &pki.ca_pem).unwrap();
         let systemd = FakeSystemd::default();
         *systemd.ack_dir.lock().unwrap() = Some(dir.path("root/var/lib/fleet-agent"));
+        *systemd.units.lock().unwrap() = Some(systemd::LoadedUnits::new(
+            dir.path("root/etc/systemd/system"),
+        ));
         Self {
             dir,
             pki,
@@ -295,6 +332,20 @@ impl Fixture {
         for (name, text) in units {
             fs::write(paths.unit_dir().join(name), text).unwrap();
         }
+    }
+
+    /// What systemd has loaded, in the fake.
+    fn loaded(&self) -> systemd::LoadedUnits {
+        self.systemd.units.lock().unwrap().clone().unwrap()
+    }
+
+    /// The calls that change something or check the units: everything but `show`, which only reads.
+    fn changes(&self) -> Vec<String> {
+        self.systemd
+            .calls()
+            .into_iter()
+            .filter(|c| !c.starts_with("show "))
+            .collect()
     }
 
     fn unit_text(&self, name: &str) -> Option<String> {
@@ -548,7 +599,7 @@ fn onboarding_install_end_to_end() {
 
     // The service.
     assert_eq!(
-        fx.systemd.calls()[..2],
+        fx.changes()[..2],
         [
             "daemon-reload".to_owned(),
             "is-enabled fleet-agent.service".to_owned()
@@ -2437,8 +2488,9 @@ fn refresh_units_writes_this_versions_units_over_the_installers_and_touches_noth
         (systemd::UNIT_NAME, &old),
         (systemd::ROLLBACK_UNIT_NAME, systemd::ROLLBACK_UNIT),
     ]);
+    fx.loaded().reload();
     let units = fx.paths().unit_dir();
-    assert_eq!(recovery_covered(&units), Ok(false));
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(false));
     let before: Vec<String> = fx.tree();
 
     let outcome = fx.refresh(Mode::Human);
@@ -2456,9 +2508,9 @@ fn refresh_units_writes_this_versions_units_over_the_installers_and_touches_noth
         fx.unit_text(systemd::RECOVERY_UNIT_NAME).as_deref(),
         Some(systemd::RECOVERY_UNIT)
     );
-    assert_eq!(recovery_covered(&units), Ok(true));
-    // One daemon-reload and nothing else: no restart, no enable.
-    assert_eq!(fx.systemd.calls(), ["daemon-reload"]);
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(true));
+    // Checked, then one daemon-reload and nothing else: no restart, no enable.
+    assert_eq!(fx.changes(), ["verify", "daemon-reload"]);
     // No config, credential, state, or link was created or changed.
     let after = fx.tree();
     let added: Vec<&String> = after.iter().filter(|p| !before.contains(p)).collect();
@@ -2475,10 +2527,13 @@ fn refresh_units_writes_this_versions_units_over_the_installers_and_touches_noth
         outcome.out
     );
 
-    // Again: nothing to write, so no reload either.
+    // Again: nothing to write, but systemd is reloaded anyway (review of #235).
     let outcome = fx.refresh(Mode::Json);
     outcome.ok();
-    assert_eq!(fx.systemd.calls(), ["daemon-reload"]);
+    assert_eq!(
+        fx.changes(),
+        ["verify", "daemon-reload", "verify", "daemon-reload"]
+    );
     let last: Value = serde_json::from_str(outcome.out.lines().last().unwrap()).unwrap();
     assert_eq!(last["event"], "units_refreshed");
     assert_eq!(last["changed"], false);
@@ -2522,7 +2577,7 @@ fn refresh_units_refuses_a_unit_the_installer_did_not_write_and_changes_nothing(
             .map(|(n, _)| (n.clone(), fx.unit_text(n)))
             .collect();
         assert_eq!(after, before, "{name}: a unit was changed");
-        assert!(fx.systemd.calls().is_empty(), "{:?}", fx.systemd.calls());
+        assert!(fx.changes().is_empty(), "{:?}", fx.systemd.calls());
     }
 }
 
@@ -2647,7 +2702,9 @@ fn refresh_units_needs_root_and_systemd_and_safe_files() {
     fs::set_permissions(fx.paths().unit_dir(), fs::Permissions::from_mode(0o755)).unwrap();
     fx.refresh(Mode::Human).ok();
     assert!(
-        fx.systemd.calls().iter().all(|c| c == "daemon-reload"),
+        fx.changes()
+            .iter()
+            .all(|c| c == "daemon-reload" || c == "verify"),
         "{:?}",
         fx.systemd.calls()
     );
@@ -2655,9 +2712,9 @@ fn refresh_units_needs_root_and_systemd_and_safe_files() {
 
 #[test]
 fn refresh_units_reports_a_failed_daemon_reload() {
-    let mut fx = Fixture::new();
+    let fx = Fixture::new();
     fx.installed_with_units(&[(systemd::UNIT_NAME, &old_service_unit())]);
-    fx.systemd.fail_reload = true;
+    *fx.systemd.fail_reload.lock().unwrap() = true;
     let failure = fx.refresh(Mode::Human).failure();
     assert_eq!(failure.failure, Failure::Failed);
     assert!(
@@ -2708,4 +2765,179 @@ fn refresh_units_parses_alone_and_refuses_the_install_options() {
         Failure::Usage
     );
     assert!(INSTALL_USAGE.contains("--refresh-units"));
+}
+
+#[test]
+fn a_refresh_whose_reload_failed_is_completed_by_the_next_one() {
+    // Review of #235, the reviewer's case: the first run wrote the files and its reload failed (or it was
+    // killed before it). The next run finds nothing to write, and must still reload. Until then the host is
+    // not reported as covered: systemd still runs the old units.
+    let fx = Fixture::new();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old_service_unit())]);
+    fx.loaded().reload();
+    let units = fx.paths().unit_dir();
+    *fx.systemd.fail_reload.lock().unwrap() = true;
+    assert!(
+        fx.refresh(Mode::Human)
+            .failure()
+            .what
+            .contains("daemon-reload failed")
+    );
+    assert_eq!(
+        fx.unit_text(systemd::UNIT_NAME).as_deref(),
+        Some(systemd::UNIT)
+    );
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(false));
+    *fx.systemd.fail_reload.lock().unwrap() = false;
+    fx.refresh(Mode::Human).ok();
+    assert_eq!(
+        fx.systemd.count("daemon-reload"),
+        2,
+        "no reload on the retry: {:?}",
+        fx.changes()
+    );
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(true));
+}
+
+#[test]
+fn install_reloads_when_systemd_has_not_read_the_units_it_finds_in_place() {
+    // Review of #235: the same gap for `fleet-agent install`, which writes nothing when the files are already
+    // this version's.
+    let fx = Fixture::new();
+    fx.installed_with_units(&[
+        (systemd::UNIT_NAME, systemd::UNIT),
+        (systemd::ROLLBACK_UNIT_NAME, systemd::ROLLBACK_UNIT),
+        (systemd::RECOVERY_UNIT_NAME, systemd::RECOVERY_UNIT),
+    ]);
+    let mut ui = Ui::new(
+        Mode::Quiet,
+        false,
+        Box::new(Captured::default()),
+        Box::new(Captured::default()),
+    );
+    assert!(!layout::write_units(&fx.host(), &mut ui, false).unwrap());
+    assert_eq!(fx.systemd.count("daemon-reload"), 1);
+    // Loaded now: nothing to write and nothing to reload.
+    assert!(!layout::write_units(&fx.host(), &mut ui, false).unwrap());
+    assert_eq!(fx.systemd.count("daemon-reload"), 1);
+}
+
+#[test]
+fn refresh_units_refuses_units_systemd_would_not_load_and_changes_nothing() {
+    // Review of #235: the refresh restarts nothing, so a unit systemd refuses would show only at the next
+    // start, after the update can no longer roll back. It is checked first, in copies whose ExecStart= runs
+    // this version's binary (so a missing `previous` does not fail the check).
+    let fx = Fixture::new();
+    let old = old_service_unit();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    *fx.systemd.verify_fails.lock().unwrap() =
+        Some("fleet-agent.service: Unit configuration has fatal error".into());
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Preflight);
+    assert!(
+        failure
+            .what
+            .contains("systemd would not load this version's units"),
+        "{}",
+        failure.what
+    );
+    assert!(failure.what.contains("fatal error"), "{}", failure.what);
+    assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old));
+    assert!(fx.unit_text(systemd::RECOVERY_UNIT_NAME).is_none());
+    assert_eq!(fx.changes(), ["verify"]);
+    let verified = fx.systemd.verified.lock().unwrap().clone();
+    let names: Vec<&str> = verified.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            systemd::UNIT_NAME,
+            systemd::ROLLBACK_UNIT_NAME,
+            systemd::RECOVERY_UNIT_NAME
+        ]
+    );
+    let binary = fx
+        .paths()
+        .versions_dir()
+        .join(crate::AGENT_VERSION)
+        .join("fleet-agent");
+    for (name, text) in &verified {
+        assert!(
+            !text.contains("ExecStart=/usr/lib/fleet-agent/"),
+            "{name}: {text}"
+        );
+        assert!(
+            text.contains(&format!("ExecStart={} ", binary.display())),
+            "{name}"
+        );
+    }
+    // The copies are removed.
+    assert!(
+        fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .flatten()
+            .all(|e| !e
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("fleet-agent-units-{}-", std::process::id()))),
+        "the verify copies were left behind"
+    );
+}
+
+#[test]
+fn refresh_units_by_hand_holds_the_update_locks_and_leaves_a_supervisor_its_own_case() {
+    // Review of #235: run by hand, it takes `update.lock` and `updater.lock`, so no update is staged or
+    // supervised while it writes. While a supervisor holds `update.lock`, it goes on only for that
+    // supervisor's confirmed update of this version.
+    use crate::fsx::Lock;
+    let old = old_service_unit();
+    let record = |state: &Path, phase: &str| {
+        fs::write(
+            state.join("update.json"),
+            format!(r#"{{"rollout_id":5,"version":"{}","from_version":"0.0.1","phase":"{phase}","started_unix":1,"report_id":"00000000-0000-4000-8000-0000000000aa","confirm_seconds":300}}"#, crate::AGENT_VERSION),
+        )
+        .unwrap();
+    };
+    let fx = Fixture::new();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    let state = fx.paths().state_dir();
+    dir_with_mode(&state, 0o700);
+
+    // An agent is starting an update (it holds updater.lock): refused.
+    let starting = Lock::file(&state.join("updater.lock")).unwrap().unwrap();
+    let failure = fx.refresh(Mode::Human).failure();
+    assert!(
+        failure.what.contains("an agent update is starting"),
+        "{}",
+        failure.what
+    );
+    drop(starting);
+    // A supervisor runs (update.lock held) with nothing confirmed: refused.
+    let supervisor = Lock::file(&state.join("update.lock")).unwrap().unwrap();
+    let failure = fx.refresh(Mode::Human).failure();
+    assert!(
+        failure.what.contains("its supervisor is running"),
+        "{}",
+        failure.what
+    );
+    assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old.clone()));
+    // The supervisor's own case: its update of this version has confirmed.
+    record(&state, "confirmed");
+    fx.refresh(Mode::Quiet).ok();
+    assert_eq!(
+        fx.unit_text(systemd::UNIT_NAME).as_deref(),
+        Some(systemd::UNIT)
+    );
+    drop(supervisor);
+
+    // By hand, with no update: both locks are held while it runs, and released after.
+    fs::remove_file(state.join("update.json")).unwrap();
+    *fx.systemd.lock_probe.lock().unwrap() = Some(state.clone());
+    fx.refresh(Mode::Quiet).ok();
+    assert_eq!(
+        *fx.systemd.probed.lock().unwrap(),
+        [false, false],
+        "a lock was free during the run"
+    );
+    assert!(Lock::file(&state.join("update.lock")).unwrap().is_some());
+    assert!(Lock::file(&state.join("updater.lock")).unwrap().is_some());
 }

@@ -115,6 +115,9 @@ class FleetList
 
   def filtered? = q.present? || tag.present? || status.present? || recovery.present?
 
+  # Only the recovery-mode filter is set: an empty list then means every active host is covered (#232).
+  def only_recovery_filter? = recovery.present? && q.blank? && tag.blank? && status.blank?
+
   # Whether the page was asked for by a cursor (Previous or Next), so an empty page may only mean its hosts moved on.
   def cursor? = @cursor.any?
 

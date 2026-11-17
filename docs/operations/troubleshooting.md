@@ -115,18 +115,19 @@ The new version's own log lines, before the rollback, say why it did not confirm
 
 ## A host shows "Recovery mode is not set up"
 
-The host's agent reports that its systemd units do not include recovery mode ([ADR 0030](../decisions/0030-agent-recovery-mode.md)): if it keeps failing on a version it has confirmed, it stops until someone starts it on the VM. The Fleet page's **Recovery mode: Not set up** filter lists every such host. On the VM:
+The host's agent reports that systemd does not run its recovery unit ([ADR 0030](../decisions/0030-agent-recovery-mode.md)): if it keeps failing on a version it has confirmed, it stops until someone starts it on the VM. The Fleet page's **Recovery mode: Not set up** filter lists every such host. On the VM:
 
 ```sh
 head -n 1 /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-agent-recovery.service
-systemctl show -p OnFailure fleet-agent       # should name fleet-agent-recovery.service
+systemctl show -p OnFailure -p NeedDaemonReload fleet-agent   # names fleet-agent-recovery.service; NeedDaemonReload=no
 journalctl -u fleet-agent-update | grep -i units   # the last update's refresh
 ```
 
-- **Units from an older release:** `sudo fleet-agent install --refresh-units` writes the installed version's units (or re-run the installer). An update from an older agent release does not refresh them; the update after it does.
+- **Units from an older release, or not reloaded:** `sudo fleet-agent install --refresh-units` writes the installed version's units and reloads systemd. An update from an older agent release does not refresh them; the update after it does.
+- **It refuses with "systemd would not load this version's units":** the release's units do not suit this VM's systemd. Nothing was changed; the old units keep running the agent. Report it with the `systemd-analyze verify` output it shows.
 - **A unit file without the first line `` # Written by `fleet-agent install` ``:** someone replaced it by hand, and the agent never overwrites it. Move it away, keep local changes in a drop-in (`systemctl edit fleet-agent`), and run `sudo fleet-agent install --refresh-units`.
 - **A note in the update history** ("its systemd units were not installed"): the update succeeded but the refresh did not; the note says why.
-- **"does not report"**: the agent is older than the release that reports it. Update it.
+- **"does not report"**: the agent is older than the release that reports it, and its own release has no recovery mode, so its installer cannot set it up. Update it from the Agents page; after that first update, `sudo fleet-agent install --refresh-units` (or the next update) sets it up.
 
 ## Package updates succeed, but vulnerabilities stay open
 

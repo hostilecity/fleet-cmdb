@@ -31,6 +31,12 @@
     <p><strong>No hosts in the fleet.</strong></p>
     <p>Run the installer on a VM and approve it on the <%= link_to "approval page", onboard_path %>, or <%= link_to "pre-register a host", new_host_path %> for an unattended install.</p>
   </div>
+<% elsif @hosts.empty? && @fleet.only_recovery_filter? %>
+  <%# #232, review of #235: the outcome the operator wants, said as such. %>
+  <div class="sheet empty" id="all_recovery_set_up">
+    <p><strong>Every active host that has sent a heartbeat has recovery mode set up.</strong></p>
+    <p><%= link_to "Show the whole fleet", root_path %></p>
+  </div>
 <% elsif @hosts.empty? %>
   <div class="sheet empty">
     <p><strong>No hosts match <%= [ (@fleet.q && %("#{@fleet.q}")), (@fleet.tag && %(tag "#{@fleet.tag}")), (@fleet.status && "status #{FleetList::STATUSES[@fleet.status]}"), (@fleet.recovery && "recovery mode not set up") ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>

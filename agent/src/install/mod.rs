@@ -49,7 +49,7 @@ use crate::config::Config;
 use crate::shutdown::Shutdown;
 
 #[cfg(test)]
-pub use systemd::{RECOVERY_UNIT, UNIT};
+pub use systemd::{LoadedUnits, RECOVERY_UNIT, UNIT};
 pub use systemd::{Systemctl, Systemd, UNIT_DIR, UNIT_NAME, Units, recovery_covered};
 pub use token::TokenSource;
 pub use ui::{Mode, Ui};
@@ -676,7 +676,8 @@ pub fn install(host: &Host, options: &InstallOptions, ui: &mut Ui) -> Result<(),
 /// and the rollback and recovery units if they are missing, then `daemon-reload` if any changed. Nothing
 /// else is touched: no config, credential, state, or version link, and the service is not restarted
 /// (systemd uses the new settings at its next start; `OnFailure=` and `RestartMode=` apply once reloaded).
-/// The supervisor of an agent update runs it from the new, confirmed, signed binary (ADR 0018, ADR 0030).
+/// The units are checked with `systemd-analyze verify` first, and systemd is always reloaded. Run by hand,
+/// it holds the update locks, so no update can start meanwhile (review of #235). The supervisor of an agent update runs it from the new, confirmed, signed binary (ADR 0018, ADR 0030).
 /// Every check comes first ([`layout::check_refresh`]), so a refusal changes nothing.
 pub fn refresh_units(host: &Host, ui: &mut Ui) -> Result<(), InstallError> {
     ui.title(&format!(
@@ -697,13 +698,15 @@ pub fn refresh_units(host: &Host, ui: &mut Ui) -> Result<(), InstallError> {
         ));
     }
     let _lock = layout::lock(host)?;
-    layout::check_refresh(host)?;
-    let wrote = layout::write_units(host, ui)?;
+    let _updates = layout::check_refresh(host)?;
+    // Always reloaded: a refresh that wrote the files and then failed or was killed before its reload is
+    // repeated by the next one, which finds nothing to write (review of #235).
+    let wrote = layout::write_units(host, ui, true)?;
     ui.summary(
         if wrote {
             "Done. The systemd units are this version's; systemd was reloaded."
         } else {
-            "Done. The systemd units were already this version's."
+            "Done. The systemd units were already this version's; systemd was reloaded."
         },
         "units_refreshed",
         &[

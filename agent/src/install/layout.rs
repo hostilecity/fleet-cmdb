@@ -156,16 +156,18 @@ pub fn install(host: &Host, ui: &mut Ui) -> Result<Installed, InstallError> {
 
     prune_versions(host, ui)?;
 
-    if write_units(host, ui)? {
+    if write_units(host, ui, false)? {
         changed = true;
     }
     Ok(Installed { changed })
 }
 
 /// The units built into this binary: the service, and the rollback and recovery units its `OnFailure=`
-/// starts (ADR 0018, ADR 0030). Each is written only if it differs, then `daemon-reload` once if any was.
-/// Returns whether any was written.
-pub fn write_units(host: &Host, ui: &mut Ui) -> Result<bool, InstallError> {
+/// starts (ADR 0018, ADR 0030). Each is written only if it differs. Then `daemon-reload` runs if any was
+/// written, if `always_reload` (`--refresh-units`), or if systemd says it still needs one: a run that wrote
+/// the files and was then killed, or whose reload failed, leaves files no later run would write again
+/// (review of #235). Returns whether any file was written.
+pub fn write_units(host: &Host, ui: &mut Ui, always_reload: bool) -> Result<bool, InstallError> {
     let paths = &host.paths;
     let mut wrote_unit = false;
     for (unit, text) in [
@@ -189,7 +191,7 @@ pub fn write_units(host: &Host, ui: &mut Ui) -> Result<bool, InstallError> {
         ui.detail(&format!("Wrote {}", unit.display()));
         wrote_unit = true;
     }
-    if wrote_unit {
+    if wrote_unit || always_reload || super::systemd::needs_reload(&*host.systemd) {
         host.systemd.daemon_reload().map_err(|e| {
             InstallError::failed(format!(
                 "systemctl daemon-reload failed after writing the units in {}: {e}",
@@ -213,7 +215,7 @@ pub fn write_units(host: &Host, ui: &mut Ui) -> Result<bool, InstallError> {
 ///   existed), and are then written. The service unit must be there and be the installer's: without it
 ///   this is not an installed agent, and a unit in `/etc/systemd/system` would hide a packaged one. A unit
 ///   without the marker is someone's local copy: it is left alone, and so are the others.
-pub fn check_refresh(host: &Host) -> Result<(), InstallError> {
+pub fn check_refresh(host: &Host) -> Result<Vec<crate::fsx::Lock>, InstallError> {
     let paths = &host.paths;
     let refuse = |what: String, next: &str| InstallError::new(Failure::Preflight, what, next);
     let version_rel = PathBuf::from("versions").join(AGENT_VERSION);
@@ -241,14 +243,16 @@ pub fn check_refresh(host: &Host) -> Result<(), InstallError> {
             dirs.push(other);
         }
     }
+    let mut held = Vec::new();
     for dir in dirs {
-        crate::update::check_refresh_units(&dir).map_err(|why| {
+        let locks = crate::update::hold_for_refresh(&dir).map_err(|why| {
             InstallError::new(
                 Failure::Failed,
                 why,
                 "Wait for the update to finish; a confirmed update refreshes the units itself.",
             )
         })?;
+        held.extend(locks);
     }
     if let Some(reason) = fsx::check_dir(&paths.unit_dir(), host.owner_uid) {
         return Err(refuse(
@@ -297,7 +301,64 @@ pub fn check_refresh(host: &Host) -> Result<(), InstallError> {
             ));
         }
     }
-    Ok(())
+    verify_units(host)?;
+    Ok(held)
+}
+
+/// `systemd-analyze verify` on this version's three units, written to a new private directory first
+/// (review of #235). The refresh restarts nothing, so the new units first apply at the next start of the
+/// service, long after the update confirmed: a unit systemd would refuse to load must be caught now, not at
+/// the next reboot. Only a unit systemd would refuse fails (verify exits nonzero); warnings, such as a
+/// setting an older systemd does not know and ignores, do not. `ExecStart=` points to this version's binary
+/// in the copies, as `scripts/check-unit.sh` does with `/bin/true`, so `previous` need not exist.
+fn verify_units(host: &Host) -> Result<(), InstallError> {
+    use std::os::unix::fs::DirBuilderExt;
+    let binary = host
+        .paths
+        .lib_dir()
+        .join("versions")
+        .join(AGENT_VERSION)
+        .join("fleet-agent")
+        .display()
+        .to_string();
+    let dir = std::env::temp_dir().join(format!(
+        "fleet-agent-units-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    // `create`, not `create_all`: an existing path (someone else's, or a link) fails rather than being used.
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| io_failed("create", &dir, e))?;
+    let result = (|| {
+        let mut files = Vec::new();
+        for (name, text) in [
+            (super::systemd::UNIT_NAME, UNIT),
+            (super::systemd::ROLLBACK_UNIT_NAME, ROLLBACK_UNIT),
+            (super::systemd::RECOVERY_UNIT_NAME, RECOVERY_UNIT),
+        ] {
+            let copy = text
+                .replace("/usr/lib/fleet-agent/current/fleet-agent", &binary)
+                .replace("/usr/lib/fleet-agent/previous/fleet-agent", &binary);
+            let path = dir.join(name);
+            fs::write(&path, copy).map_err(|e| io_failed("write", &path, e))?;
+            files.push(path);
+        }
+        host.systemd.verify(&files).map(drop).map_err(|e| {
+            InstallError::new(
+                Failure::Preflight,
+                format!(
+                    "systemd would not load this version's units (systemd-analyze verify: {e}); no unit was changed"
+                ),
+                "Keep the units this VM has, and report it: the release's units need a fix for this systemd.",
+            )
+        })
+    })();
+    let _ = fs::remove_dir_all(&dir);
+    result
 }
 
 /// Keeps the versions `current` and `previous` point to and removes the others (ADR 0018 retention).

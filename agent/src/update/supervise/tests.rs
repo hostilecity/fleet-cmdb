@@ -121,7 +121,7 @@ fn a_unit_refresh_that_fails_is_noted_and_the_update_still_succeeds() {
         "{reason}"
     );
     assert!(
-        reason.contains("sudo fleet-agent install")
+        reason.contains("sudo fleet-agent install --refresh-units")
             && reason.contains("was not written by fleet-agent install"),
         "{reason}"
     );
@@ -155,17 +155,20 @@ fn the_real_refresh_runs_the_new_binary_with_refresh_units_and_an_empty_environm
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         path
     };
+    // Everything the child sees, but the PWD the shell sets itself. The test process always has PATH and
+    // HOME, so this fails if the environment is passed on (review of #235).
+    assert!(std::env::var_os("PATH").is_some() && std::env::var_os("HOME").is_some());
     let ok = script(
         "ok",
         &format!(
-            "echo \"$* FLEET_ENROLLMENT_TOKEN=${{FLEET_ENROLLMENT_TOKEN:-unset}}\" > {}",
+            "{{ echo \"$*\"; env | grep -v '^PWD=' | sort; }} > {}",
             seen.display()
         ),
     );
     assert_eq!(RunRefresh.refresh(&ok), Ok(()));
     assert_eq!(
         fs::read_to_string(&seen).unwrap(),
-        "install --refresh-units --quiet FLEET_ENROLLMENT_TOKEN=unset\n"
+        "install --refresh-units --quiet\nLANG=C\n"
     );
     let refused = script(
         "refused",
