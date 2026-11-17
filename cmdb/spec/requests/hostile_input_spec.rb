@@ -135,13 +135,14 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
       # A package set, two package snapshots, and the host's packages, with hostile names, versions, and sources (P2-D03).
       let!(:packages) do
         rows = ->(suffix) { [ [ fit(128), fit(200) + suffix, fit(128) ], [ "#{fit(100)}-2", "1.0", nil ] ].map { |name, version, source| [ name, fit(32), version, source ] } }
-        [ "", "+1" ].each_with_index do |suffix, index|
-          PackageSnapshot.create!(host:, manager: "dpkg", package_count: 2, content_hash: SecureRandom.hex(32), packages: rows.(suffix), report_id: SecureRandom.uuid,
+        sets = [ "", "+1" ].each_with_index.map do |suffix, index|
+          set_id = PackageStore.store!(rows.(suffix).map { |row| AgentApi::PackageReport::Package.from_a(row) })
+          PackageSnapshot.create!(host:, manager: "dpkg", package_count: 2, content_hash: SecureRandom.hex(32), package_set_id: set_id, report_id: SecureRandom.uuid,
                                   warnings: [ { "field" => text, "message" => text } ], collected_at: (2 - index).hours.ago, received_at: (2 - index).hours.ago)
+          set_id
         end
         HostPackageSet.create!(host:, manager: "dpkg", package_count: 2, content_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid, schema_version: 1,
-                               collected_at: 1.hour.ago, received_at: 1.hour.ago)
-        HostPackage.insert_all(rows.("+1").map { |name, architecture, version, source| { host_id: host.id, name:, architecture:, version:, source: } })
+                               collected_at: 1.hour.ago, received_at: 1.hour.ago, package_set_id: sets.last)
       end
 
       # A vulnerability finding whose advisory and package text are hostile, with a script URL as its reference, and a
@@ -151,8 +152,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                                     modified_at: Time.current)
         HostVulnerabilityEvaluation.create!(host:, ecosystem: "Debian:13", state: "evaluated", evaluated_at: Time.current, not_evaluated_count: 1,
                                             not_evaluated: [ { "package" => text, "architecture" => text, "version" => text, "source" => text, "advisory" => text, "reason" => text } ])
-        VulnerabilityFinding.create!(host:, advisory:, package: fit(128), architecture: fit(32), source: fit(128), ecosystem: "Debian:13", installed_version: fit(256),
-                                     fixed_version: fit(256), state: "reopened", first_seen_at: 2.hours.ago, resolved_at: 1.hour.ago, reopened_at: Time.current)
+        VulnerabilityFinding.create!(host:, advisory:, package: fit(128), architecture: fit(32), last_source: fit(128), last_installed_version: fit(256),
+                                     last_fixed_version: fit(256), state: "reopened", first_seen_at: 2.hours.ago, resolved_at: 1.hour.ago, reopened_at: Time.current)
       end
 
       # Advisory imports whose file name, failure reason, and malformed records' locations, ids, and reasons are hostile, by a hostile
@@ -177,8 +178,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                               collected_at: 1.minute.ago, received_at: 1.minute.ago)
         advisory = Advisory.create!(advisory_id: "DSA-9199-1", source: "test", summary: "Example.", severity: "high", aliases: %w[CVE-2026-91991 CVE-2026-91992],
                                     modified_at: Time.current)
-        VulnerabilityFinding.create!(host: triage_host, advisory:, package: "libc6", architecture: "amd64", source: "glibc", ecosystem: "Debian:13",
-                                     installed_version: "2.41-12+deb13u4", state: "open", first_seen_at: 1.hour.ago)
+        VulnerabilityFinding.create!(host: triage_host, advisory:, package: "libc6", architecture: "amd64", last_source: "glibc",
+                                     last_installed_version: "2.41-12+deb13u4", state: "open", first_seen_at: 1.hour.ago)
         base = { tracker: "debian", release: "trixie", package: "glibc" }
         TriageEntry.create!(base.merge(cve_id: "CVE-2026-91991", status: "open", urgency: "low", urgency_raw: fit(64), no_dsa: true, no_dsa_note: fit(512),
                                        no_dsa_reason: fit(32), next_point_update: true, scope: fit(8)))

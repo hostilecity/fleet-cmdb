@@ -11,16 +11,16 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
 
   def send_report(payload, as: credential, headers: {}) = post_api("/api/v1/reports/packages", payload, as, headers:)
 
-  def stored_packages = HostPackage.where(host:).order(:name, :architecture).map { |p| p.to_package.to_h.transform_keys(&:to_s) }
+  def stored_packages = stored_package_rows(host).map { |row| AgentApi::PackageReport::Package.from_a(row).to_h.transform_keys(&:to_s) }
 
   def sorted(packages) = packages.sort_by { |p| [ p["name"], p["architecture"] ] }
 
   def gzip(text) = ActiveSupport::Gzip.compress(text)
 
-  # The INSERT, UPDATE, and DELETE statements on host_packages that the block sends.
+  # The INSERT, UPDATE, and DELETE statements on the package store's tables that the block sends.
   def package_writes
     statements = []
-    counter = ->(*, payload) { statements << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)[^"]*"host_packages"/) }
+    counter = ->(*, payload) { statements << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE|DELETE)[^"]*"package_(chunks|chunk_entries|sets)"/) }
     ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { yield }
     statements
   end
@@ -77,9 +77,9 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(PackageDiff.for(first).installed.size).to eq(8)
     end
 
-    it "writes only the packages that changed: the others keep their rows (scale assessment)" do
+    it "stores only the chunks that changed: the others are the same rows, shared (ADR 0028)" do
       send_report(report)
-      kept = HostPackage.where(host:).where.not(name: %w[vim openssl tzdata]).pluck(:name, :architecture, :id)
+      before = PackageSnapshot.find_by!(host:).package_set_id
       packages = example["packages"].reject { |p| p["name"] == "vim" }
                                     .map { |p| p["name"] == "openssl" ? p.merge("version" => "3.5.1-1+deb13u2") : p }
                                     .map { |p| p["name"] == "tzdata" ? p.merge("source" => "tzdata-legacy") : p }
@@ -88,10 +88,20 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       statements = package_writes { send_report(report(packages:)) }
 
       expect(stored_packages).to eq(sorted(packages))
-      expect(HostPackage.where(host:).where.not(name: %w[vim openssl tzdata curl]).pluck(:name, :architecture, :id)).to match_array(kept)
-      expect(HostPackage.find_by!(host:, name: "tzdata")).to have_attributes(source: "tzdata-legacy")
-      expect(statements.size).to eq(2) # one DELETE of vim, one upsert of openssl, tzdata, and curl
+      after = PackageSnapshot.where(host:).chronological.last.package_set_id
+      old_chunks, new_chunks = PackageSet.find(before).chunk_ids, PackageSet.find(after).chunk_ids
+      buckets = %w[vim openssl tzdata tzdata-legacy curl].map { |source| PackageStore.bucket(source) }.uniq
+      expect((0...64).reject { |b| old_chunks[b] == new_chunks[b] }).to match_array(buckets.select { |b| old_chunks[b] || new_chunks[b] })
       expect(statements.join).not_to include("libc6")
+      expect(statements.grep(/INSERT INTO "package_chunk_entries"/).size).to eq(1) # one batch for the new chunks
+    end
+
+    it "stores nothing new when another host reports the same set" do
+      send_report(report)
+      other, other_credential = enrolled_host
+      statements = package_writes { post_api("/api/v1/reports/packages", report, other_credential) }
+      expect(statements).to eq([]) # the set is found by its hash
+      expect(HostPackageSet.find_by!(host: other).package_set_id).to eq(HostPackageSet.find_by!(host:).package_set_id)
     end
 
     it "writes no package rows when only the skipped names changed" do
@@ -112,8 +122,8 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(response).to have_http_status(:ok)
       expect(HostPackageSet.find_by!(host:)).to have_attributes(manager: "unsupported", unsupported?: true, package_count: 0,
                                                                 unsupported_reason: unsupported["unsupported_reason"])
-      expect(PackageSnapshot.where(host:).chronological.last).to have_attributes(unsupported?: true, packages: [])
-      expect(HostPackage.where(host:)).to be_empty
+      expect(PackageSnapshot.where(host:).chronological.last).to have_attributes(unsupported?: true, package_set_id: nil, package_list: [])
+      expect(stored_packages).to be_empty
     end
 
     it "makes the diff to and from an unsupported manager unavailable, not everything removed or installed (review of #98)" do
@@ -148,13 +158,13 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(HostPackageSet.find_by!(host:)).to have_attributes(manager: "unreadable", unreadable?: true, unsupported?: false, package_count: 8,
                                                                 unsupported_reason: unreadable["unsupported_reason"])
       expect(stored_packages).to eq(kept)
-      expect(PackageSnapshot.where(host:).chronological.last).to have_attributes(unreadable?: true, packages: [], package_count: 0)
+      expect(PackageSnapshot.where(host:).chronological.last).to have_attributes(unreadable?: true, package_set_id: nil, package_count: 0)
     end
 
     it "is recorded on a host that had never reported, with no packages" do
       send_report(unreadable)
-      expect(HostPackageSet.find_by!(host:)).to have_attributes(manager: "unreadable", package_count: 0)
-      expect(HostPackage.where(host:)).to be_empty
+      expect(HostPackageSet.find_by!(host:)).to have_attributes(manager: "unreadable", package_count: 0, package_set_id: nil)
+      expect(stored_packages).to be_empty
     end
 
     it "snapshots a change of reason, and not the same unreadable report again" do
@@ -307,14 +317,14 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
     send_report(report(packages:))
     expect_error(:bad_request, "validation_failed")
     expect(json.dig("error", "details")).to eq([ { "pointer" => "/packages/8", "problem" => "duplicates an earlier package with the same name and architecture" } ])
-    expect([ HostPackageSet.count, HostPackage.count, PackageSnapshot.count, PackageReportReceipt.count ]).to eq([ 0, 0, 0, 0 ])
+    expect([ HostPackageSet.count, PackageSet.count, PackageSnapshot.count, PackageReportReceipt.count ]).to eq([ 0, 0, 0, 0 ])
   end
 
   it "stores a version dpkg would refuse as reported, so matching can mark it not evaluated (P2-S09)" do
     packages = [ example["packages"].first.merge("version" => "1.0-") ]
     send_report(report(packages:))
     expect(response).to have_http_status(:ok)
-    expect(HostPackage.find_by!(host:).version).to eq("1.0-")
+    expect(stored_package_rows(host).sole[2]).to eq("1.0-")
   end
 
   it "round-trips names and versions dpkg takes with only a warning, such as an underscore (review of #98)" do
@@ -402,7 +412,7 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
     diffed = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
     expect(response).to have_http_status(:ok)
-    expect([ HostPackage.where(host:).count, diff.changed.size, diff.upgraded.size ]).to eq([ 3_000, 300, 300 ])
+    expect([ stored_package_rows(host).size, diff.changed.size, diff.upgraded.size ]).to eq([ 3_000, 300, 300 ])
     timings = { first_report: stored - started, changed_report: changed - stored, diff: diffed - changed }
     Rails.logger.info("[package_reports_spec] 3,000 packages, #{first.to_json.bytesize} bytes (#{body.bytesize} gzip): #{timings.transform_values { |t| t.round(3) }}")
     expect(timings.values).to all(be < 5.0)

@@ -25,6 +25,10 @@
 # over an unreadable snapshot before the one given, since it says nothing changed; when the only earlier snapshots
 # kept are unreadable, the set before is unknown and the diff is not available (review of #121). The host's first
 # snapshot (none before it) has everything installed.
+#
+# Two snapshots are compared by their sets' chunks (ADR 0028): only the buckets whose chunks differ are loaded and
+# compared, since equal chunks hold the same packages. A name the older report skipped is looked up in the whole newer
+# set, so removed_skipped stays exact.
 class PackageDiff
   Change = Data.define(:name, :architecture, :from, :to, :direction) do
     # The direction, except :equivalent for versions dpkg treats as equal that are spelled differently (`1.0` and
@@ -61,7 +65,14 @@ class PackageDiff
     reason = [ older, newer ].filter_map { |set| unknown_reason(set) }.first
     return new([], [], scheme, unavailable_reason: reason) if reason
 
-    new(list(older), list(newer), scheme, older_skipped: skipped_list(older), skipped: skipped_list(newer))
+    older_skipped = skipped_list(older)
+    skipped = skipped_list(newer)
+    if [ older, newer ].all? { |set| set.respond_to?(:package_set_id) }
+      before, after = PackageStore.differing_packages(older.package_set_id, newer.package_set_id)
+      listed = PackageStore.listed_names(newer.package_set_id, older_skipped.map(&:name).uniq)
+      return new(before, after, scheme, older_skipped:, skipped:, listed_now: listed)
+    end
+    new(list(older), list(newer), scheme, older_skipped:, skipped:)
   end
 
   def self.for(snapshot, scheme: PackageVersions::Dpkg)
@@ -82,7 +93,8 @@ class PackageDiff
   end
   private_class_method :unknown_reason
 
-  def initialize(older, newer, scheme, unavailable_reason: nil, older_skipped: [], skipped: [])
+  # listed_now: names the newer set lists beyond newer (when newer holds only the buckets that differ).
+  def initialize(older, newer, scheme, unavailable_reason: nil, older_skipped: [], skipped: [], listed_now: Set.new)
     @unavailable_reason = unavailable_reason
     before = older.index_by(&:key)
     after = newer.index_by(&:key)
@@ -92,7 +104,7 @@ class PackageDiff
     @completed = new_here.map { |p| Completed.new(name: p.name, architecture: p.architecture, package: p, reason: was_skipped[p.name]) }
     gone, @removed = before.except(*after.keys).values.sort_by(&:key).partition { |p| now_skipped.key?(p.name) }
     @skipped = gone.map { |p| Skip.new(name: p.name, architecture: p.architecture, package: p, reason: now_skipped[p.name]) }
-    listed_now = newer.to_set(&:name)
+    listed_now = newer.to_set(&:name) | listed_now
     @removed_skipped = was_skipped.reject { |name, _| listed_now.include?(name) || now_skipped.key?(name) }
                                   .sort.map { |name, reason| SkippedRemoval.new(name:, reason:) }
     @changed = after.slice(*before.keys).filter_map do |key, now|
