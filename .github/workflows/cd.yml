@@ -1,5 +1,5 @@
 # Deploy (P1-O03): builds and runs the server on its VM (docs/operations/install-server.md). On a self-hosted runner
-# on the LAN it connects to the VM over SSH, ships the commit's cmdb/, docs/api/, agent/trust/, and agent/release-keys/ (tar), builds the image there, and replaces the
+# on the LAN it connects to the VM over SSH, ships the commit's cmdb/, docs/api/, agent/trust/, agent/release-keys/, and ops/backup/ (tar), builds the image there, and replaces the
 # fleet-cmdb container, which joins the existing PostgreSQL container's Docker network and publishes port 443: HTTPS
 # with the server's Cloudflare Origin CA certificate, for agents and the Cloudflare tunnel (ADR 0024). Settings come
 # from the "production" environment; secret values travel only on SSH standard input into a mode-0600 env file for
@@ -10,6 +10,11 @@
 # re-run an earlier Deploy run (it redeploys its commit) or revert on main. The runner needs bash, ssh and tar, not
 # git: actions/checkout downloads the commit through the API when git is missing. It also needs openssl, to check
 # that agents will trust the server's certificate before it is deployed.
+#
+# Backups (#138, docs/operations/backup-and-restore.md): after the app is up it writes the backup's settings, the
+# database password among them, over SSH standard input into ~/.config/fleet-cmdb/backup.env (mode 0600), and runs
+# ops/backup/install.sh, which installs the deploy user's systemd timer for ops/backup/docker.sh (pg_dump in a
+# throwaway postgres container on the database network). The first deploy also takes the first backup.
 #
 # Background jobs run inside the app container (SOLID_QUEUE_IN_PUMA). With the variable FLEET_JOBS_CONTAINER set to
 # true they run in a second container instead, fleet-cmdb-jobs, from the same image and settings (#198,
@@ -46,6 +51,10 @@ jobs:
       DEPLOY_DIR: ${{ vars.DEPLOY_DIR || 'fleet-cmdb' }}
       DB_NETWORK: ${{ vars.FLEET_DB_NETWORK }}
       JOBS_CONTAINER: ${{ vars.FLEET_JOBS_CONTAINER || 'false' }}
+      BACKUP_DIR: ${{ vars.FLEET_BACKUP_DIR || '/var/backups/fleet-cmdb' }}
+      BACKUP_ALLOW_LOCAL: ${{ vars.FLEET_BACKUP_ALLOW_LOCAL || 'false' }}
+      BACKUP_RETENTION_DAYS: ${{ vars.FLEET_BACKUP_RETENTION_DAYS }}
+      BACKUP_PG_IMAGE: ${{ vars.FLEET_BACKUP_PG_IMAGE || 'postgres:17' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -71,6 +80,10 @@ jobs:
           [[ "$DEPLOY_DIR" =~ ^[A-Za-z0-9._/-]+$ && "$DEPLOY_DIR" != *..* ]] || { echo "::error::DEPLOY_DIR is not a plain path"; exit 1; }
           [[ "$DB_NETWORK" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::set the variable FLEET_DB_NETWORK"; exit 1; }
           [[ "$JOBS_CONTAINER" =~ ^(true|false)$ ]] || { echo "::error::FLEET_JOBS_CONTAINER must be true, false, or unset"; exit 1; }
+          [[ "$BACKUP_DIR" =~ ^/[A-Za-z0-9._/-]+$ && "$BACKUP_DIR" != *..* ]] || { echo "::error::FLEET_BACKUP_DIR must be an absolute plain path"; exit 1; }
+          [[ "$BACKUP_ALLOW_LOCAL" =~ ^(true|false)$ ]] || { echo "::error::FLEET_BACKUP_ALLOW_LOCAL must be true, false, or unset"; exit 1; }
+          [[ "$BACKUP_RETENTION_DAYS" =~ ^([1-9][0-9]*)?$ ]] || { echo "::error::FLEET_BACKUP_RETENTION_DAYS must be a whole number of days, or unset"; exit 1; }
+          [[ "$BACKUP_PG_IMAGE" =~ ^[a-z0-9][a-z0-9._/:@-]*$ ]] || { echo "::error::FLEET_BACKUP_PG_IMAGE is not an image name"; exit 1; }
 
       - name: Configure SSH
         env:
@@ -104,7 +117,7 @@ jobs:
 
       - name: Ship the code
         run: |
-          tar -cf - cmdb docs/api agent/trust agent/release-keys | ssh -F "$SSH_CONFIG" server \
+          tar -cf - cmdb docs/api agent/trust agent/release-keys ops/backup | ssh -F "$SSH_CONFIG" server \
             "rm -rf '$DEPLOY_DIR/build-$DEPLOY_SHA' && mkdir -p '$DEPLOY_DIR/build-$DEPLOY_SHA' && tar -xf - -C '$DEPLOY_DIR/build-$DEPLOY_SHA'"
 
       - name: Write the app's env file on the server
@@ -214,9 +227,42 @@ jobs:
           docker exec fleet-cmdb curl -fsSk -o /dev/null https://localhost:3443/up \
             || { docker logs --tail 100 fleet-cmdb; echo "the app does not answer HTTPS on 3443" >&2; exit 1; }
           docker ps --filter name='^fleet-cmdb(-jobs)?$' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-          echo "/health: $(docker exec fleet-cmdb curl -s http://localhost:3000/health) (503 until backups exist)"
+          echo "/health: $(docker exec fleet-cmdb curl -s http://localhost:3000/health) (503 until the first backup)"
           docker images fleet-cmdb --format '{{.Tag}}' | grep -vx -e latest -e "$sha" | sed 's/^/fleet-cmdb:/' | xargs -r docker rmi >/dev/null || true
           docker image prune -f >/dev/null
+          REMOTE
+
+      - name: Set up backups on the server
+        env:
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          PGHOST: ${{ vars.FLEET_DB_HOST || 'postgres' }}
+        run: |
+          # The backup reaches the database as the app does: the role cmdb, the password from the same secret, sent on SSH
+          # standard input into a mode-0600 env file that docker.sh reads (it stays, since the timer needs it daily).
+          lines=("FLEET_DB_NETWORK=$DB_NETWORK" "PGHOST=$PGHOST" PGUSER=cmdb "PGPASSWORD=$DATABASE_PASSWORD" \
+                 "BACKUP_DIR=$BACKUP_DIR" "BACKUP_PG_IMAGE=$BACKUP_PG_IMAGE")
+          [[ "$PGHOST$DATABASE_PASSWORD" != *$'\n'* ]] || { echo "::error::DATABASE_PASSWORD or FLEET_DB_HOST holds a line break"; exit 1; }
+          if [ "$BACKUP_ALLOW_LOCAL" = true ]; then lines+=(BACKUP_ALLOW_LOCAL=true); fi
+          if [ -n "$BACKUP_RETENTION_DAYS" ]; then lines+=("BACKUP_RETENTION_DAYS=$BACKUP_RETENTION_DAYS"); fi
+          printf '%s\n' "${lines[@]}" | ssh -F "$SSH_CONFIG" server \
+            'umask 077 && mkdir -p "$HOME/.config/fleet-cmdb" && cat > "$HOME/.config/fleet-cmdb/backup.env"'
+          ssh -F "$SSH_CONFIG" server "bash -s -- '$DEPLOY_DIR' '$DEPLOY_SHA'" <<'REMOTE'
+          set -euo pipefail
+          dir="$1" sha="$2"
+          echo "==> install the backup timer"
+          bash "$dir/build-$sha/ops/backup/install.sh"
+          # The first deploy (or one after backups stopped) takes a backup now, so /health need not wait for the night.
+          if ! docker exec fleet-cmdb curl -s http://localhost:3000/health | grep -q '"backup":"ok"'; then
+            echo "==> no recent backup: take one now"
+            export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+            if systemctl --user start fleet-cmdb-backup.service; then
+              echo "backup done"
+            else
+              journalctl --user -u fleet-cmdb-backup.service -n 30 --no-pager || true
+              echo "::warning::the backup failed (above), so /health stays 503: see docs/operations/backup-and-restore.md"
+            fi
+          fi
+          echo "/health: $(docker exec fleet-cmdb curl -s http://localhost:3000/health)"
           REMOTE
 
       - name: Clean up
