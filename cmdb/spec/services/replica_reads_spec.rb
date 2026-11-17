@@ -3,7 +3,6 @@ require "rails_helper"
 # Dashboard and report reads from a replica (#198 step 2). The test environment's replica is the test database itself
 # (config/database.yml), shared with the writing connection, so the reading role refuses writes as a replica would.
 RSpec.describe ReplicaReads do
-  after { described_class.reset! }
 
   def role_inside = described_class.around { ApplicationRecord.current_role }
 
