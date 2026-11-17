@@ -127,7 +127,8 @@ module FleetBenchmark
 
     # Package sets and findings for the first package_hosts hosts (ADR 0028). With package_variants above 1, the hosts are
     # spread over that many distinct sets derived from the template's, as ADR 0028's prototype was: each upgrades 1 to 12
-    # of the template's source packages and adds up to 2 hand-installed tools, so the sets share most of their chunks.
+    # of the template's source packages (to the one newer version each, as a security update is the same everywhere)
+    # and adds up to 2 of 20 hand-installed tools, so the sets share most of their chunks.
     def packages
       @variants = variant_sets
       ids = "ARRAY[#{@variants.join(',')}]::bigint[]"
@@ -136,6 +137,11 @@ module FleetBenchmark
         UPDATE host_package_sets hps SET package_set_id = (#{ids})[1 + #{n} % #{@variants.size}], content_hash = md5(((#{ids})[1 + #{n} % #{@variants.size}])::text),
                package_count = (SELECT package_count FROM package_sets s WHERE s.id = (#{ids})[1 + #{n} % #{@variants.size}])
         FROM hosts h WHERE h.id = hps.host_id AND h.name LIKE 'bench-%' AND h.id <> #{@template} AND #{n} <= #{@o[:package_hosts]}
+      SQL
+      # The other hosts report an empty package list, so they have no packages and no findings, as before ADR 0028.
+      run_sql(<<~SQL)
+        UPDATE host_package_sets hps SET package_set_id = #{PackageStore.store!([])}, package_count = 0, content_hash = md5('empty')
+        FROM hosts h WHERE h.id = hps.host_id AND h.name LIKE 'bench-%' AND h.id <> #{@template} AND #{n} > #{@o[:package_hosts]}
       SQL
       limit = "AND substr(h.name, 7)::int <= #{@o[:package_hosts]}"
       copy("vulnerability_findings", "host_id",
@@ -155,10 +161,10 @@ module FleetBenchmark
       base = PackageStore.packages(template)
       sources = base.map { |p| p.source || p.name }.uniq.sort
       random = Random.new(196)
-      variants = Array.new(@o[:package_variants] - 1) do |k|
+      variants = Array.new(@o[:package_variants] - 1) do
         upgraded = sources.sample(random.rand(1..12), random:).to_set
-        list = base.map { |p| upgraded.include?(p.source || p.name) ? p.with(version: "#{p.version}+b#{k + 1}") : p }
-        list += Array.new(random.rand(0..2)) { |t| AgentApi::PackageReport::Package.new("bench-tool-#{random.rand(20)}-#{t}", "amd64", "1.0-1", nil) }
+        list = base.map { |p| upgraded.include?(p.source || p.name) ? p.with(version: "#{p.version}+b1") : p }
+        list += Array.new(random.rand(0..2)) { AgentApi::PackageReport::Package.new("bench-tool-#{random.rand(20)}", "amd64", "1.0-1", nil) }
         PackageStore.store!(list.uniq(&:key))
       end
       log "#{variants.size + 1} package sets: #{PackageChunk.count} chunks, #{PackageChunkEntry.count} chunk entries"
