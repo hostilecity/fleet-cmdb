@@ -7,6 +7,4 @@ class ChunkMatch < ApplicationRecord
 
   belongs_to :package_chunk
   belongs_to :advisory
-
-  def key = [ advisory_id, package, architecture ]
 end
