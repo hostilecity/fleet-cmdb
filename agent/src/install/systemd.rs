@@ -43,8 +43,48 @@ pub struct Units {
     pub recovery: bool,
 }
 
-/// The units whose settings decide recovery mode, in the order [`recovery_covered`] asks systemd about them.
-const COVERAGE_UNITS: [&str; 2] = [UNIT_NAME, RECOVERY_UNIT_NAME];
+/// `systemctl show --property=KEY... UNIT`, as a map with every key. The runner joins the output's lines
+/// with spaces ([`crate::logging::sanitize`]), so it is split at the known keys: a token `KEY=value` starts
+/// a key, and any other token belongs to the value before it (`OnFailure=` lists units separated by spaces;
+/// no unit name or path systemd prints here holds `=`). One unit per call, so blocks never run together.
+fn show(
+    systemd: &dyn Systemd,
+    unit: &str,
+    keys: &[&str],
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut args = vec!["show".to_owned()];
+    args.extend(keys.iter().map(|k| format!("--property={k}")));
+    args.push(unit.to_owned());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = systemd
+        .systemctl(&args)
+        .map_err(|e| format!("systemctl show {unit} failed: {e}"))?;
+    let mut found: std::collections::HashMap<String, Vec<&str>> = std::collections::HashMap::new();
+    let mut current: Option<&str> = None;
+    for token in output.split_whitespace() {
+        match token.split_once('=') {
+            Some((key, value)) if keys.contains(&key) => {
+                current = Some(key);
+                let values = found.entry(key.to_owned()).or_default();
+                values.clear();
+                values.extend(Some(value).filter(|v| !v.is_empty()));
+            }
+            _ => {
+                if let Some(key) = current {
+                    found.entry(key.to_owned()).or_default().push(token);
+                }
+            }
+        }
+    }
+    keys.iter()
+        .map(|key| {
+            found
+                .get(*key)
+                .map(|v| ((*key).to_owned(), v.join(" ")))
+                .ok_or_else(|| format!("systemctl show {unit} did not say {key}"))
+        })
+        .collect()
+}
 
 /// Whether recovery mode is set up, as systemd has loaded it (#232, review of #235): the service's
 /// `OnFailure=` (drop-ins included) names the recovery unit, the recovery unit is loaded from `unit_dir`
@@ -59,40 +99,18 @@ pub fn recovery_covered(unit_dir: &Path, systemd: &dyn Systemd) -> Result<bool, 
         Some(text) if text.starts_with(UNIT_MARKER) => {}
         _ => return Ok(false),
     }
-    let mut args = vec![
-        "show",
-        "--property=OnFailure",
-        "--property=LoadState",
-        "--property=FragmentPath",
-        "--property=NeedDaemonReload",
-    ];
-    args.extend(COVERAGE_UNITS);
-    let output = systemd
-        .systemctl(&args)
-        .map_err(|e| format!("systemctl show failed: {e}"))?;
-    let blocks: Vec<std::collections::HashMap<&str, &str>> = output
-        .split("\n\n")
-        .map(|block| block.lines().filter_map(|l| l.split_once('=')).collect())
-        .collect();
-    let [service, recovery] = blocks.as_slice() else {
-        return Err(format!(
-            "systemctl show answered {} units instead of {}",
-            blocks.len(),
-            COVERAGE_UNITS.len()
-        ));
-    };
-    let get = |unit: &std::collections::HashMap<&str, &str>, key: &str| -> Result<String, String> {
-        unit.get(key)
-            .map(|v| (*v).to_owned())
-            .ok_or_else(|| format!("systemctl show did not say {key}"))
-    };
-    let named = get(service, "OnFailure")?
+    let service = show(systemd, UNIT_NAME, &["OnFailure", "NeedDaemonReload"])?;
+    let recovery = show(
+        systemd,
+        RECOVERY_UNIT_NAME,
+        &["LoadState", "FragmentPath", "NeedDaemonReload"],
+    )?;
+    let named = service["OnFailure"]
         .split_whitespace()
         .any(|u| u == RECOVERY_UNIT_NAME);
-    let loaded = get(recovery, "LoadState")? == "loaded"
-        && Path::new(&get(recovery, "FragmentPath")?) == fragment;
-    let reloaded =
-        get(service, "NeedDaemonReload")? == "no" && get(recovery, "NeedDaemonReload")? == "no";
+    let loaded =
+        recovery["LoadState"] == "loaded" && Path::new(&recovery["FragmentPath"]) == fragment;
+    let reloaded = service["NeedDaemonReload"] == "no" && recovery["NeedDaemonReload"] == "no";
     Ok(named && loaded && reloaded)
 }
 
@@ -133,9 +151,8 @@ pub fn needs_reload(systemd: &dyn Systemd) -> bool {
         ROLLBACK_UNIT_NAME,
         RECOVERY_UNIT_NAME,
     ]) {
-        Ok(output) => output
-            .lines()
-            .any(|l| l.trim() != "no" && !l.trim().is_empty()),
+        // One value per unit; the runner joins the lines with spaces.
+        Ok(output) => output.split_whitespace().any(|v| v != "no"),
         Err(_) => true,
     }
 }
@@ -746,6 +763,36 @@ mod tests {
         let bad = dir.write("broken.service", "[Service]\nExecStart=fleet-agent run\n");
         let error = systemctl.verify(&[bad]).unwrap_err();
         assert!(error.contains("broken.service"), "{error}");
+    }
+
+    #[test]
+    fn coverage_is_read_through_the_real_systemctl_runner() {
+        // Review of #235, found by the update smoke test: the runner joins systemctl's lines with spaces, so
+        // the answer must be read the way it arrives. A scripted systemctl prints what systemd 255 prints.
+        let dir = crate::test_support::TempDir::new();
+        let units = dir.path("units");
+        std::fs::create_dir_all(&units).unwrap();
+        std::fs::write(units.join(RECOVERY_UNIT_NAME), RECOVERY_UNIT).unwrap();
+        let fragment = units.join(RECOVERY_UNIT_NAME);
+        let script = |reload: &str| {
+            format!(
+                "case \"$*\" in\n\
+                 *{UNIT_NAME}) printf 'OnFailure={ROLLBACK_UNIT_NAME} {RECOVERY_UNIT_NAME}\\nNeedDaemonReload=no\\n' ;;\n\
+                 *{RECOVERY_UNIT_NAME}) printf 'LoadState=loaded\\nFragmentPath={}\\nNeedDaemonReload={reload}\\n' ;;\n\
+                 *) exit 1 ;;\n\
+                 esac",
+                fragment.display()
+            )
+        };
+        let (_d, systemctl) = fake(&script("no"), Duration::from_secs(5));
+        assert_eq!(recovery_covered(&units, &systemctl), Ok(true));
+        let (_d, systemctl) = fake(&script("yes"), Duration::from_secs(5));
+        assert_eq!(recovery_covered(&units, &systemctl), Ok(false));
+        // NeedDaemonReload for three units, one per line, arrives as one line too.
+        let (_d, systemctl) = fake("printf 'no\\nno\\nno\\n'", Duration::from_secs(5));
+        assert!(!needs_reload(&systemctl));
+        let (_d, systemctl) = fake("printf 'no\\nyes\\nno\\n'", Duration::from_secs(5));
+        assert!(needs_reload(&systemctl));
     }
 
     #[test]
