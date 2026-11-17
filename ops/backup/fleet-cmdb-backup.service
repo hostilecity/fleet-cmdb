@@ -1,9 +1,10 @@
 [Unit]
-Description=fleet-cmdb backup (P1-O01)
-After=network-online.target
+Description=fleet-cmdb backup (P1-O01, #138)
+Documentation=https://github.com/hostilecity/fleet-cmdb/blob/main/docs/operations/backup-and-restore.md
 
 [Service]
 Type=oneshot
-# Copy backup.env.example to /etc/fleet-cmdb/backup.env (mode 0600) and fill it in. It holds the database password.
-EnvironmentFile=/etc/fleet-cmdb/backup.env
-ExecStart=/opt/fleet-cmdb/ops/backup/backup.sh
+# A user unit of the deploy user, installed by ops/backup/install.sh (the Deploy workflow runs it). Settings, the
+# database password among them, are in ~/.config/fleet-cmdb/backup.env (mode 0600), which docker.sh reads.
+ExecStart=%h/.local/share/fleet-cmdb/backup/docker.sh backup
+TimeoutStartSec=3h

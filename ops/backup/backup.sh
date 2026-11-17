@@ -3,20 +3,26 @@
 #
 # Writes one backup set, a directory fleet-cmdb-<UTC time>/ in BACKUP_DIR, holding:
 #   fleet-cmdb.dump   pg_dump custom-format dump of the primary database (hosts, snapshots, audit log, releases' rows)
+#   queue.dump, cache.dump, cable.dump
+#                     dumps of the Solid Queue, Solid Cache, and Solid Cable databases (<primary>_queue and so on)
 #   releases.tar      the release files in FLEET_RELEASES_DIR (uploaded releases cannot be re-imported from GitHub)
 #   counts            row counts taken just before the dump, which the restore drill compares against
-#   SHA256SUMS        checksums of the three files above
+#   SHA256SUMS        checksums of the files above
 # then prunes old sets and, last of all, touches FLEET_BACKUP_STATUS_FILE, which /health watches. A backup that
 # fails part-way therefore leaves the status file alone and /health turns unhealthy once it is old enough.
 #
 # Needs pg_dump, pg_restore, psql, tar, sha256sum. The database is reached with the standard libpq variables
-# (PGHOST, PGUSER, PGPASSWORD or PGPASSFILE, PGDATABASE is ignored: see BACKUP_DB_NAME).
+# (PGHOST, PGPORT, PGUSER, PGPASSWORD or PGPASSFILE, PGDATABASE is ignored: see BACKUP_DB_NAME). pg_dump must be the
+# server's major version or newer; the script checks this first and names both versions if not.
+#
+# In the deployment (.github/workflows/cd.yml) it runs inside a throwaway postgres container on the database's Docker
+# network, started by ops/backup/docker.sh, which checks BACKUP_DIR on the VM first (docs/operations/backup-and-restore.md).
 #
 #   BACKUP_DIR               required: an off-machine location mounted here (NFS, SMB, sshfs, a rclone mount). The
 #                            script refuses a directory that is not a mount point unless BACKUP_ALLOW_LOCAL=1.
 #   FLEET_RELEASES_DIR       required: the release files (the same variable the server reads)
 #   FLEET_BACKUP_STATUS_FILE required: touched after a complete backup (the same variable the server reads)
-#   BACKUP_DB_NAME           default cmdb_production
+#   BACKUP_DB_NAME           default cmdb_production; the other three are <name>_queue, <name>_cache, <name>_cable
 #   BACKUP_RETENTION_DAYS    default 14: sets older than this are deleted, but the newest BACKUP_KEEP_MIN are kept
 #   BACKUP_KEEP_MIN          default 3
 set -euo pipefail
@@ -36,6 +42,15 @@ keep_min="${BACKUP_KEEP_MIN:-3}"
 if [ "${BACKUP_ALLOW_LOCAL:-}" != 1 ] && ! mountpoint -q "$BACKUP_DIR"; then
   die "BACKUP_DIR $BACKUP_DIR is not a mount point, so it may be on this machine. Mount the off-machine location there (or set BACKUP_ALLOW_LOCAL=1 for a test)"
 fi
+
+# pg_dump refuses a newer server anyway; say plainly which versions met, and which image setting fixes it.
+server_major="$(psql --no-psqlrc -X -At -v ON_ERROR_STOP=1 -d "$db" -c "SELECT current_setting('server_version_num')::int / 10000")"
+client_major="$(pg_dump --version | sed -n 's/^pg_dump (PostgreSQL) \([0-9]*\).*/\1/p')"
+[[ "$server_major" =~ ^[0-9]+$ && "$client_major" =~ ^[0-9]+$ ]] || die "could not read the PostgreSQL versions (server '$server_major', pg_dump '$client_major')"
+if [ "$client_major" -lt "$server_major" ]; then
+  die "pg_dump is PostgreSQL $client_major but the server is PostgreSQL $server_major: use a client of version $server_major or newer (in the deployment, the variable FLEET_BACKUP_PG_IMAGE, for example postgres:$server_major)"
+fi
+log "PostgreSQL server $server_major, pg_dump $client_major"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 final="$BACKUP_DIR/fleet-cmdb-$stamp"
@@ -61,8 +76,13 @@ hosts_with_inventory="$(count "SELECT count(DISTINCT host_id) FROM inventory_sna
 printf 'hosts=%s\naudit_entries=%s\nagent_releases=%s\nhosts_with_inventory=%s\n' \
   "$hosts" "$audit_entries" "$agent_releases" "$hosts_with_inventory" > "$work/counts"
 
-pg_dump --format=custom --no-owner --no-privileges --file "$work/fleet-cmdb.dump" "$db"
-pg_restore --list "$work/fleet-cmdb.dump" > /dev/null # the dump can be read back
+# The primary database, then the queue, cache, and cable databases. Each dump must read back.
+dump() {
+  pg_dump --format=custom --no-owner --no-privileges --file "$work/$2" "$1"
+  pg_restore --list "$work/$2" > /dev/null
+}
+dump "$db" fleet-cmdb.dump
+for side in queue cache cable; do dump "${db}_$side" "$side.dump"; done
 
 if [ -d "$FLEET_RELEASES_DIR" ]; then
   tar -C "$FLEET_RELEASES_DIR" -cf "$work/releases.tar" .
@@ -74,7 +94,7 @@ else
   die "FLEET_RELEASES_DIR $FLEET_RELEASES_DIR does not exist, but the database has $agent_releases release(s)"
 fi
 
-(cd "$work" && sha256sum fleet-cmdb.dump releases.tar counts > SHA256SUMS)
+(cd "$work" && sha256sum fleet-cmdb.dump queue.dump cache.dump cable.dump releases.tar counts > SHA256SUMS)
 mv "$work" "$final" # a set appears whole or not at all
 trap - EXIT
 log "wrote $final ($(du -sh "$final" | cut -f1))"

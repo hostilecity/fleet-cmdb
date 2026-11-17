@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# The restore drill (P1-O01): restore a backup set into a scratch database and release directory, boot the app
-# against them, and check that hosts, the audit log, and release downloads are there. Nothing live is touched.
+# The restore drill (P1-O01): restore a backup set into scratch databases (the primary, and its queue, cache, and
+# cable databases) and a scratch release directory, boot the app against the primary, and check that hosts, the
+# audit log, and release downloads are there. Nothing live is touched. In the deployment, run
+# `ops/backup/docker.sh restore-drill` on the VM instead: it does the same with containers.
 #
 #   restore-drill.sh [backup set directory]     (default: the newest set in BACKUP_DIR)
 #
@@ -22,9 +24,11 @@ scratch_db="cmdb_restore_drill_$(date -u +%Y%m%d%H%M%S)_$$"
 scratch_dir="$(mktemp -d)"
 cleanup() {
   if [ "${DRILL_KEEP:-}" = 1 ]; then
-    echo "restore drill: kept database $scratch_db and $scratch_dir"
+    echo "restore drill: kept the databases $scratch_db(_queue, _cache, _cable) and $scratch_dir"
   else
-    dropdb --if-exists "$scratch_db" || true
+    for name in "$scratch_db" "${scratch_db}_queue" "${scratch_db}_cache" "${scratch_db}_cable"; do
+      dropdb --if-exists "$name" || true
+    done
     rm -rf "$scratch_dir"
   fi
 }
