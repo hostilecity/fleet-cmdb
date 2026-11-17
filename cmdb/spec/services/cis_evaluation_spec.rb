@@ -82,13 +82,14 @@ RSpec.describe CisEvaluation do
     expect(evaluate([ enrolled_host.first ], rule_ids: [])).to have_attributes(hosts: 0, results: 0, changes: 0)
   end
 
-  it "keeps results and changes when the snapshot they name is pruned, clearing only its id" do
+  it "keeps results and changes when the snapshot they name is no longer kept: the id stays, and names no snapshot (ADR 0027)" do
     define_cis_rules(cis_rule_hash)
     record_config(host)
     evaluate
     snapshot = ConfigSnapshot.sole
     ConfigSnapshot.where(id: snapshot.id).delete_all
-    expect([ CisResult.sole.config_snapshot_id, CisResultChange.sole.config_snapshot_id ]).to eq([ nil, nil ])
+    expect([ CisResult.sole.config_snapshot_id, CisResultChange.sole.config_snapshot_id ]).to eq([ snapshot.id, snapshot.id ])
+    expect([ CisResult.sole.config_snapshot, CisResultChange.sole.config_snapshot ]).to eq([ nil, nil ])
   end
 
   describe "reading everything once the host is locked (review of #110)" do

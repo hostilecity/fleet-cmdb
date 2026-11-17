@@ -2,6 +2,9 @@
 # content hash changes, retained per NFR-2 (the newest per host is always kept). packages holds
 # [name, architecture, version, source] rows sorted by name and architecture.
 class PackageSnapshot < ApplicationRecord
+  # Partitioned by time (ADR 0027): the table's key is (id, stored_at), ids still come from one sequence.
+  self.primary_key = :id
+
   belongs_to :host
 
   scope :chronological, -> { order(:received_at, :id) }

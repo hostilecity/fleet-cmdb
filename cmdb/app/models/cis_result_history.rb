@@ -91,14 +91,15 @@ class CisResultHistory
     end
   end
 
-  # { snapshot id => { received_at:, facts:, previous_facts: (nil for the host's first snapshot) } }.
+  # { snapshot id => { received_at:, facts:, previous_facts: (nil for the host's first snapshot) } }. A change can name a
+  # snapshot that is no longer kept (there is no foreign key, ADR 0027): it is left out, as if the change named none.
   def snapshot_facts(ids)
     return {} if ids.empty?
 
     order = ConfigSnapshot.where(host_id: @host_id).order(:received_at, :id).pluck(:id)
     previous = ids.to_h { |id| [ id, (i = order.index(id)) && i.positive? ? order[i - 1] : nil ] }
     loaded = ConfigSnapshot.where(id: ids + previous.values.compact).pluck(:id, :received_at, :facts).to_h { |id, at, facts| [ id, [ at, facts ] ] }
-    ids.to_h do |id|
+    ids.select { |id| loaded.key?(id) }.to_h do |id|
       received_at, facts = loaded.fetch(id)
       [ id, { received_at:, facts:, previous_facts: previous[id] && loaded.dig(previous[id], 1) } ]
     end

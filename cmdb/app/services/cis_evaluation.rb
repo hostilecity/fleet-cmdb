@@ -113,7 +113,7 @@ module CisEvaluation
       shown_changed << host_id if shown
     end
     CisResult.upsert_all(rows, unique_by: %i[host_id cis_rule_id], update_only: COLUMNS - %i[host_id cis_rule_id], record_timestamps: false)
-    CisResultChange.insert_all(changes, record_timestamps: false) if changes.any?
+    CisResultChange.insert_all!(changes, record_timestamps: false) if changes.any?
     [ changes.size, shown_changed ]
   end
 
