@@ -276,8 +276,10 @@ pub enum LedgerError {
 impl std::fmt::Display for LedgerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            // Only another process can hold it: this one releases its own lock on drop, even while a
-            // child forked by another thread still holds a copy of the descriptor (#242).
+            // In production only another process can hold it: there is one poller per process, and
+            // it releases its own lock on drop, even while a child forked by another thread still
+            // holds a copy of the descriptor (#242). (A second open in the same process while the
+            // first is open is refused too, as the tests show.)
             Self::Locked => write!(
                 f,
                 "another process holds the task ledger's lock ({LOCK_FILE}), most likely a second fleet-agent using the same state directory"

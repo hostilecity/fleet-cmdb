@@ -1,9 +1,10 @@
 //! Other processes for the lock tests (#242): a child forked and caught before it execs, and a real
 //! second process that takes a lock the way the agent does.
 
+use std::io::Read;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 /// A child forked from this process that does nothing until it is killed. It holds a copy of every
 /// descriptor open when it was forked, as a program another thread starts does between `fork` and
@@ -12,16 +13,30 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 pub struct Forked(libc::pid_t);
 
 impl Forked {
+    ///
+    /// The child also holds, for its short life, copies of other concurrent tests' pipe ends, so it
+    /// can delay their end of file by the few milliseconds it lives. It dies with this process, even
+    /// one killed outright (a timeout, the OOM killer), so it never keeps those pipes open for good.
     pub fn idle() -> Self {
-        // SAFETY: after fork the child calls only pause(2), which is async-signal-safe, so it never
-        // touches a lock or allocator another thread of this process held at the fork. It never
-        // returns, unwinds, or exits on its own; the parent kills it.
+        // SAFETY: getpid(2) has no preconditions.
+        let parent = unsafe { libc::getpid() };
+        // SAFETY: after fork the child calls only prctl(2), getppid(2), _exit(2) and pause(2), all
+        // async-signal-safe, so it never touches a lock or allocator another thread of this process
+        // held at the fork. It never returns or unwinds; the parent kills it, or its death does.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
         if pid == 0 {
-            loop {
-                // SAFETY: see above.
-                unsafe { libc::pause() };
+            // SAFETY: see above.
+            unsafe {
+                // Killed when the parent dies; and if it already died before this took effect, the
+                // child was re-parented, so it leaves now.
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                if libc::getppid() != parent {
+                    libc::_exit(0);
+                }
+                loop {
+                    libc::pause();
+                }
             }
         }
         Self(pid)
@@ -55,6 +70,9 @@ const HOLD_TEST: &str = "test_support::processes::held_for_another_test";
 pub struct Holder {
     child: Child,
     stdin: Option<ChildStdin>,
+    /// The rest of its output, read to the end on drop so libtest's last lines reach it and its
+    /// exit status means something.
+    stdout: Option<BufReader<ChildStdout>>,
 }
 
 impl Holder {
@@ -69,20 +87,29 @@ impl Holder {
             .spawn()
             .unwrap();
         let stdin = child.stdin.take();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        for line in stdout.lines() {
-            // libtest prints the test's name first, on the same line.
-            let line = line.unwrap();
-            if line.ends_with("fleet-agent-test: held") {
-                return Some(Self { child, stdin });
+        let stdout = Some(BufReader::new(child.stdout.take().unwrap()));
+        // From here on its Drop reaps the child, on every path, panics included.
+        let mut holder = Self {
+            child,
+            stdin,
+            stdout,
+        };
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let reader = holder.stdout.as_mut().unwrap();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                panic!("the holder exited without answering");
             }
-            if line.ends_with("fleet-agent-test: refused") {
-                drop(stdin);
-                child.wait().unwrap();
+            // libtest prints the test's name first, on the same line.
+            let answer = line.trim_end();
+            if answer.ends_with("fleet-agent-test: held") {
+                return Some(holder);
+            }
+            if answer.ends_with("fleet-agent-test: refused") {
                 return None;
             }
         }
-        panic!("the holder exited without answering: {:?}", child.wait());
     }
 
     /// The other process's id.
@@ -93,9 +120,21 @@ impl Holder {
 
 impl Drop for Holder {
     fn drop(&mut self) {
-        // End of input tells it to let go and exit; it is reaped before the test goes on.
+        // End of input tells it to let go and exit; its output is read to the end and it is reaped
+        // before the test goes on. It must have passed: a failure after it answered shows here.
         drop(self.stdin.take());
-        let _ = self.child.wait();
+        let mut rest = String::new();
+        if let Some(mut stdout) = self.stdout.take() {
+            let _ = stdout.read_to_string(&mut rest);
+        }
+        let status = self.child.wait();
+        if !std::thread::panicking() {
+            let status = status.unwrap();
+            assert!(
+                status.success(),
+                "the holder process failed ({status}): {rest}"
+            );
+        }
     }
 }
 
