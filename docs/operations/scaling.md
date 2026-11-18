@@ -142,7 +142,7 @@ The application side is built (ADR 0031, #198). Each part is an optional setting
   - a rollout stage prepare's (`Rollouts`, review of #215), which keeps a 1% stage from opening at 2%;
   - the partition maintenance run's (`Partitions.exclusively`, #195, #239), which keeps two runs of partition DDL from overlapping (the hourly job, `partitions:ensure`, and a manual run). Its DDL uses `SET LOCAL lock_timeout` inside each statement's transaction, which is safe through the pooler.
 
-  The work under the lock still runs on the pooled connection; the direct one only holds the lock, idle meanwhile. So before each batch (each table, for partition maintenance), and before a rollout prepare re-times a stage, the run checks that the lock's server process is the same one. Active Record reopens a lost connection without a word, which would have released the lock, so the run stops if it differs. The liveness run raises, and the next minute's run carries on. A rollout prepare rolls back its current batch and stops; the next prepare carries on from the database's count, so a stage never gets more than its share. The check also runs with nothing set, on the primary's own connection: one small statement a batch, so a connection reopened at the next transaction stops the run there too (the owner's decision, 2026-11-18).
+  The work under the lock still runs on the pooled connection; the direct one only holds the lock, idle meanwhile. So before each step that depends on the lock, the run checks that the lock's server process is the same one. The steps are: each liveness batch; a prepare's re-time and each of its batches; and in partition maintenance each table, each partition created, each batch moved out of a default partition or moved forward by retention, and each drop. Active Record reopens a lost connection without a word, which would have released the lock, so the run stops if it differs. The liveness run raises, and the next minute's run carries on. A rollout prepare rolls back its current batch and stops; the next prepare carries on from the database's count, so a stage never gets more than its share. The check also runs with nothing set, on the primary's own connection: one small statement a batch, so a connection reopened at the next transaction stops the run there too (the owner's decision, 2026-11-18).
 
   The processes that take these locks, and so open a direct connection, are the jobs (the liveness run, and a rollout's automatic advance) and the dashboard: starting a rollout and an operator's Advance prepare the stage inside the request. So dashboard nodes need a route to the primary itself, not only to PgBouncer. Agent API requests never take one; API nodes need `DIRECT_DATABASE_URL` set with the pooler (the boot checks it) but open no direct connection.
 
@@ -178,24 +178,32 @@ The application side is built (ADR 0031, #198). Each part is an optional setting
    Fill `userlist.txt` with the role's SCRAM secret, read as a superuser on the primary: `SELECT format('"%s" "%s"', rolname, rolpassword) FROM pg_authid WHERE rolname = 'cmdb';` gives the whole line. Refresh it whenever `DATABASE_PASSWORD` changes. PgBouncer's `auth_query`, which looks the secret up at login, avoids that copy but needs a lookup function and role on the primary; either works.
 
 2. Point the app's four database URLs at PgBouncer (`DATABASE_URL=postgres://pgbouncer.example.lan:6432/cmdb_production`, and `QUEUE_`, `CACHE_`, `CABLE_DATABASE_URL` the same way), set `FLEET_DB_POOLER=transaction`, and set `DIRECT_DATABASE_URL=postgres://db.example.lan/cmdb_production`. A URL without a user or password keeps the role `cmdb` and `DATABASE_PASSWORD` from `config/database.yml`, so no secret goes into a variable.
-3. **Migrate once per deploy, in a one-off container on direct connections.** No server node migrates: every node behind the pooler sets `FLEET_DB_PREPARE=false` (the entrypoint refuses to start without it), and any migration through the pooler stops. Before the nodes start, run the new image once with its four database URLs straight to PostgreSQL and the pooler unset, so Rails' migration lock is on. The deploy workflow does not run this yet (`cd.yml` deploys one VM, and deletes its env file when it is done), so until it does, run it by hand on a VM that runs the app, before starting the nodes:
+3. **Migrate once per deploy, in a one-off container on direct connections.** No server node migrates: every node behind the pooler sets `FLEET_DB_PREPARE=false` (the entrypoint refuses to start without it), and any migration through the pooler stops. Before the nodes start, run the new image once with its four database URLs straight to PostgreSQL and the pooler unset, so Rails' migration lock is on. The deploy workflow does not run this yet (`cd.yml` deploys one VM, and deletes its env file when it is done), so until it does, run it by hand on a VM that runs the app, before starting the nodes. Save it as a script (it holds no secret) and run it with `bash`, so a failed check stops the script, not your shell:
 
    ```bash
+   set -o pipefail
    # The app's own settings: the running app container's environment, less the variables its image sets itself (PATH,
-   # LD_PRELOAD, BUNDLE_*, RUBY_*, and the like, which the new image sets for itself), less the database URLs and the
-   # pooler setting, which follow below. Read by docker itself through <( ): no file is written, so no secret is left on
-   # disk, even if the run is interrupted. Needs bash.
+   # LD_PRELOAD, BUNDLE_*, RUBY_*, and the like, which the new image sets for itself), less what a migration does not
+   # need: the database URLs and the pooler setting (given below), the TLS certificate and key, and the advisory feed
+   # token. Read by docker itself through <( ): no file is written, so no secret is left on disk, even if the run is
+   # interrupted. It stops, rather than pass the image's variables on, when the image or its settings cannot be read.
    app_settings() {
+     local image image_env
+     image=$(docker inspect -f '{{.Image}}' fleet-cmdb) && [ -n "$image" ] || { echo "cannot read the fleet-cmdb container's image" >&2; return 1; }
+     image_env=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$image") && [ -n "$image_env" ] \
+       || { echo "cannot read the settings of image $image" >&2; return 1; }
      docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-cmdb \
-       | grep -vxF -f <(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(docker inspect -f '{{.Image}}' fleet-cmdb)") \
-       | grep -Ev '^((QUEUE_|CACHE_|CABLE_|DIRECT_|REPLICA_)?DATABASE_URL|FLEET_DB_POOLER|FLEET_DB_PREPARE)=' \
+       | grep -vxF -f <(printf '%s\n' "$image_env") \
+       | grep -Ev '^((QUEUE_|CACHE_|CABLE_|DIRECT_|REPLICA_)?DATABASE_URL|FLEET_DB_POOLER|FLEET_DB_PREPARE|FLEET_TLS_[A-Z0-9_]*|FLEET_ADVISORY_FEED_TOKEN)=' \
        | grep -v '^$'
    }
+   settings=$(app_settings) || exit 1
    # The database's Docker network: the deploy writes its name to backup.env (FLEET_DB_NETWORK, a GitHub variable).
    network=$(sed -n 's/^FLEET_DB_NETWORK=//p' ~/.config/fleet-cmdb/backup.env)
+   [ -n "$network" ] || { echo "FLEET_DB_NETWORK is not in ~/.config/fleet-cmdb/backup.env" >&2; exit 1; }
    # The image to migrate with: the one the nodes will run. The deploy tags it with the commit (docker images fleet-cmdb).
    image=fleet-cmdb:0123456789abcdef0123456789abcdef01234567
-   docker run --rm --env-file <(app_settings) --network "$network" \
+   docker run --rm --env-file <(printf '%s\n' "$settings") --network "$network" \
      -e DATABASE_URL=postgres://db.example.lan/cmdb_production \
      -e QUEUE_DATABASE_URL=postgres://db.example.lan/cmdb_production_queue \
      -e CACHE_DATABASE_URL=postgres://db.example.lan/cmdb_production_cache \
@@ -231,15 +239,15 @@ The operator's session check, which records activity (a write), runs first, on t
 
 **Lag:** a page reads the replica only once the replica has replayed everything the primary had written when the page started. It reads the primary's WAL position (`pg_current_wal_lsn()`) and waits until the replica's replay position (`pg_last_wal_replay_lsn()`) reaches it, at most `FLEET_REPLICA_MAX_WAIT_MS` (100 ms), counted from the replica's first answer, so opening its connection is not counted as lag. Otherwise it reads the primary and logs `[replica] not caught up within 100 ms; this page reads the primary`. So no page shows older data than the primary would: an operator's own change, an agent's report, and a live refresh, which is sent after a change commits, all show at once, and there is no "sticky primary" delay to tune. This assumes `synchronous_commit` is on (the default) on the primary. **A server that is not in recovery is never read as a replica:** after a failover or promotion, or with the URL naming the wrong server, it is skipped and logged (`[replica] the replica server is not in recovery (promoted, or not a replica)`). Only the test environment, whose replica is the test database, allows it. The polls run uncached: inside a request Rails' query cache is on, and would answer every poll after the first with the first answer, so a replica that caught up during the wait would never be seen (final check of #237).
 
-**When the replica fails, the page shows a plain error page** (503, "This page couldn't be loaded", with a Try again link); it is not run again (the owner's decision, 2026-11-18). What happens next depends on the failure:
+**When the replica fails while a page reads it, the page shows a plain error page** (503, "This page couldn't be loaded", with a Try again link). It is not run again (the owner's decision, 2026-11-18). The replica is then skipped for `FLEET_REPLICA_SKIP_SECONDS` (30 s), so the next load reads the primary. That holds for:
 
-| Failure | The page | The replica |
-|---|---|---|
-| Cannot be reached (within `FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS`, 2 s), or not in recovery, at the page's check | reads the primary | skipped for `FLEET_REPLICA_SKIP_SECONDS` (30 s) |
-| A lost connection, or a query cancelled by a recovery conflict (40001), while the page reads it | error page | skipped for `FLEET_REPLICA_SKIP_SECONDS`, so the next load reads the primary |
-| A cancelled query (57014: a `statement_timeout` set on the replica, or `pg_cancel_backend`) | error page | stays in use: one slow page does not send every page to the primary, or run its slow query again there |
+- a lost connection;
+- a query cancelled by a recovery conflict (40001);
+- a cancelled query (57014: a `statement_timeout` set on the replica, or `pg_cancel_backend`), so a page that always exceeds the replica's timeout still loads, from the primary, on the next try.
 
-The log names the error each time (`[replica] ActiveRecord::ConnectionFailed: ...; pages read the primary for 30 seconds`, or `...; this page failed, and the replica stays in use`). An error from the primary's own query is not blamed on the replica. Each page costs two small extra statements: one on the primary and one on the replica.
+A replica that cannot be reached (within `FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS`, 2 s), or is not in recovery, at a page's check is skipped the same way, and that page reads the primary at once. The log names the error each time (`[replica] ActiveRecord::ConnectionFailed: ...; pages read the primary for 30 seconds`).
+
+**The skip is per process.** Each Puma process keeps its own. With `WEB_CONCURRENCY` above 1, or several dashboard nodes, Try again can reach a process that has not seen the failure and still uses the replica. After a lost connection that process's own check fails and reads the primary. After a recovery conflict or a cancelled query it can fail again, until each process has marked the replica down. An error from the primary's own query is not blamed on the replica. Each page costs two small extra statements: one on the primary and one on the replica.
 
 **How:** set `REPLICA_DATABASE_URL=postgres://replica.example.lan/cmdb_production` on the dashboard nodes. The replica gets its own pool of the same size in each process. It needs no setting on API or jobs nodes, which never read it.
 
