@@ -54,7 +54,10 @@
 //! than forget one.
 //!
 //! **One writer.** The ledger holds an exclusive lock ([`LOCK_FILE`]) while open, so a second agent
-//! process on the same state directory cannot interleave lines.
+//! process on the same state directory cannot interleave lines: it is refused ([`LedgerError::Locked`]).
+//! Closing the ledger releases the lock at once ([`fsx::Lock`]), even while a child that another
+//! thread forked still holds a copy of its descriptor, so this process can open the ledger again
+//! straight away (#242).
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -257,7 +260,7 @@ pub struct Recovery {
 
 #[derive(Debug)]
 pub enum LedgerError {
-    /// Another process holds the ledger.
+    /// Another process holds the ledger's lock ([`LOCK_FILE`]).
     Locked,
     /// The ledger is full and cannot be compacted yet.
     Full,
@@ -273,7 +276,14 @@ pub enum LedgerError {
 impl std::fmt::Display for LedgerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Locked => write!(f, "another fleet-agent process holds the task ledger"),
+            // In production only another process can hold it: there is one poller per process, and
+            // it releases its own lock on drop, even while a child forked by another thread still
+            // holds a copy of the descriptor (#242). (A second open in the same process while the
+            // first is open is refused too, as the tests show.)
+            Self::Locked => write!(
+                f,
+                "another process holds the task ledger's lock ({LOCK_FILE}), most likely a second fleet-agent using the same state directory"
+            ),
             Self::Full => write!(
                 f,
                 "the task ledger is full and cannot be compacted until the task in it is reported"

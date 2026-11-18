@@ -344,7 +344,8 @@ impl<'a, R: Rng> Poller<'a, R> {
                     };
                     tracing::error!(
                         state_dir = %self.state_dir.display(),
-                        "cannot open the task ledger ({why}); no task will be polled or run until it can be"
+                        "cannot open the task ledger ({why}); no task will be polled or run until it can be, and it is tried again every {} s",
+                        LEDGER_RETRY.as_secs()
                     );
                 }
                 self.open_after = Some(now + LEDGER_RETRY);

@@ -1159,11 +1159,20 @@ fn kill_matrix_run(seed: u64) -> MatrixRun {
         .extend(ids.iter().map(|id| restart(id)));
     let mut poller = rig.poller(&executor, None);
     let start = Instant::now();
+    // The ticks' times are made up, so the 200 take a few real milliseconds. A ledger that did not
+    // open (#242: a released lock looked held while a child another test forked had not yet exec'd)
+    // would use them all up. The lock no longer can (`fsx::Lock`), but should the ledger not open,
+    // the next tick waits a little real time, within a real limit, instead of the run failing on
+    // timing alone.
+    let patience = Instant::now() + Duration::from_secs(10);
     for i in 0..200 {
         if server.queue.borrow().is_empty() && server.claimed.borrow().is_none() {
             break;
         }
         poller.tick(&server, start + Duration::from_secs(31 * i + 1), wall());
+        if poller.ledger().is_none() && Instant::now() < patience {
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
     let runs = ids
         .iter()
