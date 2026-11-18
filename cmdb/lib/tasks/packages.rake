@@ -1,4 +1,13 @@
 namespace :packages do
+  desc "Move an upgraded database's package lists into package sets (#196, ADR 0028; docs/operations/upgrades.md); resumable"
+  task backfill: :environment do
+    $stdout.sync = true # progress as it goes, also into a log file
+    backfill = PackageStoreBackfill.new(log: ->(message) { puts message })
+    puts "To move: #{backfill.pending.map { |what, count| "#{count} #{what.tr('_', ' ')}" }.join(', ')}."
+    backfill.run!
+    puts "Done. Start the server again: its migrations finish the upgrade."
+  end
+
   desc "Check the package store's references (ADR 0028): snapshots and hosts with no set, and ids that name nothing"
   task check_snapshots: :environment do
     problems = PackageStore.check

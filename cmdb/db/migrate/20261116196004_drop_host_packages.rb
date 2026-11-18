@@ -1,15 +1,25 @@
 # Drops the per-host package storage once every list is in a set (#196, ADR 0028, the clean-up): host_packages, the
 # snapshots' JSON lists, and the finding columns that are now chunk verdicts (source, ecosystem, installed_version,
-# fixed_version) with their indexes. Refuses while any dpkg snapshot or host has no set, which would lose its list.
+# fixed_version) with their indexes. Refuses while any dpkg snapshot or host has no set, which would lose its list, or
+# any finding's details are not copied yet.
 #
-# Each drop is catalog-only. The space of the dropped finding columns returns as rows are rewritten; a large fleet that
-# wants it at once rebuilds the table (ADR 0028). Not reversible: no backward compatibility is needed (NFR-5), and the
-# lists would have to be rebuilt from the sets.
+# Each drop is catalog-only, under ACCESS EXCLUSIVE locks on three tables, so it waits at most LOCK_TIMEOUT for them
+# (the deploy has stopped the server; a straggler is the backup or a console). The space of the dropped finding columns
+# returns only as rows are rewritten: an upgraded database keeps its larger rows until the table is rebuilt (ADR 0028).
+# Not reversible: no backward compatibility is needed (NFR-5).
 class DropHostPackages < ActiveRecord::Migration[8.1]
+  LOCK_TIMEOUT = "10s".freeze
+
   def up
+    execute "SET LOCAL lock_timeout = '#{LOCK_TIMEOUT}'"
+    left = PackageStoreBackfill.new.pending
     unset = select_value("SELECT count(*) FROM package_snapshots WHERE manager = 'dpkg' AND package_set_id IS NULL").to_i +
             select_value("SELECT count(*) FROM host_package_sets WHERE manager = 'dpkg' AND package_set_id IS NULL").to_i
-    raise "#{unset} dpkg package snapshots and hosts have no package set; run BackfillPackageSets again (bin/rails db:migrate:redo VERSION=20261116196003)" if unset.positive?
+    if unset.positive? || left["findings"].positive?
+      raise "#{BackfillPackageSets::UPGRADE_STEP}: #{unset} dpkg package snapshots and hosts have no package set and #{left['findings']} findings " \
+            "have no copied details, so the old storage is kept. Run `bin/rails packages:backfill` in a one-off container with this image " \
+            "(it only adds what is missing), then start the server again (docs/operations/upgrades.md)."
+    end
 
     drop_table :host_packages
     remove_column :package_snapshots, :packages

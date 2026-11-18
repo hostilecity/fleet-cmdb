@@ -79,15 +79,46 @@ RSpec.describe BackfillPackageSets do
     expect(connection.column_exists?(:package_snapshots, :packages)).to be(false)
   end
 
-  it "copies each finding's details to its last_ columns" do
-    host = old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
-    advisory = Advisory.create!(advisory_id: "DSA-1-1", source: "test", severity: "high", modified_at: Time.current)
+  def old_finding(host, advisory, package)
     connection.execute(<<~SQL.squish)
       INSERT INTO vulnerability_findings (host_id, advisory_id, package, architecture, source, ecosystem, installed_version, fixed_version, state, first_seen_at, created_at, updated_at)
-      VALUES (#{host.id}, #{advisory.id}, 'openssl', 'amd64', 'openssl', 'Debian:13', '3.5.0-1', '3.5.1-1', 'open', now(), now(), now())
+      VALUES (#{host.id}, #{advisory.id}, '#{package}', 'amd64', 'openssl', 'Debian:13', '3.5.0-1', '3.5.1-1', 'open', now(), now(), now())
     SQL
-    migrate
-    expect(connection.select_rows("SELECT last_source, last_installed_version, last_fixed_version FROM vulnerability_findings")).to eq([ %w[openssl 3.5.0-1 3.5.1-1] ])
+  end
+
+  it "copies each finding's details to its last_ columns in batches, and names each host's set on its evaluation" do
+    stub_const("PackageStoreBackfill::FINDINGS_BATCH", 1)
+    host = old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
+    advisory = Advisory.create!(advisory_id: "DSA-1-1", source: "test", severity: "high", modified_at: Time.current)
+    %w[openssl libssl3].each { |package| old_finding(host, advisory, package) }
+    HostVulnerabilityEvaluation.create!(host:, ecosystem: "Debian:13", state: "evaluated", evaluated_at: Time.current)
+    statements = []
+    ActiveSupport::Notifications.subscribed(->(*, payload) { statements << payload[:sql] if payload[:sql].start_with?("UPDATE vulnerability_findings") }, "sql.active_record") { migrate }
+    expect(connection.select_rows("SELECT last_source, last_installed_version, last_fixed_version, last_ecosystem FROM vulnerability_findings").uniq)
+      .to eq([ %w[openssl 3.5.0-1 3.5.1-1 Debian:13] ])
+    expect(statements.size).to be >= 2 # one batch of ids each
+    expect(HostVulnerabilityEvaluation.find_by!(host:).package_set_id).to eq(set_of(host))
+  end
+
+  it "refuses at container start, changing nothing, when the work is too long, and the rake task does it, resumably" do
+    stub_const("BackfillPackageSets::INLINE_HASHES", 1)
+    old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
+    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: 2 distinct package lists and 0 findings .*`bin\/rails packages:backfill`/m)
+    expect(PackageSet.count).to eq(0)
+    expect { quiet { DropHostPackages.new.migrate(:up) } }.to raise_error(/fleet-cmdb upgrade step needed: 2 dpkg package snapshots and hosts have no package set/)
+
+    log = []
+    backfill = PackageStoreBackfill.new(log: ->(message) { log << message })
+    expect(backfill.pending).to eq("hashes" => 2, "unreadable_hosts" => 0, "findings" => 0)
+    backfill.run!
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "findings" => 0)
+    expect(log).to include("hosts: 1 distinct package lists stored", "snapshots: 1 distinct package lists stored")
+    expect(connection.select_value("SELECT count(*) FROM pg_class WHERE relname LIKE '%backfill_196'").to_i).to eq(0) # its indexes are gone
+    migrate # nothing left: runs at once
+    quiet { DropHostPackages.new.migrate(:up) }
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "findings" => 0)
+    backfill.run!
+    expect(log.last).to eq("nothing to move: host_packages is gone")
   end
 
   it "rolls back to no sets" do

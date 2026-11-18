@@ -204,7 +204,7 @@ Release files and the backup status file are in the Docker volume `fleet-cmdb_st
 
 ## 7. Upgrade, change a setting, roll back
 
-- **Upgrade:** merge to `main`; every push to `main` deploys. Migrations run on start (`db:prepare`).
+- **Upgrade:** merge to `main`; every push to `main` deploys. Migrations run on start (`db:prepare`). A few upgrades of a large database need a step of their own, and say so in the log: [upgrades.md](upgrades.md).
 - **Change a setting:** change the secret or variable in GitHub, then run the workflow.
 - **Renew the certificate:** before it expires (Settings shows when), create a new Origin certificate as in step 1, replace `FLEET_TLS_CERT` and `FLEET_TLS_KEY`, and run the workflow. Agents need nothing.
 - **Roll back:** if `FLEET_JOBS_CONTAINER` is `true` and you go back to a commit from before the jobs container existed, first run `docker stop -t 30 fleet-cmdb-jobs && docker rm fleet-cmdb-jobs` on the VM: that commit's workflow does not know the container and would leave it running new code beside the old app's own jobs. Then open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: then restore the last backup taken before the upgrade ([backup-and-restore.md](backup-and-restore.md#restore)), which loses everything written since. To be safe, take a backup by hand before a deploy you may roll back: `~/.local/share/fleet-cmdb/backup/docker.sh backup`.
