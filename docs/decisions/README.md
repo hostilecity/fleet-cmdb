@@ -34,6 +34,6 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0028](0028-content-addressed-package-sets.md) | Each distinct package set stored once, in content-addressed chunks, matched once per chunk (accepted, built in #196) | #196 |
 | [0029](0029-heartbeat-state-in-a-narrow-table.md) | Heartbeat state lives in a narrow table of its own, so heartbeats stay heap-only (proposed) | #192 |
 | [0030](0030-agent-recovery-mode.md) | An agent that keeps failing on a confirmed version runs in recovery mode instead of stopping for good (proposed; amends 0018) | #180 |
-| [0031](0031-second-scale-step-readiness.md) | Second scale step, app side only: optional pooler with a direct connection for session locks, caught-up replica reads, and node roles (proposed) | #198 |
+| [0031](0031-second-scale-step-readiness.md) | Second scale step, app side only: optional pooler with a direct connection for session locks, caught-up replica reads, and node roles | #198 |
 
 Not an ADR: [`phase-3-threat-model.md`](phase-3-threat-model.md) is the Phase 3 threat model ([P3-X01](../backlog/specs/p3-security.md)). It decides nothing by itself; its proposals become binding only through a spec or an ADR.
