@@ -142,8 +142,11 @@
       ],
       "properties": {
         "recovery": {
-          "description": "true when recovery mode is set up (ADR 0030): fleet-agent-recovery.service carries the installer's marker and is loaded from /etc/systemd/system, fleet-agent.service names it in OnFailure= (drop-ins included), and neither waits for a daemon-reload. false otherwise, including when the agent cannot read the file or systemctl cannot answer. A host with false keeps stopping for good after a crash loop on a confirmed version, until a confirmed update or `fleet-agent install --refresh-units` installs and loads the units.",
-          "type": "boolean"
+          "description": "true when recovery mode is set up (ADR 0030): fleet-agent-recovery.service carries the installer's marker and is loaded from /etc/systemd/system, fleet-agent.service names it in OnFailure= (drop-ins included), and neither waits for a daemon-reload. false when it is not. null when the agent could not check (it cannot read the unit file, or systemctl does not answer); the dashboard shows that apart from false. A host without recovery mode keeps stopping for good after a crash loop on a confirmed version, until a confirmed update or `fleet-agent install --refresh-units` installs and loads the units.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     }

@@ -37,10 +37,12 @@ const MAX_UNIT_BYTES: u64 = 64 * 1024;
 
 /// What the heartbeat reports about the installed units (#232): whether recovery mode is set up (ADR
 /// 0030). Checked on every heartbeat, so a refresh after an update (which does not restart the service)
-/// shows at once.
+/// shows at once. `recovery` is `None` (sent as `null`) when the agent could not check: a unit file it cannot
+/// read, or a `systemctl` that does not answer (re-review of #235), which the dashboard shows apart from
+/// "not set up".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Units {
-    pub recovery: bool,
+    pub recovery: Option<bool>,
 }
 
 /// `systemctl show --property=KEY... UNIT`, as a map with every key. The runner joins the output's lines
@@ -202,6 +204,12 @@ pub trait Systemd {
         let _ = files;
         Ok(String::new())
     }
+
+    /// Why `systemd-analyze` cannot be run, if it cannot (re-review of #235): then the units cannot be
+    /// checked, which is not the release's fault and gets its own message.
+    fn analyze_unavailable(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The real `systemctl`, run with a time limit: a wedged systemd or D-Bus must not hang the installer,
@@ -247,6 +255,10 @@ const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OUTPUT: u64 = 64 * 1024;
 
 impl Systemd for Systemctl {
+    fn analyze_unavailable(&self) -> Option<String> {
+        (!Path::new(SYSTEMD_ANALYZE).exists()).then(|| format!("{SYSTEMD_ANALYZE} is missing"))
+    }
+
     fn verify(&self, files: &[PathBuf]) -> Result<String, String> {
         let analyze = Self {
             path: PathBuf::from(SYSTEMD_ANALYZE),

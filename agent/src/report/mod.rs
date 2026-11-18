@@ -26,7 +26,8 @@
 //! finishes first. The loops stop in parallel, so stopping takes as long as the slowest of them
 //! (Rust practice review of #114):
 //!
-//! - heartbeat: the request in flight, at most the client's 30 s timeout;
+//! - heartbeat: the units check (two `systemctl show` calls, at most [`UNITS_CHECK_TIMEOUT`] each, #232)
+//!   and the request in flight (the client's 30 s timeout), at most about 50 s;
 //! - config: the one request or collection call in flight, at most 30 s for a request, 10 s for a
 //!   command, 5 s for a filesystem call. The reporter checks [`Shutdown`] itself: the collection
 //!   starts nothing new, a report collected meanwhile is dropped, and nothing is fetched or sent
@@ -35,7 +36,7 @@
 //!   like the config reporter, it starts nothing after the stop request;
 //! - inventory: a collection already started (about 10 s) and its send (30 s), about 40 s.
 //!
-//! So the agent stops within about 40 s, inside systemd's default 90 s stop timeout (the unit sets
+//! So the agent stops within about 50 s, inside systemd's default 90 s stop timeout (the unit sets
 //! no `TimeoutStopSec`). The state record is written atomically
 //! after each accepted report, so stopping at any point loses nothing. If any loop ends unexpectedly
 //! (a bug that panics), the others are stopped too and the agent exits with a failure, so systemd
@@ -300,7 +301,8 @@ fn run_with(
     })
 }
 
-/// Longest the heartbeat waits for `systemctl show` when it checks whether recovery mode is set up (#232).
+/// Longest the heartbeat waits for each of its two `systemctl show` calls when it checks whether recovery mode
+/// is set up (#232): up to 20 s in all.
 const UNITS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How soon recovery mode tries normal mode again when its last try did not stop it (the service could

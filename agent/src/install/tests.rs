@@ -49,6 +49,8 @@ struct FakeSystemd {
     units: Arc<Mutex<Option<systemd::LoadedUnits>>>,
     /// `systemd-analyze verify` refuses the units with this (review of #235).
     verify_fails: Arc<Mutex<Option<String>>>,
+    /// `systemd-analyze` is not installed (re-review of #235).
+    analyze_missing: Arc<Mutex<bool>>,
     /// The unit files `verify` was given, with their text, and the directories they were in.
     verified: Arc<Mutex<Vec<(String, String)>>>,
     verified_dirs: Arc<Mutex<Vec<PathBuf>>>,
@@ -75,6 +77,10 @@ impl FakeSystemd {
 impl Systemd for FakeSystemd {
     fn unavailable(&self) -> Option<String> {
         self.unavailable.clone()
+    }
+    fn analyze_unavailable(&self) -> Option<String> {
+        (*self.analyze_missing.lock().unwrap())
+            .then(|| "/usr/bin/systemd-analyze is missing".into())
     }
     fn verify(&self, files: &[PathBuf]) -> Result<String, String> {
         self.calls.lock().unwrap().push("verify".into());
@@ -1494,6 +1500,8 @@ fn the_server_dropping_after_enrollment_keeps_the_credential_for_a_rerun() {
     );
     assert!(fx.config_text().unwrap().contains(CREDENTIAL));
     assert_eq!(fx.systemd.count("restart"), 0);
+    // Four heartbeat attempts, one check of the units (re-review of #235): one `systemctl show` per unit.
+    assert_eq!(fx.systemd.count("show --property=OnFailure"), 1);
 
     // The re-run keeps the credential and finishes.
     let server2 = fx.server(vec![probe(), heartbeat_ok()]);
@@ -2937,4 +2945,33 @@ fn refresh_units_by_hand_holds_the_update_locks_and_leaves_a_supervisor_its_own_
     );
     assert!(Lock::file(&state.join("update.lock")).unwrap().is_some());
     assert!(Lock::file(&state.join("updater.lock")).unwrap().is_some());
+}
+
+#[test]
+fn refresh_units_without_systemd_analyze_says_so_and_changes_nothing() {
+    // Re-review of #235: no check, no write (the owner's choice to confirm), with a message that blames
+    // neither the release nor the units.
+    let fx = Fixture::new();
+    let old = old_service_unit();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    *fx.systemd.analyze_missing.lock().unwrap() = true;
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Preflight);
+    assert!(
+        failure
+            .what
+            .contains("cannot check the units before writing them")
+            && failure.what.contains("systemd-analyze is missing"),
+        "{}",
+        failure.what
+    );
+    assert!(!failure.what.contains("would not load"), "{}", failure.what);
+    assert!(
+        failure.next.contains("Install systemd-analyze"),
+        "{}",
+        failure.next
+    );
+    assert!(!failure.next.contains("report it"), "{}", failure.next);
+    assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old));
+    assert!(fx.changes().is_empty(), "{:?}", fx.changes());
 }

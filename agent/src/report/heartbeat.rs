@@ -168,7 +168,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
     }
 
     /// `units` for one heartbeat. A unit file that cannot be read, or a `systemctl` that cannot answer,
-    /// reports `recovery: false` (it cannot be shown to be set up), with a warning logged once.
+    /// reports `recovery: null` (could not be checked; re-review of #235), with a warning logged once.
     fn units(&self) -> Option<crate::install::Units> {
         let (dir, systemd) = self.units_dir.as_ref()?;
         let recovery = match crate::install::recovery_covered(dir, *systemd) {
@@ -180,14 +180,16 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
                 let mut last = self.units_problem.borrow_mut();
                 if last.as_deref() != Some(why.as_str()) {
                     tracing::warn!(
-                        "cannot tell whether recovery mode is set up ({why}); heartbeats say it is not"
+                        "cannot tell whether recovery mode is set up ({why}); heartbeats say it could not be checked"
                     );
                     *last = Some(why);
                 }
-                false
+                return Some(crate::install::Units { recovery: None });
             }
         };
-        Some(crate::install::Units { recovery })
+        Some(crate::install::Units {
+            recovery: Some(recovery),
+        })
     }
 
     /// Recovery mode moved its next try of normal mode: later heartbeats say when.
@@ -215,12 +217,26 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         }
     }
 
-    /// The request for one heartbeat.
+    /// The request for one heartbeat, with the times as given (tests; [`Heartbeat::beat`] uses
+    /// [`Heartbeat::request_with`]).
+    #[cfg(test)]
     pub fn request(
         &self,
         hostname: Option<String>,
         now: Instant,
         wall: SystemTime,
+    ) -> HeartbeatRequest {
+        self.request_with(hostname, now, wall, self.units())
+    }
+
+    /// The request, with `units` already checked. [`Heartbeat::beat`] checks them first and takes the times
+    /// after, so a slow `systemctl` never sends an old `agent_time` (re-review of #235).
+    fn request_with(
+        &self,
+        hostname: Option<String>,
+        now: Instant,
+        wall: SystemTime,
+        units: Option<crate::install::Units>,
     ) -> HeartbeatRequest {
         HeartbeatRequest {
             schema_version: AGENT_SCHEMA_VERSION,
@@ -230,7 +246,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             agent_time: rfc3339(wall),
             tasks: self.capabilities.clone(),
             recovery: self.recovery.clone(),
-            units: self.units(),
+            units,
         }
     }
 
@@ -243,7 +259,17 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         wall: SystemTime,
     ) -> Duration {
         let _span = tracing::info_span!("heartbeat").entered();
-        let request = self.request(hostname, now, wall);
+        // The units check may wait on systemctl (up to 2 x UNITS_CHECK_TIMEOUT): the times are moved on by what
+        // it took, so `agent_time` and `uptime_seconds` are those of the request.
+        let checking = Instant::now();
+        let units = self.units();
+        let took = checking.elapsed();
+        let (now, wall) = if self.units_dir.is_some() {
+            (now + took, wall + took)
+        } else {
+            (now, wall)
+        };
+        let request = self.request_with(hostname, now, wall, units);
         let body = match serde_json::to_value(&request) {
             Ok(body) => body,
             // A struct of strings and integers always serialises; keep going if it ever does not.
@@ -464,12 +490,12 @@ mod tests {
         assert_eq!(recovery(&hb), json!({"recovery": false}));
         systemd.reload();
         assert_eq!(recovery(&hb), json!({"recovery": true}));
-        // Unreadable: reported as not set up, and logged once, not on every heartbeat.
+        // Unreadable: reported as not checked (null, not false), and logged once, not on every heartbeat.
         std::fs::remove_file(units.join("fleet-agent-recovery.service")).unwrap();
         std::fs::create_dir(units.join("fleet-agent-recovery.service")).unwrap();
         let ((), logs) = logs_of(|| {
-            assert_eq!(recovery(&hb), json!({"recovery": false}));
-            assert_eq!(recovery(&hb), json!({"recovery": false}));
+            assert_eq!(recovery(&hb), json!({"recovery": null}));
+            assert_eq!(recovery(&hb), json!({"recovery": null}));
         });
         assert_eq!(
             logs.matches("cannot tell whether recovery mode is set up")
@@ -482,6 +508,53 @@ mod tests {
             serde_json::to_value(heartbeat(&intervals, started).request(None, started, wall()))
                 .unwrap();
         assert!(body.get("units").is_none());
+    }
+
+    /// A `systemctl` that takes a while to answer, then answers as `inner`.
+    struct Slow<'a>(&'a crate::install::LoadedUnits, Duration);
+
+    impl crate::install::Systemd for Slow<'_> {
+        fn unavailable(&self) -> Option<String> {
+            None
+        }
+        fn systemctl(&self, args: &[&str]) -> Result<String, String> {
+            std::thread::sleep(self.1);
+            self.0.systemctl(args)
+        }
+    }
+
+    #[test]
+    fn a_slow_units_check_does_not_send_an_old_agent_time() {
+        // Re-review of #235: the check runs before the times are taken for the request.
+        use crate::install::{RECOVERY_UNIT, UNIT};
+        let intervals = intervals();
+        let started = Instant::now();
+        let dir = crate::test_support::TempDir::new();
+        let units = dir.path("units");
+        std::fs::create_dir_all(&units).unwrap();
+        std::fs::write(units.join("fleet-agent.service"), UNIT).unwrap();
+        std::fs::write(units.join("fleet-agent-recovery.service"), RECOVERY_UNIT).unwrap();
+        let loaded = crate::install::LoadedUnits::new(units.clone());
+        loaded.reload();
+        let slow = Slow(&loaded, Duration::from_millis(700));
+        let mut hb = heartbeat(&intervals, started).with_units_in(units, &slow);
+        let transport = FakeTransport::new(vec![]);
+        transport.push(ok(envelope(json!({}))));
+        hb.beat(&transport, None, started, wall());
+        let (_, body) = transport.sent().pop().unwrap();
+        assert_eq!(body["units"], json!({"recovery": true}));
+        let sent = parse_rfc3339(body["agent_time"].as_str().unwrap()).unwrap();
+        // Two calls of 700 ms: the time sent is that of the request, not of the start of the check.
+        assert!(
+            sent >= wall() + Duration::from_millis(1400),
+            "{:?}",
+            body["agent_time"]
+        );
+        assert!(
+            sent < wall() + Duration::from_secs(10),
+            "{:?}",
+            body["agent_time"]
+        );
     }
 
     #[test]

@@ -347,6 +347,15 @@ fn verify_units(host: &Host) -> Result<(), InstallError> {
             fs::write(&path, copy).map_err(|e| io_failed("write", &path, e))?;
             files.push(path);
         }
+        // The tool missing is not the release's fault: refused (no check, no write), with its own next
+        // step. A choice for the owner: other distributions (#163) may ship it separately.
+        if let Some(why) = host.systemd.analyze_unavailable() {
+            return Err(InstallError::new(
+                Failure::Preflight,
+                format!("cannot check the units before writing them: {why}; no unit was changed"),
+                "Install systemd-analyze (it ships with systemd; on some distributions in a separate package) and run the command again, or re-run `sudo fleet-agent install`, which writes the units and restarts the service under them.",
+            ));
+        }
         host.systemd.verify(&files).map(drop).map_err(|e| {
             InstallError::new(
                 Failure::Preflight,
