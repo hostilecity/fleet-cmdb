@@ -8,7 +8,7 @@ Almost every upgrade is a merge to `main`: the deploy builds the image, starts t
 
 The upgrade moves every host's package list and every package snapshot into content-addressed package sets, copies each finding's details, and drops `host_packages` and the snapshots' JSON lists.
 
-- **Small databases (a homelab):** nothing to do. The migration runs at container start when its estimate (30 ms for each distinct package list, that is a host's current one and each kept snapshot, plus 0.12 ms per finding) is at most 90 s. Measured on 2 shared CPUs: 2,002 distinct lists and 225,450 findings (an estimate of 87 s) took 62 s, and 66 s with the boot and the other migrations, under a load average of 8, against the deploy's 300 s wait. 50 hosts with 90 days of snapshots take a few seconds.
+- **Small databases (a homelab):** nothing to do. The migration runs at container start when its estimate (30 ms for each distinct package list, that is a host's current one and each kept snapshot, plus 0.12 ms per finding) is at most 90 s. Measured on 2 shared CPUs: 2,002 distinct lists and 225,450 findings (an estimate of 87 s) took 62 s, and 66 s with the boot and the other migrations, under a load average of 8 (107 s with partitioned snapshots under a load average of 10 to 13), against the deploy's 300 s wait. 50 hosts with 90 days of snapshots take a few seconds.
 - **Large databases:** above that estimate, the migration refuses at container start (see above). Measured on 2 shared CPUs, the backfill is linear in the number of distinct lists: about 25 to 50 minutes for 100,000, and 4 to 9 hours for 1,000,000 (`docs/decisions/0028-content-addressed-package-sets.md`, "As built", item 1).
 
 When it refuses, on the server VM, as the deploy user:
