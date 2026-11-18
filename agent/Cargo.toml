@@ -37,11 +37,11 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # SIGTERM/SIGINT for graceful shutdown without an async runtime.
 signal-hook = "0.4.5"
-# Parse only: the agent never writes TOML.
 # Calendar arithmetic for the RFC 3339 timestamps in payloads and the server's clock (src/report/time.rs).
 # No features beyond std: no formatting or parsing machinery, no macros, no local-offset (libc).
 # Replaced humantime (RUSTSEC-2026-0542); already in Cargo.lock through rcgen.
 time = { version = "0.3.55", default-features = false, features = ["std"] }
+# Parse only: the agent never writes TOML.
 toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 tracing = "0.1.44"
 # Text formatter only: no ANSI colours, no env-filter (regex), no `log` bridge.
