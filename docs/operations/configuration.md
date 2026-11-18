@@ -105,7 +105,7 @@ The Deploy workflow installs a daily backup on the VM ([backup-and-restore.md](b
 | `FLEET_BACKUP_STATUS_FILE` | `/rails/storage/backup/last_success`, in the Docker volume | Touched by `ops/backup/backup.sh` after each complete backup; the app reads its time |
 | `FLEET_BACKUP_DIR` | `/var/backups/fleet-cmdb` (workflow variable) | Where the backup sets are kept on the VM; must be a mount point that uid 1000 can write |
 | `FLEET_BACKUP_ALLOW_LOCAL` | `false` (workflow variable) | `true` allows a backup directory that is not a mount point (the sets then share the VM's disk with the database) |
-| `FLEET_BACKUP_RETENTION_DAYS` | `14` (workflow variable) | Days a backup set is kept, by the time in its name; the newest 3, and any set holding more hosts or audit entries than the newest one, are always kept |
+| `FLEET_BACKUP_RETENTION_DAYS` | `14` (workflow variable) | Days a backup set is kept, by the time in its name; the newest 3, and the newest set holding more hosts or audit entries than the newest one, are always kept |
 | `FLEET_BACKUP_PG_IMAGE` | `postgres:17` (workflow variable) | The PostgreSQL client image the backup runs in; its major version must be the server's or newer. May be pinned by digest |
 | `FLEET_BACKUP_DRILL_HOST` | unset (workflow variable) | Another PostgreSQL server on the database network for the restore drill's scratch databases; unset, they go to the live server |
 | `FLEET_RESTORE_DRILL` | unset; *fixed* to `1` by the restore drill | Makes the drill's boot use an in-memory cache, so it never writes to the live cache database |

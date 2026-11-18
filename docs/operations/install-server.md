@@ -127,7 +127,7 @@ In **Settings > Environments**, create **`production`**. Under **Deployment bran
 | `FLEET_JOBS_CONTAINER` | Variable, optional | `false` (the default) | `true` runs background jobs in a second container, `fleet-cmdb-jobs`; only for larger fleets ([scaling.md](scaling.md)) |
 | `FLEET_BACKUP_DIR` | Variable, optional | `/var/backups/fleet-cmdb` (the default) | Where the backup sets are kept on the VM: the mount point of the backup location |
 | `FLEET_BACKUP_ALLOW_LOCAL` | Variable, optional | `false` (the default) | `true` lets backups go to a directory that is not a mount point |
-| `FLEET_BACKUP_RETENTION_DAYS` | Variable, optional | `14` (the default) | Days a backup set is kept; the newest 3, and any set holding more than the newest one, are always kept |
+| `FLEET_BACKUP_RETENTION_DAYS` | Variable, optional | `14` (the default) | Days a backup set is kept; the newest 3, and the newest set holding more than the newest one, are always kept |
 | `FLEET_BACKUP_PG_IMAGE` | Variable, optional | `postgres:17` (the default) | The PostgreSQL client image for backups; its major version must be the server's or newer. May be pinned by digest (`postgres:17@sha256:…`) |
 | `FLEET_BACKUP_DRILL_HOST` | Variable, optional | unset (the default) | Another PostgreSQL server on the database network for the restore drill's scratch databases, once the database is large ([backup-and-restore.md](backup-and-restore.md#the-restore-drill)) |
 
