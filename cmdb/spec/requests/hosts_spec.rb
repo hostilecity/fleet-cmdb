@@ -86,7 +86,7 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(row_names).to eq([ "Media server" ]) # it does not report recovery mode
         expect(page.at_css("select[name=recovery] option[selected]")["value"]).to eq("missing")
         expect(query(page.at_css("th a[href*='sort=name']"))).to include("recovery" => "missing")
-        media.update_columns(agent_units_recovery: true)
+        media.update_columns(agent_recovery_coverage: "set_up")
         get "/", params: { recovery: "missing", tag: "media" }
         expect(page.at_css(".empty strong").text).to eq(%(No hosts match tag "media" with recovery mode not set up.))
         # The filter alone, and every host covered: said as the good news it is (review of #235).
@@ -315,13 +315,19 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       expect(section.call["role"]).to eq("status")
       expect(section.call.at_css("a")["href"]).to eq("/agents")
       # Not set up: refresh the units on the VM, and what to do about a local copy.
-      host.update_columns(agent_units_recovery: false)
+      host.update_columns(agent_recovery_coverage: "not_set_up")
       get "/hosts/#{host.id}"
       expect(words(section.call)).to start_with("Recovery mode is not set up on this host.")
       expect(words(section.call)).to include("run sudo fleet-agent install --refresh-units", "restarts nothing",
                                              "a local copy: move it away", "sudo systemctl edit fleet-agent")
       expect(words(section.call)).not_to match(/sudo fleet-agent install(?! --refresh-units)/)
-      host.update_columns(agent_units_recovery: true)
+      # Not checked: its own text and next step, not "not set up" (re-review of #235).
+      host.update_columns(agent_recovery_coverage: "unchecked")
+      get "/hosts/#{host.id}"
+      expect(words(section.call)).to start_with("Recovery mode could not be checked on this host.")
+      expect(words(section.call)).to include("systemctl did not answer in time", "cannot tell whether recovery mode", "The next heartbeat checks again.")
+      expect(words(section.call)).not_to include("--refresh-units")
+      host.update_columns(agent_recovery_coverage: "set_up")
       get "/hosts/#{host.id}"
       expect(words(section.call)).to start_with("Recovery mode is set up.")
       expect(section.call["class"]).to be_nil

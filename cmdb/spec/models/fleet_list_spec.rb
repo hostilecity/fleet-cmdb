@@ -67,10 +67,14 @@ RSpec.describe FleetList do
     it "filters to the hosts without recovery mode, with the other filters (#232)" do
       # Media server reports it set up, web A not set up, Build runner does not report it; DNS resolver has sent no
       # heartbeat, and pending and revoked hosts are not active, so the question does not arise for them.
-      media.update_columns(agent_units_recovery: true)
-      web.update_columns(agent_units_recovery: false)
-      [ pending, revoked ].each { |h| h.update_columns(agent_units_recovery: false, first_seen_at: 1.day.ago) }
+      media.update_columns(agent_recovery_coverage: "set_up")
+      web.update_columns(agent_recovery_coverage: "not_set_up")
+      [ pending, revoked ].each { |h| h.update_columns(agent_recovery_coverage: "not_set_up", first_seen_at: 1.day.ago) }
       expect(names(recovery: "missing")).to eq([ "Build runner", "web A" ])
+      # Not checked counts as not set up too: it is not known to be (re-review of #235).
+      build.update_columns(agent_recovery_coverage: "unchecked")
+      expect(names(recovery: "missing")).to eq([ "Build runner", "web A" ])
+      build.update_columns(agent_recovery_coverage: nil)
       expect(names(recovery: "missing", tag: "lab")).to eq([ "Build runner" ])
       expect(names(recovery: "missing", status: "online")).to eq([])
       list = described_class.new(recovery: "missing", sort: "status")
@@ -88,9 +92,9 @@ RSpec.describe FleetList do
         SELECT pg_get_expr(i.indpred, i.indrelid) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
          WHERE c.relname = 'index_hosts_without_recovery_mode'
       SQL
-      expect(predicate).to eq("(((enrollment_state)::text = 'active'::text) AND (first_seen_at IS NOT NULL) AND (agent_units_recovery IS NOT TRUE))")
+      expect(predicate).to eq("(((enrollment_state)::text = 'active'::text) AND (first_seen_at IS NOT NULL) AND ((agent_recovery_coverage)::text IS DISTINCT FROM 'set_up'::text))")
       expect(FleetList::WITHOUT_RECOVERY_MODE.gsub("hosts.", "")).to eq(
-        "enrollment_state = 'active' AND first_seen_at IS NOT NULL AND agent_units_recovery IS NOT TRUE"
+        "enrollment_state = 'active' AND first_seen_at IS NOT NULL AND agent_recovery_coverage IS DISTINCT FROM 'set_up'"
       )
       migration = Rails.root.join("db/migrate/20261116232002_index_hosts_without_recovery_mode.rb").read
       expect(migration).to include(%(where: "#{FleetList::WITHOUT_RECOVERY_MODE.gsub('hosts.', '')}"))

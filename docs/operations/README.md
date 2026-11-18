@@ -18,7 +18,7 @@ For whoever installs and runs a fleet-cmdb server. Read them in this order the f
 | [agent-config-facts.md](agent-config-facts.md) | What the agent reads for each configuration fact, and how to check a report |
 | [agent-task-privileges.md](agent-task-privileges.md) | What each remote task type may do on a VM, how the agent gets that privilege under its unit, and the transient task units (P3-A05) |
 | [agent-packages.md](agent-packages.md) | Where the agent's package list comes from, `skipped`, `unsupported`, `unreadable`, and checking it against a host (AC-2.3) |
-| [troubleshooting.md](troubleshooting.md) | A failed deploy, refused release imports, certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates, hosts without recovery mode, missing security updates |
+| [troubleshooting.md](troubleshooting.md) | A failed deploy, refused release imports, certificate errors, `401`, clock skew, offline hosts, expired onboarding, halted rollouts, rolled-back updates, hosts without recovery mode or where it could not be checked, missing security updates |
 
 For development and testing: [running-locally.md](running-locally.md), [fleet-simulator.md](fleet-simulator.md), [benchmark.md](benchmark.md) (the scale benchmark), and [agent-soak.md](agent-soak.md).
 

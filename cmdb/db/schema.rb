@@ -509,14 +509,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_232002) do
     t.datetime "agent_recovery_entered_at"
     t.datetime "agent_recovery_retry_at"
     t.string "agent_recovery_reason", limit: 256
-    t.boolean "agent_units_recovery"
+    t.string "agent_recovery_coverage", limit: 16
     t.index ["agent_version"], name: "index_hosts_in_fleet_on_agent_version", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
     t.index ["hostname"], name: "index_hosts_on_hostname_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["name"], name: "index_hosts_on_name_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["tags"], name: "index_hosts_on_tags", using: :gin
-    t.index ["id"], name: "index_hosts_without_recovery_mode", where: "(((enrollment_state)::text = 'active'::text) AND (first_seen_at IS NOT NULL) AND (agent_units_recovery IS NOT TRUE))"
+    t.index ["id"], name: "index_hosts_without_recovery_mode", where: "(((enrollment_state)::text = 'active'::text) AND (first_seen_at IS NOT NULL) AND ((agent_recovery_coverage)::text IS DISTINCT FROM 'set_up'::text))"
+    t.check_constraint "agent_recovery_coverage::text = ANY (ARRAY['set_up'::character varying, 'not_set_up'::character varying, 'unchecked'::character varying]::text[])", name: "hosts_agent_recovery_coverage_valid"
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying::text, 'active'::character varying::text, 'revoked'::character varying::text, 'retired'::character varying::text])", name: "hosts_enrollment_state_valid"
   end
 

@@ -408,9 +408,9 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     it "stores whether recovery mode is set up, writes the hosts row only when it changes, and clears it without the object" do
       allow(FleetBroadcast).to receive(:hosts_changed)
       heartbeat
-      expect(host.reload.agent_units_recovery).to be_nil
+      expect(host.reload.agent_recovery_coverage).to be_nil
       heartbeat(body(units: { recovery: false }))
-      expect(host.reload.agent_units_recovery).to be(false)
+      expect(host.reload.agent_recovery_coverage).to eq("not_set_up")
       # Steady: the hosts row is not written again (only host_liveness), and nothing is broadcast.
       writes = []
       callback = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\AUPDATE "hosts"/) }
@@ -418,18 +418,21 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
       expect(writes).to be_empty
       # The confirmed update refreshed the units: true, broadcast so the fleet list's filter and the host page follow.
       heartbeat(body(units: { recovery: true }))
-      expect(host.reload.agent_units_recovery).to be(true)
+      expect(host.reload.agent_recovery_coverage).to eq("set_up")
+      # The agent could not check (re-review of #235): stored apart from "not set up".
+      heartbeat(body(units: { recovery: nil }))
+      expect(host.reload.agent_recovery_coverage).to eq("unchecked")
       heartbeat
-      expect(host.reload.agent_units_recovery).to be_nil
-      # The first heartbeat (online), then each change: false, true, not reported.
-      expect(FleetBroadcast).to have_received(:hosts_changed).with([ host.id ]).exactly(4).times
+      expect(host.reload.agent_recovery_coverage).to be_nil
+      # The first heartbeat (online), then each change: false, true, not checked, not reported.
+      expect(FleetBroadcast).to have_received(:hosts_changed).with([ host.id ]).exactly(5).times
     end
 
     it "rejects a malformed units object without changing what was stored" do
       heartbeat(body(units: { recovery: true }))
       heartbeat(body(units: { recovery: "yes" }))
       expect_error(:bad_request, "validation_failed")
-      expect(host.reload.agent_units_recovery).to be(true)
+      expect(host.reload.agent_recovery_coverage).to eq("set_up")
     end
   end
 

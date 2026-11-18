@@ -46,10 +46,10 @@ class FleetList
   COLUMNS = [ "hosts.*", "summaries.os_name", *FleetCompliance::COLUMNS ].freeze
 
   # The recovery-mode filter (#232): active hosts that have sent a heartbeat and do not report recovery mode as set up
-  # (Host#recovery_mode_coverage :not_set_up or :not_reported). Matches the partial index
+  # (Host#recovery_mode_coverage :not_set_up, :unchecked, or :not_reported). Matches the partial index
   # index_hosts_without_recovery_mode, so it reads only those hosts.
   RECOVERY_FILTERS = { "missing" => "Not set up" }.freeze
-  WITHOUT_RECOVERY_MODE = "hosts.enrollment_state = 'active' AND hosts.first_seen_at IS NOT NULL AND hosts.agent_units_recovery IS NOT TRUE".freeze
+  WITHOUT_RECOVERY_MODE = "hosts.enrollment_state = 'active' AND hosts.first_seen_at IS NOT NULL AND hosts.agent_recovery_coverage IS DISTINCT FROM 'set_up'".freeze
 
   attr_reader :q, :tag, :status, :recovery, :sort, :direction
 
