@@ -78,7 +78,7 @@ pub use inventory::Reporter;
 pub use refresh::Refresh;
 use requests::ReportRequests;
 pub use requests::ReportType;
-pub use time::rfc3339;
+pub use time::{parse_rfc3339, rfc3339};
 
 /// How often a report loop looks for a `report_request` the heartbeat loop raised.
 pub const REQUEST_POLL: Duration = Duration::from_secs(5);

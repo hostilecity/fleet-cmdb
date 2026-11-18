@@ -560,7 +560,7 @@ impl Executor for Registry {
         let started_at = task
             .started_at
             .as_deref()
-            .and_then(|t| humantime::parse_rfc3339(t).ok())
+            .and_then(crate::report::parse_rfc3339)
             .unwrap_or(finished_at);
         let exit_status = exits.last().and_then(|(_, e)| e.code);
         let finish = decided.unwrap_or_else(|| {

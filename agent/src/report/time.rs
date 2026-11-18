@@ -1,115 +1,93 @@
-//! RFC 3339 UTC timestamps for payloads (`agent_time`, `collected_at`) and for reading the server's
-//! `server_time` (DEC-08), through `humantime` (review of #68: no calendar arithmetic of our own).
+//! RFC 3339 UTC timestamps for payloads (`agent_time`, `collected_at`, task and update records, the
+//! ledger, recovery state) and for reading the server's `server_time` (DEC-08).
+//!
+//! The calendar arithmetic is the `time` crate's (review of #68: no calendar arithmetic of our own).
+//! Only the fixed-width text layout is ours: the contract's one shape, `YYYY-MM-DDTHH:MM:SS[.f]Z`
+//! (the `pattern` of the timestamps in `docs/api/schemas/v1`). It replaced `humantime`, which RustSec
+//! marked unmaintained (RUSTSEC-2026-0542); the text written is byte-for-byte what `humantime` wrote.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 
 /// The latest instant the contract's four-digit year can carry: 9999-12-31T23:59:59.999Z.
 const MAX_UNIX_MILLIS: u64 = 253_402_300_799_999;
 
-/// `time` as RFC 3339 UTC with milliseconds, for example `2026-01-01T12:00:01.250Z`.
+/// `time` as RFC 3339 UTC with milliseconds (truncated, never rounded up), for example
+/// `2026-01-01T12:00:01.250Z`.
 ///
 /// A clock set before 1970 is written as the epoch, and one past year 9999 as the end of 9999, so the
-/// payload always matches the contract's pattern (and `humantime`, which panics past 9999, is never
-/// given such a time); the server never uses these values for liveness.
+/// payload always matches the contract's pattern; the server never uses these values for liveness.
 pub fn rfc3339(time: SystemTime) -> String {
     let latest = UNIX_EPOCH + Duration::from_millis(MAX_UNIX_MILLIS);
-    humantime::format_rfc3339_millis(time.clamp(UNIX_EPOCH, latest)).to_string()
+    // In range after the clamp: `time` handles years -9999 to 9999 without its `large-dates` feature.
+    let t = OffsetDateTime::from(time.clamp(UNIX_EPOCH, latest));
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        t.year(),
+        u8::from(t.month()),
+        t.day(),
+        t.hour(),
+        t.minute(),
+        t.second(),
+        t.millisecond()
+    )
 }
 
-/// Parses an RFC 3339 timestamp from 1970 on, such as the server's `YYYY-MM-DDTHH:MM:SS[.fraction]Z`.
-/// An impossible date such as 30 February is `None`. Used only for the clock-skew warning, so the
-/// parser's small leniencies (a `+00:00` offset, an empty fraction) do no harm.
+/// Parses the contract's timestamp, `YYYY-MM-DDTHH:MM:SS[.fraction]Z` with one to nine fraction
+/// digits, from 1970 on: the server's `server_time` and the agent's own `rfc3339` text (ledger and
+/// recovery records). Anything else is `None`: an impossible date such as 30 February, an offset
+/// other than `Z`, a lowercase `t` or `z`, a space for `T`. A leap second (`:60`, which the
+/// contract's pattern allows) reads as `:59`, as before; it only ever feeds the clock-skew warning
+/// and the ledger's retention, where a second does not matter.
 pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
-    humantime::parse_rfc3339(text).ok()
+    let b = text.as_bytes();
+    if b.len() < 20 || b.last() != Some(&b'Z') {
+        return None;
+    }
+    let literals = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
+    if literals.iter().any(|&(at, want)| b[at] != want) {
+        return None;
+    }
+    let year = digits(&b[0..4])?;
+    let month = digits(&b[5..7])?;
+    let day = digits(&b[8..10])?;
+    let hour = digits(&b[11..13])?;
+    let minute = digits(&b[14..16])?;
+    let second = digits(&b[17..19])?;
+    let nanos = match &b[19..b.len() - 1] {
+        [] => 0,
+        [b'.', fraction @ ..] if (1..=9).contains(&fraction.len()) => {
+            digits(fraction)? * 10u32.pow(9 - fraction.len() as u32)
+        }
+        _ => return None,
+    };
+    if year < 1970 || second > 60 {
+        return None;
+    }
+    let date = Date::from_calendar_date(
+        i32::try_from(year).ok()?,
+        Month::try_from(u8::try_from(month).ok()?).ok()?,
+        u8::try_from(day).ok()?,
+    )
+    .ok()?;
+    let clock = Time::from_hms_nano(
+        u8::try_from(hour).ok()?,
+        u8::try_from(minute).ok()?,
+        u8::try_from(second.min(59)).ok()?,
+        nanos,
+    )
+    .ok()?;
+    Some(PrimitiveDateTime::new(date, clock).assume_utc().into())
+}
+
+/// The value of a run of ASCII digits (at most nine, so it fits); `None` if any byte is not one.
+fn digits(bytes: &[u8]) -> Option<u32> {
+    bytes.iter().try_fold(0u32, |value, &byte| {
+        byte.is_ascii_digit()
+            .then(|| value * 10 + u32::from(byte - b'0'))
+    })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn at(secs: u64, millis: u64) -> SystemTime {
-        UNIX_EPOCH + Duration::from_secs(secs) + Duration::from_millis(millis)
-    }
-
-    #[test]
-    fn formats_known_instants() {
-        assert_eq!(rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
-        assert_eq!(rfc3339(at(1_767_268_801, 250)), "2026-01-01T12:00:01.250Z");
-        // Leap day and the end of a leap year.
-        assert_eq!(rfc3339(at(951_782_400, 0)), "2000-02-29T00:00:00.000Z");
-        assert_eq!(rfc3339(at(1_735_689_599, 999)), "2024-12-31T23:59:59.999Z");
-    }
-
-    #[test]
-    fn out_of_range_clocks_stay_within_the_contract() {
-        assert_eq!(
-            rfc3339(UNIX_EPOCH - Duration::from_secs(10)),
-            "1970-01-01T00:00:00.000Z"
-        );
-        assert_eq!(
-            rfc3339(UNIX_EPOCH + Duration::from_secs(400_000_000_000)),
-            "9999-12-31T23:59:59.999Z"
-        );
-    }
-
-    #[test]
-    fn every_day_round_trips() {
-        // 1970 to past 2100 (not a leap year), one instant per day.
-        for day in 0..50_000u64 {
-            let time = at(day * 86_400 + 45_296, 7);
-            let text = rfc3339(time);
-            assert_eq!(parse_rfc3339(&text), Some(time), "{text}");
-        }
-    }
-
-    #[test]
-    fn parses_the_servers_form() {
-        assert_eq!(
-            parse_rfc3339("2026-01-01T12:00:00Z"),
-            Some(at(1_767_268_800, 0))
-        );
-        assert_eq!(
-            parse_rfc3339("2026-01-01T12:00:00.123456789Z"),
-            Some(at(1_767_268_800, 0) + Duration::from_nanos(123_456_789))
-        );
-    }
-
-    #[test]
-    fn rejects_malformed_or_impossible_timestamps() {
-        for bad in [
-            "",
-            "2026-01-01T12:00:00",
-            "2026-01-01 12:00:00Z",
-            "2026-02-30T12:00:00Z",
-            "2025-02-29T00:00:00Z",
-            "2026-13-01T00:00:00Z",
-            "2026-00-01T00:00:00Z",
-            "2026-01-01T24:00:00Z",
-            "2026-01-01T12:60:00Z",
-            "2026-01-01T12:00:61Z",
-            "1969-12-31T23:59:59Z",
-            "+026-01-01T12:00:00Z",
-            "2026-01-01T12:00:0xZ",
-            // Never misread a non-UTC offset as UTC.
-            "2026-01-01T12:00:00-05:00",
-        ] {
-            assert_eq!(parse_rfc3339(bad), None, "{bad}");
-        }
-        assert!(parse_rfc3339("2024-02-29T00:00:00Z").is_some());
-    }
-
-    #[test]
-    fn the_few_lenient_forms_all_mean_the_same_utc_instant() {
-        // `humantime` accepts these; each is the instant the strict form names, so a server sending
-        // one cannot cause a wrong clock-skew reading.
-        let noon = parse_rfc3339("2026-01-01T12:00:00Z");
-        assert!(noon.is_some());
-        for lenient in [
-            "2026-01-01T12:00:00+00:00",
-            "2026-01-01T12:00:00.Z",
-            "2026-01-01T12:00:00.0000000001Z",
-        ] {
-            assert_eq!(parse_rfc3339(lenient), noon, "{lenient}");
-        }
-    }
-}
+mod tests;
