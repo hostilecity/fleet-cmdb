@@ -43,6 +43,20 @@ struct FakeSystemd {
     /// as the real one does; with `silent`, it never does (it cannot reach the server).
     ack_dir: Arc<Mutex<Option<PathBuf>>>,
     silent: Arc<Mutex<bool>>,
+    /// `daemon-reload` fails (#232).
+    fail_reload: Arc<Mutex<bool>>,
+    /// What systemd has loaded, which answers `show` and `daemon-reload` (review of #235).
+    units: Arc<Mutex<Option<systemd::LoadedUnits>>>,
+    /// `systemd-analyze verify` refuses the units with this (review of #235).
+    verify_fails: Arc<Mutex<Option<String>>>,
+    /// `systemd-analyze` is not installed (re-review of #235).
+    analyze_missing: Arc<Mutex<bool>>,
+    /// The unit files `verify` was given, with their text, and the directories they were in.
+    verified: Arc<Mutex<Vec<(String, String)>>>,
+    verified_dirs: Arc<Mutex<Vec<PathBuf>>>,
+    /// During `verify`, whether `update.lock` and `updater.lock` in this state directory could be taken.
+    lock_probe: Arc<Mutex<Option<PathBuf>>>,
+    probed: Arc<Mutex<Vec<bool>>>,
 }
 
 /// The fake service's main process id.
@@ -64,9 +78,42 @@ impl Systemd for FakeSystemd {
     fn unavailable(&self) -> Option<String> {
         self.unavailable.clone()
     }
+    fn analyze_unavailable(&self) -> Option<String> {
+        (*self.analyze_missing.lock().unwrap())
+            .then(|| "/usr/bin/systemd-analyze is missing".into())
+    }
+    fn verify(&self, files: &[PathBuf]) -> Result<String, String> {
+        self.calls.lock().unwrap().push("verify".into());
+        if let Some(state) = self.lock_probe.lock().unwrap().clone() {
+            for name in ["update.lock", "updater.lock"] {
+                let free = crate::fsx::Lock::file(&state.join(name)).unwrap().is_some();
+                self.probed.lock().unwrap().push(free);
+            }
+        }
+        if let Some(dir) = files.first().and_then(|f| f.parent()) {
+            self.verified_dirs.lock().unwrap().push(dir.to_owned());
+        }
+        for file in files {
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            let text = fs::read_to_string(file).unwrap();
+            self.verified.lock().unwrap().push((name, text));
+        }
+        match self.verify_fails.lock().unwrap().clone() {
+            Some(why) => Err(why),
+            None => Ok(String::new()),
+        }
+    }
     fn systemctl(&self, args: &[&str]) -> Result<String, String> {
         let call = args.join(" ");
         self.calls.lock().unwrap().push(call.clone());
+        if args == ["daemon-reload"] && *self.fail_reload.lock().unwrap() {
+            return Err("Failed to reload daemon".into());
+        }
+        if let Some(units) = self.units.lock().unwrap().as_ref()
+            && let Some(answer) = units.answer(args)
+        {
+            return answer;
+        }
         match args {
             ["daemon-reload"] | ["reset-failed", _] => Ok(String::new()),
             // Recovery mode (ADR 0030) is stopped before its unit is removed.
@@ -195,6 +242,9 @@ impl Fixture {
         fs::write(dir.path("system-ca.pem"), &pki.ca_pem).unwrap();
         let systemd = FakeSystemd::default();
         *systemd.ack_dir.lock().unwrap() = Some(dir.path("root/var/lib/fleet-agent"));
+        *systemd.units.lock().unwrap() = Some(systemd::LoadedUnits::new(
+            dir.path("root/etc/systemd/system"),
+        ));
         Self {
             dir,
             pki,
@@ -264,6 +314,52 @@ impl Fixture {
             ui.error(error);
         }
         Outcome::new(result, out.text(), err.text())
+    }
+
+    /// Runs `install --refresh-units` the way `main` does (#232).
+    fn refresh(&self, mode: Mode) -> Outcome {
+        let (out, err) = (Captured::default(), Captured::default());
+        let mut ui = Ui::new(mode, false, Box::new(out.clone()), Box::new(err.clone()));
+        let result = refresh_units(&self.host(), &mut ui);
+        if let Err(error) = &result {
+            ui.error(error);
+        }
+        Outcome::new(result, out.text(), err.text())
+    }
+
+    /// The layout an install of this version leaves, with `units` (name, text) as the unit files: what a
+    /// confirmed update finds before it refreshes them.
+    fn installed_with_units(&self, units: &[(&str, &str)]) {
+        let paths = self.paths();
+        let version = paths.versions_dir().join(crate::AGENT_VERSION);
+        fs::create_dir_all(&version).unwrap();
+        fs::copy(self.dir.path("exe"), version.join("fleet-agent")).unwrap();
+        std::os::unix::fs::symlink(
+            Path::new("versions").join(crate::AGENT_VERSION),
+            paths.current(),
+        )
+        .unwrap();
+        for (name, text) in units {
+            fs::write(paths.unit_dir().join(name), text).unwrap();
+        }
+    }
+
+    /// What systemd has loaded, in the fake.
+    fn loaded(&self) -> systemd::LoadedUnits {
+        self.systemd.units.lock().unwrap().clone().unwrap()
+    }
+
+    /// The calls that change something or check the units: everything but `show`, which only reads.
+    fn changes(&self) -> Vec<String> {
+        self.systemd
+            .calls()
+            .into_iter()
+            .filter(|c| !c.starts_with("show "))
+            .collect()
+    }
+
+    fn unit_text(&self, name: &str) -> Option<String> {
+        fs::read_to_string(self.paths().unit_dir().join(name)).ok()
     }
 
     fn config_text(&self) -> Option<String> {
@@ -513,7 +609,7 @@ fn onboarding_install_end_to_end() {
 
     // The service.
     assert_eq!(
-        fx.systemd.calls()[..2],
+        fx.changes()[..2],
         [
             "daemon-reload".to_owned(),
             "is-enabled fleet-agent.service".to_owned()
@@ -1404,6 +1500,8 @@ fn the_server_dropping_after_enrollment_keeps_the_credential_for_a_rerun() {
     );
     assert!(fx.config_text().unwrap().contains(CREDENTIAL));
     assert_eq!(fx.systemd.count("restart"), 0);
+    // Four heartbeat attempts, one check of the units (re-review of #235): one `systemctl show` per unit.
+    assert_eq!(fx.systemd.count("show --property=OnFailure"), 1);
 
     // The re-run keeps the credential and finishes.
     let server2 = fx.server(vec![probe(), heartbeat_ok()]);
@@ -2373,4 +2471,507 @@ fn install_copies_the_running_image_whatever_its_path_now_names() {
     let _ = child.wait();
     assert_eq!(copied.unwrap(), fs::read("/bin/sleep").unwrap());
     assert_eq!(fs::read(&started).unwrap(), b"#!/bin/sh\necho swapped\n");
+}
+
+// --- install --refresh-units (#232) -----------------------------------------------------------------
+
+/// A service unit from before recovery mode (#180): marked, but its `OnFailure=` names only the rollback
+/// unit and it has no `RestartMode=`.
+fn old_service_unit() -> String {
+    let old = systemd::UNIT
+        .replace(
+            &format!(
+                "OnFailure={} {}",
+                systemd::ROLLBACK_UNIT_NAME,
+                systemd::RECOVERY_UNIT_NAME
+            ),
+            &format!("OnFailure={}", systemd::ROLLBACK_UNIT_NAME),
+        )
+        .replace("RestartMode=direct\n", "");
+    assert_ne!(old, systemd::UNIT);
+    old
+}
+
+#[test]
+fn refresh_units_writes_this_versions_units_over_the_installers_and_touches_nothing_else() {
+    let fx = Fixture::new();
+    let old = old_service_unit();
+    fx.installed_with_units(&[
+        (systemd::UNIT_NAME, &old),
+        (systemd::ROLLBACK_UNIT_NAME, systemd::ROLLBACK_UNIT),
+    ]);
+    fx.loaded().reload();
+    let units = fx.paths().unit_dir();
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(false));
+    let before: Vec<String> = fx.tree();
+
+    let outcome = fx.refresh(Mode::Human);
+    outcome.ok();
+    assert_eq!(
+        fx.unit_text(systemd::UNIT_NAME).as_deref(),
+        Some(systemd::UNIT)
+    );
+    assert_eq!(
+        fx.unit_text(systemd::ROLLBACK_UNIT_NAME).as_deref(),
+        Some(systemd::ROLLBACK_UNIT)
+    );
+    // The recovery unit, which the old install did not have, is written too.
+    assert_eq!(
+        fx.unit_text(systemd::RECOVERY_UNIT_NAME).as_deref(),
+        Some(systemd::RECOVERY_UNIT)
+    );
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(true));
+    // Checked, then one daemon-reload and nothing else: no restart, no enable.
+    assert_eq!(fx.changes(), ["verify", "daemon-reload"]);
+    // No config, credential, state, or link was created or changed.
+    let after = fx.tree();
+    let added: Vec<&String> = after.iter().filter(|p| !before.contains(p)).collect();
+    assert_eq!(
+        added,
+        [&format!(
+            "etc/systemd/system/{}",
+            systemd::RECOVERY_UNIT_NAME
+        )]
+    );
+    assert!(
+        outcome.out.contains("The systemd units are this version's"),
+        "{}",
+        outcome.out
+    );
+
+    // Again: nothing to write, but systemd is reloaded anyway (review of #235).
+    let outcome = fx.refresh(Mode::Json);
+    outcome.ok();
+    assert_eq!(
+        fx.changes(),
+        ["verify", "daemon-reload", "verify", "daemon-reload"]
+    );
+    let last: Value = serde_json::from_str(outcome.out.lines().last().unwrap()).unwrap();
+    assert_eq!(last["event"], "units_refreshed");
+    assert_eq!(last["changed"], false);
+}
+
+#[test]
+fn refresh_units_refuses_a_unit_the_installer_did_not_write_and_changes_nothing() {
+    for name in [
+        systemd::UNIT_NAME,
+        systemd::ROLLBACK_UNIT_NAME,
+        systemd::RECOVERY_UNIT_NAME,
+    ] {
+        let fx = Fixture::new();
+        let old = old_service_unit();
+        fx.installed_with_units(&[
+            (systemd::UNIT_NAME, &old),
+            (systemd::ROLLBACK_UNIT_NAME, systemd::ROLLBACK_UNIT),
+            (name, "[Unit]\nDescription=a local copy\n"),
+        ]);
+        let before: Vec<(String, Option<String>)> = [
+            systemd::UNIT_NAME,
+            systemd::ROLLBACK_UNIT_NAME,
+            systemd::RECOVERY_UNIT_NAME,
+        ]
+        .iter()
+        .map(|n| (n.to_string(), fx.unit_text(n)))
+        .collect();
+        let outcome = fx.refresh(Mode::Human);
+        let failure = outcome.failure();
+        assert_eq!(failure.failure, Failure::Preflight, "{name}");
+        assert!(
+            failure
+                .what
+                .contains("was not written by fleet-agent install"),
+            "{}",
+            failure.what
+        );
+        assert!(failure.what.contains(name), "{}", failure.what);
+        let after: Vec<(String, Option<String>)> = before
+            .iter()
+            .map(|(n, _)| (n.clone(), fx.unit_text(n)))
+            .collect();
+        assert_eq!(after, before, "{name}: a unit was changed");
+        assert!(fx.changes().is_empty(), "{:?}", fx.systemd.calls());
+    }
+}
+
+#[test]
+fn refresh_units_needs_an_installed_agent_of_this_version_and_no_unconfirmed_update() {
+    // No service unit: not an installed agent (and a unit here would hide a packaged one).
+    let fx = Fixture::new();
+    fx.installed_with_units(&[]);
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Preflight);
+    assert!(failure.what.contains("is missing"), "{}", failure.what);
+    assert!(fx.unit_text(systemd::RECOVERY_UNIT_NAME).is_none());
+
+    // `current` is another version: its units would name arguments this binary may not have.
+    let fx = Fixture::new();
+    let old = old_service_unit();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    fs::write(fx.dir.path("exe"), "another fleet-agent binary").unwrap();
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Preflight);
+    assert!(
+        failure.what.contains("is not this fleet-agent"),
+        "{}",
+        failure.what
+    );
+    assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old.clone()));
+
+    // An update that has not confirmed may still be rolled back: refused. A confirmed one of this version
+    // (the supervisor runs the refresh then) is not.
+    let fx = Fixture::new();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    let state = fx.paths().state_dir();
+    dir_with_mode(&state, 0o700);
+    let record = |phase: &str, version: &str| {
+        fs::write(
+            state.join("update.json"),
+            format!(r#"{{"rollout_id":5,"version":"{version}","from_version":"0.0.1","phase":"{phase}","started_unix":1,"report_id":"00000000-0000-4000-8000-0000000000aa","confirm_seconds":300}}"#),
+        )
+        .unwrap();
+    };
+    for (phase, version) in [
+        ("switched", crate::AGENT_VERSION),
+        ("confirmed", "99.0.0"),
+        ("rolling_back", crate::AGENT_VERSION),
+    ] {
+        record(phase, version);
+        let failure = fx.refresh(Mode::Human).failure();
+        assert_eq!(failure.failure, Failure::Failed, "{phase}");
+        assert!(
+            failure.what.contains("not confirmed yet"),
+            "{}",
+            failure.what
+        );
+        assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old.clone()));
+    }
+    fs::write(state.join("update.json"), "not json").unwrap();
+    assert!(
+        fx.refresh(Mode::Human)
+            .failure()
+            .what
+            .contains("unreadable")
+    );
+    record("confirmed", crate::AGENT_VERSION);
+    fx.refresh(Mode::Quiet).ok();
+    assert_eq!(
+        fx.unit_text(systemd::UNIT_NAME).as_deref(),
+        Some(systemd::UNIT)
+    );
+    assert!(
+        state.join("update.json").is_file(),
+        "the supervisor's record is left alone"
+    );
+}
+
+#[test]
+fn refresh_units_needs_root_and_systemd_and_safe_files() {
+    let mut fx = Fixture::new();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, systemd::UNIT)]);
+    fx.is_root = false;
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure.code(), 3);
+    assert!(
+        failure.what.contains("must run as root"),
+        "{}",
+        failure.what
+    );
+    fx.is_root = true;
+    fx.systemd.unavailable = Some("systemd is not running on this machine".into());
+    assert!(
+        fx.refresh(Mode::Human)
+            .failure()
+            .what
+            .contains("systemd is not running")
+    );
+    fx.systemd.unavailable = None;
+    let unit = fx.paths().unit();
+    fs::set_permissions(&unit, fs::Permissions::from_mode(0o666)).unwrap();
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Preflight);
+    assert!(
+        failure.what.contains("writable by group or others"),
+        "{}",
+        failure.what
+    );
+    fs::set_permissions(&unit, fs::Permissions::from_mode(0o644)).unwrap();
+    let rollback = fx.paths().rollback_unit();
+    std::os::unix::fs::symlink(&unit, &rollback).unwrap();
+    assert!(
+        fx.refresh(Mode::Human)
+            .failure()
+            .what
+            .contains("is not a regular file")
+    );
+    fs::remove_file(&rollback).unwrap();
+    fs::set_permissions(fx.paths().unit_dir(), fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(
+        fx.refresh(Mode::Human)
+            .failure()
+            .what
+            .contains("writable by group or others")
+    );
+    fs::set_permissions(fx.paths().unit_dir(), fs::Permissions::from_mode(0o755)).unwrap();
+    fx.refresh(Mode::Human).ok();
+    assert!(
+        fx.changes()
+            .iter()
+            .all(|c| c == "daemon-reload" || c == "verify"),
+        "{:?}",
+        fx.systemd.calls()
+    );
+}
+
+#[test]
+fn refresh_units_reports_a_failed_daemon_reload() {
+    let fx = Fixture::new();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old_service_unit())]);
+    *fx.systemd.fail_reload.lock().unwrap() = true;
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Failed);
+    assert!(
+        failure.what.contains("daemon-reload failed"),
+        "{}",
+        failure.what
+    );
+}
+
+#[test]
+fn refresh_units_parses_alone_and_refuses_the_install_options() {
+    assert_eq!(
+        parse(&args(&["install", "--refresh-units"]), false).unwrap(),
+        Command::RefreshUnits(Mode::Human)
+    );
+    assert_eq!(
+        parse(&args(&["install", "--refresh-units", "--quiet"]), true).unwrap(),
+        Command::RefreshUnits(Mode::Quiet),
+        "FLEET_ENROLLMENT_TOKEN is ignored: nothing is enrolled"
+    );
+    for extra in [
+        &["--server", "https://agent.example.lan"][..],
+        &["--reenroll"],
+        &["--token-stdin"],
+        &["--ca-file", "/root/ca.pem"],
+    ] {
+        let mut list = vec!["install", "--refresh-units"];
+        list.extend_from_slice(extra);
+        let error = parse(&args(&list), false).unwrap_err();
+        assert_eq!(error.failure, Failure::Usage, "{extra:?}");
+        assert!(
+            error.what.contains("--refresh-units only writes the units"),
+            "{}",
+            error.what
+        );
+    }
+    // `--token` peeks at the next argument: --refresh-units is one of ours, not a token.
+    assert!(
+        parse(&args(&["install", "--token", "--refresh-units"]), false)
+            .unwrap_err()
+            .what
+            .contains("--refresh-units only")
+    );
+    assert_eq!(
+        parse(&args(&["uninstall", "--refresh-units"]), false)
+            .unwrap_err()
+            .failure,
+        Failure::Usage
+    );
+    assert!(INSTALL_USAGE.contains("--refresh-units"));
+}
+
+#[test]
+fn a_refresh_whose_reload_failed_is_completed_by_the_next_one() {
+    // Review of #235, the reviewer's case: the first run wrote the files and its reload failed (or it was
+    // killed before it). The next run finds nothing to write, and must still reload. Until then the host is
+    // not reported as covered: systemd still runs the old units.
+    let fx = Fixture::new();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old_service_unit())]);
+    fx.loaded().reload();
+    let units = fx.paths().unit_dir();
+    *fx.systemd.fail_reload.lock().unwrap() = true;
+    assert!(
+        fx.refresh(Mode::Human)
+            .failure()
+            .what
+            .contains("daemon-reload failed")
+    );
+    assert_eq!(
+        fx.unit_text(systemd::UNIT_NAME).as_deref(),
+        Some(systemd::UNIT)
+    );
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(false));
+    *fx.systemd.fail_reload.lock().unwrap() = false;
+    fx.refresh(Mode::Human).ok();
+    assert_eq!(
+        fx.systemd.count("daemon-reload"),
+        2,
+        "no reload on the retry: {:?}",
+        fx.changes()
+    );
+    assert_eq!(recovery_covered(&units, &fx.systemd), Ok(true));
+}
+
+#[test]
+fn install_reloads_when_systemd_has_not_read_the_units_it_finds_in_place() {
+    // Review of #235: the same gap for `fleet-agent install`, which writes nothing when the files are already
+    // this version's.
+    let fx = Fixture::new();
+    fx.installed_with_units(&[
+        (systemd::UNIT_NAME, systemd::UNIT),
+        (systemd::ROLLBACK_UNIT_NAME, systemd::ROLLBACK_UNIT),
+        (systemd::RECOVERY_UNIT_NAME, systemd::RECOVERY_UNIT),
+    ]);
+    let mut ui = Ui::new(
+        Mode::Quiet,
+        false,
+        Box::new(Captured::default()),
+        Box::new(Captured::default()),
+    );
+    assert!(!layout::write_units(&fx.host(), &mut ui, false).unwrap());
+    assert_eq!(fx.systemd.count("daemon-reload"), 1);
+    // Loaded now: nothing to write and nothing to reload.
+    assert!(!layout::write_units(&fx.host(), &mut ui, false).unwrap());
+    assert_eq!(fx.systemd.count("daemon-reload"), 1);
+}
+
+#[test]
+fn refresh_units_refuses_units_systemd_would_not_load_and_changes_nothing() {
+    // Review of #235: the refresh restarts nothing, so a unit systemd refuses would show only at the next
+    // start, after the update can no longer roll back. It is checked first, in copies whose ExecStart= runs
+    // this version's binary (so a missing `previous` does not fail the check).
+    let fx = Fixture::new();
+    let old = old_service_unit();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    *fx.systemd.verify_fails.lock().unwrap() =
+        Some("fleet-agent.service: Unit configuration has fatal error".into());
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Preflight);
+    assert!(
+        failure
+            .what
+            .contains("systemd would not load this version's units"),
+        "{}",
+        failure.what
+    );
+    assert!(failure.what.contains("fatal error"), "{}", failure.what);
+    assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old));
+    assert!(fx.unit_text(systemd::RECOVERY_UNIT_NAME).is_none());
+    assert_eq!(fx.changes(), ["verify"]);
+    let verified = fx.systemd.verified.lock().unwrap().clone();
+    let names: Vec<&str> = verified.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            systemd::UNIT_NAME,
+            systemd::ROLLBACK_UNIT_NAME,
+            systemd::RECOVERY_UNIT_NAME
+        ]
+    );
+    let binary = fx
+        .paths()
+        .versions_dir()
+        .join(crate::AGENT_VERSION)
+        .join("fleet-agent");
+    for (name, text) in &verified {
+        assert!(
+            !text.contains("ExecStart=/usr/lib/fleet-agent/"),
+            "{name}: {text}"
+        );
+        assert!(
+            text.contains(&format!("ExecStart={} ", binary.display())),
+            "{name}"
+        );
+    }
+    // The copies are removed. (Their own directory: other tests in this process verify at the same time.)
+    let dirs = fx.systemd.verified_dirs.lock().unwrap().clone();
+    assert_eq!(dirs.len(), 1);
+    assert!(!dirs[0].exists(), "the verify copies were left behind");
+}
+
+#[test]
+fn refresh_units_by_hand_holds_the_update_locks_and_leaves_a_supervisor_its_own_case() {
+    // Review of #235: run by hand, it takes `update.lock` and `updater.lock`, so no update is staged or
+    // supervised while it writes. While a supervisor holds `update.lock`, it goes on only for that
+    // supervisor's confirmed update of this version.
+    use crate::fsx::Lock;
+    let old = old_service_unit();
+    let record = |state: &Path, phase: &str| {
+        fs::write(
+            state.join("update.json"),
+            format!(r#"{{"rollout_id":5,"version":"{}","from_version":"0.0.1","phase":"{phase}","started_unix":1,"report_id":"00000000-0000-4000-8000-0000000000aa","confirm_seconds":300}}"#, crate::AGENT_VERSION),
+        )
+        .unwrap();
+    };
+    let fx = Fixture::new();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    let state = fx.paths().state_dir();
+    dir_with_mode(&state, 0o700);
+
+    // An agent is starting an update (it holds updater.lock): refused.
+    let starting = Lock::file(&state.join("updater.lock")).unwrap().unwrap();
+    let failure = fx.refresh(Mode::Human).failure();
+    assert!(
+        failure.what.contains("an agent update is starting"),
+        "{}",
+        failure.what
+    );
+    drop(starting);
+    // A supervisor runs (update.lock held) with nothing confirmed: refused.
+    let supervisor = Lock::file(&state.join("update.lock")).unwrap().unwrap();
+    let failure = fx.refresh(Mode::Human).failure();
+    assert!(
+        failure.what.contains("its supervisor is running"),
+        "{}",
+        failure.what
+    );
+    assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old.clone()));
+    // The supervisor's own case: its update of this version has confirmed.
+    record(&state, "confirmed");
+    fx.refresh(Mode::Quiet).ok();
+    assert_eq!(
+        fx.unit_text(systemd::UNIT_NAME).as_deref(),
+        Some(systemd::UNIT)
+    );
+    drop(supervisor);
+
+    // By hand, with no update: both locks are held while it runs, and released after.
+    fs::remove_file(state.join("update.json")).unwrap();
+    *fx.systemd.lock_probe.lock().unwrap() = Some(state.clone());
+    fx.refresh(Mode::Quiet).ok();
+    assert_eq!(
+        *fx.systemd.probed.lock().unwrap(),
+        [false, false],
+        "a lock was free during the run"
+    );
+    assert!(Lock::file(&state.join("update.lock")).unwrap().is_some());
+    assert!(Lock::file(&state.join("updater.lock")).unwrap().is_some());
+}
+
+#[test]
+fn refresh_units_without_systemd_analyze_says_so_and_changes_nothing() {
+    // Re-review of #235: no check, no write (the owner's choice to confirm), with a message that blames
+    // neither the release nor the units.
+    let fx = Fixture::new();
+    let old = old_service_unit();
+    fx.installed_with_units(&[(systemd::UNIT_NAME, &old)]);
+    *fx.systemd.analyze_missing.lock().unwrap() = true;
+    let failure = fx.refresh(Mode::Human).failure();
+    assert_eq!(failure.failure, Failure::Preflight);
+    assert!(
+        failure
+            .what
+            .contains("cannot check the units before writing them")
+            && failure.what.contains("systemd-analyze is missing"),
+        "{}",
+        failure.what
+    );
+    assert!(!failure.what.contains("would not load"), "{}", failure.what);
+    assert!(
+        failure.next.contains("Install systemd-analyze"),
+        "{}",
+        failure.next
+    );
+    assert!(!failure.next.contains("report it"), "{}", failure.next);
+    assert_eq!(fx.unit_text(systemd::UNIT_NAME), Some(old));
+    assert!(fx.changes().is_empty(), "{:?}", fx.changes());
 }

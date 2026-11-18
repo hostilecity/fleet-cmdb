@@ -26,7 +26,8 @@
 //! finishes first. The loops stop in parallel, so stopping takes as long as the slowest of them
 //! (Rust practice review of #114):
 //!
-//! - heartbeat: the request in flight, at most the client's 30 s timeout;
+//! - heartbeat: the units check (two `systemctl show` calls, at most [`UNITS_CHECK_TIMEOUT`] each, #232)
+//!   and the request in flight (the client's 30 s timeout), at most about 50 s;
 //! - config: the one request or collection call in flight, at most 30 s for a request, 10 s for a
 //!   command, 5 s for a filesystem call. The reporter checks [`Shutdown`] itself: the collection
 //!   starts nothing new, a report collected meanwhile is dropped, and nothing is fetched or sent
@@ -35,7 +36,7 @@
 //!   like the config reporter, it starts nothing after the stop request;
 //! - inventory: a collection already started (about 10 s) and its send (30 s), about 40 s.
 //!
-//! So the agent stops within about 40 s, inside systemd's default 90 s stop timeout (the unit sets
+//! So the agent stops within about 50 s, inside systemd's default 90 s stop timeout (the unit sets
 //! no `TimeoutStopSec`). The state record is written atomically
 //! after each accepted report, so stopping at any point loses nothing. If any loop ends unexpectedly
 //! (a bug that panics), the others are stopped too and the agent exits with a failure, so systemd
@@ -300,6 +301,10 @@ fn run_with(
     })
 }
 
+/// Longest the heartbeat waits for each of its two `systemctl show` calls when it checks whether recovery mode
+/// is set up (#232): up to 20 s in all.
+const UNITS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How soon recovery mode tries normal mode again when its last try did not stop it (the service could
 /// not be started): it keeps heartbeating meanwhile.
 pub const RECOVERY_RETRY_AGAIN: Duration = Duration::from_secs(60 * 60);
@@ -327,6 +332,7 @@ pub fn run_recovery(
     try_normal: &dyn Fn() -> Result<(), String>,
 ) {
     let intervals = Intervals::new(config.heartbeat, config.inventory);
+    let systemctl = crate::install::Systemctl::with_timeout(UNITS_CHECK_TIMEOUT);
     let mut heartbeat = Heartbeat::new(
         &intervals,
         Backoff::new(RetryPolicy::default(), seeded(1)),
@@ -334,6 +340,10 @@ pub fn run_recovery(
         started,
     )
     .with_updater(updater)
+    .with_units_in(
+        std::path::PathBuf::from(crate::install::UNIT_DIR),
+        &systemctl,
+    )
     .in_recovery(status);
     let mut retry_at = started + retry_after;
     while !shutdown.is_requested() {
@@ -400,6 +410,7 @@ fn heartbeat_loop(
     requests: &ReportRequests,
     hint: &TaskHint,
 ) {
+    let systemctl = crate::install::Systemctl::with_timeout(UNITS_CHECK_TIMEOUT);
     let mut heartbeat = Heartbeat::new(
         intervals,
         Backoff::new(RetryPolicy::default(), seeded(1)),
@@ -410,6 +421,10 @@ fn heartbeat_loop(
     .with_updater(updater)
     .with_requests(requests)
     .with_capabilities(crate::tasks::Capabilities::of(&config.tasks))
+    .with_units_in(
+        std::path::PathBuf::from(crate::install::UNIT_DIR),
+        &systemctl,
+    )
     .with_task_hint(hint);
     while !shutdown.is_requested() {
         let hostname = crate::collect::hostname();

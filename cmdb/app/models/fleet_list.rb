@@ -1,5 +1,5 @@
 # The fleet list and its counts (FR-1.5, P1-D02). Built from query parameters so every view is linkable:
-# q (name or hostname), tag, status, sort, dir, and a keyset cursor, after or before (#193). Retired hosts are never
+# q (name or hostname), tag, status, recovery (#232), sort, dir, and a keyset cursor, after or before (#193). Retired hosts are never
 # listed or counted. A page is 100 rows read in index order after the cursor host (KeysetPage), from each host's
 # HostComplianceSummary, which carries the sort keys, the operating system name, and FleetCompliance's counts, so the
 # list costs the same whatever the fleet size; the counts are one more query over the summaries.
@@ -45,12 +45,19 @@ class FleetList
 
   COLUMNS = [ "hosts.*", "summaries.os_name", *FleetCompliance::COLUMNS ].freeze
 
-  attr_reader :q, :tag, :status, :sort, :direction
+  # The recovery-mode filter (#232): active hosts that have sent a heartbeat and do not report recovery mode as set up
+  # (Host#recovery_mode_coverage :not_set_up, :unchecked, or :not_reported). Matches the partial index
+  # index_hosts_without_recovery_mode, so it reads only those hosts.
+  RECOVERY_FILTERS = { "missing" => "Not set up" }.freeze
+  WITHOUT_RECOVERY_MODE = "hosts.enrollment_state = 'active' AND hosts.first_seen_at IS NOT NULL AND hosts.agent_recovery_coverage IS DISTINCT FROM 'set_up'".freeze
+
+  attr_reader :q, :tag, :status, :recovery, :sort, :direction
 
   def initialize(params = {})
     @q = params[:q].to_s.strip.first(100).presence
     @tag = params[:tag].present? ? Host.normalize_tag(params[:tag]) : nil
     @status = STATUSES.key?(params[:status]) ? params[:status] : nil
+    @recovery = RECOVERY_FILTERS.key?(params[:recovery]) ? params[:recovery] : nil
     @sort = SORTS.key?(params[:sort]) ? params[:sort] : "name"
     @direction = params[:dir] == "desc" ? "desc" : "asc"
     @cursor = KeysetPage.cursor(params)
@@ -64,6 +71,7 @@ class FleetList
     scope = scope.where("hosts.name ILIKE :p OR hosts.hostname ILIKE :p", p: "%#{Host.sanitize_sql_like(q)}%") if q
     scope = scope.tagged(tag) if tag
     scope = scope.where(summaries: { status_rank: STATUS_RANKS.fetch(status) }) if status
+    scope = scope.where(WITHOUT_RECOVERY_MODE) if recovery
     scope
   end
 
@@ -105,7 +113,10 @@ class FleetList
     end
   end
 
-  def filtered? = q.present? || tag.present? || status.present?
+  def filtered? = q.present? || tag.present? || status.present? || recovery.present?
+
+  # Only the recovery-mode filter is set: an empty list then means every active host is covered (#232).
+  def only_recovery_filter? = recovery.present? && q.blank? && tag.blank? && status.blank?
 
   # Whether the page was asked for by a cursor (Previous or Next), so an empty page may only mean its hosts moved on.
   def cursor? = @cursor.any?
@@ -114,11 +125,11 @@ class FleetList
   # starts at the first page.
   def sort_params(column)
     dir = sort == column && direction == "asc" ? "desc" : "asc"
-    { q:, tag:, status:, sort: column, dir: }.compact
+    { q:, tag:, status:, recovery:, sort: column, dir: }.compact
   end
 
   # The filters and sort, defaults left out, for the pager's links (which add a cursor) and the first page.
-  def list_params = { q:, tag:, status:, sort: (sort unless sort == "name"), dir: (direction unless direction == "asc") }.compact
+  def list_params = { q:, tag:, status:, recovery:, sort: (sort unless sort == "name"), dir: (direction unless direction == "asc") }.compact
 
   def aria_sort(column)
     return "none" unless sort == column

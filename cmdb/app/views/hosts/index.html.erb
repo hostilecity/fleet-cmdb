@@ -15,6 +15,8 @@
   <label>Search name or hostname<%= search_field_tag :q, @fleet.q, placeholder: "vm-01 or Media server", maxlength: 100 %></label>
   <label>Tag<%= select_tag :tag, options_for_select(@tags, @fleet.tag), include_blank: "All tags" %></label>
   <label>Status<%= select_tag :status, options_for_select(FleetList::STATUSES.invert, @fleet.status), include_blank: "All statuses" %></label>
+  <%# #232: hosts whose agent would stop for good after a crash loop, until their units are refreshed. %>
+  <label>Recovery mode<%= select_tag :recovery, options_for_select(FleetList::RECOVERY_FILTERS.invert, @fleet.recovery), include_blank: "Any" %></label>
   <%= hidden_field_tag :sort, @fleet.sort unless @fleet.sort == "name" %>
   <%= hidden_field_tag :dir, @fleet.direction unless @fleet.direction == "asc" %>
   <button class="btn quiet" type="submit">Apply</button>
@@ -29,9 +31,15 @@
     <p><strong>No hosts in the fleet.</strong></p>
     <p>Run the installer on a VM and approve it on the <%= link_to "approval page", onboard_path %>, or <%= link_to "pre-register a host", new_host_path %> for an unattended install.</p>
   </div>
+<% elsif @hosts.empty? && @fleet.only_recovery_filter? %>
+  <%# #232, review of #235: the outcome the operator wants, said as such. %>
+  <div class="sheet empty" id="all_recovery_set_up">
+    <p><strong>Every active host that has sent a heartbeat has recovery mode set up.</strong></p>
+    <p><%= link_to "Show the whole fleet", root_path %></p>
+  </div>
 <% elsif @hosts.empty? %>
   <div class="sheet empty">
-    <p><strong>No hosts match <%= [ (@fleet.q && %("#{@fleet.q}")), (@fleet.tag && %(tag "#{@fleet.tag}")), (@fleet.status && "status #{FleetList::STATUSES[@fleet.status]}") ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>
+    <p><strong>No hosts match <%= [ (@fleet.q && %("#{@fleet.q}")), (@fleet.tag && %(tag "#{@fleet.tag}")), (@fleet.status && "status #{FleetList::STATUSES[@fleet.status]}"), (@fleet.recovery && "recovery mode not set up") ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>
     <p><%= link_to "Clear the search and filters", root_path %></p>
   </div>
 <% else %>

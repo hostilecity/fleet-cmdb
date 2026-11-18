@@ -260,6 +260,7 @@
   done:
     - "A tampered, unsigned, unknown-key, or older release is refused and reported, leaving the running version unchanged (AC-1.9)."
     - "A release that exits at start, crash-loops, or cannot authenticate is rolled back automatically and reported, including across a supervisor kill or reboot (AC-1.10)."
+    - "A confirmed update installs the new version's systemd units where the installer wrote them, and the dashboard lists hosts without recovery mode (#232)."
   blocked_by: [P1-AGENT-INSTALL, P1-PACKAGING, P1-UPDATES, P1-AGENT-REPORT]
 
 - key: P1-ACCEPT

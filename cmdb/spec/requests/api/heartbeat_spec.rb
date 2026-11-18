@@ -404,6 +404,38 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     end
   end
 
+  describe "unit coverage (#232)" do
+    it "stores whether recovery mode is set up, writes the hosts row only when it changes, and clears it without the object" do
+      allow(FleetBroadcast).to receive(:hosts_changed)
+      heartbeat
+      expect(host.reload.agent_recovery_coverage).to be_nil
+      heartbeat(body(units: { recovery: false }))
+      expect(host.reload.agent_recovery_coverage).to eq("not_set_up")
+      # Steady: the hosts row is not written again (only host_liveness), and nothing is broadcast.
+      writes = []
+      callback = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\AUPDATE "hosts"/) }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { heartbeat(body(units: { recovery: false, later_unit: true })) }
+      expect(writes).to be_empty
+      # The confirmed update refreshed the units: true, broadcast so the fleet list's filter and the host page follow.
+      heartbeat(body(units: { recovery: true }))
+      expect(host.reload.agent_recovery_coverage).to eq("set_up")
+      # The agent could not check (re-review of #235): stored apart from "not set up".
+      heartbeat(body(units: { recovery: nil }))
+      expect(host.reload.agent_recovery_coverage).to eq("unchecked")
+      heartbeat
+      expect(host.reload.agent_recovery_coverage).to be_nil
+      # The first heartbeat (online), then each change: false, true, not checked, not reported.
+      expect(FleetBroadcast).to have_received(:hosts_changed).with([ host.id ]).exactly(5).times
+    end
+
+    it "rejects a malformed units object without changing what was stored" do
+      heartbeat(body(units: { recovery: true }))
+      heartbeat(body(units: { recovery: "yes" }))
+      expect_error(:bad_request, "validation_failed")
+      expect(host.reload.agent_recovery_coverage).to eq("set_up")
+    end
+  end
+
   it_behaves_like "the docs/api contract examples", "heartbeat.request", accepted: :ok do
     def submit_example(data, valid:) = heartbeat(data)
   end

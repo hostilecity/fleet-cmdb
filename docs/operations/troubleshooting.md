@@ -113,6 +113,36 @@ cat /var/lib/fleet-agent/update-result.json   # only until the server has accept
 
 The new version's own log lines, before the rollback, say why it did not confirm: often it could not reach the server, or a config option it does not accept. Fix that and run a new rollout, or upgrade that VM by hand ([install-agent.md](install-agent.md#by-hand-on-one-vm)).
 
+## A host shows "Recovery mode is not set up"
+
+The host's agent reports that systemd does not run its recovery unit ([ADR 0030](../decisions/0030-agent-recovery-mode.md)): if it keeps failing on a version it has confirmed, it stops until someone starts it on the VM. The Fleet page's **Recovery mode: Not set up** filter lists every such host. On the VM:
+
+```sh
+head -n 1 /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-agent-recovery.service
+systemctl show -p OnFailure -p NeedDaemonReload fleet-agent   # names fleet-agent-recovery.service; NeedDaemonReload=no
+journalctl -u fleet-agent-update | grep -i units   # the last update's refresh
+```
+
+- **Units from an older release, or not reloaded:** `sudo fleet-agent install --refresh-units` writes the installed version's units and reloads systemd. An update from an older agent release does not refresh them; the update after it does.
+- **It refuses with "cannot check the units before writing them: /usr/bin/systemd-analyze is missing":** this VM has no `systemd-analyze`, so the units cannot be checked, and are not written without the check. Nothing was changed. Install it (it ships with systemd; some distributions package it separately) and run `sudo fleet-agent install --refresh-units` again, or re-run `sudo fleet-agent install`, which writes the units and restarts the service under them.
+- **It refuses with "systemd would not load this version's units":** the release's units do not suit this VM's systemd. Nothing was changed; the old units keep running the agent. Report it with the `systemd-analyze verify` output it shows.
+- **A unit file without the first line `` # Written by `fleet-agent install` ``:** someone replaced it by hand, and the agent never overwrites it. Move it away, keep local changes in a drop-in (`systemctl edit fleet-agent`), and run `sudo fleet-agent install --refresh-units`.
+- **A note in the update history** ("its systemd units were not installed"): the update succeeded but the refresh did not; the note says why.
+- **"does not report"**: the agent is older than the release that reports it, and its own release has no recovery mode, so its installer cannot set it up. Update it from the Agents page; after that first update, `sudo fleet-agent install --refresh-units` (or the next update) sets it up.
+
+
+## A host shows "Recovery mode could not be checked"
+
+The agent could not tell whether systemd runs its recovery unit: `systemctl show` failed (for example a D-Bus error, or an answer without the expected properties) or did not answer within 10 s, or `/etc/systemd/system/fleet-agent-recovery.service` could not be read (for example it is not a regular file). Recovery mode may still be set up, and `--refresh-units` does not fix this. On the VM:
+
+```sh
+journalctl -u fleet-agent | grep "cannot tell whether recovery mode"   # the reason, logged once
+systemctl show -p OnFailure fleet-agent                                 # does systemd answer?
+ls -l /etc/systemd/system/fleet-agent-recovery.service
+```
+
+Fix the cause (a busy or stuck systemd, or something other than a regular file in place of the unit). The next heartbeat checks again.
+
 ## Package updates succeed, but vulnerabilities stay open
 
 **Apply package updates** succeeds, yet the host's **Vulnerabilities** tab still lists findings with a fixed version. Debian publishes most security fixes in its security repository. If the VM's APT sources leave it out, `apt-get upgrade` never sees those fixes. VMs built from a minimal template often lack it.

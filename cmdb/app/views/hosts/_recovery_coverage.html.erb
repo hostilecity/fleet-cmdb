@@ -1,0 +1,25 @@
+<%# Whether recovery mode is set up on the VM (#232, ADR 0030), from the last heartbeat's units.recovery: as systemd has
+    loaded the units. Each state has its own next step (review of #235), as in docs/operations/troubleshooting.md. %>
+<% case host.recovery_mode_coverage %>
+<% when :set_up %>
+  <p id="<%= dom_id(host, :recovery_coverage) %>"><strong>Recovery mode is set up.</strong> If the agent keeps failing on a version it has confirmed, it goes into recovery mode, so it can still receive a fixed release.</p>
+<% when :not_set_up %>
+  <div class="notice" role="status" id="<%= dom_id(host, :recovery_coverage) %>">
+    <strong>Recovery mode is not set up on this host.</strong>
+    <p>The agent reports that systemd does not run its recovery unit: the units are from an older release, are local copies, or have not been reloaded. Without recovery mode, an agent that keeps failing on a version it has confirmed stops until someone starts it on the VM.</p>
+    <p><strong>Next step:</strong> on the VM, run <code>sudo fleet-agent install --refresh-units</code>. It writes the installed version's units and reloads systemd, and restarts nothing. If it says a unit was not written by the installer, that file is a local copy: move it away, keep your changes in a drop-in (<code>sudo systemctl edit fleet-agent</code>), and run it again.</p>
+  </div>
+<% when :unchecked %>
+  <%# Re-review of #235: the agent could not check, which --refresh-units does not fix. %>
+  <div class="notice" role="status" id="<%= dom_id(host, :recovery_coverage) %>">
+    <strong>Recovery mode could not be checked on this host.</strong>
+    <p>The agent could not tell whether systemd runs its recovery unit: <code>systemctl show</code> failed or did not answer in time, or a unit file could not be read. Recovery mode may or may not be set up.</p>
+    <p><strong>Next step:</strong> on the VM, read why with <code>journalctl -u fleet-agent | grep "cannot tell whether recovery mode"</code>, and fix that (a busy or stuck systemd, or something other than a regular file at <code>/etc/systemd/system/fleet-agent-recovery.service</code>). The next heartbeat checks again.</p>
+  </div>
+<% when :not_reported %>
+  <div class="notice" role="status" id="<%= dom_id(host, :recovery_coverage) %>">
+    <strong>This agent does not report whether recovery mode is set up.</strong>
+    <p>Agent version <code><%= host.agent_version %></code> is older than the release that reports it, and probably has no recovery mode. Without it, an agent that keeps failing on a version it has confirmed stops until someone starts it on the VM.</p>
+    <p><strong>Next step:</strong> update the agent from <%= link_to "Agents", agents_path %>. The update from this version installs the new release but not its units; the next update installs them. To set it up at once after the first update, run <code>sudo fleet-agent install --refresh-units</code> on the VM.</p>
+  </div>
+<% end %>

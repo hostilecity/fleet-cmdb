@@ -290,14 +290,41 @@ pub fn run_self_test(
     config: &Path,
     version: &semver::Version,
 ) -> Result<(), String> {
+    let args = [
+        std::ffi::OsStr::new("self-test"),
+        std::ffi::OsStr::new("--config"),
+        config.as_os_str(),
+    ];
+    let (stdout, _) = run_bounded(binary, &args, SELF_TEST_TIMEOUT)?;
+    let expected = format!("{SELF_TEST_OK} {version} ");
+    if stdout.starts_with(&expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "it reported {:?} instead of version {version}",
+            crate::logging::sanitize(stdout.lines().next().unwrap_or(""), 120)
+        ))
+    }
+}
+
+/// The first words of a successful self-test's output, followed by the version.
+pub const SELF_TEST_OK: &str = "self-test OK: fleet-agent";
+
+/// Runs `binary ARGS` with an empty environment (only `LANG=C`), no input, and a time
+/// limit, keeping at most 8 KiB of each output. Returns stdout and stderr when it exits 0, and otherwise
+/// why not, with what it printed. Used for the staged binary's self-test and, by the supervisor, for the
+/// confirmed binary's `install --refresh-units` (#232).
+pub fn run_bounded(
+    binary: &Path,
+    args: &[&std::ffi::OsStr],
+    timeout: Duration,
+) -> Result<(String, String), String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
     let mut child = Command::new(binary)
-        .arg("self-test")
-        .arg("--config")
-        .arg(config)
+        .args(args)
         .env_clear()
         .env("LANG", "C")
         .stdin(Stdio::null())
@@ -326,7 +353,7 @@ pub fn run_self_test(
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
-    let deadline = Instant::now() + SELF_TEST_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -338,7 +365,7 @@ pub fn run_self_test(
                 let _ = child.wait();
                 return Err(format!(
                     "it did not finish within {} seconds",
-                    SELF_TEST_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ));
             }
             Err(e) => return Err(format!("cannot wait for it: {e}")),
@@ -359,19 +386,8 @@ pub fn run_self_test(
             crate::logging::sanitize(why.trim(), 300)
         ));
     }
-    let expected = format!("{SELF_TEST_OK} {version} ");
-    if stdout.starts_with(&expected) {
-        Ok(())
-    } else {
-        Err(format!(
-            "it reported {:?} instead of version {version}",
-            crate::logging::sanitize(stdout.lines().next().unwrap_or(""), 120)
-        ))
-    }
+    Ok((stdout, stderr))
 }
-
-/// The first words of a successful self-test's output, followed by the version.
-pub const SELF_TEST_OK: &str = "self-test OK: fleet-agent";
 
 #[cfg(test)]
 pub(crate) mod tests {

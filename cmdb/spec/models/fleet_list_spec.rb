@@ -64,6 +64,43 @@ RSpec.describe FleetList do
       expect(names(tag: " LAB ")).to eq([ "Build runner", "Lab sandbox", "Media server" ])
     end
 
+    it "filters to the hosts without recovery mode, with the other filters (#232)" do
+      # Media server reports it set up, web A not set up, Build runner does not report it; DNS resolver has sent no
+      # heartbeat, and pending and revoked hosts are not active, so the question does not arise for them.
+      media.update_columns(agent_recovery_coverage: "set_up")
+      web.update_columns(agent_recovery_coverage: "not_set_up")
+      [ pending, revoked ].each { |h| h.update_columns(agent_recovery_coverage: "not_set_up", first_seen_at: 1.day.ago) }
+      expect(names(recovery: "missing")).to eq([ "Build runner", "web A" ])
+      # Not checked counts as not set up too: it is not known to be (re-review of #235).
+      build.update_columns(agent_recovery_coverage: "unchecked")
+      expect(names(recovery: "missing")).to eq([ "Build runner", "web A" ])
+      build.update_columns(agent_recovery_coverage: nil)
+      expect(names(recovery: "missing", tag: "lab")).to eq([ "Build runner" ])
+      expect(names(recovery: "missing", status: "online")).to eq([])
+      list = described_class.new(recovery: "missing", sort: "status")
+      expect([ list.filtered?, list.total ]).to eq([ true, 2 ])
+      expect(list.list_params).to eq(recovery: "missing", sort: "status")
+      expect(list.sort_params("name")).to eq(recovery: "missing", sort: "name", dir: "asc")
+      expect(described_class.new(recovery: "everything").recovery).to be_nil
+    end
+
+    it "has a partial index whose predicate is exactly the recovery-mode filter (#232)" do
+      # Structural rather than a plan: the planner's choice on a test database depends on its statistics (it
+      # flaked on CI). PostgreSQL uses a partial index whenever the query's condition implies its predicate, which
+      # an identical condition always does. The plans on 300k hosts were measured in the review of #235.
+      predicate = Host.connection.select_value(<<~SQL)
+        SELECT pg_get_expr(i.indpred, i.indrelid) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+         WHERE c.relname = 'index_hosts_without_recovery_mode'
+      SQL
+      expect(predicate).to eq("(((enrollment_state)::text = 'active'::text) AND (first_seen_at IS NOT NULL) AND ((agent_recovery_coverage)::text IS DISTINCT FROM 'set_up'::text))")
+      expect(FleetList::WITHOUT_RECOVERY_MODE.gsub("hosts.", "")).to eq(
+        "enrollment_state = 'active' AND first_seen_at IS NOT NULL AND agent_recovery_coverage IS DISTINCT FROM 'set_up'"
+      )
+      migration = Rails.root.join("db/migrate/20261118232004_index_hosts_without_recovery_mode.rb").read
+      expect(migration).to include(%(where: "#{FleetList::WITHOUT_RECOVERY_MODE.gsub('hosts.', '')}"))
+    end
+
+
     it "ignores unknown statuses, sorts, and directions" do
       list = described_class.new(status: "retired", sort: "secret_digest", dir: "sideways")
       expect([ list.status, list.sort, list.direction ]).to eq([ nil, "name", "asc" ])

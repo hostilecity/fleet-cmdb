@@ -45,6 +45,10 @@ pub struct HeartbeatRequest {
     /// Present only in recovery mode (#180, ADR 0030): why, and since when. Absent means normal mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<crate::recovery::Status>,
+    /// Which of the installer's units are set up (#232): whether recovery mode is. Absent only where the
+    /// loop was not told where the units are (tests).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub units: Option<crate::install::Units>,
 }
 
 /// The state record of this process's first accepted heartbeat (in the state directory). `install`
@@ -75,6 +79,10 @@ pub struct Heartbeat<'a, R: Rng> {
     task_hint: Option<&'a TaskHint>,
     /// Sent as `recovery` in every heartbeat in recovery mode ([`Heartbeat::in_recovery`]).
     recovery: Option<crate::recovery::Status>,
+    /// Where the systemd units are, and the `systemctl` to ask, for `units` ([`Heartbeat::with_units_in`]).
+    units_dir: Option<(std::path::PathBuf, &'a dyn crate::install::Systemd)>,
+    /// The last unit check that failed, logged once until it changes.
+    units_problem: std::cell::RefCell<Option<String>>,
     backoff: Backoff<R>,
     rng: R,
     started: Instant,
@@ -94,6 +102,8 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             capabilities: None,
             task_hint: None,
             recovery: None,
+            units_dir: None,
+            units_problem: std::cell::RefCell::default(),
             backoff,
             rng,
             started,
@@ -146,6 +156,42 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         self
     }
 
+    /// Reports in every heartbeat whether recovery mode is set up in `dir` (#232), as `systemd` has loaded the
+    /// units, asked each time: a confirmed update refreshes them without restarting the service.
+    pub fn with_units_in(
+        mut self,
+        dir: std::path::PathBuf,
+        systemd: &'a dyn crate::install::Systemd,
+    ) -> Self {
+        self.units_dir = Some((dir, systemd));
+        self
+    }
+
+    /// `units` for one heartbeat. A unit file that cannot be read, or a `systemctl` that cannot answer,
+    /// reports `recovery: null` (could not be checked; re-review of #235), with a warning logged once.
+    fn units(&self) -> Option<crate::install::Units> {
+        let (dir, systemd) = self.units_dir.as_ref()?;
+        let recovery = match crate::install::recovery_covered(dir, *systemd) {
+            Ok(covered) => {
+                self.units_problem.borrow_mut().take();
+                covered
+            }
+            Err(why) => {
+                let mut last = self.units_problem.borrow_mut();
+                if last.as_deref() != Some(why.as_str()) {
+                    tracing::warn!(
+                        "cannot tell whether recovery mode is set up ({why}); heartbeats say it could not be checked"
+                    );
+                    *last = Some(why);
+                }
+                return Some(crate::install::Units { recovery: None });
+            }
+        };
+        Some(crate::install::Units {
+            recovery: Some(recovery),
+        })
+    }
+
     /// Recovery mode moved its next try of normal mode: later heartbeats say when.
     pub fn set_recovery_retry_at(&mut self, retry_at: String) {
         if let Some(status) = &mut self.recovery {
@@ -171,12 +217,26 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         }
     }
 
-    /// The request for one heartbeat.
+    /// The request for one heartbeat, with the times as given (tests; [`Heartbeat::beat`] uses
+    /// [`Heartbeat::request_with`]).
+    #[cfg(test)]
     pub fn request(
         &self,
         hostname: Option<String>,
         now: Instant,
         wall: SystemTime,
+    ) -> HeartbeatRequest {
+        self.request_with(hostname, now, wall, self.units())
+    }
+
+    /// The request, with `units` already checked. [`Heartbeat::beat`] checks them first and takes the times
+    /// after, so a slow `systemctl` never sends an old `agent_time` (re-review of #235).
+    fn request_with(
+        &self,
+        hostname: Option<String>,
+        now: Instant,
+        wall: SystemTime,
+        units: Option<crate::install::Units>,
     ) -> HeartbeatRequest {
         HeartbeatRequest {
             schema_version: AGENT_SCHEMA_VERSION,
@@ -186,6 +246,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             agent_time: rfc3339(wall),
             tasks: self.capabilities.clone(),
             recovery: self.recovery.clone(),
+            units,
         }
     }
 
@@ -198,7 +259,17 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         wall: SystemTime,
     ) -> Duration {
         let _span = tracing::info_span!("heartbeat").entered();
-        let request = self.request(hostname, now, wall);
+        // The units check may wait on systemctl (up to 2 x UNITS_CHECK_TIMEOUT): the times are moved on by what
+        // it took, so `agent_time` and `uptime_seconds` are those of the request.
+        let checking = Instant::now();
+        let units = self.units();
+        let took = checking.elapsed();
+        let (now, wall) = if self.units_dir.is_some() {
+            (now + took, wall + took)
+        } else {
+            (now, wall)
+        };
+        let request = self.request_with(hostname, now, wall, units);
         let body = match serde_json::to_value(&request) {
             Ok(body) => body,
             // A struct of strings and integers always serialises; keep going if it ever does not.
@@ -393,6 +464,97 @@ mod tests {
             assert_eq!(value["agent_time"], "2026-01-01T12:00:00.000Z");
             assert_eq!(value["agent_version"], AGENT_VERSION);
         }
+    }
+
+    #[test]
+    fn every_heartbeat_reports_whether_recovery_mode_is_set_up_as_systemd_runs_it_now() {
+        // #232: asked on every heartbeat, so a refresh after a confirmed update (no restart) shows at once,
+        // and from what systemd has loaded, not the files (review of #235).
+        use crate::install::{RECOVERY_UNIT, UNIT};
+        let intervals = intervals();
+        let started = Instant::now();
+        let dir = crate::test_support::TempDir::new();
+        let units = dir.path("units");
+        std::fs::create_dir_all(&units).unwrap();
+        let systemd = crate::install::LoadedUnits::new(units.clone());
+        let hb = heartbeat(&intervals, started).with_units_in(units.clone(), &systemd);
+        let recovery = |hb: &Heartbeat<'_, SplitMix64>| {
+            let body = serde_json::to_value(hb.request(None, started, wall())).unwrap();
+            assert_conforms("v1", "heartbeat.request", &body);
+            body["units"].clone()
+        };
+        assert_eq!(recovery(&hb), json!({"recovery": false}));
+        std::fs::write(units.join("fleet-agent.service"), UNIT).unwrap();
+        std::fs::write(units.join("fleet-agent-recovery.service"), RECOVERY_UNIT).unwrap();
+        // Written, not yet reloaded: systemd still runs what it had.
+        assert_eq!(recovery(&hb), json!({"recovery": false}));
+        systemd.reload();
+        assert_eq!(recovery(&hb), json!({"recovery": true}));
+        // Unreadable: reported as not checked (null, not false), and logged once, not on every heartbeat.
+        std::fs::remove_file(units.join("fleet-agent-recovery.service")).unwrap();
+        std::fs::create_dir(units.join("fleet-agent-recovery.service")).unwrap();
+        let ((), logs) = logs_of(|| {
+            assert_eq!(recovery(&hb), json!({"recovery": null}));
+            assert_eq!(recovery(&hb), json!({"recovery": null}));
+        });
+        assert_eq!(
+            logs.matches("cannot tell whether recovery mode is set up")
+                .count(),
+            1,
+            "{logs}"
+        );
+        // Without a unit directory (tests elsewhere) the field is left out.
+        let body =
+            serde_json::to_value(heartbeat(&intervals, started).request(None, started, wall()))
+                .unwrap();
+        assert!(body.get("units").is_none());
+    }
+
+    /// A `systemctl` that takes a while to answer, then answers as `inner`.
+    struct Slow<'a>(&'a crate::install::LoadedUnits, Duration);
+
+    impl crate::install::Systemd for Slow<'_> {
+        fn unavailable(&self) -> Option<String> {
+            None
+        }
+        fn systemctl(&self, args: &[&str]) -> Result<String, String> {
+            std::thread::sleep(self.1);
+            self.0.systemctl(args)
+        }
+    }
+
+    #[test]
+    fn a_slow_units_check_does_not_send_an_old_agent_time() {
+        // Re-review of #235: the check runs before the times are taken for the request.
+        use crate::install::{RECOVERY_UNIT, UNIT};
+        let intervals = intervals();
+        let started = Instant::now();
+        let dir = crate::test_support::TempDir::new();
+        let units = dir.path("units");
+        std::fs::create_dir_all(&units).unwrap();
+        std::fs::write(units.join("fleet-agent.service"), UNIT).unwrap();
+        std::fs::write(units.join("fleet-agent-recovery.service"), RECOVERY_UNIT).unwrap();
+        let loaded = crate::install::LoadedUnits::new(units.clone());
+        loaded.reload();
+        let slow = Slow(&loaded, Duration::from_millis(700));
+        let mut hb = heartbeat(&intervals, started).with_units_in(units, &slow);
+        let transport = FakeTransport::new(vec![]);
+        transport.push(ok(envelope(json!({}))));
+        hb.beat(&transport, None, started, wall());
+        let (_, body) = transport.sent().pop().unwrap();
+        assert_eq!(body["units"], json!({"recovery": true}));
+        let sent = parse_rfc3339(body["agent_time"].as_str().unwrap()).unwrap();
+        // Two calls of 700 ms: the time sent is that of the request, not of the start of the check.
+        assert!(
+            sent >= wall() + Duration::from_millis(1400),
+            "{:?}",
+            body["agent_time"]
+        );
+        assert!(
+            sent < wall() + Duration::from_secs(10),
+            "{:?}",
+            body["agent_time"]
+        );
     }
 
     #[test]

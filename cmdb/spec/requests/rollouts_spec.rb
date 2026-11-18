@@ -453,6 +453,13 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       RolloutHost.update_all(offered_at: nil)
       get "/hosts/#{canary_host.id}"
       expect(page.at_css("#agent_updates tbody tr").then { words(_1) }).to start_with("0.3.0 Confirmed.")
+      # #232: a succeeded result's note (units the agent could not refresh) is shown after the confirmation.
+      AgentUpdate.update_all(outcome: "succeeded", reason: "the update succeeded, but its systemd units were not installed (the old units run it; " \
+                                                           "`sudo fleet-agent install --refresh-units` on the VM installs them): refused")
+      get "/hosts/#{canary_host.id}"
+      expect(page.at_css("#agent_updates tbody tr").then { words(_1) })
+        .to start_with("0.3.0 Confirmed; the update succeeded, but its systemd units were not installed (the old units run it; " \
+                       "`sudo fleet-agent install --refresh-units` on the VM installs them): refused.")
     end
 
     it "shows a pending host's offer time while it is still ahead, and a halted rollout's waiting hosts as not offered" do

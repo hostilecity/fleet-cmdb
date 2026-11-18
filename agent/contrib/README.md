@@ -43,7 +43,7 @@ Deliberately not set:
 
 The supervisor runs as its own transient unit (`fleet-agent-update`), outside this sandbox, so the service needs no write access to `/usr/lib/fleet-agent`; if a design gives the running agent that access, add `ReadWritePaths=/usr/lib/fleet-agent` and nothing wider.
 
-`fleet-agent-rollback.service` (`Type=oneshot`) runs `/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop`: the previous version's binary, the one that was known to work. It has no `ProtectSystem=` because it has to change `/usr/lib/fleet-agent` and the state directory and restart the service, but it keeps the other restrictions that do not get in its way. `fleet-agent install` writes the three units; `uninstall` stops recovery mode and removes them. An update does not rewrite them (see the spec's known limit).
+`fleet-agent-rollback.service` (`Type=oneshot`) runs `/usr/lib/fleet-agent/previous/fleet-agent update-rollback --reason crash-loop`: the previous version's binary, the one that was known to work. It has no `ProtectSystem=` because it has to change `/usr/lib/fleet-agent` and the state directory and restart the service, but it keeps the other restrictions that do not get in its way. `fleet-agent install` writes the three units; `uninstall` stops recovery mode and removes them. A confirmed update rewrites the installer's own units from the new version (`install --refresh-units`, #232); a unit without the installer's marker is left alone.
 
 ### Recovery mode (#180)
 

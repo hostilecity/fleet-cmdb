@@ -22,20 +22,21 @@ module Liveness
   # Records a heartbeat: locks the host row and re-checks the host and credential under that lock
   # (AgentHostLock, raising AgentHostLock::Refused), then writes the host's host_liveness row in one statement, plus
   # a status event only when the host was not already online. The hosts row is written only when something it holds
-  # changed: the agent version or schema version, the task capabilities, the recovery-mode columns, or the first
-  # heartbeat's first_seen_at. Must run inside a transaction (the request's). Returns the server time it recorded.
-  # task_capabilities is the heartbeat's `tasks` object (P3-A01), compared with the host's capability columns
-  # (task_capability_columns); recovery is its `recovery` object (#180, ADR 0030), compared the same way
-  # (recovery_columns).
+  # changed: the agent version or schema version, the task capabilities, the recovery-mode columns, whether recovery
+  # mode is set up, or the first heartbeat's first_seen_at. Must run inside a transaction (the request's). Returns the
+  # server time it recorded. task_capabilities is the heartbeat's `tasks` object (P3-A01), compared with the host's
+  # capability columns (task_capability_columns); recovery is its `recovery` object (#180, ADR 0030), compared the same
+  # way (recovery_columns); units is its `units` object (#232), stored as agent_recovery_coverage (recovery_coverage).
   def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil,
-                        recovery: nil)
+                        recovery: nil, units: nil)
     host = AgentHostLock.lock!(host_id:, credential_id:)
 
     # The clock is read only now, after the lock, and last_seen_at never moves backwards: a heartbeat that waited for
     # the row cannot write an older time than the one it waited for.
     now, was = touch(host.id, Time.current, agent_time)
     capabilities = task_capability_columns(task_capabilities)
-    updates = { agent_version:, agent_schema_version:, **capabilities, **recovery_columns(recovery, host, now) }
+    updates = { agent_version:, agent_schema_version:, **capabilities, **recovery_columns(recovery, host, now),
+                agent_recovery_coverage: recovery_coverage(units) }
               .reject { |column, value| host[column] == value }
     if updates.keys.intersect?(capabilities.keys) || task_capabilities.nil? != host.task_capabilities_reported_at.nil?
       updates[:task_capabilities_reported_at] = task_capabilities && now
@@ -46,8 +47,10 @@ module Liveness
       HostStatusEvent.insert!({ host_id: host.id, from_status: was, to_status: "online", reason: "heartbeat", occurred_at: now })
     end
     # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05), a new agent
-    # version, such as the one an update installed (P1-D09), and entering or leaving recovery mode (#180).
-    unchanged = was == "online" && !updates.key?(:agent_version) && host.agent_recovery_since.nil? == recovery.nil?
+    # version, such as the one an update installed (P1-D09), entering or leaving recovery mode (#180), and a change in
+    # whether recovery mode is set up (#232), which the fleet list's filter and the host page show.
+    unchanged = was == "online" && !updates.key?(:agent_version) && host.agent_recovery_since.nil? == recovery.nil? &&
+                !updates.key?(:agent_recovery_coverage)
     FleetBroadcast.hosts_changed([ host.id ]) unless unchanged
     now
   end
@@ -85,6 +88,13 @@ module Liveness
       agent_recovery_retry_at: Time.iso8601(recovery["retry_at"]), agent_recovery_reason: recovery["reason"] }
   end
   private_class_method :recovery_columns
+
+  # agent_recovery_coverage for a heartbeat's `units` object (#232): set_up, not_set_up, or unchecked (the agent could not
+  # check, `recovery: null`; re-review of #235). nil without the object: not reported.
+  COVERAGE = { true => "set_up", false => "not_set_up", nil => "unchecked" }.freeze
+
+  def recovery_coverage(units) = units && COVERAGE.fetch(units["recovery"])
+  private_class_method :recovery_coverage
 
   # The host columns for a heartbeat's `tasks` object (FR-3.1, P3-A01): the catalog version compiled into the agent,
   # the types it implements, the types its VM enables, and the services its VM allows restarting, which

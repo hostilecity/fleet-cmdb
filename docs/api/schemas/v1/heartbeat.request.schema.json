@@ -133,6 +133,22 @@
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
         }
       }
+    },
+    "units": {
+      "description": "Which of the installer's systemd units are set up on the VM (#232), as systemd has loaded them, checked by the agent at each heartbeat. Absent means the agent does not say (an older agent); the server stores it as not reported. Unknown fields inside are ignored, so later agents can add more.",
+      "type": "object",
+      "required": [
+        "recovery"
+      ],
+      "properties": {
+        "recovery": {
+          "description": "true when recovery mode is set up (ADR 0030): fleet-agent-recovery.service carries the installer's marker and is loaded from /etc/systemd/system, fleet-agent.service names it in OnFailure= (drop-ins included), and neither waits for a daemon-reload. false when it is not. null when the agent could not check (it cannot read the unit file, or systemctl does not answer); the dashboard shows that apart from false. A host without recovery mode keeps stopping for good after a crash loop on a confirmed version, until a confirmed update or `fleet-agent install --refresh-units` installs and loads the units.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
     }
   }
 }

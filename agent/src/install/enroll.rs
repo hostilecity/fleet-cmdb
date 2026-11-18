@@ -548,6 +548,11 @@ pub fn confirm(
         Duration::from_secs(5),
         Duration::from_secs(10),
     ];
+    // As the service reports them, from the units step 2 wrote (#232). Checked once: they do not change
+    // while the installer confirms, and each check may wait on systemctl (re-review of #235).
+    let units = Some(super::Units {
+        recovery: super::recovery_covered(&host.paths.unit_dir(), &*host.systemd).ok(),
+    });
     let mut attempt = 0;
     loop {
         // The service's own request type, so the contract has one definition (review of #67).
@@ -564,6 +569,7 @@ pub fn confirm(
             // As the service reports them, so the server does not clear them in between (P3-A01).
             tasks: crate::tasks::Capabilities::of(&config.tasks),
             recovery: None,
+            units,
         };
         let error = match client.post_json(HEARTBEAT_PATH, &body) {
             Ok(response) if response.status == 200 => {
