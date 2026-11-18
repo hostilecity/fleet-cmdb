@@ -20,7 +20,7 @@ namespace :settings do
   desc "Set how many days snapshots, report ids, and status events are kept: DAYS=90"
   task retention: :environment do
     Setting.update_retention_days!(ENV.fetch("DAYS"), actor: Audit::SYSTEM)
-    puts "Snapshots, report ids, and status events are kept #{Setting.get('retention.days')} days. Audit entries are never pruned."
+    puts "Snapshots and status events are kept for at least #{Setting.get('retention.days')} days, report ids for at least 7. Audit entries are never pruned."
   rescue KeyError
     abort "Usage: bin/rails settings:retention DAYS=90"
   rescue Setting::Invalid => e

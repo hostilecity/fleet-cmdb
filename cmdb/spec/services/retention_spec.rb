@@ -1,18 +1,24 @@
 require "rails_helper"
 
-# Retention and pruning (NFR-2, DEC-07, P1-S10).
+# Retention and pruning (NFR-2, DEC-07, P1-S10). The history tables are partitioned by time (ADR 0027, #195): retire!
+# drops their partitions past the window, and prune! deletes rows only in a converted table's legacy partition (and in
+# the tables that are not partitioned). The examples of prune! give each partitioned table a legacy partition, as the
+# conversion leaves one, and date their rows in it.
 RSpec.describe Retention do
   let(:now) { Time.utc(2026, 11, 1, 12, 0, 0) }
   let(:host) { create(:host) }
   let(:other) { create(:host) }
+  let(:c) { ApplicationRecord.connection }
+  # Every row the conversion keeps in a legacy partition has this stored_at (Partitions::Conversion).
+  let(:legacy_at) { Time.utc(2000, 1, 1) }
 
-  def snapshot(host, age_days)
+  def snapshot(host, age_days, stored_at: legacy_at)
     at = now - age_days.days
-    InventorySnapshot.create!(host:, stable: {}, stable_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid, collected_at: at, received_at: at)
+    InventorySnapshot.create!(host:, stable: {}, stable_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid, collected_at: at, received_at: at, stored_at:)
   end
 
-  def status_event(host, age_days, to: "online")
-    HostStatusEvent.create!(host:, to_status: to, reason: "heartbeat", occurred_at: now - age_days.days)
+  def status_event(host, age_days, to: "online", stored_at: legacy_at)
+    HostStatusEvent.create!(host:, to_status: to, reason: "heartbeat", occurred_at: now - age_days.days, stored_at:)
   end
 
   def receipt(host, age_days)
@@ -22,7 +28,7 @@ RSpec.describe Retention do
   def package_snapshot(host, age_days)
     at = now - age_days.days
     PackageSnapshot.create!(host:, manager: "dpkg", package_count: 0, content_hash: SecureRandom.hex(32), packages: [], report_id: SecureRandom.uuid,
-                            collected_at: at, received_at: at)
+                            collected_at: at, received_at: at, stored_at: legacy_at)
   end
 
   def package_receipt(host, age_days)
@@ -32,7 +38,7 @@ RSpec.describe Retention do
   def config_snapshot(host, age_days)
     at = now - age_days.days
     ConfigSnapshot.create!(host:, facts: {}, content_hash: SecureRandom.hex(32), manifest_version: 1, report_id: SecureRandom.uuid,
-                           collected_at: at, received_at: at)
+                           collected_at: at, received_at: at, stored_at: legacy_at)
   end
 
   def config_receipt(host, age_days)
@@ -51,7 +57,38 @@ RSpec.describe Retention do
     AuditEntry.create!(actor_type: "system", action: Audit::Actions::HOST_EDITED, changeset: {}, occurred_at: now - age_days.days)
   end
 
+  # A legacy partition below each partitioned table's partitions, as a converted table has (MINVALUE to its cutover).
+  def legacy_partitions!
+    (Partitions::TABLES.keys - [ Partitions::AUDIT ]).each do |table|
+      cutover = Partitions.list(table).reject(&:default?).first.from
+      c.execute("CREATE TABLE #{table}_legacy PARTITION OF #{table} FOR VALUES FROM (MINVALUE) TO (#{c.quote(cutover)})")
+    end
+  end
+
+  def partition_of(row) = c.select_value("SELECT tableoid::regclass::text FROM #{row.class.table_name} WHERE id = #{row.id}")
+
   describe ".prune!" do
+    before { legacy_partitions! }
+
+    it "deletes nothing from a partitioned table that has no legacy partition (retire! drops its partitions)" do
+      fresh = InventorySnapshot.create!(host:, stable: {}, stable_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid,
+                                        collected_at: now - 400.days, received_at: now - 400.days)
+      snapshot(host, 300)
+      c.execute("ALTER TABLE inventory_snapshots DETACH PARTITION inventory_snapshots_legacy")
+      expect(described_class.prune!(now:)["inventory_snapshots"]).to eq(0)
+      expect(InventorySnapshot.exists?(fresh.id)).to be(true)
+    end
+
+    it "deletes only inside the legacy partition, and keeps a host's old row there while it has none newer anywhere" do
+      in_legacy = snapshot(host, 300)
+      current = snapshot(host, 200, stored_at: Time.current) # moved forward earlier, or stored since the conversion
+      only = snapshot(other, 250)
+
+      expect(described_class.prune!(now:)["inventory_snapshots"]).to eq(1)
+      expect([ in_legacy, current, only ].map { |row| InventorySnapshot.exists?(row.id) }).to eq([ false, true, true ])
+      expect(partition_of(only)).to eq("inventory_snapshots_legacy")
+    end
+
     it "keeps the newest advisory refresh attempt however old, since it holds the cool-down (review of #125)" do
       older = refresh_attempt(200)
       newest = refresh_attempt(120)
@@ -185,7 +222,7 @@ RSpec.describe Retention do
     end
 
     it "does not touch audit entries, however old, and the database would refuse to" do
-      ancient = old_audit_entry(2_000)
+      ancient = old_audit_entry(400)
       snapshot(host, 120)
 
       described_class.prune!(now:)
@@ -249,6 +286,171 @@ RSpec.describe Retention do
     end
   end
 
+  describe ".retire!" do
+    let(:t0) { Time.current }
+
+    # Partitions back to 130 days before now, as a server that has run that long has them.
+    before { Partitions.ensure!(from: t0 - 130.days) }
+
+    # A row stored when it was received, `age` days before now.
+    def stored_snapshot(host, age)
+      at = t0 - age.days
+      InventorySnapshot.create!(host:, stable: {}, stable_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid, collected_at: at, received_at: at, stored_at: at)
+    end
+
+    def stored_event(host, age, to:)
+      HostStatusEvent.create!(host:, to_status: to, reason: "evaluation", occurred_at: t0 - age.days, stored_at: t0 - age.days)
+    end
+
+    def stored_receipt(host, age) = InventoryReportReceipt.create!(host:, report_id: SecureRandom.uuid, received_at: t0 - age.days)
+
+    def ranges(table) = Partitions.list(table).reject(&:default?)
+
+    it "drops every partition wholly past the window, keeping each host's newest row (moved forward, same id) and all rows in the window" do
+      old = stored_snapshot(host, 120)
+      kept_old = stored_snapshot(host, 100) # the host's newest snapshot past the window, but it has a newer one
+      recent = stored_snapshot(host, 30)
+      only = stored_snapshot(create(:host), 110) # the only snapshot of a host whose inventory has not changed since
+      edge = stored_snapshot(other, 89.5)
+      events = [ stored_event(host, 125, to: "stale"), stored_event(host, 115, to: "online") ]
+      receipts = [ stored_receipt(host, 9), stored_receipt(host, 5) ]
+      due = ranges("inventory_snapshots").count { |p| p.to <= t0 - 90.days }
+
+      results = described_class.retire!(now: t0)
+
+      expect(results["inventory_snapshots"]).to include("partitions" => due, "moved" => 1)
+      expect(ranges("inventory_snapshots").map(&:to)).to all(be > t0 - 90.days)
+      expect([ old, kept_old ].map { |row| InventorySnapshot.exists?(row.id) }).to eq([ false, false ])
+      expect([ recent, only, edge ].map { |row| InventorySnapshot.exists?(row.id) }).to all(be(true))
+      expect(InventorySnapshot.find(only.id)).to have_attributes(received_at: only.received_at, stored_at: be_within(1.second).of(t0))
+      expect(partition_of(only)).to eq("inventory_snapshots_p#{Partitions.align(Partitions.table('inventory_snapshots'), t0).strftime('%Y%m%d')}")
+      # The newest status event moved forward too; the older one went with its partition.
+      expect(HostStatusEvent.where(host:).pluck(:id)).to eq([ events.last.id ])
+      expect(results["host_status_events"]["moved"]).to eq(1)
+      # Receipts are kept 7 days (plus up to a day: a day's partition goes once all of it is past).
+      expect(InventoryReportReceipt.exists?(receipts.first.id)).to be(false)
+      expect(InventoryReportReceipt.exists?(receipts.last.id)).to be(true)
+      expect(ranges("inventory_report_receipts").map(&:to)).to all(be > t0 - 7.days)
+      expect(Partitions.problems(now: t0)).to be_empty
+    end
+
+    it "moves kept rows forward in batches, each its own statement" do
+      hosts = create_list(:host, 3)
+      hosts.each { |h| stored_snapshot(h, 120) }
+      updates = []
+      counter = ->(*, payload) { updates << payload[:sql] if payload[:sql].start_with?("UPDATE \"inventory_snapshots\" SET stored_at") }
+
+      results = ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { described_class.retire!(now: t0, batch_size: 2) }
+
+      expect(results["inventory_snapshots"]["moved"]).to eq(3)
+      expect(updates.size).to eq(2)
+      expect(InventorySnapshot.where(host_id: hosts.map(&:id)).count).to eq(3)
+    end
+
+    it "retires the legacy partition once its cutover is past the window, moving the newest rows it holds forward" do
+      first = ranges("config_snapshots").first.from
+      c.execute("CREATE TABLE config_snapshots_legacy PARTITION OF config_snapshots FOR VALUES FROM (MINVALUE) TO (#{c.quote(first)})")
+      at = first - 400.days
+      legacy = ConfigSnapshot.create!(host:, facts: {}, content_hash: SecureRandom.hex(32), manifest_version: 1, report_id: SecureRandom.uuid,
+                                      collected_at: at, received_at: at, stored_at: legacy_at)
+      expect(partition_of(legacy)).to eq("config_snapshots_legacy")
+
+      results = described_class.retire!(now: t0)
+
+      expect(results["config_snapshots"]).to include("moved" => 1)
+      expect(Partitions.legacy("config_snapshots")).to be_nil
+      expect(ConfigSnapshot.find(legacy.id).received_at).to eq(legacy.received_at)
+    end
+
+    it "counts what it would retire in a dry run, and changes nothing" do
+      stored_snapshot(host, 120)
+      stored_snapshot(host, 110)
+      before = Partitions.list("inventory_snapshots")
+      allow(Rails.logger).to receive(:info)
+
+      results = described_class.retire!(now: t0, dry_run: true)
+
+      expect(results["inventory_snapshots"]).to include("rows" => 1, "moved" => 1)
+      expect(Partitions.list("inventory_snapshots")).to eq(before)
+      expect(InventorySnapshot.where(host:).count).to eq(2)
+      expect(Rails.logger).to have_received(:info).with(/\[retention\] dry run, would retire partitions .*inventory_snapshots=\d+ \(1 rows, 1 moved forward\)/)
+    end
+
+    it "logs what it retired, and nothing when nothing is due" do
+      stored_snapshot(host, 120)
+      allow(Rails.logger).to receive(:info)
+      described_class.retire!(now: t0)
+      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] retired partitions .*inventory_snapshots=\d+ \(\d+ rows, 1 moved forward\)/)
+
+      expect(described_class.retire!(now: t0).values.sum { |r| r["partitions"] }).to eq(0)
+      expect(Rails.logger).to have_received(:info).once
+    end
+
+    it "leaves a table whose lock it cannot get for the next run, and retires the others" do
+      stored_snapshot(host, 120)
+      stored_event(host, 120, to: "stale")
+      allow(Rails.logger).to receive(:warn)
+      allow(Partitions).to receive(:detach_and_drop!).and_call_original
+      allow(Partitions).to receive(:detach_and_drop!).with("inventory_snapshots", anything).and_raise(Partitions::Busy, "lock not granted in 3 tries of 150ms")
+
+      results = described_class.retire!(now: t0)
+
+      expect(results["inventory_snapshots"]["partitions"]).to eq(0)
+      expect(results["host_status_events"]["partitions"]).to be_positive
+      expect(Rails.logger).to have_received(:warn).with("[retention] inventory_snapshots: lock not granted in 3 tries of 150ms; the next run tries again")
+    end
+
+    it "skips a table that is not partitioned yet" do
+      allow(Partitions).to receive(:partitioned?).and_return(false)
+      expect(described_class.retire!(now: t0).values).to all(eq("partitions" => 0, "rows" => 0, "moved" => 0))
+    end
+
+    it "reports the cutoff of each table, and none for one it does not prune" do
+      expect(described_class.cutoff_for("inventory_report_receipts", now: t0)).to eq(t0 - 7.days)
+      expect(described_class.cutoff_for("inventory_snapshots", now: t0)).to eq(t0 - 90.days)
+      expect(described_class.cutoff_for("hosts", now: t0)).to be_nil
+    end
+  end
+
+  describe PartitionMaintenanceJob do
+    it "maintains the partitions, and can be run as a dry run" do
+      allow(Partitions).to receive(:maintain!).and_return("created" => {}, "retired" => {})
+      described_class.perform_now
+      described_class.perform_now(dry_run: true)
+      expect(Partitions).to have_received(:maintain!).with(dry_run: false)
+      expect(Partitions).to have_received(:maintain!).with(dry_run: true)
+    end
+
+    it "is scheduled hourly, and the nightly check daily, in every environment that runs jobs" do
+      recurring = YAML.load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+      %w[production development].each do |env|
+        expect(recurring.fetch(env)["partition_maintenance"]).to include("class" => "PartitionMaintenanceJob", "schedule" => "every hour at minute 23")
+        expect(recurring.fetch(env).dig("partition_check", "class")).to eq("PartitionCheckJob")
+      end
+    end
+  end
+
+  describe PartitionCheckJob do
+    it "logs rows without their host as an error, and says so when there are none" do
+      allow(Rails.logger).to receive(:error)
+      allow(Rails.logger).to receive(:info)
+      expect(described_class.perform_now).to eq({})
+      expect(Rails.logger).to have_received(:info).with("[partitions] check: no rows without their host or rule")
+
+      InventoryReportReceipt.insert!({ host_id: 2_000_000_000, report_id: SecureRandom.uuid, received_at: Time.current })
+      expect(described_class.perform_now).to eq("inventory_report_receipts.host_id" => 1)
+      expect(Rails.logger).to have_received(:error).with("[partitions] rows with no matching host or rule: inventory_report_receipts.host_id=1")
+    end
+
+    it "keeps what it found for /health and the dashboard banner" do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      allow(Rails).to receive(:cache).and_return(cache)
+      InventoryReportReceipt.insert!({ host_id: 2_000_000_000, report_id: SecureRandom.uuid, received_at: Time.current })
+      described_class.perform_now
+      expect(Partitions.attention).to eq([ "inventory_report_receipts.host_id: 1 recent rows name a host or rule that does not exist (bin/rails partitions:check)" ])
+    end
+  end
+
   describe ".register" do
     it "lets a later phase add its own table, replacing an earlier registration of the same model" do
       original = described_class.targets.dup
@@ -263,6 +465,8 @@ RSpec.describe Retention do
   end
 
   describe RetentionPruneJob do
+    before { legacy_partitions! }
+
     it "prunes with the stored window" do
       snapshot(host, 120)
       snapshot(host, 1)

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -162,7 +162,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.check_constraint "outcome::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'rolled_back'::character varying]::text[])", name: "agent_updates_outcome_valid"
   end
 
-  create_table "audit_entries", force: :cascade do |t|
+  create_table "audit_entries", primary_key: ["id", "occurred_at"], options: "PARTITION BY RANGE (occurred_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.string "actor_type", null: false
     t.bigint "actor_id"
     t.string "action", null: false
@@ -181,7 +182,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.check_constraint "actor_type::text = ANY (ARRAY['operator'::character varying::text, 'host'::character varying::text, 'system'::character varying::text])", name: "audit_entries_actor_type_valid"
   end
 
-  create_table "cis_result_changes", force: :cascade do |t|
+  create_table "cis_result_changes", primary_key: ["id", "occurred_at"], options: "PARTITION BY RANGE (occurred_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.bigint "cis_rule_id", null: false
     t.bigint "cis_rule_version_id"
@@ -245,15 +247,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.index ["key"], name: "index_cis_rules_on_key", unique: true
   end
 
-  create_table "config_report_receipts", force: :cascade do |t|
+  create_table "config_report_receipts", primary_key: ["id", "received_at"], options: "PARTITION BY RANGE (received_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.uuid "report_id", null: false
     t.datetime "received_at", null: false
-    t.index ["host_id", "report_id"], name: "index_config_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["host_id", "report_id"], name: "index_config_report_receipts_on_host_id_and_report_id"
     t.index ["received_at"], name: "index_config_report_receipts_on_received_at"
   end
 
-  create_table "config_snapshots", force: :cascade do |t|
+  create_table "config_snapshots", primary_key: ["id", "stored_at"], options: "PARTITION BY RANGE (stored_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.jsonb "facts", null: false
     t.string "content_hash", limit: 64, null: false
@@ -262,6 +266,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.uuid "report_id", null: false
     t.datetime "collected_at", null: false
     t.datetime "received_at", null: false
+    t.datetime "stored_at", default: -> { "now()" }, null: false
     t.index ["host_id", "received_at"], name: "index_config_snapshots_on_host_id_and_received_at"
     t.index ["received_at"], name: "index_config_snapshots_on_received_at"
   end
@@ -432,12 +437,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.index ["host_id", "name", "architecture"], name: "index_host_packages_on_host_id_and_name_and_architecture", unique: true
   end
 
-  create_table "host_status_events", force: :cascade do |t|
+  create_table "host_status_events", primary_key: ["id", "stored_at"], options: "PARTITION BY RANGE (stored_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.string "from_status"
     t.string "to_status", null: false
     t.string "reason", null: false
     t.datetime "occurred_at", null: false
+    t.datetime "stored_at", default: -> { "now()" }, null: false
     t.index ["host_id", "occurred_at"], name: "index_host_status_events_on_host_id_and_occurred_at"
     t.index ["occurred_at"], name: "index_host_status_events_on_occurred_at"
     t.check_constraint "from_status IS NULL OR (from_status::text = ANY (ARRAY['online'::character varying::text, 'stale'::character varying::text, 'offline'::character varying::text]))", name: "host_status_events_from_status_valid"
@@ -494,15 +501,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying::text, 'active'::character varying::text, 'revoked'::character varying::text, 'retired'::character varying::text])", name: "hosts_enrollment_state_valid"
   end
 
-  create_table "inventory_report_receipts", force: :cascade do |t|
+  create_table "inventory_report_receipts", primary_key: ["id", "received_at"], options: "PARTITION BY RANGE (received_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.uuid "report_id", null: false
     t.datetime "received_at", null: false
-    t.index ["host_id", "report_id"], name: "index_inventory_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["host_id", "report_id"], name: "index_inventory_report_receipts_on_host_id_and_report_id"
     t.index ["received_at"], name: "index_inventory_report_receipts_on_received_at"
   end
 
-  create_table "inventory_snapshots", force: :cascade do |t|
+  create_table "inventory_snapshots", primary_key: ["id", "stored_at"], options: "PARTITION BY RANGE (stored_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.jsonb "stable", null: false
     t.jsonb "warnings", default: [], null: false
@@ -510,6 +519,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.uuid "report_id", null: false
     t.datetime "collected_at", null: false
     t.datetime "received_at", null: false
+    t.datetime "stored_at", default: -> { "now()" }, null: false
     t.index ["host_id", "received_at"], name: "index_inventory_snapshots_on_host_id_and_received_at"
     t.index ["received_at"], name: "index_inventory_snapshots_on_received_at"
   end
@@ -579,15 +589,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 
-  create_table "package_report_receipts", force: :cascade do |t|
+  create_table "package_report_receipts", primary_key: ["id", "received_at"], options: "PARTITION BY RANGE (received_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.uuid "report_id", null: false
     t.datetime "received_at", null: false
-    t.index ["host_id", "report_id"], name: "index_package_report_receipts_on_host_id_and_report_id", unique: true
+    t.index ["host_id", "report_id"], name: "index_package_report_receipts_on_host_id_and_report_id"
     t.index ["received_at"], name: "index_package_report_receipts_on_received_at"
   end
 
-  create_table "package_snapshots", force: :cascade do |t|
+  create_table "package_snapshots", primary_key: ["id", "stored_at"], options: "PARTITION BY RANGE (stored_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
     t.bigint "host_id", null: false
     t.string "manager", limit: 16, null: false
     t.string "unsupported_reason", limit: 512
@@ -599,6 +611,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
     t.datetime "collected_at", null: false
     t.datetime "received_at", null: false
     t.jsonb "skipped", default: [], null: false
+    t.datetime "stored_at", default: -> { "now()" }, null: false
     t.index ["host_id", "received_at"], name: "index_package_snapshots_on_host_id_and_received_at"
     t.index ["received_at"], name: "index_package_snapshots_on_received_at"
     t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "package_snapshots_manager_valid"
@@ -902,18 +915,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
   add_foreign_key "agent_releases", "operators", column: "imported_by_id"
   add_foreign_key "agent_updates", "hosts"
   add_foreign_key "agent_updates", "rollouts"
-  add_foreign_key "cis_result_changes", "cis_rule_versions"
-  add_foreign_key "cis_result_changes", "cis_rules"
-  add_foreign_key "cis_result_changes", "config_snapshots", on_delete: :nullify
-  add_foreign_key "cis_result_changes", "hosts"
   add_foreign_key "cis_results", "cis_rule_versions"
   add_foreign_key "cis_results", "cis_rules"
-  add_foreign_key "cis_results", "config_snapshots", on_delete: :nullify
   add_foreign_key "cis_results", "hosts"
   add_foreign_key "cis_rule_versions", "cis_rules"
   add_foreign_key "cis_rules", "cis_rule_versions", column: "current_version_id"
-  add_foreign_key "config_report_receipts", "hosts"
-  add_foreign_key "config_snapshots", "hosts"
   add_foreign_key "enrollment_tokens", "hosts"
   add_foreign_key "evaluation_batches", "evaluation_runs", on_delete: :cascade
   add_foreign_key "evaluation_runs", "evaluation_runs", column: "superseded_by_id", on_delete: :nullify
@@ -923,7 +929,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
   add_foreign_key "host_liveness", "hosts"
   add_foreign_key "host_package_sets", "hosts"
   add_foreign_key "host_packages", "hosts"
-  add_foreign_key "host_status_events", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
   add_foreign_key "task_allowed_services", "operators", column: "added_by_id"
@@ -935,13 +940,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_192001) do
   add_foreign_key "triage_imports", "operators"
   add_foreign_key "vulnerability_findings", "advisories"
   add_foreign_key "vulnerability_findings", "hosts"
-  add_foreign_key "inventory_report_receipts", "hosts"
-  add_foreign_key "inventory_snapshots", "hosts"
   add_foreign_key "onboarding_requests", "hosts"
   add_foreign_key "onboarding_requests", "operators", column: "decided_by_id"
   add_foreign_key "operator_sessions", "operators"
-  add_foreign_key "package_report_receipts", "hosts"
-  add_foreign_key "package_snapshots", "hosts"
   add_foreign_key "report_requests", "hosts"
   add_foreign_key "report_requests", "operators", column: "requested_by_id"
   add_foreign_key "rollout_hosts", "hosts"

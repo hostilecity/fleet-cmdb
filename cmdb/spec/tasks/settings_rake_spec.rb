@@ -30,7 +30,7 @@ RSpec.describe "settings rake tasks (P1-S09)" do
 
   it "changes the retention window and explains invalid or missing values (P1-S10)" do
     expect(run("settings:show")).to include("retention.days = 90")
-    expect(run("settings:retention", "DAYS" => "45")).to include("kept 45 days. Audit entries are never pruned.")
+    expect(run("settings:retention", "DAYS" => "45")).to include("kept for at least 45 days, report ids for at least 7. Audit entries are never pruned.")
     expect(Setting.retention_window).to eq(45.days)
     expect { expect { run("settings:retention", "DAYS" => "2") }.to output(/Not changed: Enter a whole number of days from 7 to 3650/).to_stderr }.to raise_error(SystemExit)
     expect { expect { run("settings:retention", "DAYS" => nil) }.to output(/Usage/).to_stderr }.to raise_error(SystemExit)

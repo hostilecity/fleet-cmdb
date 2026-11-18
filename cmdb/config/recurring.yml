@@ -44,6 +44,16 @@ development:
   retention_pruning:
     class: RetentionPruneJob
     schedule: every day at 3:17am
+  # #195, ADR 0027: partitions of the history tables created ahead, and those past the window retired (dropped whole,
+  # each host's newest row moved forward first). No DDL while a backup runs; work it cannot do now waits an hour.
+  partition_maintenance:
+    class: PartitionMaintenanceJob
+    schedule: every hour at minute 23
+  # #195, ADR 0027: the history tables have no foreign keys; rows written since the last check whose host or rule is
+  # missing are logged as an error.
+  partition_check:
+    class: PartitionCheckJob
+    schedule: every day at 4:41am
   # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
   advisory_upload_pruning:
     class: AdvisoryUploadPruneJob
@@ -87,6 +97,16 @@ production:
   retention_pruning:
     class: RetentionPruneJob
     schedule: every day at 3:17am
+  # #195, ADR 0027: partitions of the history tables created ahead, and those past the window retired (dropped whole,
+  # each host's newest row moved forward first). No DDL while a backup runs; work it cannot do now waits an hour.
+  partition_maintenance:
+    class: PartitionMaintenanceJob
+    schedule: every hour at minute 23
+  # #195, ADR 0027: the history tables have no foreign keys; rows written since the last check whose host or rule is
+  # missing are logged as an error.
+  partition_check:
+    class: PartitionCheckJob
+    schedule: every day at 4:41am
   # P2-S13, DEC-11: advisory data from FLEET_ADVISORY_FEED_URL (does nothing when it is empty). Not in
   # development, so a laptop does not download the archive every 6 hours: run bin/rails advisories:refresh.
   advisory_feed_refresh:

@@ -11,11 +11,13 @@ Implementation details for the GitHub issue with this key. The issue states only
 - Audit entries are **not** pruned by default ([DEC-07](../../decisions/0007-snapshots-and-retention.md)); if an audit retention setting is added it is a separate, off-by-default setting.
 - Dry-run mode and log lines stating counts deleted.
 - Designed so later phases can register their own snapshot types ([P2-S12](p2-accept.md)).
+- **Scale (#195, [ADR 0027](../../decisions/0027-time-partitioned-history.md)):** the history tables are partitioned by time and retention drops whole partitions instead of deleting rows, keeping each host's newest snapshot and status event by moving it forward. The audit log is partitioned by month and never dropped, guarded against the application's own role by a one-time superuser step.
 
 ### Implementation notes
 
 - `Retention` (`cmdb/app/services/retention.rb`) prunes `inventory_snapshots` and `host_status_events` (keeping each host's newest row) and `inventory_report_receipts`. A later phase adds its own snapshot table with `Retention.register`. `RetentionPruneJob` runs daily (`config/recurring.yml`), `dry_run: true` only counts, and each run logs the counts.
 - One setting, `retention.days` (default 90, 7 to 3650), covers the snapshot and history tables: `bin/rails settings:retention DAYS=90`. Report receipts are kept for the shorter of 7 days and that window (`Retention::REPORT_ID_WINDOW`). There is no dashboard control yet (P1-D02 owns the settings page).
+- **Partitions (#195, ADR 0027):** `Partitions` (`cmdb/app/services/partitions.rb`) partitions the report receipts by day, the inventory, config, and package snapshots, host status events, and CIS result changes by week (30 days above a 180-day window), and `audit_entries` by month. `PartitionMaintenanceJob` runs hourly: it creates partitions ahead (3 of each) and a default partition for every table but the audit log, then `Retention.retire!` detaches and drops every partition wholly past the window, first moving each host's newest snapshot or status event forward (`UPDATE` of `stored_at`, same id, batches of 1,000). DDL runs under a 150 ms lock timeout, 3 tries a run, and never while `pg_dump` runs. `RetentionPruneJob` still deletes rows daily, now only in a converted table's `_legacy` partition and in the tables that are not partitioned. The history tables have no foreign keys; `PartitionCheckJob` reports orphans nightly. Migrations `2026111619500x` convert an existing database without copying rows (`Partitions::Conversion`). `/health` has `partitions` and `audit_guard` checks; `ops/postgres/audit-guard.sql` is the superuser's one-time step (docs/operations/install-server.md). Rows are kept for at least the window, up to one partition longer.
 
 ### Acceptance criteria
 
@@ -23,6 +25,9 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [x] The newest snapshot of each host survives regardless of age
 - [x] Audit entries are untouched by default (spec)
 - [ ] Pruning a large table runs in batches without long locks (verified with the [P1-O04](p1-verify.md) simulator data). Batching is specced with a small batch size; the simulator run waits for P1-O04.
+- [x] Retention drops whole partitions past the window, keeping each host's newest row with its id, and never detaches or drops an audit partition (#195, `spec/services/retention_spec.rb`, `spec/services/partitions_spec.rb`)
+- [x] An existing database is converted without copying rows or long locks, and the schema dump holds only the partitioned parents (#195, `spec/services/partitions/conversion_spec.rb`, `spec/db/schema_dump_spec.rb`)
+- [x] With the superuser's guard installed, the application's role cannot detach, drop, alter, or disable the audit log's guards, and can still create a month's partition (#195, `spec/db/audit_guard_spec.rb`)
 
 ## P1-S11: Health endpoint and structured logging with request and report ids
 
@@ -34,7 +39,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 ### Implementation notes
 
-- `/health` checks: `database`, `releases` (the newest release and a running rollout's target), `backup`, `failed_jobs`, `job_liveness`, `live_updates` (this process's Solid Cable listener is running, #194). The liveness check is "the recurring liveness evaluation finished within 5 minutes".
+- `/health` checks: `database`, `releases` (the newest release and a running rollout's target), `backup`, `failed_jobs`, `job_liveness`, `live_updates` (this process's Solid Cable listener is running, #194), `partitions` and `audit_guard` (#195, ADR 0027). A check is `ok`, `warning` (shown, still 200), or `failing` (503). The liveness check is "the recurring liveness evaluation finished within 5 minutes".
 - Production logs are one JSON object per line (`StructuredLogFormatter`): time, level, message, and `request_id`, `host_id`, `report_id` when known, plus a `request completed` line with `duration_ms`, controller, action, method, and status (never the query string). The request id is also the `X-Request-Id` response header and the `request_id` in every error envelope, so an agent log line is matched to a server line by that id; a report is found by `report_id`.
 
 ### Acceptance criteria

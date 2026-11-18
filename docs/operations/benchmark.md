@@ -40,10 +40,10 @@ bin/benchmark load --url http://127.0.0.1:3001 --agent-host agent.example.lan --
 
 | Command | Measures |
 |---|---|
-| `seed` | Needs an empty database. Creates one template host through the real API and jobs (heartbeat, inventory, config and package reports, CIS evaluation, vulnerability matching, with the simulator's Phase 2 rules and advisories), then copies its rows in SQL to `--hosts` hosts, with history spread over 1.2 retention windows so pruning has work to do. A third of the hosts are "stable": all their inventory snapshots are older than the window. Prints each table's rows and bytes per row, the figures to extrapolate from. |
+| `seed` | Needs an empty database. Creates one template host through the real API and jobs (heartbeat, inventory, config and package reports, CIS evaluation, vulnerability matching, with the simulator's Phase 2 rules and advisories), then copies its rows in SQL to `--hosts` hosts, with history spread over 1.2 retention windows so pruning has work to do. A third of the hosts are "stable": all their inventory snapshots are older than the window. The history tables are partitioned by time (ADR 0027): the seed creates the partitions for the past it writes into and stores each row as received (`stored_at` = `received_at`), so retention finds partitions to drop, as on a server that has run that long. Prints each table's rows and bytes per row, the figures to extrapolate from. |
 | `queries` | Each agent request in process through the whole Rails stack, for `--samples` hosts: wall and SQL time (median, p99), statements, rows, request and response bytes. `--verbose` lists the statements, so a review can see a new one. |
 | `explain` | Runs each hot path (liveness, fleet list, compliance, task list, audit log, retention, advisory re-matching, CIS evaluation, vulnerability matching, task jobs, host page) in a rolled-back transaction, and prints EXPLAIN (ANALYZE, BUFFERS) for every statement it sent. Sequential scans of large tables are flagged: those statements grow with the fleet. |
-| `jobs` | Times the jobs whose cost grows with the fleet (median, min, max of `--repeat` runs) and the cost per host or per row. CIS evaluation and matching run once untimed first: the seed leaves findings that the first run reopens. |
+| `jobs` | Times the jobs whose cost grows with the fleet (median, min, max of `--repeat` runs) and the cost per host or per row. CIS evaluation and matching run once untimed first: the seed leaves findings that the first run reopens. Retention is timed twice, rolled back: the row deletes (`Retention.prune!`: tables that are not partitioned, and a converted table's legacy partition) per row, and dropping the partitions past the window (`Retention.retire!`) per partition, with a line saying how many partitions, rows, and kept rows moved forward. |
 | `load` | Closed-loop HTTP load, each request as the next seeded host: throughput, p50, p90, p99, status counts, payload sizes, and what the database did during the run: commits and rows written; for `hosts` and `host_liveness`, the updates, their HOT share, dead tuples, and how much the table and its indexes grew; and the write-ahead log the run made in the benchmark database (read back with `pg_walinspect`, which needs a superuser; other databases on the server are left out), by relation. `--kind mix` sends the default intervals' proportions (per agent per hour: 60 heartbeats, 120 task polls, 4 inventory reports, and one config and one package report every 6 hours). |
 
 ## Reading the results
@@ -69,3 +69,15 @@ From the scale assessment (November 2026): a container with 2 CPUs and 7 GB of m
 | Liveness evaluation | 0.1 s a minute when nothing changes; 12.6 s when every host goes offline at once |
 | CIS evaluation | 32 ms a host (development mode) |
 | Vulnerability matching | 71 ms a host (development mode) |
+
+### Retention by partition (#195, ADR 0027)
+
+The same container, PostgreSQL 16, other suites running (load 4 to 6), so times are rough. Seed `--hosts 20000 --package-hosts 2000 --receipts 60 --audit-entries 10` (2 GB). The seed ran with `PGOPTIONS="-c session_replication_role=replica"`, which turns off every trigger and foreign key check while it copies rows (the compliance-summary triggers make the bulk copies 2 to 3 times slower, roughly linearly: the review of #239 measured 19.1 s against 8.0 s for 8,000 hosts × 40 rules); the history tables' rows are the same either way. `bin/benchmark jobs --only retention`, medians of 3, rolled back:
+
+| What | Before (rows deleted, `main`) | After (partitions dropped) |
+|---|---|---|
+| Expired history | 3,642,179 rows deleted in 16.1 s (0.004 ms a row), plus their vacuum | 334 partitions (3,488,841 rows) dropped in 4.1 s, 12 ms a partition, 6,667 kept rows moved forward; 60,000 resolved findings still deleted by row (1.2 s) |
+| A converted database (the same seed migrated) | | The five migrations took 15 s in all; the legacy partitions are retired once, one window after the upgrade: 4 million rows in 5.5 s, most of it moving each host's newest snapshots and status event forward (62,000 rows) |
+| A report's duplicate check | unique index lookup | 0.15 to 0.19 ms over 12 receipt partitions (2 ms to plan the first time in a connection) |
+
+A day's retirement in the steady state is one receipt partition of each type and, once a week, one partition of each weekly table: a few catalog operations whatever the fleet size.

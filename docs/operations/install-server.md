@@ -163,6 +163,22 @@ The deploy stops with a clear message if the network is missing, a required sett
 - Open `https://fleet.example.com` in a browser. Pass Access, and the sign-in page opens.
 - From a VM on your network, with this repository's `agent/trust` files: `curl -s -o /dev/null -w '%{http_code}\n' --cacert <(cat agent/trust/*.pem) https://fleet-vm.example.com/up` prints `200`. That is the certificate check agents make.
 
+### The audit log's guard (once, as the PostgreSQL superuser)
+
+The audit log is append-only (FR-S.3). The app's own triggers refuse updates and deletes, but the app's role `cmdb` owns the tables, so it could still change or drop those triggers. One SQL file, run **once by the PostgreSQL superuser** after the first deploy has migrated the database, closes that ([ADR 0027](../decisions/0027-time-partitioned-history.md), "The audit log's guards"): the superuser takes ownership of the guard function, records the audit log's tables by their PostgreSQL id (so a rename cannot hide one), and adds two event triggers that refuse any command on them, other than adding a month. The app never runs as a superuser, so it cannot do this itself. It belongs with the task that provisions the PostgreSQL container.
+
+**`cmdb` must not be a superuser.** A superuser can turn any guard off, so the file refuses to run when `audit_entries` belongs to one, and `/health` warns while the app's role is one. Check with `docker exec postgres psql -U <superuser> -Atc "SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'cmdb'"` (`f` is right). If the container was created with `POSTGRES_USER=cmdb`, `cmdb` is its superuser: create another superuser, then `ALTER ROLE cmdb NOSUPERUSER`.
+
+From a checkout of this repository, as the container's superuser whatever it is called (the official image names it `POSTGRES_USER`, `postgres` by default):
+
+```sh
+ssh deploy@192.0.2.10 "docker exec -i postgres sh -c 'psql -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-postgres}\" -d cmdb_production'" < ops/postgres/audit-guard.sql
+```
+
+(`postgres` is the container's name, `FLEET_DB_HOST`. If the superuser's name is not in the container's environment, list superusers with `docker exec postgres psql -U <a role you know> -Atc "SELECT rolname FROM pg_roles WHERE rolsuper"` and put it after `-U`.) It refuses to run as any other role, before the migration has partitioned `audit_entries`, or when `cmdb` is a superuser, and it is safe to run again. Run it again after a restore ([backup-and-restore.md](backup-and-restore.md)). Until it has run, the app works normally and `/health` shows `"audit_guard":"warning"`; afterwards `"ok"`. `docker exec fleet-cmdb bin/rails partitions:status` says whether it is installed.
+
+A later migration that alters `audit_entries` or its guard function will need the superuser to disable the event triggers for it; its pull request will say so.
+
 ## 5. Add the first operator
 
 ```sh

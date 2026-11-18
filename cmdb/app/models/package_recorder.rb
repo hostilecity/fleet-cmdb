@@ -26,9 +26,9 @@ module PackageRecorder
   def record!(host_id:, credential_id:, report:)
     host = AgentHostLock.lock!(host_id:, credential_id:)
     now = Time.current
-    inserted = PackageReportReceipt.insert_all([ { host_id:, report_id: report.report_id, received_at: now } ],
-                                               unique_by: %i[host_id report_id], returning: :id)
-    return Result.new(report_id: report.report_id, duplicate: true, snapshot: false) if inserted.rows.empty?
+    unless ReportReceipts.record!(PackageReportReceipt, host_id:, report_id: report.report_id, now:) # under the host lock (ADR 0027)
+      return Result.new(report_id: report.report_id, duplicate: true, snapshot: false)
+    end
 
     ReportRequests.satisfy!(host:, report_type: "packages", report:, now:) # an operator's request (P2-S03)
     set = HostPackageSet.find_or_initialize_by(host_id:)

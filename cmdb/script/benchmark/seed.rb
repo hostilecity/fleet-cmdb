@@ -141,6 +141,7 @@ module FleetBenchmark
 
     def history
       window = Setting.retention_window.to_i
+      partitions_back(window)
       bench = "h.name LIKE 'bench-%'"
       # Spread over 1.2 windows, so some rows are past the window and retention has work to do.
       spread = ->(count) { "now() - (s::float / #{count}) * #{(window * 1.2).to_i} * interval '1 second'" }
@@ -148,27 +149,31 @@ module FleetBenchmark
       template_row = ->(table) { "WITH t AS MATERIALIZED (SELECT * FROM #{table} WHERE host_id = #{@template} ORDER BY received_at DESC LIMIT 1)" }
       run_sql(<<~SQL)
         #{template_row.('inventory_snapshots')}
-        INSERT INTO inventory_snapshots (host_id, stable, warnings, stable_hash, report_id, collected_at, received_at)
-        SELECT h.id, t.stable, t.warnings, md5(h.id::text || s), gen_random_uuid(), #{spread.(@o[:inventory_snapshots])}, #{spread.(@o[:inventory_snapshots])}
+        INSERT INTO inventory_snapshots (host_id, stable, warnings, stable_hash, report_id, collected_at, received_at, stored_at)
+        SELECT h.id, t.stable, t.warnings, md5(h.id::text || s), gen_random_uuid(), #{spread.(@o[:inventory_snapshots])}, #{spread.(@o[:inventory_snapshots])},
+               #{spread.(@o[:inventory_snapshots])}
         FROM hosts h CROSS JOIN t CROSS JOIN generate_series(1, #{@o[:inventory_snapshots]}) s WHERE #{bench}
       SQL
       # A third of the hosts are stable: their inventory has not changed within the window, so every one of their snapshots
       # is older than it and the newest is kept however old (Retention's keep_newest_per_host).
       run_sql(<<~SQL)
-        UPDATE inventory_snapshots SET received_at = received_at - #{window} * interval '1 second', collected_at = collected_at - #{window} * interval '1 second'
+        UPDATE inventory_snapshots SET received_at = received_at - #{window} * interval '1 second', collected_at = collected_at - #{window} * interval '1 second',
+               stored_at = stored_at - #{window} * interval '1 second'
         WHERE host_id % 3 = 0 AND host_id <> #{@template}
       SQL
       run_sql(<<~SQL)
         #{template_row.('config_snapshots')}
-        INSERT INTO config_snapshots (host_id, facts, content_hash, state_counts, manifest_version, report_id, collected_at, received_at)
-        SELECT h.id, t.facts, md5(h.id::text || s), t.state_counts, t.manifest_version, gen_random_uuid(), #{spread.(@o[:config_snapshots])}, #{spread.(@o[:config_snapshots])}
+        INSERT INTO config_snapshots (host_id, facts, content_hash, state_counts, manifest_version, report_id, collected_at, received_at, stored_at)
+        SELECT h.id, t.facts, md5(h.id::text || s), t.state_counts, t.manifest_version, gen_random_uuid(), #{spread.(@o[:config_snapshots])}, #{spread.(@o[:config_snapshots])},
+               #{spread.(@o[:config_snapshots])}
         FROM hosts h CROSS JOIN t CROSS JOIN generate_series(1, #{@o[:config_snapshots]}) s WHERE #{bench}
       SQL
       run_sql(<<~SQL)
         #{template_row.('package_snapshots')}
-        INSERT INTO package_snapshots (host_id, manager, unsupported_reason, package_count, content_hash, packages, warnings, report_id, collected_at, received_at, skipped)
+        INSERT INTO package_snapshots (host_id, manager, unsupported_reason, package_count, content_hash, packages, warnings, report_id, collected_at, received_at, skipped,
+                                       stored_at)
         SELECT h.id, t.manager, t.unsupported_reason, t.package_count, md5(h.id::text || s), t.packages, t.warnings, gen_random_uuid(),
-               #{spread.(@o[:package_snapshots])}, #{spread.(@o[:package_snapshots])}, t.skipped
+               #{spread.(@o[:package_snapshots])}, #{spread.(@o[:package_snapshots])}, t.skipped, #{spread.(@o[:package_snapshots])}
         FROM hosts h CROSS JOIN t CROSS JOIN generate_series(1, #{@o[:package_snapshots]}) s
         WHERE #{bench} AND substr(h.name, 7)::int BETWEEN 1 AND #{@o[:package_hosts]}
       SQL
@@ -179,9 +184,9 @@ module FleetBenchmark
         SQL
       end
       run_sql(<<~SQL)
-        INSERT INTO host_status_events (host_id, from_status, to_status, reason, occurred_at)
+        INSERT INTO host_status_events (host_id, from_status, to_status, reason, occurred_at, stored_at)
         SELECT h.id, CASE WHEN s % 2 = 0 THEN 'online' ELSE 'stale' END, CASE WHEN s % 2 = 0 THEN 'stale' ELSE 'online' END,
-               CASE WHEN s % 2 = 0 THEN 'evaluation' ELSE 'heartbeat' END, #{spread.(@o[:status_events])}
+               CASE WHEN s % 2 = 0 THEN 'evaluation' ELSE 'heartbeat' END, #{spread.(@o[:status_events])}, #{spread.(@o[:status_events])}
         FROM hosts h CROSS JOIN generate_series(1, #{@o[:status_events]}) s WHERE #{bench}
       SQL
       rule = CisRule.order(:id).first
@@ -191,6 +196,18 @@ module FleetBenchmark
                CASE WHEN s % 2 = 0 THEN 'fail' ELSE 'pass' END, NULL, #{spread.(@o[:config_snapshots])}
         FROM hosts h CROSS JOIN generate_series(1, #{@o[:config_snapshots]}) s WHERE #{bench}
       SQL
+    end
+
+    # The history tables are partitioned by time (ADR 0027): partitions for the past the seed writes into, as a server
+    # that has run that long has them, so its rows do not land in the default partitions. A row's stored_at is when it
+    # was received, as for every row retention has not moved forward. Stable hosts' snapshots go back 2.2 windows, and
+    # audit entries back to the oldest seeded one.
+    def partitions_back(window)
+      now = Time.current
+      history = Partitions::TABLES.keys - [ "inventory_snapshots", Partitions::AUDIT ]
+      Partitions.ensure!(from: now - (window * 1.2).seconds - 1.day, tables: history)
+      Partitions.ensure!(from: now - (window * 2.2).seconds - 1.day, tables: [ "inventory_snapshots" ])
+      Partitions.ensure!(from: now - [ @o[:audit_entries] * 20, @o[:tasks_per_host] * 7, 90 ].max.days - 1.day, tables: [ Partitions::AUDIT ])
     end
 
     # Finished tasks (queued, claimed, running, then succeeded, as the database requires), their audit trail, and the

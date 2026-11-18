@@ -3,11 +3,402 @@
     {
       "warning_type": "SQL Injection",
       "warning_code": 0,
+      "fingerprint": "a98d6076304e9bedf698a835d16cd2a6837944cb6c47a033057a2a25dcf62ee6",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions.rb",
+      "line": 225,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "connection.select_value(\"SELECT count(*) FROM pg_event_trigger WHERE evtname IN (#{[\"fleet_audit_guard_drop\", \"fleet_audit_guard_ddl\"].map do\n connection.quote(:BRAKEMAN_SAFE_LITERAL)\n end.join(\", \")}) AND evtenabled <> 'D'\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions",
+        "method": "self.audit_guard_problem"
+      },
+      "user_input": "[\"fleet_audit_guard_drop\", \"fleet_audit_guard_ddl\"].map do\n connection.quote(:BRAKEMAN_SAFE_LITERAL)\n end.join(\", \")",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions (ADR 0027, #195): identifiers are table and column names from the constants Partitions::TABLES and REFERENCES, or partition names read from pg_inherits and quoted with quote_table_name; times are quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "37eed75d17f28b4d5d2f323af6fd26c50c1e98dabbdde419aa0a85a7731f9ce9",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions.rb",
+      "line": 277,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "connection.select_value(\"SELECT count(*) FROM #{connection.quote_table_name(partition.name)} x\\nWHERE x.#{column} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM #{referenced} r WHERE r.id = x.#{column})\\n\".squish)",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions",
+        "method": "self.orphans"
+      },
+      "user_input": "column",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions (ADR 0027, #195): identifiers are table and column names from the constants Partitions::TABLES and REFERENCES, or partition names read from pg_inherits and quoted with quote_table_name; times are quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "8d6325e1c71fcc35de0f30dbf06941d8b16b68d06e39d9328dc20d87851d2628",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions.rb",
+      "line": 373,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "connection.select_value(\"SELECT 1 FROM #{connection.quote_table_name(\"#{table.name}_default\")} WHERE #{table.key} < #{connection.quote(horizon)} LIMIT 1\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions",
+        "method": "self.set_aside_default"
+      },
+      "user_input": "table.key",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions (ADR 0027, #195): identifiers are table and column names from the constants Partitions::TABLES and REFERENCES, or partition names read from pg_inherits and quoted with quote_table_name; times are quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "9ab0737745c80848e826df99e4e5a1cccf4a32f251fd965301f197f33fd2dbfd",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions.rb",
+      "line": 402,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "connection.select_rows(\"SELECT min(#{key}), max(#{key}) FROM #{connection.quote_table_name(relname)}\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions",
+        "method": "self.bounds"
+      },
+      "user_input": "key",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions (ADR 0027, #195): identifiers are table and column names from the constants Partitions::TABLES and REFERENCES, or partition names read from pg_inherits and quoted with quote_table_name; times are quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "898bdad36d0be4fd5645d95a182b4c85facb78431c968875a1cf628b05607a3b",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 36,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.select_rows(\"SELECT conrelid::regclass::text, conname FROM pg_constraint\\nWHERE contype = 'f' AND (conrelid = ANY (ARRAY[#{tables.map do\n ApplicationRecord.connection.quote(\"public.#{t}\")\n end.join(\", \")}]::regclass[]) OR confrelid = ANY (ARRAY[#{tables.map do\n ApplicationRecord.connection.quote(\"public.#{t}\")\n end.join(\", \")}]::regclass[]))\\nORDER BY 1, 2\\n\".squish)",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "self.drop_foreign_keys!"
+      },
+      "user_input": "ApplicationRecord.connection.quote(\"public.#{t}\")",
+      "confidence": "High",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "0353aea2cd25ef351fef39722cfb07f2b34e59894b083b13cd93d44fcc3e19b8",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 69,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"ALTER TABLE #{q(Partitions.table(name).name)} VALIDATE CONSTRAINT #{q(range_check)}\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "run!"
+      },
+      "user_input": "q(Partitions.table(name).name)",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "7259a200550929c22a6fa90f603ad4a075b5e33e87e771dd50df26afb35b0898",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 71,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"ANALYZE #{q(Partitions.table(name).name)}\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "run!"
+      },
+      "user_input": "q(Partitions.table(name).name)",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "3d57ceb4ee2feabb2ef5cf52660e6bc96e4e4d461c7e5ee415610b2d1fbf8dbe",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 123,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"DROP TABLE IF EXISTS #{q(new_parent)} CASCADE\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "q(new_parent)",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "a0732e0a87794a9d689571c829ad651c9115b88adeba7aaf125808908a60bab7",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 124,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"CREATE TABLE #{q(new_parent)} (LIKE #{q(Partitions.table(name).name)} INCLUDING DEFAULTS INCLUDING CONSTRAINTS) PARTITION BY RANGE (#{Partitions.table(name).key})\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "q(new_parent)",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "62efc8174d1e75bf2d0b82930fcd6ec97debfd98533792b15fe6e293b6d5558a",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 125,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"ALTER TABLE #{q(new_parent)} ALTER COLUMN stored_at SET DEFAULT now()\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "q(new_parent)",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "bd27e2db8c6fbebd231a034087ffe7091f9011e799b2d06201110c99c1416aa9",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 126,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"ALTER TABLE #{q(new_parent)} ADD CONSTRAINT #{q(\"#{new_parent}_pkey\")} PRIMARY KEY (id, #{Partitions.table(name).key})\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "q(new_parent)",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "02a167c14fda12de3b0861be70a9b52e632885036b010f94d06074bf6270b0af",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 131,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"CREATE TRIGGER #{Partitions.table(name).name}_no_update_or_delete BEFORE UPDATE OR DELETE ON #{q(new_parent)} FOR EACH ROW EXECUTE FUNCTION #{guard}()\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "Partitions.table(name).name",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "0ebcfeeafae6870eeee762ec692b98372201a633db646e37b8a97a2d750da7c3",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 132,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"CREATE TRIGGER #{Partitions.table(name).name}_no_truncate BEFORE TRUNCATE ON #{q(new_parent)} FOR EACH STATEMENT EXECUTE FUNCTION #{guard}()\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "Partitions.table(name).name",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "6729449676cc66ea696327d0fdd90c35787f4379afbe3f52d9bd36f4316356ea",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 134,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"CREATE TABLE #{q(\"#{Partitions.table(name).name}_default\")} PARTITION OF #{q(new_parent)} DEFAULT\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "q(\"#{Partitions.table(name).name}_default\")",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "e4aad7606eb4627a610036f3a06e6af8cdab52b89fd75fc55e45a98b90b957bf",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 141,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"CREATE TABLE #{q(\"#{Partitions.table(name).name}_p#{@cutover.strftime(\"%Y%m%d\")}\")} PARTITION OF #{q(new_parent)} FOR VALUES FROM (#{ApplicationRecord.connection.quote(@cutover)}) TO (#{ApplicationRecord.connection.quote(Partitions.width_step(Partitions.table(name)).call(@cutover, 1))})\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "q(\"#{Partitions.table(name).name}_p#{@cutover.strftime(\"%Y%m%d\")}\")",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "67f8bac17f3d0dd3d404387d00df60603e4b1ad87c246ef54d09121d7af5fadf",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 143,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"CREATE TRIGGER #{Partitions.table(name).truncate_guard} BEFORE TRUNCATE ON #{q(\"#{Partitions.table(name).name}_p#{@cutover.strftime(\"%Y%m%d\")}\")} FOR EACH STATEMENT EXECUTE FUNCTION #{guard}()\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_parent"
+      },
+      "user_input": "Partitions.table(name).truncate_guard",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "836486be0db81417e8d4a3af0d97e1baa41a51cf484134ae488c4bebaf6ed07d",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions/conversion.rb",
+      "line": 162,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "ApplicationRecord.connection.execute(\"DROP INDEX CONCURRENTLY IF EXISTS #{q(name)}\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions::Conversion",
+        "method": "build_legacy_indexes"
+      },
+      "user_input": "q(name)",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions::Conversion (ADR 0027, #195), run only by the migrations 2026111619500x: every identifier is a table name from Partitions::TABLES (or a spec scratch table) and names derived from it, quoted with quote_table_name; every time is quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
       "fingerprint": "bca0c5d367477250e44b02694e6f8ff17d12119bb609751f155b0652537a252c",
       "check_name": "SQL",
       "message": "Possible SQL injection",
       "file": "script/benchmark/explain.rb",
-      "line": 110,
+      "line": 115,
       "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
       "code": "ApplicationRecord.connection.select_value(\"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) #{sql}\")",
       "render_path": null,

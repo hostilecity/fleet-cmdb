@@ -8,6 +8,7 @@ class CisResult < ApplicationRecord
   belongs_to :host
   belongs_to :cis_rule
   belongs_to :cis_rule_version, optional: true
+  # No foreign key (ADR 0027): the snapshot may no longer be kept, which readers treat like no snapshot.
   belongs_to :config_snapshot, optional: true
 
   validates :result, inclusion: { in: RESULTS }

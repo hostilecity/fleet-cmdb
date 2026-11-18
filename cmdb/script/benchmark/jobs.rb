@@ -62,12 +62,22 @@ module FleetBenchmark
         "CIS evaluation, every rule (per host)" => [ cis_hosts.size, -> { CisEvaluation.evaluate!(cis_hosts) }, nil, true ],
         "vulnerability matching, every package (per host)" => [ package_hosts.size, -> { VulnerabilityMatcher.match!(package_hosts) }, nil, true ],
         "advisory import: one changed source (per affected host)" => [ targeted, -> { EvaluationRun::Advisories.new("packages" => sources).call(Host.minimum(:id)..Host.maximum(:id)) }, nil, true ],
-        "retention prune, all tables (rolled back; per row deleted)" => [ retention_rows, -> { rolled_back { Retention.prune! } } ],
-        "retention dry run (counts only)" => [ 1, -> { Retention.prune!(dry_run: true) } ],
+        # Row deletes: the tables that are not partitioned, and the legacy partition of a converted table (ADR 0027).
+        "retention prune, row deletes (rolled back; per row deleted)" => [ retention_rows, -> { rolled_back { Retention.prune! } } ],
+        # Partitions past the window detached and dropped, each host's newest row moved forward first (ADR 0027).
+        "retention retire partitions (rolled back; per partition)" => [ retired["partitions"], -> { rolled_back { Retention.retire! } } ],
+        "retention dry run (counts only)" => [ 1, -> { Retention.prune!(dry_run: true) && Retention.retire!(dry_run: true) } ],
         "task expiry and leases (per run)" => [ 1, -> { rolled_back { TaskLeases.expire! && TaskLeases.lapse! } } ]
       }
     end
 
     def retention_rows = @retention_rows ||= Retention.prune!(dry_run: true).values.sum
+
+    # What one retirement run would do, summed over the tables: partitions, rows in them, and rows moved forward.
+    def retired
+      @retired ||= Retention.retire!(dry_run: true).values.each_with_object(Hash.new(0)) { |r, sum| r.each { |k, v| sum[k] += v } }.tap do |r|
+        puts "retirement due: #{r['partitions']} partitions, #{r['rows']} rows dropped, #{r['moved']} kept rows moved forward"
+      end
+    end
   end
 end

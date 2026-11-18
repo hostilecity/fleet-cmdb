@@ -110,7 +110,7 @@ The Deploy workflow installs a daily backup on the VM ([backup-and-restore.md](b
 | `FLEET_BACKUP_DRILL_HOST` | unset (workflow variable) | Another PostgreSQL server on the database network for the restore drill's scratch databases; unset, they go to the live server |
 | `FLEET_RESTORE_DRILL` | unset; *fixed* to `1` by the restore drill | Makes the drill's boot use an in-memory cache, so it never writes to the live cache database |
 
-**Data retention** (snapshots and status history; default 90 days; report ids are kept 7 days) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)); so are the liveness thresholds ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
+**Data retention** (snapshots and status history kept for at least 90 days by default, report ids for at least 7) is a setting in the database, changed with `bin/rails settings:retention DAYS=…` ([health-and-jobs.md](health-and-jobs.md#retention)). History is kept in time partitions that are dropped whole once all of a partition is past the window, so rows stay up to one partition longer: a day for report ids, a week for the rest (30 days when the window is over 180 days). There is no setting for the partitions themselves, and nothing to install in PostgreSQL ([ADR 0027](../decisions/0027-time-partitioned-history.md)); the superuser's one-time audit guard step is in [install-server.md](install-server.md). The liveness thresholds are database settings too ([fleet-operations.md](fleet-operations.md#change-the-liveness-thresholds)).
 
 ## Database
 

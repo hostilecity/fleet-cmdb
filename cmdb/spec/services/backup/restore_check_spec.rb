@@ -55,4 +55,23 @@ RSpec.describe Backup::RestoreCheck do
     expect(result.failures).to contain_exactly(/hosts: 0 restored, at least 1/, /audit_entries: 0 restored, at least 1/)
     expect(result.lines).to include(/ok   no releases to download/, /ok   inventory snapshots: 0 hosts have one, at least 0/)
   end
+
+  describe "the history partitions and the audit log's event triggers (ADR 0027)" do
+    before { create(:host) }
+
+    it "passes on the partitions, and warns without failing when the event triggers are not installed, as after any restore" do
+      result = run
+      expect(result.lines).to include("ok   history partitions: ok (bin/rails partitions:status lists them)",
+                                      "WARN the audit log's guard does not hold (the app's PostgreSQL role is a superuser, so no guard can hold against it): " \
+                                      "after a real restore, the PostgreSQL superuser runs ops/postgres/audit-guard.sql")
+      expect(result.failures.grep(/partitions|event triggers/)).to be_empty
+    end
+
+    it "says so when the event triggers are installed, and fails when the audit log has no partitions ahead" do
+      allow(Partitions).to receive_messages(audit_guard_problem: nil, health: :failing)
+      result = run
+      expect(result.lines).to include("ok   the audit log's event triggers are installed")
+      expect(result.failures).to include("FAIL history partitions: failing (bin/rails partitions:status lists them)")
+    end
+  end
 end
