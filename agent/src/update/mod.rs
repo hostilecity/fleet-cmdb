@@ -497,13 +497,15 @@ impl Inner {
     /// run together for long (recovery mode leaves within seconds of the service starting), but the
     /// updater's other guards (`busy`, `last_launch`) are per process: this one is not. A process that
     /// cannot take it does nothing this time; the offer comes again, and the watchdog runs again.
+    /// Within one process the watchdog and the update thread can also meet here (the watchdog checks
+    /// `busy` before it takes the lock), so the log line does not blame another process (#244).
     fn updater_lock(&self) -> Option<Lock> {
         match Lock::file(&self.state_dir.join(UPDATER_LOCK_FILE)) {
             Ok(Some(lock)) => Some(lock),
             Ok(None) => {
                 if self.note_once("updater lock held") {
                     tracing::info!(
-                        "another agent process is working on an update; leaving it to that process"
+                        "the updater lock is held: another agent process, or this agent's watchdog or update thread, is working on an update; leaving it to that one"
                     );
                 }
                 None
