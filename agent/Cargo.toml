@@ -55,7 +55,7 @@ ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 # with a throwaway certificate authority generated per test (P1-A02). minisign generates throwaway
 # release keys and signs test manifests, so no key is checked in (P1-PACKAGING).
 [dev-dependencies]
-jsonschema = { version = "0.60.1", default-features = false }
+jsonschema = { version = "0.61.2", default-features = false }
 minisign = "0.10.0"
 rcgen = "0.14.10"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
