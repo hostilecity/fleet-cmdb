@@ -4,8 +4,8 @@
 # (EvaluationRunJob fans out, EvaluationBatchJob runs a batch), so several workers share the work and a failed batch
 # is retried alone.
 #
-# - Only affected hosts are batched: for an import, those with a package built from a changed source, a finding for
-#   one, or no evaluation with data yet (EvaluationRun::Advisories); for a rule change, every host in the fleet, and
+# - Only affected hosts are batched: for an import, those on a package set holding a chunk with a changed source, or
+#   with no evaluation with data yet, after the changed chunks are matched again (EvaluationRun::Advisories, ADR 0028); for a rule change, every host in the fleet, and
 #   CisEvaluation reads facts only where a changed rule applies (EvaluationRun::CisRules).
 # - Retry-safe: evaluation and matching are idempotent, and a batch row is deleted when its batch is counted, under the
 #   run's row lock, so a retried or duplicated batch counts once. A batch locks its hosts in id order, in short
@@ -86,6 +86,9 @@ class EvaluationRun < ApplicationRecord
   # Splits a queued run into batches and supersedes the older runs it covers (EvaluationRunJob). A retried fan-out
   # enqueues the batches still waiting again; a duplicated batch job counts once.
   def fan_out!
+    # The work's own preparation, before the hosts are found (an import matches its changed chunks, ADR 0028); outside
+    # the run's lock, since it can take a while. Idempotent, so a retried fan-out may run it again.
+    work.prepare! if state == "queued"
     batch_ids = transaction do
       candidates = self.class.where(kind:, state: SUPERSEDABLE).where(id: ...id).select { |run| work.covers?(run.work) }.map(&:id)
       # Every run row this takes, in id order, so two fan-outs never deadlock (this run has the highest id). The states

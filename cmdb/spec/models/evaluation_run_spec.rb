@@ -13,7 +13,7 @@ RSpec.describe EvaluationRun do
 
   def cis_history = CisResultChange.order(:host_id, :cis_rule_id, :id).pluck(:host_id, :cis_rule_id, :cis_rule_version_id, :from_result, :to_result)
 
-  def findings = VulnerabilityFinding.order(:host_id, :advisory_id, :package).pluck(:host_id, :advisory_id, :package, :state, :resolution, :installed_version, :fixed_version)
+  def findings = VulnerabilityFinding.with_details.order(:host_id, :advisory_id, :package).pluck(:host_id, :advisory_id, :package, :state, :resolution, :installed_version, :fixed_version)
 
   def evaluations = HostVulnerabilityEvaluation.order(:host_id).pluck(:host_id, :state, :reason, :ecosystem, :not_evaluated_count)
 
@@ -236,23 +236,14 @@ RSpec.describe EvaluationRun do
       clear_enqueued_jobs
     end
 
-    # What VulnerabilityMatchJob did for an import before #197, in one job.
-    def single_job_match(packages)
-      evaluated = HostVulnerabilityEvaluation.where.not(reason: "no_advisory_data").or(HostVulnerabilityEvaluation.where(reason: nil)).select(:host_id)
-      full = Host.in_fleet.where.not(id: evaluated).pluck(:id)
-      targeted = packages.flat_map do |ecosystem, sources|
-        HostPackage.where("COALESCE(source, name) IN (?)", sources).distinct.pluck(:host_id) |
-          VulnerabilityFinding.where(ecosystem:, source: sources).distinct.pluck(:host_id)
-      end.uniq - full
-      VulnerabilityMatcher.match!(targeted, packages:) if targeted.any?
-      VulnerabilityMatcher.match!(full)
-    end
+    # What one job matching every host in the fleet writes: the run must write the same.
+    def single_job_match(_packages) = VulnerabilityMatcher.match_again!
 
     def reset_matching
       VulnerabilityFinding.delete_all
       HostVulnerabilityEvaluation.delete_all
       perform_enqueued_jobs { VulnerabilityMatcher.match!(Host.in_fleet.pluck(:id)) }
-      VulnerabilityFinding.where(source: "curl").delete_all # as before the curl advisory was matched
+      VulnerabilityFinding.where(package: %w[curl libcurl4]).delete_all # as before the curl advisory was matched
     end
 
     it "writes the same findings and evaluations as the single job it replaces, batching only the affected hosts" do

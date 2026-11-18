@@ -43,18 +43,27 @@ RSpec.describe PackageSnapshotTimeline do
     expect(entries.last.summary.counts).to eq(upgrade: 1)
   end
 
-  it "loads rows without their package lists" do
+  it "loads rows without their warnings, naming their package sets" do
     report([ [ "bash", "1.0", "bash" ] ], at: start)
-    expect(timeline.latest.has_attribute?(:packages)).to be(false)
+    expect(timeline.latest.has_attribute?(:warnings)).to be(false)
+    expect(timeline.latest.package_set_id).to eq(HostPackageSet.find_by!(host_id: host.id).package_set_id)
   end
 
-  it "caches each pair's summary by the two ids, so a second timeline builds no diff" do
+  it "caches each pair's summary by the two sets, so a second timeline, or another host with the same pair, builds no diff (ADR 0028)" do
     report([ [ "bash", "1.0", "bash" ] ], at: start)
     report([ [ "bash", "1.1", "bash" ] ], at: start + 1.hour)
     timeline.entries
-    expect(cache.read(described_class.cache_key(*snapshots.map(&:id)))).to eq("unavailable_reason" => nil, "counts" => { "upgrade" => 1 })
+    expect(cache.read(described_class.cache_key(*snapshots))).to eq("unavailable_reason" => nil, "counts" => { "upgrade" => 1 })
+    expect(described_class.cache_key(*snapshots)).to eq([ "package-diff-summary", 2, *snapshots.map(&:package_set_id) ])
     expect(PackageDiff).not_to receive(:between)
     expect(counts(timeline.entries)).to eq([ { upgrade: 1 }, nil ])
+  end
+
+  it "keys a pair with skipped names by them too, since the diff depends on them" do
+    older = PackageSnapshot.new(package_set_id: 1, skipped: [])
+    newer = PackageSnapshot.new(package_set_id: 2, skipped: [ { "name" => "vim", "reason" => "unpacked" } ])
+    expect(described_class.cache_key(older, newer).size).to eq(5)
+    expect(described_class.cache_key(older, newer)).not_to eq(described_class.cache_key(older, PackageSnapshot.new(package_set_id: 2, skipped: [])))
   end
 
   it "computes a new pair after Retention prunes the snapshot between, never the pruned pair's summary" do

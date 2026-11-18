@@ -56,6 +56,8 @@ bin/rails settings:retention DAYS=120    # 7 to 3650; audited
 
 A dry run (counts only) from the Rails console: `RetentionPruneJob.perform_now(dry_run: true)` for the row deletes, `PartitionMaintenanceJob.perform_now(dry_run: true)` for the partitions it would drop. The log lines `[retention] deleted … older than …` and `[retention] retired partitions …` state the counts of every run.
 
+After pruning, the same job collects the package sets and chunks no host and no kept snapshot uses any more, once unused for two days (ADR 0028; log line `[package store] collected package_sets=… package_chunks=…`). Hosts with the same packages share one stored set, so there is nothing to clean by hand. `bin/rails packages:check_snapshots` checks the store's references (a dpkg snapshot or host with no set, or an id that names nothing) and exits non-zero if it finds any; that would be a bug worth reporting. `bin/rails vulnerabilities:match` matches every package chunk and every host against the advisory data again.
+
 ## Advisory data
 
 The server downloads OSV advisory data every 6 hours (`FLEET_ADVISORY_FEED_URL`, outbound HTTPS to `storage.googleapis.com` by default; `cmdb/README.md`, "Advisory data"). The fleet page says when each ecosystem's data was last updated, and shows a warning when it is older than `FLEET_ADVISORY_MAX_AGE_HOURS` (48 by default) or has never been refreshed. Until then, vulnerability findings may be missing.

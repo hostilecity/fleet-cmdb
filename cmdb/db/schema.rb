@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_16_196004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -49,6 +49,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.datetime "started_at", null: false
     t.datetime "finished_at"
     t.jsonb "matching"
+    t.jsonb "changed_packages"
     t.index ["finished_at"], name: "index_advisory_imports_on_finished_at"
     t.index ["operator_id"], name: "index_advisory_imports_on_operator_id"
     t.check_constraint "(finished_at IS NULL) = (state::text = ANY (ARRAY['queued'::character varying, 'importing'::character varying]::text[]))", name: "advisory_imports_finished_iff_done"
@@ -180,6 +181,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.index ["target_type", "target_id", "occurred_at"], name: "index_audit_entries_on_target"
     t.check_constraint "(actor_type::text = 'system'::text) = (actor_id IS NULL)", name: "audit_entries_actor_id_matches_type"
     t.check_constraint "actor_type::text = ANY (ARRAY['operator'::character varying::text, 'host'::character varying::text, 'system'::character varying::text])", name: "audit_entries_actor_type_valid"
+  end
+
+  create_table "chunk_evaluations", primary_key: ["package_chunk_id", "ecosystem"], force: :cascade do |t|
+    t.bigint "package_chunk_id", null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.jsonb "not_evaluated", default: [], null: false
+    t.bigint "advisory_import_id", null: false
+    t.datetime "evaluated_at", null: false
+    t.index ["advisory_import_id", "ecosystem"], name: "index_chunk_evaluations_on_advisory_import_id_and_ecosystem"
+  end
+
+  create_table "chunk_matches", primary_key: ["package_chunk_id", "ecosystem", "advisory_id", "package", "architecture"], force: :cascade do |t|
+    t.bigint "package_chunk_id", null: false
+    t.string "ecosystem", limit: 64, null: false
+    t.bigint "advisory_id", null: false
+    t.string "package", limit: 128, null: false
+    t.string "architecture", limit: 32, null: false
+    t.string "source", limit: 128, null: false
+    t.string "installed_version", limit: 256, null: false
+    t.string "fixed_version", limit: 256
+    t.index ["advisory_id"], name: "index_chunk_matches_on_advisory_id"
   end
 
   create_table "cis_result_changes", primary_key: ["id", "occurred_at"], options: "PARTITION BY RANGE (occurred_at)", force: :cascade do |t|
@@ -422,20 +444,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.jsonb "skipped", default: [], null: false
+    t.bigint "package_set_id"
     t.index ["host_id"], name: "index_host_package_sets_on_host_id", unique: true
+    t.index ["package_set_id"], name: "index_host_package_sets_on_package_set_id"
     t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "host_package_sets_manager_valid"
     t.check_constraint "(manager::text = 'dpkg'::text) = (unsupported_reason IS NULL)", name: "host_package_sets_reason_iff_not_dpkg"
   end
 
-  create_table "host_packages", force: :cascade do |t|
-    t.bigint "host_id", null: false
-    t.string "name", limit: 128, null: false
-    t.string "architecture", limit: 32, null: false
-    t.string "version", limit: 256, null: false
-    t.string "source", limit: 128
-    t.index "COALESCE(source, name), host_id", name: "index_host_packages_on_source_package"
-    t.index ["host_id", "name", "architecture"], name: "index_host_packages_on_host_id_and_name_and_architecture", unique: true
-  end
 
   create_table "host_status_events", primary_key: ["id", "stored_at"], options: "PARTITION BY RANGE (stored_at)", force: :cascade do |t|
     t.bigserial "id", null: false
@@ -464,7 +479,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.datetime "evaluated_at", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.bigint "package_set_id"
     t.index ["host_id"], name: "index_host_vulnerability_evaluations_on_host_id", unique: true
+    t.index ["package_set_id"], name: "index_host_vulnerability_evaluations_on_package_set_id"
     t.check_constraint "(state::text = 'not_evaluated'::text) = (reason IS NOT NULL)", name: "host_vulnerability_evaluations_reason_iff_not_evaluated"
     t.check_constraint "state::text = ANY (ARRAY['evaluated'::character varying, 'not_evaluated'::character varying]::text[])", name: "host_vulnerability_evaluations_state_valid"
   end
@@ -589,6 +606,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.index ["google_uid"], name: "index_operators_on_google_uid", unique: true
   end
 
+  create_table "package_chunk_entries", primary_key: ["package_chunk_id", "name", "architecture"], force: :cascade do |t|
+    t.bigint "package_chunk_id", null: false
+    t.string "name", limit: 128, null: false
+    t.string "architecture", limit: 32, null: false
+    t.string "version", limit: 256, null: false
+    t.string "source", limit: 128
+    t.index "COALESCE(source, name), package_chunk_id", name: "index_package_chunk_entries_on_source_package"
+  end
+
+  create_table "package_chunks", force: :cascade do |t|
+    t.integer "bucket", limit: 2, null: false
+    t.binary "content_hash", null: false
+    t.integer "package_count", null: false
+    t.datetime "created_at", null: false
+    t.datetime "last_used_at", null: false
+    t.index ["content_hash"], name: "index_package_chunks_on_content_hash", unique: true
+    t.check_constraint "bucket >= 0 AND bucket <= 63", name: "package_chunks_bucket_valid"
+  end
+
   create_table "package_report_receipts", primary_key: ["id", "received_at"], options: "PARTITION BY RANGE (received_at)", force: :cascade do |t|
     t.bigserial "id", null: false
     t.bigint "host_id", null: false
@@ -598,6 +634,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.index ["received_at"], name: "index_package_report_receipts_on_received_at"
   end
 
+  create_table "package_sets", force: :cascade do |t|
+    t.binary "content_hash", null: false
+    t.bigint "chunk_ids", null: false, array: true
+    t.integer "package_count", null: false
+    t.datetime "created_at", null: false
+    t.datetime "last_used_at", null: false
+    t.index ["chunk_ids"], name: "index_package_sets_on_chunk_ids", using: :gin
+    t.index ["content_hash"], name: "index_package_sets_on_content_hash", unique: true
+    t.check_constraint "cardinality(chunk_ids) = 64", name: "package_sets_chunk_ids_by_bucket"
+  end
+
   create_table "package_snapshots", primary_key: ["id", "stored_at"], options: "PARTITION BY RANGE (stored_at)", force: :cascade do |t|
     t.bigserial "id", null: false
     t.bigint "host_id", null: false
@@ -605,14 +652,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.string "unsupported_reason", limit: 512
     t.integer "package_count", null: false
     t.string "content_hash", limit: 64, null: false
-    t.jsonb "packages", null: false
     t.jsonb "warnings", default: [], null: false
     t.uuid "report_id", null: false
     t.datetime "collected_at", null: false
     t.datetime "received_at", null: false
     t.jsonb "skipped", default: [], null: false
     t.datetime "stored_at", default: -> { "now()" }, null: false
+    t.bigint "package_set_id"
     t.index ["host_id", "received_at"], name: "index_package_snapshots_on_host_id_and_received_at"
+    t.index ["package_set_id"], name: "index_package_snapshots_on_package_set_id"
     t.index ["received_at"], name: "index_package_snapshots_on_received_at"
     t.check_constraint "manager::text = ANY (ARRAY['dpkg'::character varying, 'unsupported'::character varying, 'unreadable'::character varying]::text[])", name: "package_snapshots_manager_valid"
   end
@@ -884,10 +932,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.bigint "advisory_id", null: false
     t.string "package", limit: 128, null: false
     t.string "architecture", limit: 32, null: false
-    t.string "source", limit: 128, null: false
-    t.string "ecosystem", limit: 64, null: false
-    t.string "installed_version", limit: 256, null: false
-    t.string "fixed_version", limit: 256
     t.string "state", limit: 16, null: false
     t.string "resolution", limit: 16
     t.datetime "first_seen_at", null: false
@@ -895,10 +939,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
     t.datetime "reopened_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "last_source", limit: 128
+    t.string "last_installed_version", limit: 256
+    t.string "last_fixed_version", limit: 256
+    t.string "last_ecosystem", limit: 64
     t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
-    t.index ["ecosystem", "source", "host_id"], name: "index_vulnerability_findings_on_ecosystem_and_source"
     t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
-    t.index ["host_id", "source"], name: "index_vulnerability_findings_on_host_id_and_source"
     t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
     t.check_constraint "(state::text = 'resolved'::text) = (resolution IS NOT NULL) AND (resolution::text = ANY (ARRAY['fixed'::character varying, 'removed'::character varying, 'withdrawn'::character varying, 'not_affected'::character varying]::text[]))", name: "vulnerability_findings_resolution_valid"
     t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'reopened'::character varying]::text[])", name: "vulnerability_findings_state_valid"
@@ -928,7 +974,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_195005) do
   add_foreign_key "host_inventories", "hosts"
   add_foreign_key "host_liveness", "hosts"
   add_foreign_key "host_package_sets", "hosts"
-  add_foreign_key "host_packages", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
   add_foreign_key "task_allowed_services", "operators", column: "added_by_id"

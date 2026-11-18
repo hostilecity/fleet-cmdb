@@ -24,4 +24,14 @@ class AdvisoryImport < ApplicationRecord
   scope :covering, ->(ecosystem) { where("? = ANY (ecosystems)", ecosystem) }
 
   def in_progress? = IN_PROGRESS.include?(state)
+
+  # The imports that changed or may have changed the advisory data: every succeeded one but a feed refresh the server
+  # answered "not modified" (AdvisoryFeedRefreshJob#not_modified), which is recorded for freshness, changes nothing,
+  # and is written outside the import lock. Only these stamp chunks (review of #240).
+  scope :stamping, -> { succeeded.where.not("counts ? 'not_modified'") }
+
+  # The newest stamping import, in the order they committed (imports run one at a time under a lock, and finish inside
+  # it): what a chunk's verdicts are stamped with (ChunkEvaluation, ADR 0028 decision 7). By finished_at, not id: an
+  # upload's row is created when it is queued, before imports that finish ahead of it.
+  def self.newest_succeeded_id = stamping.order(finished_at: :desc, id: :desc).pick(:id)
 end

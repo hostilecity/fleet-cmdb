@@ -1,7 +1,8 @@
 # What a host's last package report said (P2-S08, FR-2.3): the package manager, or that it is unsupported or
-# unreadable and why, how many packages, the hash of the set, the packages skipped, and the report's warnings. The
-# packages themselves are rows of HostPackage, and the set as it was whenever it changed is a PackageSnapshot.
-# After an unreadable report the rows and the count are those of the last readable one.
+# unreadable and why, how many packages, the hash of the report, the packages skipped, and the report's warnings. The
+# packages themselves are a PackageSet (package_set_id, stored once for every host that has it; PackageStore, ADR
+# 0028), and the set as it was whenever it changed is a PackageSnapshot. After an unreadable report the set and the
+# count are those of the last readable one.
 class HostPackageSet < ApplicationRecord
   MANAGERS = %w[dpkg unsupported unreadable].freeze
 

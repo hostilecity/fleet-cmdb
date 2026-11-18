@@ -27,7 +27,7 @@ RSpec.describe Retention do
 
   def package_snapshot(host, age_days)
     at = now - age_days.days
-    PackageSnapshot.create!(host:, manager: "dpkg", package_count: 0, content_hash: SecureRandom.hex(32), packages: [], report_id: SecureRandom.uuid,
+    PackageSnapshot.create!(host:, manager: "dpkg", package_count: 0, content_hash: SecureRandom.hex(32), report_id: SecureRandom.uuid,
                             collected_at: at, received_at: at, stored_at: legacy_at)
   end
 

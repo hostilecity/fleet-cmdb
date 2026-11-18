@@ -125,13 +125,15 @@ module Advisories
         end
         check_deadline!
         sweep_absent if @full && @counts["malformed"].zero?
-        outcome = { state: "succeeded", ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators, finished_at: Time.current }
+        changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
+        # changed_packages: what re-matching needs to know this import touched, even after its run (ADR 0028 decision 7).
+        outcome = { state: "succeeded", ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators, finished_at: Time.current,
+                    changed_packages: changed }
         raise Abandoned, "advisory import #{@record.id} was finished meanwhile" if @record && !@record.lock!.in_progress?
 
         import = @record ? @record.tap { |r| r.update!(outcome) } : AdvisoryImport.create!(origin: @origin, source: @source, full: @full, operator: @operator, started_at:, **outcome)
         Audit.record(actor: @operator || Audit::SYSTEM, action: Audit::Actions::ADVISORY_IMPORTED, target: import,
                      changes: { "origin" => @origin, "source" => @source, "full" => @full, "ecosystems" => import.ecosystems.join(", "), "counts" => @counts })
-        changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
         # Targeted re-matching (P2-S11), after commit; it also evaluates hosts that had no advisory data yet.
         VulnerabilityMatchJob.after_import(changed) if changed.any? || @ecosystems.any?
         # A changed severity queued its hosts' compliance summaries for a recount, after commit (#193, ADR 0026).

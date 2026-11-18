@@ -67,6 +67,8 @@ package report sent reason=startup attempt=1 request_id=... duplicate=false
 
 An `unsupported` or `unreadable` report logs a warning with `unsupported_reason`, each warning is logged too, and so is each skipped package (`package skipped: not reported as installed`, with the package and its reason).
 
+On the server, a host's packages are stored as a package set shared with every host and snapshot that has the same list, in chunks (ADR 0028). Reading the database by hand: `host_package_sets.package_set_id` names the host's set, `package_sets.chunk_ids` its chunks, and `package_chunk_entries` their packages; `bin/rails runner 'puts PackageStore.packages(HostPackageSet.find_by!(host_id: ID).package_set_id).map(&:to_a).inspect'` prints a host's list.
+
 ## Checking a report against the host (AC-2.3)
 
 The reported set must equal the host's own listing of installed packages, with no package missing or invented, and the skipped names must be the interrupted installations. On the VM:

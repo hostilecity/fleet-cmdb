@@ -1,8 +1,21 @@
 class EvaluationRun
-  # An advisory import (Advisories::Import, packages { "Debian:13" => ["openssl"] }): the hosts with a package built
-  # from one of those sources, or a finding for one, matched for those packages only; and, in full, every host whose
-  # last evaluation is missing or was "no advisory data", since the import may have brought its first data. Both
-  # lookups use the source-package indexes (#185), so finding the hosts does not read every host's packages.
+  # An advisory import (Advisories::Import; scope packages { "Debian:13" => ["openssl"] } and the import's id), matched
+  # by chunk (#196, ADR 0028):
+  #
+  # - prepare! (once, as the run fans out, after the import committed): the chunks that hold a changed source are
+  #   matched again, for each ecosystem they are evaluated in, and then every other evaluation is moved to the newest
+  #   import if no import since its stamp changed one of its sources (VulnerabilityMatcher::Chunks.restamp!, decision
+  #   7). Without that, every other chunk in use would look stale after each import and be matched again on its next
+  #   use. The rule reads what each import changed (AdvisoryImport#changed_packages), so it holds when an earlier
+  #   import's run was superseded and never prepared, or when two runs prepare out of order.
+  # - hosts: those on a set holding a chunk with a changed source, and every host whose last evaluation is missing or
+  #   was "no advisory data", since the import may have brought its first data. Their transitions run in full: they
+  #   only read verdicts, and a host whose findings do not change writes nothing.
+  #
+  # The hosts are found from every chunk with a changed source, not only those whose verdicts changed: a host's own
+  # report may match such a chunk again between the import and this run, and its change would then not be seen here.
+  # A chunk matched against the data before the import (by a report in flight while it committed) is matched again
+  # before any host uses it, by the transitions' check that every chunk is current with the newest import.
   class Advisories
     def initialize(scope)
       @packages = scope["packages"].to_h.transform_values { |sources| Array(sources) }
@@ -10,26 +23,21 @@ class EvaluationRun
 
     attr_reader :packages
 
-    def hosts
-      affected = supported.map do |ecosystem, sources|
-        Host.in_fleet.where(id: HostPackage.where("COALESCE(source, name) IN (?)", sources).select(:host_id))
-            .or(Host.in_fleet.where(id: VulnerabilityFinding.where(ecosystem:, source: sources).select(:host_id)))
+    def prepare!
+      stamp = AdvisoryImport.newest_succeeded_id # before any advisory data is read
+      supported.each do |ecosystem, sources|
+        evaluated = ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(sources)).pluck(:package_chunk_id)
+        VulnerabilityMatcher::Chunks.ensure!(evaluated, ecosystem, stamp:, force: true)
       end
-      affected.reduce(unevaluated) { |all, scope| all.or(scope) }
+      VulnerabilityMatcher::Chunks.restamp!(stamp)
     end
 
-    # Matches the range's affected hosts, as VulnerabilityMatchJob did for the whole fleet before #197; returns the
-    # hosts whose shown vulnerabilities changed.
+    def hosts = Host.in_fleet.where(id: affected_hosts).or(unevaluated)
+
+    # Matches the range's affected hosts; returns the hosts whose shown vulnerabilities changed.
     def call(range)
-      # Taken before the targeted run, which marks its hosts evaluated: a host never fully evaluated gets a full
-      # run, not only the changed packages (review of #105).
-      full = unevaluated.where(id: range).pluck(:id)
-      targeted = supported.flat_map do |ecosystem, sources|
-        HostPackage.where(host_id: range).where("COALESCE(source, name) IN (?)", sources).distinct.pluck(:host_id) |
-          VulnerabilityFinding.where(host_id: range, ecosystem:, source: sources).distinct.pluck(:host_id)
-      end.uniq - full
-      changed = targeted.any? ? VulnerabilityMatcher.match!(targeted, packages:).changed_host_ids : []
-      changed | VulnerabilityMatcher.match!(full).changed_host_ids
+      ids = Host.in_fleet.where(id: range).merge(hosts).pluck(:id)
+      VulnerabilityMatcher.match!(ids).changed_host_ids
     end
 
     # A later import of the same sources (or more) makes an older run redundant: it finds the same hosts, and
@@ -44,6 +52,15 @@ class EvaluationRun
     private
 
     def supported = packages.select { |ecosystem, sources| Ecosystems.supported?(ecosystem) && sources.any? }
+
+    def changed_chunks(sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources).select(:package_chunk_id)
+
+    # host_package_sets rows on a set holding a chunk with a changed source (the source index, then the GIN index).
+    def affected_hosts
+      return HostPackageSet.none.select(:host_id) if supported.empty?
+
+      HostPackageSet.where(package_set_id: PackageSet.holding_sources(supported.values.flatten.uniq)).select(:host_id)
+    end
 
     # Hosts with no evaluation that had advisory data: none at all, or "no advisory data". A correlated NOT EXISTS, an
     # anti-join on the evaluations' host_id index, so it stays cheap per batch and over the fleet whatever work_mem

@@ -169,10 +169,10 @@ Rules (FR-2.2, DEC-10, DEC-12, P2-S04) are data in a YAML or JSON file the opera
 - **Validation.** The body is validated against `docs/api`; `lib/agent_api/package_report.rb` then refuses a package listed twice for one architecture. `manager: unsupported` and `manager: unreadable` (dpkg is there, its database could not be listed) carry a reason and no packages; `skipped` names packages not listed as installed (an interrupted installation), stored sorted and without duplicates. A version dpkg would refuse is stored as reported; matching treats it as not evaluated.
 - **Storage.** `PackageRecorder` stores a valid report under the host row lock:
   - `package_report_receipts`: report ids already processed. A retried report is answered `duplicate: true` and changes nothing.
-  - `host_package_sets`: the manager (or that it is unsupported or unreadable, and why), the package count, the content hash, the skipped names, and warnings, updated on every report. After an unreadable report the count and the `host_packages` rows are those of the last readable one.
-  - `host_packages`: one row per installed package, brought up to date when the set changes (only the packages that changed are written); indexed by source package, `COALESCE(source, name)`, for matching.
-  - `package_snapshots`: the whole set as `[name, architecture, version, source]` rows plus the skipped names, written only when the content hash changes (an unreadable report is a snapshot with no packages). Retention keeps the newest per host.
-- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). A package in the older set and not the newer one is `removed`, or `skipped` (with the reason) when the newer report names it in `skipped`. A skipped name counts as present: installed after being skipped is `completed`, and skipped then neither listed nor skipped is `removed_skipped` (no version known). The class comment in `app/models/package_diff.rb` lists each kind's shape. With an unsupported or unreadable manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
+  - `host_package_sets`: the manager (or that it is unsupported or unreadable, and why), the package count, the content hash, the skipped names, warnings, and `package_set_id`, the host's package set, updated on every report. After an unreadable report the count and the set are those of the last readable one.
+  - **Package sets, stored once** (ADR 0028, #196, `PackageStore`): a list is split into 64 chunks by a hash of each package's source package, `COALESCE(source, name)`. Each distinct chunk (`package_chunks`, its packages in `package_chunk_entries`, indexed by source package) and each distinct set (`package_sets`: its 64 chunk ids) is stored once, found by its SHA-256, so hosts and snapshots with the same packages share one set, and a change stores only the chunks of the sources it touches. Sets and chunks nothing references are collected after each retention run (`PackageStore.collect!`), two days after their last use.
+  - `package_snapshots`: the set's id (`package_set_id`) plus the skipped names, written only when the content hash changes (an unreadable or unsupported report is a snapshot with no set). Retention keeps the newest per host. `bin/rails packages:check_snapshots` reports a dpkg snapshot or host with no set, and ids that name nothing.
+- **Diffs.** `PackageDiff.between(older, newer)` lists installed, removed, and changed packages, reading only the chunks in which the two sets differ; a change is an upgrade or a downgrade by dpkg's order (`lib/package_versions`, FR-2.4). A package in the older set and not the newer one is `removed`, or `skipped` (with the reason) when the newer report names it in `skipped`. A skipped name counts as present: installed after being skipped is `completed`, and skipped then neither listed nor skipped is `removed_skipped` (no version known). The class comment in `app/models/package_diff.rb` lists each kind's shape. With an unsupported or unreadable manager on either side the set is unknown, so the diff is not available (`available?` is false) rather than everything removed or installed.
 
 ### Report requests
 
@@ -268,24 +268,26 @@ bin/rails advisories:status                               # also shows each rele
 
 ### Vulnerability findings
 
-`VulnerabilityMatcher` (P2-S11, FR-2.4, AC-2.4) matches each host's installed packages against the advisories for its ecosystem.
+`VulnerabilityMatcher` (P2-S11, FR-2.4, AC-2.4) moves each host's findings through their lifecycle from the verdicts of its package set's chunks, and `VulnerabilityMatcher::Chunks` matches each distinct chunk once per ecosystem (ADR 0028, #196).
 
 - **Matching.**
-  - It matches on source package name, or the binary name when dpkg records no source.
+  - It matches on source package name, or the binary name when dpkg records no source. A package's verdict depends only on its own version and source, so a chunk's verdicts (`chunk_matches`, with `chunk_evaluations` saying which chunks are matched against which import, and what could not be evaluated) hold for every host that has it.
+  - Before a host's transitions, every chunk of its set is matched for its ecosystem against the newest succeeded import, if it is not already.
   - It applies OSV's range algorithm, `limit` included, with dpkg's version order (`PackageVersions`), never string comparison. A finding's fixed version is the fix of the range the installed version is in.
-- **Findings.** `vulnerability_findings` holds one finding per host, advisory, and installed binary package (name and architecture), so each binary built from an affected source has its own.
+- **Findings.** `vulnerability_findings` holds one finding per host, advisory, and installed binary package (name and architecture), so each binary built from an affected source has its own. A row holds only the finding's lifecycle; its source, installed version, and fixed version are its chunk's verdict while it is active (`VulnerabilityFinding.with_details`), and `last_*` keep them as they were at its last transition for when it is resolved.
   - **States:** `open`, `resolved` with a resolution (`fixed`, `removed`, `withdrawn`, or `not_affected`), and `reopened` when the condition returns, for example after a downgrade or a reinstall.
   - **Timestamps:** `first_seen_at`, `resolved_at`, and `reopened_at`.
 - **Not evaluated.** `host_vulnerability_evaluations` records each host's last run.
   - **A whole host** is "not evaluated", with the reason, when it has no inventory, is on a distribution outside the fleet profile, has no package report, has an unsupported package manager, has a package database that could not be read, or has no advisory data for its ecosystem. Its findings are left as they were.
   - **One package** whose version, or whose advisory's version, dpkg cannot parse is listed as not evaluated, and its finding is left as it was.
-- **When it runs.** `VulnerabilityMatchJob` runs after each commit that adds a package snapshot (for that host). After each import, a fleet-wide `EvaluationRun` re-matches the hosts with the packages it changed, plus hosts not yet evaluated, in batches of 1,000 hosts on the `evaluation` queue (#197); Data sources shows its progress. Agents are not involved.
+- **When it runs.** `VulnerabilityMatchJob` runs after each commit that adds a package snapshot (for that host). After each import, a fleet-wide `EvaluationRun` matches the chunks holding a changed source again, moves every other evaluation to the new import, and runs the transitions of the hosts on sets holding those chunks, plus hosts not yet evaluated, in batches of 1,000 hosts on the `evaluation` queue (#197); Data sources shows its progress. Agents are not involved.
   - **Idempotent:** running it again changes nothing.
-  - **Concurrency:** each host is matched in its own short transaction under its row lock (`FOR UPDATE`), the lock package reports take, so it never sees half of a report.
-  - **Cost:** a fixed number of queries per host whatever its package count. 50 hosts by 2,000 packages take about 5 s.
+  - **Concurrency:** hosts are handled in batches, each in a short transaction holding its hosts' row locks (`FOR UPDATE`, in id order), the lock package reports take, so it never sees half of a report; each batch is sized to hold its locks for about 0.2 s.
+  - **Cost:** matching grows with new chunks, not with hosts; a host's transitions are a fixed number of queries per batch whatever its package count.
 
 ```sh
-bin/rails vulnerabilities:match   # match every host now
+bin/rails vulnerabilities:match   # match every chunk and every host again now
+bin/rails packages:check_snapshots # check the package store's references
 ```
 
 ### Tasks (Phase 3, in progress)

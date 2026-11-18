@@ -148,9 +148,9 @@ module AdvisoriesTask
 end
 
 namespace :vulnerabilities do
-  desc "Match every host in the fleet against the advisory data now (normally done after each package report and import)"
+  desc "Match every package chunk and host in the fleet against the advisory data again (normally done after each package report and import)"
   task match: :environment do
-    outcome = VulnerabilityMatcher.match!(Host.in_fleet.pluck(:id))
+    outcome = VulnerabilityMatcher.match_again!
     puts "#{outcome.evaluated} hosts evaluated, #{outcome.not_evaluated} not evaluated; " \
          "#{outcome.opened} findings opened, #{outcome.reopened} reopened, #{outcome.resolved} resolved."
   end

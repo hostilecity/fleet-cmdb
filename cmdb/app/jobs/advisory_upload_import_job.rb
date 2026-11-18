@@ -74,7 +74,7 @@ class AdvisoryUploadImportJob < ApplicationJob
   # How many changed source packages findings are matched again for, and on how many hosts in the fleet.
   def matching(changed_packages)
     sources = changed_packages.values.flatten.uniq
-    hosts = sources.empty? ? 0 : HostPackage.joins(:host).merge(Host.in_fleet).where("COALESCE(host_packages.source, host_packages.name) IN (?)", sources).distinct.count(:host_id)
+    hosts = sources.empty? ? 0 : Host.in_fleet.where(id: HostPackageSet.where(package_set_id: PackageSet.holding_sources(sources)).select(:host_id)).count
     { "packages" => sources.size, "hosts" => hosts }
   end
 end

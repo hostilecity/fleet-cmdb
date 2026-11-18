@@ -1,14 +1,15 @@
 # One page of a host's installed packages (P2-D03, FR-2.3, owner decision Q15 on the P2-D01 review): server-side
 # search, filters, sort, and pages of PER_PAGE, all from query parameters so every view can be bookmarked, as on
 # the fleet list (FleetList). q matches the package or source package name; arch is one architecture; findings
-# "open" keeps packages with an open or reopened vulnerability finding. A page is three queries whatever the
-# number of packages: the count, the rows, and the open findings of the rows shown.
+# "open" keeps packages with an open or reopened vulnerability finding. The rows are the entries of the host's
+# PackageSet's chunks (ADR 0028). A page is four queries whatever the number of packages: the set's chunk ids, the
+# count, the rows, and the open findings of the rows shown.
 class HostPackageList
   PER_PAGE = 50
   QUERY_MAX = 100
   # Version sorts as text: dpkg's order cannot be expressed in SQL, and the diff, not the list, says which way a
   # version moved.
-  SORTS = { "name" => "host_packages.name", "version" => "host_packages.version", "source" => "host_packages.source" }.freeze
+  SORTS = { "name" => "package_chunk_entries.name", "version" => "package_chunk_entries.version", "source" => "package_chunk_entries.source" }.freeze
   ORDERS = SORTS.transform_values do |sql|
     expression = Arel.sql(sql)
     { "asc" => expression.asc.nulls_last, "desc" => expression.desc.nulls_last }.freeze
@@ -21,7 +22,8 @@ class HostPackageList
 
   def initialize(host_id, params = {})
     @host_id = host_id
-    @architectures = HostPackage.where(host_id:).distinct.order(:architecture).pluck(:architecture)
+    @chunk_ids = PackageStore.chunk_ids_of(HostPackageSet.where(host_id:).pick(:package_set_id))
+    @architectures = entries.distinct.order(:architecture).pluck(:architecture)
     @q = params[:q].to_s.strip.first(QUERY_MAX).presence
     @arch = @architectures.include?(params[:arch]) ? params[:arch] : nil
     @findings = params[:findings] == "open" ? "open" : nil
@@ -31,8 +33,8 @@ class HostPackageList
   end
 
   def scope
-    scope = HostPackage.where(host_id:)
-    scope = scope.where("host_packages.name ILIKE :p OR host_packages.source ILIKE :p", p: "%#{HostPackage.sanitize_sql_like(q)}%") if q
+    scope = entries
+    scope = scope.where("package_chunk_entries.name ILIKE :p OR package_chunk_entries.source ILIKE :p", p: "%#{PackageChunkEntry.sanitize_sql_like(q)}%") if q
     scope = scope.where(architecture: arch) if arch
     scope = scope.where(open_finding) if findings
     scope
@@ -77,9 +79,11 @@ class HostPackageList
 
   private
 
+  def entries = PackageChunkEntry.where(package_chunk_id: @chunk_ids)
+
   # EXISTS an open or reopened finding (VulnerabilityFinding.active, so the two cannot disagree) for the package row.
   def open_finding
-    VulnerabilityFinding.active.where("vulnerability_findings.host_id = host_packages.host_id AND vulnerability_findings.package = host_packages.name " \
-                                      "AND vulnerability_findings.architecture = host_packages.architecture").arel.exists
+    VulnerabilityFinding.active.where(host_id:).where("vulnerability_findings.package = package_chunk_entries.name " \
+                                                      "AND vulnerability_findings.architecture = package_chunk_entries.architecture").arel.exists
   end
 end

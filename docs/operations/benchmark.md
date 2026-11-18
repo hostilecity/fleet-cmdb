@@ -13,7 +13,9 @@ export DATABASE_URL=postgres:///cmdb_bench QUEUE_DATABASE_URL=postgres:///cmdb_b
        CACHE_DATABASE_URL=postgres:///cmdb_bench_cache CABLE_DATABASE_URL=postgres:///cmdb_bench_cable
 bin/rails db:create db:schema:load
 
-bin/benchmark seed --hosts 100000 --package-hosts 10000   # about 7.5 GB and 15 minutes on 2 CPUs
+bin/benchmark seed --hosts 100000 --package-hosts 10000   # about 7.5 GB and 15 minutes on 2 CPUs (before #196)
+# or, with the package hosts spread over 1,500 distinct package sets that share most of their chunks (ADR 0028):
+bin/benchmark seed --hosts 20000 --package-hosts 5000 --package-variants 1500
 bin/benchmark queries                                     # statements, rows, and time per agent request
 bin/benchmark explain                                     # EXPLAIN (ANALYZE, BUFFERS) of the hot paths
 bin/benchmark jobs                                        # per-host cost of the fleet-wide jobs
@@ -40,17 +42,17 @@ bin/benchmark load --url http://127.0.0.1:3001 --agent-host agent.example.lan --
 
 | Command | Measures |
 |---|---|
-| `seed` | Needs an empty database. Creates one template host through the real API and jobs (heartbeat, inventory, config and package reports, CIS evaluation, vulnerability matching, with the simulator's Phase 2 rules and advisories), then copies its rows in SQL to `--hosts` hosts, with history spread over 1.2 retention windows so pruning has work to do. A third of the hosts are "stable": all their inventory snapshots are older than the window. The history tables are partitioned by time (ADR 0027): the seed creates the partitions for the past it writes into and stores each row as received (`stored_at` = `received_at`), so retention finds partitions to drop, as on a server that has run that long. Prints each table's rows and bytes per row, the figures to extrapolate from. |
+| `seed` | Needs an empty database. Creates one template host through the real API and jobs (heartbeat, inventory, config and package reports, CIS evaluation, vulnerability matching, with the simulator's Phase 2 rules and advisories), then copies its rows in SQL to `--hosts` hosts, with history spread over 1.2 retention windows so pruning has work to do. A third of the hosts are "stable": all their inventory snapshots are older than the window. The history tables are partitioned by time (ADR 0027): the seed creates the partitions for the past it writes into and stores each row as received (`stored_at` = `received_at`), so retention finds partitions to drop, as on a server that has run that long. Prints each table's rows and bytes per row, the figures to extrapolate from. Package hosts point at the template's package set, or with `--package-variants N` at N sets derived from it (each upgrades 1 to 12 of its sources to one newer version and adds up to 2 of 20 tools; ADR 0028's prototype), and so do their snapshots. |
 | `queries` | Each agent request in process through the whole Rails stack, for `--samples` hosts: wall and SQL time (median, p99), statements, rows, request and response bytes. `--verbose` lists the statements, so a review can see a new one. |
-| `explain` | Runs each hot path (liveness, fleet list, compliance, task list, audit log, retention, advisory re-matching, CIS evaluation, vulnerability matching, task jobs, host page) in a rolled-back transaction, and prints EXPLAIN (ANALYZE, BUFFERS) for every statement it sent. Sequential scans of large tables are flagged: those statements grow with the fleet. |
-| `jobs` | Times the jobs whose cost grows with the fleet (median, min, max of `--repeat` runs) and the cost per host or per row. CIS evaluation and matching run once untimed first: the seed leaves findings that the first run reopens. Retention is timed twice, rolled back: the row deletes (`Retention.prune!`: tables that are not partitioned, and a converted table's legacy partition) per row, and dropping the partitions past the window (`Retention.retire!`) per partition, with a line saying how many partitions, rows, and kept rows moved forward. |
+| `explain` | Runs each hot path (liveness, fleet list, compliance, task list, audit log, retention, advisory re-matching, CIS evaluation, vulnerability matching, the packages and vulnerabilities tabs, task jobs, host page) in a rolled-back transaction, and prints EXPLAIN (ANALYZE, BUFFERS) for every statement it sent. Sequential scans of large tables are flagged: those statements grow with the fleet. |
+| `jobs` | Times the jobs whose cost grows with the fleet (median, min, max of `--repeat` runs) and the cost per host, chunk, or row. CIS evaluation and matching run once untimed first: the seed leaves findings that the first run reopens, and the first matching run matches the chunks. Matching is timed as host transitions (per host), every chunk matched again (per chunk), and an advisory import of one changed source: its chunks matched again (per chunk) and the whole re-match with the transitions of the hosts on them (per affected host). Retention is timed twice, rolled back: the row deletes (`Retention.prune!`: tables that are not partitioned, and a converted table's legacy partition) per row, and dropping the partitions past the window (`Retention.retire!`) per partition, with a line saying how many partitions, rows, and kept rows moved forward. |
 | `load` | Closed-loop HTTP load, each request as the next seeded host: throughput, p50, p90, p99, status counts, payload sizes, and what the database did during the run: commits and rows written; for `hosts` and `host_liveness`, the updates, their HOT share, dead tuples, and how much the table and its indexes grew; and the write-ahead log the run made in the benchmark database (read back with `pg_walinspect`, which needs a superuser; other databases on the server are left out), by relation. `--kind mix` sends the default intervals' proportions (per agent per hour: 60 heartbeats, 120 task polls, 4 inventory reports, and one config and one package report every 6 hours). |
 
 ## Reading the results
 
 - **Per request, not per run.** Statement counts and rows per request are exact and do not depend on the machine; times do. Compare times only between runs on the same machine with nothing else running, and repeat them (the median of three is the figure to quote).
 - **Extrapolating.** A request's cost is per host and does not grow with the fleet when every statement is an index lookup. A statement that `explain` flags as a sequential scan, or a job whose time per host is constant, grows linearly: multiply by the fleet size. Request rates scale with the fleet on the default intervals: 1,000,000 agents send about 16,700 heartbeats and 33,300 task polls a second.
-- **The seeded data.** Every host is a copy of the template, so data is more uniform than a real fleet (one OS, the same 800 packages). Package rows, findings, and package snapshots exist only for the first `--package-hosts` hosts, to stay within a few gigabytes; extrapolate their tables from the bytes per row.
+- **The seeded data.** Every host is a copy of the template, so data is more uniform than a real fleet (one OS, the same 800 packages unless `--package-variants` spreads them). Findings and package snapshots exist only for the first `--package-hosts` hosts, to stay within a few gigabytes; extrapolate their tables from the bytes per row. Package storage (ADR 0028) grows with distinct chunks, not hosts: divide the package tables by the package hosts only for the seed's own distribution.
 
 ## Reference results
 
@@ -81,3 +83,17 @@ The same container, PostgreSQL 16, other suites running (load 4 to 6), so times 
 | A report's duplicate check | unique index lookup | 0.15 to 0.19 ms over 12 receipt partitions (2 ms to plan the first time in a connection) |
 
 A day's retirement in the steady state is one receipt partition of each type and, once a week, one partition of each weekly table: a few catalog operations whatever the fleet size.
+
+### Package sets and per-chunk matching (#196, ADR 0028)
+
+`seed --hosts 20000 --package-hosts 5000`, before on `main` (every package host the template's 800 packages) and after with `--package-variants 1500` (1,499 distinct sets, 859 chunks, 13,954 chunk entries). Same container, other suites running, development mode; times are rough, sizes exact. This is the favourable case, a template fleet; a hand-managed fleet, where most sets are distinct, is not measured. The findings' 306 bytes a row are those of a fresh database: an upgraded one keeps its wider rows until the table is rebuilt (docs/operations/upgrades.md).
+
+| What | Before | After |
+|---|---|---|
+| Package lists and snapshots, per package host | 209 KB (`host_packages` 175 KB, JSON snapshots 34 KB) | 2.2 KB (sets 0.7 KB, chunk entries 0.5 KB, snapshot rows 0.9 KB) |
+| Findings, per package host (450 each) | 173 KB (380 B a row) | 138 KB (306 B a row; lifecycle and `last_*`) |
+| Vulnerability matching, per host | 122.5 ms (each host's own packages) | 6.7 ms (transitions from chunk verdicts); 1.7 ms per chunk to match a chunk again |
+| Advisory import, one changed source (5,001 affected hosts) | 164 s, 32.9 ms per host | 0.08 s to match its 21 chunks again; 39.5 s with every affected host's transitions, 7.9 ms per host |
+| Package report, 5 packages upgraded (in process) | 13 statements, 824 rows, SQL p50 57 ms | 12 statements, 10 rows, SQL p50 27 ms |
+| Packages tab, one page (page 9; search "lib" page 2) | 5.8 ms; 1.3 ms | 4.6 ms; 3.0 ms |
+| A host's open findings with their details (450) | 9.9 ms | 7.3 ms |

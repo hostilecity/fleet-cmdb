@@ -3,23 +3,21 @@
 # serialised and a revocation that lands mid-request is still refused.
 #
 # - A report id already processed for the host is a duplicate: nothing changes.
-# - When the content hash differs from the current set's, a snapshot of the whole set is written and the
-#   host's HostPackage rows are brought up to date, writing only the packages that changed. Otherwise only the
-#   report details (time, warnings) are updated.
+# - When the content hash differs from the current set's, the list is stored in content-addressed chunks
+#   (PackageStore, ADR 0028: only chunks and a set not stored yet are written), the host points at its PackageSet, and a
+#   snapshot naming the set is written. Otherwise only the report details (time, warnings) are updated.
 # - An unsupported package manager is stored as such, with its reason and no packages: never as an empty set.
 # - An unreadable one (dpkg is there, its database could not be listed) is stored with its reason too, but the
-#   host's previous packages and count are kept, since nothing says they changed; vulnerability matching does not
+#   host's previous set and count are kept (its snapshot names no set), since nothing says they changed; vulnerability matching does not
 #   evaluate the host meanwhile (HostContext), so its findings stay as they were.
 # - Skipped packages (named by the agent, not listed as installed) are stored with the set and its snapshot; they
-#   are not in HostPackage, so findings for them resolve as removed at the next matching, and reopen when the
+#   are not in the PackageSet, so findings for them resolve as removed at the next matching, and reopen when the
 #   package is listed again (P2-S08, P2-S11 owner decision).
 # - A new report, changed or not, satisfies the host's pending packages report request (ReportRequests, P2-S03).
 #
 # Vulnerability matching (P2-S11) runs after a new snapshot, for that host, once the transaction commits.
 module PackageRecorder
   Result = Data.define(:report_id, :duplicate, :snapshot)
-
-  INSERT_BATCH = 5_000
 
   module_function
 
@@ -35,10 +33,11 @@ module PackageRecorder
     hash = report.content_hash
     snapshot = set.content_hash != hash
     if snapshot
+      package_set_id = report.manager == "dpkg" ? PackageStore.store!(report.packages, now:) : nil
       PackageSnapshot.create!(host_id:, manager: report.manager, unsupported_reason: report.unsupported_reason,
-                              package_count: report.packages.size, content_hash: hash, packages: report.packages.map(&:to_a),
+                              package_count: report.packages.size, content_hash: hash, package_set_id:,
                               skipped: report.skipped.map(&:to_h), warnings: report.warnings, report_id: report.report_id, collected_at: report.collected_at, received_at: now)
-      replace_packages(host_id, report.packages) unless report.unreadable?
+      set.package_set_id = package_set_id unless report.unreadable?
       VulnerabilityMatchJob.after_snapshot(host_id)
     end
     set.update!(manager: report.manager, unsupported_reason: report.unsupported_reason, package_count: report.unreadable? ? set.package_count.to_i : report.packages.size,
@@ -46,21 +45,4 @@ module PackageRecorder
                 collected_at: report.collected_at, received_at: now)
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end
-
-  # Brings the host's rows to the report's packages, writing only what changed: rows for packages no longer listed are
-  # deleted, and new or changed packages (version or source) are upserted. A report that upgrades five of 800 packages
-  # writes five rows, not 800 deletions and 800 insertions with their index entries. The report has no two packages
-  # with one name and architecture (AgentApi::PackageReport refuses them).
-  def replace_packages(host_id, packages)
-    current = HostPackage.where(host_id:).pluck(:id, :name, :architecture, :version, :source).index_by { |row| row[1, 2] }
-    listed = packages.to_set(&:key)
-    removed = current.filter_map { |key, row| row.first unless listed.include?(key) }
-    HostPackage.where(id: removed).delete_all if removed.any?
-    changed = packages.reject { |p| (row = current[p.key]) && row[3] == p.version && row[4] == p.source }
-    changed.each_slice(INSERT_BATCH) do |slice|
-      HostPackage.upsert_all(slice.map { |p| { host_id:, name: p.name, architecture: p.architecture, version: p.version, source: p.source } },
-                             unique_by: %i[host_id name architecture], update_only: %i[version source])
-    end
-  end
-  private_class_method :replace_packages
 end
