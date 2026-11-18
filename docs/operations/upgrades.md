@@ -8,8 +8,8 @@ Almost every upgrade is a merge to `main`: the deploy builds the image, starts t
 
 The upgrade moves every host's package list and every package snapshot into content-addressed package sets, copies each finding's details, and drops `host_packages` and the snapshots' JSON lists.
 
-- **Small databases (a homelab):** nothing to do. The migration runs at container start: about 15 ms for each distinct package list (a host's current one and each kept snapshot), plus about 1 s for every 100,000 findings. 50 hosts with 90 days of snapshots take a few seconds.
-- **Large databases:** above 20,000 distinct package lists or 5,000,000 findings to copy, the migration refuses at container start (see above), because it would not finish inside the deploy's 5-minute wait. Measured: about 15 ms a distinct list, linear in their number, so about 25 minutes for 100,000 and about 4 hours for 1,000,000 distinct snapshots (one worker; `docs/decisions/0028-content-addressed-package-sets.md`, "As built", item 1).
+- **Small databases (a homelab):** nothing to do. The migration runs at container start: 15 to 30 ms for each distinct package list (a host's current one and each kept snapshot), plus about 10 s for every 100,000 findings. 50 hosts with 90 days of snapshots take a few seconds.
+- **Large databases:** above 5,000 distinct package lists or 1,000,000 findings to copy, the migration refuses at container start (see above), because it might not finish inside the deploy's 5-minute wait. Measured on 2 shared CPUs: linear in the number of distinct lists, about 25 to 50 minutes for 100,000 and 4 to 9 hours for 1,000,000 (`docs/decisions/0028-content-addressed-package-sets.md`, "As built", item 1).
 
 When it refuses, on the server VM, as the deploy user:
 
@@ -25,5 +25,5 @@ docker exec fleet-cmdb bin/rails packages:check_snapshots   # "every reference i
 - `packages:backfill` is resumable: stopped or interrupted, run it again and it carries on with what is left. It only adds; it never deletes anything.
 - Do not run `bin/rails db:migrate:redo` or roll the migrations back: rolling back `BackfillPackageSets` empties the package store, matched verdicts included.
 - If `FLEET_JOBS_CONTAINER` is `true`, the deploy starts the jobs container only after `/up` answers, so it is not running meanwhile; after the restart, run the workflow again (or start the jobs container as the deploy does) to bring it back.
-- The findings keep their old, wider rows: the dropped columns' space comes back only as rows are rewritten. To get it back at once on a large database, rebuild the table at a quiet time (`VACUUM FULL vulnerability_findings`, which locks it while it runs).
+- The old space stays: the findings keep their wider rows, and `package_snapshots` the space of its JSON lists, until rows are rewritten (old snapshots also leave with retention). To get it back at once on a large database, rebuild the tables at a quiet time (`VACUUM FULL vulnerability_findings` and `VACUUM FULL package_snapshots`, which lock each table while they run).
 - After the upgrade no package chunk is matched yet: findings keep the state they had and show their copied details, and each host's chunks are matched at its next package report or advisory import. `bin/rails vulnerabilities:match` matches everything at once.

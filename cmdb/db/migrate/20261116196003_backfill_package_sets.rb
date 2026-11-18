@@ -12,8 +12,8 @@
 class BackfillPackageSets < ActiveRecord::Migration[8.1]
   disable_ddl_transaction!
 
-  INLINE_HASHES = 20_000
-  INLINE_FINDINGS = 5_000_000
+  INLINE_HASHES = 5_000
+  INLINE_FINDINGS = 1_000_000
   # The text bin/docker-entrypoint looks for.
   UPGRADE_STEP = "fleet-cmdb upgrade step needed".freeze
 
