@@ -86,7 +86,7 @@ A day's retirement in the steady state is one receipt partition of each type and
 
 ### Package sets and per-chunk matching (#196, ADR 0028)
 
-`seed --hosts 20000 --package-hosts 5000`, before on `main` (every package host the template's 800 packages) and after with `--package-variants 1500` (1,499 distinct sets, 859 chunks, 13,954 chunk entries). Same container, other suites running, development mode; times are rough, sizes exact.
+`seed --hosts 20000 --package-hosts 5000`, before on `main` (every package host the template's 800 packages) and after with `--package-variants 1500` (1,499 distinct sets, 859 chunks, 13,954 chunk entries). Same container, other suites running, development mode; times are rough, sizes exact. This is the favourable case, a template fleet; a hand-managed fleet, where most sets are distinct, is not measured. The findings' 306 bytes a row are those of a fresh database: an upgraded one keeps its wider rows until the table is rebuilt (docs/operations/upgrades.md).
 
 | What | Before | After |
 |---|---|---|
