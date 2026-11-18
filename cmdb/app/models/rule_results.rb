@@ -15,7 +15,7 @@ class RuleResults
     @rows ||= begin
       hosts = Host.in_fleet.to_a
       results = CisResult.where(cis_rule_id: @rule.id, host_id: hosts.map(&:id)).includes(:cis_rule_version).index_by(&:host_id)
-      reporting = ConfigSnapshot.where(host_id: hosts.map(&:id)).distinct.pluck(:host_id).to_set
+      reporting = Partitions.with_set_aside(ConfigSnapshot).where(host_id: hosts.map(&:id)).distinct.pluck(:host_id).to_set
       hosts.map do |host|
         stored = results[host.id]
         reason = stored ? stored.reason : (reporting.include?(host.id) ? "The rule has not been evaluated on this host yet." : CisEvaluation::NO_REPORT)

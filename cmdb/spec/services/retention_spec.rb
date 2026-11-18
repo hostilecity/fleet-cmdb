@@ -463,7 +463,7 @@ RSpec.describe Retention do
       allow(Rails).to receive(:cache).and_return(cache)
       InventoryReportReceipt.insert!({ host_id: 2_000_000_000, report_id: SecureRandom.uuid, received_at: Time.current })
       described_class.perform_now
-      expect(Partitions.attention).to eq([ "inventory_report_receipts.host_id: 1 recent rows name a host or rule that does not exist (bin/rails partitions:check)" ])
+      expect(Partitions.attention.map(&:text)).to eq([ "inventory_report_receipts.host_id: 1 recent rows name a host or rule that does not exist (bin/rails partitions:check)" ])
     end
   end
 

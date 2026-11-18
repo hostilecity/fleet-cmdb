@@ -46,9 +46,11 @@
           <p><%= link_to "See the failed jobs", failed_jobs_path %>. Work they were doing, such as an import or a cleanup, did not finish.</p></div>
       <% end %>
       <% if current_operator && (attention = maintenance_attention).any? %>
-        <div class="notice" role="status" id="maintenance_banner"><strong>Database maintenance needs attention.</strong>
-          <ul><% attention.each do |text| %><li><%= text %></li><% end %></ul>
-          <p>Nothing has stopped yet. The server owner's guide says what to do (docs/operations/health-and-jobs.md, "Partitions"); <code>bin/rails partitions:status</code> shows the details.</p></div>
+        <% urgent = attention.any? { |problem| problem.severity == :failing } %>
+        <div class="notice<%= " error" if urgent %>" role="<%= urgent ? "alert" : "status" %>" id="maintenance_banner">
+          <strong><%= urgent ? "Database maintenance needs attention now: audited actions will fail when the audit log's months run out." : "Database maintenance needs attention." %></strong>
+          <ul><% attention.each do |problem| %><li><%= problem.text %></li><% end %></ul>
+          <p>The server owner's guide says what each of these means and what to do: <code>docs/operations/health-and-jobs.md</code>, section "Partitions" (in this server's repository). On the server, <code>bin/rails partitions:status</code> shows the details.</p></div>
       <% end %>
       <% flash.each do |type, message| %>
         <div class="notice flash <%= type == "alert" ? "error" : "info" %>" role="<%= type == "alert" ? "alert" : "status" %>"><strong><%= message %></strong></div>

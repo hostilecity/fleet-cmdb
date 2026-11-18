@@ -47,7 +47,7 @@ RSpec.describe "partitions rake tasks" do
     output = run("partitions:status")
     expect(output).to include("inventory_snapshots: #{Partitions.list('inventory_snapshots').count { |p| !p.default? }} partitions, MINVALUE to",
                               ", legacy partition until #{first.from.to_date}",
-                              "warning: inventory_report_receipts: the default partition has rows", "Audit guard (ops/postgres/audit-guard.sql): installed")
+                              "warning: Inventory report ids (inventory_report_receipts): the default partition has rows", "Audit guard (ops/postgres/audit-guard.sql): installed")
     allow(Partitions).to receive(:partitioned?).and_return(false)
     expect(run("partitions:status")).to include("audit_entries: not partitioned yet (run bin/rails db:migrate)")
   end
