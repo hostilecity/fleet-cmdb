@@ -10,8 +10,9 @@
 # - store! finds or stores a list's chunks and set and returns the set's id. It runs in the caller's transaction (the
 #   package report's, under the host lock); two reports storing the same new chunk or set at once both end with the
 #   one row (INSERT ... ON CONFLICT DO NOTHING, then read).
-# - Garbage collection is mark and sweep (collect!, after each retention run; decision 8): a set is kept while a host
-#   or a snapshot references it, a chunk while a set holds it. There are no foreign keys from hosts, snapshots, or
+# - Garbage collection is mark and sweep (collect!, after each retention run; decision 8): a set is kept while a host,
+#   a snapshot, or a host's vulnerability evaluation (the set its findings were last moved from, which a resolution
+#   reads) references it, a chunk while a set holds it. There are no foreign keys from hosts, snapshots, or
 #   sets, so instead store! touches a set or chunk it reuses when its last_used_at is more than TOUCH_AFTER old, and
 #   collect! deletes only rows unreferenced and untouched for COLLECT_AFTER, re-checking last_used_at in the DELETE
 #   itself. A touch and a delete then conflict on the row: if the touch wins, the delete skips the touched row; if
@@ -109,6 +110,7 @@ module PackageStore
 
   UNREFERENCED_SET = <<~SQL.squish.freeze
     NOT EXISTS (SELECT 1 FROM host_package_sets h WHERE h.package_set_id = package_sets.id)
+    AND NOT EXISTS (SELECT 1 FROM host_vulnerability_evaluations e WHERE e.package_set_id = package_sets.id)
     AND NOT EXISTS (SELECT 1 FROM package_snapshots s WHERE s.package_set_id = package_sets.id)
   SQL
   UNREFERENCED_CHUNK = "NOT EXISTS (SELECT 1 FROM package_sets s WHERE s.chunk_ids @> ARRAY[package_chunks.id])".freeze

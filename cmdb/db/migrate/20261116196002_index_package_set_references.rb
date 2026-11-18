@@ -1,7 +1,7 @@
 # The indexes garbage collection needs to tell whether a package set is still referenced (#196, ADR 0028), built
 # without blocking package reports.
 #
-# - host_package_sets: CREATE INDEX CONCURRENTLY.
+# - host_package_sets and host_vulnerability_evaluations: CREATE INDEX CONCURRENTLY.
 # - package_snapshots: when it is partitioned (ADR 0027), PostgreSQL refuses CONCURRENTLY on the parent, and a plain
 #   CREATE INDEX on the parent holds a SHARE lock on every partition for the whole build. So the index is created on
 #   the parent only (ON ONLY: instant, invalid), each partition's is built CONCURRENTLY and attached, and the parent's
@@ -16,8 +16,10 @@ class IndexPackageSetReferences < ActiveRecord::Migration[8.1]
 
   def up
     drop_invalid("index_host_package_sets_on_package_set_id")
+    drop_invalid("index_host_vulnerability_evaluations_on_package_set_id")
     drop_invalid(PARENT)
     add_index :host_package_sets, :package_set_id, algorithm: :concurrently, if_not_exists: true
+    add_index :host_vulnerability_evaluations, :package_set_id, algorithm: :concurrently, if_not_exists: true
     return add_index(:package_snapshots, :package_set_id, name: PARENT, algorithm: :concurrently, if_not_exists: true) unless partitioned?
 
     execute "CREATE INDEX IF NOT EXISTS #{PARENT} ON ONLY package_snapshots (package_set_id)"
@@ -32,6 +34,7 @@ class IndexPackageSetReferences < ActiveRecord::Migration[8.1]
   def down
     remove_index :package_snapshots, name: PARENT, if_exists: true
     remove_index :host_package_sets, :package_set_id, algorithm: :concurrently, if_exists: true
+    remove_index :host_vulnerability_evaluations, :package_set_id, algorithm: :concurrently, if_exists: true
   end
 
   private
