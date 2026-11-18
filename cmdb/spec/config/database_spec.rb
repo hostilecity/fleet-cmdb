@@ -17,7 +17,7 @@ end
 # pooler turns off prepared statements and the migration lock on the pooled databases only; a direct database and a
 # replica appear only when their URLs are set, and neither is ever migrated on its own.
 RSpec.describe "config/database.yml with the scale settings (#198)" do
-  KEYS = %w[FLEET_DB_POOLER DIRECT_DATABASE_URL REPLICA_DATABASE_URL].freeze
+  KEYS = %w[FLEET_DB_POOLER DIRECT_DATABASE_URL REPLICA_DATABASE_URL FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS].freeze
 
   def production(env = {})
     saved = KEYS.to_h { |key| [ key, ENV.fetch(key, nil) ] }
@@ -45,6 +45,8 @@ RSpec.describe "config/database.yml with the scale settings (#198)" do
     configs = production("REPLICA_DATABASE_URL" => "postgres://replica.example.lan/cmdb_production")
     expect(configs.keys).to eq(%w[primary cache queue cable replica])
     expect(configs.fetch("replica")).to include(database: "cmdb_production", username: "cmdb", replica: true, connect_timeout: 2)
+    slow = production("REPLICA_DATABASE_URL" => "postgres://replica.example.lan/cmdb_production", "FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS" => "5")
+    expect(slow.fetch("replica")).to include(connect_timeout: 5)
   end
 
   it "stops the boot on a transaction pooler without a direct database" do

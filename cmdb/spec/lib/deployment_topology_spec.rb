@@ -8,6 +8,8 @@ RSpec.describe DeploymentTopology do
     expect(described_class.direct?({})).to be(false)
     expect(described_class.replica?({})).to be(false)
     expect(described_class.replica_max_wait_ms({})).to eq(100)
+    expect(described_class.replica_skip_seconds({})).to eq(30)
+    expect(described_class.replica_connect_timeout_seconds({})).to eq(2)
     expect(described_class.node_role({})).to eq("all")
     expect { described_class.validate!({}) }.not_to raise_error
   end
@@ -23,6 +25,8 @@ RSpec.describe DeploymentTopology do
     expect(described_class.node_role(env)).to eq("agent_api")
     expect(described_class.node_role("FLEET_NODE_ROLE" => "dashboard")).to eq("dashboard")
     expect(described_class.replica_max_wait_ms("FLEET_REPLICA_MAX_WAIT_MS" => "2000")).to eq(2000)
+    expect(described_class.replica_skip_seconds("FLEET_REPLICA_SKIP_SECONDS" => "3600")).to eq(3600)
+    expect(described_class.replica_connect_timeout_seconds("FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS" => "1")).to eq(1)
     expect { described_class.validate!(env) }.not_to raise_error
   end
 
@@ -38,6 +42,10 @@ RSpec.describe DeploymentTopology do
       expect { described_class.replica_max_wait_ms("FLEET_REPLICA_MAX_WAIT_MS" => value) }
         .to raise_error(ArgumentError, "FLEET_REPLICA_MAX_WAIT_MS must be a whole number from 0 to 2000, not #{value.inspect}")
     end
+    expect { described_class.replica_skip_seconds("FLEET_REPLICA_SKIP_SECONDS" => "0") }
+      .to raise_error(ArgumentError, 'FLEET_REPLICA_SKIP_SECONDS must be a whole number from 1 to 3600, not "0"')
+    expect { described_class.validate!("FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS" => "61") }
+      .to raise_error(ArgumentError, 'FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS must be a whole number from 1 to 60, not "61"')
     expect { described_class.node_role("FLEET_NODE_ROLE" => "jobs") }.to raise_error(ArgumentError, 'FLEET_NODE_ROLE must be all, agent_api, or dashboard, not "jobs"')
     expect { described_class.validate!("FLEET_NODE_ROLE" => "") }.to raise_error(ArgumentError, /FLEET_NODE_ROLE/)
   end

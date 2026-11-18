@@ -67,7 +67,7 @@ development:
   replica:
     <<: *primary_development
     replica: true
-    connect_timeout: 2
+    connect_timeout: <%= DeploymentTopology.replica_connect_timeout_seconds %>
 <% end %>
 
 
@@ -183,5 +183,5 @@ production:
   replica:
     <<: *primary_production
     replica: true
-    connect_timeout: 2
+    connect_timeout: <%= DeploymentTopology.replica_connect_timeout_seconds %>
 <% end %>

@@ -3,7 +3,9 @@ RSpec.configure do |config|
   # only through Rails' prevent_writes, which checks the class the pool is named after. That is ApplicationRecord, the
   # class ReplicaReads switches, when it loads lazily, but ActiveRecord::Base with eager loading (CI). Name it
   # ApplicationRecord in both, so every page ReplicaReads lists runs with writes refused (#198). Production needs
-  # none of this: its replica's own pool has replica: true, which refuses every write.
+  # none of this: there the reading role has a pool of its own, whose config has replica: true. Rails refuses writes
+  # on it (AbstractAdapter#preventing_writes? is true for a replica config, besides the role's prevent_writes), and
+  # the standby refuses them itself.
   config.before(:suite) do
     ActiveRecord::Base.connection_pool.pool_config.connection_descriptor = ApplicationRecord
   end

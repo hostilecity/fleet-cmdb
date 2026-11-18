@@ -1,9 +1,19 @@
 require "rails_helper"
 
 # Dashboard and report reads from a replica (#198 step 2). The test environment's replica is the test database itself
-# (config/database.yml), shared with the writing connection, so the reading role refuses writes as a replica would.
+# (config/database.yml), shared with the writing connection, so the reading role refuses writes as a replica would, and
+# config.x.replica_may_be_primary lets that server, which is not in recovery, be read as one.
 RSpec.describe ReplicaReads do
   def role_inside = described_class.around { ApplicationRecord.current_role }
+
+  # A stand-in for the replica's pool: tests share the writing pool with the reading role.
+  let(:replica_pool) { instance_double(ActiveRecord::ConnectionAdapters::ConnectionPool, role: :reading) }
+
+  def replica_answers(*rows)
+    connection = ApplicationRecord.connection
+    allow(connection).to receive(:select_rows).and_call_original
+    allow(connection).to receive(:select_rows).with(anything, "Replica caught up") { [ rows.size > 1 ? rows.shift : rows.first ] }
+  end
 
   it "runs the block on the reading role, with writes refused, once the replica has caught up" do
     expect(described_class.configured?).to be(true)
@@ -21,26 +31,37 @@ RSpec.describe ReplicaReads do
     callback = ->(*, payload) { statements << [ payload[:name], payload[:sql] ] }
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { expect(described_class.caught_up?).to be(true) }
     expect(statements.map(&:first)).to eq([ "Replica target", "Replica caught up" ])
-    expect(statements.last.last).to match(/NOT pg_is_in_recovery\(\) OR pg_last_wal_replay_lsn\(\) >= '[0-9A-F]+\/[0-9A-F]+'::pg_lsn/)
+    expect(statements.last.last).to match(/SELECT pg_is_in_recovery\(\), pg_last_wal_replay_lsn\(\) >= '[0-9A-F]+\/[0-9A-F]+'::pg_lsn/)
+  end
+
+  it "reads a standby that has replayed the target" do
+    replica_answers([ true, true ])
+    expect(role_inside).to eq(:reading)
+  end
+
+  describe "a server that is not in recovery (review of #237)" do
+    before { allow(Rails.configuration.x).to receive(:replica_may_be_primary).and_return(false) }
+
+    it "is never read as a replica outside the test setup: it is skipped, logged, and the page reads the primary" do
+      replica_answers([ false, nil ])
+      allow(Rails.logger).to receive(:error).and_call_original
+      expect(role_inside).to eq(:writing)
+      expect(described_class.down?).to be(true)
+      expect(Rails.logger).to have_received(:error)
+        .with("[replica] the replica server is not in recovery (promoted, or not a replica); pages read the primary for 30 seconds")
+    end
   end
 
   describe "a replica that lags" do
-    let(:connection) { ApplicationRecord.connection }
-
-    before do
-      allow(connection).to receive(:select_value).and_call_original
-      allow(Rails.configuration.x).to receive(:replica_max_wait_ms).and_return(50)
-    end
+    before { allow(Rails.configuration.x).to receive(:replica_max_wait_ms).and_return(50) }
 
     it "waits for it, up to FLEET_REPLICA_MAX_WAIT_MS" do
-      answers = [ false, false, true ]
-      allow(connection).to receive(:select_value).with(anything, "Replica caught up") { answers.shift }
+      replica_answers([ true, false ], [ true, false ], [ true, true ])
       expect(role_inside).to eq(:reading)
-      expect(answers).to be_empty
     end
 
-    it "reads the primary when it has not caught up in time, and tries it again on the next page" do
-      allow(connection).to receive(:select_value).with(anything, "Replica caught up").and_return(false)
+    it "reads the primary when it has not caught up in time, logs it, and tries it again on the next page" do
+      replica_answers([ true, false ])
       allow(Rails.logger).to receive(:info).and_call_original
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       expect(role_inside).to eq(:writing)
@@ -51,30 +72,84 @@ RSpec.describe ReplicaReads do
   end
 
   describe "a replica that fails" do
-    it "is not tried for BACKOFF after the check fails, and pages read the primary meanwhile" do
-      allow(ApplicationRecord.connection).to receive(:select_value).and_call_original
-      allow(ApplicationRecord.connection).to receive(:select_value).with(anything, "Replica caught up").and_raise(ActiveRecord::ConnectionNotEstablished)
-      expect(Rails.logger).to receive(:error).with(/\[replica\] ActiveRecord::ConnectionNotEstablished: pages read the primary for 30 seconds/)
+    it "is skipped for FLEET_REPLICA_SKIP_SECONDS after its check fails, with the error in the log" do
+      allow(Rails.configuration.x).to receive(:replica_skip_seconds).and_return(45)
+      connection = ApplicationRecord.connection
+      allow(connection).to receive(:select_rows).and_call_original
+      allow(connection).to receive(:select_rows).with(anything, "Replica caught up").and_raise(ActiveRecord::ConnectionNotEstablished, "connection refused\nmore")
+      expect(Rails.logger).to receive(:error).with("[replica] ActiveRecord::ConnectionNotEstablished: connection refused; pages read the primary for 45 seconds")
       expect(role_inside).to eq(:writing)
       expect(described_class.down?).to be(true)
       expect(described_class.caught_up?).to be(false)
-      travel(described_class::BACKOFF + 1.second) { expect(described_class.down?).to be(false) }
+      travel(46.seconds) { expect(described_class.down?).to be(false) }
     end
 
-    it "is marked down when it fails while a page reads it, and the error goes on to the page" do
-      # Tests share the writing pool with the reading role, so a replica's pool is stood in for.
-      pool = instance_double(ActiveRecord::ConnectionAdapters::ConnectionPool, role: :reading)
-      expect do
-        described_class.around { raise ActiveRecord::ConnectionNotEstablished.new("gone", connection_pool: pool) }
-      end.to raise_error(ActiveRecord::ConnectionNotEstablished)
+    it "leaves a failure of the primary's own query alone: it goes on, and the replica is not marked down" do
+      connection = ApplicationRecord.connection
+      allow(connection).to receive(:select_value).and_call_original
+      allow(connection).to receive(:select_value).with(anything, "Replica target").and_raise(ActiveRecord::ConnectionFailed)
+      expect { role_inside }.to raise_error(ActiveRecord::ConnectionFailed)
+      expect(described_class.down?).to be_falsey
+    end
+
+    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure ].each do |error|
+      it "is marked down when it raises #{error.name.demodulize} while a page reads it, and the page runs again on the primary" do
+        roles = []
+        value = described_class.around do
+          roles << ApplicationRecord.current_role
+          raise error.new("replica gone", connection_pool: replica_pool) if roles.size == 1
+
+          :from_primary
+        end
+        expect(value).to eq(:from_primary)
+        expect(roles).to eq(%i[reading writing])
+        expect(described_class.down?).to be(true)
+      end
+    end
+
+    it "finds the replica's error under a view's error" do
+      wrapped = begin
+        begin
+          raise ActiveRecord::ConnectionFailed.new("replica gone", connection_pool: replica_pool)
+        rescue ActiveRecord::ConnectionFailed
+          raise ActionView::Template::Error, "rendering failed"
+        end
+      rescue ActionView::Template::Error => e
+        e
+      end
+      calls = 0
+      expect(described_class.around { (calls += 1) == 1 ? raise(wrapped) : :again }).to eq(:again)
       expect(described_class.down?).to be(true)
     end
 
-    it "is not marked down for another database's connection error" do
-      expect do
-        described_class.around { raise ActiveRecord::ConnectionNotEstablished.new("queue gone", connection_pool: SolidQueue::Record.connection_pool) }
-      end.to raise_error(ActiveRecord::ConnectionNotEstablished)
+    it "passes the error on, after marking the replica down, when the page cannot run again" do
+      expect { described_class.around(fallback: -> { false }) { raise ActiveRecord::ConnectionFailed.new("gone", connection_pool: replica_pool) } }
+        .to raise_error(ActiveRecord::ConnectionFailed)
+      expect(described_class.down?).to be(true)
+    end
+
+    it "is not marked down for another database's error, or for a view error with none of its errors under it" do
+      expect { described_class.around { raise ActiveRecord::ConnectionNotEstablished.new("queue gone", connection_pool: SolidQueue::Record.connection_pool) } }
+        .to raise_error(ActiveRecord::ConnectionNotEstablished)
+      view_error = -> { raise "a broken view" rescue raise ActionView::Template::Error, "rendering failed" } # rubocop:disable Style/RescueModifier
+      expect { described_class.around(&view_error) }.to raise_error(ActionView::Template::Error)
       expect(described_class.down?).to be_falsey
+    end
+  end
+
+  # The GET and HEAD guard (review of #237): a page wrapped with reads_from_replica never reads the replica on another
+  # method, whatever the routes say.
+  describe ReplicaReads::Controller do
+    def role_for(method)
+      controller = HostsController.new
+      controller.set_request!(ActionDispatch::TestRequest.create("REQUEST_METHOD" => method))
+      controller.send(:read_from_replica) { ApplicationRecord.current_role }
+    end
+
+    it "reads the replica on GET and HEAD only" do
+      expect(role_for("GET")).to eq(:reading)
+      expect(role_for("HEAD")).to eq(:reading)
+      %w[POST PATCH PUT DELETE].each { |method| expect(role_for(method)).to eq(:writing), method }
     end
   end
 end

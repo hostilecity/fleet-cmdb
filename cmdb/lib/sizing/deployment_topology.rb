@@ -12,6 +12,9 @@
 #   ReplicaReads, and only once it has caught up. Unset, every page reads the primary.
 # - FLEET_REPLICA_MAX_WAIT_MS: how long such a page waits for the replica to catch up before it reads the primary
 #   (default 100).
+# - FLEET_REPLICA_SKIP_SECONDS: how long a replica that failed, or is not in recovery, is skipped (default 30).
+# - FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS: the replica's connect timeout (default 2), so an unreachable replica costs a
+#   page at most that before it reads the primary.
 # - FLEET_NODE_ROLE: "all" (default), "agent_api" (only the agent hostname), or "dashboard" (only the dashboard
 #   hostname, and health on the agent hostname), so the same image can run as either kind of node.
 #
@@ -21,6 +24,8 @@ module DeploymentTopology
   POOLERS = %w[transaction].freeze
   NODE_ROLES = %w[all agent_api dashboard].freeze
   REPLICA_WAIT_RANGE = (0..2000)
+  REPLICA_SKIP_RANGE = (1..3600)
+  REPLICA_CONNECT_TIMEOUT_RANGE = (1..60)
 
   module_function
 
@@ -39,13 +44,11 @@ module DeploymentTopology
 
   def replica?(env = ENV) = present?(env["REPLICA_DATABASE_URL"])
 
-  def replica_max_wait_ms(env = ENV)
-    value = env.fetch("FLEET_REPLICA_MAX_WAIT_MS", "100")
-    number = value.to_s.match?(/\A\d+\z/) ? value.to_i : -1
-    return number if REPLICA_WAIT_RANGE.cover?(number)
+  def replica_max_wait_ms(env = ENV) = whole("FLEET_REPLICA_MAX_WAIT_MS", 100, REPLICA_WAIT_RANGE, env)
 
-    raise ArgumentError, "FLEET_REPLICA_MAX_WAIT_MS must be a whole number from 0 to 2000, not #{value.inspect}"
-  end
+  def replica_skip_seconds(env = ENV) = whole("FLEET_REPLICA_SKIP_SECONDS", 30, REPLICA_SKIP_RANGE, env)
+
+  def replica_connect_timeout_seconds(env = ENV) = whole("FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS", 2, REPLICA_CONNECT_TIMEOUT_RANGE, env)
 
   def node_role(env = ENV)
     value = env.fetch("FLEET_NODE_ROLE", "all")
@@ -60,6 +63,8 @@ module DeploymentTopology
   def validate!(env = ENV)
     pooler(env)
     replica_max_wait_ms(env)
+    replica_skip_seconds(env)
+    replica_connect_timeout_seconds(env)
     node_role(env)
     return unless transaction_pooler?(env) && !direct?(env)
 
@@ -68,4 +73,13 @@ module DeploymentTopology
 
   def present?(value) = !value.nil? && !value.strip.empty?
   private_class_method :present?
+
+  def whole(name, default, range, env)
+    value = env.fetch(name, default.to_s)
+    number = value.to_s.match?(/\A\d+\z/) ? value.to_i : -1
+    return number if range.cover?(number)
+
+    raise ArgumentError, "#{name} must be a whole number from #{range.min} to #{range.max}, not #{value.inspect}"
+  end
+  private_class_method :whole
 end
