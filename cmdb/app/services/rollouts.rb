@@ -71,7 +71,8 @@ module Rollouts
       now = Time.current
       rollout = Rollout.create!(agent_release: release, started_by: actor, canary_host_ids: ids, canary_tag: tag,
                                 stage_percents: percents, started_at: now, stage_opened_at: now)
-      added = prepare_stage!(rollout, 0).to_i # a new rollout: nothing else can be preparing it
+      # A new rollout: nothing else can be preparing it, so nil here means the prepare lost its lock (#198).
+      added = prepare_stage!(rollout, 0) or raise Invalid, "Choosing the canaries was interrupted. Try again."
       raise Invalid.new("None of the canaries is an active host running an older version than #{release.version}.", field: :canary_tag) if added.zero?
 
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_STARTED, target: rollout,
@@ -391,12 +392,20 @@ module Rollouts
   #
   # Uncached: each batch's INSERT runs inside a SELECT (a CTE), which does not clear Active Record's query cache, and the
   # quota must be counted afresh in every batch.
+  #
+  # Behind a transaction-mode pooler the lock is on the direct connection (#198), and the prepare checks it still holds
+  # it before the re-time and before each batch (still_held). If it does not, the prepare stops, returning nil as when
+  # another prepare is running: the batch in progress rolls back, the batches before it stay chosen but hidden by the
+  # stage gate, and the next prepare carries on from the database's count, so the stage never gets more than its share.
   def prepare_stage!(rollout, stage)
-    ApplicationRecord.uncached { with_prepare_lock(rollout) { prepare_locked!(rollout, stage) } }
+    ApplicationRecord.uncached { with_prepare_lock(rollout) { |still_held| prepare_locked!(rollout, stage, still_held) } }
+  rescue SessionLock::Lost => e
+    Rails.logger.error("[rollouts] prepare of rollout #{rollout.id} stage #{stage} stopped: #{e.message}")
+    nil
   end
   private_class_method :prepare_stage!
 
-  def prepare_locked!(rollout, stage)
+  def prepare_locked!(rollout, stage, still_held)
     begin
       older = older_hosts(rollout.agent_release.semver)
       older = older.merge(canary_scope(rollout.canary_host_ids, rollout.canary_tag)) if stage.zero?
@@ -412,8 +421,11 @@ module Rollouts
       spread = stage_spread(size)
       # Offer times count from now; halted_seconds is subtracted so a past halt does not delay this stage (OFFER_DUE_SQL).
       base = Time.current - rollout.halted_seconds
-      retime_stage!(rollout, stage, base:, spread:) if in_stage.positive?
-      insert_stage_rows!(rollout, older, stage:, target:, spread:, base:)
+      if in_stage.positive?
+        still_held.call
+        retime_stage!(rollout, stage, base:, spread:)
+      end
+      insert_stage_rows!(rollout, older, stage:, target:, spread:, base:, still_held:)
       members.where(stage:).count
     end
   end
@@ -442,10 +454,11 @@ module Rollouts
   # statement, so one snapshot. What is still wanted is the target less the rollout's rows, counted in the batch's own
   # transaction, and a batch that adds more has its highest extra rows deleted by id there (review of #215). Each
   # host's offer time is base plus its offset (OFFER_DELAY_SQL).
-  def insert_stage_rows!(rollout, older, stage:, target:, spread:, base:)
+  def insert_stage_rows!(rollout, older, stage:, target:, spread:, base:, still_held:)
     after = 0
     loop do
       last = RolloutHost.transaction do
+        still_held.call # before this batch counts and inserts (#198)
         wanted = target && (target - rollout.rollout_hosts.count)
         next nil if wanted && wanted <= 0
 

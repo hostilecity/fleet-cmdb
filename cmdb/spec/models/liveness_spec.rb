@@ -147,6 +147,27 @@ RSpec.describe Liveness do
     expect(Host.connection.select_value(held)).to eq(0) # this connection's lock only: other databases share the cluster (review of #186)
   end
 
+  # Behind a transaction-mode pooler the lock is on the direct connection, idle while the batches run on another
+  # (#198, review of #237): if its session ends, the lock is gone, and the run must stop before its next batch.
+  it "stops before the next batch once the lock's session on the direct connection has ended" do
+    use_direct_database
+    stub_const("Liveness::BATCH_SIZE", 1)
+    others = Array.new(2) { enrolled_host.first }
+    ([ host ] + others).each { |h| travel_to(start) { record_heartbeat(h, agent_time: start) } }
+    batches = 0
+    allow(HostStatusEvent).to receive(:insert_all!).and_wrap_original do |original, *args|
+      original.call(*args)
+      expect(end_lock_holder(0, Liveness::EVALUATION_LOCK_KEY)).to eq(1) if (batches += 1) == 1
+    end
+    allow(FleetBroadcast).to receive(:hosts_changed)
+
+    expect { travel_to(start + 20.minutes) { described_class.evaluate! } }.to raise_error(SessionLock::Lost)
+    expect(batches).to eq(1) # no batch after the lock was lost
+    moved = HostLiveness.where(liveness_status: "offline").pluck(:host_id)
+    expect(moved.size).to eq(1)
+    expect(FleetBroadcast).to have_received(:hosts_changed).with(moved)
+  end
+
   it "closes the connection when the lock cannot be released, so the lock goes with it and no later run is blocked" do
     heartbeat_at(start)
     connection = Host.connection

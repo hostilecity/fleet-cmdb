@@ -12,25 +12,51 @@ module SessionLock
   module_function
 
   # Runs the block holding the advisory lock named by key_sql (one bigint, or two ints, as SQL), and returns its value;
-  # returns nil without running it when another session holds the lock. The block is given a check that raises Lost if
-  # the lock's server session has ended, which released the lock (Active Record reopens a lost connection without a
-  # word, so the check compares the server process): a run calls it between batches, so it never goes on unlocked. The lock is released first in ensure; if that fails, the connection is
-  # closed and dropped from the pool, which releases it (review of #212).
+  # returns nil without running it when another session holds the lock. The lock is released first in ensure; if that
+  # fails, the connection is closed and dropped from the pool, which releases it (review of #212).
+  #
+  # The block is given a check to call before each write that depends on the lock. On the direct connection it raises
+  # Lost when the lock's server session has ended, which released the lock: the lock connection sits idle while the
+  # work runs elsewhere, and Active Record reopens a lost connection without a word, so the check compares the server
+  # process id (an error on the lock connection counts as lost too). On the primary's own connection (nothing set, the
+  # homelab) the check does nothing, so that path runs the same statements as before #198.
   def hold(key_sql)
+    direct = direct?
     pool.with_connection do |connection|
-      pid, locked = connection.select_rows("SELECT pg_backend_pid(), pg_try_advisory_lock(#{key_sql})").first
+      locked, pid = lock(connection, key_sql, direct)
       return nil unless locked
 
       begin
-        yield -> { connection.select_value("SELECT pg_backend_pid()") == pid or raise Lost, "the session holding advisory lock #{key_sql} ended" }
+        yield(direct ? -> { verify!(connection, pid, key_sql) } : NO_CHECK)
       ensure
         release(connection, key_sql)
       end
     end
   end
 
+  NO_CHECK = -> { }
+
+  def direct? = DirectRecord.configured?
+
   # DirectRecord's pool when the direct database is configured, else the primary's.
-  def pool = DirectRecord.configured? ? DirectRecord.connection_pool : ApplicationRecord.connection_pool
+  def pool = direct? ? DirectRecord.connection_pool : ApplicationRecord.connection_pool
+
+  # [locked, server process id]; the id only on the direct connection, which the check needs it for.
+  def lock(connection, key_sql, direct)
+    return [ connection.select_value("SELECT pg_try_advisory_lock(#{key_sql})") ] unless direct
+
+    connection.select_rows("SELECT pg_try_advisory_lock(#{key_sql}), pg_backend_pid()").first
+  end
+  private_class_method :lock
+
+  def verify!(connection, pid, key_sql)
+    return if connection.select_value("SELECT pg_backend_pid()") == pid
+
+    raise Lost, "the session holding advisory lock #{key_sql} ended"
+  rescue ActiveRecord::ActiveRecordError => e
+    raise Lost, "the session holding advisory lock #{key_sql} failed: #{e.class}"
+  end
+  private_class_method :verify!
 
   def release(connection, key_sql)
     connection.select_value("SELECT pg_advisory_unlock(#{key_sql})")
