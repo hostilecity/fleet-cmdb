@@ -11,7 +11,7 @@
 Past about 10,000 agents, #198 plans PgBouncer in transaction mode, a read replica for the dashboard, and separate agent-API and dashboard nodes behind a load balancer. None of that could be switched on without code changes:
 
 - Rails uses prepared statements, and a session-level lock around migrations.
-- Three session-level advisory locks span several transactions: the liveness evaluation's (#186), a rollout stage prepare's (review of #215), and the partition maintenance run's (#195, #239).
+- Four session-level advisory locks span several transactions: the liveness evaluation's (#186), a rollout stage prepare's (review of #215), the partition maintenance run's (#195, #239), and the package backfill's (#196, #240).
 - No page could read a replica.
 - Every node served both hostnames.
 
@@ -21,8 +21,8 @@ The owner decided (2026-11-16) to build only what the app needs, as optional set
 
 - **`FLEET_DB_POOLER=transaction`** turns off prepared statements and Rails' migration advisory lock on the pooled databases (primary, cache, queue, cable, and the replica). Unset, nothing changes.
 - **Migrations never run through the pooler** (ADR 0025's "migrations run once on a direct connection"). With the pooler set, every task that migrates or loads a schema stops, and the entrypoint refuses to start a server unless `FLEET_DB_PREPARE=false`. Migrations run once per deploy in a one-off container from the same image, with its database URLs straight to PostgreSQL and the pooler unset, so Rails' lock is on. That one-off is the one migrating container, so no node has to be chosen. Rejected: migrating from a serving node over `DIRECT_DATABASE_URL`, which names only the primary, not the queue, cache, and cable databases. The owner wants the one-off in `cd.yml`, off unless `FLEET_DB_POOLER` is set; that is a follow-up to #237.
-- **`DIRECT_DATABASE_URL`**, required with the pooler: the primary without the pooler. `SessionLock` takes the three session-level advisory locks on it: liveness, rollout prepare, and partition maintenance. The work under each lock still runs on the pooled connection.
-  - Before each step that depends on the lock, the run checks the lock's server process id: each liveness batch, the prepare's re-time and each of its batches, and in partition maintenance each table, each partition created, each batch moved out of a default partition or moved forward, and each drop. A lost and silently reopened lock connection then stops the run before its next write.
+- **`DIRECT_DATABASE_URL`**, required with the pooler: the primary without the pooler. `SessionLock` takes the four session-level advisory locks on it: liveness, rollout prepare, partition maintenance, and the package backfill. The work under each lock still runs on the pooled connection.
+  - Before each step that depends on the lock, the run checks the lock's server process id: each liveness batch, the prepare's re-time and each of its batches, in partition maintenance each table, each partition created, each batch moved out of a default partition or moved forward, and each drop; and each batch of the package backfill. A lost and silently reopened lock connection then stops the run before its next write.
   - The check runs on every path, the homelab's included, which costs one small statement a batch (the owner's decision, 2026-11-18). On the homelab's single connection, Active Record reopens a dropped connection at the next transaction without the lock.
   - Every lock statement runs uncached. Inside a request or a job the query cache is on, and would otherwise answer the check with the first process id.
   - A stopped liveness run is caught up by the next minute's.
