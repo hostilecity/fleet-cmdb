@@ -4,6 +4,8 @@ namespace :partitions do
   desc "Create the history tables' partitions ahead, and their default partitions (also run after db:prepare and db:schema:load)"
   task ensure: :environment do
     created = Partitions.ensure!
+    next puts("Another partition maintenance run is in progress: nothing done.") if created.nil?
+
     made = created.reject { |_, names| names.empty? }
     puts(made.any? ? made.map { |table, names| "#{table}: created #{names.join(', ')}" } : "Every partition ahead exists.")
   end
@@ -20,7 +22,8 @@ namespace :partitions do
     end
     problems = Partitions.problems
     puts(problems.empty? ? "No problems." : problems.map { |p| "#{p.severity}: #{p.text}" })
-    puts "Audit guard (ops/postgres/audit-guard.sql): #{Partitions.audit_guard_installed? ? 'installed' : 'NOT installed: run it as the PostgreSQL superuser'}"
+    problem = Partitions.audit_guard_problem
+    puts "Audit guard (ops/postgres/audit-guard.sql): #{problem ? "does NOT hold: #{problem}" : 'installed'}"
   end
 
   desc "Report rows whose host, CIS rule, or rule version does not exist (the nightly check)"

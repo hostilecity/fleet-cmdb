@@ -72,6 +72,16 @@ module Partitions
     "cis_result_changes" => { "host_id" => "hosts", "cis_rule_id" => "cis_rules", "cis_rule_version_id" => "cis_rule_versions" }
   }.freeze
 
+  # The session advisory lock one maintenance run holds (maintain! and ensure!), so two never overlap: a boot-time
+  # partitions:ensure, the hourly job, and a manual run. The loser does nothing and says so.
+  LOCK_KEY = 195_027
+  RETIRED = "_retired".freeze
+  MOVING = "_default_moving".freeze
+  # Rows the default partition holds are moved back through the parent this many at a time, each its own transaction.
+  MOVE_BATCH = 1_000
+  ORPHANS_KEY = "partitions/orphans".freeze
+  REPORTED_KEY = "partitions/reported".freeze
+
   # Seconds between tries of a DDL statement (specs set 0).
   mattr_accessor :pause, default: 1
 
@@ -86,25 +96,51 @@ module Partitions
         return { "skipped" => "backup running" }
       end
 
-      created = dry_run ? {} : ensure!(now:)
-      { "created" => created, "retired" => Retention.retire!(now:, dry_run:) }
+      result = exclusively do
+        created = dry_run ? {} : ensure!(now:)
+        { "created" => created, "retired" => Retention.retire!(now:, dry_run:) }
+      end
+      return { "skipped" => "another maintenance run is in progress" } if result == :busy
+
+      report_changes(run_problems(now:)) unless dry_run
+      result
+    end
+
+    # Runs the block holding the maintenance lock, or returns :busy when another session holds it. Re-entrant within
+    # one session (maintain! calls ensure!).
+    def exclusively
+      return :busy unless connection.select_value("SELECT pg_try_advisory_lock(#{LOCK_KEY})")
+
+      begin
+        yield
+      ensure
+        connection.select_value("SELECT pg_advisory_unlock(#{LOCK_KEY})")
+      end
     end
 
     # Creates every table's default partition and its partitions up to AHEAD of now, and back to `from` when given
     # (the benchmark seed and specs write history in the past), moving any rows a new range finds in the default.
-    # Tables not converted yet are skipped. `tables` limits it to some tables. Returns { table => [created names] }.
+    # Tables not converted yet are skipped. `tables` limits it to some tables. Returns { table => [created names] }, or
+    # nil when another maintenance run holds the lock.
     def ensure!(now: Time.current, from: nil, tables: TABLES.keys)
-      TABLES.values_at(*tables).to_h do |table|
-        next [ table.name, [] ] unless partitioned?(table.name)
+      result = exclusively do
+        TABLES.values_at(*tables).to_h do |table|
+          next [ table.name, [] ] unless partitioned?(table.name)
 
-        [ table.name, ensure_table(table, now:, from:) ]
-      rescue Busy => e
-        Rails.logger.warn("[partitions] #{table.name}: #{e.message}; the next run tries again")
-        [ table.name, [] ]
-      end.tap do |created|
-        made = created.reject { |_, names| names.empty? }
-        Rails.logger.info("[partitions] created #{made.map { |t, names| "#{t}=#{names.size}" }.join(' ')}") if made.any?
+          [ table.name, ensure_table(table, now:, from:) ]
+        rescue Busy => e
+          Rails.logger.warn("[partitions] #{table.name}: #{e.message}; the next run tries again")
+          [ table.name, [] ]
+        end
       end
+      if result == :busy
+        Rails.logger.info("[partitions] another maintenance run is in progress: nothing done")
+        return nil
+      end
+
+      made = result.reject { |_, names| names.empty? }
+      Rails.logger.info("[partitions] created #{made.map { |t, names| "#{t}=#{names.size}" }.join(' ')}") if made.any?
+      result
     end
 
     def partitioned?(name)
@@ -122,23 +158,29 @@ module Partitions
 
     def legacy(name) = list(name).find(&:legacy?)
 
-    # Detaches a partition, then drops it, each in its own transaction under the lock timeout. Never an audit
-    # partition: the audit log is never pruned (FR-S.3, ADR 0027 decision 7).
+    # Detaches a partition and renames it <name>_retired, in one transaction under the lock timeout, then drops it in
+    # another. Never an audit partition: the audit log is never pruned (FR-S.3, ADR 0027 decision 7).
     def detach_and_drop!(name, partition)
       raise ArgumentError, "audit partitions are never detached or dropped (FR-S.3)" if table(name).audit?
 
-      with_lock_timeout { |c| c.execute("ALTER TABLE #{c.quote_table_name(name)} DETACH PARTITION #{c.quote_table_name(partition.name)}") }
-      with_lock_timeout { |c| c.execute("DROP TABLE #{c.quote_table_name(partition.name)}") }
+      retired = "#{partition.name}#{RETIRED}"
+      with_lock_timeout do |c|
+        c.execute("ALTER TABLE #{c.quote_table_name(name)} DETACH PARTITION #{c.quote_table_name(partition.name)}")
+        c.execute("ALTER TABLE #{c.quote_table_name(partition.name)} RENAME TO #{c.quote_table_name(retired)}")
+      end
+      with_lock_timeout { |c| c.execute("DROP TABLE #{c.quote_table_name(retired)}") }
     end
 
-    # Drops partitions an earlier run detached but could not drop (the drop is a transaction of its own).
+    # Drops partitions an earlier run detached but could not drop (the drop is a transaction of its own): only the ones
+    # this code detached, which it renamed <partition>_retired. A partition an operator detached keeps its name and is
+    # left alone.
     def drop_leftovers!(name)
       raise ArgumentError, "audit partitions are never detached or dropped (FR-S.3)" if table(name).audit?
 
       leftovers = connection.select_values(<<~SQL.squish)
         SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relispartition
-          AND (c.relname ~ #{connection.quote("^#{name}_p[0-9]{8}$")} OR c.relname = #{connection.quote("#{name}_legacy")})
+          AND c.relname ~ #{connection.quote("^#{name}_(p[0-9]{8}|legacy)#{RETIRED}$")}
       SQL
       leftovers.each { |relname| with_lock_timeout { |c| c.execute("DROP TABLE #{c.quote_table_name(relname)}") } }
       leftovers
@@ -153,10 +195,10 @@ module Partitions
     end
 
     # What /health reports: :failing when the audit log has fewer than MIN_AHEAD months ahead (its writes would fail),
-    # :warning for any other problem, otherwise :ok. Each problem is logged.
+    # :warning for any other problem (orphans found by the nightly check included), otherwise :ok. The hourly run logs
+    # problems as they appear and clear (report_changes), not every request.
     def health(now: Time.current)
-      found = problems(now:)
-      found.each { |problem| Rails.logger.warn("[health] partitions: #{problem.text}") }
+      found = problems(now:) + orphan_problems
       return :ok if found.empty?
 
       found.any? { |problem| problem.severity == :failing } ? :failing : :warning
@@ -166,13 +208,59 @@ module Partitions
       TABLES.each_value.select { |table| partitioned?(table.name) }.flat_map { |table| table_problems(table, now) }
     end
 
-    # The hardened audit guard (ops/postgres/audit-guard.sql) is installed: both event triggers enabled, and the
-    # guard function owned by a superuser. /health shows a warning, not a failure, without it.
-    def audit_guard_installed?
-      connection.select_value(<<~SQL.squish)
-        SELECT (SELECT count(*) FROM pg_event_trigger WHERE evtname IN (#{AUDIT_EVENT_TRIGGERS.map { |n| connection.quote(n) }.join(', ')}) AND evtenabled <> 'D') = #{AUDIT_EVENT_TRIGGERS.size}
-           AND (SELECT r.rolsuper FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.oid = 'public.audit_entries_append_only()'::regprocedure)
+    # The hardened audit guard (ops/postgres/audit-guard.sql) holds. /health shows a warning, not a failure, without it.
+    def audit_guard_installed? = audit_guard_problem.nil?
+
+    # Why the audit guard does not hold, or nil when it does: the app's role, or the owner of audit_entries, is a
+    # superuser (no guard holds against one); an event trigger is missing or disabled; the guard function is not the
+    # superuser's; or a partition is not among the objects the guard protects (it was created while the guard was off).
+    def audit_guard_problem
+      c = connection
+      return "the app's PostgreSQL role is a superuser, so no guard can hold against it" if c.select_value("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+      if c.select_value("SELECT r.rolsuper FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner WHERE c.oid = 'public.audit_entries'::regclass")
+        return "audit_entries is owned by a PostgreSQL superuser, so no guard can hold against it"
+      end
+      enabled = c.select_value("SELECT count(*) FROM pg_event_trigger WHERE evtname IN (#{AUDIT_EVENT_TRIGGERS.map { |n| c.quote(n) }.join(', ')}) AND evtenabled <> 'D'")
+      return "the audit log's event triggers are not installed (the superuser runs ops/postgres/audit-guard.sql)" if enabled < AUDIT_EVENT_TRIGGERS.size
+      unless c.select_value("SELECT r.rolsuper FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.oid = 'public.audit_entries_append_only()'::regprocedure")
+        return "the guard function audit_entries_append_only() is not owned by the superuser (run ops/postgres/audit-guard.sql)"
+      end
+      missing = c.select_values(<<~SQL.squish)
+        SELECT t.relid::regclass::text FROM pg_partition_tree('public.audit_entries'::regclass) t
+        WHERE NOT EXISTS (SELECT 1 FROM fleet_audit_guard.protected p WHERE p.objid = t.relid AND p.kind IN ('parent', 'partition'))
       SQL
+      "#{missing.join(', ')} not protected by the audit guard (the superuser runs ops/postgres/audit-guard.sql again)" if missing.any?
+    end
+
+    # What an operator should look at, as sentences, for the banner on every dashboard page: what the last hourly run
+    # found (partition problems and, in production, an audit guard that does not hold) and the rows the nightly check
+    # found without their host or rule. Read from the cache those jobs write, so a page view runs no catalog query.
+    def attention = (Rails.cache.read(REPORTED_KEY) || []) + orphan_problems.map(&:text)
+
+    # What the hourly run found, for the banner: partition problems and, in production, an audit guard that does not hold.
+    def run_problems(now: Time.current)
+      found = problems(now:)
+      if Rails.env.production? && (guard = audit_guard_problem)
+        found << Problem.new(severity: :warning, text: "The audit log's guard does not hold: #{guard}.")
+      end
+      found
+    end
+
+    # Logs each problem when it appears, and once more when it clears, instead of on every /health request, and keeps
+    # the list for the banner (two hours: an hourly run that stops reporting lets it lapse). The hourly run calls it.
+    def report_changes(found)
+      texts = found.map(&:text)
+      before = Rails.cache.read(REPORTED_KEY) || []
+      (texts - before).each { |text| Rails.logger.warn("[partitions] needs attention: #{text}") }
+      (before - texts).each { |text| Rails.logger.info("[partitions] resolved: #{text}") }
+      Rails.cache.write(REPORTED_KEY, texts, expires_in: 2.hours)
+    end
+
+    # The nightly check's last finding, kept two days, as problems.
+    def orphan_problems
+      (Rails.cache.read(ORPHANS_KEY) || {}).map do |column, count|
+        Problem.new(severity: :warning, text: "#{column}: #{count} recent rows name a host or rule that does not exist (bin/rails partitions:check)")
+      end
     end
 
     # The nightly check (PartitionCheckJob, `bin/rails partitions:check`): rows whose host, rule, or rule version does
@@ -246,11 +334,12 @@ module Partitions
 
     def ensure_table(table, now:, from:)
       created = []
+      limit = now + table.ahead_span(now)
+      moving = table.default ? set_aside_default(table, limit + LONG_WIDTH + 1.day) : nil
       parts = list(table.name)
       created << create_default(table) if table.default && parts.none?(&:default?)
       ranged = parts.reject(&:default?)
-      oldest_default = table.default ? default_bounds(table).first : nil
-      back_to = [ from, oldest_default ].compact.min
+      back_to = [ from, moving && bounds(moving, table.key).first ].compact.min
       step = width_step(table)
 
       cursor = ranged.map(&:to).max || align(table, back_to || now)
@@ -262,20 +351,55 @@ module Partitions
           start = before
         end
       end
-      limit = now + table.ahead_span(now)
       while cursor <= limit
         after = step.call(cursor, 1)
         created << create_partition(table, cursor, after)
         cursor = after
       end
+      move_back(table, moving) if moving
       created
     end
 
-    def default_bounds(table)
+    # A default partition holding rows the partitions about to be created would cover (PostgreSQL refuses a partition
+    # whose range has rows in the default) is detached and renamed <table>_default_moving, and an empty default takes
+    # its place, all in one short transaction: no lock is held while its rows are copied (move_back). Returns that table's
+    # name, or nil. One left by an interrupted run is picked up again.
+    def set_aside_default(table, horizon)
       c = connection
-      c.select_rows("SELECT min(#{table.key}), max(#{table.key}) FROM #{c.quote_table_name("#{table.name}_default")}").first.map do |v|
-        v && Time.find_zone("UTC").parse(v.to_s)
+      moving = "#{table.name}#{MOVING}"
+      return moving if c.table_exists?(moving)
+
+      default = "#{table.name}_default"
+      return nil unless c.table_exists?(default) && c.select_value("SELECT 1 FROM #{c.quote_table_name(default)} WHERE #{table.key} < #{c.quote(horizon)} LIMIT 1")
+
+      with_lock_timeout do
+        c.execute("ALTER TABLE #{c.quote_table_name(table.name)} DETACH PARTITION #{c.quote_table_name(default)}")
+        c.execute("ALTER TABLE #{c.quote_table_name(default)} RENAME TO #{c.quote_table_name(moving)}")
+        c.execute("CREATE TABLE #{c.quote_table_name(default)} PARTITION OF #{c.quote_table_name(table.name)} DEFAULT")
       end
+      moving
+    end
+
+    # Moves the set-aside default's rows back through the parent, MOVE_BATCH at a time, each batch its own short
+    # transaction (only ROW EXCLUSIVE on the parent), into the partitions now created for them (rows past them go to
+    # the new default), then drops it. Until a row is moved back, readers do not see it.
+    def move_back(table, moving)
+      c = connection
+      loop do
+        moved = ApplicationRecord.transaction(requires_new: true) do
+          c.exec_update(<<~SQL.squish)
+            WITH batch AS (DELETE FROM #{c.quote_table_name(moving)} WHERE ctid = ANY (ARRAY(SELECT ctid FROM #{c.quote_table_name(moving)} LIMIT #{MOVE_BATCH})) RETURNING *)
+            INSERT INTO #{c.quote_table_name(table.name)} SELECT * FROM batch
+          SQL
+        end
+        break if moved < MOVE_BATCH
+      end
+      with_lock_timeout { c.execute("DROP TABLE #{c.quote_table_name(moving)}") }
+    end
+
+    def bounds(relname, key)
+      c = connection
+      c.select_rows("SELECT min(#{key}), max(#{key}) FROM #{c.quote_table_name(relname)}").first.map { |v| v && Time.find_zone("UTC").parse(v.to_s) }
     end
 
     def create_default(table)
@@ -284,27 +408,15 @@ module Partitions
       name
     end
 
-    # Creates the partition for [from, to). Rows the default holds in that range move into it in the same transaction
-    # (PostgreSQL refuses a partition whose range has rows in the default).
+    # Creates the partition for [from, to). Its range holds no rows in the default: set_aside_default moved them out.
     def create_partition(table, from, to)
       name = "#{table.name}_p#{from.strftime('%Y%m%d')}"
       with_lock_timeout do |c|
-        parent = c.quote_table_name(table.name)
-        range = "#{table.key} >= #{c.quote(from)} AND #{table.key} < #{c.quote(to)}"
-        moving = table.default && c.select_value("SELECT 1 FROM #{c.quote_table_name("#{table.name}_default")} WHERE #{range} LIMIT 1")
-        if moving
-          c.execute("CREATE TEMP TABLE partition_rows (LIKE #{parent}) ON COMMIT DROP")
-          c.execute("WITH moved AS (DELETE FROM #{c.quote_table_name("#{table.name}_default")} WHERE #{range} RETURNING *) INSERT INTO partition_rows SELECT * FROM moved")
-        end
-        c.execute("CREATE TABLE #{c.quote_table_name(name)} PARTITION OF #{parent} FOR VALUES FROM (#{c.quote(from)}) TO (#{c.quote(to)})")
+        c.execute("CREATE TABLE #{c.quote_table_name(name)} PARTITION OF #{c.quote_table_name(table.name)} FOR VALUES FROM (#{c.quote(from)}) TO (#{c.quote(to)})")
         # Its own truncate guard: a statement trigger is not cloned from the parent. Once the superuser's event trigger is
         # installed (ops/postgres/audit-guard.sql), it has already added one.
         if table.audit? && !c.select_value("SELECT 1 FROM pg_trigger WHERE tgrelid = #{c.quote(name)}::regclass AND tgname = #{c.quote(table.truncate_guard)}")
           c.execute("CREATE TRIGGER #{table.truncate_guard} BEFORE TRUNCATE ON #{c.quote_table_name(name)} FOR EACH STATEMENT EXECUTE FUNCTION #{table.name}_append_only()")
-        end
-        if moving
-          c.execute("INSERT INTO #{parent} SELECT * FROM partition_rows")
-          c.execute("DROP TABLE partition_rows")
         end
       end
       name
@@ -317,6 +429,9 @@ module Partitions
       default = parts.find(&:default?)
       if default && connection.select_value("SELECT EXISTS (SELECT 1 FROM #{connection.quote_table_name(default.name)})")
         found << Problem.new(severity: :warning, text: "#{table.name}: the default partition has rows (the next maintenance run moves them)")
+      end
+      if connection.table_exists?("#{table.name}#{MOVING}")
+        found << Problem.new(severity: :warning, text: "#{table.name}: rows set aside from the default partition are still being moved back")
       end
       ahead = ranged.count { |p| p.from && p.from > now }
       if ahead < MIN_AHEAD

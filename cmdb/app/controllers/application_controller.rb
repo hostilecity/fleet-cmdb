@@ -14,7 +14,7 @@ class ApplicationController < ActionController::Base
   # Current.request_id, which audit entries record (FR-S.3), is set for every request by RequestContext.
   before_action :require_operator!
 
-  helper_method :current_operator, :failed_job_count
+  helper_method :current_operator, :failed_job_count, :maintenance_attention
 
   def self.allow_unauthenticated_access(**options)
     skip_before_action :require_operator!, **options
@@ -31,6 +31,17 @@ class ApplicationController < ActionController::Base
   rescue ActiveRecord::ActiveRecordError => e
     logger.error("[jobs] failed-job count unavailable: #{e.class}")
     @failed_job_count = nil
+  end
+
+  # What the history partitions' maintenance needs an operator to look at, for the banner on every page (#195, ADR
+  # 0027): what the hourly and nightly jobs last found (Partitions.attention). It must not take the page down either.
+  def maintenance_attention
+    return @maintenance_attention if defined?(@maintenance_attention)
+
+    @maintenance_attention = Partitions.attention
+  rescue ActiveRecord::ActiveRecordError => e
+    logger.error("[partitions] maintenance status unavailable: #{e.class}")
+    @maintenance_attention = []
   end
 
   def current_operator = Current.operator

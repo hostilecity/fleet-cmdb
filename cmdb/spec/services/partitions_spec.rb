@@ -154,9 +154,14 @@ RSpec.describe Partitions do
       expect(names(receipts)).not_to include(first.name)
       expect(c.table_exists?(first.name)).to be(false)
 
+      # One this code detached (renamed _retired) is dropped; one an operator detached keeps its name and stays.
+      third = described_class.list(receipts).reject(&:default?).second
       c.execute("ALTER TABLE #{receipts} DETACH PARTITION #{second.name}")
-      expect(described_class.drop_leftovers!(receipts)).to eq([ second.name ])
-      expect(c.table_exists?(second.name)).to be(false)
+      c.execute("ALTER TABLE #{second.name} RENAME TO #{second.name}_retired")
+      c.execute("ALTER TABLE #{receipts} DETACH PARTITION #{third.name}")
+      expect(described_class.drop_leftovers!(receipts)).to eq([ "#{second.name}_retired" ])
+      expect(c.table_exists?("#{second.name}_retired")).to be(false)
+      expect(c.table_exists?(third.name)).to be(true)
     end
   end
 
@@ -168,6 +173,7 @@ RSpec.describe Partitions do
         expect(described_class.maintain!).to eq("skipped" => "backup running")
       end
       expect(Retention).not_to have_received(:retire!)
+      20.times { described_class.backup_running? ? sleep(0.1) : break } # the closed session may linger briefly
       expect(described_class.backup_running?).to be(false)
     end
 
@@ -188,10 +194,9 @@ RSpec.describe Partitions do
     end
 
     it "warns about rows in a default partition, partitions due for retirement, and too few ahead" do
-      allow(Rails.logger).to receive(:warn)
       receipt(1.year.from_now)
       expect(described_class.health).to eq(:warning)
-      expect(Rails.logger).to have_received(:warn).with("[health] partitions: #{receipts}: the default partition has rows (the next maintenance run moves them)")
+      expect(described_class.problems.map(&:text)).to include("#{receipts}: the default partition has rows (the next maintenance run moves them)")
 
       described_class.ensure!(from: 12.days.ago, tables: [ receipts ])
       expect(described_class.problems.map(&:text)).to include("#{receipts}: a partition has been due for retirement for 3 days")
@@ -229,6 +234,92 @@ RSpec.describe Partitions do
       allow(described_class).to receive(:partitioned?).and_return(false)
       receipt(Time.current, host_id: 2_000_000_000)
       expect(described_class.orphans).to eq({})
+    end
+  end
+  describe "moving rows out of a default partition (review of #239)" do
+    let(:first) { described_class.list(receipts).reject(&:default?).first }
+
+    it "sets the default aside, puts an empty one in its place, and moves its rows back in batches, each its own statement" do
+      stub_const("Partitions::MOVE_BATCH", 2)
+      ids = Array.new(5) { |i| receipt(first.from - 2.days + i.minutes).rows.first.first }
+      ahead = receipt(2.years.from_now).rows.first.first
+      inserts = []
+      counter = ->(*, payload) { inserts << payload[:sql] if payload[:sql].start_with?("WITH batch AS (DELETE FROM") }
+
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { described_class.ensure!(tables: [ receipts ]) }
+
+      expect(inserts.size).to eq(4) # 2 + 2 + 2 (the row far ahead too, which goes back to the new default), then none left
+      expect(c.table_exists?("#{receipts}_default_moving")).to be(false)
+      expect(ids.map { |id| c.select_value("SELECT tableoid::regclass::text FROM #{receipts} WHERE id = #{id}") }.uniq)
+        .to eq([ "#{receipts}_p#{(first.from - 2.days).strftime('%Y%m%d')}" ])
+      expect(c.select_value("SELECT tableoid::regclass::text FROM #{receipts} WHERE id = #{ahead}")).to eq("#{receipts}_default")
+    end
+
+    it "leaves rows far ahead in the default without setting it aside" do
+      receipt(2.years.from_now)
+      expect(described_class.ensure!(tables: [ receipts ])).to eq(receipts => [])
+      expect(c.table_exists?("#{receipts}_default_moving")).to be(false)
+    end
+
+    it "picks up rows set aside by a run that stopped part-way, and says so until they are back" do
+      c.execute("CREATE TABLE #{receipts}_default_moving (LIKE #{receipts})")
+      c.execute("INSERT INTO #{receipts}_default_moving (id, host_id, report_id, received_at) VALUES (nextval('#{receipts}_id_seq'), #{host.id}, gen_random_uuid(), #{c.quote(first.from - 1.day)})")
+      expect(described_class.problems.map(&:text)).to include("#{receipts}: rows set aside from the default partition are still being moved back")
+
+      described_class.ensure!(tables: [ receipts ])
+
+      expect(c.table_exists?("#{receipts}_default_moving")).to be(false)
+      expect(c.select_value("SELECT count(*) FROM #{receipts}_p#{(first.from - 1.day).strftime('%Y%m%d')}")).to eq(1)
+    end
+  end
+
+  describe "one maintenance run at a time (review of #239)" do
+    it "does nothing, and says so, while another session holds the maintenance lock" do
+      allow(Rails.logger).to receive(:info)
+      allow(Retention).to receive(:retire!)
+      other_session do |session|
+        session.exec("SELECT pg_advisory_lock(#{described_class::LOCK_KEY})")
+        expect(described_class.maintain!).to eq("skipped" => "another maintenance run is in progress")
+        expect(described_class.ensure!).to be_nil
+        session.exec("SELECT pg_advisory_unlock(#{described_class::LOCK_KEY})")
+      end
+      expect(Retention).not_to have_received(:retire!)
+      expect(Rails.logger).to have_received(:info).with("[partitions] another maintenance run is in progress: nothing done")
+      expect(described_class.ensure!).to eq(described_class::TABLES.keys.index_with { [] })
+    end
+  end
+
+  describe ".attention and .report_changes (review of #239)" do
+    let(:cache) { ActiveSupport::Cache::MemoryStore.new }
+
+    before { allow(Rails).to receive(:cache).and_return(cache) }
+
+    it "logs a problem once when it appears and once when it clears, not on every request" do
+      allow(Rails.logger).to receive(:warn)
+      allow(Rails.logger).to receive(:info)
+      problem = described_class::Problem.new(severity: :warning, text: "inventory_report_receipts: the default partition has rows")
+      2.times { described_class.report_changes([ problem ]) }
+      described_class.report_changes([])
+      expect(Rails.logger).to have_received(:warn).with("[partitions] needs attention: #{problem.text}").once
+      expect(Rails.logger).to have_received(:info).with("[partitions] resolved: #{problem.text}").once
+    end
+
+    it "has the maintenance run report its problems, and lists them, and the nightly check's orphans, for the banner" do
+      receipt(1.year.from_now)
+      allow(Rails.logger).to receive(:warn)
+      described_class.maintain!
+      expect(Rails.logger).to have_received(:warn).with("[partitions] needs attention: #{receipts}: the default partition has rows (the next maintenance run moves them)")
+
+      cache.write(described_class::ORPHANS_KEY, { "inventory_report_receipts.host_id" => 2 })
+      expect(described_class.attention).to eq([ "#{receipts}: the default partition has rows (the next maintenance run moves them)",
+                                                "inventory_report_receipts.host_id: 2 recent rows name a host or rule that does not exist (bin/rails partitions:check)" ])
+      expect(described_class.health).to eq(:warning)
+    end
+
+    it "adds an audit guard that does not hold, in production" do
+      allow(Rails.env).to receive(:production?).and_return(true)
+      described_class.maintain!
+      expect(described_class.attention).to eq([ "The audit log's guard does not hold: the app's PostgreSQL role is a superuser, so no guard can hold against it." ])
     end
   end
 end

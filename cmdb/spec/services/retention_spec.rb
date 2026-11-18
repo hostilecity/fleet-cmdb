@@ -441,6 +441,14 @@ RSpec.describe Retention do
       expect(described_class.perform_now).to eq("inventory_report_receipts.host_id" => 1)
       expect(Rails.logger).to have_received(:error).with("[partitions] rows with no matching host or rule: inventory_report_receipts.host_id=1")
     end
+
+    it "keeps what it found for /health and the dashboard banner" do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      allow(Rails).to receive(:cache).and_return(cache)
+      InventoryReportReceipt.insert!({ host_id: 2_000_000_000, report_id: SecureRandom.uuid, received_at: Time.current })
+      described_class.perform_now
+      expect(Partitions.attention).to eq([ "inventory_report_receipts.host_id: 1 recent rows name a host or rule that does not exist (bin/rails partitions:check)" ])
+    end
   end
 
   describe ".register" do

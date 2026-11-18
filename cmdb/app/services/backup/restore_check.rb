@@ -80,10 +80,10 @@ module Backup
     def check_partitions
       health = Partitions.health
       check "history partitions: #{health} (bin/rails partitions:status lists them)", health != :failing
-      if Partitions.audit_guard_installed?
-        pass "the audit log's event triggers are installed"
+      if (problem = Partitions.audit_guard_problem)
+        warn_with "the audit log's guard does not hold (#{problem}): after a real restore, the PostgreSQL superuser runs ops/postgres/audit-guard.sql"
       else
-        warn_with "the audit log's event triggers are not installed: after a real restore, the PostgreSQL superuser runs ops/postgres/audit-guard.sql"
+        pass "the audit log's event triggers are installed"
       end
     end
 

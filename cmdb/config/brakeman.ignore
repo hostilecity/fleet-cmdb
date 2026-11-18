@@ -3,18 +3,18 @@
     {
       "warning_type": "SQL Injection",
       "warning_code": 0,
-      "fingerprint": "c53de1f9a9aec1df1a6555d61ce8dffb2a34b26493a910173147a6cb240bd90f",
+      "fingerprint": "a98d6076304e9bedf698a835d16cd2a6837944cb6c47a033057a2a25dcf62ee6",
       "check_name": "SQL",
       "message": "Possible SQL injection",
       "file": "app/services/partitions.rb",
-      "line": 173,
+      "line": 225,
       "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
-      "code": "connection.select_value(\"SELECT (SELECT count(*) FROM pg_event_trigger WHERE evtname IN (#{[\"fleet_audit_guard_drop\", \"fleet_audit_guard_ddl\"].map do\n connection.quote(:BRAKEMAN_SAFE_LITERAL)\n end.join(\", \")}) AND evtenabled <> 'D') = #{[\"fleet_audit_guard_drop\", \"fleet_audit_guard_ddl\"].size}\\n   AND (SELECT r.rolsuper FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.oid = 'public.audit_entries_append_only()'::regprocedure)\\n\".squish)",
+      "code": "connection.select_value(\"SELECT count(*) FROM pg_event_trigger WHERE evtname IN (#{[\"fleet_audit_guard_drop\", \"fleet_audit_guard_ddl\"].map do\n connection.quote(:BRAKEMAN_SAFE_LITERAL)\n end.join(\", \")}) AND evtenabled <> 'D'\")",
       "render_path": null,
       "location": {
         "type": "method",
         "class": "Partitions",
-        "method": "self.audit_guard_installed?"
+        "method": "self.audit_guard_problem"
       },
       "user_input": "[\"fleet_audit_guard_drop\", \"fleet_audit_guard_ddl\"].map do\n connection.quote(:BRAKEMAN_SAFE_LITERAL)\n end.join(\", \")",
       "confidence": "Medium",
@@ -30,7 +30,7 @@
       "check_name": "SQL",
       "message": "Possible SQL injection",
       "file": "app/services/partitions.rb",
-      "line": 189,
+      "line": 277,
       "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
       "code": "connection.select_value(\"SELECT count(*) FROM #{connection.quote_table_name(partition.name)} x\\nWHERE x.#{column} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM #{referenced} r WHERE r.id = x.#{column})\\n\".squish)",
       "render_path": null,
@@ -49,20 +49,43 @@
     {
       "warning_type": "SQL Injection",
       "warning_code": 0,
-      "fingerprint": "9dec84c0a4aeb7752d84326eb755f421cc669e90778b6831dd9225975d21c437",
+      "fingerprint": "8d6325e1c71fcc35de0f30dbf06941d8b16b68d06e39d9328dc20d87851d2628",
       "check_name": "SQL",
       "message": "Possible SQL injection",
       "file": "app/services/partitions.rb",
-      "line": 276,
+      "line": 373,
       "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
-      "code": "connection.select_rows(\"SELECT min(#{table.key}), max(#{table.key}) FROM #{connection.quote_table_name(\"#{table.name}_default\")}\")",
+      "code": "connection.select_value(\"SELECT 1 FROM #{connection.quote_table_name(\"#{table.name}_default\")} WHERE #{table.key} < #{connection.quote(horizon)} LIMIT 1\")",
       "render_path": null,
       "location": {
         "type": "method",
         "class": "Partitions",
-        "method": "self.default_bounds"
+        "method": "self.set_aside_default"
       },
       "user_input": "table.key",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "note": "Partitions (ADR 0027, #195): identifiers are table and column names from the constants Partitions::TABLES and REFERENCES, or partition names read from pg_inherits and quoted with quote_table_name; times are quoted with connection.quote. No request input reaches it."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "9ab0737745c80848e826df99e4e5a1cccf4a32f251fd965301f197f33fd2dbfd",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "app/services/partitions.rb",
+      "line": 402,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "connection.select_rows(\"SELECT min(#{key}), max(#{key}) FROM #{connection.quote_table_name(relname)}\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Partitions",
+        "method": "self.bounds"
+      },
+      "user_input": "key",
       "confidence": "Medium",
       "cwe_id": [
         89
@@ -375,7 +398,7 @@
       "check_name": "SQL",
       "message": "Possible SQL injection",
       "file": "script/benchmark/explain.rb",
-      "line": 110,
+      "line": 115,
       "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
       "code": "ApplicationRecord.connection.select_value(\"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) #{sql}\")",
       "render_path": null,

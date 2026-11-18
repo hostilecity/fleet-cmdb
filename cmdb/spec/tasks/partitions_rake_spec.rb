@@ -21,6 +21,11 @@ RSpec.describe "partitions rake tasks" do
     expect(run("partitions:ensure")).to eq("audit_entries: created audit_entries_p20270301\n")
   end
 
+  it "does nothing while another maintenance run holds the lock" do
+    allow(Partitions).to receive(:ensure!).and_return(nil)
+    expect(run("partitions:ensure")).to eq("Another partition maintenance run is in progress: nothing done.\n")
+  end
+
   it "runs after db:prepare and db:schema:load" do
     %w[db:prepare db:schema:load db:schema:load:primary].each do |name|
       expect(Rake::Task[name].actions.size).to be >= 1, name
@@ -34,11 +39,11 @@ RSpec.describe "partitions rake tasks" do
   it "lists each table's partitions, the problems, and the audit guard" do
     output = run("partitions:status")
     expect(output).to include("audit_entries: ", "inventory_report_receipts: ", ", default", "No problems.",
-                              "Audit guard (ops/postgres/audit-guard.sql): NOT installed: run it as the PostgreSQL superuser")
+                              "Audit guard (ops/postgres/audit-guard.sql): does NOT hold: the app's PostgreSQL role is a superuser")
     first = Partitions.list("inventory_snapshots").reject(&:default?).first
     ApplicationRecord.connection.execute("CREATE TABLE inventory_snapshots_legacy PARTITION OF inventory_snapshots FOR VALUES FROM (MINVALUE) TO ('#{first.from.to_fs(:db)}')")
     InventoryReportReceipt.insert!({ host_id: create(:host).id, report_id: SecureRandom.uuid, received_at: 1.year.from_now })
-    allow(Partitions).to receive(:audit_guard_installed?).and_return(true)
+    allow(Partitions).to receive(:audit_guard_problem).and_return(nil)
     output = run("partitions:status")
     expect(output).to include("inventory_snapshots: #{Partitions.list('inventory_snapshots').count { |p| !p.default? }} partitions, MINVALUE to",
                               ", legacy partition until #{first.from.to_date}",
