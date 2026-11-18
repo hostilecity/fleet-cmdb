@@ -21,8 +21,14 @@ class PackageStoreBackfill
   # Another backfill holds the lock (two `docker exec` at once, for example): nothing was done by this one.
   class Busy < StandardError; end
 
-  # Measured seconds per unit of work, on 2 shared CPUs (review of #240): what estimated_seconds adds up.
+  # Measured seconds per unit of work, on 2 shared CPUs under load 9 to 11 (reviews of #240, #196 follow-up): what
+  # estimated_seconds adds up. A list costs at least SECONDS_PER_LIST, and each of its packages SECONDS_PER_PACKAGE
+  # when its chunks are new (the bound for large, varied lists; lists that share chunks cost less); each dpkg row
+  # pointed at a set costs SECONDS_PER_ROW. 500 lists of 3,000 new packages took 302 s, and 400,000 rows over 20
+  # lists 38 s: the rates are rounded up from those, so a busy VM still finishes what the estimate lets run inline.
   SECONDS_PER_LIST = 0.03
+  SECONDS_PER_PACKAGE = 0.00021
+  SECONDS_PER_ROW = 0.0001
   SECONDS_PER_FINDING = 0.00012
   # The session advisory lock that keeps two backfills from running at once, through SessionLock (#198): on the direct
   # connection behind a transaction-mode pooler, uncached, and checked before each batch. LOCK takes it in a statement
@@ -48,19 +54,25 @@ class PackageStoreBackfill
   # Whether the old storage is still there to move.
   def needed? = @connection.table_exists?(:host_packages)
 
-  # How much is left: distinct dpkg hashes (hosts and snapshots), unreadable hosts, and finding rows not copied.
+  # How much is left: distinct dpkg hashes (hosts and snapshots), unreadable hosts, the packages in those lists, the
+  # dpkg rows to point at a set, and finding rows not copied.
   def pending
-    return { "hashes" => 0, "unreadable_hosts" => 0, "findings" => 0 } unless needed?
+    return { "hashes" => 0, "unreadable_hosts" => 0, "packages" => 0, "rows" => 0, "findings" => 0 } unless needed?
 
-    { "hashes" => HostPackageSet.where(UNSET).distinct.count(:content_hash) + PackageSnapshot.where(UNSET).distinct.count(:content_hash),
-      "unreadable_hosts" => HostPackageSet.where(manager: "unreadable", package_set_id: nil).count,
+    unreadable = HostPackageSet.where(manager: "unreadable", package_set_id: nil)
+    { "hashes" => [ HostPackageSet, PackageSnapshot ].sum { |model| model.where(UNSET).distinct.count(:content_hash) },
+      "unreadable_hosts" => unreadable.count,
+      "packages" => [ HostPackageSet, PackageSnapshot ].sum { |model| distinct_packages(model) } + unreadable.sum(:package_count),
+      "rows" => [ HostPackageSet, PackageSnapshot ].sum { |model| model.where(UNSET).count },
       "findings" => VulnerabilityFinding.where(last_ecosystem: nil).count }
   end
 
-  # How long the work left should take, in seconds, from the measured rates.
+  # How long the work left should take, in seconds, from the measured rates: the lists by their number or their
+  # packages, whichever costs more, plus the rows and the findings.
   def estimated_seconds
     left = pending
-    (left["hashes"] + left["unreadable_hosts"]) * SECONDS_PER_LIST + left["findings"] * SECONDS_PER_FINDING
+    lists = [ (left["hashes"] + left["unreadable_hosts"]) * SECONDS_PER_LIST, left["packages"] * SECONDS_PER_PACKAGE ].max
+    lists + left["rows"] * SECONDS_PER_ROW + left["findings"] * SECONDS_PER_FINDING
   end
 
   # Runs the backfill under a session advisory lock, so a second one at once refuses (Busy) instead of racing it. A run
@@ -80,9 +92,17 @@ class PackageStoreBackfill
 
   private
 
+  # The packages of the distinct lists of model's dpkg rows with no set yet (one list per content hash).
+  def distinct_packages(model)
+    model.from(model.where(UNSET).select("DISTINCT ON (content_hash) package_count").order(:content_hash), model.table_name).sum(:package_count)
+  end
+
   def backfill
-    INDEXES.each { |sql| @connection.execute(sql) }
-    @connection.execute("ANALYZE package_snapshots, host_package_sets")
+    # The temporary indexes only when there are lists to store: a re-run after the step builds none (each scans the table).
+    if pending.values_at("hashes", "unreadable_hosts").sum.positive?
+      INDEXES.each { |sql| @connection.execute(sql) }
+      @connection.execute("ANALYZE package_snapshots, host_package_sets")
+    end
     hosts
     unreadable_hosts
     snapshots

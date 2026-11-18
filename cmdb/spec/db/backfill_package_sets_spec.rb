@@ -109,17 +109,18 @@ RSpec.describe BackfillPackageSets do
 
     log = []
     backfill = PackageStoreBackfill.new(log: ->(message) { log << message })
-    expect(backfill.estimated_seconds).to eq(2 * PackageStoreBackfill::SECONDS_PER_LIST)
+    # Two one-package lists and their two rows: the list rate is the larger.
+    expect(backfill.estimated_seconds).to eq(2 * PackageStoreBackfill::SECONDS_PER_LIST + 2 * PackageStoreBackfill::SECONDS_PER_ROW)
     holding_backfill_lock { expect { backfill.run! }.to raise_error(PackageStoreBackfill::Busy, /another package backfill is running/) }
     expect(PackageSet.count).to eq(0)
-    expect(backfill.pending).to eq("hashes" => 2, "unreadable_hosts" => 0, "findings" => 0)
+    expect(backfill.pending).to eq("hashes" => 2, "unreadable_hosts" => 0, "packages" => 2, "rows" => 2, "findings" => 0)
     backfill.run!
-    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "findings" => 0)
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "packages" => 0, "rows" => 0, "findings" => 0)
     expect(log).to include("hosts: 1 distinct package lists stored", "snapshots: 1 distinct package lists stored")
     expect(connection.select_value("SELECT count(*) FROM pg_class WHERE relname LIKE '%backfill_196'").to_i).to eq(0) # its indexes are gone
     migrate # nothing left: runs at once
     quiet { DropHostPackages.new.migrate(:up) }
-    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "findings" => 0)
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "packages" => 0, "rows" => 0, "findings" => 0)
     backfill.run!
     expect(log.last).to eq("nothing to move: host_packages is gone")
   end

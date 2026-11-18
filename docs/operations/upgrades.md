@@ -8,7 +8,15 @@ Almost every upgrade is a merge to `main`: the deploy builds the image, starts t
 
 The upgrade moves every host's package list and every package snapshot into content-addressed package sets, copies each finding's details, and drops `host_packages` and the snapshots' JSON lists.
 
-- **Small databases (a homelab):** nothing to do. The migration runs at container start when its estimate (30 ms for each distinct package list, that is a host's current one and each kept snapshot, plus 0.12 ms per finding) is at most 90 s. Measured on 2 shared CPUs: 2,002 distinct lists and 225,450 findings (an estimate of 87 s) took 62 s, and 66 s with the boot and the other migrations, under a load average of 8 (107 s with partitioned snapshots under a load average of 10 to 13), against the deploy's 300 s wait. 50 hosts with 90 days of snapshots take a few seconds.
+- **Small databases (a homelab):** nothing to do. The migration runs at container start when its estimate is at most 90 s. The estimate (`PackageStoreBackfill#estimated_seconds`) adds, for the distinct package lists (a host's current one and each kept snapshot), 30 ms a list or 0.21 ms a package, whichever is more; 0.1 ms per snapshot row; and 0.12 ms per finding. The rates are rounded up from runs on 2 shared CPUs under a load average of 9 to 11, so a busy VM still finishes within the deploy's 300 s wait:
+
+  | Case | Estimate | Measured, load 9 to 11 | Measured, load 1 to 3 |
+  | --- | --- | --- | --- |
+  | 500 distinct lists of 3,000 packages | 315 s (refused) | 302 s | 112 s |
+  | 400,000 snapshot rows over 20 lists | 41 s | 38 s | 23 s |
+  | 50 hosts, 90 days: 121 lists, 97,402 packages, 700 rows, 20,000 findings | 23 s | 9 s | 2 s |
+
+  The package rate is the cost when every chunk is new; lists that share most packages cost less, so the estimate is high for them, and a database near the limit may be refused and need the step below although it would have fit.
 - **Large databases:** above that estimate, the migration refuses at container start (see above). Measured on 2 shared CPUs, the backfill is linear in the number of distinct lists: about 25 to 50 minutes for 100,000, and 4 to 9 hours for 1,000,000 (`docs/decisions/0028-content-addressed-package-sets.md`, "As built", item 1).
 
 When it refuses, on the server VM, as the deploy user:
