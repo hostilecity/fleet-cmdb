@@ -249,6 +249,46 @@ impl Systemctl {
     }
 }
 
+/// One of a child's output pipes, read without blocking: what it holds now is read, at most [`MAX_OUTPUT`]
+/// bytes kept and the rest read and dropped, so the child never blocks on a full pipe.
+struct Pipe {
+    file: std::fs::File,
+    bytes: Vec<u8>,
+    open: bool,
+}
+
+impl Pipe {
+    fn new(fd: std::os::fd::OwnedFd) -> Self {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fcntl on a descriptor this Pipe owns; it changes only its file status flags.
+        let open = unsafe {
+            let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+            flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
+        };
+        Self {
+            file: std::fs::File::from(fd),
+            bytes: Vec::new(),
+            open,
+        }
+    }
+
+    /// Reads what the pipe holds now, until it would block or reaches its end.
+    fn drain(&mut self) {
+        let mut buf = [0u8; 8192];
+        while self.open {
+            match self.file.read(&mut buf) {
+                Ok(0) => self.open = false,
+                Ok(n) => {
+                    let room = (MAX_OUTPUT as usize).saturating_sub(self.bytes.len());
+                    self.bytes.extend_from_slice(&buf[..n.min(room)]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break, // WouldBlock: nothing more for now
+            }
+        }
+    }
+}
+
 /// Longest any one `systemctl` call may take. `daemon-reload` on a busy machine is the slowest; a
 /// minute is generous for all of them.
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -300,30 +340,18 @@ impl Systemd for Systemctl {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("cannot run {}: {e}", self.path.display()))?;
-        // Read both pipes while waiting, so a chatty child cannot block on a full pipe.
-        let reader = |pipe: Option<Box<dyn Read + Send>>| {
-            thread::spawn(move || {
-                let mut bytes = Vec::new();
-                if let Some(pipe) = pipe {
-                    let _ = pipe.take(MAX_OUTPUT).read_to_end(&mut bytes);
-                }
-                bytes
-            })
-        };
-        let stdout = reader(
-            child
-                .stdout
-                .take()
-                .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        );
-        let stderr = reader(
-            child
-                .stderr
-                .take()
-                .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        );
+        // Read both pipes while waiting, so a chatty child cannot block on a full pipe. They are read without
+        // blocking from this thread, not by reader threads: the heartbeat runs this twice a minute (#232), and
+        // the soak test counts the agent's threads (re-review of #235).
+        let mut pipes = [
+            child.stdout.take().map(|p| Pipe::new(p.into())),
+            child.stderr.take().map(|p| Pipe::new(p.into())),
+        ];
         let deadline = Instant::now() + self.timeout;
         let status = loop {
+            for pipe in pipes.iter_mut().flatten() {
+                pipe.drain();
+            }
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
@@ -338,10 +366,16 @@ impl Systemd for Systemctl {
                 Err(e) => return Err(format!("cannot wait for {shown}: {e}")),
             }
         };
-        let text = |handle: thread::JoinHandle<Vec<u8>>| {
-            let bytes = handle.join().unwrap_or_default();
+        // What it wrote just before it exited. A descendant that kept a pipe open cannot hold this up: the
+        // pipes do not block.
+        for pipe in pipes.iter_mut().flatten() {
+            pipe.drain();
+        }
+        let text = |pipe: Option<Pipe>| {
+            let bytes = pipe.map(|p| p.bytes).unwrap_or_default();
             crate::logging::sanitize(String::from_utf8_lossy(&bytes).trim(), 2000)
         };
+        let [stdout, stderr] = pipes;
         let (stdout, stderr) = (text(stdout), text(stderr));
         if status.success() {
             Ok(stdout)
@@ -827,6 +861,29 @@ mod tests {
         let path = dir.write("systemctl", &format!("#!/bin/sh\n{script}\n"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         (dir, Systemctl { path, timeout })
+    }
+
+    #[test]
+    fn the_runner_reads_without_threads_and_a_descendant_holding_the_pipe_does_not_hold_it_up() {
+        // Re-review of #235: the pipes are read from the calling thread (the soak counts threads). A command
+        // that leaves a descendant with its output open still returns once it exits, with what it wrote.
+        let (_dir, systemctl) = fake(
+            "printf 'first\\n'; sleep 5 & printf 'last\\n'",
+            Duration::from_secs(20),
+        );
+        let started = Instant::now();
+        assert_eq!(systemctl.systemctl(&["show"]).unwrap(), "first last");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        // Written slowly, in pieces, while it runs.
+        let (_dir, systemctl) = fake(
+            "for i in 1 2 3; do printf \"$i \"; sleep 0.1; done",
+            Duration::from_secs(20),
+        );
+        assert_eq!(systemctl.systemctl(&["show"]).unwrap(), "1 2 3");
     }
 
     #[test]
