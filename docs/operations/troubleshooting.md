@@ -90,7 +90,7 @@ The agent logs `this host's clock differs from the server's`. The server always 
 
 ## The agent was killed for using too much memory
 
-The agent's unit caps its memory at 256 MiB and its threads and processes at 64 (#182). That is far more than it needs: about 8 MiB at rest, about 81 MiB at most on a host with 20,000 packages (most of it `dpkg-query`'s). A leak first makes it slow: past 192 MiB the kernel throttles it, so heartbeats can come late and the host can show as stale. If it still reaches 256 MiB, the kernel kills it in its own cgroup and systemd restarts it 10 seconds later. If that happens at four starts within five minutes, systemd stops restarting it, and the agent goes into recovery mode: the host shows **Recovering**, with a reason such as `start-limit-hit, last exit killed KILL`.
+The agent's unit caps its memory at 256 MiB and its threads and processes at 64 (#182). That is far more than it needs: about 8 MiB at rest, about 81 MiB at most on a host with 20,000 packages (most of it `dpkg-query`'s). A leak first makes it slow: past 192 MiB the kernel throttles it, so heartbeats can come late and the host can show as stale. If it still reaches 256 MiB, the kernel kills it in its own cgroup and systemd restarts it 10 seconds later. If that happens at four starts within five minutes, systemd stops restarting it, and the agent goes into recovery mode: the host shows **Recovering**, with the reason `fleet-agent.service kept failing and systemd stopped restarting it (oom-kill, last exit killed KILL)`.
 
 1. **See it in the journal:**
 

@@ -373,7 +373,7 @@ if in_group limits; then
     fi
     [ "$most" -le "$(sed -n 's/^MemoryMax=//p' "$UNITS/fleet-agent.service" | sed 's/M$//' | awk '{ print $1 * 1048576 }')" ] \
         || fail "leaking release: the cgroup held $most bytes, more than MemoryMax"
-    echo "limits: the leaking release was held below MemoryMax (largest sample $most bytes; last: $(grep high "$tmp/leak-samples" | tail -n 1)) and rolled back$(oom_killed "$leak_since" && echo ', after an OOM kill')"
+    echo "limits: the leaking release was held below MemoryMax (largest sample $most bytes, $held samples past MemoryHigh) and rolled back$(oom_killed "$leak_since" && echo ', after an OOM kill')"
 
     echo "== limits: killed for memory, then restarted cleanly"
     reset
