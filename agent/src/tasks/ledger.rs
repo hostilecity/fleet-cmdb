@@ -67,7 +67,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::fsx::{self, Lock};
-use crate::report::rfc3339;
+use crate::report::{parse_rfc3339, rfc3339};
 
 use super::catalog::Catalog;
 
@@ -866,7 +866,7 @@ impl Ledger {
                     || task
                         .reported_at
                         .as_deref()
-                        .and_then(|t| humantime::parse_rfc3339(t).ok())
+                        .and_then(parse_rfc3339)
                         .is_none_or(|t| unix(t) >= recent)
             })
             .map(|(_, task)| task.clone())
