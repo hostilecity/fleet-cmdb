@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::*;
+use crate::test_support::processes::{Forked, Hold, Holder};
 use crate::test_support::{TempDir, mode, names};
 
 thread_local! {
@@ -529,6 +530,46 @@ fn a_second_process_cannot_open_the_ledger() {
     ));
     drop(ledger);
     assert!(Ledger::open(&dir, now()).is_ok());
+}
+
+#[test]
+fn a_real_second_agent_process_is_refused_the_ledger_and_this_one_is_refused_its() {
+    // The single-writer guarantee across processes (P3-A02): another process running the agent's
+    // own Ledger::open holds the ledger, so this one is refused, for as long as it holds it.
+    let (_tmp, dir) = state();
+    let other = Holder::start(Hold::Ledger, &dir).expect("the other process opened the ledger");
+    assert_ne!(other.id(), std::process::id());
+    assert!(matches!(
+        Ledger::open(&dir, now()),
+        Err(LedgerError::Locked)
+    ));
+    // A child forked here (another thread starting a program) changes nothing about that.
+    let child = Forked::idle();
+    assert!(matches!(
+        Ledger::open(&dir, now()),
+        Err(LedgerError::Locked)
+    ));
+    drop(child);
+    drop(other);
+    let (ledger, _) = open(&dir);
+    // And while this process has it open, a second process is refused.
+    assert!(Holder::start(Hold::Ledger, &dir).is_none());
+    drop(ledger);
+}
+
+#[test]
+fn the_ledger_opens_again_at_once_while_a_child_forked_before_it_was_dropped_still_runs() {
+    // #242: the poller drops the ledger and opens it again (after a failed write; in the tests,
+    // every simulated restart) while another thread starts a program. The forked child holds a copy
+    // of the lock's descriptor until it execs; here it never does, so the reopen is decided, not
+    // timed.
+    let (_tmp, dir) = state();
+    let (ledger, _) = open(&dir);
+    let child = Forked::idle();
+    drop(ledger);
+    let reopened = Ledger::open(&dir, now());
+    assert!(reopened.is_ok(), "{:?}", reopened.err());
+    drop(child);
 }
 
 /// Fills the ledger with `count` reported tasks with sequential ids.
