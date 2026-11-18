@@ -6,8 +6,8 @@
 #   sudo scripts/update-smoke.sh DIR [GROUP]    (run from agent/)
 #
 # GROUP runs one part, so CI can run the parts side by side: refusals (the four refused releases), rollbacks
-# (exits at start, crash loop, no credential), or recovery (both killed supervisors, success, below minimum).
-# Without it, every scenario runs.
+# (exits at start, crash loop, no credential), recovery (both killed supervisors, success, below minimum), or
+# limits (the memory and task limits, #182). Without it, every scenario runs.
 #
 # DIR holds what the workflow prepared (scripts/update-smoke-build.sh, minisign -G -W): test.key and
 # other.key (throwaway private keys, never committed), and fleet-agent-1.0.0 and fleet-agent-1.0.1, the
@@ -28,13 +28,18 @@
 #   success        a good release is installed, keeps the configuration, reports in its first inventory, and
 #                  its result is retried until the server accepts it
 #   below minimum  an agent the server answers 426 on inventory still updates (NFR-5)
+#   limits         (#182) the unit's memory and task limits are in force; a release that leaks past MemoryMax
+#                  is killed and rolled back like any crash loop; an agent killed for memory is restarted
+#                  cleanly; and one killed at every start ends in recovery mode, which keeps reporting, and
+#                  is normal again once the limit is raised. The limit is lowered with a drop-in, as an
+#                  operator would raise it.
 set -euo pipefail
 
-dir=${1:?usage: sudo scripts/update-smoke.sh DIR [refusals|rollbacks|recovery]}
+dir=${1:?usage: sudo scripts/update-smoke.sh DIR [refusals|rollbacks|recovery|limits]}
 group=${2:-all}
 case "$group" in
-    all | refusals | rollbacks | recovery) ;;
-    *) echo "update-smoke: unknown group $group (refusals, rollbacks, or recovery)" >&2; exit 2 ;;
+    all | refusals | rollbacks | recovery | limits) ;;
+    *) echo "update-smoke: unknown group $group (refusals, rollbacks, recovery, or limits)" >&2; exit 2 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
@@ -54,7 +59,7 @@ if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${UPDATE_SMOKE_DISPOSABLE:-}" != yes 
     echo "update-smoke: this rewrites $LIB, $ETC, $STATE and $UNITS; run it on a disposable machine and set UPDATE_SMOKE_DISPOSABLE=yes" >&2
     exit 2
 fi
-for path in "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service"; do
+for path in "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent.service.d" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service"; do
     if [ -e "$path" ]; then
         echo "update-smoke: $path exists; an agent is installed here, and this test would destroy it" >&2
         exit 2
@@ -103,7 +108,8 @@ cleanup() {
     systemctl stop fleet-agent-update fleet-agent fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
     systemctl reset-failed fleet-agent fleet-agent-update fleet-agent-rollback fleet-agent-recovery 2>/dev/null || true
     [ -z "$stub_pid" ] || kill "$stub_pid" 2>/dev/null || true
-    rm -rf "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service" "$tmp"
+    rm -rf "$LIB" "$ETC" "$STATE" "$UNITS/fleet-agent.service" "$UNITS/fleet-agent-rollback.service" "$UNITS/fleet-agent-recovery.service" "$tmp" \
+        "$UNITS/fleet-agent.service.d" "$UNITS/multi-user.target.wants/fleet-agent.service"
     systemctl daemon-reload 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -222,6 +228,9 @@ mkscript "$tmp/exits.sh" 1.0.2 'echo "update-smoke: release 1.0.2 refuses to sta
 release exits_at_start 1.0.2 "$tmp/exits.sh"
 mkscript "$tmp/loops.sh" 1.0.3 'echo "update-smoke: release 1.0.3 started" >&2; sleep 2; exit 1'
 release crash_loop 1.0.3 "$tmp/loops.sh"
+# A release that leaks: it holds 400 MiB (tail keeps the last 400 MiB of its input), past the unit's MemoryMax.
+mkscript "$tmp/leaks.sh" 1.0.4 'echo "update-smoke: release 1.0.4 started" >&2; head -c 400M /dev/zero | tail -c 400M > /dev/null; sleep 60'
+release leaks 1.0.4 "$tmp/leaks.sh"
 
 python3 "$here/update-stub.py" 8443 "$tmp/cert.pem" "$tmp/key.pem" "$tmp" &
 stub_pid=$!
@@ -289,6 +298,99 @@ if in_group rollbacks; then
     rolled_back "a crash-looping release" crash_loop 1.0.3
     rolled_back "a release that cannot authenticate" good "$NEW" "{\"deny_heartbeat\": [\"$NEW\"]}"
 fi
+
+
+# --- The memory and task limits (#182) ------------------------------------------------------------------
+
+DROPIN=$UNITS/fleet-agent.service.d/50-update-smoke-limit.conf
+
+# lower_memory_max VALUE: a drop-in, as `systemctl edit fleet-agent` writes one; daemon-reload applies it to
+# the running service's cgroup at once.
+lower_memory_max() {
+    mkdir -p "$(dirname "$DROPIN")"
+    printf '[Service]\nMemoryMax=%s\n' "$1" > "$DROPIN"
+    systemctl daemon-reload
+}
+remove_dropin() {
+    rm -f "$DROPIN"
+    rmdir "$(dirname "$DROPIN")" 2> /dev/null || true
+    systemctl daemon-reload
+}
+oom_killed() { journal_has fleet-agent "oom-kill"; }
+restarts() { systemctl show fleet-agent -p NRestarts --value; }
+recovery_heartbeat() {
+    event_exists "[.[] | select(.kind == \"heartbeat\" and .status == 200 and .recovery != null and .at > $since)] | length > 0"
+}
+normal_heartbeat() {
+    event_exists "[.[] | select(.kind == \"heartbeat\" and .agent_version == \"$OLD\" and .status == 200 and .recovery == null and .at > $since)] | length > 0"
+}
+
+if in_group limits; then
+    echo "== limits: in force on the installed unit"
+    reset
+    want=$(unit_limits "$UNITS/fleet-agent.service")
+    for unit in fleet-agent fleet-agent-recovery; do
+        shown=$(systemctl show "$unit" -p MemoryHigh -p MemoryMax -p MemorySwapMax -p OOMPolicy -p TasksMax | sort | tr '\n' ' ' | sed 's/ $//')
+        [ "$shown" = "$want" ] || fail "limits: $unit has '$shown', expected '$want'"
+        echo "limits: $unit: $shown"
+    done
+    # The rollback unit must never be stopped by a limit: it acts after the service failed, perhaps for one.
+    shown=$(systemctl show fleet-agent-rollback -p MemoryMax -p TasksMax | sort | tr '\n' ' ')
+    case "$shown" in
+        "MemoryMax=infinity TasksMax="*) ;;
+        *) fail "limits: the rollback unit has '$shown', expected no memory limit" ;;
+    esac
+    cgroup=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value)
+    echo "limits: the running agent: memory.current $(cat "$cgroup/memory.current"), memory.peak $(cat "$cgroup/memory.peak" 2> /dev/null || echo unknown), pids.current $(cat "$cgroup/pids.current")"
+
+    # The new version leaks past MemoryMax before it confirms: the kernel kills it in its own cgroup, and the
+    # supervisor and the rollback unit, which run outside that cgroup, roll it back as for any crash loop.
+    rolled_back "a release that leaks past MemoryMax" leaks 1.0.4
+    journal_has fleet-agent "update-smoke: release 1.0.4 started" || fail "leaking release: 1.0.4 never ran"
+    oom_killed || fail "leaking release: no OOM kill of fleet-agent.service was logged"
+    echo "limits: the leaking release was killed for memory and rolled back"
+
+    echo "== limits: killed for memory, then restarted cleanly"
+    reset
+    before=$(restarts)
+    since=$(date +%s.%N)
+    # Far below what the agent uses, so the kernel kills it at its next allocation.
+    lower_memory_max 1M
+    wait_until "the OOM kill of the running agent" 60 oom_killed
+    remove_dropin
+    since=$(date +%s.%N)
+    wait_until "a heartbeat from the restarted agent" 90 heartbeat_from "$OLD"
+    service_active || fail "killed for memory: the service is not active"
+    [ "$(restarts)" -gt "$before" ] || fail "killed for memory: systemd did not restart it (NRestarts $(restarts))"
+    recovery_stopped || fail "killed for memory: recovery mode runs after a single kill"
+    [ -f "$STATE/task-ledger.jsonl" ] || fail "killed for memory: the task ledger is gone"
+    [ ! -e "$STATE/update.json" ] || fail "killed for memory: an update record appeared"
+    echo "limits: killed for memory and restarted by systemd ($(restarts) restarts); heartbeat, ledger, and state intact"
+
+    echo "== limits: killed at every start: start limit, then recovery mode, then normal again"
+    reset
+    # Recovery mode stays only for a service that is still enabled (ADR 0030).
+    systemctl enable --quiet fleet-agent
+    since=$(date +%s.%N)
+    lower_memory_max 1M
+    wait_until "recovery mode to report" 240 recovery_heartbeat
+    reason=$(jq -rs "[.[] | select(.kind == \"heartbeat\" and .recovery != null and .at > $since)] | last | .recovery.reason" "$events")
+    echo "limits: recovery mode reports: $reason"
+    [ "$(systemctl is-active fleet-agent)" = failed ] || fail "killed at every start: the service is $(systemctl is-active fleet-agent), not failed"
+    oom_killed || fail "killed at every start: no OOM kill was logged"
+    [ ! -e "$STATE/update.json" ] || fail "killed at every start: the rollback unit left an update record"
+    # The operator raises the limit again and starts the service (troubleshooting.md).
+    remove_dropin
+    systemctl reset-failed fleet-agent
+    since=$(date +%s.%N)
+    systemctl start fleet-agent
+    wait_until "recovery mode to see the service running and exit" 30 recovery_stopped
+    wait_until "a heartbeat in normal mode" 90 normal_heartbeat
+    service_active || fail "killed at every start: the service is not active after the limit was raised"
+    systemctl disable --quiet fleet-agent
+    echo "limits: an agent killed at every start stayed reachable in recovery mode, and is normal again"
+fi
+in_group limits && [ "$group" = limits ] && { echo "update-smoke: every $group scenario passed"; exit 0; }
 
 in_group recovery || { echo "update-smoke: every $group scenario passed"; exit 0; }
 

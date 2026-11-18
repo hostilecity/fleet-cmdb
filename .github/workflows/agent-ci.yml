@@ -5,7 +5,7 @@
 # task privilege smoke test (P3-A05), the no-shell check for the task module (P3-A03), the check that the
 # release binary has no fault-injection hooks (P3-X03), and
 # the update smoke test (a supervised agent update and its rollbacks on systemd, P1-AGENT-UPDATE; agent
-# changes and pushes to main only, in three parallel groups).
+# changes and pushes to main only, in four parallel groups; one checks the memory and task limits, #182).
 # Pushes to main upload the binary as a workflow artefact (built with the release keys in
 # agent/release-keys, unsigned). Signed releases are published only by agent-release.yml, on a version
 # tag, after the owner's approval (P1-PACKAGING, ADR 0018); nothing here has access to the release key.
@@ -309,8 +309,10 @@ jobs:
     # stand-in for the API and the release channel. A good release is installed; tampered, unsigned,
     # wrongly signed, older, failing, crash-looping, and unauthenticated releases are refused or rolled
     # back; a killed supervisor is resumed or backstopped by the OnFailure unit; an agent below the
-    # server's minimum version still updates (scripts/update-smoke.sh). No private key is committed:
-    # the keys exist only in the runner's temporary directory. The scenarios run in three groups side by
+    # server's minimum version still updates; the memory and task limits (#182) hold, a release
+    # that leaks past MemoryMax is rolled back, and an agent killed for memory is restarted or, killed at
+    # every start, reaches recovery mode (scripts/update-smoke.sh). No private key is committed:
+    # the keys exist only in the runner's temporary directory. The scenarios run in four groups side by
     # side; each job builds its own two versions (cached), so the throwaway keys never leave its runner.
     needs: changes
     if: needs.changes.outputs.update == 'true'
@@ -319,7 +321,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [refusals, rollbacks, recovery]
+        group: [refusals, rollbacks, recovery, limits]
     defaults:
       run:
         working-directory: agent
