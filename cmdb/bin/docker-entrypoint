@@ -8,7 +8,14 @@
 # shows it Up: the image has no HEALTHCHECK; /up refuses connections), so `--restart unless-stopped` does not run it
 # again and again, and the log says what to run (docs/operations/upgrades.md). It stops at once on SIGTERM. Any other
 # failure exits, as before.
-if [ "$*" == "./bin/rails server" ] || [ "$*" == "bundle exec puma -C config/puma.rb" ]; then
+#
+# FLEET_DB_PREPARE=false skips that (#198): with several app nodes, migrations run once, from one container, and every
+# other node starts without them. Unset or true migrates, as before; any other value stops the container.
+#
+# Behind a transaction-mode pooler (FLEET_DB_POOLER=transaction) Rails takes no migration lock, so no node migrates:
+# migrations run once per deploy in a one-off container on direct connections, with the lock (ADR 0025;
+# docs/operations/scaling.md). A node with the pooler set must therefore say FLEET_DB_PREPARE=false, or it stops.
+migrate() {
   log="$(mktemp)"
   set +e
   ./bin/rails db:prepare 2>&1 | tee "$log"
@@ -28,6 +35,18 @@ if [ "$*" == "./bin/rails server" ] || [ "$*" == "bundle exec puma -C config/pum
     exit "$status"
   fi
   rm -f "$log"
+}
+
+if [ "$*" == "./bin/rails server" ] || [ "$*" == "bundle exec puma -C config/puma.rb" ]; then
+  if [ "${FLEET_DB_POOLER:-}" == "transaction" ] && [ "${FLEET_DB_PREPARE:-}" != "false" ]; then
+    echo "FLEET_DB_POOLER=transaction needs FLEET_DB_PREPARE=false: migrate once, in a one-off container on direct connections (docs/operations/scaling.md)" >&2
+    exit 1
+  fi
+  case "${FLEET_DB_PREPARE:-true}" in
+    true) migrate ;;
+    false) echo "FLEET_DB_PREPARE=false: not migrating; migrations run in one container of their own" ;;
+    *) echo "FLEET_DB_PREPARE must be true or false, not '${FLEET_DB_PREPARE}'" >&2; exit 1 ;;
+  esac
 fi
 
 exec "${@}"

@@ -46,6 +46,49 @@ RSpec.describe "Host-based separation", type: :request do
     end
   end
 
+  describe "node roles (FLEET_NODE_ROLE, #198)" do
+    around do |example|
+      saved = Rails.configuration.x.fleet_hosts.role
+      example.run
+    ensure
+      Rails.configuration.x.fleet_hosts.role = saved
+    end
+
+    it "serves both hostnames by default" do
+      expect(Rails.configuration.x.fleet_hosts.role).to eq("all")
+      request_as(:get, "/sign_in", host: dashboard_host)
+      expect(response).to have_http_status(:ok)
+      request_as(:post, "/api/v1/enroll", host: agent_host)
+      expect(response.parsed_body.dig("error", "code")).to eq("validation_failed")
+    end
+
+    it "serves only the agent hostname on an agent API node" do
+      Rails.configuration.x.fleet_hosts.role = "agent_api"
+      request_as(:post, "/api/v1/enroll", host: agent_host)
+      expect(response.parsed_body.dig("error", "code")).to eq("validation_failed")
+      request_as(:get, "/up", host: agent_host)
+      expect(response).to have_http_status(:ok)
+      [ "/sign_in", "/", "/cable", "/auth/failure" ].each do |path|
+        request_as(:get, path, host: dashboard_host)
+        expect_empty_404
+      end
+    end
+
+    it "serves the dashboard and only the health paths of the agent hostname on a dashboard node" do
+      Rails.configuration.x.fleet_hosts.role = "dashboard"
+      request_as(:get, "/sign_in", host: dashboard_host)
+      expect(response).to have_http_status(:ok)
+      request_as(:get, "/up", host: agent_host)
+      expect(response).to have_http_status(:ok)
+      request_as(:get, "/up", host: "localhost", remote_addr: "127.0.0.1")
+      expect(response).to have_http_status(:ok)
+      %w[/api/v1/enroll /api/v1/heartbeat /api/v1/tasks/poll].each do |path|
+        request_as(:post, path, host: agent_host)
+        expect_empty_404
+      end
+    end
+  end
+
   describe "health checks" do
     it "answer on the agent host and localhost, never the dashboard host (the tunnel)" do
       request_as(:get, "/up", host: agent_host)

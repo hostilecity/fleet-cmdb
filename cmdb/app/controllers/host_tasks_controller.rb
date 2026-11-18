@@ -6,6 +6,7 @@ class HostTasksController < ApplicationController
 
   HISTORY = 20
 
+  reads_from_replica only: %i[show] # a caught-up replica when one is configured (#198)
   before_action :load_host_tab
 
   def show

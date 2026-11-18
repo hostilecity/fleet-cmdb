@@ -3,6 +3,7 @@
 class HostsController < ApplicationController
   include ShowsEnrollmentToken
   include HostTab
+  reads_from_replica only: %i[index] # a caught-up replica when one is configured (#198)
 
   FIELDS = %i[name hostname tags description notes].freeze
   HISTORY_LIMIT = 25

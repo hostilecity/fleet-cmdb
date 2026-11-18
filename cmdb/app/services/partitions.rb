@@ -96,9 +96,9 @@ module Partitions
         return { "skipped" => "backup running" }
       end
 
-      result = exclusively do
+      result = exclusively do |still_held|
         created = dry_run ? {} : ensure!(now:)
-        { "created" => created, "retired" => Retention.retire!(now:, dry_run:) }
+        { "created" => created, "retired" => Retention.retire!(now:, dry_run:, still_held:) }
       end
       return { "skipped" => "another maintenance run is in progress" } if result == :busy
 
@@ -107,15 +107,14 @@ module Partitions
     end
 
     # Runs the block holding the maintenance lock, or returns :busy when another session holds it. Re-entrant within
-    # one session (maintain! calls ensure!).
-    def exclusively
-      return :busy unless connection.select_value("SELECT pg_try_advisory_lock(#{LOCK_KEY})")
-
-      begin
-        yield
-      ensure
-        connection.select_value("SELECT pg_advisory_unlock(#{LOCK_KEY})")
-      end
+    # one session (maintain! calls ensure!): the nested hold takes the same lock on the same connection. The lock is a
+    # session-level one that spans the run's transactions, so it goes through SessionLock (#198): on the direct
+    # connection behind a transaction-mode pooler, uncached. The block is given SessionLock's check (still_held), which
+    # the run calls before each step that depends on the lock: each table, each partition it creates, each batch it
+    # moves out of a default partition, and each drop, here and in Retention.retire!.
+    def exclusively(&)
+      result = SessionLock.hold(LOCK_KEY.to_s) { |still_held| [ yield(still_held) ] }
+      result ? result.first : :busy
     end
 
     # Creates every table's default partition and its partitions up to AHEAD of now, and back to `from` when given
@@ -123,11 +122,13 @@ module Partitions
     # Tables not converted yet are skipped. `tables` limits it to some tables. Returns { table => [created names] }, or
     # nil when another maintenance run holds the lock.
     def ensure!(now: Time.current, from: nil, tables: TABLES.keys)
-      result = exclusively do
+      result = exclusively do |still_held|
         TABLES.values_at(*tables).to_h do |table|
           next [ table.name, [] ] unless partitioned?(table.name)
 
-          [ table.name, ensure_table(table, now:, from:) ]
+          still_held.call # before this table's DDL (#198)
+
+          [ table.name, ensure_table(table, now:, from:, still_held:) ]
         rescue Busy => e
           Rails.logger.warn("[partitions] #{table.name}: #{e.message}; the next run tries again")
           [ table.name, [] ]
@@ -160,7 +161,8 @@ module Partitions
 
     # Detaches a partition and renames it <name>_retired, in one transaction under the lock timeout, then drops it in
     # another. Never an audit partition: the audit log is never pruned (FR-S.3, ADR 0027 decision 7).
-    def detach_and_drop!(name, partition)
+    def detach_and_drop!(name, partition, still_held: SessionLock::UNCHECKED)
+      still_held.call
       raise ArgumentError, "audit partitions are never detached or dropped (FR-S.3)" if table(name).audit?
 
       retired = "#{partition.name}#{RETIRED}"
@@ -174,7 +176,7 @@ module Partitions
     # Drops partitions an earlier run detached but could not drop (the drop is a transaction of its own): only the ones
     # this code detached, which it renamed <partition>_retired. A partition an operator detached keeps its name and is
     # left alone.
-    def drop_leftovers!(name)
+    def drop_leftovers!(name, still_held: SessionLock::UNCHECKED)
       raise ArgumentError, "audit partitions are never detached or dropped (FR-S.3)" if table(name).audit?
 
       leftovers = connection.select_values(<<~SQL.squish)
@@ -182,7 +184,10 @@ module Partitions
         WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relispartition
           AND c.relname ~ #{connection.quote("^#{name}_(p[0-9]{8}|legacy)#{RETIRED}$")}
       SQL
-      leftovers.each { |relname| with_lock_timeout { |c| c.execute("DROP TABLE #{c.quote_table_name(relname)}") } }
+      leftovers.each do |relname|
+        still_held.call
+        with_lock_timeout { |c| c.execute("DROP TABLE #{c.quote_table_name(relname)}") }
+      end
       leftovers
     end
 
@@ -332,7 +337,7 @@ module Partitions
       Partition.new(name: relname, from:, to:)
     end
 
-    def ensure_table(table, now:, from:)
+    def ensure_table(table, now:, from:, still_held:)
       created = []
       limit = now + table.ahead_span(now)
       moving = table.default ? set_aside_default(table, limit + LONG_WIDTH + 1.day) : nil
@@ -347,16 +352,18 @@ module Partitions
         start = first
         while start > back_to
           before = step.call(start, -1)
+          still_held.call
           created << create_partition(table, before, start)
           start = before
         end
       end
       while cursor <= limit
         after = step.call(cursor, 1)
+        still_held.call
         created << create_partition(table, cursor, after)
         cursor = after
       end
-      move_back(table, moving) if moving
+      move_back(table, moving, still_held:) if moving
       created
     end
 
@@ -383,9 +390,10 @@ module Partitions
     # Moves the set-aside default's rows back through the parent, MOVE_BATCH at a time, each batch its own short
     # transaction (only ROW EXCLUSIVE on the parent), into the partitions now created for them (rows past them go to
     # the new default), then drops it. Until a row is moved back, readers do not see it.
-    def move_back(table, moving)
+    def move_back(table, moving, still_held:)
       c = connection
       loop do
+        still_held.call # before each batch: two runs moving the same table at once could drop rows not yet moved (#198)
         moved = ApplicationRecord.transaction(requires_new: true) do
           c.exec_update(<<~SQL.squish)
             WITH batch AS (DELETE FROM #{c.quote_table_name(moving)} WHERE ctid = ANY (ARRAY(SELECT ctid FROM #{c.quote_table_name(moving)} LIMIT #{MOVE_BATCH})) RETURNING *)
@@ -394,6 +402,7 @@ module Partitions
         end
         break if moved < MOVE_BATCH
       end
+      still_held.call
       with_lock_timeout { c.execute("DROP TABLE #{c.quote_table_name(moving)}") }
     end
 

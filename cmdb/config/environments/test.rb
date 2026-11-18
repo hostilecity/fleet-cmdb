@@ -44,6 +44,10 @@ Rails.application.configure do
   # Solid Queue records live in their own test database, as in production (P1-O02).
   config.solid_queue.connects_to = { database: { writing: :queue } }
 
+  # The test replica is the test database itself (config/database.yml), which is not in recovery. Only here may such a
+  # server be read as a replica (ReplicaReads, #198); anywhere else it is skipped as promoted or misconfigured.
+  config.x.replica_may_be_primary = true
+
   config.x.fleet_hosts.dashboard = "fleet.example.lan"
   config.x.onboarding.max_open = 6
   config.x.onboarding.max_open_per_address = 3

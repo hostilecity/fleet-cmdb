@@ -236,6 +236,111 @@ RSpec.describe Rollouts do
     end
   end
 
+  # Behind a transaction-mode pooler the prepare lock is on the direct connection, idle while the batches run on
+  # another (#198, review of #237). A prepare that has lost it must stop before its next write, or a 1% stage could
+  # open at 2% (review of #215).
+  describe "a prepare that loses its lock (#198)" do
+    let!(:canary) { host_running("0.2.0").first }
+    let!(:rollout) { start_rollout(release:, canaries: [ canary ], stage_percents: [ 100 ]) }
+
+    before do
+      stub_const("Rollouts::OPEN_BATCH", 2)
+      Array.new(5) { host_running("0.2.0") }
+    end
+
+    def stage_one = rollout.rollout_hosts.where(stage: 1).count
+
+    # As a request or a job runs it: inside the executor, with the query cache on for every pool (re-review of #237).
+    def in_executor(&) = Rails.application.executor.wrap(&)
+
+    def prepare = in_executor { Rollouts.send(:prepare_stage!, rollout, 1) }
+
+    def lose_lock_on(check_number)
+      checks = 0
+      allow(SessionLock).to receive(:hold).and_wrap_original do |original, key, &block|
+        original.call(key) { block.call(-> { raise SessionLock::Lost, "gone" if (checks += 1) == check_number }) }
+      end
+      -> { checks }
+    end
+
+    it "checks the lock before each batch, and stops with Interrupted and the batch rolled back once it is lost" do
+      checks = lose_lock_on(2)
+      allow(Rails.logger).to receive(:error).and_call_original
+
+      expect { prepare }.to raise_error(Rollouts::Interrupted, "gone")
+      expect(checks.call).to eq(2)
+      expect(stage_one).to eq(1) # the first batch only: the canary and one new host, the canary already in
+      expect(Rails.logger).to have_received(:error).with("[rollouts] prepare of rollout #{rollout.id} stage 1 stopped: gone")
+      allow(SessionLock).to receive(:hold).and_call_original
+      expect(prepare).to eq(5) # the next prepare carries on from the database
+    end
+
+    it "checks the lock before re-timing a stage prepared before" do
+      prepare
+      lose_lock_on(1)
+      expect { expect { prepare }.to raise_error(Rollouts::Interrupted) }.not_to(change { rollout.rollout_hosts.where(stage: 1).pluck(:offer_at) })
+    end
+
+    # The review's two-session reproduction, in the executor: the direct session holding the lock ends during the
+    # prepare, a second session takes the same lock, and the first prepare stops at its next batch instead of carrying
+    # on beside it. Without the uncached check (SessionLock), the query cache answers the check and the prepare goes on.
+    it "stops at the next batch when the lock's session on the direct connection ends and another takes the lock" do
+      use_direct_database
+      other = separate_session
+      batches = 0
+      allow(RolloutHost.connection).to receive(:select_rows).and_wrap_original do |original, *args|
+        original.call(*args).tap do
+          next unless (batches += 1) == 1
+
+          expect(end_lock_holder(Rollouts::PREPARE_LOCK_KEY, rollout.id)).to eq(1)
+          expect(other.select_value("SELECT pg_try_advisory_lock(#{Rollouts::PREPARE_LOCK_KEY}, #{rollout.id})")).to be(true)
+        end
+      end
+
+      expect { prepare }.to raise_error(Rollouts::Interrupted, /ended|failed/)
+      expect(batches).to eq(1)
+      expect(stage_one).to eq(1)
+    ensure
+      other&.disconnect!
+    end
+
+    it "refuses an Advance whose prepare stopped, with a message of its own, and opens nothing" do
+      lose_lock_on(1)
+      expect { in_executor { Rollouts.advance!(rollout, actor: operator) } }
+        .to raise_error(Rollouts::Invalid, "Choosing the next stage's hosts was interrupted, and the stage was not opened. Try again.")
+      expect(rollout.reload.current_stage).to eq(0)
+    end
+
+    it "lets the automatic advance give up quietly when its prepare stopped, for the backstop to retry" do
+      lose_lock_on(1)
+      allow(Rollouts).to receive(:advanceable?).and_return(true)
+      expect(in_executor { Rollouts.advance_confirmed!(rollout.id, from: 0) }).to be_nil
+      expect(rollout.reload.current_stage).to eq(0)
+    end
+
+    # start!'s canary prepare joins the start's transaction, so a stop rolls the whole start back (re-review of #237:
+    # with the check answered from the cache, start! returned normally).
+    it "refuses a start whose canary prepare lost its lock on the direct connection, starting nothing" do
+      Rollouts.cancel!(rollout, actor: operator)
+      use_direct_database
+      tagged = Array.new(4) { host_running("0.2.0", tags: [ "canary" ]).first }
+      batches = 0
+      allow(RolloutHost.connection).to receive(:select_rows).and_wrap_original do |original, *args|
+        original.call(*args).tap do
+          next unless args.first.to_s.include?("INSERT INTO rollout_hosts") && (batches += 1) == 1
+
+          expect(end_lock_holder(Rollouts::PREPARE_LOCK_KEY, Rollout.maximum(:id))).to eq(1)
+        end
+      end
+      count = Rollout.count
+
+      expect { in_executor { Rollouts.start!(release:, actor: operator, canary_tag: "canary") } }
+        .to raise_error(Rollouts::Invalid, "Choosing the canaries was interrupted. Nothing was started. Try again.")
+      expect(Rollout.count).to eq(count)
+      expect(RolloutHost.where(host_id: tagged).count).to eq(0)
+    end
+  end
+
   describe "the advance after a confirmed stage (#199)" do
     include ActiveJob::TestHelper
 

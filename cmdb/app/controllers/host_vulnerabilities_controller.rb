@@ -26,6 +26,7 @@ class HostVulnerabilitiesController < ApplicationController
     def installed_version = findings.first.installed_version
   end
 
+  reads_from_replica only: %i[show package] # a caught-up replica when one is configured (#198)
   before_action :load_host_tab
 
   def show

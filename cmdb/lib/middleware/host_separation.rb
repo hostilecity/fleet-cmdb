@@ -6,6 +6,9 @@ require "ipaddr"
 # - The dashboard hostname serves everything else (dashboard, sign-in, OAuth), never /api/ or health.
 # - localhost serves the health paths only, for the container health check; it is not published anywhere.
 # - Any other host, or a path on the wrong host, gets an empty 404.
+# - A node with FLEET_NODE_ROLE=agent_api serves nothing on the dashboard hostname, and one with dashboard serves
+#   only the health paths on the agent hostname (#198), so a load balancer that sends a request to the wrong kind
+#   of node gets a 404 rather than an answer from a node not sized for it.
 #
 # X-Forwarded-Host, X-Forwarded-For, Client-IP, and Forwarded are removed unless the request comes directly
 # from a configured trusted proxy, so a client can claim neither another hostname (Rails would otherwise
@@ -27,6 +30,9 @@ class HostSeparation
 
   def self.agent_host = config.agent
 
+  # "all", "agent_api", or "dashboard" (DeploymentTopology.node_role).
+  def self.role = config.role || "all"
+
   # "Host" or "host:port" or "[v6]:port" -> lowercase host without port or brackets.
   def self.normalize(value)
     host = value.to_s.split(",").last.to_s.strip.downcase
@@ -45,8 +51,8 @@ class HostSeparation
 
   # Whether a request for path on host may be served at all.
   def self.allowed?(host, path)
-    if host == agent_host then api_path?(path) || health_path?(path)
-    elsif host == dashboard_host then !api_path?(path) && !health_path?(path)
+    if host == agent_host then health_path?(path) || (api_path?(path) && role != "dashboard")
+    elsif host == dashboard_host then role != "agent_api" && !api_path?(path) && !health_path?(path)
     elsif LOCAL_HOSTS.include?(host) then health_path?(path)
     else false
     end

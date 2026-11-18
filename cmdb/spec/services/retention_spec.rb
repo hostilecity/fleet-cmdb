@@ -347,6 +347,22 @@ RSpec.describe Retention do
       expect(InventorySnapshot.where(host_id: hosts.map(&:id)).count).to eq(3)
     end
 
+    # Run by Partitions.maintain! under the maintenance lock (#198): the lock is checked before each batch moved forward
+    # and each drop, so a run that lost it stops there, with nothing of the batch or the drop done.
+    it "checks the maintenance lock before each batch it moves forward, and stops once it is lost" do
+      hosts = create_list(:host, 3)
+      hosts.each { |h| stored_snapshot(h, 120) }
+      updates = []
+      counter = ->(*, payload) { updates << payload[:sql] if payload[:sql].start_with?("UPDATE \"inventory_snapshots\" SET stored_at") }
+      still_held = -> { raise SessionLock::Lost, "gone" if updates.size == 1 }
+      partitions = ranges("inventory_snapshots").size
+
+      expect { ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { described_class.retire!(now: t0, batch_size: 2, still_held:) } }
+        .to raise_error(SessionLock::Lost)
+      expect(updates.size).to eq(1)
+      expect(ranges("inventory_snapshots").size).to eq(partitions) # nothing dropped
+    end
+
     it "retires the legacy partition once its cutover is past the window, moving the newest rows it holds forward" do
       first = ranges("config_snapshots").first.from
       c.execute("CREATE TABLE config_snapshots_legacy PARTITION OF config_snapshots FOR VALUES FROM (MINVALUE) TO (#{c.quote(first)})")
@@ -391,7 +407,7 @@ RSpec.describe Retention do
       stored_event(host, 120, to: "stale")
       allow(Rails.logger).to receive(:warn)
       allow(Partitions).to receive(:detach_and_drop!).and_call_original
-      allow(Partitions).to receive(:detach_and_drop!).with("inventory_snapshots", anything).and_raise(Partitions::Busy, "lock not granted in 3 tries of 150ms")
+      allow(Partitions).to receive(:detach_and_drop!).with("inventory_snapshots", anything, still_held: anything).and_raise(Partitions::Busy, "lock not granted in 3 tries of 150ms")
 
       results = described_class.retire!(now: t0)
 

@@ -2,6 +2,7 @@
 # (FR-S.4). Filters and the page position are query parameters (AuditLog), so any view can be bookmarked.
 # There is no create, update, or destroy action, and nothing here writes.
 class AuditEntriesController < ApplicationController
+  reads_from_replica only: %i[index] # a caught-up replica when one is configured (#198)
   def index
     # Read from the query string itself: Rails reserves params[:action] for the routed action ("index"),
     # and the filter is called action, as in Audit::Actions. Only plain strings are filter values.

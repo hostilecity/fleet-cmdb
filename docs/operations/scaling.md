@@ -1,6 +1,6 @@
 # Scaling the server
 
-How to size the server past the homelab, and the steps after that. The defaults are right for one VM with a few hundred agents; nothing here is needed below about 2,000. The capacity figures come from the scale benchmark (`bin/benchmark`, [benchmark.md](benchmark.md), from #188); re-measure with it after each step (#198, [ADR 0025](../decisions/0025-first-scale-step.md)).
+How to size the server past the homelab, and the steps after that. The defaults are right for one VM with a few hundred agents; nothing here is needed below about 2,000. The capacity figures come from the scale benchmark (`bin/benchmark`, [benchmark.md](benchmark.md), from #188); re-measure with it after each step (#198, [ADR 0025](../decisions/0025-first-scale-step.md) for step 1, [ADR 0031](../decisions/0031-second-scale-step-readiness.md) for the settings steps 2 and 3 use).
 
 ## Today: one container
 
@@ -119,34 +119,192 @@ Past about 200 connections, or with more than one app VM, use PgBouncer instead 
 
 The agent API's limits are counted in each Puma process's memory, with no database write per request: the per-credential limit (`FLEET_API_RATE_LIMIT_PER_MINUTE`, 120 a minute) and the per-address limit on failed authentication (`FLEET_API_FAILED_AUTH_LIMIT_PER_MINUTE`, 60 a minute). With `WEB_CONCURRENCY` processes, each new connection may land on any of them, so a client whose requests reach several processes can get up to that many times each limit; a restart resets the counters. That still stops a runaway agent, which is what the limit is for: a normal agent sends about 3 requests a minute. Each process keeps counts for at most `FLEET_API_RATE_LIMIT_MAX_CREDENTIALS` credentials (100,000 by default, about 26 MB, plus as many recently authenticated key ids): above that fleet size, raise it, or the least recently counted credentials lose their counts. Enrollment, onboarding, and release-download limits stay in the cache database, shared by every process ([configuration.md](configuration.md)).
 
-## Step 2: up to about 100,000 agents (not built yet)
+## Step 2: up to about 100,000 agents
 
-- **Separate API and dashboard nodes** behind a load balancer: about 20 API cores at a 300 s poll interval (2,100 requests a second). The host constraints already keep `/api/v1` on the agent hostname.
+The application side is built (ADR 0031, #198). Each part is an optional setting, off by default; the homelab sets none of them. The deployment itself is not built yet: running PgBouncer, a replica, a load balancer, and more than one VM, and the changes `cd.yml` needs for that (it deploys one VM).
+
+- **Separate API and dashboard nodes** behind a load balancer (`FLEET_NODE_ROLE`, below): about 20 API cores at a 300 s poll interval (2,100 requests a second). The host constraints already keep `/api/v1` on the agent hostname.
 - **Rate limit at the edge** (proposed, #191). With many API processes on several nodes, the in-process limits allow a client the limit once per process. Put the limit that must hold in the load balancer or proxy in front of the agent hostname: per credential key id (the part of `Authorization: Bearer <key_id>.<secret>` before the dot; the key id is not secret) at about 120 a minute, and per source address for requests that end in `401`, at about 60 a minute. Keep the application's limits as the second layer. **Required with a load balancer:** set `FLEET_TRUSTED_PROXIES` to its address and have it overwrite `X-Forwarded-For` with the client's address. Otherwise every agent's address is the load balancer's, and the application's failed-authentication limit treats the whole fleet as one client: agents that authenticated in the last 15 minutes still pass, but a restarted process or a new agent would be refused while a hostile client keeps that address over the limit ([configuration.md](configuration.md)). The application cannot do this itself without a shared counter (Redis or Valkey `INCR` and `EXPIRE`), which would be a second required service; the edge already sees every request. **What the edge must answer (#223):** for agents to wait out its limit, a refused request gets status `429`, a `Retry-After` header in whole seconds (at most 900; the agent honours at most 15 minutes), and a JSON body whose `error.code` is `rate_limited`, for example `{"error":{"code":"rate_limited","message":"Too many requests. Retry later."}}`. Off-the-shelf limiters (nginx `limit_req`, HAProxy, CDN rate-limit rules) send their own page by default, so set a custom error response. Any other `429` is treated as a transient failure: the agent ignores its `Retry-After`, retries with its normal backoff (about 5 s at first, doubling, up to 5 minutes, spread at random), and logs `not the fleet server's own rate limit`. The limit still holds either way; only the custom answer lets agents back off for as long as the edge asks.
-- **PgBouncer in transaction mode** between the app and PostgreSQL (below).
-- **A read replica** for the dashboard and reports.
+- **PgBouncer in transaction mode** between the app and PostgreSQL (`FLEET_DB_POOLER`, `DIRECT_DATABASE_URL`, below).
+- **A read replica** for the dashboard and reports (`REPLICA_DATABASE_URL`, below).
 - **Jobs on their own VM**, from the jobs container above.
 
-### PgBouncer in transaction mode
+### PgBouncer in transaction mode: `FLEET_DB_POOLER`, `DIRECT_DATABASE_URL`
 
 **When:** the connection plan passes what PostgreSQL handles well (a few hundred), or several app VMs share one database. In transaction mode each transaction borrows a server connection and returns it at commit, so hundreds of app threads share a few dozen PostgreSQL connections.
 
+**What the app does with `FLEET_DB_POOLER=transaction`:**
+
+- **No prepared statements** on the pooled databases (primary, cache, queue, cable, and the replica): a prepared statement belongs to one server connection, which the next transaction may not get. Without this setting, through PgBouncer with `max_prepared_statements = 0`, 75 of 480 queries from 8 threads failed (`prepared statement "a2" does not exist`, `prepared statement "a1" already exists`); with it, none did.
+- **No migration advisory lock** on the pooled databases (`advisory_locks: false`): Rails takes a session-level lock around migrations, and its unlock could land on another server connection. So no migration runs through the pooler: every `db:migrate`, `db:prepare`, `db:setup`, `db:rollback`, and `db:schema:load` stops when `FLEET_DB_POOLER=transaction` is set (`lib/tasks/migrations.rake`), and the entrypoint refuses to start a server with the pooler set unless `FLEET_DB_PREPARE=false`. Migrations run once per deploy in a one-off container on direct connections, with the lock (step 3 below), as [ADR 0025](../decisions/0025-first-scale-step.md) planned.
+- **The four session-level advisory locks go to the direct connection.** `DIRECT_DATABASE_URL` is the primary database without the pooler; the boot stops if the pooler is set without it. `SessionLock` takes these locks on it:
+  - the liveness evaluation's (`Liveness.evaluate!`, #186), which keeps runs from overlapping across its batches;
+  - a rollout stage prepare's (`Rollouts`, review of #215), which keeps a 1% stage from opening at 2%;
+  - the partition maintenance run's (`Partitions.exclusively`, #195, #239), which keeps two runs of partition DDL from overlapping (the hourly job, `partitions:ensure`, and a manual run). Its DDL uses `SET LOCAL lock_timeout` inside each statement's transaction, which is safe through the pooler.
+  - the package backfill's (`PackageStoreBackfill`, #196, merged as #240), which keeps two runs of `bin/rails packages:backfill` (or the migration that runs it) from working side by side.
+
+  The work under the lock still runs on the pooled connection; the direct one only holds the lock, idle meanwhile. So before each step that depends on the lock, the run checks that the lock's server process is the same one. The steps are: each liveness batch; a prepare's re-time and each of its batches; in partition maintenance each table, each partition created, each batch moved out of a default partition or moved forward by retention, and each drop; and each batch of the package backfill. Active Record reopens a lost connection without a word, which would have released the lock, so the run stops if it differs. The liveness run raises, and the next minute's run carries on. A rollout prepare rolls back its current batch and stops; the next prepare carries on from the database's count, so a stage never gets more than its share. The check also runs with nothing set, on the primary's own connection: one small statement a batch, so a connection reopened at the next transaction stops the run there too (the owner's decision, 2026-11-18).
+
+  The processes that take these locks, and so open a direct connection, are the jobs (the liveness run, and a rollout's automatic advance) and the dashboard: starting a rollout and an operator's Advance prepare the stage inside the request. So dashboard nodes need a route to the primary itself, not only to PgBouncer. Agent API requests never take one; API nodes need `DIRECT_DATABASE_URL` set with the pooler (the boot checks it) but open no direct connection.
+
+  **Keep the direct connection alive.** It sits idle while a run works on the pooled connections, for minutes in a large rollout stage, so a stateful firewall, a NAT idle timeout, or PostgreSQL's `idle_session_timeout` can drop it. That releases the lock, and the run then stops at its next check. Add TCP keepalives to the URL (`DIRECT_DATABASE_URL=postgres://db.example.lan/cmdb_production?keepalives_idle=60&keepalives_interval=10&keepalives_count=3`), and leave `idle_session_timeout` unset for the role `cmdb`. All of the lock's statements run uncached, so the check really reaches the server inside a request or a job, where Rails' query cache is on (re-review of #237).
+- **Everything else is safe through the pooler,** and was checked: every other advisory lock is transaction-level (`pg_advisory_xact_lock`: chunk matching (#240), advisory imports and manual refreshes, Debian triage, release imports, onboarding, rule writes, task settings, pending advisory uploads); `lock_timeout` is set with `SET LOCAL` or `set_config(..., true)` (live refresh, advisory imports); `SET TRANSACTION READ ONLY` runs inside its transaction (CIS dry runs and rule import plans); Debian triage's temporary table is `ON COMMIT DROP`, inside its transaction; the heartbeat directives' query is marked `preparable: true`, which Rails ignores with prepared statements off. Solid Queue claims jobs with `FOR UPDATE SKIP LOCKED` inside transactions and takes no advisory lock, so it needs no direct connection. Solid Cable polls its table and uses no `LISTEN` or `NOTIFY` (Action Cable's PostgreSQL adapter, which does, is not used). Solid Cache runs plain statements. The session settings Rails makes on connect (`IntervalStyle`, `TimeZone`, `standard_conforming_strings`) are ones PgBouncer tracks and replays for each client (PgBouncer 1.20 and later; `IntervalStyle` through `track_extra_parameters`, whose default includes it). Rails also sets `client_min_messages`, which PgBouncer does not track, but every client sets the same value (`warning`), so every server connection has it. Measured: 400 transactions from 8 threads over 2 server connections all saw `iso_8601`, `UTC`, `on`, and `warning`.
+
 **How:**
 
-1. Run PgBouncer on the database's Docker network with `pool_mode = transaction`, one pool for each of the four databases, `max_client_conn` at least the connection plan above, and `default_pool_size` per database to fit `max_connections` (for example 40 for the primary and 10 for each of the others).
-2. Point the app's requests at it: the app container's database host to the PgBouncer container and its port (6432 by default). Today `FLEET_DB_HOST` and `PGPORT` are one setting for both containers, so this step needs a database host override for the jobs container alone (not built yet; see the caveat below). Do not point `FLEET_DB_HOST` at PgBouncer before that exists.
-3. In `config/database.yml` (a code change, made with this step): `prepared_statements: false`, because a prepared statement belongs to one server connection, which the next transaction may not get. PgBouncer 1.21 and later can track prepared statements itself (`max_prepared_statements`), which lets Rails keep them; measure before relying on it.
-4. **Migrations run once, on a direct connection.** Rails serialises migrations with a session-level advisory lock, which is not safe through transaction pooling, and turning it off (`advisory_locks: false`) is only safe when one process migrates. With several app nodes every container runs `db:prepare` from `bin/docker-entrypoint` on start, so this step also changes the deploy: run `bin/rails db:prepare` once as a one-off container whose `DATABASE_URL` (and the queue, cache, and cable URLs) go straight to PostgreSQL, with the advisory lock left on, and have the entrypoint skip `db:prepare` on the nodes behind PgBouncer (for example with a setting that only the one-off sets).
+1. Run PgBouncer on the database's network with `pool_mode = transaction` and one pool for each of the four databases (and one for the replica, if it goes through PgBouncer too). For example, with the plan below:
 
-**What stays safe:** the app's advisory locks today are all transaction-level (`pg_advisory_xact_lock`, `pg_try_advisory_xact_lock`), and `lock_timeout` is set with `SET LOCAL`; both end with their transaction. Solid Queue claims jobs with `FOR UPDATE SKIP LOCKED` inside transactions, and Solid Cable and Solid Cache poll and write in ordinary statements.
+   ```ini
+   [databases]
+   cmdb_production       = host=db.example.lan dbname=cmdb_production       pool_size=40
+   cmdb_production_queue = host=db.example.lan dbname=cmdb_production_queue pool_size=20
+   cmdb_production_cache = host=db.example.lan dbname=cmdb_production_cache pool_size=10
+   cmdb_production_cable = host=db.example.lan dbname=cmdb_production_cable pool_size=10
 
-**The caveat, from #186:** batching the liveness evaluation (#186) holds a session-level advisory lock (`pg_try_advisory_lock`) across its batches, so that runs never overlap. Behind a transaction-mode PgBouncer the lock and its unlock may run on different server connections, so a lock could stay held by a connection another client then uses. Before PgBouncer goes in, either keep the jobs on a direct connection to PostgreSQL, or replace the lock with a lease row (a row with an expiry, taken with `UPDATE ... WHERE expires_at < now()`). A direct connection for the jobs needs the jobs container to have its own database settings (its own `DATABASE_URL` and queue, cache, and cable URLs, or its own `PGHOST` and `PGPORT`), which `cd.yml` does not offer yet: both containers share one env file. Its connections are few, so they fit beside PgBouncer's pools easily.
+   [pgbouncer]
+   ; The app network's address, not 0.0.0.0 (example: 198.51.100.10).
+   listen_addr = 198.51.100.10
+   listen_port = 6432
+   pool_mode = transaction
+   max_client_conn = 1000
+   auth_type = scram-sha-256
+   ; One line per role, with its SCRAM secret copied from PostgreSQL (below), so no password is stored in clear.
+   auth_file = /etc/pgbouncer/userlist.txt
+   ; Rails keeps no prepared statements with FLEET_DB_POOLER=transaction, so none to track.
+   max_prepared_statements = 0
+   ; The default; listed because IntervalStyle must be replayed for each client (Rails sets iso_8601).
+   track_extra_parameters = IntervalStyle
+   ```
+
+   Fill `userlist.txt` with the role's SCRAM secret, read as a superuser on the primary: `SELECT format('"%s" "%s"', rolname, rolpassword) FROM pg_authid WHERE rolname = 'cmdb';` gives the whole line. Refresh it whenever `DATABASE_PASSWORD` changes. PgBouncer's `auth_query`, which looks the secret up at login, avoids that copy but needs a lookup function and role on the primary; either works.
+
+2. Point the app's four database URLs at PgBouncer (`DATABASE_URL=postgres://pgbouncer.example.lan:6432/cmdb_production`, and `QUEUE_`, `CACHE_`, `CABLE_DATABASE_URL` the same way), set `FLEET_DB_POOLER=transaction`, and set `DIRECT_DATABASE_URL=postgres://db.example.lan/cmdb_production`. A URL without a user or password keeps the role `cmdb` and `DATABASE_PASSWORD` from `config/database.yml`, so no secret goes into a variable.
+3. **Migrate once per deploy, in a one-off container on direct connections.** No server node migrates: every node behind the pooler sets `FLEET_DB_PREPARE=false` (the entrypoint refuses to start without it), and any migration through the pooler stops. Before the nodes start, run the new image once with its four database URLs straight to PostgreSQL and the pooler unset, so Rails' migration lock is on. The deploy workflow does not run this yet (`cd.yml` deploys one VM, and deletes its env file when it is done), so until it does, run it by hand on a VM that runs the app, before starting the nodes. Save it as a script (it holds no secret) and run it with `bash`, so a failed check stops the script, not your shell:
+
+   ```bash
+   set -o pipefail
+   # The app's own settings: the running app container's environment, less the variables its image sets itself (PATH,
+   # LD_PRELOAD, BUNDLE_*, RUBY_*, and the like, which the new image sets for itself), less what a migration does not
+   # need: the database URLs and the pooler setting (given below), the TLS certificate and key, and the advisory feed
+   # token. Read by docker itself through <( ): no file is written, so no secret is left on disk, even if the run is
+   # interrupted. It stops, rather than pass the image's variables on, when the image or its settings cannot be read.
+   app_settings() {
+     local image image_env
+     image=$(docker inspect -f '{{.Image}}' fleet-cmdb) && [ -n "$image" ] || { echo "cannot read the fleet-cmdb container's image" >&2; return 1; }
+     image_env=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$image") && [ -n "$image_env" ] \
+       || { echo "cannot read the settings of image $image" >&2; return 1; }
+     docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-cmdb \
+       | grep -vxF -f <(printf '%s\n' "$image_env") \
+       | grep -Ev '^((QUEUE_|CACHE_|CABLE_|DIRECT_|REPLICA_)?DATABASE_URL|FLEET_DB_POOLER|FLEET_DB_PREPARE|FLEET_TLS_[A-Z0-9_]*|FLEET_ADVISORY_FEED_TOKEN)=' \
+       | grep -v '^$'
+   }
+   settings=$(app_settings) || exit 1
+   # The database's Docker network: the deploy writes its name to backup.env (FLEET_DB_NETWORK, a GitHub variable).
+   network=$(sed -n 's/^FLEET_DB_NETWORK=//p' ~/.config/fleet-cmdb/backup.env)
+   [ -n "$network" ] || { echo "FLEET_DB_NETWORK is not in ~/.config/fleet-cmdb/backup.env" >&2; exit 1; }
+   # The image to migrate with: the one the nodes will run. The deploy tags it with the commit (docker images fleet-cmdb).
+   image=fleet-cmdb:0123456789abcdef0123456789abcdef01234567
+   docker run --rm --env-file <(printf '%s\n' "$settings") --network "$network" \
+     -e DATABASE_URL=postgres://db.example.lan/cmdb_production \
+     -e QUEUE_DATABASE_URL=postgres://db.example.lan/cmdb_production_queue \
+     -e CACHE_DATABASE_URL=postgres://db.example.lan/cmdb_production_cache \
+     -e CABLE_DATABASE_URL=postgres://db.example.lan/cmdb_production_cable \
+     "$image" ./bin/rails db:prepare
+   ```
+
+   `db.example.lan` is the PostgreSQL server itself (on the homelab layout, the PostgreSQL container's name, `FLEET_DB_HOST`), never PgBouncer. A variable the deploy set to a value of its own (such as `RAILS_LOG_LEVEL`) is kept, because its line differs from the image's. Before the first deploy there is no app container to copy from: pass the settings the boot requires instead (the hostnames, `SECRET_KEY_BASE`, `FLEET_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; [configuration.md](configuration.md)), from a file of mode 0600 that you delete after. The owner wants this step in `cd.yml`, off unless `FLEET_DB_POOLER` is set (a follow-up to #237).
+
+   The one migrating container is that one-off, so nothing has to choose a node. Two of them by mistake would still be safe, because Rails' lock is on. The nodes start after it succeeds.
+
+Measured with this repository's PgBouncer test (PgBouncer 1.22 in transaction mode, `pool_size=2` for the primary, one 2-CPU machine shared with PostgreSQL and other work, a 3,000-host seed, `bin/benchmark load --kind mix --threads 8 --duration 30`, one Puma process with jobs inside): 124.5 requests a second through PgBouncer and 173.4 straight to PostgreSQL, every request `200` both ways. Twenty liveness runs, four at once, through the pooler made 6,002 transitions and left no advisory lock held. On one machine PgBouncer only adds a hop, two server connections, and statements parsed each time. It pays off when many app processes on several VMs share one PostgreSQL. Measure on the real topology before relying on it (below).
+
+**The hazard it avoids, measured:** the old way through the pooler, a liveness lock taken on one server connection and released from another (`pg_advisory_unlock` returned false) stayed held by that server connection after the client process had exited. Every later liveness run, from any process, was then refused until that server connection ended.
+
+### Read replica: `REPLICA_DATABASE_URL`, `FLEET_REPLICA_MAX_WAIT_MS`, `FLEET_REPLICA_SKIP_SECONDS`, `FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS`
+
+**When:** dashboard pages over a large fleet take database time the agents' writes need. The fleet list and compliance pages read every host's summary row. A streaming replica of the primary takes that load.
+
+**What reads it:** only these pages, on GET (each controller names them with `reads_from_replica`):
+
+| Page | Action |
+|---|---|
+| Fleet list | `hosts#index` |
+| Compliance | `compliance#index` |
+| Audit log | `audit_entries#index` |
+| A host's Configuration tab and config compare | `host_configs#show`, `#compare` |
+| A host's Packages tab and package compare | `host_packages#show`, `#compare` |
+| A host's Vulnerabilities tab and package page | `host_vulnerabilities#show`, `#package` |
+| A host's Tasks tab | `host_tasks#show` |
+
+The operator's session check, which records activity (a write), runs first, on the primary. Nothing else reads the replica: no agent API path, no write, nothing that checks or takes a second factor (step-up), no confirmation page. The task list and a task's page stay on the primary because they show whether the operator's second factor is recent, and that check takes a row lock. The suite runs every listed page on the reading role with writes refused, so an Active Record write or a row lock there fails the test, which is how the task list was found. A write hidden inside a `SELECT` (such as `SELECT nextval(...)`) or a `WITH` statement is not caught that way, because Rails treats those as reads; a real standby refuses it, and the page shows the error page as below. A standby smoke test in CI would catch it earlier (not built; see ADR 0031).
+
+**Lag:** a page reads the replica only once the replica has replayed everything the primary had written when the page started. It reads the primary's WAL position (`pg_current_wal_lsn()`) and waits until the replica's replay position (`pg_last_wal_replay_lsn()`) reaches it, at most `FLEET_REPLICA_MAX_WAIT_MS` (100 ms), counted from the replica's first answer, so opening its connection is not counted as lag. Otherwise it reads the primary and logs `[replica] not caught up within 100 ms; this page reads the primary`. So no page shows older data than the primary would: an operator's own change, an agent's report, and a live refresh, which is sent after a change commits, all show at once, and there is no "sticky primary" delay to tune. This assumes `synchronous_commit` is on (the default) on the primary. **A server that is not in recovery is never read as a replica:** after a failover or promotion, or with the URL naming the wrong server, it is skipped and logged (`[replica] the replica server is not in recovery (promoted, or not a replica)`). Only the test environment, whose replica is the test database, allows it. The polls run uncached: inside a request Rails' query cache is on, and would answer every poll after the first with the first answer, so a replica that caught up during the wait would never be seen (final check of #237).
+
+**When the replica fails while a page reads it, the page shows a plain error page** (503, "This page couldn't be loaded", with a Try again link). It is not run again (the owner's decision, 2026-11-18). The replica is then skipped for `FLEET_REPLICA_SKIP_SECONDS` (30 s), so the next load reads the primary. That holds for:
+
+- a lost connection;
+- a query cancelled by a recovery conflict (40001);
+- a cancelled query (57014: a `statement_timeout` set on the replica, or `pg_cancel_backend`), so a page that always exceeds the replica's timeout still loads, from the primary, on the next try.
+
+A replica that cannot be reached (within `FLEET_REPLICA_CONNECT_TIMEOUT_SECONDS`, 2 s), or is not in recovery, at a page's check is skipped the same way, and that page reads the primary at once. The log names the error each time (`[replica] ActiveRecord::ConnectionFailed: ...; pages read the primary for 30 seconds`).
+
+**The skip is per process.** Each Puma process keeps its own. With `WEB_CONCURRENCY` above 1, or several dashboard nodes, Try again can reach a process that has not seen the failure and still uses the replica. After a lost connection that process's own check fails and reads the primary. After a recovery conflict or a cancelled query it can fail again, until each process has marked the replica down. An error from the primary's own query is not blamed on the replica. Each page costs two small extra statements: one on the primary and one on the replica.
+
+**How:** set `REPLICA_DATABASE_URL=postgres://replica.example.lan/cmdb_production` on the dashboard nodes. The replica gets its own pool of the same size in each process. It needs no setting on API or jobs nodes, which never read it.
+
+### Node roles: `FLEET_NODE_ROLE`, `FLEET_DB_PREPARE`
+
+The same image runs as any kind of node:
+
+| | `FLEET_NODE_ROLE` | Serves | Jobs | Needs |
+|---|---|---|---|---|
+| Agent API node | `agent_api` | `/api/v1`, `/up`, `/health` on the agent hostname; nothing on the dashboard hostname | none: leave `SOLID_QUEUE_IN_PUMA` unset | primary (or PgBouncer), queue (enqueues), cache (enrollment, onboarding, and download rate limits), the releases directory; `FLEET_REPORT_MAX_IN_FLIGHT` set; `DIRECT_DATABASE_URL` set with the pooler, though it opens no direct connection |
+| Dashboard node | `dashboard` | the dashboard, sign-in, and Action Cable on the dashboard hostname; only `/up` and `/health` on the agent hostname | none | primary, queue, cache, cable (each process's Solid Cable listener delivers live refreshes), the replica if any, the releases directory (uploads, the Agents page); with the pooler, a route to the primary itself for the direct connection (rollout start and Advance) |
+| Jobs node | either, with no published port | nothing | `bin/jobs` (the jobs container), or `SOLID_QUEUE_IN_PUMA=1` on one node | all four databases, the direct database with a pooler, the releases directory (imports) |
+| Homelab | `all` (default) | both hostnames | inside Puma | as today |
+
+- A request for a hostname the node does not serve gets an empty 404, so a load balancer that sends it to the wrong pool shows up at once. Point the load balancer's health check at `/up` with the agent hostname or `localhost` as the `Host`: those are the names that serve it.
+- Action Cable runs only where a page subscribes, so an API node opens no cable connections. Sign-out disconnects a session's live pages on every dashboard node through Solid Cable.
+- Sessions are in the signed cookie, so any dashboard node serves any operator; every node needs the same `SECRET_KEY_BASE` and `FLEET_ENCRYPTION_KEY`.
+- More than one Solid Queue scheduler is safe (Solid Queue keeps each recurring run once), but one jobs node is enough here.
+- **Shared files:** release binaries (`FLEET_RELEASES_DIR`) and the backup status file (`FLEET_BACKUP_STATUS_FILE`) are files in the storage volume. The dashboard and jobs write release binaries (uploads and imports), API nodes serve them, and `/health` checks them on every node. With nodes on several VMs, mount the same storage there on each, or keep one copy per node by importing on each. Which of these to choose is open (ADR 0031).
+- `FLEET_DB_PREPARE=false` skips the entrypoint's `db:prepare`. With several nodes, migrate with the one-off container above and set it on every node; behind the pooler that is required. Without the pooler, leaving it on one node also works, since Rails' lock keeps two from migrating at once, but a node that loses that race exits and restarts.
+
+### Connection budget for step 2
+
+Two budgets now: client connections to PgBouncer, which are cheap, and server connections from PgBouncer to PostgreSQL, which are what `max_connections` counts. Per process the client side is as in step 1 (13 for each Puma process, 39 for one jobs node with the default threads). The direct connection is one per process that takes a lock: the jobs worker that runs liveness, and any jobs or dashboard process that has prepared a rollout stage. It stays open, idle in its pool, after the lock is released, and the every-minute liveness run keeps the jobs one open for good. That is about 10 standing connections in the example below, whatever the agent count.
+
+An example for 100,000 agents at a 300 s poll interval (2,100 requests a second): four API nodes of 5 Puma processes, two dashboard nodes of 2, one jobs node.
+
+| | Client connections | Server connections |
+|---|---|---|
+| API processes (20 x 13) | 260 to PgBouncer | |
+| Dashboard processes (4 x 13) | 52 to PgBouncer; up to 4 x P = 20 to the replica | |
+| Jobs node (step 1's 39) | 39 to PgBouncer | |
+| Direct connections | 1 a jobs worker plus 1 a dashboard process that has prepared a stage, kept open: about 10 | about 10, to PostgreSQL |
+| PgBouncer's pools (`pool_size`) | `max_client_conn` 1,000 | 40 + 20 + 10 + 10 = 80, to PostgreSQL |
+| Margin: backups, a console, the one-off migration | | 10 |
+| **PostgreSQL primary** | | **about 100**: the default `max_connections` with a little headroom; set 150 |
+
+The primary's pool of 40 assumes each agent request holds a server connection for about 10 ms. That is 21 busy at 2,100 requests a second, nearly half the pool. Check it with `SHOW POOLS;` in PgBouncer's admin console: `cl_waiting` above 0 for long, or a growing `maxwait`, means the pool is too small. The replica's connections are on the replica server, not the primary.
+
+### What to measure with `bin/benchmark` at step 2
+
+- **One API node through PgBouncer:** `bin/benchmark load --kind mix` against one Puma process, through PgBouncer and straight to PostgreSQL, on the real VMs. Requests a second per process is the figure to scale the API core count from (110 on the reference machine, straight). Watch `SHOW POOLS;` meanwhile.
+- **The cost of no prepared statements:** `bin/benchmark queries` with `FLEET_DB_POOLER=transaction` and the URLs through PgBouncer, against the same run without. Statements and rows per request must not change; SQL time a request may rise a little, because each statement is parsed again.
+- **Jobs:** `bin/benchmark jobs` for the liveness evaluation with `DIRECT_DATABASE_URL` set; it must cost the same as before, with one extra statement a batch (the lock check).
+- **The replica:** `bin/benchmark explain` covers the fleet list, compliance, and audit log statements; on the replica, the same plans should hold. In production, count `[replica] not caught up` in the dashboard nodes' log against page views, and watch `pg_stat_replication.replay_lag` on the primary. A steady share of pages reading the primary means the replica lags more than `FLEET_REPLICA_MAX_WAIT_MS`.
+- **The edge rate limit** and the load balancer: `bin/benchmark load` from more than one machine, so the limit sees more than one address.
 
 ## Step 3: up to a million agents (not built yet)
 
-- 100 to 200 API cores after the request-cost work (#189, #191).
-- A dedicated PostgreSQL primary for agent writes (about 20,000 requests a second).
+- 100 to 200 API cores after the request-cost work (#189, #191): 20 to 40 API nodes as above, with the same settings.
+- A dedicated PostgreSQL primary for agent writes (about 20,000 requests a second). The replica and the dashboard nodes take the dashboard's reads off it (step 2).
 - The history tables partitioned by time (#195).
 - Report ingestion behind a queue: accept, store the body, process it in a job, so a surge after an outage cannot use up the database's connections (#200 for agent-side spreading).
+
+**Connection budget for step 3 (an estimate, to be measured):** 200 API processes x 13 is 2,600 client connections. Several PgBouncer instances share them, each single-threaded: plan one per few thousand transactions a second, and measure it. At 20,000 requests a second and about 10 ms each, about 200 server connections are busy on the primary. So the primary's PgBouncer pools total about 250, and `max_connections` is about 300, sized against the database VM's memory. The direct connections stay about 10: the liveness run and the rollout prepares do not grow with the API nodes.
+
+**What to measure at step 3:** `bin/benchmark load` against each kind of node as at step 2, plus a surge: every agent reporting at once after an outage (`--kind mix` with many threads from several machines), to size report load shedding (`FLEET_REPORT_MAX_IN_FLIGHT`) and the queued ingestion. Also `bin/benchmark jobs` for the liveness evaluation at a million hosts: it reads every host's narrow row each minute, so if a run takes more than a few seconds, raise `JOB_REALTIME_THREADS` (step 1).
 
 Re-measure each step with `bin/benchmark` before taking the next.

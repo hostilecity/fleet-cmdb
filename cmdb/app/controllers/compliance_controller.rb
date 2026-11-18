@@ -3,6 +3,7 @@
 # its counts, filterable by search, tag, status, and severity and sortable, all in the URL, in keyset pages of 100 (#193).
 # Read-only. FleetCompliance builds the page in a fixed number of queries whatever the fleet size.
 class ComplianceController < ApplicationController
+  reads_from_replica only: %i[index] # a caught-up replica when one is configured (#198)
   def index
     @compliance = FleetCompliance.new(params.permit(:q, :tag, :ecosystem, :status, :cis, :vuln, :sort, :after, :before))
     @totals = FleetCompliance.totals

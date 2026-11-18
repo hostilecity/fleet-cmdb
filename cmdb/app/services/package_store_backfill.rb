@@ -24,8 +24,11 @@ class PackageStoreBackfill
   # Measured seconds per unit of work, on 2 shared CPUs (review of #240): what estimated_seconds adds up.
   SECONDS_PER_LIST = 0.03
   SECONDS_PER_FINDING = 0.00012
-  LOCK = "SELECT pg_try_advisory_lock(196, 3)".freeze
-  UNLOCK = "SELECT pg_advisory_unlock(196, 3)".freeze
+  # The session advisory lock that keeps two backfills from running at once, through SessionLock (#198): on the direct
+  # connection behind a transaction-mode pooler, uncached, and checked before each batch. LOCK takes it in a statement
+  # of its own (the specs hold it from another session).
+  LOCK_KEY = "196, 3".freeze
+  LOCK = "SELECT pg_try_advisory_lock(#{LOCK_KEY})".freeze
 
   BATCH = 1_000
   FINDINGS_BATCH = 10_000
@@ -39,6 +42,7 @@ class PackageStoreBackfill
   def initialize(log: ->(_message) { })
     @log = log
     @connection = ApplicationRecord.connection
+    @still_held = SessionLock::UNCHECKED
   end
 
   # Whether the old storage is still there to move.
@@ -59,16 +63,19 @@ class PackageStoreBackfill
     (left["hashes"] + left["unreadable_hosts"]) * SECONDS_PER_LIST + left["findings"] * SECONDS_PER_FINDING
   end
 
-  # Runs the backfill under a session advisory lock, so a second one at once refuses (Busy) instead of racing it.
+  # Runs the backfill under a session advisory lock, so a second one at once refuses (Busy) instead of racing it. A run
+  # whose lock was lost part-way stops before its next batch (SessionLock::Lost); run it again to carry on.
   def run!
     return @log.call("nothing to move: host_packages is gone") unless needed?
-    raise Busy, "another package backfill is running; wait for it to finish (docs/operations/upgrades.md)" unless @connection.select_value(LOCK)
 
-    begin
+    ran = SessionLock.hold(LOCK_KEY) do |still_held|
+      @still_held = still_held
       backfill
+      true
     ensure
-      @connection.select_value(UNLOCK)
+      @still_held = SessionLock::UNCHECKED
     end
+    raise Busy, "another package backfill is running; wait for it to finish (docs/operations/upgrades.md)" unless ran
   end
 
   private
@@ -98,6 +105,7 @@ class PackageStoreBackfill
                           .where("EXISTS (SELECT 1 FROM host_packages p WHERE p.host_id = host_package_sets.host_id)").order(:host_id).limit(BATCH).pluck(:host_id)
       break if ids.empty?
 
+      @still_held.call
       ApplicationRecord.transaction { ids.each { |id| HostPackageSet.where(host_id: id).update_all(package_set_id: PackageStore.store!(host_rows(id))) } }
       after = ids.last
     end
@@ -119,6 +127,7 @@ class PackageStoreBackfill
       hashes = model.where(UNSET).where("content_hash > ?", after).distinct.order(:content_hash).limit(BATCH).pluck(:content_hash)
       break if hashes.empty?
 
+      @still_held.call
       ApplicationRecord.transaction do
         hashes.each do |hash|
           scope = model.where(UNSET).where(content_hash: hash)
@@ -134,6 +143,7 @@ class PackageStoreBackfill
   def findings
     last = VulnerabilityFinding.maximum(:id).to_i
     (0..last).step(FINDINGS_BATCH) do |from|
+      @still_held.call
       VulnerabilityFinding.where(id: (from + 1)..(from + FINDINGS_BATCH), last_ecosystem: nil)
                           .update_all("last_source = source, last_installed_version = installed_version, last_fixed_version = fixed_version, last_ecosystem = ecosystem")
     end
@@ -143,6 +153,7 @@ class PackageStoreBackfill
   def evaluations
     last = HostVulnerabilityEvaluation.maximum(:host_id).to_i
     (0..last).step(FINDINGS_BATCH) do |from|
+      @still_held.call
       HostVulnerabilityEvaluation.where(host_id: (from + 1)..(from + FINDINGS_BATCH), package_set_id: nil)
                                  .update_all("package_set_id = (SELECT h.package_set_id FROM host_package_sets h WHERE h.host_id = host_vulnerability_evaluations.host_id)")
     end

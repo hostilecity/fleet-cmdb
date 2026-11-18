@@ -11,6 +11,8 @@
 class HostConfigsController < ApplicationController
   include HostTab
 
+  reads_from_replica only: %i[show compare] # a caught-up replica when one is configured (#198)
+  before_action :load_host_tab
   RESULT_FILTERS = %w[attention fail not_readable pass not_applicable not_evaluated all].freeze
   ATTENTION = %w[fail not_readable].freeze
   RESULT_ORDER = %w[fail not_readable pass not_applicable not_evaluated].freeze
@@ -26,7 +28,6 @@ class HostConfigsController < ApplicationController
     def attention? = ATTENTION.include?(result)
   end
 
-  before_action :load_host_tab
 
   def show
     @config = HostConfig.find_by(host_id: @host.id)

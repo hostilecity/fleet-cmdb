@@ -69,9 +69,11 @@ module Retention
     # target's cutoff, the legacy partition included once its cutover is, after moving each host's newest row forward
     # where the newest is kept. Returns { "inventory_snapshots" => { "partitions" => 2, "rows" => 4100, "moved" => 30 } }.
     # rows is PostgreSQL's estimate of the rows dropped (exact in a dry run, which counts and changes nothing).
-    def retire!(now: Time.current, window: Setting.retention_window, dry_run: false, batch_size: DEFAULT_BATCH_SIZE)
+    # still_held is the partition maintenance lock's check (Partitions.maintain!, #198), called before each batch moved
+    # forward and each drop; a run outside the lock checks nothing.
+    def retire!(now: Time.current, window: Setting.retention_window, dry_run: false, batch_size: DEFAULT_BATCH_SIZE, still_held: SessionLock::UNCHECKED)
       results = targets.select(&:partitioned).to_h do |target|
-        [ target.model.table_name, retire_target(target, cutoff: cutoff(target, now:, window:), now:, dry_run:, batch_size:) ]
+        [ target.model.table_name, retire_target(target, cutoff: cutoff(target, now:, window:), now:, dry_run:, batch_size:, still_held:) ]
       rescue Partitions::Busy => e
         Rails.logger.warn("[retention] #{target.model.table_name}: #{e.message}; the next run tries again")
         [ target.model.table_name, { "partitions" => 0, "rows" => 0, "moved" => 0 } ]
@@ -136,12 +138,12 @@ module Retention
       SQL
     end
 
-    def retire_target(target, cutoff:, now:, dry_run:, batch_size:)
+    def retire_target(target, cutoff:, now:, dry_run:, batch_size:, still_held:)
       name = target.model.table_name
       result = { "partitions" => 0, "rows" => 0, "moved" => 0 }
       return result unless Partitions.partitioned?(name)
 
-      Partitions.drop_leftovers!(name) unless dry_run
+      Partitions.drop_leftovers!(name, still_held:) unless dry_run
       # The chain is contiguous, so the partitions due are every partition before a boundary.
       due = Partitions.list(name).reject(&:default?).select { |p| p.to <= cutoff }
       return result if due.empty?
@@ -152,8 +154,8 @@ module Retention
       result["rows"] = [ due.sum { |p| dry_run ? exact_rows(p) : estimated_rows(p) } - kept.size, 0 ].max
       return result if dry_run
 
-      move_forward(target, due.last.to, kept, now:, batch_size:)
-      due.each { |partition| Partitions.detach_and_drop!(name, partition) }
+      move_forward(target, due.last.to, kept, now:, batch_size:, still_held:)
+      due.each { |partition| Partitions.detach_and_drop!(name, partition, still_held:) }
       result
     end
 
@@ -174,9 +176,10 @@ module Retention
 
     # Moves the rows forward by setting stored_at to now: PostgreSQL moves a row whose partition key changes to the
     # partition it now belongs to, keeping its id. Through the parent, bounded to the partitions being retired.
-    def move_forward(target, boundary, ids, now:, batch_size:)
+    def move_forward(target, boundary, ids, now:, batch_size:, still_held:)
       c = target.model.connection
       ids.each_slice(batch_size) do |slice|
+        still_held.call
         target.model.transaction(requires_new: true) do
           c.execute("UPDATE #{target.model.quoted_table_name} SET stored_at = #{c.quote(now)} WHERE stored_at < #{c.quote(boundary)} AND id IN (#{slice.join(',')})")
         end

@@ -26,6 +26,10 @@ module Rollouts
     end
   end
 
+  # A stage prepare that lost its session-level lock part-way and stopped (#198): nothing is choosing the hosts now,
+  # and the next prepare carries on from what was committed.
+  class Interrupted < StandardError; end
+
   CANARY_TAG_LIMIT = 32 # rollouts.canary_tag
   DEFAULT_STAGES = [ 25, 100 ].freeze
   # From FLEET_ROLLOUT_LARGE_FLEET_HOSTS active hosts (config.large_fleet_hosts, default 1,000) the default stages are
@@ -82,6 +86,8 @@ module Rollouts
     end
   rescue ActiveRecord::RecordNotUnique
     raise Invalid, "A rollout is already open. Finish or cancel it first."
+  rescue Interrupted # the start's transaction has rolled back: nothing was started (#198)
+    raise Invalid, "Choosing the canaries was interrupted. Nothing was started. Try again."
   end
 
   # The default stages after the canaries for a fleet of active_hosts active hosts (#199).
@@ -124,8 +130,12 @@ module Rollouts
     rollout.reload
     check_advance!(rollout, expected_stage)
     expected = rollout.current_stage
-    unless prepare_stage!(rollout, expected + 1)
-      raise Invalid, "The next stage's hosts are being chosen right now. Try again in a minute."
+    begin
+      unless prepare_stage!(rollout, expected + 1)
+        raise Invalid, "The next stage's hosts are being chosen right now. Try again in a minute."
+      end
+    rescue Interrupted
+      raise Invalid, "Choosing the next stage's hosts was interrupted, and the stage was not opened. Try again."
     end
     in_state!(rollout, "running") do
       check_advance!(rollout, expected_stage || expected)
@@ -140,7 +150,11 @@ module Rollouts
     rollout = Rollout.find_by(id: rollout_id)
     return unless rollout && advanceable?(rollout, from)
 
-    return unless prepare_stage!(rollout, from + 1) # another prepare is running; the backstop retries
+    begin
+      return unless prepare_stage!(rollout, from + 1) # another prepare is running; the backstop retries
+    rescue Interrupted
+      return # logged by prepare_stage!; the backstop retries
+    end
     rollout.with_lock do
       next unless advanceable?(rollout, from)
 
@@ -391,12 +405,21 @@ module Rollouts
   #
   # Uncached: each batch's INSERT runs inside a SELECT (a CTE), which does not clear Active Record's query cache, and the
   # quota must be counted afresh in every batch.
+  #
+  # Behind a transaction-mode pooler the lock is on the direct connection (#198). On every path the prepare checks it
+  # still holds the lock before the re-time and before each batch (still_held). If it does not, the prepare stops and raises Interrupted:
+  # the batch in progress rolls back, the batches before it stay chosen but hidden by the stage gate, and the next
+  # prepare carries on from the database's count, so the stage never gets more than its share. Returns nil when another
+  # prepare is running.
   def prepare_stage!(rollout, stage)
-    ApplicationRecord.uncached { with_prepare_lock(rollout) { prepare_locked!(rollout, stage) } }
+    ApplicationRecord.uncached { with_prepare_lock(rollout) { |still_held| prepare_locked!(rollout, stage, still_held) } }
+  rescue SessionLock::Lost => e
+    Rails.logger.error("[rollouts] prepare of rollout #{rollout.id} stage #{stage} stopped: #{e.message}")
+    raise Interrupted, e.message
   end
   private_class_method :prepare_stage!
 
-  def prepare_locked!(rollout, stage)
+  def prepare_locked!(rollout, stage, still_held)
     begin
       older = older_hosts(rollout.agent_release.semver)
       older = older.merge(canary_scope(rollout.canary_host_ids, rollout.canary_tag)) if stage.zero?
@@ -412,30 +435,21 @@ module Rollouts
       spread = stage_spread(size)
       # Offer times count from now; halted_seconds is subtracted so a past halt does not delay this stage (OFFER_DUE_SQL).
       base = Time.current - rollout.halted_seconds
-      retime_stage!(rollout, stage, base:, spread:) if in_stage.positive?
-      insert_stage_rows!(rollout, older, stage:, target:, spread:, base:)
+      if in_stage.positive?
+        still_held.call
+        retime_stage!(rollout, stage, base:, spread:)
+      end
+      insert_stage_rows!(rollout, older, stage:, target:, spread:, base:, still_held:)
       members.where(stage:).count
     end
   end
   private_class_method :prepare_locked!
 
   # Runs the block holding this rollout's prepare lock, or returns nil without running it when another session holds
-  # it. Session-level, so it spans the prepare's own transactions; released first in ensure, and if that fails the
-  # connection is closed and dropped from the pool, which releases it (as Liveness.evaluate! does).
-  def with_prepare_lock(rollout)
-    connection = Rollout.connection
-    key = ApplicationRecord.sanitize_sql_array([ "?, ?::int", PREPARE_LOCK_KEY, rollout.id ])
-    return nil unless connection.select_value("SELECT pg_try_advisory_lock(#{key})")
-
-    begin
-      yield
-    ensure
-      begin
-        connection.select_value("SELECT pg_advisory_unlock(#{key})")
-      rescue ActiveRecord::ActiveRecordError
-        connection.throw_away!
-      end
-    end
+  # it. Session-level (SessionLock), so it spans the prepare's own transactions; on the direct connection behind a
+  # transaction-mode pooler (#198).
+  def with_prepare_lock(rollout, &)
+    SessionLock.hold(ApplicationRecord.sanitize_sql_array([ "?, ?::int", PREPARE_LOCK_KEY, rollout.id ]), &)
   end
   private_class_method :with_prepare_lock
 
@@ -454,10 +468,11 @@ module Rollouts
   # statement, so one snapshot. What is still wanted is the target less the rollout's rows, counted in the batch's own
   # transaction, and a batch that adds more has its highest extra rows deleted by id there (review of #215). Each
   # host's offer time is base plus its offset (OFFER_DELAY_SQL).
-  def insert_stage_rows!(rollout, older, stage:, target:, spread:, base:)
+  def insert_stage_rows!(rollout, older, stage:, target:, spread:, base:, still_held:)
     after = 0
     loop do
       last = RolloutHost.transaction do
+        still_held.call # before this batch counts and inserts (#198)
         wanted = target && (target - rollout.rollout_hosts.count)
         next nil if wanted && wanted <= 0
 
