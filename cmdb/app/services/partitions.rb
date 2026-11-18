@@ -442,8 +442,23 @@ module Partitions
         end
         break if moved < MOVE_BATCH
       end
-      still_held.call
-      with_lock_timeout { c.execute("DROP TABLE #{c.quote_table_name(moving)}") }
+      still_held.call # before the drop (#198); drop_moved also checks the table is empty under its lock
+      drop_moved(table, moving)
+    end
+
+    # Drops the set-aside table only if it is empty, checked in the drop's own transaction under its lock: a batch can
+    # move fewer rows than MOVE_BATCH while rows remain (another run moving at the same time, review of #237), and those
+    # rows must not be dropped. Otherwise it is left, /health keeps warning, and the next run moves the rest.
+    def drop_moved(table, moving)
+      c = connection
+      empty = with_lock_timeout do
+        c.execute("LOCK TABLE #{c.quote_table_name(moving)} IN ACCESS EXCLUSIVE MODE")
+        c.select_value("SELECT NOT EXISTS (SELECT 1 FROM #{c.quote_table_name(moving)})").tap do |none|
+          c.execute("DROP TABLE #{c.quote_table_name(moving)}") if none
+        end
+      end
+      Rails.logger.warn("[partitions] #{table.name}: rows are still set aside in #{moving}; left for the next run") unless empty
+      empty
     end
 
     def bounds(relname, key)

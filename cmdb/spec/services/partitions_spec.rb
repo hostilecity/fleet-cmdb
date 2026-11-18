@@ -298,6 +298,20 @@ RSpec.describe Partitions do
       expect(c.table_exists?("#{receipts}_default_moving")).to be(false)
     end
 
+    it "never drops a set-aside table that still has rows, when a batch moved fewer than a whole batch (review of #237)" do
+      stub_const("Partitions::MOVE_BATCH", 1_000)
+      3.times { |i| receipt(first.from - 2.days + i.minutes) }
+      allow(c).to receive(:exec_update).and_call_original
+      allow(c).to receive(:exec_update).with(a_string_starting_with("WITH batch AS")).and_return(0) # as if another run had moved them
+      allow(Rails.logger).to receive(:warn)
+
+      described_class.ensure!(tables: [ receipts ])
+
+      expect(c.select_value("SELECT count(*) FROM #{receipts}_default_moving")).to eq(3)
+      expect(Rails.logger).to have_received(:warn).with("[partitions] #{receipts}: rows are still set aside in #{receipts}_default_moving; left for the next run")
+      expect(described_class.problems.map(&:text)).to include("#{described_class.label(receipts)}: rows set aside from the default partition are still being moved back")
+    end
+
     it "picks up rows set aside by a run that stopped part-way, and says so until they are back" do
       c.execute("CREATE TABLE #{receipts}_default_moving (LIKE #{receipts})")
       c.execute("INSERT INTO #{receipts}_default_moving (id, host_id, report_id, received_at) VALUES (nextval('#{receipts}_id_seq'), #{host.id}, gen_random_uuid(), #{c.quote(first.from - 1.day)})")
