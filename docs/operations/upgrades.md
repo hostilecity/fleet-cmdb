@@ -24,17 +24,15 @@ When it refuses, on the server VM, as the deploy user:
 1. **Keep the deploy and the backup away while it runs.** A deploy would replace the waiting container and kill the backfill, and a backup's `pg_dump` would block the restart's migration.
    - Disable the Deploy workflow (GitHub: Actions, Deploy, "Disable workflow"; or `gh workflow disable Deploy`), and merge nothing to `main` until you are done.
    - Stop the backup timer: `systemctl --user stop fleet-cmdb-backup.timer`.
-   - Run the step under the backup lock, as below. A backup or deploy that starts anyway then waits for it (a deploy for up to 20 minutes, then it fails without replacing the app; a backup for up to an hour).
-2. **Run the backfill in the waiting container, then restart it, under the lock.** The waiting container has the app's settings; a new one would not (the deploy deletes its settings file).
+   - The step runs under the backup lock (below), so a backup or deploy that starts anyway waits for it: a deploy for up to 20 minutes, then it fails without replacing the app; a backup for up to an hour.
+2. **Run the backfill in the waiting container, then restart it, under the lock,** with the script the deploy installs beside the backup's (`ops/backup/package-backfill.sh`). The waiting container has the app's settings; a new one would not (the deploy deletes its settings file).
 
    ```sh
-   lock=~/.local/state/fleet-cmdb/backup.lock; log=~/packages-backfill.log
-   nohup flock "$lock" sh -c "echo 'package backfill since $(date -u +%FT%TZ)' > $lock; \
-     docker exec fleet-cmdb bin/rails packages:backfill && docker restart fleet-cmdb && sleep 60" > "$log" 2>&1 &
-   tail -f "$log"    # progress every 1,000 lists; Ctrl-C stops only the tail
+   nohup ~/.local/share/fleet-cmdb/backup/package-backfill.sh > ~/packages-backfill.log 2>&1 &
+   tail -f ~/packages-backfill.log    # progress every 1,000 lists; Ctrl-C stops only the tail
    ```
 
-   When it prints `Done.`, the restart's migrations finish the upgrade in seconds. The `sleep 60` keeps the lock until they have.
+   It takes the backup lock as the backup does (`ops/backup/lock.sh`): it waits up to an hour for a running backup or drill, refuses at once while a restore runs or while an unfinished restore left its marker, and writes its holder line (`package backfill since <time>, pid <pid>`) once it holds the lock. Then it runs `bin/rails packages:backfill` in the container, restarts it, and keeps the lock until the app answers `/up` (up to 30 minutes, `FLEET_BACKFILL_UP_WAIT`), so the restart's migrations finish before anything else takes it. It ends with `done: fleet-cmdb serves again`, or says why it stopped.
 3. **Check, and turn things back on.**
 
    ```sh
@@ -44,7 +42,7 @@ When it refuses, on the server VM, as the deploy user:
 
    Enable the Deploy workflow again. If `FLEET_JOBS_CONTAINER` is `true`, the failed deploy never started the jobs container, so run the workflow once (Actions, Deploy, "Run workflow") to bring it back.
 
-- `packages:backfill` is resumable: if it is stopped or interrupted, run step 2 again and it carries on with what is left. It only adds; it never deletes anything. A second one started while one runs refuses (`another package backfill is running`).
+- The backfill is resumable: if it is stopped or interrupted, run step 2 again and it carries on with what is left. It only adds; it never deletes anything. A second one started while one runs refuses (`another package backfill is running`).
 - Do not run `bin/rails db:migrate:redo` or roll the migrations back: rolling back `BackfillPackageSets` empties the package store, matched verdicts included.
 - The old space stays: the findings keep their wider rows, and `package_snapshots` keeps the space of its JSON lists, until rows are rewritten (old snapshots also leave with retention). To get it back at once on a large database, rebuild the tables at a quiet time (`VACUUM FULL vulnerability_findings` and `VACUUM FULL package_snapshots`, which lock each table while they run).
 - After the upgrade no package chunk is matched yet: findings keep the state they had and show their copied details, and each host's chunks are matched at its next package report or advisory import. `bin/rails vulnerabilities:match` matches everything at once.

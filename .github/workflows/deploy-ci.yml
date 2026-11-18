@@ -63,7 +63,7 @@ jobs:
 
       - name: Lint (actionlint also shellchecks the workflows' scripts)
         run: |
-          shellcheck ops/backup/*.sh ops/deploy/*.sh
+          shellcheck -x ops/backup/*.sh ops/deploy/*.sh # -x: docker.sh and package-backfill.sh source lock.sh
           curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/actionlint.tar.gz" \
             https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
           echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
@@ -232,6 +232,7 @@ jobs:
           wait_up() { for _ in $(seq 1 60); do docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null && return 0; sleep 3; done; return 1; }
           backups=/var/backups/fleet-cmdb
           tool="$HOME/.local/share/fleet-cmdb/backup/docker.sh"
+          backfill="$HOME/.local/share/fleet-cmdb/backup/package-backfill.sh" # #196's upgrade step (docs/operations/upgrades.md)
           lock="$HOME/.local/state/fleet-cmdb/backup.lock"
           marker="$HOME/.local/state/fleet-cmdb/restore-incomplete"
           deploy_dir="$RUNNER_TEMP/deploy"
@@ -347,6 +348,21 @@ jobs:
           contains "and updated the status file with the new image" "status file updated" "$(cat "$RUNNER_TEMP/backup-138.log")"
           good="$(sets | tail -n 1)" before="$(sets | xargs)"
           expect "two sets now" 2 "$(sets | grep -c .)"
+          echo "-- #196's upgrade step under the backup lock: waits for a backup, backfills (nothing left here), restarts the app, holds the lock until /up"
+          # shellcheck disable=SC2016 # expanded by sh
+          flock "$lock" sh -c 'echo "backup (Deploy CI) running" > "$1"; sleep 5' sh "$lock" & holder=$!
+          sleep 1
+          before_start="$(docker inspect -f '{{.State.StartedAt}}' fleet-cmdb)"
+          out="$("$backfill" 2>&1)" && rc=0 || rc=$?
+          wait "$holder" 2> /dev/null || true
+          echo "$out"
+          expect "the backfill step succeeds" 0 "$rc"
+          contains "after waiting for the backup" "waiting for: backup (Deploy CI)" "$out"
+          contains "with nothing left to move" "nothing to move" "$out"
+          contains "and ends once the restarted app serves" "serves again" "$out"
+          expect "the app was restarted" yes "$([ "$(docker inspect -f '{{.State.StartedAt}}' fleet-cmdb)" != "$before_start" ] && echo yes || echo no)"
+          contains "its holder line is #236's" "package backfill since " "$(cat "$lock")"
+          contains "with its pid" ", pid " "$(cat "$lock")"
           echo "-- a restore holds the lock"
           # shellcheck disable=SC2016 # expanded by sh
           flock "$lock" sh -c 'echo "restore of fleet-cmdb-test (Deploy CI)" > "$1"; sleep 45' sh "$lock" & holder=$!
@@ -356,6 +372,7 @@ jobs:
           contains "and a deploy, before it touches the app" "a restore is in progress" \
             "$(bash "$deploy_dir/build-$GITHUB_SHA/ops/deploy/deploy.sh" "$deploy_dir" "$GITHUB_SHA" fleet-db false 2>&1 || true)"
           contains "and install.sh" "a restore is in progress" "$(bash ops/backup/install.sh 2>&1 || true)"
+          contains "and #196's upgrade step" "busy with restore" "$("$backfill" 2>&1 || true)"
           expect "the app is still the same container" true "$(docker inspect -f '{{.State.Running}}' fleet-cmdb)"
           wait "$holder" || true # the lock's holder ends by itself
 
@@ -426,6 +443,7 @@ jobs:
           contains "the backup refuses" "did not finish" "$out"
           contains "with the databases to drop" "dropdb -U postgres --if-exists" "$out"
           contains "install.sh refuses" "did not finish" "$(bash ops/backup/install.sh 2>&1 || true)"
+          contains "#196's upgrade step refuses" "did not finish" "$("$backfill" 2>&1 || true)"
           cp "$RUNNER_TEMP/app.env" "$deploy_dir/fleet-cmdb.env"
           contains "the deploy refuses" "did not finish" \
             "$(bash "$deploy_dir/build-$GITHUB_SHA/ops/deploy/deploy.sh" "$deploy_dir" "$GITHUB_SHA" fleet-db false 2>&1 || true)"

@@ -15,8 +15,8 @@ class BackfillPackageSets < ActiveRecord::Migration[8.1]
   INLINE_SECONDS = 90
   # The text bin/docker-entrypoint looks for.
   UPGRADE_STEP = "fleet-cmdb upgrade step needed".freeze
-  RUNBOOK = "Run the backfill in this waiting container under the backup lock, then restart it: " \
-            "docs/operations/upgrades.md (docker exec fleet-cmdb bin/rails packages:backfill).".freeze
+  RUNBOOK = "On the server VM, as the deploy user, run the backfill in this waiting container under the backup lock: " \
+            "nohup ~/.local/share/fleet-cmdb/backup/package-backfill.sh > ~/packages-backfill.log 2>&1 & (docs/operations/upgrades.md).".freeze
 
   def up
     backfill = PackageStoreBackfill.new(log: ->(message) { say(message, true) })

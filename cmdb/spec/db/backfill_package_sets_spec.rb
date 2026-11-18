@@ -103,9 +103,9 @@ RSpec.describe BackfillPackageSets do
   it "refuses at container start, changing nothing, when the work is too long, and the rake task does it, resumably" do
     stub_const("BackfillPackageSets::INLINE_SECONDS", 0.01)
     old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
-    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: moving 2 distinct package lists and 0 findings .* nothing was changed .*docker exec fleet-cmdb bin\/rails packages:backfill/m)
+    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: moving 2 distinct package lists and 0 findings .* nothing was changed .*package-backfill.sh/m)
     expect(PackageSet.count).to eq(0)
-    expect { quiet { DropHostPackages.new.migrate(:up) } }.to raise_error(/fleet-cmdb upgrade step needed: 2 dpkg package snapshots and hosts have no package set.*docker exec fleet-cmdb/m)
+    expect { quiet { DropHostPackages.new.migrate(:up) } }.to raise_error(/fleet-cmdb upgrade step needed: 2 dpkg package snapshots and hosts have no package set.*package-backfill.sh/m)
 
     log = []
     backfill = PackageStoreBackfill.new(log: ->(message) { log << message })
