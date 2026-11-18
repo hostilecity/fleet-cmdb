@@ -3,7 +3,13 @@
 # env file, the database network, and a published port, waits for /up, and checks that the dashboard hostname serves
 # sign-in and refuses /api/v1, also with a forged X-Forwarded-Host. Then runs it as cd.yml does with
 # FLEET_JOBS_CONTAINER=true (#198): the app without jobs, and a jobs container whose realtime worker runs the
-# every-minute liveness evaluation. Also lints the deploy workflows and ops scripts.
+# every-minute liveness evaluation. Then sets up backups as cd.yml does on the VM (#138), with the runner user standing
+# in for the deploy user (lingering on, so its systemd user timer runs): the backup env file, ops/backup/install.sh,
+# and the deploy's first backup (docker.sh first-backup) through the user unit onto a mounted location; checks the
+# set, /health, the restore drill (with an uploaded release, so its download check runs; it fails clearly until the
+# role cmdb has CREATEDB, then passes; also against a second PostgreSQL), and the backup lock; then recovers a lost
+# server in the order of backup-and-restore.md, with ops/deploy/deploy.sh (cd.yml's "Build and run") as the deploy,
+# proving that no empty-state set displaces the good one. Also lints the deploy workflows and ops scripts.
 #
 # Branch protection may require the "Deploy CI" job. It always runs and passes when nothing it checks changed.
 name: Deploy CI
@@ -46,7 +52,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       DASHBOARD: fleet.example.com
       AGENT: agent.fleet.example.com
@@ -57,7 +63,7 @@ jobs:
 
       - name: Lint (actionlint also shellchecks the workflows' scripts)
         run: |
-          shellcheck ops/backup/*.sh
+          shellcheck ops/backup/*.sh ops/deploy/*.sh
           curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/actionlint.tar.gz" \
             https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
           echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
@@ -202,6 +208,261 @@ jobs:
           echo "/health: $health"
           expect "/health sees the jobs container's liveness evaluation" ok "$(printf '%s' "$health" | sed -n 's/.*"job_liveness":"\([a-z]*\)".*/\1/p')"
           if [ "$failed" -ne 0 ]; then docker logs --tail 100 fleet-cmdb-jobs; exit 1; fi
+
+      - name: Back up, drill, and recover a lost server, as deployed and as the guide says (#138)
+        run: |
+          failed=0
+          expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; failed=1; fi; }
+          contains() { if [[ "$3" == *"$2"* ]]; then echo "ok   $1"; else echo "FAIL $1: '$2' not in: $3"; failed=1; fi; }
+          journal() { sudo journalctl --no-pager -n "${1:-40}" _SYSTEMD_USER_UNIT=fleet-cmdb-backup.service || true; }
+          stop() { echo "FAIL $1"; journal 60; docker logs --tail 60 fleet-cmdb || true; exit 1; }
+          health() { docker exec fleet-cmdb curl -s http://localhost:3000/health; }
+          backup_check() { health | sed -n 's/.*"backup":"\([a-z]*\)".*/\1/p'; }
+          wait_backup_ok() { for _ in $(seq 1 20); do [ "$(backup_check)" = ok ] && return 0; sleep 3; done; return 1; }
+          # Waits for the backup unit (started in the background) to finish, and prints its result.
+          wait_unit() {
+            for _ in $(seq 1 120); do
+              [ -n "$(systemctl --user list-jobs --no-legend fleet-cmdb-backup.service)" ] && { sleep 2; continue; } # still queued
+              case "$(systemctl --user is-active fleet-cmdb-backup.service)" in active | activating | reloading) sleep 2 ;; *) break ;; esac
+            done
+            systemctl --user show -p Result --value fleet-cmdb-backup.service
+          }
+          sets() { sudo find "$backups" -maxdepth 1 -name 'fleet-cmdb-*' -printf '%f\n' | sort; }
+          dbs() { docker exec postgres psql -U postgres -Atc "$1"; }
+          wait_up() { for _ in $(seq 1 60); do docker exec fleet-cmdb curl -fsS -o /dev/null http://localhost:3000/up 2>/dev/null && return 0; sleep 3; done; return 1; }
+          backups=/var/backups/fleet-cmdb
+          tool="$HOME/.local/share/fleet-cmdb/backup/docker.sh"
+          lock="$HOME/.local/state/fleet-cmdb/backup.lock"
+          marker="$HOME/.local/state/fleet-cmdb/restore-incomplete"
+          deploy_dir="$RUNNER_TEMP/deploy"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)" && export XDG_RUNTIME_DIR
+
+          echo "== data for the drill: an operator (an audit entry), a host, and an uploaded release with its binary"
+          docker exec fleet-cmdb bin/rails operators:allow EMAIL=operator@example.com
+          docker exec fleet-cmdb bin/rails hosts:create DISPLAY_NAME="Deploy CI" VM_HOSTNAME=vm-01.example.lan > /dev/null
+          # Test data only: the row is written directly, without Releases::Import's signature check.
+          docker exec fleet-cmdb bin/rails runner '
+            op = Operator.create!(google_uid: "deploy-ci", email: "operator@example.com")
+            bin = Random.bytes(4096)
+            File.binwrite(Releases.store.path("0.0.1"), bin)
+            AgentRelease.create!(version: "0.0.1", target: Releases::TARGET, sha256: Digest::SHA256.hexdigest(bin), size: bin.bytesize,
+              manifest: "{}", signature: "ci", trusted_comment: "ci", key_id: "0000000000000000", key_role: "current", source: "upload",
+              imported_by: op, imported_at: Time.current)'
+
+          echo "== set up as cd.yml does: the backup env file (no secret), then install.sh"
+          write_backup_env() { # the lines cd.yml writes, plus any given
+            (umask 077 && mkdir -p "$HOME/.config/fleet-cmdb" && printf '%s\n' FLEET_DB_NETWORK=fleet-db "BACKUP_DIR=$backups" BACKUP_PG_IMAGE=postgres:17 "$@" \
+              > "$HOME/.config/fleet-cmdb/backup.env" && chmod 0600 "$HOME/.config/fleet-cmdb/backup.env")
+          }
+          write_backup_env
+          sudo loginctl enable-linger "$USER" # the owner's one-time step on the VM (already on for GitHub's runner user)
+          bash ops/backup/install.sh
+          expect "the timer is enabled" enabled "$(systemctl --user is-enabled fleet-cmdb-backup.timer)"
+          expect "the timer is waiting" active "$(systemctl --user is-active fleet-cmdb-backup.timer)"
+          expect "the backup env file holds no password" 0 "$(grep -c -e PASSWORD -e "$DB_PASSWORD" "$HOME/.config/fleet-cmdb/backup.env" || true)"
+
+          echo "== the backup location is checked on the VM"
+          contains "a missing location is refused" "does not exist" "$("$tool" backup 2>&1 || true)"
+          sudo install -d -m 0700 -o 1000 -g 1000 "$backups"
+          contains "a location that is not a mount point is refused" "not a mount point" "$("$tool" backup 2>&1 || true)"
+          expect "nothing was written" "" "$(sudo ls -A "$backups")"
+          sudo mount -t tmpfs -o size=512m,mode=0700,uid=1000,gid=1000 tmpfs "$backups" # stands in for the off-machine mount
+
+          echo "== the deploy's first backup (cd.yml: docker.sh first-backup), through the systemd unit in the background"
+          contains "the first backup starts" "first backup started" "$("$tool" first-backup 2>&1)"
+          expect "and succeeds" success "$(wait_unit)"
+          journal 20
+          good="$(sets)"
+          expect "one backup set" 1 "$(printf '%s\n' "$good" | grep -c .)"
+          expect "it holds the four databases, the release files, the counts, and checksums" \
+            "SHA256SUMS cable.dump cache.dump counts fleet-cmdb.dump queue.dump releases.tar" "$(sudo ls "$backups/$good" | xargs)"
+          expect "the set belongs to the app's uid, mode 0700" "1000 700" "$(sudo stat -c '%u %a' "$backups/$good")"
+          expect "the release binary is in it" 1 "$(sudo tar -tf "$backups/$good/releases.tar" | grep -c 'fleet-agent' || true)"
+          expect "the counts include the host and the release" "hosts=1 agent_releases=1" \
+            "$(sudo grep -e '^hosts=' -e '^agent_releases=' "$backups/$good/counts" | xargs)"
+          wait_backup_ok || failed=1
+          echo "/health: $(health)"
+          expect "/health reports the backup" ok "$(backup_check)"
+          expect "and is healthy as a whole" 200 "$(docker exec fleet-cmdb curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health)"
+          expect "the database password is not in the backup's log" 0 "$(sudo journalctl --no-pager _SYSTEMD_USER_UNIT=fleet-cmdb-backup.service | grep -cF "$DB_PASSWORD" || true)"
+          contains "a later deploy takes no first backup" "already holds sets" "$("$tool" first-backup 2>&1)"
+          expect "so there is still one set" 1 "$(sets | grep -c .)"
+
+          echo "== the restore drill"
+          out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
+          echo "$out" | tail -n 3
+          expect "without CREATEDB the drill fails (restore.sh refuses before changing anything: status 64)" 64 "$rc"
+          contains "and says what to run" "ALTER ROLE cmdb CREATEDB;" "$out"
+          dbs "ALTER ROLE cmdb CREATEDB" > /dev/null # the owner's one-time step in PostgreSQL
+          out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
+          echo "$out"
+          expect "the restore drill passes" 0 "$rc"
+          contains "against the restored data" "Restore drill passed." "$out"
+          contains "including the release download" "ok   release 0.0.1: downloads through the agent API" "$out"
+          contains "it names the space it needs" "of free space on the live PostgreSQL server" "$out"
+          expect "no scratch database is left" 0 "$(dbs "SELECT count(*) FROM pg_database WHERE datname LIKE 'cmdb_restore_drill%'")"
+          expect "no scratch volume is left" "" "$(docker volume ls -q --filter name=fleet-cmdb-drill)"
+
+          echo "== the drill against another PostgreSQL server (FLEET_BACKUP_DRILL_HOST)"
+          docker run -d --name postgres-drill --network fleet-db -e POSTGRES_PASSWORD="$(openssl rand -hex 24)" postgres:17 > /dev/null
+          for _ in $(seq 1 60); do docker exec postgres-drill pg_isready -q -U postgres && break; sleep 1; done
+          docker exec -i postgres-drill psql -q -v ON_ERROR_STOP=1 -U postgres <<SQL
+          CREATE ROLE cmdb LOGIN CREATEDB PASSWORD '$DB_PASSWORD';
+          SQL
+          write_backup_env BACKUP_DRILL_PGHOST=postgres-drill
+          out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
+          echo "$out" | grep -e 'restore drill:' -e 'Restore drill'
+          expect "the drill on another server passes" 0 "$rc"
+          contains "with its scratch databases there" "on postgres-drill" "$out"
+          write_backup_env
+          docker rm -f postgres-drill > /dev/null
+
+          echo "== one lock: backup, drill, restore, and the deploy"
+          mkdir -p "$deploy_dir/build-$GITHUB_SHA"
+          tar -cf - cmdb docs/api agent/trust agent/release-keys ops/backup ops/deploy | tar -xf - -C "$deploy_dir/build-$GITHUB_SHA"
+          echo "-- a backup that waits for a deploy reads the app's settings and image only once it has the lock"
+          # The review's reproduction: while a deploy holds the lock, it replaces the container with a new image and
+          # removes the old tag (deploy.sh does both). A backup that read the image before waiting would then run the
+          # removed fleet-cmdb:ci, which Docker would try to pull, and fail to update the status file.
+          fifo="$RUNNER_TEMP/deploy-holder-138" && mkfifo "$fifo"
+          # shellcheck disable=SC2016 # expanded by sh
+          flock "$lock" sh -c 'echo "deploy of next (Deploy CI)" > "$1"; read -r _ < "$2"' sh "$lock" "$fifo" & holder=$!
+          sleep 2
+          "$tool" backup > "$RUNNER_TEMP/backup-138.log" 2>&1 & waiter=$!
+          sleep 3
+          (umask 077 && docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-cmdb | grep . > "$RUNNER_TEMP/next.env")
+          docker tag fleet-cmdb:ci fleet-cmdb:next
+          docker rm -f fleet-cmdb > /dev/null
+          docker run -d --name fleet-cmdb -p 127.0.0.1:8443:3443 --network fleet-db --cap-drop ALL --security-opt no-new-privileges \
+            -v fleet-cmdb_storage:/rails/storage --env-file "$RUNNER_TEMP/next.env" fleet-cmdb:next > /dev/null
+          rm -f "$RUNNER_TEMP/next.env"
+          docker rmi fleet-cmdb:ci > /dev/null
+          wait_up || stop "the replaced app did not start"
+          echo go > "$fifo" # releases the deploy's lock
+          wait "$holder" || true
+          wait "$waiter" && rc=0 || rc=$?
+          cat "$RUNNER_TEMP/backup-138.log"
+          expect "the waiting backup succeeds after the deploy" 0 "$rc"
+          contains "it waited for the deploy" "waiting for: deploy of next" "$(cat "$RUNNER_TEMP/backup-138.log")"
+          contains "and updated the status file with the new image" "status file updated" "$(cat "$RUNNER_TEMP/backup-138.log")"
+          good="$(sets | tail -n 1)" before="$(sets | xargs)"
+          expect "two sets now" 2 "$(sets | grep -c .)"
+          echo "-- a restore holds the lock"
+          # shellcheck disable=SC2016 # expanded by sh
+          flock "$lock" sh -c 'echo "restore of fleet-cmdb-test (Deploy CI)" > "$1"; sleep 45' sh "$lock" & holder=$!
+          sleep 2
+          contains "a backup refuses during a restore" "busy with restore" "$("$tool" backup 2>&1 || true)"
+          contains "so does the drill" "busy with restore" "$("$tool" restore-drill 2>&1 || true)"
+          contains "and a deploy, before it touches the app" "a restore is in progress" \
+            "$(bash "$deploy_dir/build-$GITHUB_SHA/ops/deploy/deploy.sh" "$deploy_dir" "$GITHUB_SHA" fleet-db false 2>&1 || true)"
+          contains "and install.sh" "a restore is in progress" "$(bash ops/backup/install.sh 2>&1 || true)"
+          expect "the app is still the same container" true "$(docker inspect -f '{{.State.Running}}' fleet-cmdb)"
+          wait "$holder" || true # the lock's holder ends by itself
+
+          echo "== recover a lost server, in the guide's order (backup-and-restore.md, Restore)"
+          echo "-- 1. the VM and PostgreSQL come back: the role cmdb with its four databases, empty"
+          (umask 077 && { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-cmdb | grep .; echo SOLID_QUEUE_IN_PUMA=1; } > "$RUNNER_TEMP/app.env")
+          docker rm -f fleet-cmdb-jobs fleet-cmdb > /dev/null
+          docker volume rm fleet-cmdb_storage > /dev/null
+          docker exec -i postgres psql -q -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+          DROP DATABASE cmdb_production WITH (FORCE);
+          DROP DATABASE cmdb_production_cache WITH (FORCE);
+          DROP DATABASE cmdb_production_queue WITH (FORCE);
+          DROP DATABASE cmdb_production_cable WITH (FORCE);
+          CREATE DATABASE cmdb_production OWNER cmdb;
+          CREATE DATABASE cmdb_production_cache OWNER cmdb;
+          CREATE DATABASE cmdb_production_queue OWNER cmdb;
+          CREATE DATABASE cmdb_production_cable OWNER cmdb;
+          ALTER ROLE cmdb CREATEDB;
+          SQL
+          echo "-- 2 and 3. the backup location is still mounted; a deploy, as cd.yml runs it: install.sh, deploy.sh (here waiting for a backup that holds the lock), first-backup"
+          cp "$RUNNER_TEMP/app.env" "$deploy_dir/fleet-cmdb.env"
+          bash "$deploy_dir/build-$GITHUB_SHA/ops/backup/install.sh" > /dev/null
+          # shellcheck disable=SC2016 # expanded by sh
+          flock "$lock" sh -c 'echo "backup (Deploy CI) running" > "$1"; sleep 10' sh "$lock" & holder=$!
+          sleep 2
+          out="$(bash "$deploy_dir/build-$GITHUB_SHA/ops/deploy/deploy.sh" "$deploy_dir" "$GITHUB_SHA" fleet-db false 2>&1)" && rc=0 || rc=$?
+          wait "$holder" 2> /dev/null || true
+          echo "$out" | grep '==>'
+          expect "the deploy succeeds" 0 "$rc"
+          contains "after waiting for the running backup" "waiting for: backup (Deploy CI)" "$out"
+          expect "its env file is deleted" no "$([ -e "$deploy_dir/fleet-cmdb.env" ] && echo yes || echo no)"
+          contains "the deploy takes no first backup: the good set is there" "already holds sets" "$("$tool" first-backup 2>&1)"
+          expect "the new app is empty" 0 "$(docker exec fleet-cmdb bin/rails runner 'print Host.count')"
+          expect "and /health says it has no backup" failing "$(backup_check)"
+          echo "-- the nightly backup before the restore refuses the empty databases, so the good set stays the newest"
+          systemctl --user start fleet-cmdb-backup.service && rc=0 || rc=1
+          expect "the timer's backup fails" 1 "$rc"
+          contains "because the database has fewer hosts than the newest set" "refused: the database holds 0 hosts" "$(journal 10)"
+          expect "no set was written" "$before" "$(sets | xargs)"
+          expect "/health still says it has no backup" failing "$(backup_check)"
+          echo "-- even a forced backup of the empty state cannot be drilled or restored by mistake"
+          "$tool" backup --force > /dev/null || stop "the forced backup failed"
+          contains "the drill refuses an empty newest set" "holds no host and no audit entry" "$("$tool" restore-drill 2>&1 || true)"
+          empty="$(sets | tail -n 1)"
+          echo "-- 4. stop the app, drop the new databases, restore the good set, start the app"
+          contains "the restore refuses while the app runs" "stop the app first" "$("$tool" restore "$good" 2>&1 || true)"
+          docker stop fleet-cmdb > /dev/null
+          contains "the restore refuses an empty set" "holds no host and no audit entry" "$("$tool" restore "$empty" 2>&1 || true)"
+          contains "and migrated databases" "holds data" "$("$tool" restore "$good" 2>&1 || true)"
+          expect "a restore that refused before changing anything leaves no marker" no "$([ -e "$marker" ] && echo yes || echo no)"
+          echo "-- a restore that fails part-way leaves its marker, and backups and deploys refuse until a restore succeeds"
+          # Into the four empty databases a freshly provisioned PostgreSQL has (reused, so a failure leaves them filled).
+          for db in cmdb_production cmdb_production_queue cmdb_production_cache cmdb_production_cable; do
+            docker exec postgres dropdb -U postgres "$db"
+            docker exec postgres createdb -U postgres -O cmdb "$db"
+          done
+          # A set whose cache dump is damaged but whose checksums match: the primary and queue restore, the cache fails.
+          damaged=fleet-cmdb-20000101T000000Z
+          sudo cp -a "$backups/$good" "$backups/$damaged"
+          sudo dd if=/dev/urandom of="$backups/$damaged/cache.dump" bs=100 count=1 conv=notrunc status=none
+          sudo sh -c 'cd "$1" && sha256sum fleet-cmdb.dump queue.dump cache.dump cable.dump releases.tar counts > SHA256SUMS && chown 1000:1000 SHA256SUMS' sh "$backups/$damaged"
+          out="$("$tool" restore "$damaged" 2>&1)" && rc=0 || rc=$?
+          echo "$out" | tail -n 3
+          expect "the damaged set's restore fails" 1 "$rc"
+          contains "part-way" "failed part-way" "$out"
+          expect "and leaves its marker" yes "$([ -e "$marker" ] && echo yes || echo no)"
+          out="$("$tool" backup 2>&1 || true)"
+          contains "the backup refuses" "did not finish" "$out"
+          contains "with the databases to drop" "dropdb -U postgres --if-exists" "$out"
+          contains "install.sh refuses" "did not finish" "$(bash ops/backup/install.sh 2>&1 || true)"
+          cp "$RUNNER_TEMP/app.env" "$deploy_dir/fleet-cmdb.env"
+          contains "the deploy refuses" "did not finish" \
+            "$(bash "$deploy_dir/build-$GITHUB_SHA/ops/deploy/deploy.sh" "$deploy_dir" "$GITHUB_SHA" fleet-db false 2>&1 || true)"
+          rm -f "$deploy_dir/fleet-cmdb.env"
+          expect "and the stopped app was left alone" false "$(docker inspect -f '{{.State.Running}}' fleet-cmdb)"
+          echo "-- the review's case: a re-run that refuses (the primary is restored) keeps the earlier marker"
+          contains "the re-run says the earlier restore still stands" "earlier unfinished restore still stands" \
+            "$("$tool" restore "$good" 2>&1 || true)"
+          expect "and keeps its marker" yes "$([ -e "$marker" ] && echo yes || echo no)"
+          contains "so the backup still refuses" "$damaged did not finish" "$("$tool" backup 2>&1 || true)"
+          echo "-- as the marker says: drop the four databases, then restore again"
+          for db in cmdb_production cmdb_production_queue cmdb_production_cache cmdb_production_cable; do
+            docker exec postgres dropdb -U postgres --if-exists "$db"
+          done
+          out="$("$tool" restore "$good" 2>&1)" || { echo "$out"; stop "docker.sh restore failed"; }
+          echo "$out"
+          expect "the successful restore removes the marker" no "$([ -e "$marker" ] && echo yes || echo no)"
+          docker start fleet-cmdb > /dev/null
+          wait_up || stop "the restored app did not start"
+          rm -f "$RUNNER_TEMP/app.env"
+          expect "the restored app has the host" 1 "$(docker exec fleet-cmdb bin/rails runner 'print Host.where(hostname: "vm-01.example.lan").count')"
+          expect "and the operator" 1 "$(docker exec fleet-cmdb bin/rails runner 'print OperatorAllowlistEntry.count')"
+          expect "and the release" 1 "$(docker exec fleet-cmdb bin/rails runner 'print AgentRelease.where(version: "0.0.1").count')"
+          expect "and its binary" 4096 "$(docker exec fleet-cmdb sh -c 'stat -c %s /rails/storage/releases/fleet-agent-0.0.1-*' 2> /dev/null || true)"
+          wait_backup_ok || failed=1
+          echo "/health: $(health)"
+          expect "the restore's own backup makes /health report it again" ok "$(backup_check)"
+          expect "four sets: the two good ones, the forced empty one, and the restored state" 4 "$(sets | grep -c .)"
+          contains "the newest set cannot be deleted" "is the newest set" "$("$tool" delete "$(sets | tail -n 1)" 2>&1 || true)"
+          "$tool" delete "$empty" > /dev/null || stop "docker.sh delete failed"
+          expect "an older set can" "" "$(sets | grep -x "$empty" || true)"
+          expect "retention pruned the damaged copy by the time in its name" "" "$(sets | grep -x "$damaged" || true)"
+          contains "a set that does not exist is refused" "there is no set" "$("$tool" delete fleet-cmdb-20000101T000000Z 2>&1 || true)"
+          out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
+          echo "$out" | tail -n 2
+          expect "the drill of the newest set (the restored state) passes" 0 "$rc"
+          if [ "$failed" -ne 0 ]; then docker logs --tail 100 fleet-cmdb; exit 1; fi
 
   gate:
     name: Deploy CI

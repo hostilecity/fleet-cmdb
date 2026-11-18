@@ -55,7 +55,7 @@ Per host and day on the default intervals the server writes 104 report receipts 
    - work that is due is not lost: the next hourly run tries again. The health endpoint warns when a partition has been due for retirement, or one ahead has been missing, for **3 days**.
 
    Retiring uses a plain `DETACH`: PostgreSQL refuses `DETACH ... CONCURRENTLY` when a default partition exists (verified).
-7. **The audit log stays append-only and is never dropped.** The manager only creates audit partitions; it has no code path that detaches or drops one, and a spec proves it. An audit archive policy (detach and export old months) is a separate decision for the owner and would change FR-S.3.
+7. **The audit log stays append-only and is never dropped.** The manager only creates audit partitions; it has no code path that detaches or drops one, and a spec proves it. An audit archive policy (detach and export old months) is a separate decision for the owner and would change FR-S.3. It would also have to change the backup's guard (#138, `ops/backup/backup.sh`), which refuses a database holding fewer audit entries or hosts than the newest backup set, because neither is ever deleted.
 
 ## Data model
 

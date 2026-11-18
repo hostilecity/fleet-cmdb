@@ -13,7 +13,7 @@ Project structure:
     backlog/        # issues.yml (issue stubs) and specs/ (implementation details, source of truth)
   cmdb/
   agent/
-  ops/              # backup, restore, and restore-drill scripts and systemd units
+  ops/              # backup, restore, and restore-drill scripts and the backup timer
   .github/
 ```
 

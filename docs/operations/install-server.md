@@ -3,9 +3,10 @@
 The server runs as one Docker container, `fleet-cmdb`, on a VM on your network (larger fleets may run the background jobs in a second one, `fleet-cmdb-jobs`: [scaling.md](scaling.md)). It uses a PostgreSQL container that already runs there. Operators reach the dashboard through a Cloudflare tunnel whose connector runs on another VM. The tunnel and the agents both connect to the VM's internal hostname over HTTPS, with a Cloudflare Origin CA certificate the server serves itself ([ADR 0005](../decisions/0005-hosting-tls-deployment.md), [ADR 0024](../decisions/0024-cloudflare-origin-ca-for-the-server.md), [P1-DEPLOY](../backlog/specs/p1-deploy.md)). GitHub Actions deploys it (`.github/workflows/cd.yml`):
 
 1. a self-hosted runner on the LAN connects to the VM over SSH;
-2. it ships the commit, builds the image there, and replaces the container.
+2. it ships the commit, builds the image there, and replaces the container;
+3. it installs the daily backup on the VM: a systemd timer of the deploy user that dumps the four databases with `pg_dump` in a throwaway `postgres:17` container on the database's network, with the release files, onto a backup location mounted on the VM ([backup-and-restore.md](backup-and-restore.md)).
 
-You set secrets and variables in GitHub; nothing is edited on the VM.
+You set secrets and variables in GitHub; apart from the one-time steps in step 1, nothing is edited on the VM.
 
 ```
  Operator's browser ──HTTPS──> Cloudflare (Access) ──tunnel──> cloudflared (tunnel VM) ──HTTPS──┐
@@ -18,7 +19,6 @@ Both connections go to the VM's internal hostname (`fleet-vm.example.com` below)
 
 **Not here yet:**
 - **Agents** trust the server's certificate only from the first agent release that includes Cloudflare's Origin CA roots ([agent/trust](../../agent/trust/README.md)). Install agents from that release on ([install-agent.md](install-agent.md)).
-- **Backups** come in [#138](https://github.com/hostilecity/fleet-cmdb/issues/138). Until a backup exists, `/health` reports `503` (`"backup":"failing"`). That is expected, not a fault.
 
 Names below are placeholders:
 
@@ -30,6 +30,8 @@ Names below are placeholders:
 | `192.0.2.20` | The tunnel VM's LAN address |
 | `deploy` | The user the runner logs in as on the VM |
 | `postgres_default` | The PostgreSQL container's Docker network |
+| `postgres` | The PostgreSQL container's name, on the VM and on that network |
+| `backup-01.example.lan` | A file server for the backup sets |
 
 ## 1. Check the prerequisites
 
@@ -39,6 +41,9 @@ Names below are placeholders:
 | The internal hostname resolves to the VM from the tunnel VM and from the VMs that will run agents | `getent hosts fleet-vm.example.com` on each prints `192.0.2.10` |
 | A deploy user on the VM in the `docker` group (equivalent to root on the VM) | `ssh deploy@192.0.2.10 docker ps` works without `sudo` |
 | The existing PostgreSQL container on its Docker network, reachable there as `postgres` (or another name: `FLEET_DB_HOST`), with the role `cmdb` owning `cmdb_production`, `cmdb_production_cache`, `cmdb_production_queue`, and `cmdb_production_cable` | `docker network ls` shows the network; `docker run --rm --network postgres_default postgres:17 pg_isready -h postgres` prints `accepting connections` |
+| The deploy user's systemd instance runs without a login, for the backup timer | `loginctl show-user deploy -p Linger` prints `Linger=yes` (see below) |
+| A backup location mounted at `/var/backups/fleet-cmdb` (or `FLEET_BACKUP_DIR`) that uid 1000 can write | `mountpoint /var/backups/fleet-cmdb` prints `is a mountpoint` (see below) |
+| The role `cmdb` may create databases, for the restore drill | `docker exec postgres psql -U postgres -Atc "SELECT rolcreatedb FROM pg_roles WHERE rolname = 'cmdb'"` prints `t` (see below) |
 | A self-hosted GitHub Actions runner on the LAN, registered for this repository, with `bash`, `ssh`, `tar`, and `openssl` (`git` is not needed), that can reach the VM on port 22 | **Settings > Actions > Runners** shows it **Idle** |
 | A Cloudflare tunnel with its connector on the tunnel VM, and Cloudflare Access | The tunnel shows **Healthy** in Zero Trust |
 | A Google Cloud project, for the operators' sign-in | |
@@ -52,6 +57,32 @@ ssh-keyscan -H fleet-vm.example.com 2>/dev/null     # host keys for DEPLOY_KNOWN
 ```
 
 The private key goes into the secret `SSH_PRIVATE_KEY`; then delete both files.
+
+**One-time steps for backups** ([backup-and-restore.md](backup-and-restore.md)). On the VM, as root:
+
+```sh
+usermod -aG docker deploy                         # first, if not done yet: a user manager started before keeps its old groups
+loginctl enable-linger deploy                     # the deploy user's timer runs without a login
+mkdir -p /var/backups/fleet-cmdb
+# Mount an off-machine location there, for example an NFS export of backup-01.example.lan, in /etc/fstab:
+#   backup-01.example.lan:/export/fleet-cmdb  /var/backups/fleet-cmdb  nfs  defaults,_netdev  0  0
+mount /var/backups/fleet-cmdb
+chown 1000:1000 /var/backups/fleet-cmdb && chmod 0700 /var/backups/fleet-cmdb   # uid 1000 is the app's user in its containers
+```
+
+With NFS and root squashing, set that owner on the file server instead. If a person's account on the VM also has uid 1000, that account can read every set: give the deploy user (or nobody) uid 1000, or keep such accounts off the VM.
+
+If the deploy user was added to `docker` after lingering started its systemd instance, restart that instance once: `systemctl restart user@$(id -u deploy).service`.
+
+The backup refuses a directory that is not a mount point, so the sets cannot quietly land on the VM's own disk beside the database. If you accept that (for example because the whole VM is backed up elsewhere), set the variable `FLEET_BACKUP_ALLOW_LOCAL` to `true` instead of mounting. The export must let uid 1000 write (with NFS, no `all_squash` to another user).
+
+In the PostgreSQL container, as its superuser (that container is provisioned separately; this is the only change it needs). The restore drill creates scratch databases:
+
+```sh
+docker exec postgres psql -U postgres -c 'ALTER ROLE cmdb CREATEDB;'
+```
+
+The database needs no published port: the backup reaches it on its Docker network.
 
 **Server certificate** (ADR 0024). In the Cloudflare dashboard, open your zone, then **SSL/TLS > Origin Server > Create Certificate**:
 1. Let Cloudflare generate the private key, with key type **ECC** (or RSA).
@@ -94,6 +125,13 @@ In **Settings > Environments**, create **`production`**. Under **Deployment bran
 | `RAILS_LOG_LEVEL` | Variable, optional | `info` (the default) | |
 | `FLEET_EXTRA_SETTINGS` | Variable, optional | `FLEET_SESSION_IDLE_MINUTES=60` | Any other non-secret setting of [configuration.md](configuration.md), one `NAME=value` per line |
 | `FLEET_JOBS_CONTAINER` | Variable, optional | `false` (the default) | `true` runs background jobs in a second container, `fleet-cmdb-jobs`; only for larger fleets ([scaling.md](scaling.md)) |
+| `FLEET_BACKUP_DIR` | Variable, optional | `/var/backups/fleet-cmdb` (the default) | Where the backup sets are kept on the VM: the mount point of the backup location |
+| `FLEET_BACKUP_ALLOW_LOCAL` | Variable, optional | `false` (the default) | `true` lets backups go to a directory that is not a mount point |
+| `FLEET_BACKUP_RETENTION_DAYS` | Variable, optional | `14` (the default) | Days a backup set is kept; the newest 3, and the newest set holding more than the newest one, are always kept |
+| `FLEET_BACKUP_PG_IMAGE` | Variable, optional | `postgres:17` (the default) | The PostgreSQL client image for backups; its major version must be the server's or newer. May be pinned by digest (`postgres:17@sha256:…`) |
+| `FLEET_BACKUP_DRILL_HOST` | Variable, optional | unset (the default) | Another PostgreSQL server on the database network for the restore drill's scratch databases, once the database is large ([backup-and-restore.md](backup-and-restore.md#the-restore-drill)) |
+
+The backup reads the database host and password from the app container when it runs, so no secret is stored for it.
 
 ## 3. Publish the dashboard through the tunnel
 
@@ -112,13 +150,16 @@ So that Google and anyone else can read the privacy page without passing Access,
 
 Open **Actions > Deploy > Run workflow**, pick branch `main` (a run from any other branch is skipped). The first run takes a few minutes, because the image builds on the VM. The log shows:
 1. the commit;
-2. `database network postgres_default exists` and the build;
-3. `wait for /up` (the first start migrates the databases);
-4. the container's status, and `/health` (`503` until backups exist).
+2. under **Set up backups on the server**, the backup timer's next run;
+3. `database network postgres_default exists` and the build;
+4. `wait for /up` (the first start migrates the databases);
+5. the container's status;
+6. under **Take the first backup**: `the first backup started in the background` on the first deploy (`already holds sets` on later ones). A minute or two later, `/health` shows `"backup":"ok"`.
 
-The deploy stops with a clear message if the network is missing, a required setting is not set, or agents would not trust the certificate; only names are printed, never values (and the certificate's names and expiry, which are not secret). The server does not start if the key does not match the certificate or the certificate does not cover `FLEET_AGENT_HOST`; `docker logs fleet-cmdb` says which. Secret values reach the VM over SSH standard input, into a mode-0600 env file for `docker run --env-file`, which is deleted once the containers have started. With `FLEET_JOBS_CONTAINER=true`, the jobs container gets a copy without the TLS certificate and key (`FLEET_TLS_*`), which only the app serves. Docker keeps them in the container's configuration (`docker inspect`), which only users in the `docker` group can read.
+The deploy stops with a clear message if the network is missing, a required setting is not set, agents would not trust the certificate, lingering is off for the deploy user, a restore is in progress or did not finish, or a backup or the restore drill has held the backup lock for over 20 minutes; in each case before the app is replaced. A first backup that cannot start (for example because the backup location is not mounted) shows a warning, and `/health` stays `503`. Only names are printed, never values (and the certificate's names and expiry, which are not secret). The server does not start if the key does not match the certificate or the certificate does not cover `FLEET_AGENT_HOST`; `docker logs fleet-cmdb` says which. Secret values reach the VM over SSH standard input, into a mode-0600 env file for `docker run --env-file`, which is deleted once the containers have started. With `FLEET_JOBS_CONTAINER=true`, the jobs container gets a copy without the TLS certificate and key (`FLEET_TLS_*`), which only the app serves. Docker keeps them in the container's configuration (`docker inspect`), which only users in the `docker` group can read.
 
 **Check:**
+- `docker exec fleet-cmdb curl -s http://localhost:3000/health` on the VM shows `"backup":"ok"`. Then run the restore drill once and record it ([backup-and-restore.md](backup-and-restore.md#the-restore-drill)): `~/.local/share/fleet-cmdb/backup/docker.sh restore-drill` ends with `Restore drill passed.`
 - Open `https://fleet.example.com` in a browser. Pass Access, and the sign-in page opens.
 - From a VM on your network, with this repository's `agent/trust` files: `curl -s -o /dev/null -w '%{http_code}\n' --cacert <(cat agent/trust/*.pem) https://fleet-vm.example.com/up` prints `200`. That is the certificate check agents make.
 
@@ -139,16 +180,18 @@ docker ps --filter name=fleet-cmdb        # Up …
 docker logs -f fleet-cmdb                 # the app: one JSON object per line (health-and-jobs.md)
 docker logs -f fleet-cmdb-jobs            # background jobs, only with FLEET_JOBS_CONTAINER=true
 docker exec fleet-cmdb curl -s http://localhost:3000/health
+systemctl --user list-timers fleet-cmdb-backup.timer   # the next backup
+journalctl --user -u fleet-cmdb-backup.service -n 30   # the last backups (as root, journalctl _SYSTEMD_USER_UNIT=fleet-cmdb-backup.service if the journal is not persistent)
 ```
 
-Release files and the backup status file are in the Docker volume `fleet-cmdb_storage`, which survives every deploy. The database is in your PostgreSQL container.
+Release files and the backup status file are in the Docker volume `fleet-cmdb_storage`, which survives every deploy. The database is in your PostgreSQL container, and the backup sets in `/var/backups/fleet-cmdb`.
 
 ## 7. Upgrade, change a setting, roll back
 
 - **Upgrade:** merge to `main`; every push to `main` deploys. Migrations run on start (`db:prepare`).
 - **Change a setting:** change the secret or variable in GitHub, then run the workflow.
 - **Renew the certificate:** before it expires (Settings shows when), create a new Origin certificate as in step 1, replace `FLEET_TLS_CERT` and `FLEET_TLS_KEY`, and run the workflow. Agents need nothing.
-- **Roll back:** if `FLEET_JOBS_CONTAINER` is `true` and you go back to a commit from before the jobs container existed, first run `docker stop -t 30 fleet-cmdb-jobs && docker rm fleet-cmdb-jobs` on the VM: that commit's workflow does not know the container and would leave it running new code beside the old app's own jobs. Then open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: that needs a backup (a later issue).
+- **Roll back:** if `FLEET_JOBS_CONTAINER` is `true` and you go back to a commit from before the jobs container existed, first run `docker stop -t 30 fleet-cmdb-jobs && docker rm fleet-cmdb-jobs` on the VM: that commit's workflow does not know the container and would leave it running new code beside the old app's own jobs. Then open the earlier Deploy run of the commit to go back to and choose **Re-run all jobs**; a run always deploys its own commit. GitHub re-runs only runs up to 30 days old: for an older commit, revert on `main` instead, and the push (or a manual run) deploys the revert. If the newer version migrated the database, the old code may not run on it: then restore the last backup taken before the upgrade ([backup-and-restore.md](backup-and-restore.md#restore)), which loses everything written since. To be safe, take a backup by hand before a deploy you may roll back: `~/.local/share/fleet-cmdb/backup/docker.sh backup`.
 - Two deploys never overlap; a second one waits.
 
 ## 8. First steps in the dashboard
@@ -176,9 +219,11 @@ The server is up but empty. In this order:
 ## Uninstall
 
 ```sh
+systemctl --user disable --now fleet-cmdb-backup.timer
+rm -rf ~/.config/systemd/user/fleet-cmdb-backup.* ~/.local/share/fleet-cmdb ~/.config/fleet-cmdb   # the backup's scripts and settings
 docker rm -f fleet-cmdb-jobs fleet-cmdb    # the jobs container exists only with FLEET_JOBS_CONTAINER=true
 docker volume rm fleet-cmdb_storage       # deletes uploaded release files
 docker image rm $(docker images -q fleet-cmdb)
 ```
 
-Then remove the tunnel's public hostname and the Access applications in Cloudflare, revoke the Origin certificate (**SSL/TLS > Origin Server**), the OAuth client in Google Cloud, and the `production` environment in GitHub. The databases stay in your PostgreSQL container.
+Then remove the tunnel's public hostname and the Access applications in Cloudflare, revoke the Origin certificate (**SSL/TLS > Origin Server**), the OAuth client in Google Cloud, and the `production` environment in GitHub. The databases stay in your PostgreSQL container, and the backup sets in the backup location. As root, `loginctl disable-linger deploy` if nothing else needs it.
