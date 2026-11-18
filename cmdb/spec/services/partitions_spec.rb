@@ -148,6 +148,17 @@ RSpec.describe Partitions do
   end
 
   describe ".detach_and_drop! and .drop_leftovers!" do
+    it "checks the maintenance lock before each drop, and drops nothing once it is lost (#198)" do
+      first, second = described_class.list(receipts).reject(&:default?).first(2)
+      lost = -> { raise SessionLock::Lost, "gone" }
+      expect { described_class.detach_and_drop!(receipts, first, still_held: lost) }.to raise_error(SessionLock::Lost)
+      expect(names(receipts)).to include(first.name)
+      c.execute("ALTER TABLE #{receipts} DETACH PARTITION #{second.name}")
+      c.execute("ALTER TABLE #{second.name} RENAME TO #{second.name}_retired")
+      expect { described_class.drop_leftovers!(receipts, still_held: lost) }.to raise_error(SessionLock::Lost)
+      expect(c.table_exists?("#{second.name}_retired")).to be(true)
+    end
+
     it "detaches and drops a partition, and drops one an earlier run detached but did not drop" do
       first, second = described_class.list(receipts).reject(&:default?).first(2)
       described_class.detach_and_drop!(receipts, first)
@@ -166,6 +177,14 @@ RSpec.describe Partitions do
   end
 
   describe ".backup_running? and .maintain!" do
+    it "gives Retention.retire! the maintenance lock's check (#198)" do
+      checks = []
+      allow(Retention).to receive(:retire!) { |still_held:, **| checks << still_held && {} }
+      described_class.maintain!
+      expect(checks.size).to eq(1)
+      expect(checks.first).to respond_to(:call)
+    end
+
     it "does no partition work while pg_dump is dumping this database" do
       allow(Retention).to receive(:retire!)
       other_session(application_name: "pg_dump") do
@@ -183,7 +202,7 @@ RSpec.describe Partitions do
       expect(described_class.maintain!).to eq("created" => described_class::TABLES.keys.index_with { [] }, "retired" => {})
       expect(described_class.maintain!(dry_run: true)).to eq("created" => {}, "retired" => {})
       expect(described_class).to have_received(:ensure!).once
-      expect(Retention).to have_received(:retire!).with(now: anything, dry_run: true)
+      expect(Retention).to have_received(:retire!).with(now: anything, dry_run: true, still_held: anything)
     end
   end
 
@@ -253,6 +272,24 @@ RSpec.describe Partitions do
       expect(ids.map { |id| c.select_value("SELECT tableoid::regclass::text FROM #{receipts} WHERE id = #{id}") }.uniq)
         .to eq([ "#{receipts}_p#{(first.from - 2.days).strftime('%Y%m%d')}" ])
       expect(c.select_value("SELECT tableoid::regclass::text FROM #{receipts} WHERE id = #{ahead}")).to eq("#{receipts}_default")
+    end
+
+    # A run whose maintenance lock is lost part-way through moving rows back stops before its next batch, so a second
+    # run that takes the lock never works on the same moving table beside it, and the table is not dropped (#198).
+    it "checks the maintenance lock before each batch it moves back, and stops with the rest set aside once it is lost" do
+      stub_const("Partitions::MOVE_BATCH", 2)
+      Array.new(5) { |i| receipt(first.from - 2.days + i.minutes) }
+      batches = 0
+      counter = ->(*, payload) { batches += 1 if payload[:sql].start_with?("WITH batch AS (DELETE FROM") }
+      allow(SessionLock).to receive(:hold).and_wrap_original do |original, key, &block|
+        original.call(key) { block.call(-> { raise SessionLock::Lost, "gone" if batches == 1 }) }
+      end
+
+      expect { ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { described_class.ensure!(tables: [ receipts ]) } }
+        .to raise_error(SessionLock::Lost)
+      expect(batches).to eq(1)
+      expect(c.table_exists?("#{receipts}_default_moving")).to be(true) # not dropped: 3 rows are still in it
+      expect(c.select_value("SELECT count(*) FROM #{receipts}_default_moving")).to eq(3)
     end
 
     it "leaves rows far ahead in the default without setting it aside" do
