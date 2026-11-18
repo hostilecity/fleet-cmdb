@@ -508,7 +508,34 @@ mod tests {
         let ran = registry.run(&restart("nginx.service"), &control).unwrap();
         assert_eq!(ran.outcome, Outcome::Succeeded, "{}", ran.output);
         assert!(ran.output.contains("restarting\n"), "{}", ran.output);
-        assert!(control.asked.get() > 0);
+        // Implied by the handshake (the fake restart exits only after an ask); kept as documentation.
+        assert!(control.asked.get() >= 1, "progress was still sent");
+    }
+
+    #[test]
+    fn a_cancel_between_programs_does_not_stop_a_restart() {
+        // DEC-14 while no program runs (review of #238): the settle pause asks about the cancel
+        // through `Run::stopped`, which must pass it on as progress and never stop the task.
+        let systemctl = FakeSystemctl::new(0);
+        systemctl.set_active(true);
+        let task = RestartService {
+            settle: Duration::from_millis(300),
+            ..systemctl.task(vec![])
+        };
+        let registry = registry(task, allowing(&["nginx.service"]));
+        let control = TestControl::default();
+        control.cancel.set(true);
+        let ran = registry.run(&restart("nginx.service"), &control).unwrap();
+        assert_eq!(
+            (ran.outcome, ran.reason),
+            (Outcome::Succeeded, None),
+            "{}",
+            ran.output
+        );
+        assert_eq!(
+            systemctl.calls(),
+            ["restart -- nginx.service", "is-active -- nginx.service"]
+        );
     }
 
     #[test]

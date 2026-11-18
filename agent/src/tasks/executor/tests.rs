@@ -139,10 +139,13 @@ pub fn program(path: &'static str, args: &'static [&'static str], privilege: Pri
 }
 
 /// A shell loop that waits, polling every 10 ms for at most about 10 s, until `mark` exists (see
-/// [`TestControl::mark_asked`]), then goes on; if it never appears, prints why and exits 99.
+/// [`TestControl::mark_asked`]); if it never appears, prints why and exits 99. Once it appears the
+/// program keeps running for 0.3 s more, many agent ticks, so a cancel the agent wrongly acts on
+/// stops it before it exits (review of #238: exiting at once let such a regression pass about 1 run
+/// in 10). The sleep starts only after the ask, so it cannot make the test flaky.
 pub fn wait_for_file(mark: &std::path::Path) -> String {
     format!(
-        "n=0; while [ ! -e '{}' ]; do n=$((n+1)); if [ $n -gt 1000 ]; then echo 'the agent never asked about a cancel'; exit 99; fi; sleep 0.01; done",
+        "n=0; while [ ! -e '{}' ]; do n=$((n+1)); if [ $n -gt 1000 ]; then echo 'the agent never asked about a cancel'; exit 99; fi; sleep 0.01; done; sleep 0.3",
         mark.display()
     )
 }
@@ -521,8 +524,9 @@ fn a_task_that_cannot_be_interrupted_ignores_a_cancel() {
         60,
         &control,
     );
-    assert_eq!(ran.outcome, Outcome::Succeeded);
-    assert!(control.asked.get() > 0, "progress was still sent");
+    assert_eq!(ran.outcome, Outcome::Succeeded, "{}", ran.output);
+    // Implied by the handshake (the program exits 0 only after an ask); kept as documentation.
+    assert!(control.asked.get() >= 1, "progress was still sent");
 }
 
 #[test]
