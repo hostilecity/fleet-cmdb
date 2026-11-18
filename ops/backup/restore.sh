@@ -10,13 +10,15 @@
 # non-empty release directory, so it cannot overwrite live data. To recover a lost server, run it under the
 # production database name with the app stopped (in the deployment: ops/backup/docker.sh restore), then start the
 # app (docs/operations/backup-and-restore.md). The restore drill runs it against scratch names.
-# Exit status: 0 restored; 3 refused, nothing changed; 1 failed part-way (see the message).
+# Exit status: 0 restored; 64 refused, nothing changed; anything else failed part-way (see the message).
 # Needs createdb, dropdb, pg_restore, psql, tar, sha256sum, and the libpq variables (PGHOST, PGUSER, PGPASSWORD).
 set -euo pipefail
 
 die() { echo "restore: $*" >&2; exit 1; }
-# Exit status 3: refused before anything was changed (ops/backup/docker.sh then clears its restore marker).
-refuse() { echo "restore: $*" >&2; exit 3; }
+# Exit status 64: refused before anything was changed (ops/backup/docker.sh may then clear its restore marker). No
+# tool this script runs returns 64 (psql's ON_ERROR_STOP failure, for one, is 3), so a failure part-way is never
+# mistaken for a refusal.
+refuse() { echo "restore: $*" >&2; exit 64; }
 sql() { psql --no-psqlrc -X -At -v ON_ERROR_STOP=1 "$@"; }
 
 [ "$#" -eq 3 ] || refuse "usage: restore.sh <backup set directory> <database name> <release directory>"

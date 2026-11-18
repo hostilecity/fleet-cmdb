@@ -126,7 +126,7 @@ take_lock() {
 
 # A restore that did not finish leaves the databases and the volume in an unknown state.
 check_restore_marker() {
-  [ ! -e "$restore_marker" ] || die "refused: $(cat "$restore_marker"). Run docker.sh restore again (drop the databases its message named first). If you are sure the databases are fine, delete $restore_marker"
+  [ ! -e "$restore_marker" ] || die "refused: $(cat "$restore_marker")"
 }
 
 # docker run of the PostgreSQL client image on the database network, as uid 1000 with no capabilities, with the
@@ -284,13 +284,25 @@ cmd_restore() {
   own_volume "$volume"
   log "restoring $set into $db (and _queue, _cache, _cable) and the volume $volume"
   mkdir -p "$(dirname "$restore_marker")"
-  printf 'a restore of %s did not finish (started %s)' "$set" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$restore_marker"
-  local rc=0
+  # A marker from an earlier run that did not finish stays until a restore succeeds, even if this run refuses.
+  local had_marker=0 rc=0
+  if [ -e "$restore_marker" ]; then had_marker=1; fi
+  # The marker's text is what backups, install.sh, and deploys print, so it says what to do without any earlier output.
+  # An earlier run's marker is kept as it is: it names the restore that did not finish.
+  if [ "$had_marker" = 0 ]; then
+    printf '%s' "a restore of $set did not finish (started $(date -u +%Y-%m-%dT%H:%M:%SZ)), so the databases and the volume may be half restored. With the app stopped, drop the four databases ($db, ${db}_queue, ${db}_cache, ${db}_cable; for example: for db in $db ${db}_queue ${db}_cache ${db}_cable; do docker exec postgres dropdb -U postgres --if-exists \"\$db\"; done, with your PostgreSQL container's name), empty the release directory (docker run --rm -v $volume:/s --user 1000:1000 --entrypoint sh $image -c 'rm -rf /s/releases/*'), then run $0 restore again (docs/operations/backup-and-restore.md, Restore). Only if you are sure the databases are complete, delete $restore_marker" > "$restore_marker"
+  fi
   pg_run -v "$BACKUP_DIR:/backups:ro" -v "$volume:/storage" --entrypoint bash "$image" \
     /ops/restore.sh "/backups/$set" "$db" /storage/releases || rc=$?
   case "$rc" in
     0) rm -f "$restore_marker" ;;
-    3) rm -f "$restore_marker"; die "the restore refused before changing anything (above)" ;;
+    64)
+      if [ "$had_marker" = 1 ]; then
+        die "the restore refused before changing anything (above), and the earlier unfinished restore still stands: $(cat "$restore_marker")"
+      fi
+      rm -f "$restore_marker"
+      die "the restore refused before changing anything (above)"
+      ;;
     *) die "the restore failed part-way (above). $restore_marker stays, so backups and deploys refuse until a restore succeeds" ;;
   esac
   # A backup of the restored state at once, still under the lock: it becomes the newest set, so later backups
@@ -314,6 +326,7 @@ cmd_delete() {
   set="$(resolve_set "$1")"
   newest="$(newest_set)"
   [ "$set" != "$newest" ] || die "$set is the newest set, which later backups compare against: not deleted"
+  pg_run -v "$BACKUP_DIR:/backups:ro" --entrypoint test "$image" -d "/backups/$set" || die "there is no set $set in $BACKUP_DIR (docker.sh list shows the sets)"
   pg_run -v "$BACKUP_DIR:/backups" --entrypoint rm "$image" -rf "/backups/$set"
   log "deleted $set"
 }

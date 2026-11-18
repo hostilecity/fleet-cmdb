@@ -291,7 +291,7 @@ jobs:
           echo "== the restore drill"
           out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
           echo "$out" | tail -n 3
-          expect "without CREATEDB the drill fails (restore.sh refuses before changing anything: status 3)" 3 "$rc"
+          expect "without CREATEDB the drill fails (restore.sh refuses before changing anything: status 64)" 64 "$rc"
           contains "and says what to run" "ALTER ROLE cmdb CREATEDB;" "$out"
           dbs "ALTER ROLE cmdb CREATEDB" > /dev/null # the owner's one-time step in PostgreSQL
           out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
@@ -406,17 +406,39 @@ jobs:
           contains "the restore refuses an empty set" "holds no host and no audit entry" "$("$tool" restore "$empty" 2>&1 || true)"
           contains "and migrated databases" "holds data" "$("$tool" restore "$good" 2>&1 || true)"
           expect "a restore that refused before changing anything leaves no marker" no "$([ -e "$marker" ] && echo yes || echo no)"
-          echo "-- a restore that did not finish leaves its marker, and backups and deploys refuse until a restore succeeds"
-          printf 'a restore of %s did not finish (started by Deploy CI)' "$good" > "$marker" # as a killed restore leaves it
-          contains "the backup refuses" "did not finish" "$("$tool" backup 2>&1 || true)"
+          echo "-- a restore that fails part-way leaves its marker, and backups and deploys refuse until a restore succeeds"
+          # Into the four empty databases a freshly provisioned PostgreSQL has (reused, so a failure leaves them filled).
+          for db in cmdb_production cmdb_production_queue cmdb_production_cache cmdb_production_cable; do
+            docker exec postgres dropdb -U postgres "$db"
+            docker exec postgres createdb -U postgres -O cmdb "$db"
+          done
+          # A set whose cache dump is damaged but whose checksums match: the primary and queue restore, the cache fails.
+          damaged=fleet-cmdb-20000101T000000Z
+          sudo cp -a "$backups/$good" "$backups/$damaged"
+          sudo dd if=/dev/urandom of="$backups/$damaged/cache.dump" bs=100 count=1 conv=notrunc status=none
+          sudo sh -c 'cd "$1" && sha256sum fleet-cmdb.dump queue.dump cache.dump cable.dump releases.tar counts > SHA256SUMS && chown 1000:1000 SHA256SUMS' sh "$backups/$damaged"
+          out="$("$tool" restore "$damaged" 2>&1)" && rc=0 || rc=$?
+          echo "$out" | tail -n 3
+          expect "the damaged set's restore fails" 1 "$rc"
+          contains "part-way" "failed part-way" "$out"
+          expect "and leaves its marker" yes "$([ -e "$marker" ] && echo yes || echo no)"
+          out="$("$tool" backup 2>&1 || true)"
+          contains "the backup refuses" "did not finish" "$out"
+          contains "with the databases to drop" "dropdb -U postgres --if-exists" "$out"
           contains "install.sh refuses" "did not finish" "$(bash ops/backup/install.sh 2>&1 || true)"
           cp "$RUNNER_TEMP/app.env" "$deploy_dir/fleet-cmdb.env"
           contains "the deploy refuses" "did not finish" \
             "$(bash "$deploy_dir/build-$GITHUB_SHA/ops/deploy/deploy.sh" "$deploy_dir" "$GITHUB_SHA" fleet-db false 2>&1 || true)"
           rm -f "$deploy_dir/fleet-cmdb.env"
           expect "and the stopped app was left alone" false "$(docker inspect -f '{{.State.Running}}' fleet-cmdb)"
+          echo "-- the review's case: a re-run that refuses (the primary is restored) keeps the earlier marker"
+          contains "the re-run says the earlier restore still stands" "earlier unfinished restore still stands" \
+            "$("$tool" restore "$good" 2>&1 || true)"
+          expect "and keeps its marker" yes "$([ -e "$marker" ] && echo yes || echo no)"
+          contains "so the backup still refuses" "$damaged did not finish" "$("$tool" backup 2>&1 || true)"
+          echo "-- as the marker says: drop the four databases, then restore again"
           for db in cmdb_production cmdb_production_queue cmdb_production_cache cmdb_production_cable; do
-            docker exec postgres dropdb -U postgres "$db"
+            docker exec postgres dropdb -U postgres --if-exists "$db"
           done
           out="$("$tool" restore "$good" 2>&1)" || { echo "$out"; stop "docker.sh restore failed"; }
           echo "$out"
@@ -435,6 +457,8 @@ jobs:
           contains "the newest set cannot be deleted" "is the newest set" "$("$tool" delete "$(sets | tail -n 1)" 2>&1 || true)"
           "$tool" delete "$empty" > /dev/null || stop "docker.sh delete failed"
           expect "an older set can" "" "$(sets | grep -x "$empty" || true)"
+          expect "retention pruned the damaged copy by the time in its name" "" "$(sets | grep -x "$damaged" || true)"
+          contains "a set that does not exist is refused" "there is no set" "$("$tool" delete fleet-cmdb-20000101T000000Z 2>&1 || true)"
           out="$("$tool" restore-drill 2>&1)" && rc=0 || rc=$?
           echo "$out" | tail -n 2
           expect "the drill of the newest set (the restored state) passes" 0 "$rc"

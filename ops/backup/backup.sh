@@ -34,9 +34,9 @@
 #                            BACKUP_NO_STATUS=1, which leaves it to the caller
 #   BACKUP_DB_NAME           default cmdb_production; the other three are <name>_queue, <name>_cache, <name>_cable
 #   BACKUP_RETENTION_DAYS    default 14: sets older than this (by the time in their name) are deleted, but the newest
-#                            BACKUP_KEEP_MIN are always kept, and so is any set holding more hosts or more audit
-#                            entries than the newest set (the sets of an earlier, bigger database, after a forced
-#                            backup): those stay until deleted by hand (docker.sh delete)
+#                            BACKUP_KEEP_MIN are always kept, and so is the newest set holding more hosts or more
+#                            audit entries than the newest set (the last set of an earlier, bigger database, after
+#                            a forced backup), until deleted by hand (docker.sh delete); its older ones age out
 #   BACKUP_KEEP_MIN          default 3
 #   BACKUP_FORCE             1: write the set even if the database holds fewer hosts or audit entries (see above)
 set -euo pipefail
@@ -92,7 +92,7 @@ newest="$(sets_newest_first | head -n 1)"
 if [ -n "$newest" ] && [ "${BACKUP_FORCE:-}" != 1 ]; then
   last_hosts="$(count_in "$newest" hosts)" last_audit="$(count_in "$newest" audit_entries)"
   if [ -n "$last_hosts" ] && [ -n "$last_audit" ] && { [ "$hosts" -lt "$last_hosts" ] || [ "$audit_entries" -lt "$last_audit" ]; }; then
-    die "refused: the database holds $hosts hosts and $audit_entries audit entries, fewer than the newest set $(basename "$newest") ($last_hosts and $last_audit). Hosts and audit entries are never deleted, so this is not the database that was backed up (for example the empty databases of a rebuilt server: restore a set first, docs/operations/backup-and-restore.md). Nothing was written and no set was pruned. If the server was lost, restore a set first. If you restored an older set on purpose, or emptied the database on purpose for a fresh start, back up with BACKUP_FORCE=1 (docker.sh backup --force): the new set becomes the one later backups compare against, and the older sets that hold more are kept until you delete them"
+    die "refused: the database holds $hosts hosts and $audit_entries audit entries, fewer than the newest set $(basename "$newest") ($last_hosts and $last_audit). Hosts and audit entries are never deleted, so this is not the database that was backed up (for example the empty databases of a rebuilt server: restore a set first, docs/operations/backup-and-restore.md). Nothing was written and no set was pruned. If the server was lost, restore a set first. If you restored an older set on purpose, or emptied the database on purpose for a fresh start, back up with BACKUP_FORCE=1 (docker.sh backup --force): the new set becomes the one later backups compare against, and the newest older set that holds more is kept until you delete it"
   fi
 fi
 
@@ -129,8 +129,9 @@ trap - EXIT
 log "wrote $final ($(du -sh "$final" | cut -f1))"
 
 # Retention: delete sets older than the window, by the UTC time in their name (a mount's mtimes may not be kept),
-# but never the newest keep_min, and never a set that holds more hosts or more audit entries than the one just
-# written: those are the sets of an earlier, bigger database (after a forced backup), kept until deleted by hand.
+# but never the newest keep_min, and never the newest set that holds more hosts or more audit entries than the one
+# just written: the last set of an earlier, bigger database (after a forced backup), kept until deleted by hand. Its
+# older sets are pruned by age as usual: one copy is enough to go back to.
 now="$(date -u +%s)"
 age_of() { # seconds since the UTC time in a fleet-cmdb-<time> or .incoming-<time> name, or nothing
   local t="${1##*-}"
@@ -138,11 +139,15 @@ age_of() { # seconds since the UTC time in a fleet-cmdb-<time> or .incoming-<tim
   echo $((now - $(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}" +%s)))
 }
 mapfile -t sets < <(sets_newest_first)
+bigger=""
+for set in "${sets[@]}"; do
+  set_hosts="$(count_in "$set" hosts)" set_audit="$(count_in "$set" audit_entries)"
+  if [ "${set_hosts:-0}" -gt "$hosts" ] || [ "${set_audit:-0}" -gt "$audit_entries" ]; then bigger="$set"; break; fi
+done
 for i in "${!sets[@]}"; do
   [ "$i" -lt "$keep_min" ] && continue
-  set_hosts="$(count_in "${sets[$i]}" hosts)" set_audit="$(count_in "${sets[$i]}" audit_entries)"
-  if [ "${set_hosts:-0}" -gt "$hosts" ] || [ "${set_audit:-0}" -gt "$audit_entries" ]; then
-    log "kept ${sets[$i]}: it holds more than the newest set (delete it by hand when it is no longer needed)"
+  if [ "${sets[$i]}" = "$bigger" ]; then
+    log "kept ${sets[$i]}: the newest set that holds more than this one (delete it by hand when it is no longer needed)"
     continue
   fi
   age="$(age_of "$(basename "${sets[$i]}")")"
