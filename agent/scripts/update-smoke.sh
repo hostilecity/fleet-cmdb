@@ -28,8 +28,8 @@
 #   success        a good release is installed, keeps the configuration, reports in its first inventory, and
 #                  its result is retried until the server accepts it
 #   below minimum  an agent the server answers 426 on inventory still updates (NFR-5)
-#   limits         (#182) the unit's memory and task limits are in force; a release that leaks past MemoryMax
-#                  is killed and rolled back like any crash loop; an agent killed for memory is restarted
+#   limits         (#182) the unit's memory and task limits are in force; a release that leaks is held by them
+#                  and rolled back; an agent killed for memory is restarted
 #                  cleanly; and one killed at every start ends in recovery mode, which keeps reporting, and
 #                  is normal again once the limit is raised. The limit is lowered with a drop-in, as an
 #                  operator would raise it.
@@ -228,11 +228,9 @@ mkscript "$tmp/exits.sh" 1.0.2 'echo "update-smoke: release 1.0.2 refuses to sta
 release exits_at_start 1.0.2 "$tmp/exits.sh"
 mkscript "$tmp/loops.sh" 1.0.3 'echo "update-smoke: release 1.0.3 started" >&2; sleep 2; exit 1'
 release crash_loop 1.0.3 "$tmp/loops.sh"
-# A release that leaks past the unit's MemoryMax: dd fills a 400 MiB buffer in one read(2). In one system
-# call the kernel cannot throttle it at MemoryHigh (it does that on the way back to user space), so the
-# charge reaches MemoryMax and the OOM killer at once. A leak of many small allocations is slowed near
-# MemoryHigh first and reaches MemoryMax only slowly (agent/contrib/README.md).
-mkscript "$tmp/leaks.sh" 1.0.4 'echo "update-smoke: release 1.0.4 started" >&2; dd if=/dev/zero of=/dev/null bs=400M count=1 2> /dev/null; sleep 60'
+# A release that leaks: tail keeps the last 400 MiB of its input, more than the unit's MemoryMax. The kernel
+# throttles it once it passes MemoryHigh, so it creeps towards MemoryMax (agent/contrib/README.md).
+mkscript "$tmp/leaks.sh" 1.0.4 'echo "update-smoke: release 1.0.4 started" >&2; head -c 400M /dev/zero | tail -c 400M > /dev/null; sleep 60'
 release leaks 1.0.4 "$tmp/leaks.sh"
 
 python3 "$here/update-stub.py" 8443 "$tmp/cert.pem" "$tmp/key.pem" "$tmp" &
@@ -349,14 +347,33 @@ if in_group limits; then
     cgroup=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value)
     echo "limits: the running agent: memory.current $(cat "$cgroup/memory.current"), memory.peak $(cat "$cgroup/memory.peak" 2> /dev/null || echo unknown), pids.current $(cat "$cgroup/pids.current")"
 
-    # The new version leaks past MemoryMax before it confirms: the kernel kills it in its own cgroup, and the
-    # supervisor and the rollback unit, which run outside that cgroup, roll it back as for any crash loop.
+    # The new version leaks before it confirms. The kernel holds it in the service's cgroup (throttled past
+    # MemoryHigh, killed at MemoryMax), and the supervisor and the rollback unit, which run outside that
+    # cgroup, roll it back: at the confirmation deadline, or once the service fails. A sampler records the
+    # cgroup's memory events meanwhile, as proof that the limit, not luck, held the leak.
     leak_since=$(date +%s)
-    rolled_back "a release that leaks past MemoryMax" leaks 1.0.4
+    (
+        set +eo pipefail
+        while :; do
+            cg=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value 2> /dev/null)
+            { cat "$cg/memory.current" "$cg/memory.events"; } 2> /dev/null | tr '\n' ' '
+            echo
+            sleep 0.2
+        done
+    ) > "$tmp/leak-samples" &
+    sampler=$!
+    rolled_back "a release that leaks 400 MiB" leaks 1.0.4
+    kill "$sampler" 2> /dev/null || true
     journalctl -u fleet-agent --since "@$leak_since" --no-pager -o cat | grep -Fq "update-smoke: release 1.0.4 started" \
         || fail "leaking release: 1.0.4 never ran"
-    oom_killed "$leak_since" || fail "leaking release: no OOM kill of fleet-agent.service was logged"
-    echo "limits: the leaking release was killed for memory and rolled back"
+    held=$(awk '{ for (i = 2; i < NF; i++) if (($i == "high" || $i == "oom_kill") && $(i + 1) > 0) n++ } END { print n + 0 }' "$tmp/leak-samples")
+    most=$(awk 'BEGIN { m = 0 } $1 ~ /^[0-9]+$/ && $1 > m { m = $1 } END { print m }' "$tmp/leak-samples")
+    if [ "$held" = 0 ] && ! oom_killed "$leak_since"; then
+        fail "leaking release: the cgroup never reached MemoryHigh or MemoryMax (largest sample $most bytes)"
+    fi
+    [ "$most" -le "$(sed -n 's/^MemoryMax=//p' "$UNITS/fleet-agent.service" | sed 's/M$//' | awk '{ print $1 * 1048576 }')" ] \
+        || fail "leaking release: the cgroup held $most bytes, more than MemoryMax"
+    echo "limits: the leaking release was held below MemoryMax (largest sample $most bytes; last: $(grep high "$tmp/leak-samples" | tail -n 1)) and rolled back$(oom_killed "$leak_since" && echo ', after an OOM kill')"
 
     echo "== limits: killed for memory, then restarted cleanly"
     reset

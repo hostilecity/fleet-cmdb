@@ -309,8 +309,8 @@ jobs:
     # stand-in for the API and the release channel. A good release is installed; tampered, unsigned,
     # wrongly signed, older, failing, crash-looping, and unauthenticated releases are refused or rolled
     # back; a killed supervisor is resumed or backstopped by the OnFailure unit; an agent below the
-    # server's minimum version still updates; the memory and task limits (#182) hold, a release
-    # that leaks past MemoryMax is rolled back, and an agent killed for memory is restarted or, killed at
+    # server's minimum version still updates; the memory and task limits (#182) hold, a leaking
+    # release is held by them and rolled back, and an agent killed for memory is restarted or, killed at
     # every start, reaches recovery mode (scripts/update-smoke.sh). No private key is committed:
     # the keys exist only in the runner's temporary directory. The scenarios run in four groups side by
     # side; each job builds its own two versions (cached), so the throwaway keys never leave its runner.
