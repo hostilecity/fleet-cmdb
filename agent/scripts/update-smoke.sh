@@ -228,8 +228,11 @@ mkscript "$tmp/exits.sh" 1.0.2 'echo "update-smoke: release 1.0.2 refuses to sta
 release exits_at_start 1.0.2 "$tmp/exits.sh"
 mkscript "$tmp/loops.sh" 1.0.3 'echo "update-smoke: release 1.0.3 started" >&2; sleep 2; exit 1'
 release crash_loop 1.0.3 "$tmp/loops.sh"
-# A release that leaks: it holds 400 MiB (tail keeps the last 400 MiB of its input), past the unit's MemoryMax.
-mkscript "$tmp/leaks.sh" 1.0.4 'echo "update-smoke: release 1.0.4 started" >&2; head -c 400M /dev/zero | tail -c 400M > /dev/null; sleep 60'
+# A release that leaks past the unit's MemoryMax: dd fills a 400 MiB buffer in one read(2). In one system
+# call the kernel cannot throttle it at MemoryHigh (it does that on the way back to user space), so the
+# charge reaches MemoryMax and the OOM killer at once. A leak of many small allocations is slowed near
+# MemoryHigh first and reaches MemoryMax only slowly (agent/contrib/README.md).
+mkscript "$tmp/leaks.sh" 1.0.4 'echo "update-smoke: release 1.0.4 started" >&2; dd if=/dev/zero of=/dev/null bs=400M count=1 2> /dev/null; sleep 60'
 release leaks 1.0.4 "$tmp/leaks.sh"
 
 python3 "$here/update-stub.py" 8443 "$tmp/cert.pem" "$tmp/key.pem" "$tmp" &
@@ -316,7 +319,10 @@ remove_dropin() {
     rmdir "$(dirname "$DROPIN")" 2> /dev/null || true
     systemctl daemon-reload
 }
-oom_killed() { journal_has fleet-agent "oom-kill"; }
+# oom_killed [SINCE]: systemd logged an OOM kill of the service since SINCE (default: the scenario's start).
+oom_killed() {
+    journalctl -u fleet-agent --since "@${1:-${since%.*}}" --no-pager -o cat 2> /dev/null | grep -Fq "oom-kill"
+}
 restarts() { systemctl show fleet-agent -p NRestarts --value; }
 recovery_heartbeat() {
     event_exists "[.[] | select(.kind == \"heartbeat\" and .status == 200 and .recovery != null and .at > $since)] | length > 0"
@@ -345,9 +351,11 @@ if in_group limits; then
 
     # The new version leaks past MemoryMax before it confirms: the kernel kills it in its own cgroup, and the
     # supervisor and the rollback unit, which run outside that cgroup, roll it back as for any crash loop.
+    leak_since=$(date +%s)
     rolled_back "a release that leaks past MemoryMax" leaks 1.0.4
-    journal_has fleet-agent "update-smoke: release 1.0.4 started" || fail "leaking release: 1.0.4 never ran"
-    oom_killed || fail "leaking release: no OOM kill of fleet-agent.service was logged"
+    journalctl -u fleet-agent --since "@$leak_since" --no-pager -o cat | grep -Fq "update-smoke: release 1.0.4 started" \
+        || fail "leaking release: 1.0.4 never ran"
+    oom_killed "$leak_since" || fail "leaking release: no OOM kill of fleet-agent.service was logged"
     echo "limits: the leaking release was killed for memory and rolled back"
 
     echo "== limits: killed for memory, then restarted cleanly"
