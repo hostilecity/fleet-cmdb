@@ -5,6 +5,16 @@ require "rake"
 RSpec.describe "packages rake tasks" do
   before(:all) { Rails.application.load_tasks if Rake::Task.tasks.none? { |task| task.name == "packages:check_snapshots" } }
 
+  it "refuses while another backfill holds the lock" do
+    allow(PackageStoreBackfill).to receive(:new).and_wrap_original do |original, **options|
+      original.call(**options).tap { |b| allow(b).to receive_messages(needed?: true, pending: {}) }
+    end
+    Rake::Task["packages:backfill"].reenable
+    holding_backfill_lock do
+      expect { Rake::Task["packages:backfill"].invoke }.to raise_error(SystemExit).and output(/another package backfill is running/).to_stderr
+    end
+  end
+
   it "backfills nothing once the old storage is gone, and says so (spec/db/backfill_package_sets_spec.rb moves an old one)" do
     Rake::Task["packages:backfill"].reenable
     expect { Rake::Task["packages:backfill"].invoke }

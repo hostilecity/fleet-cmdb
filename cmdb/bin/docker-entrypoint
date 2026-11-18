@@ -4,9 +4,10 @@
 # (config/puma.rb), because `bin/rails server` replaces the config's listeners, including the HTTPS one (ADR 0024).
 #
 # A migration that refuses because the upgrade needs a step of its own (the text "fleet-cmdb upgrade step needed", for
-# example #196's package backfill on a large database) is not retried: the container stays up without serving, so
-# `--restart unless-stopped` does not run it again and again, and the log says what to run
-# (docs/operations/upgrades.md). Any other failure exits, as before.
+# example #196's package backfill on a large database) is not retried: the container stays up without serving (docker ps
+# shows it Up: the image has no HEALTHCHECK; /up refuses connections), so `--restart unless-stopped` does not run it
+# again and again, and the log says what to run (docs/operations/upgrades.md). It stops at once on SIGTERM. Any other
+# failure exits, as before.
 if [ "$*" == "./bin/rails server" ] || [ "$*" == "bundle exec puma -C config/puma.rb" ]; then
   log="$(mktemp)"
   set +e
@@ -17,7 +18,11 @@ if [ "$*" == "./bin/rails server" ] || [ "$*" == "bundle exec puma -C config/pum
     if grep -q "fleet-cmdb upgrade step needed" "$log"; then
       echo "fleet-cmdb: the database upgrade needs a step of its own (above); the server is not started. See docs/operations/upgrades.md." >&2
       rm -f "$log"
-      exec sleep infinity
+      # As PID 1, a bare sleep would ignore SIGTERM, so docker stop and restart would wait for SIGKILL.
+      trap 'exit 0' TERM INT
+      sleep infinity &
+      wait
+      exit 0
     fi
     rm -f "$log"
     exit "$status"

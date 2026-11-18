@@ -4,7 +4,11 @@ namespace :packages do
     $stdout.sync = true # progress as it goes, also into a log file
     backfill = PackageStoreBackfill.new(log: ->(message) { puts message })
     puts "To move: #{backfill.pending.map { |what, count| "#{count} #{what.tr('_', ' ')}" }.join(', ')}."
-    backfill.run!
+    begin
+      backfill.run!
+    rescue PackageStoreBackfill::Busy => e
+      abort e.message
+    end
     puts "Done. Start the server again: its migrations finish the upgrade."
   end
 

@@ -101,14 +101,17 @@ RSpec.describe BackfillPackageSets do
   end
 
   it "refuses at container start, changing nothing, when the work is too long, and the rake task does it, resumably" do
-    stub_const("BackfillPackageSets::INLINE_HASHES", 1)
+    stub_const("BackfillPackageSets::INLINE_SECONDS", 0.01)
     old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
-    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: 2 distinct package lists and 0 findings .*`bin\/rails packages:backfill`/m)
+    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: moving 2 distinct package lists and 0 findings .* nothing was changed .*docker exec fleet-cmdb bin\/rails packages:backfill/m)
     expect(PackageSet.count).to eq(0)
-    expect { quiet { DropHostPackages.new.migrate(:up) } }.to raise_error(/fleet-cmdb upgrade step needed: 2 dpkg package snapshots and hosts have no package set/)
+    expect { quiet { DropHostPackages.new.migrate(:up) } }.to raise_error(/fleet-cmdb upgrade step needed: 2 dpkg package snapshots and hosts have no package set.*docker exec fleet-cmdb/m)
 
     log = []
     backfill = PackageStoreBackfill.new(log: ->(message) { log << message })
+    expect(backfill.estimated_seconds).to eq(2 * PackageStoreBackfill::SECONDS_PER_LIST)
+    holding_backfill_lock { expect { backfill.run! }.to raise_error(PackageStoreBackfill::Busy, /another package backfill is running/) }
+    expect(PackageSet.count).to eq(0)
     expect(backfill.pending).to eq("hashes" => 2, "unreadable_hosts" => 0, "findings" => 0)
     backfill.run!
     expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "findings" => 0)

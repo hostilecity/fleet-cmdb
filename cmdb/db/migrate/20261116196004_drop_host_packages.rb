@@ -17,8 +17,7 @@ class DropHostPackages < ActiveRecord::Migration[8.1]
             select_value("SELECT count(*) FROM host_package_sets WHERE manager = 'dpkg' AND package_set_id IS NULL").to_i
     if unset.positive? || left["findings"].positive?
       raise "#{BackfillPackageSets::UPGRADE_STEP}: #{unset} dpkg package snapshots and hosts have no package set and #{left['findings']} findings " \
-            "have no copied details, so the old storage is kept. Run `bin/rails packages:backfill` in a one-off container with this image " \
-            "(it only adds what is missing), then start the server again (docs/operations/upgrades.md)."
+            "have no copied details, so the old storage is kept. #{BackfillPackageSets::RUNBOOK}"
     end
 
     drop_table :host_packages

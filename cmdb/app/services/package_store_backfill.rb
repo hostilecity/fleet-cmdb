@@ -18,6 +18,15 @@
 # shrink as rows are done (they are dropped at the end), and each batch of distinct hashes is read by keyset from them.
 # It uses PackageStore, so the sets it stores hash exactly as a package report's would.
 class PackageStoreBackfill
+  # Another backfill holds the lock (two `docker exec` at once, for example): nothing was done by this one.
+  class Busy < StandardError; end
+
+  # Measured seconds per unit of work, on 2 shared CPUs (review of #240): what estimated_seconds adds up.
+  SECONDS_PER_LIST = 0.03
+  SECONDS_PER_FINDING = 0.00012
+  LOCK = "SELECT pg_try_advisory_lock(196, 3)".freeze
+  UNLOCK = "SELECT pg_advisory_unlock(196, 3)".freeze
+
   BATCH = 1_000
   FINDINGS_BATCH = 10_000
   Package = AgentApi::PackageReport::Package
@@ -44,9 +53,27 @@ class PackageStoreBackfill
       "findings" => VulnerabilityFinding.where(last_ecosystem: nil).count }
   end
 
+  # How long the work left should take, in seconds, from the measured rates.
+  def estimated_seconds
+    left = pending
+    (left["hashes"] + left["unreadable_hosts"]) * SECONDS_PER_LIST + left["findings"] * SECONDS_PER_FINDING
+  end
+
+  # Runs the backfill under a session advisory lock, so a second one at once refuses (Busy) instead of racing it.
   def run!
     return @log.call("nothing to move: host_packages is gone") unless needed?
+    raise Busy, "another package backfill is running; wait for it to finish (docs/operations/upgrades.md)" unless @connection.select_value(LOCK)
 
+    begin
+      backfill
+    ensure
+      @connection.select_value(UNLOCK)
+    end
+  end
+
+  private
+
+  def backfill
     INDEXES.each { |sql| @connection.execute(sql) }
     @connection.execute("ANALYZE package_snapshots, host_package_sets")
     hosts
@@ -57,8 +84,6 @@ class PackageStoreBackfill
     @connection.execute("DROP INDEX IF EXISTS package_snapshots_backfill_196")
     @connection.execute("DROP INDEX IF EXISTS host_package_sets_backfill_196")
   end
-
-  private
 
   def hosts
     by_hash(HostPackageSet, "hosts") do |scope|

@@ -8,6 +8,17 @@ module PackageStoreHelpers
 
   def clear_package_store! = PackageStoreHelpers.clear!
 
+  # Holds PackageStoreBackfill's lock on a session of its own (the test's connection is shared by the pool) while the
+  # block runs: another backfill, as two `docker exec` at once would be.
+  def holding_backfill_lock
+    info = ActiveRecord::Base.connection.raw_connection.conninfo_hash.compact.reject { |_, v| v.to_s.empty? }
+    other = PG.connect(**info)
+    other.exec(PackageStoreBackfill::LOCK)
+    yield
+  ensure
+    other&.close
+  end
+
   # The host's current packages as [name, architecture, version, source] rows.
   def stored_package_rows(host) = PackageStore.packages(HostPackageSet.find_by(host_id: host.id)&.package_set_id).map(&:to_a)
 end
