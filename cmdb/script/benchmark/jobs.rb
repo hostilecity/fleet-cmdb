@@ -53,7 +53,7 @@ module FleetBenchmark
       cis_hosts = bench_hosts.order(:id).limit(@samples).pluck(:id)
       package_hosts = bench_hosts.where(id: VulnerabilityFinding.select(:host_id)).order(:id).limit(@samples).pluck(:id)
       sources = { "Debian:13" => [ FleetSimulator::Phase2.source_name(1) ] }
-      scope = { "packages" => sources, "import_id" => AdvisoryImport.newest_succeeded_id }
+      scope = { "packages" => sources }
       targeted = Host.in_fleet.where(id: HostPackageSet.where(package_set_id: PackageSet.holding_sources(sources.values.flatten)).select(:host_id)).count
       chunks = PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources.values.flatten).distinct.count(:package_chunk_id)
       {

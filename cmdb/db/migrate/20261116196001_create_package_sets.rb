@@ -11,8 +11,12 @@
 # - host_package_sets.package_set_id and package_snapshots.package_set_id: no foreign keys (ADR 0028, the data model:
 #   package_snapshots is to be partitioned, ADR 0027); garbage collection is mark and sweep. Their indexes are built
 #   concurrently by IndexPackageSetReferences.
-# - vulnerability_findings.last_*: the details a finding had at its last transition, shown once it is resolved. The
-#   derived columns go in DropHostPackages.
+# - vulnerability_findings.last_*: the details a finding had at its last transition (source, versions, ecosystem),
+#   shown once it is resolved. The derived columns go in DropHostPackages.
+# - host_vulnerability_evaluations.package_set_id: the set the host's findings were last moved from, so a resolution
+#   can take the details its finding had in that set (its last installed version, source, and fix).
+# - advisory_imports.changed_packages: the source packages each import changed, by ecosystem, so an import's re-matching
+#   can tell which chunks no import since their stamp has touched (ADR 0028 decision 7). NULL for imports before this.
 #
 # Every table is new and empty, so this holds no lock on a large table but for the instant ADD COLUMNs.
 class CreatePackageSets < ActiveRecord::Migration[8.1]
@@ -73,5 +77,8 @@ class CreatePackageSets < ActiveRecord::Migration[8.1]
     add_column :vulnerability_findings, :last_source, :string, limit: 128
     add_column :vulnerability_findings, :last_installed_version, :string, limit: 256
     add_column :vulnerability_findings, :last_fixed_version, :string, limit: 256
+    add_column :vulnerability_findings, :last_ecosystem, :string, limit: 64
+    add_column :host_vulnerability_evaluations, :package_set_id, :bigint
+    add_column :advisory_imports, :changed_packages, :jsonb
   end
 end

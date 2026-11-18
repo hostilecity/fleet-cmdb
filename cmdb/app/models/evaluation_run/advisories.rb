@@ -3,9 +3,11 @@ class EvaluationRun
   # by chunk (#196, ADR 0028):
   #
   # - prepare! (once, as the run fans out, after the import committed): the chunks that hold a changed source are
-  #   matched again, for each ecosystem they are evaluated in, and every other evaluation current with the import
-  #   before this one is stamped with this one in one UPDATE, since nothing it matched changed (decision 7). Without
-  #   that, every other chunk in use would look stale after each import and be matched again on its next use.
+  #   matched again, for each ecosystem they are evaluated in, and then every other evaluation is moved to the newest
+  #   import if no import since its stamp changed one of its sources (VulnerabilityMatcher::Chunks.restamp!, decision
+  #   7). Without that, every other chunk in use would look stale after each import and be matched again on its next
+  #   use. The rule reads what each import changed (AdvisoryImport#changed_packages), so it holds when an earlier
+  #   import's run was superseded and never prepared, or when two runs prepare out of order.
   # - hosts: those on a set holding a chunk with a changed source, and every host whose last evaluation is missing or
   #   was "no advisory data", since the import may have brought its first data. Their transitions run in full: they
   #   only read verdicts, and a host whose findings do not change writes nothing.
@@ -17,18 +19,17 @@ class EvaluationRun
   class Advisories
     def initialize(scope)
       @packages = scope["packages"].to_h.transform_values { |sources| Array(sources) }
-      @import_id = scope["import_id"]
     end
 
     attr_reader :packages
 
     def prepare!
       stamp = AdvisoryImport.newest_succeeded_id # before any advisory data is read
-      changed = supported.to_h { |ecosystem, sources| [ ecosystem, changed_chunks(sources) ] }
-      changed.each do |ecosystem, ids|
-        VulnerabilityMatcher::Chunks.ensure!(ChunkEvaluation.where(ecosystem:, package_chunk_id: ids).pluck(:package_chunk_id), ecosystem, stamp:, force: true)
+      supported.each do |ecosystem, sources|
+        evaluated = ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(sources)).pluck(:package_chunk_id)
+        VulnerabilityMatcher::Chunks.ensure!(evaluated, ecosystem, stamp:, force: true)
       end
-      restamp(changed)
+      VulnerabilityMatcher::Chunks.restamp!(stamp)
     end
 
     def hosts = Host.in_fleet.where(id: affected_hosts).or(unevaluated)
@@ -52,24 +53,13 @@ class EvaluationRun
 
     def supported = packages.select { |ecosystem, sources| Ecosystems.supported?(ecosystem) && sources.any? }
 
-    def changed_chunks(sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources).distinct.pluck(:package_chunk_id)
+    def changed_chunks(sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources).select(:package_chunk_id)
 
     # host_package_sets rows on a set holding a chunk with a changed source (the source index, then the GIN index).
     def affected_hosts
       return HostPackageSet.none.select(:host_id) if supported.empty?
 
       HostPackageSet.where(package_set_id: PackageSet.holding_sources(supported.values.flatten.uniq)).select(:host_id)
-    end
-
-    # Moves the evaluations current with the import before this one, and holding no changed source, to this one.
-    def restamp(changed)
-      import = @import_id && AdvisoryImport.succeeded.find_by(id: @import_id)
-      previous = import&.previous_succeeded_id
-      return unless previous
-
-      scope = ChunkEvaluation.where(advisory_import_id: previous)
-      changed.each { |ecosystem, ids| scope = scope.where.not(ecosystem:, package_chunk_id: ids) if ids.any? }
-      scope.update_all(advisory_import_id: import.id)
     end
 
     # Hosts with no evaluation that had advisory data: none at all, or "no advisory data". A correlated NOT EXISTS, an

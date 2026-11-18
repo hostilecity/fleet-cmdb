@@ -29,9 +29,4 @@ class AdvisoryImport < ApplicationRecord
   # inside it): what a chunk's verdicts are stamped with (ChunkEvaluation, ADR 0028 decision 7). By finished_at, not
   # id: an upload's row is created when it is queued, before imports that finish ahead of it.
   def self.newest_succeeded_id = succeeded.order(finished_at: :desc, id: :desc).pick(:id)
-
-  # The succeeded import committed just before this one, whose stamp this import's re-matching moves forward.
-  def previous_succeeded_id
-    AdvisoryImport.succeeded.where("(finished_at, id) < (?, ?)", finished_at, id).order(finished_at: :desc, id: :desc).pick(:id)
-  end
 end
