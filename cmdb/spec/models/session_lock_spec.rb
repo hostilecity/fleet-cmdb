@@ -63,12 +63,17 @@ RSpec.describe SessionLock do
     # session can then take the lock while the block is still running, and the block's next check stops it.
     it "raises Lost from the check once the lock's session has ended, while another session can take the lock" do
       other = separate_session
+      # Inside the executor, as a request or job runs it: the query cache is on for the direct pool, and the check must
+      # still reach the server (re-review of #237).
       expect do
-        described_class.hold(KEY) do |still_held|
-          still_held.call
-          expect(end_lock_holder(1_234_567, 89)).to eq(1)
-          expect(other.select_value("SELECT pg_try_advisory_lock(#{KEY})")).to be(true) # the lock is free
-          still_held.call
+        Rails.application.executor.wrap do
+          described_class.hold(KEY) do |still_held|
+            expect(DirectRecord.connection_pool.query_cache_enabled).to be(true)
+            still_held.call
+            expect(end_lock_holder(1_234_567, 89)).to eq(1)
+            expect(other.select_value("SELECT pg_try_advisory_lock(#{KEY})")).to be(true) # the lock is free
+            still_held.call
+          end
         end
       end.to raise_error(SessionLock::Lost, /advisory lock 1234567, 89/)
     ensure
@@ -77,9 +82,12 @@ RSpec.describe SessionLock do
 
     it "raises Lost when the lock's connection was reopened without a word" do
       expect do
-        described_class.hold(KEY) do |still_held|
-          DirectRecord.connection_pool.with_connection(&:disconnect!)
-          still_held.call
+        Rails.application.executor.wrap do
+          described_class.hold(KEY) do |still_held|
+            still_held.call
+            DirectRecord.connection_pool.with_connection(&:disconnect!)
+            still_held.call
+          end
         end
       end.to raise_error(SessionLock::Lost, /ended/)
       expect(holders).to be_empty

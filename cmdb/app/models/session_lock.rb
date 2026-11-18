@@ -20,10 +20,14 @@ module SessionLock
   # work runs elsewhere, and Active Record reopens a lost connection without a word, so the check compares the server
   # process id (an error on the lock connection counts as lost too). On the primary's own connection (nothing set, the
   # homelab) the check does nothing, so that path runs the same statements as before #198.
+  #
+  # Every statement here runs uncached (re-review of #237). Inside a request or a job the executor turns on the query
+  # cache for every pool, the direct one included, so a repeated check would be answered from it with the first
+  # process id, and a prepare that had lost its lock would carry on.
   def hold(key_sql)
     direct = direct?
     pool.with_connection do |connection|
-      locked, pid = lock(connection, key_sql, direct)
+      locked, pid = connection.uncached { lock(connection, key_sql, direct) }
       return nil unless locked
 
       begin
@@ -50,7 +54,7 @@ module SessionLock
   private_class_method :lock
 
   def verify!(connection, pid, key_sql)
-    return if connection.select_value("SELECT pg_backend_pid()") == pid
+    return if connection.uncached { connection.select_value("SELECT pg_backend_pid()") } == pid
 
     raise Lost, "the session holding advisory lock #{key_sql} ended"
   rescue ActiveRecord::ActiveRecordError => e
@@ -59,7 +63,7 @@ module SessionLock
   private_class_method :verify!
 
   def release(connection, key_sql)
-    connection.select_value("SELECT pg_advisory_unlock(#{key_sql})")
+    connection.uncached { connection.select_value("SELECT pg_advisory_unlock(#{key_sql})") }
   rescue ActiveRecord::ActiveRecordError
     connection.throw_away!
   end

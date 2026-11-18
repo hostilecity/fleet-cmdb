@@ -26,6 +26,10 @@ module Rollouts
     end
   end
 
+  # A stage prepare that lost its session-level lock part-way and stopped (#198): nothing is choosing the hosts now,
+  # and the next prepare carries on from what was committed.
+  class Interrupted < StandardError; end
+
   CANARY_TAG_LIMIT = 32 # rollouts.canary_tag
   DEFAULT_STAGES = [ 25, 100 ].freeze
   # From FLEET_ROLLOUT_LARGE_FLEET_HOSTS active hosts (config.large_fleet_hosts, default 1,000) the default stages are
@@ -71,8 +75,7 @@ module Rollouts
       now = Time.current
       rollout = Rollout.create!(agent_release: release, started_by: actor, canary_host_ids: ids, canary_tag: tag,
                                 stage_percents: percents, started_at: now, stage_opened_at: now)
-      # A new rollout: nothing else can be preparing it, so nil here means the prepare lost its lock (#198).
-      added = prepare_stage!(rollout, 0) or raise Invalid, "Choosing the canaries was interrupted. Try again."
+      added = prepare_stage!(rollout, 0).to_i # a new rollout: nothing else can be preparing it
       raise Invalid.new("None of the canaries is an active host running an older version than #{release.version}.", field: :canary_tag) if added.zero?
 
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_STARTED, target: rollout,
@@ -83,6 +86,8 @@ module Rollouts
     end
   rescue ActiveRecord::RecordNotUnique
     raise Invalid, "A rollout is already open. Finish or cancel it first."
+  rescue Interrupted # the start's transaction has rolled back: nothing was started (#198)
+    raise Invalid, "Choosing the canaries was interrupted. Nothing was started. Try again."
   end
 
   # The default stages after the canaries for a fleet of active_hosts active hosts (#199).
@@ -125,8 +130,12 @@ module Rollouts
     rollout.reload
     check_advance!(rollout, expected_stage)
     expected = rollout.current_stage
-    unless prepare_stage!(rollout, expected + 1)
-      raise Invalid, "The next stage's hosts are being chosen right now. Try again in a minute."
+    begin
+      unless prepare_stage!(rollout, expected + 1)
+        raise Invalid, "The next stage's hosts are being chosen right now. Try again in a minute."
+      end
+    rescue Interrupted
+      raise Invalid, "Choosing the next stage's hosts was interrupted, and the stage was not opened. Try again."
     end
     in_state!(rollout, "running") do
       check_advance!(rollout, expected_stage || expected)
@@ -141,7 +150,11 @@ module Rollouts
     rollout = Rollout.find_by(id: rollout_id)
     return unless rollout && advanceable?(rollout, from)
 
-    return unless prepare_stage!(rollout, from + 1) # another prepare is running; the backstop retries
+    begin
+      return unless prepare_stage!(rollout, from + 1) # another prepare is running; the backstop retries
+    rescue Interrupted
+      return # logged by prepare_stage!; the backstop retries
+    end
     rollout.with_lock do
       next unless advanceable?(rollout, from)
 
@@ -394,14 +407,15 @@ module Rollouts
   # quota must be counted afresh in every batch.
   #
   # Behind a transaction-mode pooler the lock is on the direct connection (#198), and the prepare checks it still holds
-  # it before the re-time and before each batch (still_held). If it does not, the prepare stops, returning nil as when
-  # another prepare is running: the batch in progress rolls back, the batches before it stay chosen but hidden by the
-  # stage gate, and the next prepare carries on from the database's count, so the stage never gets more than its share.
+  # it before the re-time and before each batch (still_held). If it does not, the prepare stops and raises Interrupted:
+  # the batch in progress rolls back, the batches before it stay chosen but hidden by the stage gate, and the next
+  # prepare carries on from the database's count, so the stage never gets more than its share. Returns nil when another
+  # prepare is running.
   def prepare_stage!(rollout, stage)
     ApplicationRecord.uncached { with_prepare_lock(rollout) { |still_held| prepare_locked!(rollout, stage, still_held) } }
   rescue SessionLock::Lost => e
     Rails.logger.error("[rollouts] prepare of rollout #{rollout.id} stage #{stage} stopped: #{e.message}")
-    nil
+    raise Interrupted, e.message
   end
   private_class_method :prepare_stage!
 

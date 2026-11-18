@@ -161,7 +161,8 @@ RSpec.describe Liveness do
     end
     allow(FleetBroadcast).to receive(:hosts_changed)
 
-    expect { travel_to(start + 20.minutes) { described_class.evaluate! } }.to raise_error(SessionLock::Lost)
+    # Inside the executor, as the job runs it, with the query cache on (re-review of #237).
+    expect { Rails.application.executor.wrap { travel_to(start + 20.minutes) { described_class.evaluate! } } }.to raise_error(SessionLock::Lost)
     expect(batches).to eq(1) # no batch after the lock was lost
     moved = HostLiveness.where(liveness_status: "offline").pluck(:host_id)
     expect(moved.size).to eq(1)
