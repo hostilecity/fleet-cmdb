@@ -71,7 +71,7 @@ module Retention
     # rows is PostgreSQL's estimate of the rows dropped (exact in a dry run, which counts and changes nothing).
     # still_held is the partition maintenance lock's check (Partitions.maintain!, #198), called before each batch moved
     # forward and each drop; a run outside the lock checks nothing.
-    def retire!(now: Time.current, window: Setting.retention_window, dry_run: false, batch_size: DEFAULT_BATCH_SIZE, still_held: Partitions::UNCHECKED)
+    def retire!(now: Time.current, window: Setting.retention_window, dry_run: false, batch_size: DEFAULT_BATCH_SIZE, still_held: SessionLock::UNCHECKED)
       results = targets.select(&:partitioned).to_h do |target|
         [ target.model.table_name, retire_target(target, cutoff: cutoff(target, now:, window:), now:, dry_run:, batch_size:, still_held:) ]
       rescue Partitions::Busy => e

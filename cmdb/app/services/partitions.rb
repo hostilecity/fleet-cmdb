@@ -82,9 +82,6 @@ module Partitions
   ORPHANS_KEY = "partitions/orphans".freeze
   REPORTED_KEY = "partitions/reported".freeze
 
-  # The check given to a step run outside a maintenance lock (a spec, or the console): it checks nothing.
-  UNCHECKED = -> { }
-
   # Seconds between tries of a DDL statement (specs set 0).
   mattr_accessor :pause, default: 1
 
@@ -164,7 +161,7 @@ module Partitions
 
     # Detaches a partition and renames it <name>_retired, in one transaction under the lock timeout, then drops it in
     # another. Never an audit partition: the audit log is never pruned (FR-S.3, ADR 0027 decision 7).
-    def detach_and_drop!(name, partition, still_held: UNCHECKED)
+    def detach_and_drop!(name, partition, still_held: SessionLock::UNCHECKED)
       still_held.call
       raise ArgumentError, "audit partitions are never detached or dropped (FR-S.3)" if table(name).audit?
 
@@ -179,7 +176,7 @@ module Partitions
     # Drops partitions an earlier run detached but could not drop (the drop is a transaction of its own): only the ones
     # this code detached, which it renamed <partition>_retired. A partition an operator detached keeps its name and is
     # left alone.
-    def drop_leftovers!(name, still_held: UNCHECKED)
+    def drop_leftovers!(name, still_held: SessionLock::UNCHECKED)
       raise ArgumentError, "audit partitions are never detached or dropped (FR-S.3)" if table(name).audit?
 
       leftovers = connection.select_values(<<~SQL.squish)

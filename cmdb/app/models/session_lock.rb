@@ -9,6 +9,9 @@ module SessionLock
   # The lock's connection was lost (and perhaps silently reopened by Active Record), which released the lock.
   class Lost < StandardError; end
 
+  # The check for work run outside any lock (a spec, or the console): it checks nothing.
+  UNCHECKED = -> { }
+
   module_function
 
   # Runs the block holding the advisory lock named by key_sql (one bigint, or two ints, as SQL), and returns its value;

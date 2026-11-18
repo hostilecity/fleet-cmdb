@@ -124,6 +124,26 @@ RSpec.describe BackfillPackageSets do
     expect(log.last).to eq("nothing to move: host_packages is gone")
   end
 
+  # Its session lock goes through SessionLock (#198): behind a transaction-mode pooler it is on the direct connection, and
+  # a run whose lock was lost stops before its next batch, so two runs never work side by side; running it again
+  # carries on.
+  it "checks its lock before each batch, stops once it is lost, and carries on when run again" do
+    stub_const("PackageStoreBackfill::BATCH", 1)
+    old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
+    old_host([ [ "curl", "8.14.1-1", nil ] ])
+    checks = 0
+    allow(SessionLock).to receive(:hold).and_wrap_original do |original, key, &block|
+      original.call(key) { block.call(-> { raise SessionLock::Lost, "gone" if (checks += 1) == 2 }) }
+    end
+    backfill = PackageStoreBackfill.new
+
+    expect { backfill.run! }.to raise_error(SessionLock::Lost)
+    expect(backfill.pending["hashes"]).to eq(3) # one host list stored before the lock was lost, of four lists
+    allow(SessionLock).to receive(:hold).and_call_original
+    backfill.run!
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "findings" => 0)
+  end
+
   it "rolls back to no sets" do
     old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
     migrate
