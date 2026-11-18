@@ -21,7 +21,11 @@ class PackageStoreBackfill
   BATCH = 1_000
   FINDINGS_BATCH = 10_000
   Package = AgentApi::PackageReport::Package
-  INDEXES = { "package_snapshots" => "package_snapshots_backfill_196", "host_package_sets" => "host_package_sets_backfill_196" }.freeze
+  UNSET = { manager: "dpkg", package_set_id: nil }.freeze
+  INDEXES = [
+    "CREATE INDEX IF NOT EXISTS package_snapshots_backfill_196 ON package_snapshots (content_hash) WHERE manager = 'dpkg' AND package_set_id IS NULL",
+    "CREATE INDEX IF NOT EXISTS host_package_sets_backfill_196 ON host_package_sets (content_hash) WHERE manager = 'dpkg' AND package_set_id IS NULL"
+  ].freeze
 
   def initialize(log: ->(_message) { })
     @log = log
@@ -35,79 +39,67 @@ class PackageStoreBackfill
   def pending
     return { "hashes" => 0, "unreadable_hosts" => 0, "findings" => 0 } unless needed?
 
-    { "hashes" => value("SELECT count(DISTINCT content_hash) FROM host_package_sets WHERE manager = 'dpkg' AND package_set_id IS NULL") +
-                  value("SELECT count(DISTINCT content_hash) FROM package_snapshots WHERE manager = 'dpkg' AND package_set_id IS NULL"),
-      "unreadable_hosts" => value("SELECT count(*) FROM host_package_sets WHERE manager = 'unreadable' AND package_set_id IS NULL"),
-      "findings" => value("SELECT count(*) FROM vulnerability_findings WHERE last_ecosystem IS NULL") }
+    { "hashes" => HostPackageSet.where(UNSET).distinct.count(:content_hash) + PackageSnapshot.where(UNSET).distinct.count(:content_hash),
+      "unreadable_hosts" => HostPackageSet.where(manager: "unreadable", package_set_id: nil).count,
+      "findings" => VulnerabilityFinding.where(last_ecosystem: nil).count }
   end
 
   def run!
     return @log.call("nothing to move: host_packages is gone") unless needed?
 
-    create_indexes
+    INDEXES.each { |sql| @connection.execute(sql) }
+    @connection.execute("ANALYZE package_snapshots, host_package_sets")
     hosts
     unreadable_hosts
     snapshots
     findings
     evaluations
-    drop_indexes
+    @connection.execute("DROP INDEX IF EXISTS package_snapshots_backfill_196")
+    @connection.execute("DROP INDEX IF EXISTS host_package_sets_backfill_196")
   end
 
   private
 
-  def value(sql) = @connection.select_value(sql).to_i
-
-  def create_indexes
-    INDEXES.each do |table, index|
-      @connection.execute("CREATE INDEX IF NOT EXISTS #{index} ON #{table} (content_hash) WHERE manager = 'dpkg' AND package_set_id IS NULL")
-    end
-    @connection.execute("ANALYZE package_snapshots, host_package_sets")
-  end
-
-  def drop_indexes = INDEXES.each_value { |index| @connection.execute("DROP INDEX IF EXISTS #{index}") }
-
   def hosts
-    by_hash("host_package_sets", "hosts") do |hash|
-      host_id = @connection.select_value("SELECT host_id FROM host_package_sets WHERE manager = 'dpkg' AND package_set_id IS NULL AND content_hash = #{@connection.quote(hash)} LIMIT 1")
-      set_id = PackageStore.store!(host_rows(host_id))
-      @connection.execute("UPDATE host_package_sets SET package_set_id = #{set_id} WHERE manager = 'dpkg' AND package_set_id IS NULL AND content_hash = #{@connection.quote(hash)}")
+    by_hash(HostPackageSet, "hosts") do |scope|
+      PackageStore.store!(host_rows(scope.pick(:host_id)))
     end
   end
 
   def unreadable_hosts
     after = 0
     loop do
-      ids = @connection.select_values(<<~SQL.squish)
-        SELECT host_id FROM host_package_sets WHERE manager = 'unreadable' AND package_set_id IS NULL AND host_id > #{after}
-          AND EXISTS (SELECT 1 FROM host_packages p WHERE p.host_id = host_package_sets.host_id) ORDER BY host_id LIMIT #{BATCH}
-      SQL
+      ids = HostPackageSet.where(manager: "unreadable", package_set_id: nil).where(host_id: (after + 1)..)
+                          .where("EXISTS (SELECT 1 FROM host_packages p WHERE p.host_id = host_package_sets.host_id)").order(:host_id).limit(BATCH).pluck(:host_id)
       break if ids.empty?
 
-      @connection.transaction { ids.each { |id| @connection.execute("UPDATE host_package_sets SET package_set_id = #{PackageStore.store!(host_rows(id))} WHERE host_id = #{Integer(id)}") } }
+      ApplicationRecord.transaction { ids.each { |id| HostPackageSet.where(host_id: id).update_all(package_set_id: PackageStore.store!(host_rows(id))) } }
       after = ids.last
     end
   end
 
   def snapshots
-    by_hash("package_snapshots", "snapshots") do |hash|
-      json = @connection.select_value("SELECT packages FROM package_snapshots WHERE manager = 'dpkg' AND package_set_id IS NULL AND content_hash = #{@connection.quote(hash)} LIMIT 1")
-      set_id = PackageStore.store!(JSON.parse(json).map { |row| Package.from_a(row) })
-      @connection.execute("UPDATE package_snapshots SET package_set_id = #{set_id} WHERE manager = 'dpkg' AND package_set_id IS NULL AND content_hash = #{@connection.quote(hash)}")
+    by_hash(PackageSnapshot, "snapshots") do |scope|
+      list = scope.pick(:packages)
+      PackageStore.store!((list.is_a?(String) ? JSON.parse(list) : list).map { |row| Package.from_a(row) }) # cast or not, as the schema cache knows it
     end
   end
 
-  # Yields each distinct dpkg content hash of table with no set yet, by keyset on the temporary index, BATCH a transaction.
-  def by_hash(table, label)
+  # For each distinct dpkg content hash of model's table with no set yet, by keyset on the temporary index, BATCH a
+  # transaction: yields the scope of its rows, and points them all at the set id the block returns.
+  def by_hash(model, label)
     after = ""
     done = 0
     loop do
-      hashes = @connection.select_values(<<~SQL.squish)
-        SELECT DISTINCT content_hash FROM #{table} WHERE manager = 'dpkg' AND package_set_id IS NULL AND content_hash > #{@connection.quote(after)}
-        ORDER BY content_hash LIMIT #{BATCH}
-      SQL
+      hashes = model.where(UNSET).where("content_hash > ?", after).distinct.order(:content_hash).limit(BATCH).pluck(:content_hash)
       break if hashes.empty?
 
-      @connection.transaction { hashes.each { |hash| yield hash } }
+      ApplicationRecord.transaction do
+        hashes.each do |hash|
+          scope = model.where(UNSET).where(content_hash: hash)
+          scope.update_all(package_set_id: yield(scope))
+        end
+      end
       done += hashes.size
       after = hashes.last
       @log.call("#{label}: #{done} distinct package lists stored")
@@ -115,29 +107,24 @@ class PackageStoreBackfill
   end
 
   def findings
-    last = value("SELECT COALESCE(max(id), 0) FROM vulnerability_findings")
+    last = VulnerabilityFinding.maximum(:id).to_i
     (0..last).step(FINDINGS_BATCH) do |from|
-      @connection.execute(<<~SQL.squish)
-        UPDATE vulnerability_findings SET last_source = source, last_installed_version = installed_version, last_fixed_version = fixed_version,
-               last_ecosystem = ecosystem
-        WHERE id > #{from} AND id <= #{from + FINDINGS_BATCH} AND last_ecosystem IS NULL
-      SQL
+      VulnerabilityFinding.where(id: (from + 1)..(from + FINDINGS_BATCH), last_ecosystem: nil)
+                          .update_all("last_source = source, last_installed_version = installed_version, last_fixed_version = fixed_version, last_ecosystem = ecosystem")
     end
     @log.call("findings: details copied")
   end
 
   def evaluations
-    last = value("SELECT COALESCE(max(host_id), 0) FROM host_vulnerability_evaluations")
+    last = HostVulnerabilityEvaluation.maximum(:host_id).to_i
     (0..last).step(FINDINGS_BATCH) do |from|
-      @connection.execute(<<~SQL.squish)
-        UPDATE host_vulnerability_evaluations e SET package_set_id = h.package_set_id
-        FROM host_package_sets h WHERE h.host_id = e.host_id AND e.package_set_id IS NULL AND h.package_set_id IS NOT NULL
-          AND e.host_id > #{from} AND e.host_id <= #{from + FINDINGS_BATCH}
-      SQL
+      HostVulnerabilityEvaluation.where(host_id: (from + 1)..(from + FINDINGS_BATCH), package_set_id: nil)
+                                 .update_all("package_set_id = (SELECT h.package_set_id FROM host_package_sets h WHERE h.host_id = host_vulnerability_evaluations.host_id)")
     end
   end
 
   def host_rows(host_id)
-    @connection.select_rows("SELECT name, architecture, version, source FROM host_packages WHERE host_id = #{Integer(host_id)}").map { |row| Package.from_a(row) }
+    sql = ApplicationRecord.sanitize_sql_array([ "SELECT name, architecture, version, source FROM host_packages WHERE host_id = ?", host_id ])
+    @connection.select_rows(sql).map { |row| Package.from_a(row) }
   end
 end

@@ -93,7 +93,7 @@ RSpec.describe BackfillPackageSets do
     %w[openssl libssl3].each { |package| old_finding(host, advisory, package) }
     HostVulnerabilityEvaluation.create!(host:, ecosystem: "Debian:13", state: "evaluated", evaluated_at: Time.current)
     statements = []
-    ActiveSupport::Notifications.subscribed(->(*, payload) { statements << payload[:sql] if payload[:sql].start_with?("UPDATE vulnerability_findings") }, "sql.active_record") { migrate }
+    ActiveSupport::Notifications.subscribed(->(*, payload) { statements << payload[:sql] if payload[:sql].match?(/\AUPDATE "?vulnerability_findings"?/) }, "sql.active_record") { migrate }
     expect(connection.select_rows("SELECT last_source, last_installed_version, last_fixed_version, last_ecosystem FROM vulnerability_findings").uniq)
       .to eq([ %w[openssl 3.5.0-1 3.5.1-1 Debian:13] ])
     expect(statements.size).to be >= 2 # one batch of ids each
