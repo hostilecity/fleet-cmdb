@@ -274,6 +274,33 @@ RSpec.describe Partitions do
   end
 
   describe "one maintenance run at a time (review of #239)" do
+    # Behind a transaction-mode pooler the maintenance lock is on the direct connection (#198), uncached, and checked
+    # before each table, so a run whose lock session ended stops before its next table's DDL.
+    it "holds the lock on the direct connection, and stops before the next table once it is lost" do
+      use_direct_database
+      work = ApplicationRecord.connection.select_value("SELECT pg_backend_pid()")
+      holders = nil
+      tables = 0
+      allow(described_class).to receive(:partitioned?).and_wrap_original do |original, name|
+        tables += 1
+        if tables == 1
+          session = separate_session
+          holders = session.select_values(<<~SQL.squish)
+            SELECT l.pid FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+             WHERE l.locktype = 'advisory' AND l.granted AND d.datname = current_database() AND l.classid = 0 AND l.objid = #{described_class::LOCK_KEY}
+          SQL
+          session.disconnect!
+        end
+        expect(end_lock_holder(0, described_class::LOCK_KEY)).to eq(1) if tables == 2
+        original.call(name)
+      end
+
+      expect { Rails.application.executor.wrap { described_class.ensure! } }.to raise_error(SessionLock::Lost)
+      expect(holders.size).to eq(1)
+      expect(holders).not_to include(work)
+      expect(tables).to eq(2) # no table after the lock was lost
+    end
+
     it "does nothing, and says so, while another session holds the maintenance lock" do
       allow(Rails.logger).to receive(:info)
       allow(Retention).to receive(:retire!)

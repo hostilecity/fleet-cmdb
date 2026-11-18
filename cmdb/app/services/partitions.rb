@@ -107,15 +107,12 @@ module Partitions
     end
 
     # Runs the block holding the maintenance lock, or returns :busy when another session holds it. Re-entrant within
-    # one session (maintain! calls ensure!).
-    def exclusively
-      return :busy unless connection.select_value("SELECT pg_try_advisory_lock(#{LOCK_KEY})")
-
-      begin
-        yield
-      ensure
-        connection.select_value("SELECT pg_advisory_unlock(#{LOCK_KEY})")
-      end
+    # one session (maintain! calls ensure!): the nested hold takes the same lock on the same connection. The lock is a
+    # session-level one that spans the run's transactions, so it goes through SessionLock (#198): on the direct
+    # connection behind a transaction-mode pooler, uncached, with a check before each table (still_held).
+    def exclusively(&)
+      result = SessionLock.hold(LOCK_KEY.to_s) { |still_held| [ yield(still_held) ] }
+      result ? result.first : :busy
     end
 
     # Creates every table's default partition and its partitions up to AHEAD of now, and back to `from` when given
@@ -123,9 +120,11 @@ module Partitions
     # Tables not converted yet are skipped. `tables` limits it to some tables. Returns { table => [created names] }, or
     # nil when another maintenance run holds the lock.
     def ensure!(now: Time.current, from: nil, tables: TABLES.keys)
-      result = exclusively do
+      result = exclusively do |still_held|
         TABLES.values_at(*tables).to_h do |table|
           next [ table.name, [] ] unless partitioned?(table.name)
+
+          still_held.call # before this table's DDL (#198)
 
           [ table.name, ensure_table(table, now:, from:) ]
         rescue Busy => e
