@@ -87,7 +87,7 @@ module PackageStore
   # for COLLECT_AFTER, in short batches. Returns { "package_sets" => n, "package_chunks" => n }.
   def collect!(now: Time.current, dry_run: false, batch_size: COLLECT_BATCH)
     cutoff = now - COLLECT_AFTER
-    counts = { "package_sets" => sweep(PackageSet, UNREFERENCED_SET, cutoff, dry_run, batch_size) }
+    counts = { "package_sets" => sweep(PackageSet, unreferenced_set, cutoff, dry_run, batch_size) }
     counts["package_chunks"] = sweep(PackageChunk, UNREFERENCED_CHUNK, cutoff, dry_run, batch_size)
     Rails.logger.info("[package store] #{dry_run ? 'dry run, would collect' : 'collected'} " \
                       "#{counts.map { |table, count| "#{table}=#{count}" }.join(' ')} unreferenced since #{cutoff.utc.iso8601}")
@@ -113,6 +113,15 @@ module PackageStore
     AND NOT EXISTS (SELECT 1 FROM host_vulnerability_evaluations e WHERE e.package_set_id = package_sets.id)
     AND NOT EXISTS (SELECT 1 FROM package_snapshots s WHERE s.package_set_id = package_sets.id)
   SQL
+  # Snapshots the default repair set aside (package_snapshots_default_moving, ADR 0027) reference sets too, until
+  # they are moved back; such a set is not collected meanwhile.
+  def unreferenced_set
+    moving = "package_snapshots#{Partitions::MOVING}"
+    return UNREFERENCED_SET unless PackageSet.connection.select_value("SELECT pg_catalog.to_regclass('public.#{moving}') IS NOT NULL")
+
+    "#{UNREFERENCED_SET} AND NOT EXISTS (SELECT 1 FROM public.#{moving} m WHERE m.package_set_id = package_sets.id)"
+  end
+
   UNREFERENCED_CHUNK = "NOT EXISTS (SELECT 1 FROM package_sets s WHERE s.chunk_ids @> ARRAY[package_chunks.id])".freeze
 
   # Rows of model unreferenced and untouched since cutoff, deleted in keyset batches by id. The DELETE checks

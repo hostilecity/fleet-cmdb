@@ -145,6 +145,22 @@ RSpec.describe PackageStore do
       expect(described_class.packages(referenced).map(&:name)).to eq(%w[bash])
     end
 
+    it "keeps a set only a snapshot set aside by the default repair references, until it is moved back (ADR 0027, #239)" do
+      host = enrolled_host.first
+      report_packages(host, [ [ "bash", "5.2.37-1", "bash" ] ])
+      id = PackageSnapshot.find_by!(host_id: host.id).package_set_id
+      c = ActiveRecord::Base.connection
+      c.execute("CREATE TABLE package_snapshots_default_moving (LIKE package_snapshots)")
+      c.execute("WITH moved AS (DELETE FROM package_snapshots WHERE host_id = #{host.id} RETURNING *) INSERT INTO package_snapshots_default_moving SELECT * FROM moved")
+      HostPackageSet.where(host_id: host.id).delete_all
+      PackageSet.where(id:).update_all(last_used_at: now - 10.days)
+
+      expect(described_class.collect!(now:)["package_sets"]).to eq(0)
+      expect(PackageSet.exists?(id)).to be(true)
+      c.execute("DROP TABLE package_snapshots_default_moving")
+      expect(described_class.collect!(now:)["package_sets"]).to eq(1)
+    end
+
     it "skips a set touched after it was found, and the touch finds nothing after a delete: both orders (decision 8)" do
       id = described_class.store!(list, now: now - 3.days)
       allow(PackageSet).to receive(:where).and_wrap_original do |original, *args, **kwargs|
