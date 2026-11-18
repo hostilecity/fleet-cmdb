@@ -106,8 +106,9 @@ module Liveness
   # advisory lock (SessionLock) taken before the clock and thresholds are read and released when the run ends, so an
   # older run can never act after a newer one (review of #50); a run that finds another in progress does nothing, and
   # the next minute's run catches up. Rows a heartbeat holds are skipped and handled by the next run. Returns the
-  # number of transitions written. Behind a transaction-mode pooler the lock is on the direct connection (#198), and
-  # each batch first checks that connection still holds it.
+  # number of transitions written. Behind a transaction-mode pooler the lock is on the direct connection (#198). Each
+  # batch first checks the lock is still held (SessionLock), on every path: a connection reopened without a word has
+  # lost it, and the run then raises SessionLock::Lost; the next minute's run catches up.
   #
   # Transitions are written in transactions of at most BATCH_SIZE hosts, each committed before the next, so a
   # heartbeat waits for at most one batch's row locks. In one transaction, every host going offline at once (after

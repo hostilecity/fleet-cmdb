@@ -6,9 +6,9 @@ require "rails_helper"
 RSpec.describe SessionLock do
   KEY = "1234567, 89".freeze
 
-  def holders = ApplicationRecord.connection.select_values(
-    "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 1234567 AND objid = 89 AND granted"
-  )
+  def holders = ApplicationRecord.uncached do
+    ApplicationRecord.connection.select_values("SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 1234567 AND objid = 89 AND granted")
+  end
 
   def statements(&)
     sql = []
@@ -24,13 +24,37 @@ RSpec.describe SessionLock do
       expect(holders).to be_empty
     end
 
-    it "runs the statements it ran before #198, and its check runs none" do
+    it "checks the lock with one uncached statement on its own connection, and raises Lost once the session changed" do
       sql = statements do
         described_class.hold(KEY) do |still_held|
-          3.times { still_held.call }
+          2.times { still_held.call }
         end
       end
-      expect(sql).to eq([ "SELECT pg_try_advisory_lock(#{KEY})", "SELECT pg_advisory_unlock(#{KEY})" ])
+      expect(sql).to eq([ "SELECT pg_try_advisory_lock(#{KEY}), pg_backend_pid()", "SELECT pg_backend_pid()", "SELECT pg_backend_pid()",
+                          "SELECT pg_advisory_unlock(#{KEY})" ])
+
+      # The homelab's path too (the owner's decision, 2026-11-18): the connection was reopened at the next transaction,
+      # so the server process differs and the lock is gone.
+      connection = ApplicationRecord.connection
+      expect do
+        described_class.hold(KEY) do |still_held|
+          allow(connection).to receive(:select_value).and_call_original
+          allow(connection).to receive(:select_value).with("SELECT pg_backend_pid()").and_return(-1)
+          still_held.call
+        end
+      end.to raise_error(SessionLock::Lost, /ended/)
+    end
+
+    # Inside one request or job the query cache is on: a second hold of the same key would be told it got the lock
+    # without taking it, and its unlock would not run, if any of these statements were cached (final check of #237).
+    it "takes and releases the same lock twice in one executor run" do
+      Rails.application.executor.wrap do
+        expect(ApplicationRecord.connection.query_cache_enabled).to be(true)
+        2.times do
+          expect(described_class.hold(KEY) { holders.size }).to eq(1)
+          expect(holders).to be_empty
+        end
+      end
     end
   end
 
@@ -51,7 +75,7 @@ RSpec.describe SessionLock do
 
     it "does not run the block while another session holds the lock" do
       other = separate_session
-      other.execute("SELECT pg_advisory_lock(#{KEY})")
+      expect(other.select_value("SELECT pg_try_advisory_lock(#{KEY})")).to be(true) # never blocks: a lock left held fails here
       ran = false
       expect(described_class.hold(KEY) { ran = true }).to be_nil
       expect(ran).to be(false)

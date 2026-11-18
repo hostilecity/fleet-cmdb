@@ -406,8 +406,8 @@ module Rollouts
   # Uncached: each batch's INSERT runs inside a SELECT (a CTE), which does not clear Active Record's query cache, and the
   # quota must be counted afresh in every batch.
   #
-  # Behind a transaction-mode pooler the lock is on the direct connection (#198), and the prepare checks it still holds
-  # it before the re-time and before each batch (still_held). If it does not, the prepare stops and raises Interrupted:
+  # Behind a transaction-mode pooler the lock is on the direct connection (#198). On every path the prepare checks it
+  # still holds the lock before the re-time and before each batch (still_held). If it does not, the prepare stops and raises Interrupted:
   # the batch in progress rolls back, the batches before it stay chosen but hidden by the stage gate, and the next
   # prepare carries on from the database's count, so the stage never gets more than its share. Returns nil when another
   # prepare is running.
