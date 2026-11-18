@@ -120,7 +120,7 @@ class AdvisoryFeedRefreshJob < ApplicationJob
   def not_modified(last)
     now = Time.current
     import = AdvisoryImport.create!(origin: "feed", source: @source, full: true, operator: @operator, state: "succeeded", ecosystems: last.ecosystems,
-                                    counts: { "not_modified" => true }, etag: last.etag, last_modified: last.last_modified,
+                                    counts: { "not_modified" => true }, changed_packages: {}, etag: last.etag, last_modified: last.last_modified,
                                     started_at: now, finished_at: now)
     Advisories::Import::Result.new(import:, changed_packages: {})
   end

@@ -55,7 +55,8 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
       stub_request(:get, url).with(headers: { "If-None-Match" => '"v1"', "If-Modified-Since" => "Tue, 03 Nov 2026 10:00:00 GMT" }).to_return(status: 304)
       refresh
       expect(AdvisoryImport.order(:id).last).to have_attributes(state: "succeeded", full: true, ecosystems: [ "Debian:13" ], etag: '"v1"',
-                                                                counts: { "not_modified" => true }, finished_at: be_within(1.minute).of(Time.current))
+                                                                counts: { "not_modified" => true }, changed_packages: {}, finished_at: be_within(1.minute).of(Time.current))
+      expect(AdvisoryImport.newest_succeeded_id).not_to eq(AdvisoryImport.order(:id).last.id) # it stamps no chunk (ADR 0028)
       expect(AuditEntry.count).to eq(1) # nothing was imported
       expect(Advisories::Freshness.statuses.sole.updated_at).to be_within(1.minute).of(Time.current)
     end
