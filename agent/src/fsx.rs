@@ -4,7 +4,8 @@
 //!
 //! - [`read_regular`]: read a regular file of bounded size, never waiting on a FIFO or device.
 //! - [`write_atomic`]: replace a file so a crash leaves the old contents or the new, never a mix.
-//! - [`Lock`]: an exclusive `flock` that a killed process never leaves held.
+//! - [`Lock`]: an exclusive `flock` that a killed process never leaves held, and that a dropped lock
+//!   never leaves held through a child another thread forked (#242).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -152,8 +153,25 @@ pub fn remove_stale_temps(dir: &Path, prefix: &str) -> io::Result<usize> {
 
 /// An exclusive, non-blocking `flock` (std's [`File::try_lock`]), released when dropped or when the
 /// process dies, so a killed or rebooted holder never leaves it held.
+///
+/// **Dropping unlocks first, then closes** (#242). A `flock` belongs to the open file description,
+/// not the descriptor, and the kernel releases it only when the last descriptor of that description
+/// closes. A child that another thread forks keeps a copy of every descriptor until it execs
+/// (`O_CLOEXEC` takes effect only at exec), so closing alone would leave the lock held for that
+/// moment, and this process would find its own released lock "held by another process" if it took
+/// it again at once. `LOCK_UN` releases the lock on the description itself, so a copy in a forked
+/// child holds nothing. Another process's lock is its own description and is never touched: a real
+/// second process is still refused.
 #[derive(Debug)]
-pub struct Lock(#[allow(dead_code)] File);
+pub struct Lock(File);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // An unlock can only fail on a descriptor that is not open, which this one always is; the
+        // close that follows releases it in any case once no forked child holds a copy.
+        let _ = self.0.unlock();
+    }
+}
 
 impl Lock {
     /// Locks the directory `dir` (never through a symlink), so two installers cannot run at once.
@@ -194,6 +212,7 @@ impl Lock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::processes::{Forked, Hold, Holder};
     use crate::test_support::{TempDir, mode, names};
 
     #[test]
@@ -210,6 +229,50 @@ mod tests {
             drop(first);
             assert!(lock().unwrap().is_some());
         }
+    }
+
+    #[test]
+    fn a_dropped_lock_is_free_at_once_while_a_forked_child_holds_a_copy_of_it() {
+        // #242: a program another thread starts holds every descriptor between fork and exec. The
+        // child here stays in that moment for the whole test, so without the unlock on drop the
+        // second lock is refused every time, not now and then.
+        let tmp = TempDir::new();
+        let file = tmp.path("task-ledger.lock");
+        for lock in [
+            &(|| Lock::dir(tmp.root())) as &dyn Fn() -> io::Result<Option<Lock>>,
+            &|| Lock::file(&file),
+        ] {
+            let first = lock().unwrap().unwrap();
+            let child = Forked::idle();
+            drop(first);
+            let again = lock().unwrap();
+            assert!(
+                again.is_some(),
+                "the forked child's copy kept the lock held"
+            );
+            // The lock taken again still refuses a second taker while the child lives.
+            assert!(lock().unwrap().is_none());
+            drop(child);
+        }
+    }
+
+    #[test]
+    fn a_lock_another_process_holds_is_refused_until_that_process_lets_go() {
+        let tmp = TempDir::new();
+        let file = tmp.path("task-ledger.lock");
+        let other = Holder::start(Hold::Lock, &file).expect("the other process took the lock");
+        assert_ne!(other.id(), std::process::id());
+        assert!(Lock::file(&file).unwrap().is_none());
+        // Dropping a lock of ours on another description does not release the other process's.
+        let child = Forked::idle();
+        assert!(Lock::file(&file).unwrap().is_none());
+        drop(child);
+        drop(other);
+        assert!(Lock::file(&file).unwrap().is_some());
+        // And the other way round: while this process holds it, the other process is refused.
+        let ours = Lock::file(&file).unwrap().unwrap();
+        assert!(Holder::start(Hold::Lock, &file).is_none());
+        drop(ours);
     }
 
     #[test]

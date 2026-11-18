@@ -17,6 +17,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 pub mod hostile;
 pub mod memory;
+pub mod processes;
 
 /// Kept in every fault-injection hook (the poller's kill points, the ledger's failed appends), so
 /// `scripts/check-no-fault-hooks.sh` can show it is in the unit-test binary and absent from the
