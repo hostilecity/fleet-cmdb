@@ -154,7 +154,9 @@ RSpec.describe ReplicaReads do
       expect(described_class.down?).to be_falsey
     end
 
-    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure ].each do |error|
+    # Every replica-side failure, a cancelled query included (a statement_timeout set on the replica): the owner's
+    # decision 3, so a page that always times out on the replica loads from the primary on the next try.
+    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure, ActiveRecord::QueryCanceled ].each do |error|
       it "is marked down when it raises #{error.name.demodulize} while a page reads it, and the page fails with Failed, not run again" do
         runs = 0
         expect { described_class.around { runs += 1; raise error.new("replica gone", connection_pool: replica_pool) } } # rubocop:disable Style/Semicolon
@@ -162,17 +164,6 @@ RSpec.describe ReplicaReads do
         expect(runs).to eq(1)
         expect(described_class.down?).to be(true)
       end
-    end
-
-    # A statement_timeout set on the replica, or pg_cancel_backend: one slow page must not send every page to the
-    # primary (final check of #237).
-    it "fails the page on a cancelled replica query, but leaves the replica in use" do
-      allow(Rails.logger).to receive(:error).and_call_original
-      expect { described_class.around { raise ActiveRecord::QueryCanceled.new("canceling statement due to statement timeout", connection_pool: replica_pool) } }
-        .to raise_error(ReplicaReads::Failed)
-      expect(described_class.down?).to be_falsey
-      expect(Rails.logger).to have_received(:error)
-        .with("[replica] ActiveRecord::QueryCanceled: canceling statement due to statement timeout; this page failed, and the replica stays in use")
     end
 
     it "finds the replica's error under a view's error" do

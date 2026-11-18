@@ -1,8 +1,7 @@
 require "rails_helper"
 
 # A listed page whose replica fails while it reads (#198; the owner's decision, 2026-11-18): the page shows a plain
-# error page and is not run again. A connection-level failure marks the replica down, so the next load reads the
-# primary; a cancelled query leaves the replica in use.
+# error page and is not run again, and the replica is marked down, so the next load in that process reads the primary.
 RSpec.describe "Replica reads in a page", :signed_in, type: :request do
   let(:replica_pool) { instance_double(ActiveRecord::ConnectionAdapters::ConnectionPool, role: :reading) }
 
@@ -32,15 +31,23 @@ RSpec.describe "Replica reads in a page", :signed_in, type: :request do
     expect(roles.last).to eq(:writing) # the replica is skipped: the primary
   end
 
-  it "shows the error page on a cancelled replica query, and the next load reads the replica again" do
-    roles = fail_first_read_with(ActiveRecord::QueryCanceled.new("canceling statement due to statement timeout", connection_pool: replica_pool))
+  # A page that always exceeds a statement_timeout set on the replica still loads: from the primary, on the next try.
+  it "shows the error page on a cancelled replica query, and the next load reads the primary, even when every replica read is cancelled" do
+    roles = []
+    allow(FleetCompliance).to receive(:totals).and_wrap_original do |original|
+      roles << ApplicationRecord.current_role
+      raise ActiveRecord::QueryCanceled.new("canceling statement due to statement timeout", connection_pool: replica_pool) if roles.last == :reading
+
+      original.call
+    end
 
     get "/compliance"
     expect(response).to have_http_status(:service_unavailable)
-    expect(ReplicaReads.down?).to be_falsey
+    expect(page.at_css("#replica_unavailable").text.squish).to eq("Part of this page couldn't be read. Nothing was changed. Try again")
+    expect(ReplicaReads.down?).to be(true)
 
     get "/compliance"
     expect(response).to have_http_status(:ok)
-    expect(roles).to eq(%i[reading reading])
+    expect(roles).to eq(%i[reading writing])
   end
 end

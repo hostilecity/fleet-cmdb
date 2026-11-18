@@ -16,22 +16,21 @@
 # a failing one. Only the test environment, whose "replica" is the test database itself, allows it
 # (config.x.replica_may_be_primary, false everywhere else: config/application.rb).
 #
-# When the replica fails while a page reads it, the page shows a plain error page (Failed, rendered by
-# ReplicaReads::Controller); it is not run again (the owner's decision, 2026-11-18). A replica that cannot be reached,
-# is not in recovery, or fails at the connection or by a recovery conflict is then not tried again for
-# FLEET_REPLICA_SKIP_SECONDS (30 by default), so the next page reads the primary. A query cancelled on the replica
-# (a statement_timeout set there, or pg_cancel_backend) shows the error page too, but leaves the replica in use: one slow
-# page does not send every page to the primary. An error from the primary is left alone: it never marks the replica
-# down. Pages that write, need a second factor, or serve agents never come here: only the GET and HEAD actions a
+# When the replica fails while a page reads it (a lost connection, a recovery conflict, or a cancelled query), the page
+# shows a plain error page (Failed, rendered by ReplicaReads::Controller), it is not run again, and the replica is not
+# tried again for FLEET_REPLICA_SKIP_SECONDS (30 by default), so the next load reads the primary (the owner's decision,
+# 2026-11-18). So does a replica that cannot be reached or is not in recovery at a page's check. The skip is kept in
+# each process (a module variable): with several Puma processes or nodes, a retry can reach a process that has not
+# seen the failure and still reads the replica, until it fails there too. An error from the primary is left alone: it
+# never marks the replica down. Pages that write, need a second factor, or serve agents never come here: only the GET and HEAD actions a
 # controller names with reads_from_replica (ReplicaReads::Controller).
 module ReplicaReads
   POLL_INTERVAL = 0.005
   # What a replica raises when it fails under a page: it is gone, the connection broke, a recovery conflict cancelled
-  # the query (SQLSTATE 40001), or the query was cancelled (57014). Only when the error came from the replica's pool
-  # (from_replica?). All but the last mark the replica down (DOWN_ERRORS).
+  # the query (SQLSTATE 40001), or the query was cancelled (57014: a statement_timeout set on the replica, or
+  # pg_cancel_backend). Only when the error came from the replica's pool (replica_error). Each marks the replica down.
   REPLICA_ERRORS = [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure,
                      ActiveRecord::QueryCanceled ].freeze
-  DOWN_ERRORS = [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure ].freeze
 
   # The replica failed while a page read it; the page shows an error page and is not run again.
   class Failed < StandardError; end
@@ -49,8 +48,7 @@ module ReplicaReads
   def skip_for = Rails.configuration.x.replica_skip_seconds.seconds
 
   # Runs the block on the replica when it has caught up, else on the primary, and returns its value. When the replica
-  # fails while the block runs on it, raises Failed (after marking the replica down, for a connection-level failure or
-  # a recovery conflict); any other error goes on as it is.
+  # fails while the block runs on it, marks it down and raises Failed; any other error goes on as it is.
   def around(&)
     return yield unless configured? && caught_up?
 
@@ -59,11 +57,7 @@ module ReplicaReads
     rescue *REPLICA_ERRORS, ActionView::Template::Error => e
       error = replica_error(e) or raise
 
-      if DOWN_ERRORS.any? { |klass| error.is_a?(klass) }
-        mark_down(error)
-      else
-        Rails.logger.error("[replica] #{describe(error)}; this page failed, and the replica stays in use")
-      end
+      mark_down(error)
       raise Failed, describe(error)
     end
   end
@@ -130,8 +124,8 @@ module ReplicaReads
 
   # For dashboard controllers: reads_from_replica only: %i[index] wraps those actions, after every before_action the
   # controller inherits (signing in records the session's activity, a write), and with the view rendered inside. A
-  # page whose replica fails shows a plain error page (503) asking to try again; the next load reads the primary when
-  # the replica was marked down.
+  # page whose replica fails shows a plain error page (503) asking to try again; the next load in that process reads
+  # the primary.
   module Controller
     extend ActiveSupport::Concern
 
