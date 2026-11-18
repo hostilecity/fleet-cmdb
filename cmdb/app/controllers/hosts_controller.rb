@@ -78,9 +78,13 @@ class HostsController < ApplicationController
     end
   end
 
-  # The host's part in each rollout, newest first, with the latest result it reported for each (P1-D09).
+  # The host's part in each rollout, newest first, with the latest result it reported for each (P1-D09). Only rows in
+  # a stage that has opened, the gate the Agents page and the offer use (Rollouts.offer_scope, #245): a host chosen for
+  # a later stage, including by a prepare that was interrupted and never retried, is not part of the rollout until the
+  # stage opens, and may never be. The rollout is joined on its primary key; the host's rows come from their host_id index.
   def load_update_history
-    @update_history = @host.rollout_hosts.includes(rollout: :agent_release).order(created_at: :desc, id: :desc).limit(UPDATE_HISTORY_LIMIT).to_a
+    @update_history = @host.rollout_hosts.joins(:rollout).where("rollout_hosts.stage <= rollouts.current_stage")
+                           .includes(rollout: :agent_release).order(created_at: :desc, id: :desc).limit(UPDATE_HISTORY_LIMIT).to_a
     @update_results = @host.agent_updates.where(rollout_id: @update_history.map(&:rollout_id)).order(:received_at, :id).index_by(&:rollout_id)
   end
 

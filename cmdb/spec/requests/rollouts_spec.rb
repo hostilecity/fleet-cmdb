@@ -465,5 +465,54 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
       get "/hosts/#{canary_host.id}"
       expect(page.at_css("#agent_updates tbody tr").then { words(_1) }).to start_with("0.2.0 → 0.3.0, not offered Not offered while the rollout is halted.")
     end
+
+    # The same gate as the Agents page and the offer (#245): a host chosen for a stage that has not opened is not shown.
+    describe "hosts chosen for a later stage (#245)" do
+      def update_rows(host)
+        get "/hosts/#{host.id}"
+        page.css("#agent_updates tbody tr").map { |row| row.then { words(_1) } }
+      end
+
+      def not_in_a_rollout?(host) = update_rows(host).empty? && page.at_css("#agent_updates p.muted")&.text == "This host has not been part of a rollout."
+
+      it "lists a host once its stage has opened" do
+        rollout = started(stage_percents: [ 100 ])
+        Rollouts.advance!(rollout, actor: operator)
+        expect(rollout.reload.current_stage).to eq(1)
+        expect(update_rows(other.first)).to contain_exactly(start_with("0.2.0 → 0.3.0, waiting"))
+        expect(update_rows(canary_host)).to contain_exactly(start_with("0.2.0 → 0.3.0, waiting"))
+      end
+
+      it "does not list a host chosen for a stage that has not opened, as the Agents page does not count it" do
+        rollout = started(stage_percents: [ 100 ])
+        Rollouts.send(:prepare_stage!, rollout, 1) # chosen, then the advance was refused (a halt committed meanwhile)
+        expect(rollout.rollout_hosts.where(stage: 1).pluck(:host_id)).to contain_exactly(other.first.id, third.first.id)
+
+        expect(not_in_a_rollout?(other.first)).to be(true)
+        expect(update_rows(canary_host)).to contain_exactly(start_with("0.2.0 → 0.3.0, waiting"))
+        get "/agents"
+        expect(host_rows.map(&:first)).to eq([ "Media server" ])
+      end
+
+      it "does not list a host left in an unopened stage by an interrupted prepare, even after the rollout ends" do
+        rollout = started(stage_percents: [ 100 ])
+        stub_const("Rollouts::OPEN_BATCH", 1)
+        # The connection is lost in the batch after the one that chose the first host of stage 1.
+        allow(RolloutHost.connection).to receive(:select_rows).and_wrap_original do |original, sql, *rest, **options|
+          raise ActiveRecord::ConnectionFailed, "lost" if sql.to_s.start_with?("WITH batch AS") && rollout.rollout_hosts.exists?(stage: 1)
+
+          original.call(sql, *rest, **options)
+        end
+        expect { Rollouts.advance!(rollout, actor: operator) }.to raise_error(ActiveRecord::ConnectionFailed)
+        expect(rollout.reload.current_stage).to eq(0)
+        left = rollout.rollout_hosts.find_by!(stage: 1) # that batch committed; the next never ran
+        expect(left.host_id).to eq(other.first.id)
+
+        expect(not_in_a_rollout?(other.first)).to be(true)
+        Rollouts.cancel!(rollout, actor: operator) # never retried: the host never acts on it
+        expect(not_in_a_rollout?(other.first)).to be(true)
+        expect(update_rows(canary_host)).to contain_exactly(start_with("0.2.0 → 0.3.0, not offered"))
+      end
+    end
   end
 end
