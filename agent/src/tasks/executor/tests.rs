@@ -7,6 +7,7 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,9 @@ pub struct TestControl {
     pub shutdown: Shutdown,
     pub cancel: Cell<bool>,
     pub asked: Cell<u32>,
+    /// When set, the file is created each time the cancel is asked about, so a test program can
+    /// wait until the agent has asked at least once (a handshake, not a sleep).
+    pub mark_asked: Option<PathBuf>,
 }
 
 impl Control for TestControl {
@@ -35,6 +39,9 @@ impl Control for TestControl {
 
     fn cancel_requested(&self) -> bool {
         self.asked.set(self.asked.get() + 1);
+        if let Some(mark) = &self.mark_asked {
+            std::fs::write(mark, "").expect("the test can mark that it was asked");
+        }
         self.cancel.get()
     }
 }
@@ -129,6 +136,18 @@ pub fn program(path: &'static str, args: &'static [&'static str], privilege: Pri
         operand: None,
         privilege,
     }
+}
+
+/// A shell loop that waits, polling every 10 ms for at most about 10 s, until `mark` exists (see
+/// [`TestControl::mark_asked`]); if it never appears, prints why and exits 99. Once it appears the
+/// program keeps running for 0.3 s more, many agent ticks, so a cancel the agent wrongly acts on
+/// stops it before it exits (review of #238: exiting at once let such a regression pass about 1 run
+/// in 10). The sleep starts only after the ask, so it cannot make the test flaky.
+pub fn wait_for_file(mark: &std::path::Path) -> String {
+    format!(
+        "n=0; while [ ! -e '{}' ]; do n=$((n+1)); if [ $n -gt 1000 ]; then echo 'the agent never asked about a cancel'; exit 99; fi; sleep 0.01; done; sleep 0.3",
+        mark.display()
+    )
 }
 
 /// A program running `script` with `/bin/sh` (tests only).
@@ -490,19 +509,24 @@ fn an_interruptible_task_is_stopped_when_the_server_cancels_it() {
 #[test]
 fn a_task_that_cannot_be_interrupted_ignores_a_cancel() {
     // DEC-14: restart_service runs to completion; the cancel is never honoured.
-    let control = TestControl::default();
+    // The program exits only once the cancel has been asked about while it runs, so the count
+    // below cannot be zero because the program happened to exit before the first check.
+    let dir = crate::test_support::TempDir::new();
+    let mark = dir.path("asked");
+    let control = TestControl {
+        mark_asked: Some(mark.clone()),
+        ..TestControl::default()
+    };
     control.cancel.set(true);
     let ran = run_one(
-        Fixed::new(
-            "restart_service",
-            vec![program("/bin/sleep", &["0.3"], Privilege::ReadOnly)],
-        ),
+        Fixed::new("restart_service", vec![sh(wait_for_file(&mark))]),
         json!({}),
         60,
         &control,
     );
-    assert_eq!(ran.outcome, Outcome::Succeeded);
-    assert!(control.asked.get() > 0, "progress was still sent");
+    assert_eq!(ran.outcome, Outcome::Succeeded, "{}", ran.output);
+    // Implied by the handshake (the program exits 0 only after an ask); kept as documentation.
+    assert!(control.asked.get() >= 1, "progress was still sent");
 }
 
 #[test]

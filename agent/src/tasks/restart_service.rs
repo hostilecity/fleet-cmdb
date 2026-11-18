@@ -297,7 +297,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::tasks::executor::tests::{TestControl, delivered, leak};
+    use crate::tasks::executor::tests::{TestControl, delivered, leak, wait_for_file};
     use crate::tasks::executor::{Execution, Executor, Registry};
     use crate::test_support::TempDir;
 
@@ -315,7 +315,8 @@ mod tests {
     }
 
     /// A stand-in for systemctl (test code may run a shell): logs every call to `calls`, exits
-    /// `restart_exit` for restart, and answers is-active from the `active` file.
+    /// `restart_exit` for restart, and answers is-active from the `active` file. After
+    /// [`FakeSystemctl::hold_restart_until_asked`], restart first waits for the `asked` file.
     struct FakeSystemctl {
         dir: TempDir,
     }
@@ -325,13 +326,16 @@ mod tests {
             let dir = TempDir::new();
             let log = dir.path("calls");
             let active = dir.path("active");
+            let hold = dir.path("hold");
+            let wait = wait_for_file(&dir.path("asked"));
             let script = dir.path("systemctl");
             std::fs::write(
                 &script,
                 format!(
-                    "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  restart) echo restarting; exit {restart_exit} ;;\n  is-active) if [ -f '{active}' ]; then echo active; exit 0; fi; echo activating; exit 3 ;;\n  status) echo '  Active: failed'; exit 3 ;;\nesac\nexit 1\n",
+                    "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  restart) if [ -f '{hold}' ]; then {wait}; fi; echo restarting; exit {restart_exit} ;;\n  is-active) if [ -f '{active}' ]; then echo active; exit 0; fi; echo activating; exit 3 ;;\n  status) echo '  Active: failed'; exit 3 ;;\nesac\nexit 1\n",
                     log = log.display(),
                     active = active.display(),
+                    hold = hold.display(),
                 ),
             )
             .unwrap();
@@ -346,6 +350,13 @@ mod tests {
             } else {
                 let _ = std::fs::remove_file(path);
             }
+        }
+
+        /// Makes restart wait until the agent has asked about a cancel at least once, and returns the
+        /// file the control must create when it is asked ([`TestControl::mark_asked`]).
+        fn hold_restart_until_asked(&self) -> PathBuf {
+            std::fs::write(self.dir.path("hold"), "").unwrap();
+            self.dir.path("asked")
         }
 
         fn calls(&self) -> Vec<String> {
@@ -487,11 +498,44 @@ mod tests {
         let systemctl = FakeSystemctl::new(0);
         systemctl.set_active(true);
         let registry = registry(systemctl.task(vec![]), allowing(&["nginx.service"]));
-        let control = TestControl::default();
+        // The fake restart exits only after the cancel has been asked about while it runs, so the
+        // count cannot be zero just because systemctl exited before the agent's first check.
+        let control = TestControl {
+            mark_asked: Some(systemctl.hold_restart_until_asked()),
+            ..TestControl::default()
+        };
         control.cancel.set(true);
         let ran = registry.run(&restart("nginx.service"), &control).unwrap();
         assert_eq!(ran.outcome, Outcome::Succeeded, "{}", ran.output);
-        assert!(control.asked.get() > 0);
+        assert!(ran.output.contains("restarting\n"), "{}", ran.output);
+        // Implied by the handshake (the fake restart exits only after an ask); kept as documentation.
+        assert!(control.asked.get() >= 1, "progress was still sent");
+    }
+
+    #[test]
+    fn a_cancel_between_programs_does_not_stop_a_restart() {
+        // DEC-14 while no program runs (review of #238): the settle pause asks about the cancel
+        // through `Run::stopped`, which must pass it on as progress and never stop the task.
+        let systemctl = FakeSystemctl::new(0);
+        systemctl.set_active(true);
+        let task = RestartService {
+            settle: Duration::from_millis(300),
+            ..systemctl.task(vec![])
+        };
+        let registry = registry(task, allowing(&["nginx.service"]));
+        let control = TestControl::default();
+        control.cancel.set(true);
+        let ran = registry.run(&restart("nginx.service"), &control).unwrap();
+        assert_eq!(
+            (ran.outcome, ran.reason),
+            (Outcome::Succeeded, None),
+            "{}",
+            ran.output
+        );
+        assert_eq!(
+            systemctl.calls(),
+            ["restart -- nginx.service", "is-active -- nginx.service"]
+        );
     }
 
     #[test]
