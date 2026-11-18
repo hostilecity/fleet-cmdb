@@ -72,7 +72,7 @@ From the scale assessment (November 2026): a container with 2 CPUs and 7 GB of m
 
 ### Retention by partition (#195, ADR 0027)
 
-The same container, PostgreSQL 16, other suites running (load 4 to 6), so times are rough. Seed `--hosts 20000 --package-hosts 2000 --receipts 60 --audit-entries 10` (2 GB; the summary triggers were off during the seed, `PGOPTIONS="-c session_replication_role=replica"`, which does not change the history tables). `bin/benchmark jobs --only retention`, medians of 3, rolled back:
+The same container, PostgreSQL 16, other suites running (load 4 to 6), so times are rough. Seed `--hosts 20000 --package-hosts 2000 --receipts 60 --audit-entries 10` (2 GB). The seed ran with `PGOPTIONS="-c session_replication_role=replica"`, which turns off every trigger and foreign key check while it copies rows (the compliance-summary triggers make the bulk copies 2 to 3 times slower, roughly linearly: the review of #239 measured 19.1 s against 8.0 s for 8,000 hosts × 40 rules); the history tables' rows are the same either way. `bin/benchmark jobs --only retention`, medians of 3, rolled back:
 
 | What | Before (rows deleted, `main`) | After (partitions dropped) |
 |---|---|---|
