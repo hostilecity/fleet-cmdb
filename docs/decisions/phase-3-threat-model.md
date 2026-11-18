@@ -411,7 +411,7 @@ None of these blocks Phase 3 acceptance (#39): each is either a hardening beyond
 - A first install trusts GitHub (the repository, its tags, and the tag ruleset) for the release public key, and the person installing to check every command on the server-rendered page against the guide on GitHub (C16). A hostile server can still pick which signed release, at which version, the page offers.
 - Running `apply_package_updates` runs whatever the VM's configured APT sources and maintainer scripts do, as root. Debian's archive signing is the control; the agent adds none.
 - The server's audit log can be rewritten by whoever owns the database role (A3, F-5); the agent's journal on each VM is the independent record (pending Q5).
-- An agent installed before #182 and only updated remotely runs without memory and task limits until its units are written again (D10, #232).
+- An agent whose units are older than #182 runs without memory and task limits until they are written again: by a re-install, or by a confirmed update whose supervisor refreshes the units (D10, #232).
 
 ## 13. Keeping this document current
 

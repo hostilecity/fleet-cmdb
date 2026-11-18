@@ -25,7 +25,8 @@
 #   no credential  a real 1.0.1 whose heartbeats are rejected (it never confirms): rolled back and reported
 #   killed         the supervisor killed with SIGKILL after the switch: a good release still ends installed,
 #                  and a crash-looping one is rolled back by the OnFailure unit
-#   success        a good release is installed, keeps the configuration, reports in its first inventory, and
+#   success        a good release is installed, refreshes the units (#232; the limits of #182 then hold at once),
+#                  keeps the configuration, reports in its first inventory, and
 #                  its result is retried until the server accepts it
 #   below minimum  an agent the server answers 426 on inventory still updates (NFR-5)
 #   limits         (#182) the unit's memory and task limits are in force; a release that leaks is held by them
@@ -442,10 +443,11 @@ expect_old_running "killed supervisor, crash-looping release"
 
 echo "== success: a good release is installed, refreshes the units, and its result is retried"
 reset
-# #232: units from before recovery mode (no recovery unit, OnFailure= names only the rollback unit); the confirmed
-# update writes the new version's.
+# #232: units from before recovery mode (no recovery unit, OnFailure= names only the rollback unit) and before the
+# memory and task limits (#182); the confirmed update writes the new version's.
 sed -e 's/^OnFailure=fleet-agent-rollback.service fleet-agent-recovery.service$/OnFailure=fleet-agent-rollback.service/' \
-    -e '/^RestartMode=direct$/d' "$agent_dir/src/install/fleet-agent.service" > "$UNITS/fleet-agent.service"
+    -e '/^RestartMode=direct$/d' -e '/^\(MemoryHigh\|MemoryMax\|MemorySwapMax\|OOMPolicy\|TasksMax\)=/d' \
+    "$agent_dir/src/install/fleet-agent.service" > "$UNITS/fleet-agent.service"
 rm -f "$UNITS/fleet-agent-recovery.service"
 systemctl daemon-reload
 offer good "$NEW" '{"results_503": 2}'
@@ -456,6 +458,13 @@ for unit in fleet-agent.service fleet-agent-recovery.service; do
     cmp -s "$agent_dir/src/install/$unit" "$UNITS/$unit" || fail "success: $UNITS/$unit is not the new version's"
 done
 systemctl show -p OnFailure --value fleet-agent | grep -q fleet-agent-recovery.service || fail "success: systemd was not reloaded"
+# The refresh's daemon-reload puts the limits in force on the running service at once (#182).
+limits=$(systemctl show fleet-agent -p MemoryHigh -p MemoryMax -p MemorySwapMax -p OOMPolicy -p TasksMax | sort | tr '\n' ' ' | sed 's/ $//')
+[ "$limits" = "$(unit_limits "$agent_dir/src/install/fleet-agent.service")" ] \
+    || fail "success: the refreshed units' limits are not in force: $limits"
+cgroup=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value)
+[ "$(cat "$cgroup/memory.max")" = "$(systemctl show fleet-agent -p MemoryMax --value)" ] \
+    || fail "success: the running service's cgroup has memory.max $(cat "$cgroup/memory.max")"
 running_is "$NEW" || fail "success: running $(running_version)"
 [ "$(readlink "$LIB/previous")" = "versions/$OLD" ] || fail "success: previous is $(readlink "$LIB/previous"), not versions/$OLD"
 since=$(date +%s.%N)

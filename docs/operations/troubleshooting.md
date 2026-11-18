@@ -127,7 +127,7 @@ The agent's unit caps its memory at 256 MiB and its threads and processes at 64 
 
    Recovery mode sees the service running and exits by itself. The drop-in stays across updates and re-installs. `sudo systemctl revert fleet-agent` removes it.
 
-**`MemoryMax=infinity` on a VM you did not change** means its units are older than #182: the installer writes the limits, and a remote update does not rewrite the units yet (#232). Run the installer of the current release on it once ([install-agent.md](install-agent.md#by-hand-on-one-vm)).
+**`MemoryMax=infinity` on a VM you did not change** means its units are older than #182. The installer writes the limits, and so does a confirmed update from a release that refreshes the units (#232); an update from an older release does not. If the installed version has the limits, `sudo fleet-agent install --refresh-units` writes its units; otherwise run the installer of the current release ([install-agent.md](install-agent.md#by-hand-on-one-vm)).
 
 ## The onboarding request expired
 
