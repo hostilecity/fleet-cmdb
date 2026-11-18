@@ -64,6 +64,11 @@ module Cmdb
     # What this node serves (FLEET_NODE_ROLE, #198): "all" (default), "agent_api", or "dashboard" (HostSeparation).
     config.x.fleet_hosts.role = DeploymentTopology.node_role
 
+    # Whether ReplicaReads may read a server that is not in recovery as a replica (#198): never, except in the test
+    # environment, whose replica is the test database itself (config/environments/test.rb sets it true). Set here
+    # explicitly, because an unset config.x key is an empty, truthy ActiveSupport::OrderedOptions (re-review of #237).
+    config.x.replica_may_be_primary = false
+
     # Proxies allowed to set X-Forwarded-Host and X-Forwarded-For (the tunnel connector and the agent TLS
     # proxy), as comma-separated addresses or CIDRs. Unset means only loopback is trusted.
     trusted = ENV.fetch("FLEET_TRUSTED_PROXIES", "").split(",").map(&:strip).reject(&:empty?).map { |cidr| IPAddr.new(cidr) }

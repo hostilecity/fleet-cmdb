@@ -1,4 +1,5 @@
 require "rails_helper"
+require "open3"
 
 # Dashboard and report reads from a replica (#198 step 2). The test environment's replica is the test database itself
 # (config/database.yml), shared with the writing connection, so the reading role refuses writes as a replica would, and
@@ -40,7 +41,34 @@ RSpec.describe ReplicaReads do
   end
 
   describe "a server that is not in recovery (review of #237)" do
-    before { allow(Rails.configuration.x).to receive(:replica_may_be_primary).and_return(false) }
+    # The real default, from config/application.rb, without a stub (re-review of #237: an unset config.x key is an
+    # empty, truthy OrderedOptions, so a stubbed false hid that production read a promoted server).
+    it "may be read as a replica in no environment but test" do
+      env = { "RAILS_ENV" => "production", "SECRET_KEY_BASE" => "a" * 64, "FLEET_ENCRYPTION_KEY" => "b" * 40,
+              "FLEET_DASHBOARD_HOST" => "fleet.example.com", "FLEET_AGENT_HOST" => "agent.example.lan",
+              "GOOGLE_CLIENT_ID" => "x", "GOOGLE_CLIENT_SECRET" => "y", "FLEET_RELEASES_DIR" => Dir.mktmpdir,
+              "FLEET_BACKUP_STATUS_FILE" => File.join(Dir.mktmpdir, "s"), "BOOTSNAP_CACHE_DIR" => Dir.mktmpdir }
+      script = "print [ Rails.configuration.x.replica_may_be_primary, ReplicaReads.primary_allowed? ].inspect"
+      out, err, status = Open3.capture3(env, "bin/rails", "runner", script, chdir: Rails.root.to_s, unsetenv_others: false)
+      expect(status).to be_success, err
+      expect(out.lines.last).to eq("[false, false]")
+    end
+
+    it "is allowed only by an exact true, not by an unset (empty) setting" do
+      saved = Rails.configuration.x.replica_may_be_primary
+      Rails.configuration.x.replica_may_be_primary = ActiveSupport::OrderedOptions.new
+      expect(described_class.primary_allowed?).to be(false)
+    ensure
+      Rails.configuration.x.replica_may_be_primary = saved
+    end
+
+    around do |example|
+      saved = Rails.configuration.x.replica_may_be_primary
+      Rails.configuration.x.replica_may_be_primary = false # as config/application.rb sets it
+      example.run
+    ensure
+      Rails.configuration.x.replica_may_be_primary = saved
+    end
 
     it "is never read as a replica outside the test setup: it is skipped, logged, and the page reads the primary" do
       replica_answers([ false, nil ])
@@ -57,6 +85,17 @@ RSpec.describe ReplicaReads do
 
     it "waits for it, up to FLEET_REPLICA_MAX_WAIT_MS" do
       replica_answers([ true, false ], [ true, false ], [ true, true ])
+      expect(role_inside).to eq(:reading)
+    end
+
+    it "starts the wait after the first answer, so opening the replica's connection is not counted as lag" do
+      answers = [ [ true, false ], [ true, true ] ]
+      connection = ApplicationRecord.connection
+      allow(connection).to receive(:select_rows).and_call_original
+      allow(connection).to receive(:select_rows).with(anything, "Replica caught up") do
+        sleep 0.08 if answers.size == 2 # a cold connection: the first answer takes longer than the whole wait
+        [ answers.shift ]
+      end
       expect(role_inside).to eq(:reading)
     end
 
@@ -92,7 +131,7 @@ RSpec.describe ReplicaReads do
       expect(described_class.down?).to be_falsey
     end
 
-    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure ].each do |error|
+    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure, ActiveRecord::QueryCanceled ].each do |error|
       it "is marked down when it raises #{error.name.demodulize} while a page reads it, and the page runs again on the primary" do
         roles = []
         value = described_class.around do

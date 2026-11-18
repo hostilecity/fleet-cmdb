@@ -12,18 +12,21 @@
 # A server that is not in recovery is never read as a replica (review of #237): a promoted ex-replica after a failover,
 # or a URL naming the wrong server, has no replay position to compare and may hold different data. It is skipped like
 # a failing one. Only the test environment, whose "replica" is the test database itself, allows it
-# (config.x.replica_may_be_primary).
+# (config.x.replica_may_be_primary, false everywhere else: config/application.rb).
 #
 # A replica that cannot be reached, is not in recovery, or fails while a page reads it (a lost connection, or a query
 # cancelled by a recovery conflict) is not tried again for FLEET_REPLICA_SKIP_SECONDS (30 by default); pages read the
-# primary meanwhile, and the page that hit the failure is run again on the primary. An error from the primary is left
+# primary meanwhile, and the page that hit the failure is run again on the primary (so a page named with
+# reads_from_replica must be safe to run twice: see ReplicaReads::Controller). An error from the primary is left
 # alone: it never marks the replica down. Pages that write, need a second factor, or serve agents never come here:
 # only the actions a controller names with reads_from_replica (ReplicaReads::Controller).
 module ReplicaReads
   POLL_INTERVAL = 0.005
-  # What a replica raises when it fails under a page: it is gone, the connection broke, or a recovery conflict
-  # cancelled the query (SQLSTATE 40001).
-  REPLICA_ERRORS = [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure ].freeze
+  # What a replica raises when it fails under a page: it is gone, the connection broke, a recovery conflict cancelled
+  # the query (SQLSTATE 40001), or the query was cancelled, by a statement_timeout set on the replica or by
+  # pg_cancel_backend (57014). Only when the error came from the replica's pool (from_replica?).
+  REPLICA_ERRORS = [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure,
+                     ActiveRecord::QueryCanceled ].freeze
 
   @mutex = Mutex.new
   @down_until = nil
@@ -66,11 +69,14 @@ module ReplicaReads
 
   def replayed?(target)
     check = ApplicationRecord.sanitize_sql_array([ "SELECT pg_is_in_recovery(), pg_last_wal_replay_lsn() >= ?::pg_lsn", target ])
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + max_wait
+    deadline = nil
     ApplicationRecord.connected_to(role: :reading) do
       loop do
         recovering, reached = ApplicationRecord.connection.select_rows(check, "Replica caught up").first
-        return not_a_replica unless recovering || Rails.configuration.x.replica_may_be_primary
+        # The wait starts after the first answer: the first poll may also open the replica's connection, which is not
+        # lag (re-review of #237).
+        deadline ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + max_wait
+        return not_a_replica unless recovering || primary_allowed?
         return true if reached || !recovering
 
         if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
@@ -84,6 +90,9 @@ module ReplicaReads
     mark_down(e)
     false
   end
+
+  # Only exactly true allows it: config/application.rb sets false, and test.rb true.
+  def primary_allowed? = Rails.configuration.x.replica_may_be_primary == true
 
   def not_a_replica
     mark_down(nil, "the replica server is not in recovery (promoted, or not a replica)")
@@ -108,11 +117,21 @@ module ReplicaReads
 
   # For dashboard controllers: reads_from_replica only: %i[index] wraps those actions, after every before_action the
   # controller inherits (signing in records the session's activity, a write), and with the view rendered inside.
+  #
+  # The rule for every action named here: it must be safe to run twice. When its replica fails part-way, the whole
+  # action runs again on the primary (around), so it must read only: no write, enqueue, broadcast, audit entry, or
+  # streamed response. A cache write of a value derived from what it read (PackageSnapshotTimeline) is fine; the second
+  # run writes the same value. spec/requests/replica_rerun_spec.rb runs every such action and fails on any write,
+  # enqueue, or broadcast inside the part that would run again, and on an action named here that it does not cover.
   module Controller
     extend ActiveSupport::Concern
 
+    # Every action named with reads_from_replica, as "controller#action", for the spec that holds them to the rule.
+    def self.actions = @actions ||= Set.new
+
     class_methods do
       def reads_from_replica(only:)
+        Array(only).each { |action| ReplicaReads::Controller.actions << "#{controller_path}##{action}" }
         around_action :read_from_replica, only:
       end
     end

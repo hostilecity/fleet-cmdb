@@ -25,7 +25,8 @@ default: &default
   <% if DeploymentTopology.transaction_pooler? %>
   # Behind a transaction-mode pooler (FLEET_DB_POOLER=transaction) each transaction may get another server connection:
   # a prepared statement belongs to one server connection, and so does the session-level advisory lock Rails takes
-  # around migrations. With it off, run migrations from one process only (FLEET_DB_PREPARE, scaling.md).
+  # around migrations. So no migration runs through the pooler (lib/tasks/migrations.rake refuses it): they run once,
+  # in a one-off container on direct connections, with the lock (docs/operations/scaling.md).
   prepared_statements: false
   advisory_locks: false
   <% end %>
