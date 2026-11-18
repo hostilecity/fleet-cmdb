@@ -48,8 +48,19 @@ Copy that directory and the repository's `agent/` directory to the VM. On the VM
 sudo apt-get install -y --no-install-recommends jq minisign openssl python3
 sudo systemd-run --unit=fleet-soak --setenv=SOAK_DISPOSABLE=yes --working-directory="$PWD" \
   "$PWD/scripts/soak.sh" "$HOME/soak-build" "$HOME/soak-results"
-journalctl -fu fleet-soak      # follow it; it ends after 72 hours
+sudo journalctl -fu fleet-soak # follow it; it ends after 72 hours (needs sudo, or membership of adm or systemd-journal)
 ```
+
+To check on it later, or after it has finished:
+
+```sh
+sudo systemctl status fleet-soak   # "active (running)" while it runs; after it ends, the unit is gone or "failed"
+sudo journalctl -u fleet-soak      # everything it printed, including the verdict
+ls ~/soak-results                  # summary.md, samples.csv, events.log, journal.log
+cat ~/soak-results/summary.md
+```
+
+A transient unit that exits 0 is removed as soon as it stops, so `systemctl status` then says it could not be found. That is normal; the results are in `~/soak-results`, and the journal keeps its output. A unit that failed stays listed as `failed` until `sudo systemctl reset-failed fleet-soak`.
 
 Running it as a transient unit keeps it going after you log out. `SOAK_HOURS`, `SOAK_SAMPLE_SECONDS`, `SOAK_CYCLE_MINUTES`, `SOAK_OUTAGE_SECONDS`, and `SOAK_FLAP_SECONDS` (each with `--setenv`) change the schedule. The unit exits 0 when every check passes. `$HOME/soak-results` then holds `summary.md`, `samples.csv`, `events.log`, and the agent's journal; attach `summary.md` and `samples.csv` to the Phase 2 delivery note. The throwaway key never leaves the build machine and the VM; delete both afterwards.
 
