@@ -88,6 +88,29 @@ RSpec.describe ReplicaReads do
       expect(role_inside).to eq(:reading)
     end
 
+    # As a request runs it: inside the executor, with the query cache on. Each poll must reach the server; a cached poll
+    # would repeat the first "not yet" until the deadline (final check of #237).
+    it "polls the replica uncached, so a replica that catches up during the wait is read" do
+      connection = ApplicationRecord.connection
+      polls = 0
+      allow(connection).to receive(:select_rows).and_call_original
+      allow(connection).to receive(:select_rows).with(anything, "Replica caught up").and_wrap_original do |original, *args|
+        rows = original.call(*args) # through the query cache, as in production
+        (polls += 1) <= 2 ? [ [ true, false ] ] : rows # "not yet" twice, then the real answer
+      end
+      payloads = []
+      callback = ->(*, payload) { payloads << payload if payload[:name] == "Replica caught up" }
+      role = ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+        Rails.application.executor.wrap do
+          expect(connection.query_cache_enabled).to be(true)
+          role_inside
+        end
+      end
+      expect(role).to eq(:reading)
+      expect(payloads.size).to eq(3)
+      expect(payloads.map { |payload| payload[:cached] }).to all(be_falsey)
+    end
+
     it "starts the wait after the first answer, so opening the replica's connection is not counted as lag" do
       answers = [ [ true, false ], [ true, true ] ]
       connection = ApplicationRecord.connection
@@ -131,19 +154,25 @@ RSpec.describe ReplicaReads do
       expect(described_class.down?).to be_falsey
     end
 
-    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure, ActiveRecord::QueryCanceled ].each do |error|
-      it "is marked down when it raises #{error.name.demodulize} while a page reads it, and the page runs again on the primary" do
-        roles = []
-        value = described_class.around do
-          roles << ApplicationRecord.current_role
-          raise error.new("replica gone", connection_pool: replica_pool) if roles.size == 1
-
-          :from_primary
-        end
-        expect(value).to eq(:from_primary)
-        expect(roles).to eq(%i[reading writing])
+    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed, ActiveRecord::SerializationFailure ].each do |error|
+      it "is marked down when it raises #{error.name.demodulize} while a page reads it, and the page fails with Failed, not run again" do
+        runs = 0
+        expect { described_class.around { runs += 1; raise error.new("replica gone", connection_pool: replica_pool) } } # rubocop:disable Style/Semicolon
+          .to raise_error(ReplicaReads::Failed, "#{error.name}: replica gone")
+        expect(runs).to eq(1)
         expect(described_class.down?).to be(true)
       end
+    end
+
+    # A statement_timeout set on the replica, or pg_cancel_backend: one slow page must not send every page to the
+    # primary (final check of #237).
+    it "fails the page on a cancelled replica query, but leaves the replica in use" do
+      allow(Rails.logger).to receive(:error).and_call_original
+      expect { described_class.around { raise ActiveRecord::QueryCanceled.new("canceling statement due to statement timeout", connection_pool: replica_pool) } }
+        .to raise_error(ReplicaReads::Failed)
+      expect(described_class.down?).to be_falsey
+      expect(Rails.logger).to have_received(:error)
+        .with("[replica] ActiveRecord::QueryCanceled: canceling statement due to statement timeout; this page failed, and the replica stays in use")
     end
 
     it "finds the replica's error under a view's error" do
@@ -156,14 +185,7 @@ RSpec.describe ReplicaReads do
       rescue ActionView::Template::Error => e
         e
       end
-      calls = 0
-      expect(described_class.around { (calls += 1) == 1 ? raise(wrapped) : :again }).to eq(:again)
-      expect(described_class.down?).to be(true)
-    end
-
-    it "passes the error on, after marking the replica down, when the page cannot run again" do
-      expect { described_class.around(fallback: -> { false }) { raise ActiveRecord::ConnectionFailed.new("gone", connection_pool: replica_pool) } }
-        .to raise_error(ActiveRecord::ConnectionFailed)
+      expect { described_class.around { raise wrapped } }.to raise_error(ReplicaReads::Failed, /ConnectionFailed/)
       expect(described_class.down?).to be(true)
     end
 
@@ -175,6 +197,7 @@ RSpec.describe ReplicaReads do
       expect(described_class.down?).to be_falsey
     end
   end
+
 
   # The GET and HEAD guard (review of #237): a page wrapped with reads_from_replica never reads the replica on another
   # method, whatever the routes say.

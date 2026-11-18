@@ -1,0 +1,7 @@
+<% content_for :title, "Page not loaded" %>
+<%# A page whose read replica failed while it loaded (ReplicaReads, #198). It is not run again; the operator tries again. %>
+<div class="page-head"><div><h1>This page couldn't be loaded</h1></div></div>
+<div class="sheet empty" id="replica_unavailable">
+  <p><strong>Reading it from the database failed part-way.</strong> Nothing was changed.</p>
+  <p>Try again: it usually loads on the next try. <%= link_to "Try again", request.fullpath, class: "btn" %></p>
+</div>
