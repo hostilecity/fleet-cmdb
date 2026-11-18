@@ -15,6 +15,10 @@
 default: &default
   adapter: postgresql
   encoding: unicode
+  # Every connection looks only in public (review of #239): with PostgreSQL's default ("$user", public), the app's role
+  # could create a schema named after itself holding its own audit_entries, and new entries would go there. Rails sets
+  # this on each connection, over any ALTER ROLE or ALTER DATABASE default. /health's audit_guard check verifies it.
+  schema_search_path: public
   # The most connections one process may open to each database: the largest thread count of any process (Puma's
   # RAILS_MAX_THREADS, the job workers' JOB_THREADS and JOB_REALTIME_THREADS) plus 2 for Solid Queue's polling and
   # heartbeat (lib/sizing/process_sizing.rb). 5 with the defaults. The connection budget against PostgreSQL's
