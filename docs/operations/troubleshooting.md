@@ -133,7 +133,7 @@ journalctl -u fleet-agent-update | grep -i units   # the last update's refresh
 
 ## A host shows "Recovery mode could not be checked"
 
-The agent could not tell whether systemd runs its recovery unit: `systemctl show` did not answer within 10 s, or `/etc/systemd/system/fleet-agent-recovery.service` could not be read (for example it is not a regular file). Recovery mode may still be set up, and `--refresh-units` does not fix this. On the VM:
+The agent could not tell whether systemd runs its recovery unit: `systemctl show` failed (for example a D-Bus error, or an answer without the expected properties) or did not answer within 10 s, or `/etc/systemd/system/fleet-agent-recovery.service` could not be read (for example it is not a regular file). Recovery mode may still be set up, and `--refresh-units` does not fix this. On the VM:
 
 ```sh
 journalctl -u fleet-agent | grep "cannot tell whether recovery mode"   # the reason, logged once

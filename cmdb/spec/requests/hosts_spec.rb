@@ -325,7 +325,7 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       host.update_columns(agent_recovery_coverage: "unchecked")
       get "/hosts/#{host.id}"
       expect(words(section.call)).to start_with("Recovery mode could not be checked on this host.")
-      expect(words(section.call)).to include("systemctl did not answer in time", "cannot tell whether recovery mode", "The next heartbeat checks again.")
+      expect(words(section.call)).to include("systemctl show failed or did not answer in time", "cannot tell whether recovery mode", "The next heartbeat checks again.")
       expect(words(section.call)).not_to include("--refresh-units")
       host.update_columns(agent_recovery_coverage: "set_up")
       get "/hosts/#{host.id}"

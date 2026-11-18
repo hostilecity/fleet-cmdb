@@ -13,7 +13,7 @@
   <%# Re-review of #235: the agent could not check, which --refresh-units does not fix. %>
   <div class="notice" role="status" id="<%= dom_id(host, :recovery_coverage) %>">
     <strong>Recovery mode could not be checked on this host.</strong>
-    <p>The agent could not tell whether systemd runs its recovery unit: <code>systemctl</code> did not answer in time, or a unit file could not be read. Recovery mode may or may not be set up.</p>
+    <p>The agent could not tell whether systemd runs its recovery unit: <code>systemctl show</code> failed or did not answer in time, or a unit file could not be read. Recovery mode may or may not be set up.</p>
     <p><strong>Next step:</strong> on the VM, read why with <code>journalctl -u fleet-agent | grep "cannot tell whether recovery mode"</code>, and fix that (a busy or stuck systemd, or something other than a regular file at <code>/etc/systemd/system/fleet-agent-recovery.service</code>). The next heartbeat checks again.</p>
   </div>
 <% when :not_reported %>

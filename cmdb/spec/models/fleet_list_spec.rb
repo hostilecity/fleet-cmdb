@@ -96,7 +96,7 @@ RSpec.describe FleetList do
       expect(FleetList::WITHOUT_RECOVERY_MODE.gsub("hosts.", "")).to eq(
         "enrollment_state = 'active' AND first_seen_at IS NOT NULL AND agent_recovery_coverage IS DISTINCT FROM 'set_up'"
       )
-      migration = Rails.root.join("db/migrate/20261116232002_index_hosts_without_recovery_mode.rb").read
+      migration = Rails.root.join("db/migrate/20261118232004_index_hosts_without_recovery_mode.rb").read
       expect(migration).to include(%(where: "#{FleetList::WITHOUT_RECOVERY_MODE.gsub('hosts.', '')}"))
     end
 

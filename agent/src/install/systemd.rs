@@ -91,10 +91,12 @@ fn show(
 /// Whether recovery mode is set up, as systemd has loaded it (#232, review of #235): the service's
 /// `OnFailure=` (drop-ins included) names the recovery unit, the recovery unit is loaded from `unit_dir`
 /// and that file carries the installer's marker, and neither unit waits for a `daemon-reload` (otherwise
-/// systemd still runs the settings from before the files changed). Asked with one `systemctl show`, which
-/// works inside the sandbox (`AF_UNIX`; the recovery unit has no capabilities and needs none for it). A
-/// recovery unit that is missing, or not the installer's, is `Ok(false)`; a file that cannot be read or a
-/// `systemctl` that cannot answer is an error, which the heartbeat reports as `false`.
+/// systemd still runs the settings from before the files changed). Asked with two `systemctl show` calls,
+/// one per unit (`show`), which work inside the sandbox (`AF_UNIX`; the recovery unit has no capabilities
+/// and needs none for them); each is bounded by the runner's time limit (10 s on the heartbeat path). A
+/// recovery unit that is missing, or not the installer's, is `Ok(false)`; a file that cannot be read, or a
+/// `systemctl show` that fails, times out, or leaves out a property, is an error, which the heartbeat
+/// reports as `null` (could not check; `Heartbeat::units`).
 pub fn recovery_covered(unit_dir: &Path, systemd: &dyn Systemd) -> Result<bool, String> {
     let fragment = unit_dir.join(RECOVERY_UNIT_NAME);
     match read_unit(&fragment)? {
