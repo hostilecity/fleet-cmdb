@@ -13,7 +13,10 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
   let(:file) { Rails.root.join("../ops/postgres/audit-guard.sql").read }
   # The file inside the example's transaction: without its BEGIN and COMMIT, so a run that should have been refused but
   # was not cannot commit the example (a spec below checks they are there).
-  let(:script) { file.sub(/^BEGIN;$/, "").sub(/^COMMIT;$/, "") }
+  let(:bare_script) { file.sub(/^BEGIN;$/, "").sub(/^COMMIT;$/, "") }
+  # As the documented connection starts it: on PostgreSQL 17 and later, with event triggers off (PGOPTIONS), which the
+  # file insists on (final check of #249, B1).
+  let(:script) { (pg17? ? "SET LOCAL event_triggers = off;\n" : "") + bare_script }
   let(:role) { "fleet_audit_guard_spec" }
   let(:audit_tables) { [ "audit_entries" ] + Partitions.list("audit_entries").map(&:name) }
   let(:partition) { Partitions.list("audit_entries").reject(&:default?).last.name }
@@ -57,8 +60,9 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
 
   def pg17? = c.select_value("SELECT current_setting('server_version_num')::int") >= 170_000
 
-  # ops/postgres/audit-guard-drop-defaults.sql, in the example's transaction.
-  let(:drop_defaults) { Rails.root.join("../ops/postgres/audit-guard-drop-defaults.sql").read.sub(/^BEGIN;$/, "").sub(/^COMMIT;$/, "") }
+  # ops/postgres/audit-guard-recover.sql, in the example's transaction, connected as documented.
+  let(:bare_recover) { Rails.root.join("../ops/postgres/audit-guard-recover.sql").read.sub(/^BEGIN;$/, "").sub(/^COMMIT;$/, "") }
+  let(:recover) { (pg17? ? "SET LOCAL event_triggers = off;\n" : "") + bare_recover }
 
   def problem = as_owner { Partitions.audit_guard_problem }
 
@@ -107,7 +111,7 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
     end
 
     it "is done by the superuser only, never while the app's role is one or as good as one, and safe to run again" do
-      as_login { refused(script, %r{run ops/postgres/audit-guard.sql as the PostgreSQL superuser, not as #{role}}) }
+      as_login { refused(bare_script, %r{run ops/postgres/audit-guard.sql as the PostgreSQL superuser, not as #{role}}) }
       c.execute("ALTER TABLE audit_entries OWNER TO CURRENT_USER")
       refused(script, /audit_entries is owned by a superuser/)
       c.execute("ALTER TABLE audit_entries OWNER TO #{role}")
@@ -402,7 +406,7 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
 
       # One made while the guard was off (or before it was installed) is reported, and the step refuses to run over it.
       unguarded { as_owner { attempt("CREATE INDEX fleet_spec_idx ON #{partition} (id) WHERE public.fleet_spec_f(1) = 1") } }
-      expect(problem).to match(/\Aindex fleet_spec_idx uses function fleet_spec_f\(integer\), which is not a superuser's built-in/)
+      expect(problem).to match(/\Aindex public.fleet_spec_idx uses function public.fleet_spec_f\(integer\), which is not a superuser's built-in: .*\(the app's role drops it \(DROP INDEX\)\)\z/)
       refused(script, escalated)
       expect(superuser?).to be(false)
     end
@@ -511,8 +515,10 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
     end
 
     it "N2: runs as the superuser it logged in as, even when its role is set to the app's" do
+      c.execute("SET LOCAL event_triggers = off") if pg17? # as PGOPTIONS does at login, before the database's role setting applies
       c.execute("SET ROLE #{role}") # as ALTER DATABASE ... SET role would (spec/db/audit_guard_concurrently_spec.rb does it for real)
-      install
+      c.execute(bare_script)
+      restore_settings
       expect(problem).to be_nil
     end
 
@@ -571,7 +577,7 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
     it "S1: refuses to run while an event trigger other than its own exists, and turns event triggers off where it can" do
       as_owner { attempt("CREATE FUNCTION public.fleet_spec_et() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN END $$") }
       c.execute("CREATE EVENT TRIGGER fleet_spec_et ON ddl_command_end EXECUTE FUNCTION public.fleet_spec_et()")
-      refused(script, /event triggers other than the guard's exist \(fleet_spec_et, owned by [^,]+, running public.fleet_spec_et\(\)\)/)
+      refused(script, /event triggers other than the guard's exist \(fleet_spec_et, on ddl_command_end, owned by [^,]+, running public.fleet_spec_et\(\)\)/)
       c.execute("DROP EVENT TRIGGER fleet_spec_et")
       c.execute("CREATE EVENT TRIGGER fleet_audit_guard_ddl ON ddl_command_end EXECUTE FUNCTION public.fleet_spec_et()") # the guard's name, not its function
       refused(script, /event triggers other than the guard's exist \(fleet_audit_guard_ddl/)
@@ -583,7 +589,7 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       restore_settings
       expect(problem).to be_nil
       c.execute("CREATE EVENT TRIGGER fleet_spec_et ON sql_drop EXECUTE FUNCTION public.fleet_spec_et()")
-      expect(problem).to match(/\Aevent trigger fleet_spec_et \(owned by .*, running fleet_spec_et\(\)\) is not the audit guard's/)
+      expect(problem).to match(/\Aevent trigger fleet_spec_et \(on sql_drop, owned by .*, running fleet_spec_et\(\)\) is not the audit guard's: the superuser's next step/)
     end
 
     it "S2: refuses an unlogged id sequence, keeps it logged, and reports one made unlogged while the guard was off" do
@@ -608,19 +614,19 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       # no longer change.
       unguarded { as_owner { attempt(month) } }
       c.execute("INSERT INTO fleet_audit_guard.protected (kind, objid) VALUES ('partition', 'fleet_spec_month'::regclass)")
-      expect(problem).to match(/\Adefault value for column action of table fleet_spec_month uses function fleet_spec_f\(integer\)/)
-      refused(script, %r{uses function public.fleet_spec_f\(integer\).*audit-guard-drop-defaults.sql}m)
+      expect(problem).to match(%r{\Adefault value for column action of table public.fleet_spec_month uses function public.fleet_spec_f\(integer\), .*audit-guard-recover.sql})
+      refused(script, %r{uses function public.fleet_spec_f\(integer\).*audit-guard-recover.sql}m)
       as_owner { refused("ALTER TABLE fleet_spec_month ALTER COLUMN action DROP DEFAULT", /default value for .*fleet_spec_month.action may not be dropped/) }
-      as_login { refused(drop_defaults, /as the PostgreSQL superuser, not as #{role}/) }
+      as_login { refused(bare_recover, /as the PostgreSQL superuser, not as #{role}/) }
 
-      c.execute(drop_defaults) # the recovery: the superuser drops exactly that default, evaluating nothing
+      c.execute(recover) # the recovery: the superuser drops exactly that default, evaluating nothing
       restore_settings
       expect(superuser?).to be(false)
       expect(c.select_value("SELECT count(*) FROM pg_attrdef WHERE adrelid = 'fleet_spec_month'::regclass AND adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'fleet_spec_month'::regclass AND attname = 'action')")).to eq(0)
       install
       expect(superuser?).to be(false)
       expect(problem).to be_nil
-      c.execute(drop_defaults) # nothing left to drop: it says so and changes nothing
+      c.execute(recover) # nothing left to drop: it says so and changes nothing
       restore_settings
     end
 
@@ -651,6 +657,99 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       as_owner { attempt("CREATE INDEX fleet_spec_idx ON audit_entries ((id + public.fleet_spec_f(3)))") }
       expect { attempt(script) }.to raise_error(ActiveRecord::StatementInvalid) { |error| expect(error.message.scan(" uses function ").size).to eq(1) }
       expect(superuser?).to be(false)
+    end
+  end
+  # The final check of #249: each set up as the role, as the review did.
+  describe "the final check's findings" do
+    def plant_code
+      as_owner do
+        attempt(<<~SQL)
+          CREATE FUNCTION public.fleet_spec_escalate() RETURNS void LANGUAGE plpgsql VOLATILE AS $$
+          BEGIN
+            IF (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) THEN EXECUTE 'ALTER ROLE #{role} SUPERUSER'; END IF;
+          END $$
+        SQL
+        attempt("CREATE FUNCTION public.fleet_spec_f(text) RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN PERFORM public.fleet_spec_escalate(); RETURN $1; END $$")
+      end
+    end
+
+    def defaults = c.select_rows("SELECT a.attname, pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'audit_entries'::regclass ORDER BY 1")
+
+    it "B1: on PostgreSQL 17 and later, refuses a session that connected with event triggers on (a login trigger may have run)" do
+      if pg17?
+        refused(bare_script, /connect with event triggers off: this session connected with them on/)
+        install
+        refused(bare_recover, /connect with event triggers off/)
+      else
+        install # PostgreSQL 16 has no login event triggers, and no event_triggers setting to require
+      end
+      expect(problem).to be_nil
+    end
+
+    it "S1: the recovery drops exactly the defaults and constraints the step flags, a parent's on the parent, and puts back the app's defaults" do
+      install
+      plant_code
+      before = defaults
+      unguarded do
+        # On the parent these recurse into the superuser's default partition, so (as an earlier guard let through) the
+        # superuser sets them; setting a default evaluates nothing.
+        c.execute("ALTER TABLE audit_entries ALTER COLUMN action SET DEFAULT public.fleet_spec_f('parent')") # copied to every partition
+        c.execute("ALTER TABLE audit_entries ALTER COLUMN occurred_at SET DEFAULT public.fleet_spec_f('2026-01-01')::timestamp")
+        as_owner do
+          attempt("ALTER TABLE #{partition} ALTER COLUMN request_id SET DEFAULT public.fleet_spec_f('own')")
+          attempt("ALTER TABLE #{partition} ALTER COLUMN target_type SET DEFAULT 'built-in'") # not flagged, kept
+          attempt("ALTER TABLE #{partition} ADD CONSTRAINT fleet_spec_check CHECK (public.fleet_spec_f(action) IS NOT NULL) NOT VALID")
+          attempt("CREATE INDEX fleet_spec_idx ON #{partition} ((public.fleet_spec_f(action)))") # flagged, but the role drops it
+        end
+      end
+      flagged = c.select_values("SELECT what FROM fleet_audit_guard.untrusted_code('audit_entries'::regclass) ORDER BY 1")
+      expect(flagged.size).to eq(5) # the parent's two defaults (not their 30-odd copies), the partition's own default, the check, the index
+      expect { attempt(script) }.to raise_error(ActiveRecord::StatementInvalid) do |error|
+        expect(error.message[/not installed: (.*?)\n/, 1].split("; ").sort).to eq(flagged) # the step lists the same objects
+      end
+
+      c.execute(recover)
+      restore_settings
+      expect(superuser?).to be(false)
+      expect(c.select_values("SELECT what FROM fleet_audit_guard.untrusted_code('audit_entries'::regclass)")).to eq([ "index public.fleet_spec_idx uses function public.fleet_spec_f(text)" ])
+      expect(defaults).to eq(before) # occurred_at is CURRENT_TIMESTAMP again; action has no default, as in the app's schema
+      expect(c.select_value("SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum " \
+                            "WHERE d.adrelid = '#{partition}'::regclass AND a.attname = 'target_type'")).to eq("'built-in'::character varying")
+      expect(c.select_value("SELECT count(*) FROM pg_constraint WHERE conname IN ('audit_entries_actor_type_valid', 'audit_entries_actor_id_matches_type') AND conrelid = '#{partition}'::regclass")).to eq(2)
+      expect(problem).to start_with("index public.fleet_spec_idx uses function public.fleet_spec_f(text), which is not a superuser's built-in: it would run as the superuser in the audit guard's step (the app's role drops it (DROP INDEX))")
+      as_owner { attempt("DROP INDEX fleet_spec_idx") }
+      install
+      expect(problem).to be_nil
+      expect(superuser?).to be(false)
+    end
+
+    it "S1: the recovery refuses before the guard is installed, when the app's role can drop what the step names itself" do
+      plant_code
+      as_owner { attempt("ALTER TABLE audit_entries ALTER COLUMN action SET DEFAULT public.fleet_spec_f('parent')") }
+      expect { attempt(script) }.to raise_error(ActiveRecord::StatementInvalid) { |error| expect(error.message.scan(" uses function ").size).to eq(1) }
+      refused(recover, /the audit guard is not installed/)
+      expect(superuser?).to be(false)
+    end
+
+    it "S2: /health gives each remedy that works under the guard, and says an older guard needs the step again" do
+      install
+      plant_code
+      unguarded { as_owner { attempt("CREATE STATISTICS fleet_spec_stats ON (public.fleet_spec_f(action)), id FROM audit_entries") } }
+      expect(problem).to end_with("(the app's role drops it (DROP STATISTICS))")
+      as_owner { attempt("DROP STATISTICS fleet_spec_stats") }
+      # A harmless function here: adding the column checks the domain against every row, which evaluates it.
+      unguarded do
+        as_owner do
+          attempt("CREATE FUNCTION public.fleet_spec_plain(text) RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT true'")
+          attempt("CREATE DOMAIN public.fleet_spec_text AS text CHECK (public.fleet_spec_plain(VALUE))")
+        end
+      end
+      unguarded { c.execute("ALTER TABLE audit_entries ADD COLUMN fleet_spec public.fleet_spec_text") } # recurses into the superuser's default
+      expect(problem).to end_with("(it can only have been added while the guard was off: see install-server.md, \"Recovery\")")
+      unguarded { c.execute("ALTER TABLE audit_entries DROP COLUMN fleet_spec") }
+      expect(problem).to be_nil
+      c.execute("DROP FUNCTION fleet_audit_guard.untrusted_code(oid)")
+      expect(problem).to eq("the audit guard is from an older version of ops/postgres/audit-guard.sql (the superuser runs it again)")
     end
   end
 end

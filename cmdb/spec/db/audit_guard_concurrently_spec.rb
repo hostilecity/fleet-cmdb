@@ -14,19 +14,25 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
   let(:role) { "fleet_guard_concurrently_#{Process.pid}" }
   let(:file) { Rails.root.join("../ops/postgres/audit-guard.sql").read }
 
-  # A session on the test's own server: DATABASE_URL's host, port, and user, not libpq's defaults (review 3, N4).
-  def connect(dbname)
+  # A session on the test's own server: DATABASE_URL's host, port, and user, not libpq's defaults (review 3, N4). With
+  # pinned: true, connected as install-server.md says (PGOPTIONS): search_path pinned, and on PostgreSQL 17 and later
+  # event triggers off (final check of #249, B1).
+  def connect(dbname, pinned: false, options: nil)
     config = ApplicationRecord.connection_db_config.configuration_hash
-    PG.connect({ host: config[:host], port: config[:port], user: config[:username], password: config[:password], dbname: }.compact)
+    options ||= "-c search_path=pg_catalog,pg_temp#{' -c event_triggers=off' if pg17?}" if pinned
+    PG.connect({ host: config[:host], port: config[:port], user: config[:username], password: config[:password], dbname:, options: }.compact)
   end
+
+  def pg17? = ApplicationRecord.connection.select_value("SELECT current_setting('server_version_num')::int") >= 170_000
 
   before do
     admin = connect(ApplicationRecord.connection.current_database)
     admin.exec("CREATE ROLE #{role} NOLOGIN")
     admin.exec("CREATE DATABASE #{database} OWNER #{role}")
     admin.close
-    @pg = connect(database)
+    @pg = connect(database, pinned: true)
     @pg.exec(<<~SQL)
+      SET search_path = public; -- the app's schema, made as the app makes it; pinned again at the end
       ALTER SCHEMA public OWNER TO #{role};
       SET ROLE #{role};
       CREATE FUNCTION audit_entries_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -41,6 +47,7 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
       CREATE TRIGGER audit_entries_partition_no_truncate BEFORE TRUNCATE ON audit_entries_p20261201 FOR EACH STATEMENT EXECUTE FUNCTION audit_entries_append_only();
       INSERT INTO audit_entries (actor_type, action, occurred_at) VALUES ('system', 'a', '2026-11-05'), ('system', 'b', '2026-12-05');
       RESET ROLE;
+      SET search_path = pg_catalog, pg_temp;
     SQL
   end
 
@@ -55,22 +62,22 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
   it "is refused before it changes anything, so no month is left hidden" do
     @pg.exec(file)
     @pg.exec("SET ROLE #{role}")
-    expect { @pg.exec("ALTER TABLE audit_entries DETACH PARTITION audit_entries_p20261201 CONCURRENTLY") }
+    expect { @pg.exec("ALTER TABLE public.audit_entries DETACH PARTITION public.audit_entries_p20261201 CONCURRENTLY") }
       .to raise_error(PG::Error, /default partition|append-only/)
     @pg.exec("RESET ROLE")
 
     expect(@pg.exec("SELECT count(*) FROM pg_inherits WHERE inhdetachpending").getvalue(0, 0)).to eq("0")
-    expect(@pg.exec("SELECT count(*) FROM audit_entries").getvalue(0, 0)).to eq("2")
+    expect(@pg.exec("SELECT count(*) FROM public.audit_entries").getvalue(0, 0)).to eq("2")
   end
 
   it "runs as the superuser it logged in as when the database sets the app's role for every session" do
     @pg.exec("ALTER DATABASE #{database} SET role = #{role}")
     @pg.close
-    @pg = connect(database)
+    @pg = connect(database, pinned: true)
     expect(@pg.exec("SELECT current_user").getvalue(0, 0)).to eq(role)
     @pg.exec(file)
     expect(@pg.exec("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'fleet_audit_guard_%'").getvalue(0, 0)).to eq("2")
-    expect(@pg.exec("SELECT relowner::regrole::text FROM pg_class WHERE oid = 'audit_entries_default'::regclass").getvalue(0, 0)).not_to eq(role)
+    expect(@pg.exec("SELECT relowner::regrole::text FROM pg_class WHERE oid = 'public.audit_entries_default'::regclass").getvalue(0, 0)).not_to eq(role)
   end
 
   it "holds the audit tables from before its checks to its commit, so nothing can be added in between (review of #249)" do
@@ -99,10 +106,42 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
 
   it "leaves an invalid index behind after a refused CREATE INDEX CONCURRENTLY, which the app's role can drop (second review of #249, N4)" do
     @pg.exec(file)
-    @pg.exec("SET ROLE #{role}")
-    expect { @pg.exec("CREATE INDEX CONCURRENTLY fleet_spec_cic ON audit_entries_p20261101 (action)") }.to raise_error(PG::InsufficientPrivilege, /append-only/)
-    expect(@pg.exec("SELECT indisvalid FROM pg_index WHERE indexrelid = 'fleet_spec_cic'::regclass").getvalue(0, 0)).to eq("f")
-    @pg.exec("DROP INDEX fleet_spec_cic")
-    expect(@pg.exec("SELECT to_regclass('fleet_spec_cic') IS NULL").getvalue(0, 0)).to eq("t")
+    app = connect(database) # the app's own kind of session: event triggers on (the superuser's pinned one has them off)
+    app.exec("SET ROLE #{role}")
+    expect { app.exec("CREATE INDEX CONCURRENTLY fleet_spec_cic ON public.audit_entries_p20261101 (action)") }.to raise_error(PG::InsufficientPrivilege, /append-only/)
+    expect(app.exec("SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.fleet_spec_cic'::regclass").getvalue(0, 0)).to eq("f")
+    app.exec("DROP INDEX public.fleet_spec_cic")
+    expect(app.exec("SELECT to_regclass('public.fleet_spec_cic') IS NULL").getvalue(0, 0)).to eq("t")
+  ensure
+    app&.close
+  end
+
+  it "B1: a login event trigger runs on every plain connection on 17, so the file runs only in a session connected with event triggers off" do
+    if pg17?
+      @pg.exec(<<~SQL)
+        SET ROLE #{role};
+        CREATE TABLE public.fleet_spec_logins (who name);
+        CREATE FUNCTION public.fleet_spec_login() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO public.fleet_spec_logins VALUES (current_user); END $$;
+        RESET ROLE;
+        CREATE EVENT TRIGGER fleet_spec_login ON login EXECUTE FUNCTION public.fleet_spec_login(); -- as made while the role was a superuser
+      SQL
+      plain = connect(database)
+      expect(plain.exec("SELECT count(*) FROM public.fleet_spec_logins WHERE who <> '#{role}'").getvalue(0, 0)).to eq("1") # ran as the superuser at connect
+      expect { plain.exec(file) }.to raise_error(PG::RaiseException, /connect with event triggers off/)
+      plain.close
+
+      pinned = connect(database, pinned: true)
+      expect { pinned.exec(file) }.to raise_error(PG::RaiseException, /fleet_spec_login, on login \(it runs as whoever connects, every superuser included\)/)
+      pinned.exec("ROLLBACK")
+      pinned.exec("DROP EVENT TRIGGER fleet_spec_login") # the remedy, in a session connected the documented way
+      expect(pinned.exec("SELECT count(*) FROM public.fleet_spec_logins").getvalue(0, 0)).to eq("1") # no further run
+      pinned.exec(file)
+      pinned.close
+    else
+      # PostgreSQL 16 has no login triggers, and refuses the setting at connect: the 17 command fails closed there.
+      expect { connect(database, options: "-c event_triggers=off") }.to raise_error(PG::ConnectionBad, /unrecognized configuration parameter/)
+      @pg.exec(file)
+    end
+    expect(@pg.exec("SELECT count(*) FROM pg_catalog.pg_event_trigger WHERE evtname LIKE 'fleet_audit_guard_%'").getvalue(0, 0)).to eq("2")
   end
 end

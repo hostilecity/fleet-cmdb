@@ -105,4 +105,4 @@ done
 mkdir -p "$releases_dir"
 tar -C "$releases_dir" -xf "$set_dir/releases.tar"
 echo "restore: databases and release files in $releases_dir restored from $set_dir"
-echo "restore: for a real restore, the PostgreSQL superuser now runs ops/postgres/audit-guard.sql against $db (docs/operations/backup-and-restore.md)"
+echo "restore: for a real restore, the PostgreSQL superuser now runs ops/postgres/audit-guard.sql against $db, connected with PGOPTIONS as docs/operations/backup-and-restore.md says"

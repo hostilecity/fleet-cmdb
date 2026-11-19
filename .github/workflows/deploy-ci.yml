@@ -477,9 +477,15 @@ jobs:
           as_cmdb() { docker exec -e PGPASSWORD="$DB_PASSWORD" "$@"; }
           expect "/health: the partitions are ok after boot" ok "$(check partitions)"
           expect "/health: audit_guard warns before the superuser step" warning "$(check audit_guard)"
-          # The command in docs/operations/install-server.md, as the container's superuser whatever it is called.
-          docker exec -i postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
-          docker exec -i postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql # safe to run again
+          # The command in docs/operations/install-server.md for PostgreSQL 17 (this image), as the container's superuser
+          # whatever it is called: connected with event triggers off and search_path pinned (final check of #249, B1).
+          pin='-c event_triggers=off -c search_path=pg_catalog,pg_temp'
+          out="$(docker exec -i postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql 2>&1)" && rc=0 || rc=$?
+          expect "the step refuses a session that connected with event triggers on" "3 1" "$rc $(printf '%s' "$out" | grep -c 'connect with event triggers off')"
+          docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
+          docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql # safe to run again
+          out="$(docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard-recover.sql 2>&1)"
+          expect "the recovery file, with nothing to recover, changes nothing" 1 "$(printf '%s' "$out" | grep -c 'nothing dropped')"
           expect "/health: audit_guard is ok after it" ok "$(check audit_guard)"
           partition="$(docker exec postgres psql -U postgres -d cmdb_production -Atc "SELECT inhrelid::regclass FROM pg_inherits WHERE inhparent = 'audit_entries'::regclass LIMIT 1")"
           expect "the app's role cannot detach an audit partition" 1 \
@@ -507,7 +513,7 @@ jobs:
             "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc "SELECT count(*) FROM pg_namespace WHERE nspname = 'fleet_audit_guard'")"
           expect "the restore has no default partition until the superuser runs the step again" 0 \
             "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc "SELECT count(*) FROM pg_class WHERE relname = 'audit_entries_default'")"
-          docker exec -i postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_restore_ci' < ops/postgres/audit-guard.sql
+          docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_restore_ci' < ops/postgres/audit-guard.sql
           expect "the superuser step works on the restored database" 2 \
             "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc 'SELECT count(*) FROM pg_event_trigger')"
           expect "and makes its own default partition" t \

@@ -16,12 +16,6 @@ module Partitions
     TREE = "pg_catalog.pg_partition_tree('public.audit_entries'::pg_catalog.regclass)".freeze
     GUARD = "'public.audit_entries_append_only()'::pg_catalog.regprocedure".freeze
     ID_GUARD = "pg_catalog.to_regprocedure('fleet_audit_guard.audit_entries_id()')".freeze
-    # What code an audit table may use only when it is a superuser's built-in in pg_catalog, with each catalog's
-    # namespace and owner columns (as in ops/postgres/audit-guard.sql).
-    CODE = {
-      "pg_proc" => %w[pronamespace proowner], "pg_operator" => %w[oprnamespace oprowner], "pg_type" => %w[typnamespace typowner],
-      "pg_opclass" => %w[opcnamespace opcowner], "pg_opfamily" => %w[opfnamespace opfowner]
-    }.freeze
 
     def initialize(connection)
       @c = connection
@@ -82,8 +76,8 @@ module Partitions
 
       # Any other event trigger would run as the superuser in every superuser step, this guard's included, and a role
       # that was once a superuser can have left one running its own function (second review of #249, S1).
-      other = values(<<~SQL.squish).first
-        SELECT e.evtname || ' (owned by ' || e.evtowner::pg_catalog.regrole::text || ', running ' || e.evtfoid::pg_catalog.regprocedure::text || ')'
+      name, event, owner, function = @c.select_rows(<<~SQL.squish).first
+        SELECT e.evtname, e.evtevent, e.evtowner::pg_catalog.regrole::text, e.evtfoid::pg_catalog.regprocedure::text
         FROM pg_catalog.pg_event_trigger e
         WHERE NOT (e.evtname IN (#{AUDIT_EVENT_TRIGGERS.map { |n| @c.quote(n) }.join(', ')})
                    AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
@@ -91,7 +85,13 @@ module Partitions
                                WHERE f.oid = e.evtfoid AND n.nspname = 'fleet_audit_guard' AND fo.rolsuper AND no.rolsuper))
         ORDER BY 1
       SQL
-      "event trigger #{other} is not the audit guard's: a superuser's next step would run it as the superuser (drop it)" if other
+      return unless name
+
+      # A login trigger (PostgreSQL 17 and later) runs on every connection, every superuser's included, before anything
+      # the superuser types (final check of #249, B1).
+      runs = event == "login" ? "it runs as whoever connects, on every connection to this database, every superuser included" : "the superuser's next step would run it as the superuser"
+      "event trigger #{name} (on #{event}, owned by #{owner}, running #{function}) is not the audit guard's: #{runs}. " \
+        "The superuser drops it, connected with event triggers off as install-server.md says"
     end
 
     def function_problem
@@ -134,33 +134,36 @@ module Partitions
     # An index, statistics object, constraint, or default of an audit table, or the table itself (a column type, the
     # partition key), that uses a function, operator, operator class or family, or type other than a superuser's
     # built-in: the planner and index builds run such code as whoever plans over the table, and the superuser does when
-    # it runs the step again (review 3 of #239, B1). The guard refuses CREATE INDEX and CREATE STATISTICS on these tables;
-    # this reports one made before it was installed or while it was off. Catalogs only.
+    # it runs the step again (review 3 of #239, B1). The check is the step's own, installed with the guard
+    # (fleet_audit_guard.untrusted_code), so /health, the step, and the recovery file flag the same objects. This runs
+    # only once the guard is installed (installed_problem comes first), so each remedy is one that works under it.
     def code_problem
-      trusted = CODE.map do |catalog, (namespace, owner)|
-        "WHEN 'pg_catalog.#{catalog}'::pg_catalog.regclass THEN (SELECT o.#{namespace} = 'pg_catalog'::pg_catalog.regnamespace AND r.rolsuper " \
-          "FROM pg_catalog.#{catalog} o JOIN pg_catalog.pg_roles r ON r.oid = o.#{owner} WHERE o.oid = d.refobjid)"
+      unless value("SELECT pg_catalog.to_regprocedure('fleet_audit_guard.untrusted_code(oid)') IS NOT NULL")
+        return "the audit guard is from an older version of ops/postgres/audit-guard.sql (the superuser runs it again)"
       end
-      found = values(<<~SQL.squish).first
-        WITH tree AS (SELECT t.relid FROM #{TREE} t),
-        attached (classid, objid) AS (
-          SELECT 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid, t.relid FROM tree t
-          UNION ALL SELECT 'pg_catalog.pg_class'::pg_catalog.regclass, i.indexrelid FROM pg_catalog.pg_index i JOIN tree t ON t.relid = i.indrelid
-                    WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhrelid = i.indexrelid)
-          UNION ALL SELECT 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, s.oid FROM pg_catalog.pg_statistic_ext s JOIN tree t ON t.relid = s.stxrelid
-          UNION ALL SELECT 'pg_catalog.pg_constraint'::pg_catalog.regclass, k.oid FROM pg_catalog.pg_constraint k JOIN tree t ON t.relid = k.conrelid
-                    WHERE k.conparentid = 0
-          UNION ALL SELECT 'pg_catalog.pg_attrdef'::pg_catalog.regclass, a.oid FROM pg_catalog.pg_attrdef a JOIN tree t ON t.relid = a.adrelid)
-        SELECT pg_catalog.pg_describe_object(a.classid, a.objid, d.objsubid) || ' uses ' || pg_catalog.pg_describe_object(d.refclassid, d.refobjid, 0)
-        FROM attached a JOIN pg_catalog.pg_depend d ON d.classid = a.classid AND d.objid = a.objid
-        WHERE d.refclassid IN (#{CODE.keys.map { |catalog| "'pg_catalog.#{catalog}'::pg_catalog.regclass" }.join(', ')})
-          AND NOT COALESCE(CASE d.refclassid #{trusted.join(' ')} END, false)
-        ORDER BY 1
-      SQL
-      return "#{found}, which is not a superuser's built-in: it would run as the superuser in the audit guard's step (the app's role drops it)" if found
 
-      # A CREATE INDEX CONCURRENTLY the guard refused leaves its index behind, invalid but kept up to date on every
-      # insert (second review of #249, N4). The guard lets the app's role drop it.
+      what, kind = @c.select_rows(<<~SQL.squish).first
+        SELECT u.what, CASE u.classid
+                         WHEN 'pg_catalog.pg_attrdef'::pg_catalog.regclass THEN 'recover'
+                         WHEN 'pg_catalog.pg_constraint'::pg_catalog.regclass THEN 'recover'
+                         WHEN 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass THEN 'statistics'
+                         ELSE (SELECT CASE WHEN c.relkind IN ('i', 'I') THEN 'index' ELSE 'table' END FROM pg_catalog.pg_class c WHERE c.oid = u.objid)
+                       END
+        FROM fleet_audit_guard.untrusted_code('public.audit_entries'::pg_catalog.regclass) u ORDER BY u.what LIMIT 1
+      SQL
+      return invalid_index_problem unless what
+
+      remedy = {
+        "recover" => "the superuser runs ops/postgres/audit-guard-recover.sql, connected as install-server.md says",
+        "index" => "the app's role drops it (DROP INDEX)", "statistics" => "the app's role drops it (DROP STATISTICS)",
+        "table" => "it can only have been added while the guard was off: see install-server.md, \"Recovery\""
+      }.fetch(kind)
+      "#{what}, which is not a superuser's built-in: it would run as the superuser in the audit guard's step (#{remedy})"
+    end
+
+    # A CREATE INDEX CONCURRENTLY the guard refused leaves its index behind, invalid but kept up to date on every
+    # insert (second review of #249, N4). The guard lets the app's role drop it.
+    def invalid_index_problem
       invalid = values(<<~SQL.squish).first
         SELECT i.indexrelid::pg_catalog.regclass::text FROM pg_catalog.pg_index i JOIN #{TREE} t ON t.relid = i.indrelid
         WHERE NOT i.indisvalid ORDER BY 1
