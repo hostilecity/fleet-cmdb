@@ -8,8 +8,10 @@
 #   the old schema also has <table>_legacy, holding every row from before the conversion (MINVALUE up to the
 #   cutover); it ages out like any partition (Retention).
 # - ensure! creates partitions AHEAD of now (3 days, 3 weeks, or 3 months), and a default partition for every table
-#   except the audit log, so a write never fails because a partition is missing. The audit log has no default: it
-#   fails closed (FR-S.3), and /health turns red when fewer than 2 months are created ahead.
+#   except the audit log, so a write never fails because a partition is missing. The app makes no default for the audit
+#   log: it fails closed (FR-S.3), and /health turns red when fewer than 2 months are created ahead. Once the superuser
+#   has run ops/postgres/audit-guard.sql, the log has that file's default partition, which refuses every row (CHECK
+#   (false)), so it still fails closed; it is there only so PostgreSQL refuses DETACH ... CONCURRENTLY (ADR 0027).
 # - Every DDL statement runs with lock_timeout LOCK_TIMEOUT and is tried TRIES times, so a query on the parent waits at
 #   most that long behind one attempt. Work that cannot get its lock is left for the next hourly run.
 # - Nothing here runs DDL while pg_dump is dumping this database (maintain!): the dump holds a lock on every table
@@ -17,8 +19,8 @@
 # - Audit partitions are only ever created, each with its own truncate guard (a statement trigger is not cloned to
 #   partitions). detach_and_drop! refuses them, and no other code path detaches or drops a partition.
 module Partitions
-  # append_only: the audit log's rules (no default partition, never detached or dropped, a truncate guard on every
-  # partition calling <name>_append_only()).
+  # append_only: the audit log's rules (no default partition the app makes or writes to, never detached or dropped, a
+  # truncate guard on every partition calling <name>_append_only()).
   Table = Data.define(:name, :key, :width, :default, :append_only) do
     def audit? = append_only
     def truncate_guard = "#{name}_partition_no_truncate"
@@ -51,7 +53,8 @@ module Partitions
   ].index_by(&:name).freeze
 
   AHEAD = 3
-  # Fewer partitions ahead than this is a warning (for the audit log, a failure: it has no default to fall back on).
+  # Fewer partitions ahead than this is a warning (for the audit log, a failure: no default takes its rows, since the
+  # guard's default partition refuses them all).
   MIN_AHEAD = 2
   # A partition due for retirement, or one ahead that is missing, for this long is a warning.
   OVERDUE = 3.days
@@ -277,14 +280,18 @@ module Partitions
 
     # The model's rows, and also those of its default partition while they are set aside to be moved back
     # (set_aside_default), so a reader that must see every row (a duplicate report, a host's latest config snapshot)
-    # does not miss them in that window. Costs one catalog lookup.
+    # does not miss them in that window. Costs one catalog lookup; ReportReceipts, run for every report, folds it into
+    # its own query instead.
     def with_set_aside(model)
-      moving = "#{model.table_name}#{MOVING}"
+      moving = set_aside_name(model.table_name)
       return model.all unless connection.select_value("SELECT pg_catalog.to_regclass(#{connection.quote("public.#{moving}")}) IS NOT NULL")
 
       table = model.quoted_table_name
       model.from("(SELECT * FROM #{table} UNION ALL SELECT * FROM #{connection.quote_table_name(moving)}) #{table}")
     end
+
+    # The name of a table's default partition while its rows are set aside to be moved back.
+    def set_aside_name(table_name) = "#{table_name}#{MOVING}"
 
     # The readable name of a table, for messages an operator reads.
     def label(name) = "#{LABELS.fetch(name, name)} (#{name})"

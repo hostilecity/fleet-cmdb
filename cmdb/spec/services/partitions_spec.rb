@@ -408,6 +408,16 @@ RSpec.describe Partitions do
       c.execute("INSERT INTO #{table}_default_moving #{rows_sql}")
     end
 
+    it "checks a report for a duplicate in one query while nothing is set aside (review 3 of #239, N6)" do
+      ReportReceipts.record!(InventoryReportReceipt, host_id: host.id, report_id: SecureRandom.uuid, now: Time.current)
+      statements = []
+      counter = ->(*, payload) { statements << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:sql].match?(/SAVEPOINT|BEGIN|COMMIT/) }
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+        expect(ReportReceipts.record!(InventoryReportReceipt, host_id: host.id, report_id: SecureRandom.uuid, now: Time.current)).to be(true)
+      end
+      expect(statements.size).to eq(2) # the lookup with the set-aside check, and the insert
+    end
+
     it "still recognises a retried report whose receipt is set aside" do
       report_id = SecureRandom.uuid
       set_aside(receipts, "(id, host_id, report_id, received_at) VALUES (nextval('#{receipts}_id_seq'), #{host.id}, #{c.quote(report_id)}, #{c.quote(first.from - 1.day)})")

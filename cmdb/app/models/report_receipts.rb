@@ -8,9 +8,20 @@ module ReportReceipts
 
   # Records the report id for the host and returns true, or returns false when it was recorded before (a duplicate).
   def record!(model, host_id:, report_id:, now:)
-    return false if Partitions.with_set_aside(model).exists?(host_id:, report_id:)
+    return false if recorded?(model, host_id:, report_id:)
 
     model.insert!({ host_id:, report_id:, received_at: now })
     true
+  end
+
+  # One query in the usual case: the lookup, and whether a set-aside default exists, together (review 3 of #239, N6).
+  # Only while one exists, which is rare and short, is it looked up as well.
+  def recorded?(model, host_id:, report_id:)
+    c = model.connection
+    found, set_aside = c.select_rows(<<~SQL.squish).first
+      SELECT EXISTS (#{model.where(host_id:, report_id:).select(1).to_sql}),
+             pg_catalog.to_regclass(#{c.quote("public.#{Partitions.set_aside_name(model.table_name)}")}) IS NOT NULL
+    SQL
+    found || (set_aside && Partitions.with_set_aside(model).exists?(host_id:, report_id:))
   end
 end
