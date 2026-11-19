@@ -56,6 +56,23 @@ module HostTabsHelper
   # "1 high, 2 medium, 1 unknown".
   def severity_counts(pairs) = pairs.map { |severity, count| "#{count} #{severity}" }.join(", ")
 
+  # The reports tile's detail: "Config 3 hours ago · packages 3 hours ago · inventory less than a minute ago", each
+  # type with its own age and "no package report yet" for a type never received. The order is fixed, as in the
+  # approved mockup, so a live refresh changes the ages but never moves the types around.
+  def report_ages(summary)
+    HostSummary::REPORT_TYPES.map do |type|
+      at = summary.received[type]
+      at ? "#{type} #{seen_ago(at)}" : "no #{report_names([ type ])} yet"
+    end.join(" · ").upcase_first
+  end
+
+  # The reports tile's headline: the oldest report's age, marked "oldest" when more than one type has arrived, so a
+  # minute-old inventory never makes a six-hour-old package report look fresh.
+  def oldest_report_age(summary)
+    age = seen_ago(summary.oldest_received_at)
+    summary.received_count > 1 ? safe_join([ tag.small("oldest"), " ", age ]) : age
+  end
+
   # "dpkg, set last changed 1 day ago" for the packages tile.
   def package_tile_detail(summary)
     set = summary.package_set

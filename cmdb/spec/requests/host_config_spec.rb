@@ -68,11 +68,35 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
     end
 
     it "says not evaluated, not 0 or 100%, for vulnerabilities and packages it knows nothing about, and when reports arrived" do
+      travel_to(start + 3.minutes)
       get "/hosts/#{host.id}"
       expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities Not evaluated Packages have not been matched against advisories yet")
       expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known No package report yet")
-      expect(words(page.at_css("#glance_reports"))).to eq("Last reports received 1 minute ago Config and inventory; no package report yet")
+      expect(words(page.at_css("#glance_reports"))).to eq("Last reports received oldest 3 minutes ago Config 2 minutes ago · no package report yet · inventory 3 minutes ago")
       expect(page.at_css("#glance_reports")["href"]).to eq("/hosts/#{host.id}#report_requests")
+    end
+
+    # The owner saw "less than 5 seconds ago · Inventory, packages, and config" on a host whose package report comes
+    # every 6 hours: the tile showed the newest report's time beside every type's name.
+    it "gives each report type its own age, headed by the oldest, so a fresh inventory does not make old reports look new" do
+      travel_to(start + 2.minutes) { report_packages(host, [ [ "openssl", "3.5.0-1", "openssl" ] ]) }
+      travel_to(start + 3.hours) { record_inventory(host) }
+      travel_to(start + 3.hours + 30.seconds)
+      get "/hosts/#{host.id}"
+      tile = page.at_css("#glance_reports")
+      expect(tile.at_css(".big").text.squish).to eq("oldest about 3 hours ago")
+      expect(tile.at_css(".big small").text).to eq("oldest")
+      expect(tile.at_css(".detail").text).to eq("Config about 3 hours ago · packages about 3 hours ago · inventory half a minute ago")
+    end
+
+    it "shows a new report's age on the next refresh of the page, as a live refresh would" do
+      travel_to(start + 10.minutes)
+      get "/hosts/#{host.id}/config"
+      expect(page.at_css("#glance_reports .detail").text).to eq("Config 9 minutes ago · no package report yet · inventory 10 minutes ago")
+      report_packages(host, [ [ "openssl", "3.5.0-1", "openssl" ] ])
+      get "/hosts/#{host.id}/config"
+      expect(page.at_css("#glance_reports .big").text.squish).to eq("oldest 10 minutes ago")
+      expect(page.at_css("#glance_reports .detail").text).to eq("Config 9 minutes ago · packages less than 5 seconds ago · inventory 10 minutes ago")
     end
 
     it "says so when no check counts towards the pass rate" do
