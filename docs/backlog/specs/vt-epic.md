@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-**Status: proposed.** Nothing here is built. The owner approves the mockups (VT-D01), [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md), the new requirement [FR-2.6](../../requirements.md#fr-26-vulnerability-triage-and-risk-exposure-proposed), and the answers to the open questions at the end before any slice starts.
+**Status: proposed** (epic #264; slices #256 to #263). Nothing here is built. The owner approves the mockups (VT-D01), [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md), the new requirement [FR-2.6](../../requirements.md#fr-26-vulnerability-triage-and-risk-exposure-proposed), and the answers to the open questions at the end before any slice starts.
 
 ## Why
 
