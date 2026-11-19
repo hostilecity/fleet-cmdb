@@ -5,7 +5,8 @@ require "rails_helper"
 # cannot run in a transaction, so this builds a scratch database with an audit log shaped like the app's, owned by a
 # role that owns the database too, installs ops/postgres/audit-guard.sql in it, tries the detach as that role, and drops
 # the database and the role afterwards. With the guard's default partition in place, PostgreSQL refuses the concurrent
-# form before it changes anything.
+# form before it changes anything. The same database shows the step running as the superuser it logged in as when the
+# database sets the app's role for every session (review 3 of #239, N2), which only a new session can show.
 RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
   self.use_transactional_tests = false
 
@@ -13,12 +14,18 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
   let(:role) { "fleet_guard_concurrently_#{Process.pid}" }
   let(:file) { Rails.root.join("../ops/postgres/audit-guard.sql").read }
 
+  # A session on the test's own server: DATABASE_URL's host, port, and user, not libpq's defaults (review 3, N4).
+  def connect(dbname)
+    config = ApplicationRecord.connection_db_config.configuration_hash
+    PG.connect({ host: config[:host], port: config[:port], user: config[:username], password: config[:password], dbname: }.compact)
+  end
+
   before do
-    admin = PG.connect(dbname: ApplicationRecord.connection.current_database)
+    admin = connect(ApplicationRecord.connection.current_database)
     admin.exec("CREATE ROLE #{role} NOLOGIN")
     admin.exec("CREATE DATABASE #{database} OWNER #{role}")
     admin.close
-    @pg = PG.connect(dbname: database)
+    @pg = connect(database)
     @pg.exec(<<~SQL)
       ALTER SCHEMA public OWNER TO #{role};
       SET ROLE #{role};
@@ -39,7 +46,7 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
 
   after do
     @pg&.close
-    admin = PG.connect(dbname: ApplicationRecord.connection.current_database)
+    admin = connect(ApplicationRecord.connection.current_database)
     admin.exec("DROP DATABASE IF EXISTS #{database} WITH (FORCE)")
     admin.exec("DROP ROLE IF EXISTS #{role}")
     admin.close
@@ -54,5 +61,15 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
 
     expect(@pg.exec("SELECT count(*) FROM pg_inherits WHERE inhdetachpending").getvalue(0, 0)).to eq("0")
     expect(@pg.exec("SELECT count(*) FROM audit_entries").getvalue(0, 0)).to eq("2")
+  end
+
+  it "runs as the superuser it logged in as when the database sets the app's role for every session" do
+    @pg.exec("ALTER DATABASE #{database} SET role = #{role}")
+    @pg.close
+    @pg = connect(database)
+    expect(@pg.exec("SELECT current_user").getvalue(0, 0)).to eq(role)
+    @pg.exec(file)
+    expect(@pg.exec("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'fleet_audit_guard_%'").getvalue(0, 0)).to eq("2")
+    expect(@pg.exec("SELECT relowner::regrole::text FROM pg_class WHERE oid = 'audit_entries_default'::regclass").getvalue(0, 0)).not_to eq(role)
   end
 end

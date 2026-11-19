@@ -4,14 +4,24 @@ module Partitions
   # as a WARN line, and (in production) the dashboard banner.
   #
   # Besides "is it installed", it looks for the ways around it the reviews of #239 found, in case one got through before
-  # the guard was installed or while it was off: a role that is as good as a superuser; a search path or a second
-  # audit_entries that would send entries elsewhere; a trigger that is not one of the guards, has a WHEN condition, or
-  # is disabled; a rule, a policy, or row security; an unlogged or detaching partition, or one not recorded; a default
-  # partition other than the superuser's that refuses every row; and an id sequence the app's role could reset, or one
-  # behind the highest id. Every catalog is named with pg_catalog.
+  # the guard was installed or while it was off: a role that is as good as a superuser (a member of one included); a
+  # search path or a second audit_entries that would send entries elsewhere; code other than a superuser's built-ins
+  # on an audit table (an index, statistics object, constraint, default, or column type), which would run as the
+  # superuser when it next runs the step (review 3, B1); a trigger that is not one of the guards, has a WHEN condition,
+  # or is disabled, and a table without its truncate or id trigger; a rule, a policy, or row security; an unlogged or
+  # detaching partition, one not recorded, or a recorded one no longer attached; a default partition other than the
+  # superuser's that refuses every row; and an id sequence the app's role could reset, or one behind the highest id.
+  # Every catalog is named with pg_catalog, and objects are found by OID, not by name.
   class GuardCheck
     TREE = "pg_catalog.pg_partition_tree('public.audit_entries'::pg_catalog.regclass)".freeze
     GUARD = "'public.audit_entries_append_only()'::pg_catalog.regprocedure".freeze
+    ID_GUARD = "pg_catalog.to_regprocedure('fleet_audit_guard.audit_entries_id()')".freeze
+    # What code an audit table may use only when it is a superuser's built-in in pg_catalog, with each catalog's
+    # namespace and owner columns (as in ops/postgres/audit-guard.sql).
+    CODE = {
+      "pg_proc" => %w[pronamespace proowner], "pg_operator" => %w[oprnamespace oprowner], "pg_type" => %w[typnamespace typowner],
+      "pg_opclass" => %w[opcnamespace opcowner], "pg_opfamily" => %w[opfnamespace opfowner]
+    }.freeze
 
     def initialize(connection)
       @c = connection
@@ -19,7 +29,7 @@ module Partitions
 
     def problem
       role_problem("the app's PostgreSQL role", "current_user") || role_problem("the owner of audit_entries", owner_sql) ||
-        search_path_problem || installed_problem || function_problem || table_problem || trigger_problem ||
+        search_path_problem || installed_problem || function_problem || code_problem || table_problem || trigger_problem ||
         default_problem || sequence_problem
     end
 
@@ -33,10 +43,14 @@ module Partitions
     def role_problem(who, role)
       return "#{who} is a superuser, so no guard can hold against it" if value("SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = #{role}")
 
-      member = values(<<~SQL.squish).first
-        SELECT g.rolname FROM pg_catalog.pg_roles g
-        WHERE g.rolname IN (#{DANGEROUS_ROLES.map { |n| @c.quote(n) }.join(', ')}) AND pg_catalog.pg_has_role(#{role}, g.oid, 'MEMBER') ORDER BY 1
+      # Membership, direct or through other roles, of a superuser role is as good as being one: SET ROLE (review 3, S1).
+      member, superuser = @c.select_rows(<<~SQL.squish).first
+        SELECT g.rolname, g.rolsuper FROM pg_catalog.pg_roles g
+        WHERE g.rolname <> #{role} AND (g.rolsuper OR g.rolname IN (#{DANGEROUS_ROLES.map { |n| @c.quote(n) }.join(', ')}))
+          AND pg_catalog.pg_has_role(#{role}, g.oid, 'MEMBER')
+        ORDER BY g.rolsuper DESC, 1
       SQL
+      return "#{who} is a member of the superuser role #{member}, so no guard can hold against it" if superuser
       return "#{who} is a member of #{member}, which is as good as a superuser against the guard" if member
 
       "#{who} has CREATEROLE, which before PostgreSQL 16 can grant itself any role" if before16? && value("SELECT r.rolcreaterole FROM pg_catalog.pg_roles r WHERE r.rolname = #{role}")
@@ -75,26 +89,59 @@ module Partitions
       "the guard function audit_entries_append_only() runs as its owner (SECURITY DEFINER); the superuser runs ops/postgres/audit-guard.sql again" if definer
     end
 
-    # Exactly the guards on every table of the audit log: the row trigger (cloned to each partition) and the truncate
-    # guards, enabled, with no condition.
+    # Exactly the guards on every table of the audit log: the row trigger and the id trigger (each cloned to every
+    # partition) and the truncate guards, enabled, with no condition.
     def trigger_problem
       odd = values(<<~SQL.squish).first
         SELECT t.tgname || ' on ' || t.tgrelid::pg_catalog.regclass::text FROM #{TREE} p JOIN pg_catalog.pg_trigger t ON t.tgrelid = p.relid
         WHERE NOT t.tgisinternal
-          AND NOT (t.tgfoid = #{GUARD} AND t.tgqual IS NULL AND t.tgenabled = 'O' AND t.tgnargs = 0
-                   AND ((t.tgname = 'audit_entries_no_update_or_delete' AND t.tgtype = 27 AND (p.level = 0) = (t.tgparentid = 0))
-                        OR (p.level = 0 AND t.tgname = 'audit_entries_no_truncate' AND t.tgtype = 34)
-                        OR (p.level > 0 AND t.tgname = 'audit_entries_partition_no_truncate' AND t.tgtype = 34)))
+          AND NOT (t.tgqual IS NULL AND t.tgenabled = 'O' AND t.tgnargs = 0
+                   AND ((t.tgfoid = #{GUARD}
+                         AND ((t.tgname = 'audit_entries_no_update_or_delete' AND t.tgtype = 27 AND (p.level = 0) = (t.tgparentid = 0))
+                              OR (p.level = 0 AND t.tgname = 'audit_entries_no_truncate' AND t.tgtype = 34)
+                              OR (p.level > 0 AND t.tgname = 'audit_entries_partition_no_truncate' AND t.tgtype = 34)))
+                        OR (t.tgfoid = #{ID_GUARD} AND t.tgname = 'audit_entries_id_from_sequence' AND t.tgtype = 7 AND (p.level = 0) = (t.tgparentid = 0))))
         ORDER BY 1
       SQL
       return "trigger #{odd} is not one of the audit log's guards as installed (a WHEN condition, disabled, or another function)" if odd
 
-      bare = values(<<~SQL.squish).first
-        SELECT p.relid::pg_catalog.regclass::text FROM #{TREE} p
+      bare, missing = @c.select_rows(<<~SQL.squish).first
+        SELECT p.relid::pg_catalog.regclass::text,
+               CASE WHEN NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = p.relid AND t.tgtype = 34 AND t.tgfoid = #{GUARD}) THEN 'truncate guard'
+                    ELSE 'id trigger' END
+        FROM #{TREE} p
         WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = p.relid AND t.tgtype = 34 AND t.tgfoid = #{GUARD})
+           OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = p.relid AND t.tgtype = 7 AND t.tgfoid = #{ID_GUARD})
         ORDER BY 1
       SQL
-      "#{bare} has no truncate guard" if bare
+      "#{bare} has no #{missing} (the superuser runs ops/postgres/audit-guard.sql again)" if bare
+    end
+
+    # An index, statistics object, constraint, or default of an audit table, or the table itself (a column type, the
+    # partition key), that uses a function, operator, operator class or family, or type other than a superuser's
+    # built-in: the planner and index builds run such code as whoever plans over the table, and the superuser does when
+    # it runs the step again (review 3 of #239, B1). The guard refuses CREATE INDEX and CREATE STATISTICS on these tables;
+    # this reports one made before it was installed or while it was off. Catalogs only.
+    def code_problem
+      trusted = CODE.map do |catalog, (namespace, owner)|
+        "WHEN 'pg_catalog.#{catalog}'::pg_catalog.regclass THEN (SELECT o.#{namespace} = 'pg_catalog'::pg_catalog.regnamespace AND r.rolsuper " \
+          "FROM pg_catalog.#{catalog} o JOIN pg_catalog.pg_roles r ON r.oid = o.#{owner} WHERE o.oid = d.refobjid)"
+      end
+      found = values(<<~SQL.squish).first
+        WITH tree AS (SELECT t.relid FROM #{TREE} t),
+        attached (classid, objid) AS (
+          SELECT 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid, t.relid FROM tree t
+          UNION ALL SELECT 'pg_catalog.pg_class'::pg_catalog.regclass, i.indexrelid FROM pg_catalog.pg_index i JOIN tree t ON t.relid = i.indrelid
+          UNION ALL SELECT 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, s.oid FROM pg_catalog.pg_statistic_ext s JOIN tree t ON t.relid = s.stxrelid
+          UNION ALL SELECT 'pg_catalog.pg_constraint'::pg_catalog.regclass, k.oid FROM pg_catalog.pg_constraint k JOIN tree t ON t.relid = k.conrelid
+          UNION ALL SELECT 'pg_catalog.pg_attrdef'::pg_catalog.regclass, a.oid FROM pg_catalog.pg_attrdef a JOIN tree t ON t.relid = a.adrelid)
+        SELECT pg_catalog.pg_describe_object(a.classid, a.objid, d.objsubid) || ' uses ' || pg_catalog.pg_describe_object(d.refclassid, d.refobjid, 0)
+        FROM attached a JOIN pg_catalog.pg_depend d ON d.classid = a.classid AND d.objid = a.objid
+        WHERE d.refclassid IN (#{CODE.keys.map { |catalog| "'pg_catalog.#{catalog}'::pg_catalog.regclass" }.join(', ')})
+          AND NOT COALESCE(CASE d.refclassid #{trusted.join(' ')} END, false)
+        ORDER BY 1
+      SQL
+      "#{found}, which is not a superuser's built-in: it would run as the superuser in the audit guard's step (the app's role drops it)" if found
     end
 
     def table_problem
@@ -104,6 +151,15 @@ module Partitions
         WHERE i.inhparent = 'public.audit_entries'::pg_catalog.regclass AND i.inhdetachpending ORDER BY 1
       SQL
       return "#{detaching} is being detached, so its entries are hidden" if detaching
+
+      # A partition the guard recorded that is no longer in the tree: detached or dropped while the guard was off (review
+      # 3 of #239, S1).
+      gone = values(<<~SQL.squish).first
+        SELECT COALESCE(c.oid::pg_catalog.regclass::text, 'the partition with OID ' || g.objid::text) FROM fleet_audit_guard.protected g
+        LEFT JOIN pg_catalog.pg_class c ON c.oid = g.objid
+        WHERE g.kind = 'partition' AND g.objid NOT IN (SELECT t.relid FROM #{TREE} t) ORDER BY 1
+      SQL
+      return "#{gone}, recorded by the audit guard, is no longer attached to audit_entries, so its entries are hidden" if gone
 
       odd = values(<<~SQL.squish).first
         SELECT c.oid::pg_catalog.regclass::text || CASE
@@ -123,36 +179,39 @@ module Partitions
     end
 
     # The superuser's default partition, which refuses every row, is what makes PostgreSQL refuse DETACH ... CONCURRENTLY.
+    # Matched by OID: the default PostgreSQL knows is public.audit_entries_default (review 3 of #239, B2).
     def default_problem
-      defaults = @c.select_rows(<<~SQL.squish)
-        SELECT c.relname, r.rolsuper, EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c' AND pg_catalog.pg_get_constraintdef(k.oid) = 'CHECK (false)')
-        FROM pg_catalog.pg_inherits i JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid JOIN pg_catalog.pg_roles r ON r.oid = c.relowner
-        WHERE i.inhparent = 'public.audit_entries'::pg_catalog.regclass AND pg_catalog.pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT'
+      found = @c.select_rows(<<~SQL.squish).first
+        SELECT c.oid = pg_catalog.to_regclass('public.audit_entries_default'), r.rolsuper,
+               (SELECT pg_catalog.array_agg(pg_catalog.pg_get_constraintdef(k.oid)) FROM pg_catalog.pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c' AND k.conislocal) = ARRAY['CHECK (false)']
+        FROM pg_catalog.pg_partitioned_table pt JOIN pg_catalog.pg_class c ON c.oid = pt.partdefid JOIN pg_catalog.pg_roles r ON r.oid = c.relowner
+        WHERE pt.partrelid = 'public.audit_entries'::pg_catalog.regclass
       SQL
-      return if defaults == [ [ "audit_entries_default", true, true ] ]
+      return if found == [ true, true, true ]
 
       "the audit log's default partition is not the superuser's audit_entries_default refusing every row (the superuser runs ops/postgres/audit-guard.sql again)"
     end
 
-    # The id sequence is the superuser's: the app's role may use it but not reset it, and it is not behind the ids.
+    # The id sequence is the superuser's: the app's role may use it but not reset it, and it is not behind the ids. Read
+    # by OID: a name could be mixed-case or shadowed (review 3 of #239, S2). Its last value is NULL before the first
+    # nextval.
     def sequence_problem
-      seq = value("SELECT g.objid::pg_catalog.regclass::text FROM fleet_audit_guard.protected g WHERE g.kind = 'sequence'")
-      default = value(<<~SQL.squish)
-        SELECT pg_catalog.pg_get_expr(a.adbin, a.adrelid) FROM pg_catalog.pg_attrdef a JOIN pg_catalog.pg_attribute t ON t.attrelid = a.adrelid AND t.attnum = a.adnum
-        WHERE a.adrelid = 'public.audit_entries'::pg_catalog.regclass AND t.attname = 'id'
+      oid, seq = @c.select_rows("SELECT g.objid, g.objid::pg_catalog.regclass::text FROM fleet_audit_guard.protected g WHERE g.kind = 'sequence'").first
+      uses = oid && value(<<~SQL.squish)
+        SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef a JOIN pg_catalog.pg_attribute t ON t.attrelid = a.adrelid AND t.attnum = a.adnum
+                       JOIN pg_catalog.pg_depend d ON d.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass AND d.objid = a.oid
+                                                  AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.refobjid = #{Integer(oid)}
+                       WHERE a.adrelid = 'public.audit_entries'::pg_catalog.regclass AND t.attname = 'id')
       SQL
-      return "audit_entries.id no longer takes its value from the guarded sequence" unless seq && default == "nextval('#{seq}'::regclass)"
+      return "audit_entries.id no longer takes its value from the guarded sequence" unless uses
 
-      super_owned, resettable = @c.select_rows(<<~SQL.squish).first
-        SELECT r.rolsuper, pg_catalog.has_sequence_privilege(current_user, s.oid, 'UPDATE')
-        FROM pg_catalog.pg_class s JOIN pg_catalog.pg_roles r ON r.oid = s.relowner WHERE s.oid = #{@c.quote(seq)}::pg_catalog.regclass
+      super_owned, resettable, behind = @c.select_rows(<<~SQL.squish).first
+        SELECT r.rolsuper, pg_catalog.has_sequence_privilege(current_user, s.oid, 'UPDATE'),
+               (SELECT max(id) FROM public.audit_entries) > COALESCE(pg_catalog.pg_sequence_last_value(s.oid), 0)
+        FROM pg_catalog.pg_class s JOIN pg_catalog.pg_roles r ON r.oid = s.relowner WHERE s.oid = #{Integer(oid)}
       SQL
       return "the id sequence #{seq} is not the superuser's, or the app's role can reset it" if !super_owned || resettable
 
-      behind = value(<<~SQL.squish)
-        SELECT (SELECT max(id) FROM public.audit_entries) > (SELECT s.last_value FROM pg_catalog.pg_sequences s
-                                                             WHERE (s.schemaname || '.' || s.sequencename)::pg_catalog.regclass = #{@c.quote(seq)}::pg_catalog.regclass)
-      SQL
       "the id sequence #{seq} is behind the highest id, so ids would repeat" if behind
     end
   end

@@ -67,12 +67,15 @@ if [ "${#to_create[@]}" -gt 0 ]; then
 fi
 
 # The primary dump without the audit log's guard (ADR 0027): its event triggers, which only a superuser can create
-# (this runs as the app's role), and the fleet_audit_guard schema with its functions and table, which would otherwise
-# come back owned by the app's role. After a real restore the superuser installs the guard again
-# (ops/postgres/audit-guard.sql); until then /health shows audit_guard as a warning.
+# (this runs as the app's role); the fleet_audit_guard schema with its functions and table, which would otherwise
+# come back owned by the app's role, and the id trigger that calls one of them; and the default partition
+# audit_entries_default with its indexes and truncate guard, which is always empty (CHECK (false)) and which the guard
+# refuses to adopt from the app's role (review 3 of #239, B2). After a real restore the superuser installs the guard
+# again (ops/postgres/audit-guard.sql), which makes them anew; until then /health shows audit_guard as a warning.
 list="$(mktemp)"
 trap 'rm -f "$list"' EXIT
-pg_restore --list "$set_dir/fleet-cmdb.dump" | grep -v -E ' EVENT TRIGGER | fleet_audit_guard ' > "$list"
+pg_restore --list "$set_dir/fleet-cmdb.dump" \
+  | grep -v -E ' EVENT TRIGGER | fleet_audit_guard | audit_entries_default( |_)| TRIGGER public audit_entries audit_entries_id_from_sequence ' > "$list"
 
 created=() restored=()
 undo() {
