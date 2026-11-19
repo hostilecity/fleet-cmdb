@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data sources with exploitation signals · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html" aria-current="page">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01 review. The Data sources page as built, with two more panels under the OSV and Debian Security Tracker panels (unchanged, not redrawn here). They follow the trimmed style of the tracker panel (#148): status, problems, latest activity.</p>
+<div class="page-head"><div><h1>Data sources</h1><p>Advisory data, Debian's triage, and exploitation signals. Every source is fetched by the server; agents never contact them.</p></div></div>
+<p class="muted">OSV advisory data and the Debian Security Tracker: as on the <a href="../phase-2/data-sources.html">current page</a>.</p>
+
+<section class="sheet" aria-labelledby="kev" id="kev-panel">
+  <h2 id="kev" class="mt0">Known exploited vulnerabilities (CISA KEV)</h2>
+  <p>CISA's list of vulnerabilities with evidence of exploitation in the wild. Used by rule N1 and the "known exploited" marks. Public domain (CC0).</p>
+  <dl class="facts tight">
+    <dt>Freshness</dt><dd><span class="lamp online">Up to date</span> · last success 5 hours ago, catalog version 2026.11.19</dd>
+    <dt>Entries</dt><dd>1,771 CVEs, of which 3 match open findings in this fleet</dd>
+    <dt>Source</dt><dd><span class="mono">www.cisa.gov/…/known_exploited_vulnerabilities.json</span> · every 6 hours with the advisory refresh, conditional request</dd>
+  </dl>
+  <h3>Latest imports</h3>
+  <div class="table-wrap"><table><caption class="visually-hidden">Latest KEV imports</caption><thead><tr><th scope="col">When</th><th scope="col">Outcome</th><th scope="col">Changes</th></tr></thead><tbody>
+  <tr><td>2026-11-19 10:15</td><td>Imported</td><td>2 added (1 matches open findings on 2 hosts: re-triaged)</td></tr>
+  <tr><td>2026-11-19 04:15</td><td>Not modified</td><td>Nothing downloaded</td></tr>
+  </tbody></table></div>
+  <p class="state-note">A file that would remove more than 10% of the entries is held back, as the other sources are. Offline: <code>bin/rails signals:kev_import FILE=...</code>.</p>
+</section>
+
+<section class="sheet" aria-labelledby="epss" id="epss-panel">
+  <h2 id="epss" class="mt0">Exploit prediction (FIRST EPSS)</h2>
+  <p>FIRST's daily estimate of the probability that a CVE sees exploitation activity in the next 30 days. Used by rule N2 (at or above 10%) and shown beside findings. Free to use with attribution: <q>See EPSS at https://www.first.org/epss</q>.</p>
+  <dl class="facts tight">
+    <dt>Freshness</dt><dd><span class="lamp online">Up to date</span> · scores of 2026-11-19 (the model version and date are read from the file's first line)</dd>
+    <dt>Entries</dt><dd>Only CVEs named by advisories in the database are kept: 41,206 of 302,114 in the file</dd>
+    <dt>Crossed the threshold today</dt><dd>4 CVEs rose to 10% or more (1 matches open findings: re-triaged); 2 fell below 7%</dd>
+    <dt>Source</dt><dd><span class="mono">epss.empiricalsecurity.com/epss_scores-current.csv.gz</span> · daily at 14:30 UTC</dd>
+  </dl>
+  <p class="state-note">A finding enters Needs attention at 10% and leaves below 7%, so a score that wobbles around the line does not move findings back and forth every day. Offline: <code>bin/rails signals:epss_import FILE=...</code>.</p>
+</section>
+<p class="note">Freshness limits: KEV and EPSS are stale after 7 days (one week of failed refreshes). Stale or turned off, the rules that need them stop applying in the cautious direction (<a href="states.html#stale-signals">states.html</a>). Neither source ever opens, resolves, or reopens a finding, or changes its severity.</p>
+</main>
+</body>
+</html>

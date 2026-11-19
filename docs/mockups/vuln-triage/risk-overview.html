@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Risk overview · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html" aria-current="page">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01 review. A new fleet-wide page, <strong>Risk</strong>, after Compliance in the top bar. Today there is no fleet-wide vulnerabilities page (#253, #252 question 5). This page answers "which hosts have the worst exposure, which have the most work, and what single change helps most", and shows whether the fleet is getting better.</p>
+<div class="page-head"><div><h1>Risk</h1><p>Open vulnerability findings on the 10 active hosts, by what can be done about them. 9 of 10 hosts evaluated; <a href="../phase-2/compliance.html?status=not_evaluated">1 not evaluated</a>.</p></div><div class="actions"><a class="btn quiet" href="data-sources.html">Data sources</a></div></div>
+<p class="freshness"><span>Advisory data: <span class="mono">Debian:13</span> 3 hours ago.</span> <span>Debian's triage: 3 hours ago.</span> <span>CISA KEV: 5 hours ago.</span> <span>FIRST EPSS: scores of 2026-11-19.</span></p>
+
+<h2 class="mt0" id="fleet-b">34,912 open findings on 9 hosts</h2>
+<div class="bucket-strip" role="group" aria-labelledby="fleet-b">
+  <a class="fix" href="#quick"><span class="bk fix">Fix available</span><span class="count">412</span><span class="what">61 package upgrades on 7 hosts</span><span class="act">See quick wins</span></a>
+  <a class="attn" href="#exposed"><span class="bk attn">Needs attention</span><span class="count">47</span><span class="what">18 advisories on 4 hosts · 1 known exploited</span><span class="act">6 without a decision</span></a>
+  <a class="low" href="../phase-2/compliance.html"><span class="bk low">Low risk</span><span class="count">11,280</span><span class="what">no fix; local, minor, or idle</span><span class="act">Watch</span></a>
+  <a class="ign" href="../phase-2/compliance.html"><span class="bk ign">Ignorable</span><span class="count">23,173</span><span class="what">17,940 on kernels not running</span><span class="act">Tidy up: remove old kernels</span></a>
+</div>
+<p class="propbar-legend">Counts are sums of each host's precomputed bucket counts, like the Compliance page's severity strip, so each equals the sum of its column there. Hosts that are not evaluated add nothing and are named above.</p>
+
+<h2 class="section" id="trend-h">Is it getting better?</h2>
+<div class="cols-2">
+<figure class="chart" aria-labelledby="bd1-cap">
+  <figcaption id="bd1-cap">Fix available, last 90 days <span class="sub">Findings an update would clear, fleet-wide, at the end of each day. Down is good.</span></figcaption>
+  <svg class="burndown" viewBox="0 0 720 220" role="img" aria-labelledby="bd1-t bd1-d">
+    <title id="bd1-t">Fix available findings over 90 days</title>
+    <desc id="bd1-d">From 980 on 2026-08-21 down to 412 on 2026-11-19. A patch day on 2026-09-20 cleared about 300; an advisory import on 2026-10-10 added 180.</desc>
+    <line class="grid" x1="40" y1="190" x2="700" y2="190"/><line class="grid" x1="40" y1="105" x2="700" y2="105"/><line class="grid" x1="40" y1="20" x2="700" y2="20"/>
+    <text class="axis" x="4" y="194">0</text><text class="axis" x="4" y="109">500</text><text class="axis" x="4" y="24">1,000</text>
+    <text class="axis" x="40" y="212">Aug 21</text><text class="axis" x="333" y="212">Oct 1</text><text class="axis" x="650" y="212">Nov 19</text>
+    <line class="event" x1="260" y1="20" x2="260" y2="190"/><text class="mark" x="264" y="34">patch day</text>
+    <line class="event" x1="406" y1="20" x2="406" y2="190"/><text class="mark" x="410" y="48">import +180</text>
+    <polyline class="l-fix" points="40,23 113,30 186,36 260,86 333,90 406,59 480,68 553,102 626,114 700,120"/>
+    <text class="mark" x="660" y="112">412</text>
+  </svg>
+  <details><summary>Show the numbers</summary>
+  <table><caption class="visually-hidden">Fix available findings every 10 days</caption><thead><tr><th scope="col">Day</th><th scope="col" class="num">Fix available</th><th scope="col">Note</th></tr></thead><tbody>
+  <tr><td>2026-08-21</td><td class="num">980</td><td></td></tr><tr><td>2026-09-20</td><td class="num">610</td><td>Patch day</td></tr><tr><td>2026-10-10</td><td class="num">770</td><td>Advisory import added 180</td></tr><tr><td>2026-11-19</td><td class="num">412</td><td></td></tr>
+  </tbody></table></details>
+</figure>
+<figure class="chart" aria-labelledby="bd2-cap">
+  <figcaption id="bd2-cap">Needs attention, last 90 days <span class="sub">Findings with no fix and a sign of exploitation or exposure. Controls and accepted risks are drawn apart.</span></figcaption>
+  <svg class="burndown" viewBox="0 0 720 220" role="img" aria-labelledby="bd2-t bd2-d">
+    <title id="bd2-t">Needs attention findings over 90 days</title>
+    <desc id="bd2-d">From 61 on 2026-08-21 to 47 on 2026-11-19, with a rise to 63 on 2026-10-10 when a samba advisory was published. Of today's 47, 41 have a control recorded or an accepted risk.</desc>
+    <line class="grid" x1="40" y1="190" x2="700" y2="190"/><line class="grid" x1="40" y1="106" x2="700" y2="106"/><line class="grid" x1="40" y1="22" x2="700" y2="22"/>
+    <text class="axis" x="10" y="194">0</text><text class="axis" x="10" y="110">40</text><text class="axis" x="10" y="26">80</text>
+    <text class="axis" x="40" y="212">Aug 21</text><text class="axis" x="333" y="212">Oct 1</text><text class="axis" x="650" y="212">Nov 19</text>
+    <polyline class="l-attn" points="40,62 113,64 186,68 260,75 333,70 406,58 480,68 553,81 626,87 700,91"/>
+    <polyline class="l-low" points="40,170 113,165 186,160 260,150 333,140 406,135 480,128 553,115 626,110 700,104"/>
+    <text class="mark" x="664" y="84">47</text><text class="mark" x="664" y="120">41 handled</text>
+  </svg>
+  <ul class="legend"><li class="attn">Needs attention</li><li class="low">Of which a control or accepted risk is recorded</li></ul>
+</figure>
+</div>
+<p class="state-note">Daily points come from a small rollup written once a day (one row per day and bucket, kept 400 days), never from scanning findings. The chart marks days when an advisory import or a feed change moved the numbers, so a jump is explained rather than blamed on the operator.</p>
+
+<h2 class="section">Where to start</h2>
+<div class="cols-3">
+<section class="panel" aria-labelledby="exposed" id="exposed-panel">
+  <h2 id="exposed">Most exposed hosts</h2>
+  <ol class="rank">
+    <li><a href="host-vulns.html">Media server</a> <span class="tier t4">Known exploited</span><span class="line">258 points · 1 known exploited, 9 need attention</span></li>
+    <li><a href="host-vulns.html">Web A</a> <span class="tier t3">Exposed, no fix</span><span class="line">196 points · 12 need attention, 3 without a decision</span></li>
+    <li><a href="host-vulns.html">Build runner</a> <span class="tier t2">Fixes waiting</span><span class="line">142 points · 4 high with a fix</span></li>
+    <li><a href="host-vulns.html">Print server</a> <span class="tier t2">Fixes waiting</span><span class="line">97 points</span></li>
+    <li><a href="host-vulns.html">DNS resolver</a> <span class="tier t1">Low</span><span class="line">61 points</span></li>
+  </ol>
+  <a class="more" href="fleet.html?sort=exposure">All hosts by exposure</a>
+</section>
+<section class="panel" aria-labelledby="work-h">
+  <h2 id="work-h">Most work</h2>
+  <ol class="rank">
+    <li><a href="host-vulns.html#work">Build runner</a> · 22 upgrades<span class="line">0% done in 30 days · last package report 7 minutes ago</span></li>
+    <li><a href="host-vulns.html#work">Web A</a> · 14 upgrades<span class="line">22% done in 30 days</span></li>
+    <li><a href="host-vulns.html#work">Print server</a> · 9 upgrades and a reboot<span class="line">40% done in 30 days</span></li>
+    <li><a href="host-vulns.html#work">Media server</a> · 5 upgrades and a reboot<span class="line">63% done in 30 days</span></li>
+  </ol>
+  <a class="more" href="fleet.html?sort=work">All hosts by work</a>
+</section>
+<section class="panel" aria-labelledby="quick" id="quick-panel">
+  <h2 id="quick">Quick wins</h2>
+  <ol class="rank">
+    <li><strong>Upgrade <span class="mono">openssl</span></strong> to <span class="mono">3.5.1-1+deb13u2</span><span class="line">clears 162 findings (2 high) on 8 hosts</span></li>
+    <li><strong>Reboot 4 hosts</strong> into the kernel already installed<span class="line">164 kernel advisories fixed on disk, not yet running</span></li>
+    <li><strong>Upgrade <span class="mono">curl</span></strong> to <span class="mono">8.14.1-2+deb13u1</span><span class="line">clears 64 findings on 8 hosts</span></li>
+    <li><strong>Upgrade <span class="mono">libxml2</span></strong> to <span class="mono">2.12.7+dfsg-3+deb13u1</span><span class="line">clears 48 findings on 8 hosts</span></li>
+  </ol>
+  <p class="state-note">By source package, so one row covers every binary package it builds. Worked out after each matching run from package chunks, not per host (ADR 0028); as of 3 hours ago.</p>
+  <p class="state-note">Tidy-up, not risk: removing old kernels on 6 hosts would clear 17,940 ignorable findings. It changes no exposure score.</p>
+</section>
+</div>
+
+<h2 class="section" id="habits">Good habits</h2>
+<div class="cols-2">
+<section class="panel" aria-labelledby="streak-h">
+  <h2 id="streak-h">Hosts with no fixable critical</h2>
+  <div class="progress-line"><meter min="0" max="9" value="6" aria-describedby="streak-t">6 of 9</meter><span class="big">6 of 9</span></div>
+  <p id="streak-t">6 of the 9 evaluated hosts have no critical finding with a fix waiting. Longest run: DNS resolver, 41 days. A run ends when a fixable critical appears and stays open for more than 7 days (a grace period, so a new advisory does not break it overnight).</p>
+  <p><span class="honest streak">No fixable critical <span class="scope">DNS resolver, 41 days</span></span> <span class="honest streak">No fixable critical <span class="scope">Git mirror: withheld</span></span></p>
+  <p class="state-note">A run says only what it says. It is never shown for a host that is not evaluated or whose package report or advisory data is stale, and it never says "secure" or "safe".</p>
+</section>
+<section class="panel" aria-labelledby="dec-h">
+  <h2 id="dec-h">Decisions due</h2>
+  <ul class="change-list">
+    <li><span class="override-tag suspended">Suspended</span> Web A, <span class="mono">DEBIAN-CVE-2026-90777</span>: risk accepted on 2026-10-20, then CISA listed it as exploited on 2026-11-02. Back in Needs attention. <a href="override.html#suspended">Review</a></li>
+    <li><span class="override-tag">Expires in 6 days</span> Print server, <span class="mono">DEBIAN-CVE-2026-91877</span>: control in place (port closed by firewall). <a href="override.html">Renew or end</a></li>
+    <li>6 Needs attention advisories have no decision yet. <a href="#exposed">Show them</a></li>
+  </ul>
+</section>
+</div>
+<p class="note">Nothing on this page ranks or scores people. There are no operator points, levels, or leaderboards of people; the rankings are of hosts and package upgrades, so the motivation is "this host is getting better", which is true when the number moves.</p>
+</main>
+</body>
+</html>

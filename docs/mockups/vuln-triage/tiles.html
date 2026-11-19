@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summary tiles and the exposure score · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01 review. The host summary tiles (under the host header on every tab) and the exposure score's explanation. Today the second tile is "Open vulnerabilities: 3,844". Proposed: it becomes two tiles, <strong>Vulnerability exposure</strong> and <strong>Work remaining</strong>, and the Packages tile moves to the tab bar's count, which already shows it.</p>
+<h1>Summary tiles</h1>
+
+<h2 id="today">Today</h2>
+<div class="glance" role="group" aria-label="Host summary, today">
+  <a href="../phase-2/host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="../phase-2/host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">3,844</span><span class="detail">31 critical, 402 high, 2,190 medium, 1,180 low, 41 unknown</span></a>
+  <a href="../phase-2/host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="../phase-2/report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<p class="state-note">The number that does not move when you run <code>apt upgrade</code>.</p>
+
+<h2 id="proposed">Proposed</h2>
+<div class="glance" role="group" aria-label="Host summary, proposed">
+  <a href="../phase-2/host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Vulnerability exposure</span><span class="big">258 <small>points</small></span><span class="detail"><span class="tier t4">Known exploited</span><br>1 known exploited · 9 need attention · <a href="#score">why</a></span></a>
+  <a href="host-vulns.html#work"><span class="label">Work remaining</span><span class="big">5 <small>upgrades</small></span><span class="detail">and a reboot · clears 37 findings<br><meter class="small" min="0" max="101" value="64">63%</meter> 63% done in 30 days</span></a>
+  <a href="../phase-2/report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<p class="state-note">The raw count is not hidden: the tab's heading says "3,844 open findings" with the four buckets under it.</p>
+
+<h2 id="tile-states">Tile states</h2>
+<div class="glance" role="group" aria-label="Tile states">
+  <a href="host-vulns.html"><span class="label">Vulnerability exposure</span><span class="big">0 <small>points</small></span><span class="detail"><span class="tier t0">Minimal</span><br>412 open, all ignorable</span></a>
+  <a href="host-vulns.html#work"><span class="label">Work remaining</span><span class="big">0 <small>upgrades</small></span><span class="detail"><span class="none-open">Nothing to install</span><br>2 need attention, no fix yet</span></a>
+  <a href="states.html#not-evaluated"><span class="label">Vulnerability exposure</span><span class="big"><span class="not-eval">Not evaluated</span></span><span class="detail">No package report yet</span></a>
+  <a href="states.html#stale"><span class="label">Work remaining</span><span class="big">3 <small>upgrades</small></span><span class="detail">as of the package report 2 days ago</span></a>
+</div>
+<p class="state-note">"Nothing to install" always says what still needs attention beside it. A host that is not evaluated never shows 0 points or "Nothing to install".</p>
+
+<h2 id="score">How the exposure score is counted</h2>
+<div class="cols-2">
+<section class="sheet" aria-labelledby="pts-h">
+  <h3 id="pts-h" class="mt0">Points per open advisory on the host</h3>
+  <table class="points"><caption class="visually-hidden">Points by bucket and severity</caption><thead><tr><th scope="col">Bucket</th><th scope="col" class="num">Critical</th><th scope="col" class="num">High</th><th scope="col" class="num">Medium</th><th scope="col" class="num">Low or unknown</th></tr></thead><tbody>
+  <tr><th scope="row"><span class="bk attn">Needs attention</span></th><td class="num">40</td><td class="num">20</td><td class="num">8</td><td class="num">2</td></tr>
+  <tr><th scope="row"><span class="bk fix">Fix available</span></th><td class="num">20</td><td class="num">10</td><td class="num">4</td><td class="num">1</td></tr>
+  <tr><th scope="row"><span class="bk low">Low risk</span></th><td class="num">2</td><td class="num">1</td><td class="num">0</td><td class="num">0</td></tr>
+  <tr><th scope="row"><span class="bk ign">Ignorable</span></th><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+  </tbody></table>
+  <p class="state-note">Known exploited (CISA KEV) doubles an advisory's points, except in Ignorable. An advisory counts once per host, in its worst bucket, however many binary packages it matches (openssl and libssl3t64 are one advisory, not two). The table is a published constant in the spec, not a model, and the same everywhere.</p>
+</section>
+<section class="sheet" aria-labelledby="why-h">
+  <h3 id="why-h" class="mt0">Why Media server has 258 points</h3>
+  <table class="points"><caption class="visually-hidden">Score breakdown for Media server</caption><thead><tr><th scope="col">From</th><th scope="col" class="num">Advisories</th><th scope="col" class="num">Points</th></tr></thead><tbody>
+  <tr><td>Needs attention, known exploited (high &times; 2)</td><td class="num">1</td><td class="num">40</td></tr>
+  <tr><td>Needs attention, critical</td><td class="num">1</td><td class="num">40</td></tr>
+  <tr><td>Needs attention, high and medium</td><td class="num">3</td><td class="num">36</td></tr>
+  <tr><td>Fix available</td><td class="num">28</td><td class="num">76</td></tr>
+  <tr><td>Low risk, critical and high</td><td class="num">63</td><td class="num">66</td></tr>
+  <tr><td>Low risk, medium and low; Ignorable</td><td class="num">3,281</td><td class="num">0</td></tr>
+  <tr><th scope="row">Total</th><td class="num"></td><td class="num"><strong>258</strong></td></tr>
+  </tbody></table>
+  <p class="state-note">Tier, the word shown with the score: <strong>Known exploited</strong> if any known exploited advisory is in Needs attention or Fix available; else <strong>Exposed, no fix</strong> if any critical or high needs attention; else <strong>Fixes waiting</strong> if any critical or high has a fix; else <strong>Low</strong> if any points; else <strong>Minimal</strong>.</p>
+</section>
+</div>
+
+<h2 id="compliance-strip">On the Compliance page</h2>
+<p>The vulnerability severity strip stays as it is. Under it, one line with the bucket counts, each a link that filters the table:</p>
+<p class="sheet flat"><a href="../phase-2/compliance.html?bucket=fix"><span class="bk fix">412 fix available</span></a> &middot; <a href="../phase-2/compliance.html?bucket=attention"><span class="bk attn">47 need attention</span></a> &middot; <a href="../phase-2/compliance.html?bucket=low"><span class="bk low">11,280 low risk</span></a> &middot; <a href="../phase-2/compliance.html?bucket=ignorable"><span class="bk ign">23,173 ignorable</span></a> <span class="muted">on 9 of 10 hosts evaluated</span></p>
+</main>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triage states: missing or stale data · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01 review. What the triage screens say when data is missing or old. The rule throughout: missing data never makes a finding look safer. It can only keep a finding in a more cautious bucket, and the page says which data is missing.</p>
+<h1>Triage states</h1>
+
+<h2 id="stale-signals">Exploitation data is stale or turned off</h2>
+<div class="notice" role="status"><strong>Known exploited data (CISA KEV) is 9 days old.</strong><p>The last 3 refreshes failed. Until it is refreshed, no finding is put in Ignorable because Debian rates it unimportant (rule I5); those 236 findings are in Low risk instead, and Low risk reasons say "not checked against KEV". <a href="data-sources.html#kev">Data sources</a></p></div>
+<div class="table-wrap"><table><caption class="visually-hidden">A Low risk reason while KEV data is stale</caption><thead><tr><th scope="col">Reason</th><th scope="col" class="num">Findings</th></tr></thead><tbody>
+<tr><td><span class="reason low">Debian rates it unimportant, but whether it is known exploited could not be checked (KEV data 9 days old).<span class="rule-id">L5</span></span></td><td class="num">236</td></tr>
+</tbody></table></div>
+<p class="state-note">The same for EPSS: past its age limit (7 days by default) rule N2 cannot fire, rule I5 is held back, and the freshness line says so. Badges that depend on it ("no known exploited exposure") are withheld.</p>
+
+<h2 id="no-in-use">The agent does not report what is in use</h2>
+<div class="notice info" role="status"><strong>This host's agent (0.3.2) does not report which packages are in use.</strong><p>"Installed but not running" (rule L1) and "Listening" cannot be judged here, so network-reachable findings stay in Needs attention (rule N4) rather than Low risk. Update the agent to 0.4.0 or later.</p></div>
+
+<h2 id="not-evaluated">Host not evaluated</h2>
+<div class="glance" role="group" aria-label="Summary for a host that is not evaluated">
+  <a href="host-vulns.html"><span class="label">Vulnerability exposure</span><span class="big"><span class="not-eval">Not evaluated</span></span><span class="detail">No package report yet</span></a>
+  <a href="host-vulns.html#work"><span class="label">Work remaining</span><span class="big"><span class="muted">Not known</span></span><span class="detail">Needs a package report</span></a>
+</div>
+<p class="state-note">As today (#128): no buckets, no score, no badge, never zeros. Findings kept from an earlier evaluation keep their buckets with the "from an earlier evaluation, may be out of date" notice, and the host counts as not evaluated on the fleet pages.</p>
+
+<h2 id="stale">Old package report</h2>
+<p><span class="honest withheld">No fixable critical <span class="scope">withheld: last package report 9 days ago</span></span></p>
+<p class="state-note">A streak or badge is withheld when the host's last package report is older than 3 days (the threshold the fleet uses for stale reports) or the advisory data is past its age limit. The numbers stay, with their date.</p>
+
+<h2 id="badges">What a badge may and may not say</h2>
+<div class="table-wrap"><table><caption class="visually-hidden">Badges and their exact claims</caption><thead><tr><th scope="col">Badge</th><th scope="col">Shown when</th><th scope="col">Never shown when</th></tr></thead><tbody>
+<tr><td><span class="honest">Nothing to install</span></td><td>No finding in Fix available, and no reboot pending.</td><td>Not evaluated; stale report or data. Always followed by the Needs attention count when it is not zero.</td></tr>
+<tr><td><span class="honest streak">No fixable critical <span class="scope">for 12 days</span></span></td><td>No critical in Fix available for longer than 7 days (grace for new advisories), counted from the summary's timestamp.</td><td>Not evaluated; stale report or data.</td></tr>
+<tr><td><span class="honest">No known exploited exposure</span></td><td>No KEV advisory outside Ignorable.</td><td>KEV data stale or off; not evaluated.</td></tr>
+</tbody></table></div>
+<p class="note">No badge uses the words "secure", "safe", "compliant", "clean", or "protected". There are no badges for low counts of Low risk or Ignorable findings, because those can be lowered by changing nothing real.</p>
+</main>
+</body>
+</html>

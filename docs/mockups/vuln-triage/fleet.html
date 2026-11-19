@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet with exposure and work columns · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01 review. The fleet list as built today, with the "Open vulnerabilities" column replaced by two sortable columns, <strong>Exposure</strong> and <strong>Work</strong>, and the compliance panel given one more line. Everything else is unchanged.</p>
+<div class="page-head"><div><h1>Fleet</h1><p>12 hosts, 10 active. Retired hosts are not listed or counted.</p></div><div class="actions"><a class="btn" href="../phase-1/agents-install.html">Install an agent</a></div></div>
+<p class="freshness"><span>Advisory data last updated: <span class="mono">Debian:13</span> 3 hours ago.</span> <a href="data-sources.html">Data sources</a></p>
+<div class="strip" aria-label="Fleet status">
+  <a href="fleet.html?status=online"><span class="count">8</span><span class="lamp online">Online</span></a>
+  <a href="fleet.html?status=stale"><span class="count">1</span><span class="lamp stale">Stale</span></a>
+  <a href="fleet.html?status=offline"><span class="count">1</span><span class="lamp offline">Offline</span></a>
+  <a href="fleet.html?status=awaiting"><span class="count">0</span><span class="lamp awaiting">Awaiting first contact</span></a>
+  <span class="divider" aria-hidden="true"></span>
+  <a class="aside" href="fleet.html?status=pending"><span class="count">1</span><span class="lamp pending">Pending enrollment</span></a>
+  <a class="aside" href="fleet.html?status=revoked"><span class="count">1</span><span class="lamp">Revoked</span></a>
+</div>
+<section class="sheet flat" aria-labelledby="comp-h">
+  <div class="group-head mt0"><h2 id="comp-h" class="mt0">Compliance and risk</h2><span><a href="../phase-2/compliance.html">Compliance</a> · <a href="risk-overview.html">Risk overview</a></span></div>
+  <p class="mb0"><strong>23</strong> open CIS-aligned check failures (1 critical, 4 high) on 7 of 10 hosts evaluated.</p>
+  <p class="mb0"><strong>34,912</strong> open vulnerability findings on 9 of 10 hosts evaluated: <span class="bk fix">412 fix available</span> (61 upgrades), <span class="bk attn">47 need attention</span>, 11,280 low risk, 23,173 ignorable.</p>
+</section>
+<form class="filters" role="search">
+  <label>Search name or hostname<input type="search" placeholder="vm-01 or Media server"></label>
+  <label>Tag<select><option>All tags</option><option>ci</option><option>infra</option><option>media</option><option>storage</option><option>web</option></select></label>
+  <label>Status<select><option>All statuses</option><option>Online</option><option>Stale</option><option>Offline</option></select></label>
+  <label>Vulnerabilities<select><option>All hosts</option><option>Known exploited (not ignorable)</option><option>Has findings that need attention</option><option>Has a fix available</option><option>Nothing to install</option><option>Not evaluated</option></select></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+<div class="table-wrap"><table><caption class="visually-hidden">Hosts, highest exposure first</caption>
+<thead><tr><th aria-sort="none"><a href="#">Name</a></th><th aria-sort="none"><a href="#">Status</a></th><th aria-sort="none"><a href="#">Hostname</a></th><th>Tags</th><th aria-sort="none"><a href="#">CIS pass rate</a></th><th aria-sort="descending"><a href="#">Exposure</a></th><th aria-sort="none"><a href="#">Work</a></th><th aria-sort="none"><a href="#">Agent</a></th></tr></thead>
+<tbody>
+<tr><td><a href="host-vulns.html">Media server</a></td><td><span class="lamp online">Online</span></td><td class="mono">vm-01.example.lan</td><td><span class="tag">media</span></td><td><a href="../phase-2/host-config.html#results">80.6%</a><span class="rate-detail">5 failing</span></td><td><a href="host-vulns.html"><span class="tier t4">Known exploited</span></a><span class="rate-detail">258 points · 9 need attention</span></td><td><a href="host-vulns.html#work">5 upgrades</a><span class="rate-detail">and a reboot · 63% done in 30 days</span></td><td class="mono">0.4.0</td></tr>
+<tr><td><a href="host-vulns.html">Web A</a></td><td><span class="lamp online">Online</span></td><td class="mono">vm-02.example.lan</td><td><span class="tag">web</span></td><td><a href="../phase-2/host-config.html#results">94.3%</a><span class="rate-detail">2 failing</span></td><td><a href="host-vulns.html"><span class="tier t3">Exposed, no fix</span></a><span class="rate-detail">196 points · 12 need attention</span></td><td><a href="host-vulns.html#work">14 upgrades</a><span class="rate-detail">22% done in 30 days</span></td><td class="mono">0.4.0</td></tr>
+<tr><td><a href="host-vulns.html">Build runner</a></td><td><span class="lamp stale">Stale</span></td><td class="mono">vm-03.example.lan</td><td><span class="tag">ci</span></td><td><a href="../phase-2/host-config.html#results">83.3%</a><span class="rate-detail">4 failing, 1 critical</span></td><td><a href="host-vulns.html"><span class="tier t2">Fixes waiting</span></a><span class="rate-detail">142 points · 0 need attention</span></td><td><a href="host-vulns.html#work">22 upgrades</a><span class="rate-detail">0% done in 30 days</span></td><td class="mono">0.4.0</td></tr>
+<tr><td><a href="host-vulns.html">DNS resolver</a></td><td><span class="lamp online">Online</span></td><td class="mono">vm-05.example.lan</td><td><span class="tag">infra</span></td><td><a href="../phase-2/host-config.html#results">97.2%</a><span class="rate-detail">1 failing</span></td><td><a href="host-vulns.html"><span class="tier t1">Low</span></a><span class="rate-detail">61 points · 0 need attention</span></td><td><span class="none-open">Nothing to install</span><span class="rate-detail"><span class="honest streak">No fixable critical <span class="scope">for 41 days</span></span></span></td><td class="mono">0.4.0</td></tr>
+<tr><td><a href="host-vulns.html">Backup target</a></td><td><span class="lamp offline">Offline</span></td><td class="mono">vm-04.example.lan</td><td><span class="tag">storage</span></td><td><a href="../phase-2/host-config.html#results">100%</a><span class="rate-detail"><span class="none-open">None failing</span></span></td><td><a href="host-vulns.html"><span class="tier t1">Low</span></a><span class="rate-detail">55 points · from 2 days ago</span></td><td>3 upgrades<span class="rate-detail">last package report 2 days ago</span></td><td class="mono">0.4.0</td></tr>
+<tr><td><a href="host-vulns.html">Git mirror</a></td><td><span class="lamp online">Online</span></td><td class="mono">vm-08.example.lan</td><td><span class="tag">infra</span></td><td><a href="../phase-2/host-config.html#results">91.7%</a><span class="rate-detail">3 failing</span></td><td><span class="not-eval">Not evaluated<span class="visually-hidden">: no package report yet</span></span><span class="reason-line">No package report yet</span></td><td><span class="muted">Not known</span></td><td class="mono">0.4.0</td></tr>
+<tr><td><a href="../phase-1/host-pending.html">Lab sandbox</a></td><td><span class="lamp pending">Pending enrollment</span></td><td class="mono">vm-11.example.lan</td><td><span class="tag">lab</span></td><td><span class="muted">Not tracked</span></td><td><span class="muted">Not tracked</span></td><td><span class="muted">Not tracked</span></td><td class="mono"><span class="unavailable">—</span></td></tr>
+</tbody></table></div>
+<p class="pager"><span>7 of 12 hosts shown (example rows).</span><span>Previous · Next</span></p>
+<p class="note"><strong>Exposure</strong> sorts by the exposure score (points), highest first, ties by name; the cell shows the tier word, the points, and how many findings need attention. <strong>Work</strong> sorts by the number of package upgrades with a fix, most first; a pending reboot counts as one more. Both read precomputed columns on <code>host_compliance_summaries</code> with an index each, so a page costs the same at a million hosts (ADR 0026). The raw open count is still on the host's tab and the Compliance page.</p>
+<p class="note">Honest states, as today: a host that is not evaluated says so with its reason, never 0 points; a host whose last package report is old says how old under its numbers; "Nothing to install" means exactly that and is never shown on a host that is not evaluated. The streak line is withheld when the host's data is stale. See <a href="states.html">states.html</a>.</p>
+</main>
+</body>
+</html>
