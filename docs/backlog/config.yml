@@ -17,6 +17,8 @@ milestones:
   - title: "Phase 3 — Remote tasks"
     description: "Allowlisted remote tasks with audit trail. Highest-risk phase. Exit criteria: AC-3.1 to AC-3.9."
     gate: P2-ACCEPT
+  - title: "Vulnerability triage (proposed)"
+    description: "Proposed, not approved: triage buckets, exploitation signals, operator decisions, exposure scores, and the fleet risk page (VT-EPIC, ADR 0032). Built after Phase 2 acceptance; does not gate Phase 3. No gate issue."
 
 labels:
   - { name: "area:server",    color: "D93F0B", description: "Rails server (cmdb/)" }
