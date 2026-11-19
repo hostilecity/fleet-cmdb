@@ -18,7 +18,8 @@ root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 
 # A fresh stub: HOME, the stub's bin, the "container" directory, and its state. Options as files in $state:
-# backfill (ok | slow | fail), up_after (the /up call that first answers), after_restart (serve | crash | refuse).
+# backfill (ok | slow | fail), up_after (the /up call that first answers), after_restart (serve | crash | restarting |
+# stop | refuse), pid_delay (seconds before the backfill writes its pid).
 setup() {
   local dir="$root/$1"
   mkdir -p "$dir/home" "$dir/bin" "$dir/ctr/bin" "$dir/ctr/tmp" "$dir/state"
@@ -30,6 +31,8 @@ setup() {
   echo ok > "$STUB_STATE/backfill"
   echo 3 > "$STUB_STATE/up_after"
   echo serve > "$STUB_STATE/after_restart"
+  echo false > "$STUB_STATE/restarting"
+  echo 0 > "$STUB_STATE/pid_delay"
   : > "$STUB_STATE/events"
   : > "$STUB_STATE/logs"
 
@@ -41,11 +44,14 @@ case "$cmd" in
   inspect)
     case "$2" in
       *State.Running*) cat "$s/running" ;;
-      *State.Restarting*) echo false ;;
+      *State.Restarting*) cat "$s/restarting" ;;
       *RestartCount*) cat "$s/restart_count" ;;
       *) echo "unknown format $2" >&2; exit 1 ;;
     esac ;;
-  exec) shift; cd "$STUB_CTR" && PATH="$STUB_CTR/bin:$PATH" exec "$@" ;;
+  exec)
+    shift
+    case "$*" in *packages:backfill*) sleep "$(cat "$s/pid_delay")" ;; esac # a slow docker exec start
+    cd "$STUB_CTR" && PATH="$STUB_CTR/bin:$PATH" exec "$@" ;;
   restart) echo restarted >> "$s/events" ;;
   logs) cat "$s/logs" ;;
   *) echo "unknown docker command $cmd" >&2; exit 1 ;;
@@ -75,6 +81,8 @@ n=$(( $(cat "$s/calls" 2> /dev/null || echo 0) + 1 )); echo "$n" > "$s/calls"
 flock -n "$HOME/.local/state/fleet-cmdb/backup.lock" true 9>&- && echo "lock free during /up" >> "$s/events"
 case "$(cat "$s/after_restart")" in
   crash) echo $(( $(cat "$s/restart_count") + 1 )) > "$s/restart_count"; exit 7 ;;
+  restarting) echo true > "$s/restarting"; exit 7 ;;
+  stop) echo false > "$s/running"; exit 7 ;;
   refuse) echo "fleet-cmdb upgrade step needed: still too long" >> "$s/logs"; exit 7 ;;
 esac
 [ "$n" -ge "$(cat "$s/up_after")" ]
@@ -142,10 +150,61 @@ out="$(run 40)"
 contains "it stops waiting" "exited and was restarted while it started" "$out"
 expect "at once, not after FLEET_BACKFILL_UP_WAIT" yes "$([ $(($(date +%s) - start)) -lt 30 ] && echo yes || echo no)"
 
+echo "-- the restarted container is restarting by itself"
+setup restarting
+echo restarting > "$STUB_STATE/after_restart"
+contains "it stops waiting" "exited and was restarted while it started" "$(run 20)"
+
+echo "-- the restarted container stops"
+setup stop
+echo stop > "$STUB_STATE/after_restart"
+contains "it stops waiting" "stopped while it started" "$(run 20)"
+
 echo "-- the restarted container refuses again"
 setup refuse
 echo refuse > "$STUB_STATE/after_restart"
-contains "it says so" "refused the upgrade again" "$(run 600)"
+contains "it says so" "refused the upgrade again" "$(run 20)"
+
+echo "-- interrupted once while it waits for /up: it keeps waiting, and the lock"
+setup up_once
+echo 1000 > "$STUB_STATE/up_after"
+FLEET_BACKFILL_UP_WAIT=60 "$script" > "$root/up_once.log" 2>&1 & pid=$!
+for _ in $(seq 1 50); do grep -q "restarting fleet-cmdb" "$root/up_once.log" && break; sleep 0.2; done
+kill -TERM "$pid"
+sleep 6
+contains "it says it still waits" "still waiting for fleet-cmdb's migrations" "$(cat "$root/up_once.log")"
+if flock -n "$lock" true; then fail "the lock was released"; else ok "the lock is still held"; fi
+echo 0 > "$STUB_STATE/up_after" # the migrations end
+wait "$pid" && rc=0 || rc=$?
+expect "then it ends serving" 0 "$rc"
+contains "with its done line" "serves again" "$(cat "$root/up_once.log")"
+
+echo "-- interrupted twice while it waits for /up: it stops waiting"
+setup up_twice
+echo 1000 > "$STUB_STATE/up_after"
+FLEET_BACKFILL_UP_WAIT=60 "$script" > "$root/up_twice.log" 2>&1 & pid=$!
+for _ in $(seq 1 50); do grep -q "restarting fleet-cmdb" "$root/up_twice.log" && break; sleep 0.2; done
+kill -TERM "$pid"
+sleep 6
+kill -TERM "$pid"
+wait "$pid" && rc=0 || rc=$?
+expect "it fails" 1 "$rc"
+contains "and says the migrations go on without the lock" "migrations go on without the backup lock" "$(cat "$root/up_twice.log")"
+
+echo "-- interrupted before the backfill wrote its pid, with a stale pid file from an earlier run"
+setup stale_pid
+echo slow > "$STUB_STATE/backfill"
+echo 3 > "$STUB_STATE/pid_delay"
+sleep 300 & stale=$! # a live process that is not the backfill
+echo "$stale" > "$STUB_CTR/tmp/package-backfill.pid"
+FLEET_BACKFILL_UP_WAIT=60 "$script" > "$root/stale_pid.log" 2>&1 & pid=$!
+for _ in $(seq 1 50); do grep -q "moving the package lists" "$root/stale_pid.log" && break; sleep 0.2; done
+kill -TERM "$pid"
+wait "$pid" || true
+expect "the stale pid was not signalled" yes "$(kill -0 "$stale" 2> /dev/null && echo yes || echo no)"
+kill "$stale" 2> /dev/null || true
+contains "it waited for this run's backfill and stopped it" "backfill interrupted" "$(cat "$STUB_STATE/events")"
+contains "and says so" "the backfill stopped" "$(cat "$root/stale_pid.log")"
 
 echo "-- /up never answers"
 setup timeout

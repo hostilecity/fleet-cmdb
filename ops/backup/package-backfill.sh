@@ -19,6 +19,8 @@
 #   and on 3443 (up to FLEET_BACKFILL_UP_WAIT seconds, 1800 by default), so nothing that takes the lock runs while the
 #   migrations do. It stops waiting at once if the container stops, restarts by itself (a crash loop under
 #   --restart unless-stopped), or logs the refusal again, and says so with the log's end.
+# - Interrupted while it waits for /up, it keeps waiting, and the lock, so the migrations finish alone; a second
+#   interrupt stops it, and the lock is then released although they may still run.
 # - After FLEET_BACKFILL_UP_WAIT without /up it releases the lock although the migrations may still run; the runbook
 #   has the backup timer stopped and the Deploy workflow disabled until the app serves.
 set -euo pipefail
@@ -26,7 +28,8 @@ set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 app=fleet-cmdb
 up_wait="${FLEET_BACKFILL_UP_WAIT:-1800}"
-# In the container's working directory (/rails), which the app may write: the backfill's pid, to stop it.
+# In the container's working directory (/rails), which the app may write: the backfill's pid, to stop it. Removed
+# before the backfill starts and after it ends, so a pid read from it is this run's.
 pid_file=tmp/package-backfill.pid
 
 die() { echo "fleet-cmdb package backfill: $*" >&2; exit 1; }
@@ -34,14 +37,28 @@ log() { echo "fleet-cmdb package backfill: $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 inspect() { docker inspect -f "$1" "$app" 2> /dev/null || true; }
 tail_log() { docker logs --tail 20 "$app" 2>&1 || true; }
 backfill_running() { docker exec "$app" sh -c "kill -0 \"\$(cat $pid_file)\"" 2> /dev/null; }
+pid_written() { docker exec "$app" test -s "$pid_file" 2> /dev/null; }
 
 stage=start
 child=""
+interrupts=0
 on_signal() {
+  interrupts=$((interrupts + 1))
+  if [ "$stage" = up ] && [ "$interrupts" = 1 ]; then
+    log "interrupted: still waiting for $app's migrations, holding the backup lock; interrupt again to stop waiting (the lock is then released while they run)"
+    return
+  fi
   trap '' INT TERM
   case "$stage" in
     backfill)
       log "interrupted: stopping the backfill in $app (the batch in progress rolls back)"
+      # The docker exec may not have written this run's pid yet.
+      for _ in $(seq 1 10); do
+        pid_written && break
+        { [ -n "$child" ] && kill -0 "$child" 2> /dev/null; } || break
+        sleep 1
+      done
+      pid_written || die "interrupted before the backfill in $app wrote its pid; it may still start. A second packages:backfill reports Busy while one runs. $app was not restarted. The backup lock is released."
       docker exec "$app" sh -c "kill -INT \"\$(cat $pid_file)\"" 2> /dev/null || true
       for _ in $(seq 1 60); do backfill_running || break; sleep 1; done
       [ -z "$child" ] || kill "$child" 2> /dev/null || true
@@ -50,7 +67,7 @@ on_signal() {
       fi
       die "interrupted: the backfill stopped. $app was not restarted and still waits with the upgrade step. The backup lock is released. Run this script again to carry on."
       ;;
-    up) die "interrupted while $app restarts: its migrations go on without the backup lock. Check it: docker logs $app" ;;
+    up) die "interrupted again: stopped waiting for $app; its migrations go on without the backup lock. Check it: docker logs $app" ;;
     *) die "interrupted before anything was changed" ;;
   esac
 }
@@ -66,11 +83,13 @@ check_restore_marker
   || die "the $app container is not running: deploy first, so that it waits with the upgrade step (docs/operations/upgrades.md)"
 
 log "moving the package lists into package sets (bin/rails packages:backfill)"
+docker exec "$app" rm -f "$pid_file"
 stage=backfill
 # In the background and waited for, so a signal reaches on_signal at once rather than after the backfill.
 docker exec "$app" sh -c "echo \$\$ > $pid_file && exec bin/rails packages:backfill" & child=$!
 wait "$child" || die "the backfill stopped (above); run this script again to carry on"
 child=""
+docker exec "$app" rm -f "$pid_file"
 
 log "restarting $app: its migrations finish the upgrade"
 stage=up
