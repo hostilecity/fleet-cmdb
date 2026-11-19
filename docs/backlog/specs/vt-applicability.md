@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed), not in the recommended first cut (epic question 21), and blocked by VT-HOST-TAB because it adds the in-use signals to the tab (the agent half can be written earlier). It feeds rules L1 and N4 and the reboot work item. It is an agent contract change ([FR-2.3](../../requirements.md#fr-23-package-reporting)); no backward compatibility is needed before Phase 3 ends (NFR-5). The agent reports facts and the server decides; nothing here runs a command chosen by the server.
+Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19), not in the first cut (epic decision 21), and blocked by VT-HOST-TAB because it adds the in-use signals to the tab (the agent half can be written earlier). It feeds rules L1 and N4 and the reboot work item. It is an agent contract change ([FR-2.3](../../requirements.md#fr-23-package-reporting)); no backward compatibility is needed before Phase 3 ends (NFR-5). The agent reports facts and the server decides; nothing here runs a command chosen by the server.
 
 ## What the server already knows without this slice
 

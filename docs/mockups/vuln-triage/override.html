@@ -15,7 +15,7 @@
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
-<p class="note">VT-D01 review. The override flow: an operator records that a compensating control is in place, or accepts a risk for a while. It is its own page, like the Phase 1 host actions, reached from "Record a control&hellip;" or "Accept the risk&hellip;" on the Needs attention section. Four states are drawn: the form, the form with errors, the saved result with its audit entry, and a suspended decision.</p>
+<p class="note">VT-D01, approved by the owner 2026-11-19 (PR #265). The override flow: an operator records that a compensating control is in place, or accepts a risk for a while. It is its own page, like the Phase 1 host actions, reached from "Record a control&hellip;" or "Accept the risk&hellip;" on the Needs attention section. Four states are drawn: the form, the form with errors, the saved result with its audit entry, and a suspended decision.</p>
 <p><a href="host-vulns.html#attn">&larr; Media server: vulnerabilities</a></p>
 <div class="page-head"><div><h1>Record a decision</h1><p><span class="mono">DEBIAN-CVE-2026-92010</span> on <a href="host-vulns.html">Media server</a> (<span class="mono">vm-01.example.lan</span>)</p></div></div>
 
@@ -98,7 +98,7 @@
 <div class="table-wrap"><table><caption>A suspended decision on Web A</caption><thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Why this bucket</th></tr></thead><tbody>
 <tr><td><span class="mono">DEBIAN-CVE-2026-90777</span><span class="state-note">openssh-server</span></td><td><span class="sev high">High</span></td><td><span class="override-tag suspended">Decision suspended</span><span class="reason attn">Risk accepted by Example Operator on 2026-10-20 ("only reachable from the admin VLAN"), but on 2026-11-02 CISA listed it as known exploited. The acceptance no longer applies; the finding (still in Needs attention, as it always was) is due a new decision.<span class="rule-id">N1</span></span> <a href="override.html">Record a new decision</a></td></tr>
 </tbody></table></div>
-<p class="note">Audit entries, one action each: <code>vulnerability.decision_recorded</code>, <code>vulnerability.decision_changed</code>, <code>vulnerability.decision_ended</code> (by an operator), <code>vulnerability.decision_expired</code> and <code>vulnerability.decision_suspended</code> (by the system, with the evidence that changed). A decision never changes a finding's state or severity, and it never removes the finding from any open count: the totals stay honest, only the bucket moves. Whether saving needs the second factor is review question V14.</p>
+<p class="note">Audit entries, one action each: <code>vulnerability.decision_recorded</code>, <code>vulnerability.decision_changed</code>, <code>vulnerability.decision_ended</code> (by an operator), <code>vulnerability.decision_expired</code> and <code>vulnerability.decision_suspended</code> (by the system, with the evidence that changed). A decision never changes a finding's state or severity, and it never removes the finding from any open count: the totals stay honest, only the bucket moves. Second factor: not required, except for one action covering more than 10 hosts (decided, <a href="index.html#v14">V14</a>).</p>
 </main>
 </body>
 </html>

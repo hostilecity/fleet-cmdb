@@ -11,7 +11,7 @@ Source for the GitHub issues that track the Fleet CMDB build, designed to be che
 | `review-notes.md` | What the requirements review found (R-01 to R-37) |
 | `_original-requirements.md` | The requirements draft as received, for diffing |
 
-Decisions are not issues: all are decided and recorded as ADRs in `docs/decisions/` (see its index). There are no epic issues for the phases; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. The one exception is the proposed vulnerability triage work (`VT-EPIC`, [specs/vt-epic.md](specs/vt-epic.md)), opened on GitHub as a parent issue with its slices as sub-issues because it is a proposal outside the phases. SETUP-01 and SETUP-02 are done.
+Decisions are not issues: all are decided and recorded as ADRs in `docs/decisions/` (see its index). There are no epic issues for the phases; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. The one exception is the vulnerability triage work (`VT-EPIC`, [specs/vt-epic.md](specs/vt-epic.md), approved 2026-11-19), opened on GitHub as a parent issue with its slices as sub-issues because it sits outside the phases. SETUP-01 and SETUP-02 are done.
 
 ## What a GitHub issue looks like
 
@@ -38,9 +38,9 @@ Nothing else is copied into GitHub, so there is nothing to keep in sync: change 
 | Phase 1 — CMDB & inventory | 21: server (hosts, access, API/enrollment, onboarding, heartbeat, inventory, operability, releases, rollouts), dashboard (3: fleet, actions, audit log), agent (core, install, collectors, reporting, packaging, updater), deployment, verification, acceptance |
 | Phase 2 — Config, CIS & vulnerabilities | 13 |
 | Phase 3 — Remote tasks | 12 |
-| Vulnerability triage (proposed) | 9: an epic and 8 slices (VT-EPIC), not approved; gated by `P2-ACCEPT`, not gating Phase 3. The milestone is created on GitHub only when the owner approves the proposal |
+| Vulnerability triage | 9: an epic and 8 slices (VT-EPIC), approved by the owner 2026-11-19; gated by `P2-ACCEPT`, not gating Phase 3 |
 
-The Phase 2 and Phase 3 counts were corrected to what `import.rb check` prints (13 and 12) in the vulnerability triage proposal (#265).
+The Phase 2 and Phase 3 counts were corrected to what `import.rb check` prints (13 and 12) in the vulnerability triage PR (#265).
 
 Run `ruby docs/backlog/import.rb plan` for the full list in creation order with blockers.
 

@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed); decided in [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md). The buckets, the rules and their order, and the missing-data rules are the epic's VT-M1; work items are VT-M4; where things are computed is VT-M6.
+Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19); decided in [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md). The buckets, the rules and their order, and the missing-data rules are the epic's VT-M1; work items are VT-M4; where things are computed is VT-M6.
 
 ## VT-S05: The classifier, stored buckets, work events, and re-triage
 

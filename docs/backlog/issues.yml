@@ -554,8 +554,8 @@
     - "The delivery note includes the per-task privilege table and the no-arbitrary-shell review note."
   blocked_by: [P3-SECURITY, P3-TASK-MODEL, P3-TASK-API, P3-TASK-CONTROLS, P3-DASH-CREATE, P3-DASH-TASKS, P3-AGENT-LEDGER, P3-AGENT-EXEC, P3-AGENT-TASKS, P3-AGENT-UPDATES]
 
-# Proposed (VT-EPIC, ADR 0032): vulnerability triage. Not approved; built after Phase 2 acceptance (the milestone's gate), not gating Phase 3.
-# Recommended first cut (epic question 21): VT-FIXABLE, VT-SIGNALS, VT-BUCKETS, VT-HOST-TAB, VT-SCORES.
+# Vulnerability triage (VT-EPIC, ADR 0032), approved by the owner 2026-11-19. Built after Phase 2 acceptance (the milestone's gate), not gating Phase 3.
+# First cut (owner decision 21): VT-FIXABLE, VT-SIGNALS, VT-BUCKETS, VT-HOST-TAB, VT-SCORES.
 - key: VT-FIXABLE
   title: "FR-2.6: store whether each open finding has a fix, count it in the summaries, and filter by it (folds in #252)"
   milestone: 4
@@ -647,12 +647,12 @@
   blocked_by: [VT-SCORES, VT-OVERRIDES]
 
 - key: VT-EPIC
-  title: "Proposal: vulnerability triage, risk exposure, and remediation progress (epic)"
+  title: "Vulnerability triage, risk exposure, and remediation progress (epic)"
   milestone: 4
   labels: ["area:server", "area:dashboard"]
   covers: [FR-2.6]
   goal: "Findings are shown as fix available, needs attention, low risk, or ignorable with reasons, and operators see exposure, work, and progress per host and for the fleet."
   done:
-    - "The owner has approved the mockups, ADR 0032, FR-2.6, and the open questions' answers."
+    - "The owner has approved the mockups, ADR 0032, FR-2.6, and the 26 decisions (done 2026-11-19, PR #265)."
     - "Every slice issue is closed, and the bucket counts add up to the open count on every page that shows them."
   blocked_by: [VT-RISK-PAGE, VT-HOST-TAB, VT-APPLICABILITY]

@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed), not in the recommended first cut (epic question 21). There is no fleet-wide vulnerabilities page today (#253); #252's fleet-wide by-package page stays deferred (epic question 22). Drawn in [risk-overview.html](../../mockups/vuln-triage/risk-overview.html).
+Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19), not in the first cut (epic decision 21). There is no fleet-wide vulnerabilities page today (#253); #252's fleet-wide by-package page stays deferred (epic decision 22). Drawn in [risk-overview.html](../../mockups/vuln-triage/risk-overview.html).
 
 ## VT-S08: Daily totals and quick wins
 
@@ -21,7 +21,7 @@ Part of [VT-EPIC](vt-epic.md) (proposed), not in the recommended first cut (epic
 
 ### Scope
 
-- `GET /risk`, **Risk** in the top bar after Compliance (epic question 20): the fleet bucket strip, hosts per tier, the two burn-down charts (SVG with title, description, and a table), most exposed hosts (tier, then points) and most work (work items), top 5 each from the summary indexes, quick wins, hosts with no fixable critical and the longest run, and decisions due (VT-OVERRIDES).
+- `GET /risk`, **Risk** in the top bar after Compliance (epic decision 20): the fleet bucket strip, hosts per tier, the two burn-down charts (SVG with title, description, and a table), most exposed hosts (tier, then points) and most work (work items), top 5 each from the summary indexes, quick wins, hosts with no fixable critical and the longest run, and decisions due (VT-OVERRIDES).
 - No progress figures (they are per host; S5c). Every count says how many hosts were evaluated; staleness qualifiers as on the host tab; the honesty rules of epic VT-M5; no ranking of people.
 - Live refresh as the fleet pages, with a fixed number of statements per view.
 

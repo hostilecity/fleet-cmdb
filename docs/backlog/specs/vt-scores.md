@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed). The tier, points, and work definitions are the epic's VT-M3 and VT-M4. Drawn in [fleet.html](../../mockups/vuln-triage/fleet.html) and [tiles.html](../../mockups/vuln-triage/tiles.html).
+Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19). The tier, points, and work definitions are the epic's VT-M3 and VT-M4. Drawn in [fleet.html](../../mockups/vuln-triage/fleet.html) and [tiles.html](../../mockups/vuln-triage/tiles.html).
 
 ## VT-S07: Tier, points, and work on the summaries
 
@@ -25,7 +25,7 @@ Part of [VT-EPIC](vt-epic.md) (proposed). The tier, points, and work definitions
 
 - Fleet list: the "Open vulnerabilities" column becomes **Exposure** (tier word, points, how many need attention) and **Work** (work items: upgrades, a new kernel, a reboot), sorted by keyset (Exposure: tier, then points). The hostname and tags move under the name, so the table fits the page at 1,280 px (N6; measured in headless Chrome). Progress is not on the fleet list (it is a 30-day window the summaries cannot keep; host tab and tiles only, S5c). A vulnerabilities filter (known exploited, needs attention, has a fix, nothing to install, not evaluated). Not evaluated and not tracked hosts read as today, never 0 points.
 - Fleet compliance panel: one more line with the bucket totals and work items.
-- Host summary tiles: "Open vulnerabilities" becomes **Vulnerability exposure** (tier, points) and **Work remaining** (work items and 30-day progress, read for that host); the Packages tile is dropped, since the Packages tab shows the count (epic question 18).
+- Host summary tiles: "Open vulnerabilities" becomes **Vulnerability exposure** (tier, points) and **Work remaining** (work items and 30-day progress, read for that host); the Packages tile is dropped, since the Packages tab shows the count (epic decision 18).
 - Compliance page: one line of bucket totals under the severity strip, each a filter (`?bucket=`).
 - The honesty rules of epic VT-M5 for every badge and run shown here, including the wording during a run's grace.
 

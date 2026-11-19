@@ -261,9 +261,9 @@ Phase 2 starts only after Phase 1 is accepted.
 - Rules are managed in the dashboard: list and filter, view versions, add one rule from a form and edit a rule, each with a preview of the hosts that would change result before saving, enable and disable, and import a file with a preview of what would change. Rules with several conditions are added by importing a file.
 - Advisory data is managed in the dashboard: sources (OSV and the distribution's triage source), last import, an upload, and a manual feed refresh that is limited to one every 5 minutes.
 
-### FR-2.6 Vulnerability triage and risk exposure (proposed)
+### FR-2.6 Vulnerability triage and risk exposure
 
-Proposed by [VT-EPIC](backlog/specs/vt-epic.md) and [ADR 0032](decisions/0032-vulnerability-triage-buckets.md); not approved, not built. Built after Phase 2 acceptance and does not gate Phase 3.
+Approved by the owner on 2026-11-19 ([VT-EPIC](backlog/specs/vt-epic.md), [ADR 0032](decisions/0032-vulnerability-triage-buckets.md), PR #265); not built yet. Built after Phase 2 acceptance (milestone "Vulnerability triage", gated by P2-ACCEPT) and does not gate Phase 3.
 
 - Every open finding is in exactly one triage bucket (fix available, needs attention, low risk, ignorable), decided by published rules over stored data, with a reason the operator can read. The bucket never changes a finding's state, its normalised severity, or the open counts, and the bucket counts add up to the open count. A kernel fix is shown as its own work (install the new kernel package, or reboot into the installed one). Stale data is still used, and missing or stale data never puts a finding in a less cautious bucket or lowers a score.
 - The server imports exploitation signals (CISA's Known Exploited Vulnerabilities catalog and FIRST's EPSS scores) on a schedule, with the same safeguards as the advisory feeds, and the agent reports what is needed to judge applicability: listening services and a pending reboot, and, where the VM enables it, which libraries are in use. Agents need no internet access and gain no new privilege in their main service.

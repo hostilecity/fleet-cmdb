@@ -15,7 +15,7 @@
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
-<p class="note">VT-D01 review. The host summary tiles (under the host header on every tab) and the exposure score's explanation. Today the second tile is "Open vulnerabilities: 3,765". Proposed: it becomes two tiles, <strong>Vulnerability exposure</strong> and <strong>Work remaining</strong>, and the Packages tile is dropped because the Packages tab already shows the count. That is review question V18.</p>
+<p class="note">VT-D01, approved by the owner 2026-11-19 (PR #265). The host summary tiles (under the host header on every tab) and the exposure score's explanation. Today the second tile is "Open vulnerabilities: 3,765". Approved: it becomes two tiles, <strong>Vulnerability exposure</strong> and <strong>Work remaining</strong>, and the Packages tile is dropped because the Packages tab already shows the count. Decided (<a href="index.html#v18">V18</a>).</p>
 <h1>Summary tiles</h1>
 
 <h2 id="today">Today</h2>
@@ -27,8 +27,8 @@
 </div>
 <p class="state-note">This is the number that does not move when you run <code>apt upgrade</code>.</p>
 
-<h2 id="proposed">Proposed</h2>
-<div class="glance" role="group" aria-label="Host summary, proposed">
+<h2 id="proposed">Approved design</h2>
+<div class="glance" role="group" aria-label="Host summary, approved design">
   <a href="../phase-2/host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
   <a href="host-vulns.html"><span class="label">Vulnerability exposure</span><span class="big"><span class="tier t4">Known exploited</span></span><span class="detail">394 points · 1 known exploited · 9 findings need attention · <span class="muted">why: below</span></span></a>
   <a href="host-vulns.html#work"><span class="label">Work remaining</span><span class="big">5 <small>work items</small></span><span class="detail">4 upgrades and a reboot · clears 78 findings<br><meter class="small" min="0" max="14" value="9">9 of 14</meter> 9 of 14 done in 30 days</span></a>
@@ -57,7 +57,7 @@
   <tr><th scope="row"><span class="bk low">Low risk</span></th><td class="num">2</td><td class="num">1</td><td class="num">0</td><td class="num">0</td></tr>
   <tr><th scope="row"><span class="bk ign">Ignorable</span></th><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
   </tbody></table>
-  <p class="state-note">A known exploited (KEV) advisory scores double, except in Ignorable. An advisory counts once per host, in its worst bucket, however many binary packages it matches. The values are a published constant (review question V13 asks about them).</p>
+  <p class="state-note">A known exploited (KEV) advisory scores double, except in Ignorable. An advisory counts once per host, in its worst bucket, however many binary packages it matches. The values are a published constant (decided, <a href="index.html#v13">V13</a>).</p>
   <p class="state-note"><strong>Tier:</strong> <span class="tier t4">Known exploited</span> if a KEV advisory is in Needs attention or Fix available, or under a control; else <span class="tier t3">Exposed, no fix</span> if a critical or high needs attention; else <span class="tier t2">Fixes waiting</span> if a critical or high has a fix; else <span class="tier t1">Low</span> if any points; else <span class="tier t0">Minimal</span>.</p>
 </section>
 <section class="sheet" aria-labelledby="why-h">

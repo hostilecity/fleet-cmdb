@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed). This slice **folds in #252**: its definition of "fix available" (the advisory names a fixed version for the host's release, the range the installed version is in) and its filter, built so that VT-BUCKETS later only adds buckets beside it. It gives the owner the first visible answer ("what is fixable") before any new data source. The flag says only whether the advisory data names a fix for the release; kernel fixes (K1, K2) and Debian's own fixed version (F2) are VT-BUCKETS' rules, so until then a running kernel's fix shows here as "Fix available" on its package row, and the tab says a kernel fix needs a new package and a reboot.
+Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19). This slice **folds in #252**: its definition of "fix available" (the advisory names a fixed version for the host's release, the range the installed version is in) and its filter, built so that VT-BUCKETS later only adds buckets beside it. It gives the owner the first visible answer ("what is fixable") before any new data source. The flag says only whether the advisory data names a fix for the release; kernel fixes (K1, K2) and Debian's own fixed version (F2) are VT-BUCKETS' rules, so until then a running kernel's fix shows here as "Fix available" on its package row, and the tab says a kernel fix needs a new package and a reboot.
 
 ## VT-S01: A fix flag on the open finding, kept by the matcher, counted by the summaries
 

@@ -2,15 +2,15 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed); decided in [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md). ADR 0022 left "per-finding risk acceptance" for a later decision; this is it. Drawn in [override.html](../../mockups/vuln-triage/override.html).
+Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19); decided in [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md). ADR 0022 left "per-finding risk acceptance" for a later decision; this is it. Drawn in [override.html](../../mockups/vuln-triage/override.html).
 
 ## VT-S06: Decisions
 
 ### Scope
 
 - Table `finding_decisions`: host, advisory, kind (`control`, `accepted`), reason (10 to 1,000 characters, sanitised), expires on (a date), created by and at, ended by, at, and why (`operator`, `expired`, `fixed`, `suspended`, `resolved`), and the evidence at creation (bucket and rule, severity, KEV, EPSS band, attack vector, listening class). One active decision per host and advisory, covering every binary package the advisory matches on the host. A decision is never deleted.
-- Allowed only on findings in Needs attention or Low risk. Expiry at most `FLEET_DECISION_MAX_DAYS` (90), or `FLEET_DECISION_MAX_DAYS_KEV` (30) for a KEV-listed advisory (epic question 15).
-- **Effect** (S1, epic question 12):
+- Allowed only on findings in Needs attention or Low risk. Expiry at most `FLEET_DECISION_MAX_DAYS` (90), or `FLEET_DECISION_MAX_DAYS_KEV` (30) for a KEV-listed advisory (epic decision 15).
+- **Effect** (S1, epic decision 12):
   - **Control in place** (rule O1) moves the finding to Low risk, scored as "Low risk by a control" (10, 5, 2, 1 points; KEV doubled), well above plain Low risk. A KEV-listed finding under a control keeps the "Known exploited" tier.
   - **Risk accepted** changes no bucket, points, or tier. The finding stays where the rules put it (normally Needs attention), marked "risk accepted until ...", and leaves "decisions due". Accepting a risk changes nothing about exposure, so it never lowers the score.
   - Neither changes the finding's state or severity, or removes it from the open count.
@@ -18,7 +18,7 @@ Part of [VT-EPIC](vt-epic.md) (proposed); decided in [ADR 0032](../../decisions/
 - **Several hosts** (N8): one action may cover several hosts with the same open finding, but each host shows its own evidence, and a control must be confirmed host by host (a checkbox per host saying the control exists there). An acceptance may cover them together. Each host gets its own decision and audit entry, with a shared request id.
 - **Audit**, one action each (FR-S.3): `vulnerability.decision_recorded`, `vulnerability.decision_changed`, `vulnerability.decision_ended` (operator), `vulnerability.decision_expired`, `vulnerability.decision_suspended` (system, with the evidence that changed).
 - **Re-classify** the hosts concerned in their transitions after each change (VT-S05).
-- Second factor: not required (epic question 14), except one action covering more than 10 hosts, which uses the existing step-up (P3-S09).
+- Second factor: not required (epic decision 14), except one action covering more than 10 hosts, which uses the existing step-up (P3-S09).
 - Adds the decision links and tags to the host tab (VT-D04).
 
 ### Acceptance criteria

@@ -15,7 +15,7 @@
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
-<p class="note">VT-D01 review. The host's Vulnerabilities tab with every open finding in exactly one of four buckets, each with a reason. It builds on the grouping by package from #253. Example data: a Debian 13 host with 3,765 open findings. It runs kernel <span class="mono">6.12.48+deb13</span> and has <span class="mono">6.12.57+deb13</span> installed but not yet booted. Parts added by later slices are marked: the score breakdown and the run badge (VT-SCORES), decisions (VT-OVERRIDES), and "Listening" (VT-APPLICABILITY).</p>
+<p class="note">VT-D01, approved by the owner 2026-11-19 (PR #265). The host's Vulnerabilities tab with every open finding in exactly one of four buckets, each with a reason. It builds on the grouping by package from #253. Example data: a Debian 13 host with 3,765 open findings. It runs kernel <span class="mono">6.12.48+deb13</span> and has <span class="mono">6.12.57+deb13</span> installed but not yet booted. Parts added by later slices are marked: the score breakdown and the run badge (VT-SCORES), decisions (VT-OVERRIDES), and "Listening" (VT-APPLICABILITY).</p>
 <div class="host-head">
   <div>
     <h1>Media server</h1>
@@ -163,7 +163,7 @@
   </div>
 </details>
 
-<p class="note">Order of the sections: Fix available first because it is the work an operator can do now; Needs attention second, open by default; Low risk and Ignorable closed. Review question V16 on the <a href="index.html#v16">index</a> asks whether Needs attention should come first instead.</p>
+<p class="note">Order of the sections: Fix available first because it is the work an operator can do now; Needs attention second, open by default; Low risk and Ignorable closed. Decided (<a href="index.html#v16">V16</a>): Fix available first.</p>
 <p class="note">The rules (I1, I2, K1, K2, F1, F2, I3, I4, O1, N1 to N4, I5, L1 to L5) and their order are in the <a href="index.html#model">index</a> and in <code>docs/backlog/specs/vt-epic.md</code>. "Listening" comes from the agent's report of listening services (VT-APPLICABILITY, no new privilege). On a host whose agent does not send it, no listening signal is shown and rule L1 never applies.</p>
 </main>
 </body>

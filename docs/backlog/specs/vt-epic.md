@@ -1,8 +1,8 @@
-# VT-EPIC: Vulnerability triage, risk exposure, and remediation progress (proposal)
+# VT-EPIC: Vulnerability triage, risk exposure, and remediation progress
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-**Status: proposed** (epic #264; slices #256 to #263). Nothing here is built. The owner approves the mockups (VT-D01), [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md), the new requirement [FR-2.6](../../requirements.md#fr-26-vulnerability-triage-and-risk-exposure-proposed), and the answers to the open questions at the end before any slice starts. Revised after the independent review of PR #265 (B1, B2, S1 to S12, N1 to N11).
+**Status: approved by the owner on 2026-11-19** (epic #264; slices #256 to #263; PR #265). Nothing here is built yet. The decisions are recorded at the end, "Decided by the owner (2026-11-19)". Revised after the independent review of PR #265 (B1, B2, S1 to S12, N1 to N11) before approval.
 
 ## Why
 
@@ -20,7 +20,7 @@ And a count is not a risk: CVSS "measures the severity of a vulnerability and ..
 
 - Findings are per host, advisory, and binary package; state open, resolved, or reopened (P2-S11). An open finding's fixed version is the chunk verdict's (`chunk_matches.fixed_version`, ADR 0028), not a column of `vulnerability_findings`; `last_fixed_version` is written when an open finding's fix moves (ADR 0028, "As built", item 6). Resolution `fixed` means "the installed version is outside the affected ranges", which also happens when the advisory data changes.
 - #253 (merged) groups a host's findings by package, worst first, with "Fix for N of M" ([P2-D04](p2-dash-host.md#p2-d04-host-vulnerabilities-view)).
-- #252 (open) proposes a fix-available filter. This proposal **folds it in** as [VT-FIXABLE](vt-fixable.md); its questions are answered in question 22.
+- #252 proposed a fix-available filter. It is **folded into** [VT-FIXABLE](vt-fixable.md) by the owner's decision (decision 22) and is closed when PR #265 merges.
 - Debian's triage is imported per release, source package, and CVE: status, urgency (including `unimportant` and `end-of-life`), fixed version, no-DSA note and reason, whether a fix is planned for the next point release, and scope ([P2-S16](p2-debian-triage.md#p2-s16-import-the-debian-security-tracker-data)). DEC-22: it never changes a finding's state, severity, or any count.
 - Advisories keep their raw severity, which is the CVSS v3 vector when there is one (`advisories.severity_raw`, [P2-S10](p2-vulns.md#p2-s10-advisory-model-and-osv-import)).
 - The agent reports the running kernel release (`kernel_version`), running and enabled services, and every installed package with its source, so the server already knows which kernel images are installed and which one is running. It does not report listening sockets, which process uses which package, or a pending reboot.
@@ -37,7 +37,7 @@ Every open or reopened finding is in **exactly one bucket**, decided by the firs
 | **Low risk** | No fix, and no such evidence (local only, needs privileges or a user's action, a minor issue in Debian's judgment, idle on this host), or a compensating control is recorded. | Watch. It moves by itself if evidence appears. |
 | **Ignorable** | Debian or the host's own state says it does not apply here. | Nothing, or tidy up (remove an old kernel). |
 
-The owner asked for three categories; this has four. "Not fixable" splits into **Needs attention** and **Low risk** because on the example host 9 findings have exploitation evidence and 1,230 have none, and one list of 1,239 would bury the 9. The fourth bucket is an owner decision (question 1); merging Low risk into Needs attention or into Ignorable are the alternatives.
+The owner asked for three categories; this has four, which the owner approved (decision 1). "Not fixable" splits into **Needs attention** and **Low risk** because on the example host 9 findings have exploitation evidence and 1,230 have none, and one list of 1,239 would bury the 9. Merging Low risk into Needs attention or into Ignorable were the rejected alternatives.
 
 ### Rules, in order
 
@@ -53,7 +53,7 @@ The owner asked for three categories; this has four. "Not fixable" splits into *
 | 8 | I4 | Ignorable | The tracker marks it resolved for the release at a version the installed version is not older than (dpkg order). | "Debian marks it fixed in X; this host has Y." |
 | 9 | O1 | Low risk | An operator recorded a compensating control, not expired and not suspended ([VT-OVERRIDES](vt-overrides.md)). | "Control in place, recorded by ... until ...: '...'. Without it: Needs attention (N4)." |
 | 10 | N1 | Needs attention | A CVE of the advisory is in the stored KEV catalog. | "On CISA's Known Exploited Vulnerabilities list since 2026-11-02." |
-| 11 | N2 | Needs attention | A CVE of the advisory has a stored EPSS band of "high": a score of at least 0.10, staying high until it falls below 0.07 (question 6). | "FIRST estimates a 31% chance of exploitation activity in the next 30 days." |
+| 11 | N2 | Needs attention | A CVE of the advisory has a stored EPSS band of "high": a score of at least 0.10, staying high until it falls below 0.07 (decision 6). | "FIRST estimates a 31% chance of exploitation activity in the next 30 days." |
 | 12 | I5 | Ignorable | The tracker's urgency for the release is `unimportant`, and KEV data has been imported at least once (rules N1 and N2, above, override it). | "Debian rates it unimportant: it does not affect the Debian binary packages, or is thought unexploitable in most situations." |
 | 13 | N3 | Needs attention | The tracker's urgency for the release is `end-of-life`, or the package is `<removed>` from the release but still installed: no security support. | "Debian no longer supports this package in trixie, so no fix will come." |
 | 14 | N4 | Needs attention | Severity medium or higher, and either the CVSS vector says network, no privileges, no user action, or there is no vector and the tracker's scope is remote; and the agent does not report the package idle. | "Reachable over the network with no login and no user action, and smbd is listening on a network address." |
@@ -69,19 +69,19 @@ Why this order:
 
 - **Applicability first (I1, I2).** A flaw in a kernel that is not running, or in header files, is not exposure. A KEV mark is still shown. I1 also covers a newer kernel installed but not yet booted; its findings are triaged when it runs.
 - **Kernel fixes are their own rules (K1, K2).** In trixie the running image can never be upgraded in place: its fix is another package. K1 says "reboot", K2 "install the new kernel, then reboot". After the reboot the old image's findings move to I1; the work counts as done (VT-M4).
-- **Fix next (F1, F2).** The cheapest action. F2 uses Debian's own per-release fixed version when the advisory data lags; it never resolves a finding (ADR 0032 amends ADR 0011 only for the bucket; question 9).
+- **Fix next (F1, F2).** The cheapest action. F2 uses Debian's own per-release fixed version when the advisory data lags; it never resolves a finding (ADR 0032 amends ADR 0011 only for the bucket; decision 9).
 - **Release not affected (I3, I4) before exploitation signals.** An exploit for code the release does not ship does not apply.
 - **A control (O1) before exploitation signals, but suspended by new ones.** A decision records the evidence it was made on; if a CVE is then added to KEV, crosses the EPSS threshold, or its severity rises, it is suspended and the finding falls through to N1 to N4.
 - **Exploitation (N1, N2) before Debian's "unimportant" (I5).** A KEV listing or a high EPSS is evidence the CVE matters here.
-- **End of life (N3) is not ignorable.** The tracker's `<end-of-life>` tag means a package "not anymore supported by the security team in a (old-)stable release" ([security_tracker.html](https://security-team.debian.org/security_tracker.html), as checked in the review); the tracker's JSON puts it in the urgency field. No fix will ever come, which is a reason to act (question 2).
-- **"Ignored" and "postponed" are not ignorable either.** `<ignored>` means "a valid/strong reason not to fix it" and `<postponed>` "a minor issue ... that may be fixed later" ([LTS team, CVE triage](https://lts-team.pages.debian.net/cve-triage.html)). Neither says the flaw cannot be exploited, so they are L4, overridden by N1, N2, or N4 (question 4). The tracker itself hides them unless asked ("include issues tagged <no-dsa>", [tracker release view](https://security-tracker.debian.org/tracker/status/release/testing)).
-- **Network exposure without agent data fails toward attention (N4)** (question 8).
+- **End of life (N3) is not ignorable.** The tracker's `<end-of-life>` tag means a package "not anymore supported by the security team in a (old-)stable release" ([security_tracker.html](https://security-team.debian.org/security_tracker.html), as checked in the review); the tracker's JSON puts it in the urgency field. No fix will ever come, which is a reason to act (decision 2).
+- **"Ignored" and "postponed" are not ignorable either.** `<ignored>` means "a valid/strong reason not to fix it" and `<postponed>` "a minor issue ... that may be fixed later" ([LTS team, CVE triage](https://lts-team.pages.debian.net/cve-triage.html)). Neither says the flaw cannot be exploited, so they are L4, overridden by N1, N2, or N4 (decision 4). The tracker itself hides them unless asked ("include issues tagged <no-dsa>", [tracker release view](https://security-tracker.debian.org/tracker/status/release/testing)).
+- **Network exposure without agent data fails toward attention (N4)** (decision 8).
 
 ### Missing and stale data (B1, S3)
 
 Missing data never makes a finding look safer, and stale data is still evidence:
 
-- **Stale** (older than the source's age limit, question 7): every rule keeps using the **last stored data**. A KEV-listed finding stays N1; an EPSS-high one stays N2 (KEV entries are almost never removed). Nothing is rewritten when a source goes stale or recovers. Staleness is a read-time qualifier: reasons, the tier, and the freshness line say "not re-checked against KEV since 2026-11-10", and badges that depend on the source are withheld. I5 is **held**: findings keep the I5 they had, from the last stored data, with the same qualifier.
+- **Stale** (older than the source's age limit, decision 7): every rule keeps using the **last stored data**. A KEV-listed finding stays N1; an EPSS-high one stays N2 (KEV entries are almost never removed). Nothing is rewritten when a source goes stale or recovers. Staleness is a read-time qualifier: reasons, the tier, and the freshness line say "not re-checked against KEV since 2026-11-10", and badges that depend on the source are withheld. I5 is **held**: findings keep the I5 they had, from the last stored data, with the same qualifier.
 - **Turned off** (the URL setting emptied): the last data is kept and goes stale, as above. Turning a feed off never lowers a score.
 - **Never imported** (no stored data): N1 or N2 cannot fire and I5 does not apply (those findings fall to L4 or L5, more cautious than Ignorable). The tier and score are shown with "not checked against KEV" (or EPSS), never as a plain lower tier.
 - **A CVE with no EPSS score** (EPSS lags new CVEs): N2 does not fire; its reason says "no EPSS score yet". I5 does not depend on EPSS, so EPSS being off or missing a CVE never moves a finding into or out of Ignorable.
@@ -118,7 +118,7 @@ The server fetches every feed; agents need no internet access. Each new feed fol
 
 - **SSVC** (CERT/CC, CISA) decides with named decision points rather than a score: Exploitation (none, public PoC, active), Exposure (small, controlled, open), Automatable, and impact ([SSVC overview](https://certcc.github.io/SSVC/ssvc_overview)); CISA's outcomes are Track, Track*, Attend, Act ([cisa.gov/ssvc](https://cisa.gov/ssvc)). **Taken:** a small decision tree on inspectable points, each outcome saying which point decided it. N1 is SSVC's "active" exploitation; N4 is "open" exposure plus "automatable".
 - **Tenable VPR** is a proprietary 0.1 to 10 score, and "Tenable does not customize these values for your organization" ([Tenable](https://docs.tenable.com/nessus/Content/RiskMetrics.htm)). **Not taken:** a learned score cannot explain itself.
-- **Qualys TruRisk** sums severity-weighted detection scores per band, scaled by asset criticality ([Qualys](https://docs.qualys.com/en/vmdr/latest/threat/calculating_asset_risk_score.htm)). **Taken:** a host score as a weighted sum by band. **Not taken:** its detection score and asset criticality (question 13).
+- **Qualys TruRisk** sums severity-weighted detection scores per band, scaled by asset criticality ([Qualys](https://docs.qualys.com/en/vmdr/latest/threat/calculating_asset_risk_score.htm)). **Taken:** a host score as a weighted sum by band. **Not taken:** its detection score and asset criticality (decision 13).
 - **Snyk's priority score** adds factors for severity, exploit maturity, reachability, fixability, recency, and social trends ([Snyk](https://docs.snyk.io/manage-issues/issue-management/priority-score)). **Taken:** fixability and exploit maturity as separate factors. **Not taken:** recency and social trends.
 - **Wiz**: "Installed-but-not-running findings drop in priority", "Internet-facing assets jump to the front of the queue", KEV is a "high-confidence urgency signal" ([Wiz](https://www.wiz.io/academy/vulnerability-management/vulnerability-prioritization)). **Taken:** listening and idle (N4, L1), KEV first (N1).
 
@@ -138,7 +138,7 @@ The **tier** is the headline and the first sort key; the **points** order hosts 
 | Low risk | 2 | 1 | 0 | 0 |
 | Ignorable | 0 | 0 | 0 | 0 |
 
-A KEV-listed advisory scores double, except in Ignorable. The values are a published constant (question 13 asks about the values themselves). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
+A KEV-listed advisory scores double, except in Ignorable. The values are a published constant (decision 13). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
 
 Points and tier depend on KEV membership, which the bucket alone does not capture (a KEV listing on a Fix available finding changes no bucket). So the finding stores a `kev` flag beside its bucket, written whenever it changes, and the summary triggers recount on it (S2). EPSS changes points only through the bucket.
 
@@ -171,10 +171,10 @@ What motivates: a meter that moves when work is done, a run to keep, a short lis
 Honesty rules (acceptance criteria for VT-SCORES and VT-RISK-PAGE):
 
 1. A badge states its exact claim and scope in its words, never "secure", "safe", "clean", "compliant", or "protected", and its words are true at the moment shown.
-2. No badge, run, or meter on a host that is not evaluated, or whose package report is older than 3 days (question 7), or when the data a badge depends on is stale; the place says "withheld" and why.
+2. No badge, run, or meter on a host that is not evaluated, or whose package report is older than 3 days (decision 7), or when the data a badge depends on is stale; the place says "withheld" and why.
 3. "Nothing to install" always shows the Needs attention count beside it when that is not zero.
 4. Nothing rewards lowering Low risk or Ignorable counts. Removing old kernels is a "tidy-up" quick win that says it changes no exposure.
-5. A run has a 7-day grace for a new fixable critical (question 7). During the grace the badge says so: "12-day run · 1 fixable critical, 4 days left". After the grace the run ends.
+5. A run has a 7-day grace for a new fixable critical (decision 7). During the grace the badge says so: "12-day run · 1 fixable critical, 4 days left". After the grace the run ends.
 6. Rankings are of hosts and work, never of people.
 7. Jumps the operator did not cause (an advisory import, a feed change) are marked on the burn-down.
 8. Accessibility: words plus shapes, never colour alone; native `<meter>` with numbers in text; SVG charts with a title, a description, and a table; nothing moves on its own; no JavaScript needed; the app's CSP (no inline styles or scripts).
@@ -203,13 +203,13 @@ Honesty rules (acceptance criteria for VT-SCORES and VT-RISK-PAGE):
 
 An advisory every host has, added to KEV, re-triages every host's finding for it: about the cost ADR 0028 measured for an advisory's fan-out (about 20 minutes of one worker at a million hosts), with fleet counts a few minutes behind meanwhile.
 
-## VT-D01: Mockups (delivered in the proposal PR)
+## VT-D01: Mockups (approved 2026-11-19)
 
-Static HTML in [`docs/mockups/vuln-triage/`](../../mockups/vuln-triage/index.html): `index.html`, `host-vulns.html`, `fleet.html`, `risk-overview.html`, `override.html`, `tiles.html`, `states.html`, `data-sources.html`.
+Static HTML in [`docs/mockups/vuln-triage/`](../../mockups/vuln-triage/index.html), approved by the owner on 2026-11-19 in PR #265: `index.html`, `host-vulns.html`, `fleet.html`, `risk-overview.html`, `override.html`, `tiles.html`, `states.html`, `data-sources.html`.
 
 ### Acceptance criteria
 
-- [ ] The owner has approved the mockups in the proposal PR
+- [x] The owner has approved the mockups (PR #265, 2026-11-19)
 - [ ] Every bucket, rule family, signal, and honesty rule above is drawn somewhere, and no screen uses colour alone
 
 ## Slices, in build order
@@ -223,41 +223,41 @@ Static HTML in [`docs/mockups/vuln-triage/`](../../mockups/vuln-triage/index.htm
 7. [VT-APPLICABILITY](vt-applicability.md): listening services and the reboot flag from the agent (no new privilege), and the optional library scan; adds the in-use signals to the tab.
 8. [VT-RISK-PAGE](vt-risk-page.md): the fleet Risk page.
 
-The recommended **first cut** is 1 to 5 (question 21): it answers "what is fixable, what needs attention, what can be ignored, and which hosts have the most work or the worst exposure" with no agent change and no new privilege.
+The **first cut** is 1 to 5 (decision 21): it answers "what is fixable, what needs attention, what can be ignored, and which hosts have the most work or the worst exposure" with no agent change and no new privilege.
 
-## Acceptance criteria (the whole proposal)
+## Acceptance criteria (the whole epic)
 
 - [ ] Every open finding on an evaluated host is in exactly one bucket with a rule id and a readable reason, and the four bucket counts add up to the open count on the host tab, the fleet list, and the Risk page
 - [ ] No finding moves to a less cautious bucket, and no score or tier drops, because data is missing, stale, or turned off; and no badge implies a host is safe
 - [ ] Fleet pages cost the same per page at a million hosts as at 50 (measured with `bin/benchmark`), and nothing is computed per host times findings on a page view
 
-## Open questions for the owner
+## Decided by the owner (2026-11-19)
 
-Each has a recommended default. A reply such as "1 yes, 2 yes, 6 0.05 ..." is enough.
+The owner approved the proposal on 2026-11-19 (PR #265) and answered all 26 open questions with their recommended defaults. The mockups (VT-D01), [ADR 0032](../../decisions/0032-vulnerability-triage-buckets.md), and [FR-2.6](../../requirements.md#fr-26-vulnerability-triage-and-risk-exposure) are approved.
 
-1. **Four buckets, not three.** "Not fixable" split into Needs attention and Low risk (recommended), or three buckets with Low risk merged into Needs attention (long list) or into Ignorable (hides unreviewed findings)?
-2. **Debian end-of-life** in Needs attention (rule N3), not Ignorable as the brief suggested? Recommended: yes.
-3. **Debian unimportant** Ignorable (rule I5) once KEV data exists, with KEV and EPSS overriding it? Recommended: yes.
-4. **No-DSA, postponed, ignored** in Low risk (rule L4) unless an exploitation or exposure rule matches first? Recommended: yes.
-5. **Bucket names.** "Fix available", "Needs attention", "Low risk", "Ignorable" (recommended), or "Safe to ignore" for the last?
-6. **EPSS threshold.** Enter at 0.10, leave below 0.07 (recommended, as settings), a percentile (top 5%), or 0.05?
-7. **Age limits and grace periods.** KEV and EPSS stale after 7 days; badges withheld when the package report is older than 3 days; a 7-day grace for a run. Recommended: as written, all settings.
-8. **Network exposure before the agent reports use.** Keep unauthenticated, network-reachable findings of medium or higher in Needs attention (N4) on hosts with no in-use report? Recommended: yes.
-9. **Debian's fixed version for Fix available (F2).** Use the tracker's per-release fixed version when the advisory data lags, for the bucket only (never to resolve a finding)? This amends ADR 0011's "OSV is the only source of fixes" for the bucket. Recommended: yes.
-10. **Kernels.** Images not running and kernel headers Ignorable (I1, I2); the running image's fixes as "reboot" (K1) or "install the new kernel package, then reboot" (K2), with K2 a documented manual step because the update task installs no new packages (DEC-16)? Recommended: yes. A catalog task to install the kernel metapackage is a separate Phase 3 decision, not proposed here.
-11. **New outbound sources.** KEV (the GitHub mirror by default, cisa.gov as the alternative) and EPSS on by default, each with a URL setting and an offline import task? Recommended: yes.
-12. **Accepted risks.** An accepted risk keeps its bucket, points, and tier, marked, and leaves "decisions due" (recommended); only a recorded control moves a finding to Low risk, scored above plain Low risk?
-13. **Score values.** The tier as the headline and first sort key, then points from the table (40/20/8/2, 20/10/4/1, 10/5/2/1, 2/1/0/0, KEV doubled, each advisory once per host)? No per-host weight now. Recommended: yes, with the values as written.
-14. **Second factor for decisions.** Not required, except one action covering more than 10 hosts. Recommended.
-15. **Decision limits.** Reason required (10 to 1,000 characters), at most 90 days (30 for KEV), only on Needs attention and Low risk findings, controls confirmed host by host. Recommended.
-16. **Host tab section order.** Fix available first (recommended) or Needs attention first?
-17. **Host tab count.** The tab bar shows "N to act on" (Fix available plus Needs attention) instead of the open count, which stays in the tab's heading? Recommended: yes.
-18. **Host summary tiles.** "Open vulnerabilities" becomes "Vulnerability exposure" and "Work remaining"; the Packages tile is dropped (the Packages tab shows the count)? Recommended: yes.
-19. **Fleet list.** "Open vulnerabilities" becomes sortable "Exposure" and "Work" columns, and the hostname and tags move under the name to keep the table within the page? Recommended: yes.
-20. **A Risk page** after Compliance (recommended), or these panels on Compliance?
-21. **First cut.** Build VT-FIXABLE, VT-SIGNALS, VT-BUCKETS, VT-HOST-TAB, and VT-SCORES first, and decide decisions (VT-OVERRIDES), the agent changes (VT-APPLICABILITY), and the Risk page after using them? Recommended: yes.
-22. **#252.** Fold it into VT-FIXABLE and close it when this is approved, with its answers: Q1 "Fix available"; Q2 yes, plus F2 (question 9); Q3 not now; Q4 replaced by the bucket line and the fleet columns; Q5 the fleet-wide by-package page is **deferred**, not replaced (the Risk page shows only the top quick wins); Q6 yes; Q7 yes; Q8 a finding in this bucket of this severity; Q9 yes, host tab only, for package upgrades (not kernels); Q10 the tab shows every bucket; Q11 no, the buckets use triage instead and say so; Q12 keep severity first inside each bucket. Recommended: yes.
-23. **In-use detection.** Listening services from `/proc/net` and socket cgroups (no new privilege) in the main agent; the library scan only as a separate, short-lived unit with `CAP_SYS_PTRACE` and no network, off by default and enabled per VM? Recommended: yes (VT-APPLICABILITY).
-24. **Suggested controls** from a short table in the repository, advice only? Recommended: yes.
-25. **Burn-down history** kept 400 days? Recommended: yes.
-26. **Milestone.** A separate "Vulnerability triage (proposed)" milestone after Phase 2 acceptance, not gating Phase 3, created on GitHub only when approved? Recommended: yes.
+1. **Four buckets.** "Not fixable" splits into Needs attention and Low risk: Fix available, Needs attention, Low risk, Ignorable.
+2. **Debian end-of-life** is Needs attention (rule N3), not Ignorable.
+3. **Debian unimportant** is Ignorable (rule I5) once KEV data exists; KEV and EPSS (N1, N2) override it.
+4. **No-DSA, postponed, ignored** are Low risk (rule L4) unless an exploitation or exposure rule matches first.
+5. **Bucket names:** "Fix available", "Needs attention", "Low risk", "Ignorable".
+6. **EPSS threshold:** enter at 0.10, leave below 0.07, as settings.
+7. **Age limits and grace periods:** KEV and EPSS stale after 7 days; badges withheld when the package report is older than 3 days; a 7-day grace for a run; all settings.
+8. **Network exposure before the agent reports use:** unauthenticated, network-reachable findings of medium or higher stay in Needs attention (N4) on hosts with no in-use report.
+9. **Debian's fixed version for Fix available (F2):** used when the advisory data lags, for the bucket only, never to resolve a finding (ADR 0032 amends ADR 0011 there).
+10. **Kernels:** images not running and kernel headers Ignorable (I1, I2); the running image's fixes as "reboot" (K1) or "install the new kernel package, then reboot" (K2), K2 a documented manual step. No kernel-install catalog task.
+11. **New outbound sources:** KEV (the GitHub mirror by default, cisa.gov as the alternative) and EPSS on by default, each with a URL setting and an offline import task.
+12. **Accepted risks** keep their bucket, points, and tier, marked, and leave "decisions due"; only a recorded control moves a finding to Low risk, scored above plain Low risk.
+13. **Score:** the tier is the headline and first sort key, then points from the table as written (40/20/8/2, 20/10/4/1, 10/5/2/1, 2/1/0/0, KEV doubled, each advisory once per host). No per-host weight.
+14. **Second factor for decisions:** not required, except one action covering more than 10 hosts.
+15. **Decision limits:** reason required (10 to 1,000 characters), at most 90 days (30 for KEV), only on Needs attention and Low risk findings, controls confirmed host by host.
+16. **Host tab section order:** Fix available first.
+17. **Host tab count:** "N to act on" (Fix available plus Needs attention); the open count stays in the heading.
+18. **Host summary tiles:** "Open vulnerabilities" becomes "Vulnerability exposure" and "Work remaining"; the Packages tile is dropped.
+19. **Fleet list:** sortable "Exposure" and "Work" columns replace "Open vulnerabilities"; hostname and tags move under the name.
+20. **A Risk page** after Compliance in the top bar.
+21. **First cut:** VT-FIXABLE (#256), VT-SIGNALS (#257), VT-BUCKETS (#259), VT-HOST-TAB (#260), VT-SCORES (#262) first; VT-OVERRIDES (#261), VT-APPLICABILITY (#258), and VT-RISK-PAGE (#263) after.
+22. **#252** is folded into VT-FIXABLE (#256) and closed when PR #265 merges. Its answers: Q1 "Fix available"; Q2 yes, plus F2; Q3 not now; Q4 replaced by the bucket line and the fleet columns; Q5 the fleet-wide by-package page is deferred; Q6 yes; Q7 yes; Q8 a finding in this bucket of this severity; Q9 yes, host tab only, for package upgrades; Q10 the tab shows every bucket; Q11 no, the buckets use triage instead; Q12 severity first inside each bucket.
+23. **In-use detection:** listening services from `/proc/net` and socket cgroups (no new privilege) in the main agent; the library scan only as a separate, short-lived unit with `CAP_SYS_PTRACE` and no network, off by default and enabled per VM.
+24. **Suggested controls** come from a short table in the repository, advice only.
+25. **Burn-down history** is kept 400 days.
+26. **Milestone:** "Vulnerability triage", gated by `P2-ACCEPT` (#28), not gating Phase 3, created on GitHub at approval.
