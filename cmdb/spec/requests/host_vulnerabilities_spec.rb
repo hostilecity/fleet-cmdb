@@ -65,6 +65,65 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(page.at_css("#advisory_freshness").text.squish).to start_with("Advisory data last updated: Debian:13")
     end
 
+    it "draws one page of rows, a package going on over the next page, with the counts of every finding (#perf)" do
+      stub_const("HostVulnerabilitiesController::ROWS_PER_PAGE", 3)
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(words(page.at_css("#open_heading"))).to eq("Open findings 5: 2 high, 1 medium, 2 low")
+      expect(groups("open_list").map { |row, advisories| [ row, advisories.map(&:first) ] }).to eq([
+        [ "acme-daemon:amd64 installed 1.0-1 High worst of 2 2 findings", [ "DSA-9100-1 Example: a flaw in acme.", "DSA-9101-1 Example: a flaw in acme." ] ],
+        [ "libacme1:amd64 installed 1.0-1 High worst of 2 2 findings", [ "DSA-9100-1 Example: a flaw in acme." ] ]
+      ])
+      pager = page.at_css("#finding_pager")
+      expect(words(pager)).to eq("Findings 1–3 of 5. Sorted by worst severity, then first seen. Previous · Page 1 of 2 · Next")
+      expect(pager.at_css("a[rel=next]")["href"]).to eq("/hosts/#{host.id}/vulnerabilities?page=2")
+
+      get pager.at_css("a[rel=next]")["href"]
+      expect(words(page.at_css("#open_heading"))).to eq("Open findings 5: 2 high, 1 medium, 2 low")
+      expect(groups("open_list").map { |row, advisories| [ row, advisories.map(&:first) ] }).to eq([
+        [ "libacme1:amd64 installed 1.0-1 continued from the previous page High worst of 2 2 findings", [ "DSA-9101-1 Example: a flaw in acme." ] ],
+        [ "acme-docs:all installed 1.0-1 Medium worst of 1 1 finding", [ "DSA-9102-1 No link recorded Example: a flaw in acme-docs." ] ]
+      ])
+      expect(words(page.at_css("#finding_pager"))).to eq("Findings 4–5 of 5. Sorted by worst severity, then first seen. Previous · Page 2 of 2 · Next")
+      expect(page.at_css("#finding_pager a[rel=prev]")["href"]).to eq("/hosts/#{host.id}/vulnerabilities")
+
+      # The filters stay in the pager's links, a page past the end shows the last, and one page needs no pager.
+      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", q: "acme", page: 9 }
+      expect(words(page.at_css("#finding_pager"))).to start_with("Findings 4–5 of 5 matching.")
+      expect(Rack::Utils.parse_query(URI(page.at_css("#finding_pager a[rel=prev]")["href"]).query)).to eq("state" => "all", "q" => "acme")
+      expect(words(page.at_css("#resolved_findings"))).to eq("Resolved findings 0 No resolved findings match.")
+      get "/hosts/#{host.id}/vulnerabilities", params: { severity: "low" }
+      expect(page.at_css("#finding_pager")).to be_nil
+      expect(page.css("#open_list tr.nested").size).to eq(2)
+    end
+
+    it "with resolved findings too, lists the open groups first and says where each section's rows are (#perf)" do
+      stub_const("HostVulnerabilitiesController::ROWS_PER_PAGE", 2)
+      report_packages(host, [ [ "acme-daemon", "1.0-1", "acme" ], [ "libacme1", "1.0-1", "acme" ], [ "bash", "5.2.37-1", "bash" ], [ "acme-docs", "2.0-1", "acme-docs", "all" ] ])
+      match(host, at: start + 1.hour)
+      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", page: 2 }
+      expect(groups("open_list").map(&:first)).to eq([ "libacme1:amd64 installed 1.0-1 High worst of 2 2 findings" ])
+      expect(words(page.at_css("#resolved_findings"))).to eq("Resolved findings 1 Listed on later pages.")
+      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", page: 3 }
+      expect(words(page.at_css("#open_findings"))).to start_with("Open findings 4: 2 high, 2 low Listed on earlier pages.")
+      expect(groups("resolved_list").map(&:first)).to eq([ "acme-docs:all installed 2.0-1 Medium worst of 1 1 finding" ])
+    end
+
+    it "runs the same statements and draws one page whatever the number of findings (#perf)" do
+      stub_const("HostVulnerabilitiesController::ROWS_PER_PAGE", 4)
+      statements = lambda do
+        sql = []
+        counter = ->(*, payload) { sql << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:cached] }
+        ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { get "/hosts/#{host.id}/vulnerabilities" }
+        sql.size
+      end
+      before = statements.call
+      import_advisories(*Array.new(20) { |i| advisory("DSA-92#{format('%02d', i)}-1", i.even? ? "acme" : "bash", fixed: nil) })
+      match(host, at: start + 1.hour)
+      expect(statements.call).to eq(before)
+      expect(words(page.at_css("#open_heading"))).to start_with("Open findings 35:")
+      expect(page.css("#open_list tr.nested").size).to eq(4)
+    end
+
     it "filters by severity on single advisories, and by state and text, keeping the filters in the URL" do
       get "/hosts/#{host.id}/vulnerabilities", params: { severity: "low" }
       expect(groups("open_list").map(&:first)).to eq([ "acme-daemon:amd64 installed 1.0-1 Low worst of 1 1 finding", "libacme1:amd64 installed 1.0-1 Low worst of 1 1 finding" ])

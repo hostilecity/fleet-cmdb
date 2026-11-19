@@ -55,8 +55,10 @@
       <h2 id="open_heading">Open findings <span class="muted"><%= open.size %><%= ": #{severity_counts(open.map { |f| f.advisory.severity }.tally.sort_by { |s, _| Advisory::SEVERITIES.index(s) })}" if open.any? %></span></h2>
       <% if @open_groups.empty? %>
         <p class="muted">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
+      <% elsif @open_page.empty? %>
+        <p class="muted" id="open_on_earlier_pages">Listed on earlier pages.</p>
       <% else %>
-        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_groups, caption: "Open and reopened vulnerability findings", id: "open_list",
+        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_page, caption: "Open and reopened vulnerability findings", id: "open_list",
                                                   triage: @triage, triage_status: @triage_status, triage_os: @triage_os %>
       <% end %>
     </section>
@@ -67,10 +69,22 @@
       <h2 id="resolved_heading">Resolved findings <span class="muted"><%= resolved.size %></span></h2>
       <% if @resolved_groups.empty? %>
         <p class="muted"><%= filtered ? "No resolved findings match." : "None yet." %></p>
+      <% elsif @resolved_page.empty? %>
+        <p class="muted" id="resolved_on_later_pages">Listed on later pages.</p>
       <% else %>
-        <%= render "host_vulnerabilities/groups", host: @host, groups: @resolved_groups, caption: "Resolved vulnerability findings", id: "resolved_list" %>
+        <%= render "host_vulnerabilities/groups", host: @host, groups: @resolved_page, caption: "Resolved vulnerability findings", id: "resolved_list" %>
         <p class="pager"><span>Showing <%= pluralize(resolved.size, "resolved finding") %>.</span><span>Sorted by severity, then first seen.</span></p>
       <% end %>
     </section>
+  <% end %>
+  <% if @pages > 1 %>
+    <nav class="pager" aria-label="Finding pages" id="finding_pager">
+      <span>Findings <%= number_with_delimiter(@first_row) %>&ndash;<%= number_with_delimiter(@last_row) %> of <%= number_with_delimiter(@row_count) %><%= " matching" if filtered %>. Sorted by worst severity, then first seen.</span>
+      <span>
+        <% if @page > 1 %><%= link_to "Previous", vulnerabilities_host_path(@host, page_params(@page - 1)), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+        &middot; Page <%= @page %> of <%= @pages %> &middot;
+        <% if @page < @pages %><%= link_to "Next", vulnerabilities_host_path(@host, page_params(@page + 1)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+      </span>
+    </nav>
   <% end %>
 <% end %>

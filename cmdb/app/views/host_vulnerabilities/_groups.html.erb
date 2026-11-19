@@ -6,9 +6,9 @@
   <% groups.each do |group| %>
     <tbody>
       <tr class="pkg-group"><th scope="rowgroup" colspan="2"><%= link_to "#{group.package}:#{group.architecture}", package_vulnerabilities_host_path(host, package: group.package), class: "mono" %>
-        <span class="muted">installed</span> <span class="mono"><%= group.installed_version %></span></th>
+        <span class="muted">installed</span> <span class="mono"><%= group.installed_version %></span><% if group.continued %> <span class="state-note">continued from the previous page</span><% end %></th>
         <td><%= severity_tag(group.worst) %> <span class="state-note">worst of <%= group.findings.size %></span></td><td colspan="3"><%= pluralize(group.findings.size, "finding") %></td></tr>
-      <% group.findings.each do |finding| %>
+      <% group.rows.each do |finding| %>
         <tr class="nested finding <%= finding.state %>"><td></td><td><%= advisory_cell(finding.advisory) %><% if triage && finding.state != "resolved" %><%= triage_lines(finding, triage[finding], page: :tab, status: local_assigns[:triage_status], os: local_assigns[:triage_os]) %><% end %></td><td><%= severity_tag(finding.advisory.severity) %></td>
           <td><%= fixed_in(finding) %></td>
           <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>

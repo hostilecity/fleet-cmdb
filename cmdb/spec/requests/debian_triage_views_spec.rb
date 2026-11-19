@@ -525,7 +525,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
 
     tab = ->(host, **params) { count_queries { get "/hosts/#{host.id}/vulnerabilities", params: } }
     tab.call(large) # warm up
-    expect(page.css("#open_list .triage").size).to eq(500)
+    expect(page.css("#open_list .triage").size).to eq(HostVulnerabilitiesController::ROWS_PER_PAGE) # one page of the 500 (#perf)
     expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 200")
     queries = tab.call(large)
     expect(queries).to eq(tab.call(small))
