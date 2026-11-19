@@ -562,6 +562,37 @@ mod tests {
         assert_eq!(values("RestartMode"), ["direct"]);
     }
 
+    #[test]
+    fn memory_and_task_limits_bound_the_agent_but_never_the_rollback() {
+        // #182: a leak or a runaway loop is stopped in the agent's own cgroup, far above what it uses.
+        // No swap, so MemoryMax is the real ceiling; systemd stops the whole unit on an OOM kill, so
+        // Restart= and OnFailure= (ADR 0030) take over as for any failure.
+        for unit_values in [values, recovery_values] {
+            // No MemoryHigh= (owner, 2026-11-18): a leak is killed and restarted, not slowed down.
+            assert!(unit_values("MemoryHigh").is_empty());
+            assert_eq!(unit_values("MemoryMax"), ["128M"]);
+            assert_eq!(unit_values("MemorySwapMax"), ["0"]);
+            assert_eq!(unit_values("OOMPolicy"), ["stop"]);
+            assert_eq!(unit_values("TasksMax"), ["64"]);
+        }
+        // The rollback unit is the step a limit must never stop (it acts once the service has failed,
+        // possibly because the service hit its limit).
+        for key in [
+            "MemoryHigh",
+            "MemoryMax",
+            "MemorySwapMax",
+            "TasksMax",
+            "OOMPolicy",
+        ] {
+            assert!(
+                !ROLLBACK_UNIT
+                    .lines()
+                    .any(|l| l.starts_with(&format!("{key}="))),
+                "the rollback unit sets {key}="
+            );
+        }
+    }
+
     /// The values of `key=` in the recovery unit, in order.
     fn recovery_values(key: &str) -> Vec<&'static str> {
         RECOVERY_UNIT

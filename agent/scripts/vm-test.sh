@@ -776,6 +776,7 @@ package_report_matches_dpkg() {
         fail "the skipped packages differ from the interrupted installations on the VM (< dpkg-query, > report)"
     fi
     echo "the package report lists the same $count packages as dpkg-query, with their source packages ($(printf '%s\n' "$skipped" | grep -c .) skipped)"
+    agent_limits "startup reports, $count packages"
     printf '%s' "$count packages, equal to dpkg-query" > "$tmp/last-result"
 }
 
@@ -887,6 +888,7 @@ packages_upgraded() {
     wait_until "a package report with fvt-demo 1.1" 120 package_report_since "$started" 1.1
     vm 'rm -f /run/reboot-required'
     echo "fvt-demo 1.0 -> 1.1, fvt-held and fvt-rm held back, reboot required and not done, fvt-demo.service named and not restarted, package report sent"
+    agent_limits "apply_package_updates and its package report"
     printf '%s' "succeeded: 1 upgraded, 2 held back, reboot_required" > "$tmp/last-result"
 }
 
@@ -932,7 +934,47 @@ forced_timeout() {
     status=$(vm "dpkg-query -W -f '\${db:Status-Abbrev}' fvt-hang")
     [ "$status" != "ii " ] || fail "fvt-hang is fully installed: the upgrade was not stopped"
     echo "stopped at the deadline; fvt-hang left as '$status', as the repair guidance says"
+    agent_limits "an upgrade stopped at its deadline"
 }
+
+# --- Memory and task limits (#182) -------------------------------------------------------------------
+
+# agent_limits LABEL: the service's peaks so far (since its last start) and its limit events; fails if the
+# agent reached MemoryMax or TasksMax (or a MemoryHigh, if a drop-in sets one). The peaks are kept for scenario 374.
+agent_limits() {
+    local seen event count
+    # shellcheck disable=SC2016 # expanded in the guest
+    seen=$(vm 'cg=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value)
+echo "memory.peak $(cat "$cg/memory.peak" 2> /dev/null || echo unknown)"
+echo "pids.peak $(cat "$cg/pids.peak" 2> /dev/null || echo unknown)"
+sed "s/^/memory.events./" "$cg/memory.events"
+sed "s/^/pids.events./" "$cg/pids.events"')
+    echo "limits, $1: $(printf '%s\n' "$seen" | tr '\n' ' ')"
+    printf '%s: %s\n' "$1" "$(printf '%s\n' "$seen" | grep -E '^(memory|pids)\.peak ' | tr '\n' ' ' | sed 's/ $//')" \
+        >> "$tmp/limits-peaks"
+    for event in memory.events.high memory.events.max memory.events.oom_kill pids.events.max; do
+        count=$(printf '%s\n' "$seen" | awk -v e="$event" '$1 == e { print $2 }')
+        [ "${count:-0}" = 0 ] || fail "$1: the agent reached a limit ($event $count)"
+    done
+}
+
+within_limits() {
+    local want shown
+    want=$(unit_limits "$here/../src/install/fleet-agent.service")
+    for unit in fleet-agent fleet-agent-recovery; do
+        shown=$(vm "systemctl show $unit -p MemoryHigh -p MemoryMax -p MemorySwapMax -p OOMPolicy -p TasksMax" \
+            | sort | tr '\n' ' ' | sed 's/ $//')
+        [ "$shown" = "$want" ] || fail "$unit has '$shown', the unit file says '$want'"
+    done
+    # No OOM kill of the agent in any scenario the journal still holds (this boot at least).
+    if vm "journalctl -u fleet-agent --no-pager -o cat | grep -q oom-kill"; then
+        fail "the agent was killed for memory: $(vm 'journalctl -u fleet-agent --no-pager -o short-iso | grep -B2 oom-kill | tail -n 6')"
+    fi
+    agent_limits "now"
+    cat "$tmp/limits-peaks"
+    printf '%s' "limits applied ($want); never reached; peaks: $(tr '\n' ';' < "$tmp/limits-peaks" | sed 's/;$//')" > "$tmp/last-result"
+}
+
 
 # --- Running and recording (vm-test-record.sh) -------------------------------------------------------
 
@@ -957,6 +999,7 @@ record_header() {
     echo "The package report check (AC-2.3) compares the agent's startup package report with \`dpkg-query --show\` on the VM."
     echo "The package update scenarios (P3-AGENT-UPDATES) run the real apply_package_updates task against a local repository of test packages built in the guest."
     echo "The units scenario (#232) starts from units older than recovery mode and checks that the confirmed update writes the new version's."
+    echo "The limits scenario (#182) checks the installed unit's memory and task limits are applied, and that no scenario brought the agent to them; it lists the peaks measured after the package scenarios."
     echo "The recovery mode scenario (#180, ADR 0030) makes a confirmed $FAULTY (the VM fault build) crash-loop and checks that recovery mode installs $FIXED."
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
@@ -974,6 +1017,7 @@ scenario 370 "Package updates applied, no reboot (AC-3.4, AC-3.5)" packages_upgr
 scenario 371 "Package manager lock held: lock_timeout" lock_contention
 scenario 372 "Agent restarted during the upgrade (L8)" agent_restart_mid_upgrade
 scenario 373 "Forced timeout ends the process tree" forced_timeout
+scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits
 scenario 307 "Crash loop on a confirmed version: recovery mode (#180)" recovery_mode
 
 # shellcheck disable=SC2016 # expanded in the guest

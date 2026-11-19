@@ -332,27 +332,42 @@ pub fn run_bounded(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot run it: {e}"))?;
+    // `Builder`, not `thread::spawn`, which panics when no thread can be started (for example at the
+    // unit's TasksMax=, #182): the update then fails with a reason instead.
     let read = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(pipe) = pipe {
-                let _ = pipe.take(8 * 1024).read_to_end(&mut bytes);
-            }
-            String::from_utf8_lossy(&bytes).into_owned()
-        })
+        std::thread::Builder::new()
+            .name("fleet-agent-self-test-output".into())
+            .spawn(move || {
+                let mut bytes = Vec::new();
+                if let Some(pipe) = pipe {
+                    let _ = pipe.take(8 * 1024).read_to_end(&mut bytes);
+                }
+                String::from_utf8_lossy(&bytes).into_owned()
+            })
     };
-    let stdout = read(
+    let readers = read(
         child
             .stdout
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
-    );
-    let stderr = read(
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn Read + Send>),
-    );
+    )
+    .and_then(|stdout| {
+        read(
+            child
+                .stderr
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        )
+        .map(|stderr| (stdout, stderr))
+    });
+    let (stdout, stderr) = match readers {
+        Ok(readers) => readers,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("cannot read its output: {e}"));
+        }
+    };
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {

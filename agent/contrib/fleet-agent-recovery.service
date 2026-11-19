@@ -37,6 +37,13 @@ StateDirectory=fleet-agent
 StateDirectoryMode=0700
 UMask=0077
 
+# Resources (#182): the service's limits. Recovery mode runs no collector, so it uses less; a limit it
+# hits is one more failure, retried after the delay above.
+MemoryMax=128M
+MemorySwapMax=0
+OOMPolicy=stop
+TasksMax=64
+
 CapabilityBoundingSet=
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes

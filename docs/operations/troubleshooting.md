@@ -84,9 +84,49 @@ The agent logs `this host's clock differs from the server's`. The server always 
 
 ## A host stays offline
 
-1. On the VM: `systemctl status fleet-agent`. If it is not running, `journalctl -u fleet-agent -n 50` says why (often a config error, exit code 78, which names the key at fault).
+1. On the VM: `systemctl status fleet-agent`. If it is not running, `journalctl -u fleet-agent -n 50` says why (often a config error, exit code 78, which names the key at fault). If it runs but keeps restarting (`systemctl show fleet-agent -p NRestarts` grows, or the host shows **Recovering**), check whether it is being killed at its memory limit ([below](#the-agent-was-killed-for-using-too-much-memory)).
 2. If it is running, its log shows whether requests fail: `cannot reach the fleet server` is a network, DNS, or certificate problem (above); `401` is a credential problem (above); `the server is rate limiting this agent` is the server's own limit (a minute at most), which resolves itself. `too many requests (429), but not the fleet server's own rate limit (perhaps a proxy or load balancer in front of it)` comes from something in front of the server, and may not resolve itself (a misconfigured edge limit, for example): check the rate limits of the proxy, load balancer, or CDN on the agent hostname. Meanwhile the agent keeps retrying with its normal backoff, at most 5 minutes apart, and ignores that answer's `Retry-After`. To have agents wait out an edge limit instead, see [scaling.md](scaling.md) ("Rate limit at the edge").
 3. On the server: `docker exec fleet-cmdb curl -s http://localhost:3000/health`. If `job_liveness` is `failing`, the liveness evaluation is not running, so no host's status changes: check `docker ps --filter name=fleet-cmdb` and `docker logs fleet-cmdb` (or `docker logs fleet-cmdb-jobs` with `FLEET_JOBS_CONTAINER=true`) on the server, and the failed jobs page. If the jobs container keeps restarting or the deploy said its workers did not start, no background job runs at all: fix what its log says, or set `FLEET_JOBS_CONTAINER=false` and run the Deploy workflow again, which goes back to one container with the jobs inside.
+
+## The agent was killed for using too much memory
+
+The agent's unit caps its memory at 128 MiB and its threads and processes at 64 (#182). It needs about 8 MiB at rest, and about 81 MiB at most on a host with 20,000 packages (most of it `dpkg-query`'s; the agent runs one listing at a time). If it reaches 128 MiB, the kernel kills it in its own cgroup and systemd restarts it 10 seconds later. A slow leak, or a host with too many packages, shows only as restarts: the host stays online (a heartbeat goes out at every start), but sends no package report, and `systemctl show fleet-agent -p NRestarts` keeps growing. The server does not show those restarts yet (#251). So look here when a host is online but its package report is missing or old. If the kills come at four starts within five minutes, systemd stops restarting it, and the agent goes into recovery mode. The host then shows **Recovering**, with the reason `fleet-agent.service kept failing and systemd stopped restarting it (oom-kill, last exit killed KILL)`, or `(signal, last exit killed KILL)`.
+
+1. **See it in the journal:**
+
+   ```sh
+   journalctl -u fleet-agent -u fleet-agent-recovery --since "1 day ago" | grep -iE 'oom|killed|start-limit'
+   journalctl -k --since "1 day ago" | grep -i 'memory cgroup out of memory'
+   systemctl show fleet-agent -p NRestarts -p Result -p MemoryPeak -p MemoryMax -p TasksMax
+   ```
+
+   The kernel's `Memory cgroup out of memory: Killed process ...` line, with `oom_memcg=/system.slice/fleet-agent.service` just before it, is the reliable sign of the memory limit, and names the process it killed: `fleet-agent`, or its `dpkg-query` on a host with very many packages. systemd's own lines vary: `A process of this unit has been killed by the OOM killer` and `Failed with result 'oom-kill'`, or only `Failed with result 'signal'` with status `KILL` when the agent itself was killed and systemd saw its exit first. `Resource temporarily unavailable (os error 11)` in the agent's own lines, when it starts a program or a thread, means the task limit. (`MemoryPeak` needs systemd 256 or later, as in Debian 13; on older systemd read `/sys/fs/cgroup/system.slice/fleet-agent.service/memory.peak`.)
+
+2. **Count the packages** (`dpkg-query -W | wc -l`). Below 20,000, the agent should never come near the limit: this is a bug, most likely a leak in the release it runs. Report it with the journal lines, and roll out a fixed release when there is one; recovery mode keeps the host reachable for it meanwhile. Above about 35,000, `dpkg-query` itself needs more than the limit allows, so every listing is killed. The agent is then restarted every few minutes (after a restart, the package report waits a random 0 to 10 minutes) and seldom reaches recovery mode, so the host looks online with no package report. Raise the limit (next step).
+
+3. **Raise the limit with a drop-in**, never in the unit file, which the installer replaces:
+
+   ```sh
+   sudo systemctl edit fleet-agent
+   ```
+
+   and add, between the comment lines:
+
+   ```ini
+   [Service]
+   MemoryMax=256M
+   ```
+
+   (`TasksMax=128` for the task limit; `MemoryMax=infinity` removes the memory limit.) For recovery mode, do the same with `sudo systemctl edit fleet-agent-recovery`. Then start the agent again:
+
+   ```sh
+   sudo systemctl reset-failed fleet-agent && sudo systemctl start fleet-agent
+   systemctl show fleet-agent -p MemoryMax -p TasksMax   # the new values, in bytes
+   ```
+
+   Recovery mode sees the service running and exits by itself. The drop-in stays across updates, re-installs, and unit refreshes. `sudo systemctl revert fleet-agent` removes it.
+
+**`MemoryMax=infinity` on a VM you did not change** means its units are older than #182. The installer writes the limits, and so does a confirmed update from a release that refreshes the units (#232); an update from an older release does not. If the installed version has the limits, `sudo fleet-agent install --refresh-units` writes its units; otherwise run the installer of the current release ([install-agent.md](install-agent.md#by-hand-on-one-vm)).
 
 ## The onboarding request expired
 

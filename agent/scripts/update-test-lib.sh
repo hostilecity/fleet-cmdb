@@ -44,3 +44,21 @@ esac
 EOF
     chmod 0755 "$1"
 }
+
+# unit_limits UNIT_FILE: the memory and task limits UNIT_FILE sets (#182), as one line in the form
+# `systemctl show -p MemoryHigh -p MemoryMax -p MemorySwapMax -p OOMPolicy -p TasksMax | sort` prints them
+# (sizes in bytes, `infinity` for one the file does not set), so a test can compare the unit with what
+# systemd applies.
+unit_limits() {
+    local key value
+    for key in MemoryHigh MemoryMax MemorySwapMax OOMPolicy TasksMax; do
+        value=$(sed -n "s/^$key=//p" "$1" | tail -n 1)
+        case "$value" in
+            *K) value=$((${value%K} * 1024)) ;;
+            *M) value=$((${value%M} * 1024 * 1024)) ;;
+            *G) value=$((${value%G} * 1024 * 1024 * 1024)) ;;
+            "") value=infinity ;;
+        esac
+        printf '%s=%s\n' "$key" "$value"
+    done | sort | tr '\n' ' ' | sed 's/ $//'
+}

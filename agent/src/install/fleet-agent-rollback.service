@@ -6,7 +6,8 @@
 # version that has not yet confirmed an agent update (P1-AGENT-UPDATE, ADR 0018),
 # this returns to the previous version. At any other time it does nothing. It runs
 # the previous version's binary, the one that was known to work, outside the agent's
-# sandbox: it has to change /usr/lib/fleet-agent and restart the service.
+# sandbox: it has to change /usr/lib/fleet-agent and restart the service. It has no memory or task
+# limit on purpose (#182): a rollback must never be the step a limit stops.
 
 [Unit]
 Description=Fleet CMDB agent update rollback

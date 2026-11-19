@@ -54,6 +54,67 @@ The supervisor runs as its own transient unit (`fleet-agent-update`), outside th
 - `StartLimitIntervalSec=0`, `Restart=on-failure`, `RestartSec=5min`, `RestartSteps=4`, `RestartMaxDelaySec=1h`: never stopped for good; a failing recovery mode is retried after 5 minutes, growing to an hour (systemd 254 and later; earlier versions keep 5 minutes). No `RestartPreventExitStatus=`, so it comes back by itself once a broken config is fixed. No `[Install]`: nothing starts it at boot.
 - The sandbox is this unit's, with three options tighter: `CapabilityBoundingSet=` (none: recovery mode runs no collector, so it needs no `CAP_DAC_READ_SEARCH`; root still reads and writes its own root-owned files, and systemd authorizes its `systemd-run` and `systemctl` calls by user id), `ProtectHome=yes`, and no `AF_NETLINK` (only the interface list needs it). `systemd-analyze security`: 1.6. `scripts/check-unit.sh` fails CI if it is ever above the service's.
 
+### Memory and task limits (#182)
+
+`fleet-agent.service` and `fleet-agent-recovery.service` set:
+
+| Option | Why |
+|---|---|
+| `MemoryMax=128M` | The ceiling. The kernel first reclaims the cgroup's page cache; a charge it still cannot fit ends in an OOM kill inside the agent's own cgroup, never against the VM's workload |
+| `MemorySwapMax=0` | Without it, a leak on a VM with swap would be pushed to swap instead of reaching `MemoryMax`, and slow the whole VM. With it, `MemoryMax` is the real ceiling |
+| `OOMPolicy=stop` | The default (`DefaultOOMPolicy=`), set here so a host's `system.conf` cannot change it: when the kernel kills any process of the unit, systemd stops the rest and restarts it as for any failure. Not `continue`: an agent whose `dpkg-query` child was killed would carry on under the same pressure. `scripts/sandbox-smoke.sh` tests this case |
+| `TasksMax=64` | Processes and threads of the unit. A thread leak or a runaway `fork` gets `EAGAIN` instead of using up the VM's PIDs |
+
+No `MemoryHigh=` (owner, 2026-11-18). With no swap, almost all of the agent's memory is anonymous, so above `MemoryHigh` the kernel would have almost nothing to reclaim and could only slow the agent down: a leaking agent would be slow and stale for minutes, with no restart, and its `dpkg-query` could hit its 20-second limit and send a misleading "unreadable" package report. With `MemoryMax` alone, a leak ends in a kill and a restart.
+
+**One listing at a time.** The package report and `apply_package_updates` both run `dpkg-query`. The agent runs one at a time (`ONE_LISTING_AT_A_TIME` in `src/packages.rs`, tested by `listings_run_one_at_a_time`), so the limit has to fit one listing, not two.
+
+**What it rests on.** The owner's 72-hour soak (#99): about 7.5 MiB resident (8.2 MiB at most), 8 threads, 9 descriptors, flat. The limits count the whole cgroup: the agent, its direct children (`dpkg-query`, `systemctl`, the self-test of a staged update), and the page cache it brings in. Measured with a release build in its own memory and pids cgroups (2026-11-19, listings serialised):
+
+| Path | Memory peak (cgroup) | Tasks peak |
+|---|---|---|
+| Start, reports, heartbeats on a host with 1,047 packages | 9.4 MiB | 24 |
+| A 20,000-package report (the most a report may list; `scripts/dpkg-status-large.py`) | 75 MiB, of which `dpkg-query` 71 MiB | 19 |
+| `refresh_reports` on that host (inventory, config, packages) | 81 MiB | 22 |
+| The 20,000-package report with a cold page cache (the agent the first to read the 24 MB status file, as after a boot) | 99 MiB, of which about 24 MiB reclaimable page cache | 26 |
+| The same under a real 128M limit | 98 MiB; no OOM kill, every package sent | 24 |
+| Inventory with 1,000 extra mounts (first round, 2026-11-18) | 76 MiB | 18 |
+| Update download, signature and checksum check, and self-test (first round) | 16 MiB (5 MiB of it the staged binary in the page cache) | 24 |
+
+A warm cache is the usual case: the CI runner writes its synthetic database, so those pages are charged to the runner, not the agent. A real status file also holds stanzas of removed packages, which `dpkg-query` parses too. **Where 128M is reached:** `dpkg-query` needs about 3.6 KiB per installed package, so it, not the agent, sets the margin. Under a real 128M limit, a host with 34,000 packages peaked at 123 MiB and kept running; one with 36,000 had its `dpkg-query` killed. So about **35,000 installed packages**, 1.75 times the 20,000 a report may list. Typical Debian hosts have hundreds to a few thousand. A host past the 20,000 cap sends no list, but still runs the listing. Past about 35,000 packages each listing would be killed, and the agent restarted (`OOMPolicy=stop`). It does not normally reach recovery mode. After a restart, the startup package report waits a random 0 to 10 minutes (the restart splay, #200), so the kills come about 5 minutes apart on average. That rarely fits enough kills into the start limit's 5 minutes: in the review's simulation, about 1% of such hosts within an hour and 25% within a day. Meanwhile the agent heartbeats at every start, so the host looks online, but it never sends a package report, and `NRestarts` keeps growing. The server does not see those restarts yet (#251). Raise `MemoryMax` with a drop-in there (below). `restart_service` adds one `systemctl` child (a few MiB, four tasks). `apply_package_updates` runs apt in task units of its own; the agent side is the listings and the journal reads (about 8 MiB on Debian 13 in the VM test). `scripts/sandbox-smoke.sh` repeats the 20,000-package measurement on the CI runner under the real unit, and `scripts/vm-test.sh` records the peaks of the package update scenarios on Debian 13; both fail if a limit is reached.
+
+**Not counted.** The update supervisor (`fleet-agent-update`), package upgrades (`fleet-agent-task-*`), and the rollback unit run in units of their own, with no limit: none of them is a child of the agent's cgroup. `fleet-agent-rollback.service` has no limit on purpose: it acts after the service failed, perhaps because of a limit, and must never be the step a limit stops (`memory_and_task_limits_bound_the_agent_but_never_the_rollback` in `src/install/systemd.rs`).
+
+**When a limit is reached:**
+
+- **`MemoryMax`:** the kernel reclaims page cache, then its OOM killer kills the largest process of the cgroup (the agent, or its `dpkg-query`), and systemd stops the rest of the unit (`OOMPolicy=stop`). The kernel logs `Memory cgroup out of memory: Killed process ...` with `oom_memcg=/system.slice/fleet-agent.service`; that line is the reliable sign. systemd's own result can read either `Failed with result 'oom-kill'` or, when the agent itself was the victim and systemd sees its exit before the cgroup's OOM event, `Failed with result 'signal'` with status `KILL` (both seen in CI). It is a `SIGKILL`: the agent writes nothing on the way out, which its state already survives, because every record is written to a temporary file and renamed, and the task ledger is appended and flushed with `fsync` before a step returns (the P3-X03 kill points cover a kill at any point).
+- **`TasksMax`:** a new thread or process fails with `EAGAIN`. Where the agent starts the thread or process itself, it reports the error and keeps running: a collector warning, a failed task step, or a failed update with "cannot read its output". But the HTTP client (ureq 3.5, with a global timeout set) resolves each new connection's host name on a thread it starts with `thread::spawn`, which panics when it cannot start. The loop that made the request then fails, and the agent exits and is restarted. A resolver thread whose lookup timed out also lives on until `getaddrinfo` returns, so very slow DNS adds threads. The measured peaks used a local stand-in server, with no slow DNS.
+- **Then `Restart=on-failure`** restarts it 10 seconds later. A one-off spike costs one restart. A task that was running is reported `interrupted` (`refresh_reports`, `restart_service`); an `apply_package_updates` upgrade runs on in its own unit and is collected after the restart (threat model L8).
+- **The start limit.** Killed at four starts within five minutes, the service stops being restarted and fails, and `OnFailure=` starts the rollback unit and then recovery mode, exactly as for a crash loop (ADR 0030). Recovery mode has the same limits but runs no collector, so a leak in a collector does not follow it; if it is killed too, it is restarted after 5 minutes, growing to an hour, and never gives up. Its reason ends with systemd's result: `fleet-agent.service kept failing and systemd stopped restarting it (oom-kill, last exit killed KILL)`, or `(signal, last exit killed KILL)` when systemd saw the exit first. A leak that takes longer than about a minute to reach the limit never makes four kills within five minutes: the agent is restarted each time and stays in normal mode, and the server does not see the restarts yet (#251).
+- **During an update.** The download, check, and self-test run in the agent's cgroup. A kill there leaves only staged files, which the next offer resumes. Nothing is installed before the supervisor runs. If the agent is killed after writing the update record but before the supervisor started, its watchdog starts the supervisor at the next start, as after any crash. After the switch, a new version that is killed before it confirms is a release that fails before it confirms: the supervisor, outside the cgroup, rolls it back at its deadline or as soon as it sees the service failed, and the rollback unit does it if the supervisor is gone. A realistic leaking release sends its first heartbeat within seconds and confirms before it gets near the limit, so it is not rolled back: it is restarted, or ends in recovery mode, as above. CI's leaking release (`scripts/update-smoke.sh`, group `limits`) never sends a heartbeat. It shows that the kernel kills it at `MemoryMax` in the service's cgroup and that the update is still rolled back cleanly, not that the limit causes the rollback. The restart of a confirmed agent and the path to recovery mode are shown by the group's two drop-in scenarios.
+
+**Raising a limit.** With a drop-in (`systemctl edit fleet-agent`; see [troubleshooting.md](../../docs/operations/troubleshooting.md#the-agent-was-killed-for-using-too-much-memory)), never by editing the unit, which the installer and the unit refresh replace. `MemoryMax=infinity` removes one.
+
+**Other systems.** `MemorySwapMax=` exists only on the unified cgroup hierarchy (v2). A host on cgroup v1 or the hybrid layout (#163), or one booted with `swapaccount=0`, ignores it, so there a leak can go to swap first. `MemoryMax=` and `TasksMax=` work on both.
+
+**Units from earlier installers.** The lines are in the units that `fleet-agent install` writes, and that a confirmed update now writes too (`install --refresh-units`, #232). The refresh runs `daemon-reload`, which puts the limits in force on the running service at once (checked in `scripts/update-smoke.sh`, scenario "success"). That is after the update has confirmed, so a limit too tight for a host is not rolled back with the release; raise it with a drop-in. The refresh is run by the supervisor of the version being replaced, so an update from a release without #232 does not refresh the units. The next update does, and so does re-running the installer. Until then `systemctl show fleet-agent -p MemoryMax` prints `infinity`.
+
+**Checked by:**
+- `src/install/systemd.rs`: the values, the recovery unit's, and none in the rollback unit.
+- `src/packages/tests.rs`: one listing at a time, with a mutation-checked test.
+- `scripts/sandbox-smoke.sh`:
+  - the limits are in force on the running unit, checked through `systemctl show` and the cgroup's own files;
+  - the 20,000-package host stays below them;
+  - with `MemoryMax=48M`, the kernel kills `dpkg-query`, not the agent, and `OOMPolicy=stop` stops the whole unit.
+- `scripts/update-smoke.sh`, group `limits`:
+  - the limits are in force on the installed units;
+  - a leaking unconfirmed release is OOM-killed and rolled back;
+  - a confirmed agent killed by a lowered `MemoryMax` drop-in is restarted, with its heartbeat, state and unchanged ledger;
+  - one killed at every start reaches recovery mode, then is normal again once the drop-in is gone.
+- `scripts/vm-test.sh` scenario 374: the limits are applied on Debian 13, never reached, and the peaks are recorded.
+
+The new error path in `stage::run_bounded` (a reader thread that cannot start) has no test: it needs a thread start to fail on demand.
+
 ### What Phase 3 tasks add
 
 Nothing to this unit ([P3-A05](../../docs/backlog/specs/p3-agent-exec.md)). `read_only` and `service_manager` task programs run as children of the agent inside this sandbox (`systemctl restart` reaches systemd over the `AF_UNIX` socket already allowed); `package_manager` programs run in a transient unit, `fleet-agent-task-<id>-<step>.service`, outside it, with fixed properties. The per-task privilege table and the option-by-option review are in [`docs/operations/agent-task-privileges.md`](../../docs/operations/agent-task-privileges.md). `scripts/task-privilege-smoke.sh` (CI) proves each privilege works under this unit's options.

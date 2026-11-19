@@ -37,6 +37,20 @@ StateDirectory=fleet-agent
 StateDirectoryMode=0700
 UMask=0077
 
+# Resources (#182): well above what the agent uses (about 8 MiB and 8 threads at rest, about 25 tasks at
+# most; the heaviest path, a refresh on a host with 20,000 packages, peaks at about 81 MiB, most of it
+# dpkg-query's; the agent runs one listing at a time). At MemoryMax the kernel kills the agent in its own
+# cgroup, never the VM's workload; systemd stops the whole unit (OOMPolicy=stop, also when the victim is a
+# child such as dpkg-query), and Restart=, the start limit, the rollback unit, and recovery mode follow as
+# for any other failure. No MemoryHigh=: it would only slow a leaking agent down, with nothing to reclaim
+# and no restart. No swap, so MemoryMax is the real ceiling. Raise them with a drop-in (`systemctl edit
+# fleet-agent`), not here. Package upgrades and the update supervisor run in units of their own and are
+# not counted.
+MemoryMax=128M
+MemorySwapMax=0
+OOMPolicy=stop
+TasksMax=64
+
 # Privileges: root, but only one capability (statvfs and reads below directories root
 # does not own); no way to gain more.
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
