@@ -188,6 +188,15 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       chip = page.at_css("#triage_filter a")
       expect([ chip.text.squish, chip["aria-current"], chip["href"] ]).to eq([ "Debian: no security update planned 5", nil, "/hosts/#{host.id}/vulnerabilities?debian=no_dsa" ])
       expect(page.at_css("#triage_filter")["aria-label"]).to eq("Filter findings by Debian's triage: no-DSA, postponed, or ignored")
+      # The chip counts in SQL (review of #253, S6) exactly what the rows' triage shows (FindingTriage, triage_no_dsa?).
+      active = VulnerabilityFinding.with_details.where(host_id: host.id).active.joins(:advisory)
+      loaded = active.preload(:advisory).to_a
+      triage = FindingTriage.load(loaded)
+      status = DebianTriage::Freshness.statuses.find { |s| s.release == "trixie" }
+      expect(FindingTriage.no_dsa(active, release: "trixie", status:).pluck(:id))
+        .to match_array(loaded.select { |f| ApplicationController.helpers.triage_no_dsa?(triage[f]) }.map(&:id))
+      expect(FindingTriage.no_dsa(active, release: "trixie", status: status.with(stale: true)).count).to eq(0)
+      expect(FindingTriage.no_dsa(active, release: nil, status: nil).count).to eq(0)
 
       get "/hosts/#{host.id}/vulnerabilities", params: { debian: "no_dsa" }
       expect(tab_lines.keys).to contain_exactly("bin-nodsa-npu DEBIAN-CVE-2026-99100", "bin-nodsa DEBIAN-CVE-2026-99101", "bin-postponed DEBIAN-CVE-2026-99102",
@@ -508,8 +517,8 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
   # The tab and the package page stay within their query bound plus the triage lookup, whatever the number of
   # findings (P2-D08 acceptance: measured at a host with 500 findings). Before P2-D08 both took 24 queries at 500
   # findings; the triage adds the host release's freshness and FindingTriage (inventories, freshness, entries;
-  # the advisories are loaded already), and the chip's count reloads the open findings when a filter is set. The
-  # host summary counts the host's open tasks for the Tasks tab (P3-DASH-TASKS): one query.
+  # the advisories are loaded already), and the chip's count is one SQL count (review of #253, S6). The host summary
+  # counts the host's open tasks for the Tasks tab (P3-DASH-TASKS): one query.
   it "renders the tab and the package page for a host with 500 findings in a fixed number of queries" do
     packages = (1..50).flat_map { |i| [ [ "acme#{i}", "1.0-1", "src#{i}" ], [ "libacme#{i}", "1.0-1", "src#{i}" ] ] }
     large = debian_host(packages:)
@@ -529,12 +538,12 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 200")
     queries = tab.call(large)
     expect(queries).to eq(tab.call(small))
-    # +1: the host's liveness, in its own table since #192; +1: the advisories preloaded beside the details (#196); +3: the
-    # package groups (HostFindingGroups), then the page's findings and their advisories, apart from the chip's open findings.
-    expect(queries).to be <= 24 + 10
+    # +1: the host's liveness, in its own table since #192; +1: the advisories preloaded beside the details (#196); +2: the
+    # package groups (HostFindingGroups) and the chip's count, in place of loading every open finding (#253).
+    expect(queries).to be <= 24 + 8
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
-    expect(filtered).to be <= queries + 2 # the open findings again, for the chip's count
+    expect(filtered).to eq(queries) # the chip's filter is a condition in the same statements
     timings = Array.new(3) { Process.clock_gettime(Process::CLOCK_MONOTONIC).then { |t0| get("/hosts/#{large.id}/vulnerabilities") && Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0 } }
     expect(timings.min).to be < 2
 

@@ -90,18 +90,19 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       travel_to(start + 3.hours) { report_packages(host, [ [ "acme-daemon", "1.0-1", "acme" ], [ "libacme1", "1.0-1", "acme" ], [ "bash", "5.2.37-1", "bash" ] ]) }
       match(host, at: start + 3.hours)
       get "/hosts/#{host.id}/vulnerabilities", params: { state: "all" }
-      expect(groups("resolved_list")).to eq([ # by worst severity; each resolved finding keeps the version installed when it resolved
-        [ "acme-docs:all installed 1.0-1 1 advisory Medium 1 medium Fix available 1 resolved 2026-11-06 09:00 UTC", [
+      expect(groups("resolved_list")).to eq([ # by worst severity, then first seen (S3), with how they resolved, never a fix count; each keeps the version installed when it resolved
+        [ "acme-docs:all installed 1.0-1 1 advisory Medium 1 medium 1 removed 1 resolved 2026-11-06 09:00 UTC", [
           [ "DSA-9102-1 No link recorded Example: a flaw in acme-docs.", "Medium", "Fixed in 2.0-1", "Resolved Removed: package no longer installed", "2026-11-06 09:00 UTC → 2026-11-06 10:00 UTC" ] ] ],
-        [ "acme-daemon:amd64 installed 2.0-1 1 advisory Low 1 low No fix available 1 resolved 2026-11-06 09:00 UTC", [
+        [ "acme-daemon:amd64 installed 2.0-1 1 advisory Low 1 low 1 withdrawn 1 resolved 2026-11-06 09:00 UTC", [
           [ "DSA-9101-1 Example: a flaw in acme.", "Low", "No fix available", "Resolved Withdrawn: the advisory was withdrawn by its source", "2026-11-06 09:00 UTC → 2026-11-06 11:00 UTC" ] ] ],
-        [ "libacme1:amd64 installed 1.0-1 1 advisory Low 1 low No fix available 1 resolved 2026-11-06 09:00 UTC", [
+        [ "libacme1:amd64 installed 1.0-1 1 advisory Low 1 low 1 withdrawn 1 resolved 2026-11-06 09:00 UTC", [
           [ "DSA-9101-1 Example: a flaw in acme.", "Low", "No fix available", "Resolved Withdrawn: the advisory was withdrawn by its source", "2026-11-06 09:00 UTC → 2026-11-06 11:00 UTC" ] ] ]
       ])
       reopened = groups("open_list").first
       expect(reopened.first).to eq("acme-daemon:amd64 installed 1.0-1 1 advisory High 1 high Fix available 1 reopened 2026-11-06 09:00 UTC")
       expect(reopened.last.first.drop(3)).to eq([ "Reopened", "2026-11-06 09:00 UTC → Resolved 2026-11-06 10:00 UTC, reopened 2026-11-06 12:00 UTC" ])
-      expect(words(page.at_css("#resolved_list_pager"))).to eq("3 packages, worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix.")
+      expect(words(page.at_css("#resolved_list_pager"))).to eq("3 packages. Sorted by worst severity, then first seen.")
+      expect(page.css("#resolved_list > thead th").map(&:text)).to eq([ "Package", "Advisories", "Severity", "Resolutions", "State", "First seen" ])
 
       get "/hosts/#{host.id}/vulnerabilities/package?package=acme-daemon"
       rows = package_rows
@@ -175,7 +176,8 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       ])
       expect(page.at_css("#open_list tbody td .unavailable").text).to eq("No fix available")
       expect(words(page.at_css("#open_heading"))).to eq("Open findings 12: 1 critical, 5 high, 6 medium")
-      expect(words(page.at_css("#open_list_pager"))).to start_with("5 packages, worst first")
+      expect(words(page.at_css("#open_list_pager"))).to eq("5 packages. Worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix.")
+      expect(page.css("#open_list > thead th").map(&:text)).to eq([ "Package", "Advisories", "Severity", "Fixes", "State", "First seen" ])
       get "/hosts/#{host.id}/vulnerabilities", params: { severity: "medium" } # ranks the findings the filters keep
       expect(rows.map { |row| row.split.first }).to eq(%w[curl:amd64 zlib:amd64 xml:amd64])
     end
@@ -198,40 +200,104 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(page.css("#open_list details.advisories").map { |d| d.key?("open") }).to eq([ true ])
     end
 
-    it "pages packages by keyset, with a cursor of its own for each section" do
+    def names = rows.map { |row| row.split.first }
+    def next_link(list = "open_list") = page.at_css("##{list}_pager a[rel=next]")&.[]("href")
+    def prev_link(list = "open_list") = page.at_css("##{list}_pager a[rel=prev]")&.[]("href")
+
+    it "pages packages by keyset on the whole sort key, with a cursor of its own for each section" do
       stub_const("HostFindingGroups::PER_PAGE", 2)
       get "/hosts/#{host.id}/vulnerabilities"
-      expect(rows.map { |row| row.split.first }).to eq(%w[ssl:amd64 kernel:amd64])
+      expect(names).to eq(%w[ssl:amd64 kernel:amd64])
       pager = page.at_css("nav#open_list_pager")
-      expect([ pager["aria-label"], words(pager.at_css(".muted")), pager.at_css(".off").text ]).to eq([ "Open finding pages", "2 packages shown of 5. Worst first.", "Previous" ])
-      get pager.at_css("a[rel=next]")["href"]
-      expect(rows.map { |row| row.split.first }).to eq(%w[curl:amd64 zlib:amd64])
-      expect(Rack::Utils.parse_query(URI(page.at_css("#open_list_pager a[rel=next]")["href"]).query)).to eq("after" => "zlib:amd64")
-      get page.at_css("#open_list_pager a[rel=next]")["href"]
-      expect(rows.map { |row| row.split.first }).to eq(%w[xml:amd64])
-      expect(page.at_css("#open_list_pager a[rel=next]")).to be_nil
-      get page.at_css("#open_list_pager a[rel=prev]")["href"]
-      expect(rows.map { |row| row.split.first }).to eq(%w[curl:amd64 zlib:amd64])
-      get page.at_css("#open_list_pager a[rel=prev]")["href"] # back to the first page, full
-      expect(rows.map { |row| row.split.first }).to eq(%w[ssl:amd64 kernel:amd64])
-      expect(page.at_css("#open_list_pager a[rel=prev]")).to be_nil
-
-      # A package no longer listed, or a cursor that is not one, reads the first page.
-      [ "gone:amd64", "nocolon", ":amd64", "x" * 200 ].each do |cursor|
-        get "/hosts/#{host.id}/vulnerabilities", params: { after: cursor }
-        expect(rows.map { |row| row.split.first }).to eq(%w[ssl:amd64 kernel:amd64]), cursor
-      end
-      get "/hosts/#{host.id}/vulnerabilities", params: { before: "gone:amd64" }
-      expect(rows.map { |row| row.split.first }).to eq(%w[ssl:amd64 kernel:amd64])
+      expect([ pager["aria-label"], words(pager.at_css(".muted")), pager.at_css(".off").text ])
+        .to eq([ "Open finding pages", "2 packages shown of 5. Worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix.", "Previous" ])
+      # The cursor is the row's whole key: critical, high, medium, low, unknown, fixable, package, architecture.
+      expect(Rack::Utils.parse_query(URI(next_link).query)).to eq("after" => "0,5,0,0,0,2,kernel,amd64")
+      get next_link
+      expect(names).to eq(%w[curl:amd64 zlib:amd64])
+      get next_link
+      expect(names).to eq(%w[xml:amd64])
+      expect(next_link).to be_nil
+      get prev_link
+      expect(names).to eq(%w[curl:amd64 zlib:amd64])
+      get prev_link # back to the first page, full
+      expect(names).to eq(%w[ssl:amd64 kernel:amd64])
+      expect(prev_link).to be_nil
+      expect(page.at_css("#open_page_notice")).to be_nil
 
       report_packages(host, [ [ "bash", "5.2.37-1", "bash" ] ])
       match(host)
-      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", after: "kernel:amd64" } # the open section's cursor leaves the resolved one
-      expect(page.css("#resolved_list > tbody > tr.pkg-group").map { |row| words(row).split.first }).to eq(%w[ssl:amd64 kernel:amd64])
-      href = page.at_css("#resolved_list_pager a[rel=next]")["href"]
-      expect(Rack::Utils.parse_query(URI(href).query)).to eq("state" => "all", "resolved_after" => "kernel:amd64")
-      get href
-      expect(page.css("#resolved_list > tbody > tr.pkg-group").map { |row| words(row).split.first }).to eq(%w[curl:amd64 zlib:amd64])
+      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", after: "0,5,0,0,0,2,kernel,amd64" } # the open section's cursor leaves the resolved one
+      expect(page.css("#resolved_list > tbody > tr.pkg-group").map { |row| words(row).split.first }).to eq(%w[ssl:amd64 kernel:amd64]) # worst severity, then first seen
+      expect(Rack::Utils.parse_query(URI(next_link("resolved_list")).query)).to eq("state" => "all", "resolved_after" => "2,2026-11-06T09:00:00.000000Z,kernel,amd64")
+      get next_link("resolved_list")
+      expect(page.css("#resolved_list > tbody > tr.pkg-group").map { |row| words(row).split.first }).to eq(%w[curl:amd64 xml:amd64])
+    end
+
+    it "keeps a page's place when the counts change under it, as a live refresh reloads the same address (review of #253, S1)" do
+      stub_const("HostFindingGroups::PER_PAGE", 2)
+      get "/hosts/#{host.id}/vulnerabilities"
+      get next_link
+      get next_link
+      third = request.fullpath
+      expect(names).to eq(%w[xml:amd64])
+      # zlib, on the page before, gains a critical advisory and moves to the top: the third page still starts after
+      # the key it was drawn from, so it shows xml again, not the first page.
+      import_advisories(advisory("DSA-9300-1", "zlib", severity: "critical"))
+      match(host)
+      get third
+      expect(names).to eq(%w[xml:amd64])
+      expect(page.at_css("#open_page_notice")).to be_nil
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(names).to eq(%w[zlib:amd64 ssl:amd64])
+    end
+
+    it "says why it shows the first page when nothing is left past the link, or the link is not one it wrote" do
+      stub_const("HostFindingGroups::PER_PAGE", 2)
+      get "/hosts/#{host.id}/vulnerabilities", params: { after: "0,0,2,0,0,0,xml,amd64", severity: "medium" } # nothing sorts after xml
+      expect(names).to eq(%w[curl:amd64 zlib:amd64])
+      notice = page.at_css("#open_page_notice")
+      expect(words(notice)).to eq("The findings changed since this page was opened, and no packages are left past it, so the first page is shown. Go to the first page")
+      expect(notice.at_css("a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities?severity=medium")
+      [ "kernel:amd64", "0,5,0,0,0,2,kernel", "a,5,0,0,0,2,kernel,amd64", "0,5,0,0,0,2,ker nel,amd64", "x" * 400 ].each do |cursor|
+        get "/hosts/#{host.id}/vulnerabilities", params: { after: cursor }
+        expect(names).to eq(%w[ssl:amd64 kernel:amd64]), cursor
+        expect(words(page.at_css("#open_page_notice"))).to start_with("The page link is not one this list wrote"), cursor
+      end
+      [ "9,2026-11-06T09:00:00Z,kernel,amd64", "2,yesterday,kernel,amd64", "2,2026-11-06T09:00:00Z" ].each do |cursor|
+        get "/hosts/#{host.id}/vulnerabilities", params: { state: "resolved", resolved_before: cursor }
+        expect(words(page.at_css("#resolved_page_notice"))).to start_with("The page link is not one this list wrote"), cursor
+      end
+    end
+
+    it "leaves off a package whose findings went between its two statements, rather than failing (review of #253, S2)" do
+      allow(VulnerabilityFinding.connection).to receive(:select_all).and_wrap_original do |original, *args, **options|
+        original.call(*args, **options).tap do
+          # A matching run resolving ssl commits between the two statements (the page reads with writes prevented).
+          ApplicationRecord.connected_to(role: :writing) { VulnerabilityFinding.where(host_id: host.id, package: "ssl").delete_all } if args[1] == "HostFindingGroups"
+        end
+      end
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(response).to have_http_status(:ok)
+      expect(names).to eq(%w[kernel:amd64 curl:amd64 zlib:amd64 xml:amd64])
+    end
+
+    it "sends the same statements and draws one page of package rows whatever the number of findings (#254)" do
+      stub_const("HostFindingGroups::PER_PAGE", 2)
+      statements = lambda do |path|
+        sql = []
+        counter = ->(*, payload) { sql << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:cached] }
+        ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { get path }
+        sql.size
+      end
+      tab = "/hosts/#{host.id}/vulnerabilities"
+      before = [ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa") ]
+      import_advisories(*Array.new(30) { |i| advisory("DSA-94#{format('%02d', i)}-1", %w[kernel curl xml][i % 3], fixed: nil) })
+      match(host)
+      expect([ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa") ]).to eq(before)
+      get tab
+      expect(words(page.at_css("#open_heading"))).to start_with("Open findings 42:")
+      expect(page.css("#open_list > tbody > tr.pkg-group").size).to eq(2)
     end
   end
 

@@ -53,6 +53,7 @@
     <% end %>
     <section aria-labelledby="open_heading" id="open_findings">
       <h2 id="open_heading">Open findings <span class="muted"><%= @open_groups.finding_count %><%= ": #{severity_counts(@open_groups.severity_counts)}" if @open_groups.finding_count.positive? %></span></h2>
+      <%= render "host_vulnerabilities/page_notice", groups: @open_groups, id: "open_page_notice", first_page: vulnerabilities_host_path(@host, link_params) %>
       <% if @open_groups.package_count.zero? %>
         <p class="muted">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
       <% else %>
@@ -65,6 +66,7 @@
   <% if @state != "open" %>
     <section aria-labelledby="resolved_heading" id="resolved_findings">
       <h2 id="resolved_heading">Resolved findings <span class="muted"><%= @resolved_groups.finding_count %></span></h2>
+      <%= render "host_vulnerabilities/page_notice", groups: @resolved_groups, id: "resolved_page_notice", first_page: vulnerabilities_host_path(@host, link_params) %>
       <% if @resolved_groups.package_count.zero? %>
         <p class="muted"><%= filtered ? "No resolved findings match." : "None yet." %></p>
       <% else %>

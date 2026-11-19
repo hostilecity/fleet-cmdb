@@ -58,6 +58,9 @@ module HostVulnerabilitiesHelper
     end
   end
 
+  # How a resolved package row's findings resolved, in the order RESOLUTIONS lists them: "2 fixed, 1 removed".
+  def group_resolutions(group) = group.resolutions.sort_by { |resolution, _| RESOLUTIONS.keys.index(resolution) }.map { |resolution, count| "#{count} #{resolution.tr('_', ' ')}" }.join(", ")
+
   # "2 high, 18 medium" for a package row, worst first.
   def finding_severity_breakdown(group) = severity_counts(group.counts.select { |_, count| count.positive? })
 
