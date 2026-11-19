@@ -8,8 +8,9 @@
 --
 -- It is one transaction: it installs everything or nothing, and an error or a dropped connection leaves whatever guard
 -- was there before. It is safe to run again. It locks the audit tables first (ACCESS EXCLUSIVE, so nothing changes them
--- between its checks and its changes), waiting at most 5 seconds: audit writes wait for it, about a second. If the lock
--- times out (a backup holds the tables for hours), run it again when the backup has finished.
+-- between its checks and its changes), waiting at most 5 seconds: audit writes queue behind it for up to about 5
+-- seconds (the step itself takes well under a second once it has the lock). If the lock times out (a backup holds the
+-- tables for hours), run it again when the backup has finished.
 --
 -- It runs no code the app's role (the owner of audit_entries) could have written, and adopts nothing that role could
 -- have prepared. Before it touches or queries any audit table, it checks from the catalogs alone that no index,
@@ -22,7 +23,10 @@
 -- guards (another trigger, a WHEN condition, a disabled trigger, a rule, a policy, row security, an unlogged or
 -- detaching partition), or when a table named audit_entries_default is anything but the superuser's default partition
 -- refusing every row. It writes every function body itself rather than adopting one it finds, every name it uses is
--- schema-qualified, and search_path is pinned. Its one query over the audit rows runs as the app's role.
+-- schema-qualified, and search_path is pinned. It refuses to run while any event trigger other than its own exists
+-- (each DDL statement here would run it as the superuser), and on PostgreSQL 17 and later also turns event triggers
+-- off for its transaction. The catalog check is the control: its one query over the audit rows (max(id)) runs as the
+-- superuser, and is safe only because that check passed.
 --
 -- What it does, none of which the app's role can undo:
 --   1. the guard function audit_entries_append_only() gets its known body and belongs to the superuser;
@@ -60,6 +64,8 @@ BEGIN;
 SET LOCAL ROLE NONE;
 SET LOCAL search_path = pg_catalog, pg_temp;
 SET LOCAL lock_timeout = '5s';
+-- Rebuilding the guard's schema drops its old id trigger with it; that NOTICE is expected and not shown.
+SET LOCAL client_min_messages = warning;
 
 DO $$
 DECLARE
@@ -73,6 +79,26 @@ DECLARE
 BEGIN
   IF NOT (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = current_user) THEN
     RAISE EXCEPTION 'run ops/postgres/audit-guard.sql as the PostgreSQL superuser, not as %', current_user;
+  END IF;
+  -- No event trigger but the guard's own may exist: every DDL statement below would run it as the superuser, and one
+  -- made by a role that was a superuser at the time (a container created with POSTGRES_USER=cmdb, then demoted) keeps
+  -- running that role's function (second review of #249, S1). Event triggers are also off for this transaction where
+  -- PostgreSQL has the setting (17 and later); before that, this refusal is the only control.
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger e
+             WHERE NOT (e.evtname IN ('fleet_audit_guard_drop', 'fleet_audit_guard_ddl')
+                        AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
+                                    JOIN pg_catalog.pg_roles fo ON fo.oid = f.proowner JOIN pg_catalog.pg_roles no ON no.oid = n.nspowner
+                                    WHERE f.oid = e.evtfoid AND n.nspname = 'fleet_audit_guard' AND fo.rolsuper AND no.rolsuper))) THEN
+    RAISE EXCEPTION 'the audit guard was not installed: event triggers other than the guard''s exist (%), and this file''s DDL would run them as the superuser: inspect them, then drop them (DROP EVENT TRIGGER) or move what they do elsewhere',
+      (SELECT pg_catalog.string_agg(pg_catalog.format('%s, owned by %s, running %s', e.evtname, e.evtowner::pg_catalog.regrole, e.evtfoid::pg_catalog.regprocedure), '; ' ORDER BY e.evtname)
+       FROM pg_catalog.pg_event_trigger e
+       WHERE NOT (e.evtname IN ('fleet_audit_guard_drop', 'fleet_audit_guard_ddl')
+                  AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
+                              JOIN pg_catalog.pg_roles fo ON fo.oid = f.proowner JOIN pg_catalog.pg_roles no ON no.oid = n.nspowner
+                              WHERE f.oid = e.evtfoid AND n.nspname = 'fleet_audit_guard' AND fo.rolsuper AND no.rolsuper)));
+  END IF;
+  IF pg_catalog.current_setting('server_version_num')::int >= 170000 THEN
+    PERFORM pg_catalog.set_config('event_triggers', 'off', true);
   END IF;
   IF parent IS NULL OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = parent) <> 'p' THEN
     RAISE EXCEPTION 'audit_entries is not partitioned yet: deploy the app (its migrations convert it), then run this again';
@@ -110,14 +136,20 @@ BEGIN
   -- and a superuser's. Triggers are checked exactly below, and their function is rewritten before anything could fire one.
   problems := problems || ARRAY(
     WITH tree AS (SELECT t.relid FROM pg_catalog.pg_partition_tree(parent) t),
+    -- A partition's copies of the parent's indexes, constraints, and defaults are left out: the parent's is listed once.
     attached (classid, objid) AS (
       SELECT 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid, t.relid FROM tree t
       UNION ALL SELECT 'pg_catalog.pg_class'::pg_catalog.regclass, i.indexrelid FROM pg_catalog.pg_index i JOIN tree t ON t.relid = i.indrelid
+                WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhrelid = i.indexrelid)
       UNION ALL SELECT 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, s.oid FROM pg_catalog.pg_statistic_ext s JOIN tree t ON t.relid = s.stxrelid
       UNION ALL SELECT 'pg_catalog.pg_constraint'::pg_catalog.regclass, k.oid FROM pg_catalog.pg_constraint k JOIN tree t ON t.relid = k.conrelid
-      UNION ALL SELECT 'pg_catalog.pg_attrdef'::pg_catalog.regclass, a.oid FROM pg_catalog.pg_attrdef a JOIN tree t ON t.relid = a.adrelid)
-    SELECT pg_catalog.format('%s uses %s, which is not a superuser''s built-in in pg_catalog: inspect it, then drop it (as the app''s role)',
-                             pg_catalog.pg_describe_object(a.classid, a.objid, d.objsubid), pg_catalog.pg_describe_object(d.refclassid, d.refobjid, 0))
+                WHERE k.conparentid = 0
+      UNION ALL SELECT 'pg_catalog.pg_attrdef'::pg_catalog.regclass, a.oid FROM pg_catalog.pg_attrdef a JOIN tree t ON t.relid = a.adrelid
+                WHERE a.adrelid = parent OR NOT EXISTS (
+                  SELECT 1 FROM pg_catalog.pg_attribute pa JOIN pg_catalog.pg_attribute ca ON ca.attname = pa.attname
+                  JOIN pg_catalog.pg_attrdef pd ON pd.adrelid = pa.attrelid AND pd.adnum = pa.attnum
+                  WHERE pa.attrelid = parent AND ca.attrelid = a.adrelid AND ca.attnum = a.adnum AND pd.adbin::text = a.adbin::text))
+    SELECT DISTINCT pg_catalog.format('%s uses %s', pg_catalog.pg_describe_object(a.classid, a.objid, d.objsubid), pg_catalog.pg_describe_object(d.refclassid, d.refobjid, 0))
     FROM attached a JOIN pg_catalog.pg_depend d ON d.classid = a.classid AND d.objid = a.objid
     WHERE d.refclassid IN ('pg_catalog.pg_proc'::pg_catalog.regclass, 'pg_catalog.pg_operator'::pg_catalog.regclass, 'pg_catalog.pg_type'::pg_catalog.regclass,
                            'pg_catalog.pg_opclass'::pg_catalog.regclass, 'pg_catalog.pg_opfamily'::pg_catalog.regclass)
@@ -136,7 +168,8 @@ BEGIN
     ORDER BY 1);
   -- Nothing below deparses an expression (pg_get_expr, pg_get_constraintdef) unless that check found nothing.
   IF pg_catalog.array_length(problems, 1) > 0 THEN
-    RAISE EXCEPTION 'the audit guard was not installed: %', pg_catalog.array_to_string(problems, '; ');
+    RAISE EXCEPTION 'the audit guard was not installed: %', pg_catalog.array_to_string(problems, '; ')
+      USING HINT = 'Code other than PostgreSQL''s own on an audit table would run as the superuser here. Drop each object named as the app''s role, never as the superuser. Once the guard is installed, the app''s role cannot change an audit table: a partition''s column default is then dropped with ops/postgres/audit-guard-drop-defaults.sql (docs/operations/install-server.md).';
   END IF;
 
   -- The audit tables carry their own guards and nothing else: the append-only triggers, and the id trigger of an earlier
@@ -271,9 +304,9 @@ BEGIN
   EXECUTE pg_catalog.format('ALTER SEQUENCE %s OWNER TO CURRENT_USER', seq::pg_catalog.regclass);
   FOR grantee IN SELECT DISTINCT a.grantee FROM pg_catalog.pg_class c, pg_catalog.aclexplode(c.relacl) a
                  WHERE c.oid IN (seq, pg_catalog.to_regclass('public.audit_entries_default')) AND a.grantee <> c.relowner LOOP
-    EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM %s', seq::pg_catalog.regclass,
+    EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM %s CASCADE', seq::pg_catalog.regclass,
                               CASE WHEN grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.quote_ident((SELECT r.rolname FROM pg_catalog.pg_roles r WHERE r.oid = grantee)) END);
-    EXECUTE pg_catalog.format('REVOKE ALL ON public.audit_entries_default FROM %s',
+    EXECUTE pg_catalog.format('REVOKE ALL ON public.audit_entries_default FROM %s CASCADE',
                               CASE WHEN grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.quote_ident((SELECT r.rolname FROM pg_catalog.pg_roles r WHERE r.oid = grantee)) END);
   END LOOP;
   EXECUTE pg_catalog.format('GRANT USAGE, SELECT ON SEQUENCE %s TO %I', seq::pg_catalog.regclass, app);
@@ -283,17 +316,21 @@ BEGIN
                     OR pg_catalog.has_table_privilege(r.oid, 'public.audit_entries_default', 'INSERT, UPDATE, DELETE, TRUNCATE'))) THEN
     RAISE EXCEPTION 'the audit guard was not installed: % or a role it belongs to can still reset the id sequence or write the default partition', app;
   END IF;
+  -- It must be logged: an unlogged sequence restarts at its first value after a crash or a replica's promotion, and the
+  -- id trigger would hand out old ids again (second review of #249, S2). Now the superuser's, and protected, its
+  -- persistence cannot be changed by the app's role.
+  IF (SELECT c.relpersistence FROM pg_catalog.pg_class c WHERE c.oid = seq) <> 'p' THEN
+    RAISE EXCEPTION 'the audit guard was not installed: the id sequence % is not logged, so it would restart after a crash and ids would repeat (ALTER SEQUENCE ... SET LOGGED, as the app''s role, first)', seq::pg_catalog.regclass;
+  END IF;
   -- It must count up and never wrap round, or the id trigger would hand out old ids again (review of #249).
   IF NOT (SELECT s.seqincrement > 0 AND NOT s.seqcycle FROM pg_catalog.pg_sequence s WHERE s.seqrelid = seq) THEN
     RAISE EXCEPTION 'the audit guard was not installed: the id sequence % counts down or cycles; ids would repeat (ALTER SEQUENCE ... INCREMENT BY 1 NO CYCLE, as the app''s role, first)', seq::pg_catalog.regclass;
   END IF;
-  -- The one query over the audit rows, as the app's role (defence in depth for B1: whatever it plans runs as that role),
-  -- then search_path pinned again in case anything it ran changed it. The sequence is read by OID: a name could be
-  -- mixed-case or shadowed (review 3 of #239, S2). pg_sequence_last_value is NULL before the first nextval.
-  EXECUTE pg_catalog.format('SET LOCAL ROLE %I', app);
+  -- The one query over the audit rows, as the superuser. It is safe only because the catalog check above found no code
+  -- of the app's role on these tables, and the lock keeps it so; switching to the app's role would not be a boundary
+  -- (code run after SET ROLE can SET ROLE NONE back: second review of #249, N1). The sequence is read by OID: a name could
+  -- be mixed-case or shadowed (review 3 of #239, S2). pg_sequence_last_value is NULL before the first nextval.
   EXECUTE pg_catalog.format('SELECT max(id) FROM %s', parent::pg_catalog.regclass) INTO max_id;
-  SET LOCAL ROLE NONE;
-  PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
   last_id := pg_catalog.pg_sequence_last_value(seq);
   IF max_id IS NOT NULL AND max_id > COALESCE(last_id, 0) THEN
     RAISE EXCEPTION 'the audit guard was not installed: the id sequence % is behind the highest id (% > %); ids would repeat', seq::pg_catalog.regclass, max_id, COALESCE(last_id, 0);
@@ -349,6 +386,25 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
                     OR (p.kind = 'function' AND cls = 'pg_catalog.pg_proc'::pg_catalog.regclass AND p.objid = obj))
 $$;
 
+-- Whether a function, operator, operator class or family, or type a new partition's code depends on is a superuser's
+-- built-in in pg_catalog (the same test as the check at the top of this file). Other kinds of object are not code.
+CREATE FUNCTION fleet_audit_guard.is_builtin(cls oid, obj oid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT CASE cls
+    WHEN 'pg_catalog.pg_proc'::pg_catalog.regclass THEN COALESCE((SELECT o.pronamespace = 'pg_catalog'::pg_catalog.regnamespace AND r.rolsuper
+                                                                  FROM pg_catalog.pg_proc o JOIN pg_catalog.pg_roles r ON r.oid = o.proowner WHERE o.oid = obj), false)
+    WHEN 'pg_catalog.pg_operator'::pg_catalog.regclass THEN COALESCE((SELECT o.oprnamespace = 'pg_catalog'::pg_catalog.regnamespace AND r.rolsuper
+                                                                      FROM pg_catalog.pg_operator o JOIN pg_catalog.pg_roles r ON r.oid = o.oprowner WHERE o.oid = obj), false)
+    WHEN 'pg_catalog.pg_type'::pg_catalog.regclass THEN COALESCE((SELECT o.typnamespace = 'pg_catalog'::pg_catalog.regnamespace AND r.rolsuper
+                                                                  FROM pg_catalog.pg_type o JOIN pg_catalog.pg_roles r ON r.oid = o.typowner WHERE o.oid = obj), false)
+    WHEN 'pg_catalog.pg_opclass'::pg_catalog.regclass THEN COALESCE((SELECT o.opcnamespace = 'pg_catalog'::pg_catalog.regnamespace AND r.rolsuper
+                                                                     FROM pg_catalog.pg_opclass o JOIN pg_catalog.pg_roles r ON r.oid = o.opcowner WHERE o.oid = obj), false)
+    WHEN 'pg_catalog.pg_opfamily'::pg_catalog.regclass THEN COALESCE((SELECT o.opfnamespace = 'pg_catalog'::pg_catalog.regnamespace AND r.rolsuper
+                                                                      FROM pg_catalog.pg_opfamily o JOIN pg_catalog.pg_roles r ON r.oid = o.opfowner WHERE o.oid = obj), false)
+    ELSE true
+  END
+$$;
+
 -- 5. No command on anything protected, and no other audit_entries; a new plain partition is recorded and guarded.
 CREATE FUNCTION fleet_audit_guard.refuse_ddl() RETURNS event_trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -383,6 +439,15 @@ BEGIN
       IF added.relkind <> 'r' OR added.relpersistence <> 'p' OR added.is_default
          OR EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid = command.objid AND k.contype = 'c' AND k.conislocal) THEN
         RAISE EXCEPTION 'the audit log is append-only: a partition of it must be a plain, logged table for a range, with no check of its own (%)', command.object_identity
+          USING ERRCODE = 'insufficient_privilege';
+      END IF;
+      -- Nor code other than a superuser's built-ins in its own column defaults or constraints: the next run of this file
+      -- would refuse it, and the app's role could not drop it (second review of #249, S3). Catalogs only.
+      IF EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                 WHERE ((d.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass AND d.objid IN (SELECT a.oid FROM pg_catalog.pg_attrdef a WHERE a.adrelid = command.objid))
+                        OR (d.classid = 'pg_catalog.pg_constraint'::pg_catalog.regclass AND d.objid IN (SELECT k.oid FROM pg_catalog.pg_constraint k WHERE k.conrelid = command.objid)))
+                   AND NOT fleet_audit_guard.is_builtin(d.refclassid, d.refobjid)) THEN
+        RAISE EXCEPTION 'the audit log is append-only: a partition of it may not have a column default or constraint using code other than PostgreSQL''s own (%)', command.object_identity
           USING ERRCODE = 'insufficient_privilege';
       END IF;
       INSERT INTO fleet_audit_guard.protected (kind, objid) VALUES ('partition', command.objid) ON CONFLICT DO NOTHING;
@@ -420,14 +485,14 @@ BEGIN
                         OR (p.kind = 'schema' AND dropped.classid = 'pg_catalog.pg_namespace'::pg_catalog.regclass)
                         OR (p.kind = 'function' AND dropped.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass)))
                   OR (p.kind IN ('parent', 'partition') AND p.objid = owner_table)) THEN
-      RAISE EXCEPTION 'the audit log is append-only: % is not dropped (ops/postgres/audit-guard.sql)', dropped.object_identity
+      RAISE EXCEPTION 'the audit log is append-only: % % may not be dropped (ops/postgres/audit-guard.sql)', dropped.object_type, dropped.object_identity
         USING ERRCODE = 'insufficient_privilege';
     END IF;
   END LOOP;
 END
 $$;
 
-REVOKE ALL ON FUNCTION fleet_audit_guard.relation_of(oid, oid), fleet_audit_guard.is_protected(oid, oid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fleet_audit_guard.relation_of(oid, oid), fleet_audit_guard.is_protected(oid, oid), fleet_audit_guard.is_builtin(oid, oid) FROM PUBLIC;
 
 CREATE EVENT TRIGGER fleet_audit_guard_drop ON sql_drop
   EXECUTE FUNCTION fleet_audit_guard.refuse_drop();

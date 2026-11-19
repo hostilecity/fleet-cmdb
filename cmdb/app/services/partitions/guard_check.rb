@@ -74,10 +74,24 @@ module Partitions
       enabled = value("SELECT count(*) FROM pg_catalog.pg_event_trigger WHERE evtname IN (#{AUDIT_EVENT_TRIGGERS.map { |n| @c.quote(n) }.join(', ')}) AND evtenabled <> 'D'")
       return "the audit log's event triggers are not installed (the superuser runs ops/postgres/audit-guard.sql)" if enabled < AUDIT_EVENT_TRIGGERS.size
 
+
       owned = value(<<~SQL.squish)
         SELECT r.rolsuper FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner WHERE n.nspname = 'fleet_audit_guard'
       SQL
-      "the fleet_audit_guard schema is missing or not the superuser's (the superuser runs ops/postgres/audit-guard.sql)" unless owned
+      return "the fleet_audit_guard schema is missing or not the superuser's (the superuser runs ops/postgres/audit-guard.sql)" unless owned
+
+      # Any other event trigger would run as the superuser in every superuser step, this guard's included, and a role
+      # that was once a superuser can have left one running its own function (second review of #249, S1).
+      other = values(<<~SQL.squish).first
+        SELECT e.evtname || ' (owned by ' || e.evtowner::pg_catalog.regrole::text || ', running ' || e.evtfoid::pg_catalog.regprocedure::text || ')'
+        FROM pg_catalog.pg_event_trigger e
+        WHERE NOT (e.evtname IN (#{AUDIT_EVENT_TRIGGERS.map { |n| @c.quote(n) }.join(', ')})
+                   AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
+                               JOIN pg_catalog.pg_roles fo ON fo.oid = f.proowner JOIN pg_catalog.pg_roles no ON no.oid = n.nspowner
+                               WHERE f.oid = e.evtfoid AND n.nspname = 'fleet_audit_guard' AND fo.rolsuper AND no.rolsuper))
+        ORDER BY 1
+      SQL
+      "event trigger #{other} is not the audit guard's: a superuser's next step would run it as the superuser (drop it)" if other
     end
 
     def function_problem
@@ -132,8 +146,10 @@ module Partitions
         attached (classid, objid) AS (
           SELECT 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid, t.relid FROM tree t
           UNION ALL SELECT 'pg_catalog.pg_class'::pg_catalog.regclass, i.indexrelid FROM pg_catalog.pg_index i JOIN tree t ON t.relid = i.indrelid
+                    WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhrelid = i.indexrelid)
           UNION ALL SELECT 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, s.oid FROM pg_catalog.pg_statistic_ext s JOIN tree t ON t.relid = s.stxrelid
           UNION ALL SELECT 'pg_catalog.pg_constraint'::pg_catalog.regclass, k.oid FROM pg_catalog.pg_constraint k JOIN tree t ON t.relid = k.conrelid
+                    WHERE k.conparentid = 0
           UNION ALL SELECT 'pg_catalog.pg_attrdef'::pg_catalog.regclass, a.oid FROM pg_catalog.pg_attrdef a JOIN tree t ON t.relid = a.adrelid)
         SELECT pg_catalog.pg_describe_object(a.classid, a.objid, d.objsubid) || ' uses ' || pg_catalog.pg_describe_object(d.refclassid, d.refobjid, 0)
         FROM attached a JOIN pg_catalog.pg_depend d ON d.classid = a.classid AND d.objid = a.objid
@@ -141,7 +157,15 @@ module Partitions
           AND NOT COALESCE(CASE d.refclassid #{trusted.join(' ')} END, false)
         ORDER BY 1
       SQL
-      "#{found}, which is not a superuser's built-in: it would run as the superuser in the audit guard's step (the app's role drops it)" if found
+      return "#{found}, which is not a superuser's built-in: it would run as the superuser in the audit guard's step (the app's role drops it)" if found
+
+      # A CREATE INDEX CONCURRENTLY the guard refused leaves its index behind, invalid but kept up to date on every
+      # insert (second review of #249, N4). The guard lets the app's role drop it.
+      invalid = values(<<~SQL.squish).first
+        SELECT i.indexrelid::pg_catalog.regclass::text FROM pg_catalog.pg_index i JOIN #{TREE} t ON t.relid = i.indrelid
+        WHERE NOT i.indisvalid ORDER BY 1
+      SQL
+      "index #{invalid} on the audit log is invalid (a CREATE INDEX CONCURRENTLY the guard refused leaves one behind): the app's role drops it (DROP INDEX)" if invalid
     end
 
     def table_problem
@@ -207,16 +231,19 @@ module Partitions
 
       # Resettable through any role the app's role belongs to (pg_database_owner, for one), and it must count up and
       # never wrap round (review of #249).
-      super_owned, resettable, wraps, behind = @c.select_rows(<<~SQL.squish).first
+      super_owned, resettable, wraps, unlogged, behind = @c.select_rows(<<~SQL.squish).first
         SELECT r.rolsuper,
                EXISTS (SELECT 1 FROM pg_catalog.pg_roles g WHERE pg_catalog.pg_has_role(current_user, g.oid, 'MEMBER')
                                                             AND pg_catalog.has_sequence_privilege(g.oid, s.oid, 'UPDATE')),
                (SELECT q.seqincrement <= 0 OR q.seqcycle FROM pg_catalog.pg_sequence q WHERE q.seqrelid = s.oid),
+               s.relpersistence <> 'p',
                (SELECT max(id) FROM public.audit_entries) > COALESCE(pg_catalog.pg_sequence_last_value(s.oid), 0)
         FROM pg_catalog.pg_class s JOIN pg_catalog.pg_roles r ON r.oid = s.relowner WHERE s.oid = #{Integer(oid)}
       SQL
       return "the id sequence #{seq} is not the superuser's, or the app's role can reset it" if !super_owned || resettable
       return "the id sequence #{seq} counts down or cycles, so ids would repeat" if wraps
+      # An unlogged sequence restarts at its first value after a crash or a replica's promotion (second review, S2).
+      return "the id sequence #{seq} is not logged, so it would restart after a crash and ids would repeat" if unlogged
 
       "the id sequence #{seq} is behind the highest id, so ids would repeat" if behind
     end

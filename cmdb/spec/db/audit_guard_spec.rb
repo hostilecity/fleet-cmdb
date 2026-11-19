@@ -44,8 +44,21 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
   # The file as the superuser, inside the example's transaction; then the connection's own search path again.
   def install
     c.execute(script)
-    c.execute("SET LOCAL search_path = public")
+    restore_settings
   end
+
+  # The file's SET LOCALs last to the end of the example's transaction: back to what the app's connections use.
+  def restore_settings
+    c.execute("SET LOCAL search_path = public")
+    c.execute("SET LOCAL client_min_messages = notice")
+    c.execute("SET LOCAL session_replication_role = origin")
+    c.execute("SET LOCAL event_triggers = on") if pg17?
+  end
+
+  def pg17? = c.select_value("SELECT current_setting('server_version_num')::int") >= 170_000
+
+  # ops/postgres/audit-guard-drop-defaults.sql, in the example's transaction.
+  let(:drop_defaults) { Rails.root.join("../ops/postgres/audit-guard-drop-defaults.sql").read.sub(/^BEGIN;$/, "").sub(/^COMMIT;$/, "") }
 
   def problem = as_owner { Partitions.audit_guard_problem }
 
@@ -539,6 +552,105 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       expect(problem).to be_nil
       c.execute("GRANT UPDATE ON SEQUENCE audit_entries_id_seq TO pg_database_owner")
       expect(problem).to eq("the id sequence audit_entries_id_seq is not the superuser's, or the app's role can reset it")
+    end
+  end
+  # The second review of #249: each spec sets up what the review did, as the role.
+  describe "the second review's findings" do
+    def plant_escalation
+      as_owner do
+        attempt(<<~SQL)
+          CREATE FUNCTION public.fleet_spec_escalate() RETURNS void LANGUAGE plpgsql VOLATILE AS $$
+          BEGIN
+            IF (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) THEN EXECUTE 'ALTER ROLE #{role} SUPERUSER'; END IF;
+          END $$
+        SQL
+        attempt("CREATE FUNCTION public.fleet_spec_f(int) RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN PERFORM public.fleet_spec_escalate(); RETURN $1; END $$")
+      end
+    end
+
+    it "S1: refuses to run while an event trigger other than its own exists, and turns event triggers off where it can" do
+      as_owner { attempt("CREATE FUNCTION public.fleet_spec_et() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN END $$") }
+      c.execute("CREATE EVENT TRIGGER fleet_spec_et ON ddl_command_end EXECUTE FUNCTION public.fleet_spec_et()")
+      refused(script, /event triggers other than the guard's exist \(fleet_spec_et, owned by [^,]+, running public.fleet_spec_et\(\)\)/)
+      c.execute("DROP EVENT TRIGGER fleet_spec_et")
+      c.execute("CREATE EVENT TRIGGER fleet_audit_guard_ddl ON ddl_command_end EXECUTE FUNCTION public.fleet_spec_et()") # the guard's name, not its function
+      refused(script, /event triggers other than the guard's exist \(fleet_audit_guard_ddl/)
+      c.execute("DROP EVENT TRIGGER fleet_audit_guard_ddl")
+
+      c.execute(script)
+      expect(c.select_value("SHOW event_triggers")).to eq("off") if pg17?
+      expect(c.select_value("SHOW client_min_messages")).to eq("warning") # no NOTICE that the old id trigger was dropped
+      restore_settings
+      expect(problem).to be_nil
+      c.execute("CREATE EVENT TRIGGER fleet_spec_et ON sql_drop EXECUTE FUNCTION public.fleet_spec_et()")
+      expect(problem).to match(/\Aevent trigger fleet_spec_et \(owned by .*, running fleet_spec_et\(\)\) is not the audit guard's/)
+    end
+
+    it "S2: refuses an unlogged id sequence, keeps it logged, and reports one made unlogged while the guard was off" do
+      as_owner { attempt("ALTER SEQUENCE audit_entries_id_seq SET UNLOGGED") }
+      refused(script, /the id sequence public.audit_entries_id_seq is not logged/)
+      as_owner { attempt("ALTER SEQUENCE audit_entries_id_seq SET LOGGED") }
+      install
+      as_owner { refused("ALTER SEQUENCE audit_entries_id_seq SET UNLOGGED", /append-only|must be owner/) }
+      unguarded { c.execute("ALTER SEQUENCE audit_entries_id_seq SET UNLOGGED") }
+      expect(problem).to eq("the id sequence audit_entries_id_seq is not logged, so it would restart after a crash and ids would repeat")
+    end
+
+    it "S3: refuses a new partition whose own default uses the role's code, and recovers one an earlier guard let through" do
+      install
+      plant_escalation
+      from = Partitions.list("audit_entries").reject(&:default?).last.to
+      month = "CREATE TABLE fleet_spec_month PARTITION OF audit_entries (action DEFAULT public.fleet_spec_f(1)::text) " \
+              "FOR VALUES FROM (#{c.quote(from)}) TO (#{c.quote(from + 1.month)})"
+      as_owner { refused(month, /may not have a column default or constraint using code other than PostgreSQL's own/) }
+
+      # As an earlier version of the guard let through: made, then recorded as an audit partition, which the role can then
+      # no longer change.
+      unguarded { as_owner { attempt(month) } }
+      c.execute("INSERT INTO fleet_audit_guard.protected (kind, objid) VALUES ('partition', 'fleet_spec_month'::regclass)")
+      expect(problem).to match(/\Adefault value for column action of table fleet_spec_month uses function fleet_spec_f\(integer\)/)
+      refused(script, %r{uses function public.fleet_spec_f\(integer\).*audit-guard-drop-defaults.sql}m)
+      as_owner { refused("ALTER TABLE fleet_spec_month ALTER COLUMN action DROP DEFAULT", /default value for .*fleet_spec_month.action may not be dropped/) }
+      as_login { refused(drop_defaults, /as the PostgreSQL superuser, not as #{role}/) }
+
+      c.execute(drop_defaults) # the recovery: the superuser drops exactly that default, evaluating nothing
+      restore_settings
+      expect(superuser?).to be(false)
+      expect(c.select_value("SELECT count(*) FROM pg_attrdef WHERE adrelid = 'fleet_spec_month'::regclass AND adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'fleet_spec_month'::regclass AND attname = 'action')")).to eq(0)
+      install
+      expect(superuser?).to be(false)
+      expect(problem).to be_nil
+      c.execute(drop_defaults) # nothing left to drop: it says so and changes nothing
+      restore_settings
+    end
+
+    it "N2: revokes a grant that was passed on, rather than stopping at dependent privileges" do
+      c.execute("CREATE ROLE fleet_spec_x NOLOGIN")
+      c.execute("CREATE ROLE fleet_spec_y NOLOGIN")
+      as_owner { attempt("GRANT UPDATE ON SEQUENCE audit_entries_id_seq TO fleet_spec_x WITH GRANT OPTION") }
+      c.execute("SET ROLE fleet_spec_x")
+      c.execute("GRANT UPDATE ON SEQUENCE audit_entries_id_seq TO fleet_spec_y")
+      c.execute("RESET ROLE")
+      install
+      expect(c.select_value("SELECT has_sequence_privilege('fleet_spec_y', 'audit_entries_id_seq', 'UPDATE')")).to be(false)
+    end
+
+    it "N4: reports an invalid index left on an audit table, which the app's role may drop" do
+      install
+      unguarded do
+        c.execute("CREATE INDEX fleet_spec_cic ON #{partition} (action)")
+        c.execute("UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'fleet_spec_cic'::regclass") # as a refused CREATE INDEX CONCURRENTLY leaves it
+      end
+      expect(problem).to start_with("index fleet_spec_cic on the audit log is invalid")
+      as_owner { attempt("DROP INDEX fleet_spec_cic") }
+      expect(problem).to be_nil
+    end
+
+    it "lists a parent's index once, not once for each partition's copy of it" do
+      plant_escalation
+      as_owner { attempt("CREATE INDEX fleet_spec_idx ON audit_entries ((id + public.fleet_spec_f(3)))") }
+      expect { attempt(script) }.to raise_error(ActiveRecord::StatementInvalid) { |error| expect(error.message.scan(" uses function ").size).to eq(1) }
+      expect(superuser?).to be(false)
     end
   end
 end

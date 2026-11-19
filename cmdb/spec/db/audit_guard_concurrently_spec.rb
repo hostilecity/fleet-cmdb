@@ -96,4 +96,13 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
     other&.exec("ROLLBACK")
     other&.close
   end
+
+  it "leaves an invalid index behind after a refused CREATE INDEX CONCURRENTLY, which the app's role can drop (second review of #249, N4)" do
+    @pg.exec(file)
+    @pg.exec("SET ROLE #{role}")
+    expect { @pg.exec("CREATE INDEX CONCURRENTLY fleet_spec_cic ON audit_entries_p20261101 (action)") }.to raise_error(PG::InsufficientPrivilege, /append-only/)
+    expect(@pg.exec("SELECT indisvalid FROM pg_index WHERE indexrelid = 'fleet_spec_cic'::regclass").getvalue(0, 0)).to eq("f")
+    @pg.exec("DROP INDEX fleet_spec_cic")
+    expect(@pg.exec("SELECT to_regclass('fleet_spec_cic') IS NULL").getvalue(0, 0)).to eq("t")
+  end
 end
