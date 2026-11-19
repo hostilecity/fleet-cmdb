@@ -105,13 +105,13 @@ module Partitions
       SQL
       return "trigger #{odd} is not one of the audit log's guards as installed (a WHEN condition, disabled, or another function)" if odd
 
+      # Each table's guards by type: update and delete (27), truncate (34), and the id trigger (7) (review of #249).
+      required = { "update and delete guard" => [ 27, GUARD ], "truncate guard" => [ 34, GUARD ], "id trigger" => [ 7, ID_GUARD ] }
+      absent = required.map { |_, (type, function)| "NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = p.relid AND t.tgtype = #{type} AND t.tgfoid = #{function})" }
       bare, missing = @c.select_rows(<<~SQL.squish).first
         SELECT p.relid::pg_catalog.regclass::text,
-               CASE WHEN NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = p.relid AND t.tgtype = 34 AND t.tgfoid = #{GUARD}) THEN 'truncate guard'
-                    ELSE 'id trigger' END
-        FROM #{TREE} p
-        WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = p.relid AND t.tgtype = 34 AND t.tgfoid = #{GUARD})
-           OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = p.relid AND t.tgtype = 7 AND t.tgfoid = #{ID_GUARD})
+               CASE #{required.keys.zip(absent).map { |name, sql| "WHEN #{sql} THEN #{@c.quote(name)}" }.join(' ')} END
+        FROM #{TREE} p WHERE #{absent.join(' OR ')}
         ORDER BY 1
       SQL
       "#{bare} has no #{missing} (the superuser runs ops/postgres/audit-guard.sql again)" if bare
@@ -205,12 +205,18 @@ module Partitions
       SQL
       return "audit_entries.id no longer takes its value from the guarded sequence" unless uses
 
-      super_owned, resettable, behind = @c.select_rows(<<~SQL.squish).first
-        SELECT r.rolsuper, pg_catalog.has_sequence_privilege(current_user, s.oid, 'UPDATE'),
+      # Resettable through any role the app's role belongs to (pg_database_owner, for one), and it must count up and
+      # never wrap round (review of #249).
+      super_owned, resettable, wraps, behind = @c.select_rows(<<~SQL.squish).first
+        SELECT r.rolsuper,
+               EXISTS (SELECT 1 FROM pg_catalog.pg_roles g WHERE pg_catalog.pg_has_role(current_user, g.oid, 'MEMBER')
+                                                            AND pg_catalog.has_sequence_privilege(g.oid, s.oid, 'UPDATE')),
+               (SELECT q.seqincrement <= 0 OR q.seqcycle FROM pg_catalog.pg_sequence q WHERE q.seqrelid = s.oid),
                (SELECT max(id) FROM public.audit_entries) > COALESCE(pg_catalog.pg_sequence_last_value(s.oid), 0)
         FROM pg_catalog.pg_class s JOIN pg_catalog.pg_roles r ON r.oid = s.relowner WHERE s.oid = #{Integer(oid)}
       SQL
       return "the id sequence #{seq} is not the superuser's, or the app's role can reset it" if !super_owned || resettable
+      return "the id sequence #{seq} counts down or cycles, so ids would repeat" if wraps
 
       "the id sequence #{seq} is behind the highest id, so ids would repeat" if behind
     end

@@ -72,4 +72,28 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
     expect(@pg.exec("SELECT count(*) FROM pg_event_trigger WHERE evtname LIKE 'fleet_audit_guard_%'").getvalue(0, 0)).to eq("2")
     expect(@pg.exec("SELECT relowner::regrole::text FROM pg_class WHERE oid = 'audit_entries_default'::regclass").getvalue(0, 0)).not_to eq(role)
   end
+
+  it "holds the audit tables from before its checks to its commit, so nothing can be added in between (review of #249)" do
+    @pg.exec(file.sub(/^COMMIT;$/, "")) # the step, its transaction still open
+    other = connect(database)
+    other.exec("SET ROLE #{role}")
+    other.exec("SET lock_timeout = '200ms'")
+    expect { other.exec("CREATE INDEX ON audit_entries_p20261101 (action)") }.to raise_error(PG::LockNotAvailable)
+    expect { other.exec("CREATE STATISTICS fleet_spec_stats ON id, occurred_at FROM audit_entries") }.to raise_error(PG::LockNotAvailable)
+    @pg.exec("COMMIT")
+  ensure
+    other&.close
+  end
+
+  it "takes that lock before any check, so an index being built elsewhere makes it wait, not check around it" do
+    other = connect(database)
+    other.exec("SET ROLE #{role}")
+    other.exec("BEGIN")
+    other.exec("LOCK TABLE audit_entries_p20261101 IN SHARE MODE") # what CREATE INDEX holds while it builds
+    expect { @pg.exec(file) }.to raise_error(PG::LockNotAvailable, /LOCK TABLE public.audit_entries IN ACCESS EXCLUSIVE MODE/)
+    @pg.exec("ROLLBACK")
+  ensure
+    other&.exec("ROLLBACK")
+    other&.close
+  end
 end

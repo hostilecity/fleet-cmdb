@@ -85,9 +85,19 @@ module PackageStore
 
   # Deletes (or, in a dry run, counts) the sets no host or snapshot references and the chunks no set holds, untouched
   # for COLLECT_AFTER, in short batches. Returns { "package_sets" => n, "package_chunks" => n }.
+  #
+  # Sets are swept holding partition maintenance's lock (Partitions.exclusively), checked before each batch: whether a
+  # set-aside package_snapshots default exists is decided once, and maintenance setting one aside or dropping it
+  # mid-sweep would hide snapshots that reference a set (review of #249). While maintenance holds the lock, sets wait
+  # for the next run; chunks do not depend on snapshots.
   def collect!(now: Time.current, dry_run: false, batch_size: COLLECT_BATCH)
     cutoff = now - COLLECT_AFTER
-    counts = { "package_sets" => sweep(PackageSet, unreferenced_set, cutoff, dry_run, batch_size) }
+    sets = Partitions.exclusively { |still_held| sweep(PackageSet, unreferenced_set, cutoff, dry_run, batch_size, still_held:) }
+    if sets == :busy
+      Rails.logger.info("[package store] partition maintenance is running: package sets are collected at the next run")
+      sets = 0
+    end
+    counts = { "package_sets" => sets }
     counts["package_chunks"] = sweep(PackageChunk, UNREFERENCED_CHUNK, cutoff, dry_run, batch_size)
     Rails.logger.info("[package store] #{dry_run ? 'dry run, would collect' : 'collected'} " \
                       "#{counts.map { |table, count| "#{table}=#{count}" }.join(' ')} unreferenced since #{cutoff.utc.iso8601}")
@@ -126,7 +136,7 @@ module PackageStore
 
   # Rows of model unreferenced and untouched since cutoff, deleted in keyset batches by id. The DELETE checks
   # last_used_at again on each row it deletes, so a row store! touched meanwhile is skipped (decision 8).
-  def sweep(model, unreferenced, cutoff, dry_run, batch_size)
+  def sweep(model, unreferenced, cutoff, dry_run, batch_size, still_held: SessionLock::UNCHECKED)
     candidates = model.where(last_used_at: ...cutoff).where(unreferenced)
     return candidates.count if dry_run
 
@@ -135,6 +145,8 @@ module PackageStore
     loop do
       ids = candidates.where(id: (after + 1)..).order(:id).limit(batch_size).pluck(:id)
       break if ids.empty?
+
+      still_held.call
 
       total += model.where(id: ids, last_used_at: ...cutoff).where(unreferenced).delete_all
       after = ids.last

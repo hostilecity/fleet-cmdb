@@ -85,7 +85,8 @@ module Partitions
   # Rows the default partition holds are moved back through the parent this many at a time, each its own transaction.
   MOVE_BATCH = 1_000
   ORPHANS_KEY = "partitions/orphans".freeze
-  REPORTED_KEY = "partitions/reported".freeze
+  # Versioned: entries became [severity, text] pairs (review 2 of #239); a list cached by an older release is ignored.
+  REPORTED_KEY = "partitions/reported/v2".freeze
   # When maintenance first skipped a run (a backup running, or another run holding the lock), until one runs again.
   SKIPPED_KEY = "partitions/skipped_since".freeze
   # Skipped runs are a warning after this long.

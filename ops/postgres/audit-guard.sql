@@ -7,7 +7,9 @@
 --   docker exec -i postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
 --
 -- It is one transaction: it installs everything or nothing, and an error or a dropped connection leaves whatever guard
--- was there before. It is safe to run again.
+-- was there before. It is safe to run again. It locks the audit tables first (ACCESS EXCLUSIVE, so nothing changes them
+-- between its checks and its changes), waiting at most 5 seconds: audit writes wait for it, about a second. If the lock
+-- times out (a backup holds the tables for hours), run it again when the backup has finished.
 --
 -- It runs no code the app's role (the owner of audit_entries) could have written, and adopts nothing that role could
 -- have prepared. Before it touches or queries any audit table, it checks from the catalogs alone that no index,
@@ -57,6 +59,7 @@ BEGIN;
 -- The session's own role, even if the database or the login set another one (ALTER DATABASE ... SET role).
 SET LOCAL ROLE NONE;
 SET LOCAL search_path = pg_catalog, pg_temp;
+SET LOCAL lock_timeout = '5s';
 
 DO $$
 DECLARE
@@ -74,6 +77,9 @@ BEGIN
   IF parent IS NULL OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = parent) <> 'p' THEN
     RAISE EXCEPTION 'audit_entries is not partitioned yet: deploy the app (its migrations convert it), then run this again';
   END IF;
+  -- The parent and every partition, held to the end: no index, statistics object, trigger, constraint, or partition can
+  -- be added between the checks below and the changes after them (review of #249). Taking a lock runs no code.
+  LOCK TABLE public.audit_entries IN ACCESS EXCLUSIVE MODE;
 
   -- The app's role: no guard holds against a superuser, or a role that can become one or replay rows unguarded.
   SELECT r.oid, r.rolname INTO app_oid, app FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.oid = c.relowner WHERE c.oid = parent;
@@ -214,6 +220,7 @@ DECLARE
   app name := (SELECT r.rolname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.oid = c.relowner WHERE c.oid = parent);
   seq oid;
   part oid;
+  grantee oid;
   max_id bigint;
   last_id bigint;
 BEGIN
@@ -223,11 +230,22 @@ BEGIN
     CREATE TABLE public.audit_entries_default PARTITION OF public.audit_entries DEFAULT;
     ALTER TABLE public.audit_entries_default ADD CONSTRAINT audit_entries_default_refuses_rows CHECK (false);
   END IF;
-  ALTER TABLE public.audit_entries_default OWNER TO CURRENT_USER;
-  REVOKE ALL ON public.audit_entries_default FROM PUBLIC;
-  EXECUTE pg_catalog.format('GRANT SELECT ON public.audit_entries_default TO %I', app);
+  ALTER TABLE public.audit_entries_default OWNER TO CURRENT_USER; -- its grants are set with the sequence's, below
   IF (SELECT pt.partdefid FROM pg_catalog.pg_partitioned_table pt WHERE pt.partrelid = parent) IS DISTINCT FROM pg_catalog.to_regclass('public.audit_entries_default') THEN
     RAISE EXCEPTION 'the audit guard was not installed: public.audit_entries_default is not the default partition of audit_entries';
+  END IF;
+  -- The parent's guards, if the app's role dropped them before this ran (review of #249): the row guard is cloned to
+  -- every partition. Then every table of the log must have it.
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = parent AND t.tgname = 'audit_entries_no_update_or_delete') THEN
+    CREATE TRIGGER audit_entries_no_update_or_delete BEFORE UPDATE OR DELETE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION public.audit_entries_append_only();
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = parent AND t.tgname = 'audit_entries_no_truncate') THEN
+    CREATE TRIGGER audit_entries_no_truncate BEFORE TRUNCATE ON public.audit_entries FOR EACH STATEMENT EXECUTE FUNCTION public.audit_entries_append_only();
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_partition_tree(parent) t
+             WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger g WHERE g.tgrelid = t.relid AND g.tgtype = 27
+                                 AND g.tgfoid = 'public.audit_entries_append_only()'::pg_catalog.regprocedure)) THEN
+    RAISE EXCEPTION 'the audit guard was not installed: a table of the audit log has no update and delete guard';
   END IF;
   -- Every partition has its truncate guard (one made while the guard was off may not).
   FOR part IN SELECT t.relid FROM pg_catalog.pg_partition_tree(parent) t
@@ -246,6 +264,29 @@ BEGIN
   IF seq IS NULL THEN
     RAISE EXCEPTION 'the audit guard was not installed: audit_entries.id has no sequence default';
   END IF;
+  -- Taken over first, so the app's role can no longer alter it while it is checked; then no grant is left but the app
+  -- role's USAGE and SELECT: ownership moves a role's grants with it, and REVOKE ... FROM PUBLIC leaves the rest (a grant
+  -- of UPDATE to pg_database_owner, which the database's owner belongs to, would allow setval: review of #249).
+  EXECUTE pg_catalog.format('ALTER SEQUENCE %s OWNED BY NONE', seq::pg_catalog.regclass);
+  EXECUTE pg_catalog.format('ALTER SEQUENCE %s OWNER TO CURRENT_USER', seq::pg_catalog.regclass);
+  FOR grantee IN SELECT DISTINCT a.grantee FROM pg_catalog.pg_class c, pg_catalog.aclexplode(c.relacl) a
+                 WHERE c.oid IN (seq, pg_catalog.to_regclass('public.audit_entries_default')) AND a.grantee <> c.relowner LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM %s', seq::pg_catalog.regclass,
+                              CASE WHEN grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.quote_ident((SELECT r.rolname FROM pg_catalog.pg_roles r WHERE r.oid = grantee)) END);
+    EXECUTE pg_catalog.format('REVOKE ALL ON public.audit_entries_default FROM %s',
+                              CASE WHEN grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.quote_ident((SELECT r.rolname FROM pg_catalog.pg_roles r WHERE r.oid = grantee)) END);
+  END LOOP;
+  EXECUTE pg_catalog.format('GRANT USAGE, SELECT ON SEQUENCE %s TO %I', seq::pg_catalog.regclass, app);
+  EXECUTE pg_catalog.format('GRANT SELECT ON public.audit_entries_default TO %I', app);
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE pg_catalog.pg_has_role(app, r.oid, 'MEMBER')
+               AND (pg_catalog.has_sequence_privilege(r.oid, seq, 'UPDATE')
+                    OR pg_catalog.has_table_privilege(r.oid, 'public.audit_entries_default', 'INSERT, UPDATE, DELETE, TRUNCATE'))) THEN
+    RAISE EXCEPTION 'the audit guard was not installed: % or a role it belongs to can still reset the id sequence or write the default partition', app;
+  END IF;
+  -- It must count up and never wrap round, or the id trigger would hand out old ids again (review of #249).
+  IF NOT (SELECT s.seqincrement > 0 AND NOT s.seqcycle FROM pg_catalog.pg_sequence s WHERE s.seqrelid = seq) THEN
+    RAISE EXCEPTION 'the audit guard was not installed: the id sequence % counts down or cycles; ids would repeat (ALTER SEQUENCE ... INCREMENT BY 1 NO CYCLE, as the app''s role, first)', seq::pg_catalog.regclass;
+  END IF;
   -- The one query over the audit rows, as the app's role (defence in depth for B1: whatever it plans runs as that role),
   -- then search_path pinned again in case anything it ran changed it. The sequence is read by OID: a name could be
   -- mixed-case or shadowed (review 3 of #239, S2). pg_sequence_last_value is NULL before the first nextval.
@@ -257,10 +298,6 @@ BEGIN
   IF max_id IS NOT NULL AND max_id > COALESCE(last_id, 0) THEN
     RAISE EXCEPTION 'the audit guard was not installed: the id sequence % is behind the highest id (% > %); ids would repeat', seq::pg_catalog.regclass, max_id, COALESCE(last_id, 0);
   END IF;
-  EXECUTE pg_catalog.format('ALTER SEQUENCE %s OWNED BY NONE', seq::pg_catalog.regclass);
-  EXECUTE pg_catalog.format('ALTER SEQUENCE %s OWNER TO CURRENT_USER', seq::pg_catalog.regclass);
-  EXECUTE pg_catalog.format('REVOKE ALL ON SEQUENCE %s FROM PUBLIC', seq::pg_catalog.regclass);
-  EXECUTE pg_catalog.format('GRANT USAGE, SELECT ON SEQUENCE %s TO %I', seq::pg_catalog.regclass, app);
 
   -- Every new entry's id comes from that sequence, by OID (the owner's decision, 2026-11-18; review 3 of #239, S2). The
   -- function runs as the inserting role, which may use the sequence. Cloned to every partition, new ones included.

@@ -502,5 +502,43 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       install
       expect(problem).to be_nil
     end
+
+    # Copilot's review of #249.
+    it "puts back the parent's update and delete guard and truncate guard if the app's role dropped them first" do
+      as_owner do
+        attempt("DROP TRIGGER audit_entries_no_update_or_delete ON audit_entries")
+        attempt("DROP TRIGGER audit_entries_no_truncate ON audit_entries")
+      end
+      install
+      as_owner do
+        refused("UPDATE audit_entries SET action = 'host.retired'", /append-only: UPDATE/)
+        refused("DELETE FROM audit_entries", /append-only: DELETE/)
+        refused("TRUNCATE audit_entries", /append-only: TRUNCATE/)
+      end
+      expect(problem).to be_nil
+      unguarded { c.execute("DROP TRIGGER audit_entries_no_update_or_delete ON audit_entries") }
+      expect(problem).to eq("audit_entries has no update and delete guard (the superuser runs ops/postgres/audit-guard.sql again)")
+    end
+
+    it "refuses an id sequence that counts down or cycles, and reports one changed while the guard was off" do
+      as_owner { attempt("ALTER SEQUENCE audit_entries_id_seq INCREMENT BY -1") }
+      refused(script, /the id sequence public.audit_entries_id_seq counts down or cycles/)
+      as_owner { attempt("ALTER SEQUENCE audit_entries_id_seq INCREMENT BY 1 CYCLE") }
+      refused(script, /counts down or cycles/)
+      as_owner { attempt("ALTER SEQUENCE audit_entries_id_seq NO CYCLE") }
+      install
+      expect(problem).to be_nil
+      unguarded { c.execute("ALTER SEQUENCE audit_entries_id_seq CYCLE") }
+      expect(problem).to eq("the id sequence audit_entries_id_seq counts down or cycles, so ids would repeat")
+    end
+
+    it "leaves no grant on the sequence but the app role's own, so a grant to a role it belongs to cannot reset it" do
+      as_owner { attempt("GRANT UPDATE ON SEQUENCE audit_entries_id_seq TO pg_database_owner") }
+      install
+      as_owner { refused("SELECT setval('audit_entries_id_seq', 1)", /permission denied/) }
+      expect(problem).to be_nil
+      c.execute("GRANT UPDATE ON SEQUENCE audit_entries_id_seq TO pg_database_owner")
+      expect(problem).to eq("the id sequence audit_entries_id_seq is not the superuser's, or the app's role can reset it")
+    end
   end
 end
