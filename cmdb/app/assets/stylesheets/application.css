@@ -288,7 +288,8 @@ nav.tabs .count { font-variant-numeric: tabular-nums; font-size: 0.8125rem; colo
 .glance > a:hover { border-color: var(--petrol); }
 .glance .label { display: block; font-size: 0.875rem; color: var(--ink-soft); }
 .glance .big { display: block; font-size: 1.75rem; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
-.glance .big .not-eval, .glance .big .none-open { font-size: 1.125rem; }
+.glance .big .not-eval, .glance .big .none-open, .glance .big .overdue { font-size: 1.125rem; }
+.glance .big .not-eval { white-space: normal; }
 .glance .detail { display: block; font-size: 0.875rem; color: var(--ink-soft); overflow-wrap: anywhere; }
 .glance .big small { font-size: 0.9375rem; font-weight: 400; color: var(--ink-soft); }
 .lamp.na::before { background: var(--lamp-off); }
@@ -328,6 +329,9 @@ pre.value { margin: 0; font-family: var(--mono); font-size: 0.8125rem; line-heig
 /* Counts that must never be confused: none open vs not evaluated */
 .none-open { display: inline-flex; gap: 0.4375rem; align-items: center; }
 .none-open::before { content: "\2713"; color: var(--lamp-online); font-weight: 700; }
+/* A report type late or missing on the host reports tile (#255): the words say it, the stale lamp's colour marks it. */
+.overdue { display: inline-flex; gap: 0.4375rem; align-items: center; }
+.overdue::before { content: ""; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--lamp-stale); flex: none; }
 .not-eval { color: var(--ink-soft); font-style: italic; display: inline-flex; gap: 0.4375rem; align-items: center; white-space: nowrap; }
 .not-eval::before { content: ""; width: 0.625rem; height: 0.625rem; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--lamp-off); flex: none; }
 .kind { display: inline-block; font-size: 0.875rem; font-weight: 700; white-space: nowrap; }

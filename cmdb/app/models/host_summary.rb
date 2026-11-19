@@ -1,13 +1,17 @@
 # What the summary tiles under a host's header show on every tab (P2-D02 to P2-D04, owner decision Q1 on the
 # P2-D01 review): the host's CIS-aligned pass rate, its open vulnerability findings by severity (or why it was not
-# evaluated), its package count and manager, when each report type last arrived (each with its own time), and its
-# open tasks by state for the Tasks tab (P3-DASH-TASKS). A fixed number of queries.
+# evaluated), its package count and manager, when each report type last arrived and whether it is on schedule
+# (ReportSchedule), and its open tasks by state for the Tasks tab (P3-DASH-TASKS). A fixed number of queries.
 class HostSummary
   REPORT_TYPES = %w[config packages inventory].freeze
 
-  attr_reader :cis, :package_set, :packages_changed_at, :vulnerability_evaluation, :open_by_severity, :received, :open_tasks
+  attr_reader :cis, :package_set, :packages_changed_at, :vulnerability_evaluation, :open_by_severity, :received, :open_tasks,
+              :intervals, :now
 
-  def initialize(host)
+  def initialize(host, now: Time.current)
+    @now = now
+    @first_seen_at = host.first_seen_at
+    @intervals = ReportSchedule.intervals
     @cis = CisCompliance.for_host(host.id)
     @package_set = HostPackageSet.find_by(host_id: host.id)
     @packages_changed_at = PackageSnapshot.where(host_id: host.id).maximum(:received_at)
@@ -27,10 +31,14 @@ class HostSummary
   # A host is evaluated for vulnerabilities only once matching has run and found it evaluable.
   def vulnerabilities_evaluated? = vulnerability_evaluation.present? && !vulnerability_evaluation.not_evaluated?
 
-  # The oldest of the report types that have arrived, or nil when none has. Each type arrives on its own interval (by
-  # default inventory every 15 minutes, config and packages every 6 hours), so the newest says nothing about the others.
-  def oldest_received_at = received.values.compact.min
+  # Whether any report has arrived.
+  def any_received? = received.values.any?
 
-  # How many report types have arrived at least once.
-  def received_count = received.values.compact.size
+  # Each report type's state against its interval (ReportSchedule): :on_schedule, :overdue, :missing, or :awaited.
+  def report_state(type)
+    ReportSchedule.state(received_at: received[type], interval: intervals.fetch(type), first_seen_at: @first_seen_at, now:)
+  end
+
+  # The report types in a state, in the order of REPORT_TYPES.
+  def report_types(state) = REPORT_TYPES.select { |type| report_state(type) == state }
 end

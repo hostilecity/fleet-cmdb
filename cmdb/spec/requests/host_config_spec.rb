@@ -72,31 +72,8 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
       get "/hosts/#{host.id}"
       expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities Not evaluated Packages have not been matched against advisories yet")
       expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known No package report yet")
-      expect(words(page.at_css("#glance_reports"))).to eq("Last reports received oldest 3 minutes ago Config 2 minutes ago · no package report yet · inventory 3 minutes ago")
+      expect(words(page.at_css("#glance_reports"))).to eq("Last reports received Waiting for packages Config 2 minutes ago No package report yet Inventory 3 minutes ago")
       expect(page.at_css("#glance_reports")["href"]).to eq("/hosts/#{host.id}#report_requests")
-    end
-
-    # The owner saw "less than 5 seconds ago · Inventory, packages, and config" on a host whose package report comes
-    # every 6 hours: the tile showed the newest report's time beside every type's name.
-    it "gives each report type its own age, headed by the oldest, so a fresh inventory does not make old reports look new" do
-      travel_to(start + 2.minutes) { report_packages(host, [ [ "openssl", "3.5.0-1", "openssl" ] ]) }
-      travel_to(start + 3.hours) { record_inventory(host) }
-      travel_to(start + 3.hours + 30.seconds)
-      get "/hosts/#{host.id}"
-      tile = page.at_css("#glance_reports")
-      expect(tile.at_css(".big").text.squish).to eq("oldest about 3 hours ago")
-      expect(tile.at_css(".big small").text).to eq("oldest")
-      expect(tile.at_css(".detail").text).to eq("Config about 3 hours ago · packages about 3 hours ago · inventory half a minute ago")
-    end
-
-    it "shows a new report's age on the next refresh of the page, as a live refresh would" do
-      travel_to(start + 10.minutes)
-      get "/hosts/#{host.id}/config"
-      expect(page.at_css("#glance_reports .detail").text).to eq("Config 9 minutes ago · no package report yet · inventory 10 minutes ago")
-      report_packages(host, [ [ "openssl", "3.5.0-1", "openssl" ] ])
-      get "/hosts/#{host.id}/config"
-      expect(page.at_css("#glance_reports .big").text.squish).to eq("oldest 10 minutes ago")
-      expect(page.at_css("#glance_reports .detail").text).to eq("Config 9 minutes ago · packages less than 5 seconds ago · inventory 10 minutes ago")
     end
 
     it "says so when no check counts towards the pass rate" do
@@ -105,6 +82,99 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
       expect(words(page.at_css("#glance_cis"))).to eq("CIS-aligned checks Not evaluated No check has a pass or fail result yet")
       expect(page.at_css("#results_section > p").text.squish).to start_with("Not evaluated. No check on this host has passed, failed, or been unreadable yet, because the host has not sent a config report.")
       expect(words(page.at_css("#glance_reports"))).to eq("Last reports received None yet The agent has sent no report")
+    end
+  end
+
+  # The reports tile's headline and its lines (owner decision on #255). The owner saw "less than 5 seconds ago ·
+  # Inventory, packages, and config" on a host whose package report comes every 6 hours: the tile showed the newest
+  # report's time beside every type's name. The host was first seen at `start`, with its inventory; its config report
+  # came a minute later.
+  describe "the reports tile" do
+    before { report({}, at: start + 1.minute) }
+
+    def tile_lines(at)
+      travel_to(at)
+      get "/hosts/#{host.id}"
+      tile = page.at_css("#glance_reports")
+      [ tile.at_css(".big").text.squish, tile.at_css(".detail").children.select(&:text?).map(&:text) ]
+    end
+
+    def report_packages_at(at) = travel_to(at) { report_packages(host, [ [ "openssl", "3.5.0-1", "openssl" ] ]) }
+
+    def inventory_at(at) = travel_to(at) { record_inventory(host) }
+
+    it "says on schedule when every type is within twice its interval, with each type's own age on its own line" do
+      report_packages_at(start + 2.minutes)
+      inventory_at(start + 3.hours)
+      expect(tile_lines(start + 3.hours + 30.seconds))
+        .to eq([ "On schedule", [ "Config about 3 hours ago", "Packages about 3 hours ago", "Inventory half a minute ago" ] ])
+      expect(page.at_css("#glance_reports .big .none-open")).to be_present
+    end
+
+    it "names the types older than twice their interval, and says how old is too old on each one's line" do
+      report_packages_at(start + 2.minutes)
+      inventory_at(start + 13.hours)
+      expect(tile_lines(start + 13.hours))
+        .to eq([ "Config and packages overdue", [ "Config about 13 hours ago, older than 12 hours", "Packages about 13 hours ago, older than 12 hours",
+                                                 "Inventory less than 5 seconds ago" ] ])
+      expect(page.at_css("#glance_reports .big .overdue")).to be_present
+    end
+
+    it "judges inventory against the operator's interval when one is set, and the agent's default otherwise" do
+      report_packages_at(start + 2.minutes)
+      expect(tile_lines(start + 31.minutes))
+        .to eq([ "Inventory overdue", [ "Config 30 minutes ago", "Packages 29 minutes ago", "Inventory 31 minutes ago, older than 30 minutes" ] ])
+      Setting.update_agent_intervals!(actor: Audit::SYSTEM, inventory_seconds: 3600)
+      expect(tile_lines(start + 31.minutes).first).to eq("On schedule")
+    end
+
+    it "waits for a type that has not arrived within its interval of the host being first seen, then says it is missing" do
+      inventory_at(start + 6.hours)
+      expect(tile_lines(start + 6.hours).first).to eq("Waiting for packages")
+      inventory_at(start + 6.hours + 1.minute)
+      expect(tile_lines(start + 6.hours + 1.minute))
+        .to eq([ "Missing packages", [ "Config about 6 hours ago", "No package report yet", "Inventory less than 5 seconds ago" ] ])
+      expect(page.at_css("#glance_reports .big .overdue")).to be_present
+    end
+
+    it "says both when one type is missing and another is overdue" do
+      inventory_at(start + 13.hours)
+      expect(tile_lines(start + 13.hours).first).to eq("Missing packages, config overdue")
+    end
+
+    it "shows a new report's age when the page is next rendered" do
+      expect(tile_lines(start + 10.minutes).last).to eq([ "Config 9 minutes ago", "No package report yet", "Inventory 10 minutes ago" ])
+      report_packages(host, [ [ "openssl", "3.5.0-1", "openssl" ] ])
+      expect(tile_lines(start + 10.minutes)).to eq([ "On schedule", [ "Config 9 minutes ago", "Packages less than 5 seconds ago", "Inventory 10 minutes ago" ] ])
+    end
+  end
+
+  describe "the reports tile with only an inventory received" do
+    let!(:fresh) { enrolled_host(name: "Fresh host").first }
+
+    before do
+      record_heartbeat(fresh)
+      record_inventory(fresh)
+    end
+
+    it "waits for the config and package reports, then says they are missing" do
+      travel_to(start + 1.minute)
+      get "/hosts/#{fresh.id}"
+      expect(words(page.at_css("#glance_reports")))
+        .to eq("Last reports received Waiting for config and packages No config report yet No package report yet Inventory 1 minute ago")
+      travel_to(start + 6.hours + 1.minute) { record_inventory(fresh) }
+      travel_to(start + 6.hours + 2.minutes)
+      get "/hosts/#{fresh.id}"
+      expect(words(page.at_css("#glance_reports")))
+        .to eq("Last reports received Missing config and packages No config report yet No package report yet Inventory 1 minute ago")
+    end
+
+    it "says the inventory is missing too when the agent was seen but sent nothing" do
+      HostInventory.where(host_id: fresh.id).delete_all
+      travel_to(start + 16.minutes)
+      get "/hosts/#{fresh.id}"
+      expect(words(page.at_css("#glance_reports")))
+        .to eq("Last reports received Missing inventory No config report yet No package report yet No inventory report yet")
     end
   end
 

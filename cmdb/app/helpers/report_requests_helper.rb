@@ -2,6 +2,12 @@
 # button (P2-D02, approved mockup report-requests.html, owner decisions Q6 and Q7).
 module ReportRequestsHelper
   REPORT_TYPE_NAMES = { "config" => "config", "inventory" => "inventory", "packages" => "package" }.freeze
+  # "Config 5 hours ago", or "No package report yet" for a type never received: one line of the host reports tile
+  # and of the compliance page's last reports cell, worded the same on both.
+  def report_age(type, received_at)
+    received_at ? "#{type.capitalize} #{seen_ago(received_at)}" : "No #{report_names([ type ])} yet"
+  end
+
   # How long after a request ended its outcome stays beside the button.
   OUTCOME_SHOWN_FOR = ReportRequests::TTL
 

@@ -44,11 +44,12 @@ module ComplianceHelper
                        tag.span("passes #{row.cis_passed} of #{row.cis_counted} checks", class: "rate-detail") ]))
   end
 
-  # "Config 5 hours ago" and "Packages never" on two lines, or "Never" when neither has arrived.
+  # "Config 5 hours ago" and "No package report yet" on two lines, worded as on the host reports tile, or "Never" when
+  # neither has arrived.
   def last_reports(row)
     return "Never" unless row.config_received_at || row.packages_received_at
 
-    safe_join([ "Config #{seen_ago(row.config_received_at).downcase_first}", "Packages #{seen_ago(row.packages_received_at).downcase_first}" ], tag.br)
+    safe_join([ report_age("config", row.config_received_at), report_age("packages", row.packages_received_at) ], tag.br)
   end
 
   # "1 critical, 3 high" for the fleet list's summary panel.

@@ -107,7 +107,7 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       expect(response.body).not_to include("Gone")
 
       build_row = page.at_css("tr#compliance_host_#{build.id}")
-      expect(row_cells(build)).to eq([ "58.3% passes 7 of 12 checks", "1", "1", "1", "1", "Not evaluated No package report yet", "Config about 5 hours ago Packages never" ])
+      expect(row_cells(build)).to eq([ "58.3% passes 7 of 12 checks", "1", "1", "1", "1", "Not evaluated No package report yet", "Config about 5 hours ago No package report yet" ])
       expect(build_row.css("td.sevcount.hot").map(&:text)).to eq(%w[1 1])
       expect(build_row.at_css("td[colspan='5'] .not-eval")).to be_present
       expect(build_row.at_css("th .lamp").text).to eq("Awaiting first contact")
