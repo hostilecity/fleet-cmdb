@@ -1,10 +1,11 @@
 # A host's Vulnerabilities tab and the findings for one package (P2-D04, FR-2.4, FR-2.5; approved mockups
 # host-vulns.html, host-vuln-package.html, states-packages-vulns.html). Read-only.
 #
-# - Findings grouped by binary package with the advisories nested under it (owner decision Q16): the package row
-#   shows the worst severity and the number of findings shown; the severity filter matches single advisories.
-#   Filterable by state (open and reopened by default, resolved, all), severity, and text (package, source package,
-#   or advisory id).
+# - Findings grouped by binary package (owner decision Q16), one row per package with its advisories collapsed under
+#   it (owner request; a fix filter is proposed in #252): the row shows how many advisories it has, the worst
+#   severity, how many have a fix available (open list) or how they resolved (resolved list), and their states;
+#   HostFindingGroups ranks and pages them (see there). The severity filter matches single advisories. Filterable by state (open and reopened by default, resolved, all),
+#   severity, and text (package, source package, or advisory id); a text search opens the groups it finds.
 # - A host that is not evaluated says so and why (HostVulnerabilityEvaluation, or HostContext before matching has
 #   run), never an empty list; findings kept from an earlier evaluation say they may be out of date. Packages the
 #   matcher could not check are listed. Advisory data freshness (Advisories::Freshness, P2-S13) is shown.
@@ -20,34 +21,33 @@ class HostVulnerabilitiesController < ApplicationController
   STATES = %w[open resolved all].freeze
   QUERY_MAX = 100
 
-  # One binary package's findings as shown: the package, the findings in display order, and the worst severity.
-  Group = Data.define(:package, :architecture, :findings) do
-    def worst = findings.first.advisory.severity
-    def installed_version = findings.first.installed_version
-  end
-
   reads_from_replica only: %i[show package] # a caught-up replica when one is configured (#198)
   before_action :load_host_tab
 
   def show
     load_evaluation
     findings = VulnerabilityFinding.with_details.where(host_id: @host.id)
-    @state_counts = { "open" => findings.active.count, "resolved" => findings.where(state: "resolved").count }
+    # Counted on the findings alone, in one query: the details' joins add no rows (#254).
+    by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state).count
+    @state_counts = { "open" => by_state.values_at("open", "reopened").compact.sum, "resolved" => by_state.fetch("resolved", 0) }
     @state_counts["all"] = @state_counts.values.sum
     @state = STATES.include?(params[:state]) ? params[:state] : "open"
     @severity = Advisory::SEVERITIES.include?(params[:severity]) ? params[:severity] : nil
     @query = params[:q].to_s.strip.first(QUERY_MAX)
     # The chip narrows the open and reopened list, the rows that show Debian's triage (T3, T5).
     @debian = params[:debian] == "no_dsa" && @state == "open" ? "no_dsa" : nil
-    # Every matching finding is loaded and grouped in Ruby, without a limit (review of #124): a host has one finding per
-    # installed binary package and advisory that affects it, a few hundred at most on a 3,000-package host with
-    # current updates, and the groups need every finding of a package to show its worst severity. Page the groups,
-    # as HostPackageList pages packages, if hosts with thousands of findings appear.
-    shown = filtered(findings).to_a
-    load_tab_triage(findings, shown)
-    shown = shown.select { |f| helpers.triage_no_dsa?(@triage[f]) } if @debian
-    @open_groups = groups(shown.select { |f| f.state != "resolved" })
-    @resolved_groups = groups(shown.select { |f| f.state == "resolved" })
+    load_triage_context
+    scope = filtered(findings)
+    if @state == "open"
+      # The chip counts every open and reopened finding Debian plans no security update for, whatever the severity and
+      # text filters (T3), in one SQL count (review of #253, S6).
+      @no_dsa_count = FindingTriage.no_dsa(findings.active.joins(:advisory), release: @triage_release, status: @triage_status).count
+      scope = FindingTriage.no_dsa(scope, release: @triage_release, status: @triage_status) if @debian
+    end
+    @open_groups = (groups(scope.where(state: %w[open reopened]), :open) unless @state == "resolved")
+    @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")
+    # Debian's triage for the open and reopened rows on the page (T5); none on the resolved list.
+    @triage = @open_groups && FindingTriage.load(@open_groups.groups.flat_map(&:findings))
     @advisory_count = AdvisoryPackage.where(ecosystem: @evaluation.ecosystem).distinct.count(:advisory_id) if @evaluation && !@evaluation.not_evaluated?
   end
 
@@ -81,22 +81,6 @@ class HostVulnerabilitiesController < ApplicationController
     @triage_status = @triage_release && DebianTriage::Freshness.statuses.find { |status| status.release == @triage_release }
   end
 
-  # Triage for the open and reopened findings the tab can show (T5), and the chip's count over all of them in the
-  # state filter, whatever the severity and search filters (T3). On the default list (open, no filters) those are
-  # the findings shown; otherwise the open and reopened findings are loaded once more. None on the resolved list.
-  def load_tab_triage(findings, shown)
-    load_triage_context
-    @triage = nil
-    return if @state == "resolved"
-
-    active = if @state == "open" && @severity.nil? && @query.blank? then shown
-    elsif @state == "open" then findings.active.preload(:advisory).to_a
-    else shown.reject { |f| f.state == "resolved" }
-    end
-    @triage = FindingTriage.load(active)
-    @no_dsa_count = active.count { |f| helpers.triage_no_dsa?(@triage[f]) } if @state == "open"
-  end
-
   def load_evaluation
     @evaluation = HostVulnerabilityEvaluation.find_by(host_id: @host.id)
     @context = HostContext.load([ @host.id ]).first unless @evaluation
@@ -118,9 +102,12 @@ class HostVulnerabilitiesController < ApplicationController
   # Severity, worst first, then the earliest first seen.
   def sorted(findings) = findings.sort_by { |f| [ Advisory::SEVERITIES.index(f.advisory.severity), f.first_seen_at, f.advisory.advisory_id ] }
 
-  def groups(findings)
-    findings.group_by { |f| [ f.package, f.architecture ] }
-            .map { |(package, architecture), list| Group.new(package:, architecture:, findings: sorted(list)) }
-            .sort_by { |group| [ Advisory::SEVERITIES.index(group.worst), group.findings.map(&:first_seen_at).min, group.package, group.architecture ] }
+  # One section's page of package groups, each with its own cursor (after and before for the open section,
+  # resolved_after and resolved_before for the resolved one). The open section ranks the biggest offenders first; the
+  # resolved one keeps worst severity, then first seen (review of #253, S3).
+  def groups(scope, section)
+    prefix = section == :resolved ? "resolved_" : ""
+    rank = section == :resolved ? :severity : :offenders
+    HostFindingGroups.new(scope, rank:, after: HostFindingGroups.cursor(params[:"#{prefix}after"], rank), before: HostFindingGroups.cursor(params[:"#{prefix}before"], rank))
   end
 end

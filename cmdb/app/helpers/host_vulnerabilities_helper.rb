@@ -47,6 +47,26 @@ module HostVulnerabilitiesHelper
     finding.fixed_version ? safe_join([ "Fixed in ", tag.span(finding.fixed_version, class: "mono") ]) : tag.span("No fix available", class: "unavailable")
   end
 
+  # A package row's fix count (HostFindingGroups::Group): how many of its findings have a known fixed version for the
+  # host's release, never "N findings" alone (owner request). Whether that version is in the host's repositories yet
+  # is not known to the server.
+  def fixable_count(group)
+    fixable, total = group.fixable, group.total
+    if fixable.zero? then tag.span(total == 1 ? "No fix available" : "No fix for any of #{total}", class: "unavailable")
+    elsif fixable == total then total == 1 ? "Fix available" : "Fix for all #{total}"
+    else "Fix for #{fixable} of #{total}"
+    end
+  end
+
+  # How a resolved package row's findings resolved, in the order RESOLUTIONS lists them: "2 fixed, 1 removed".
+  def group_resolutions(group) = group.resolutions.sort_by { |resolution, _| RESOLUTIONS.keys.index(resolution) }.map { |resolution, count| "#{count} #{resolution.tr('_', ' ')}" }.join(", ")
+
+  # "2 high, 18 medium" for a package row, worst first.
+  def finding_severity_breakdown(group) = severity_counts(group.counts.select { |_, count| count.positive? })
+
+  # "45 open, 2 reopened" or "3 resolved" for a package row.
+  def group_states(group) = group.states.sort_by { |state, _| VulnerabilityFinding::STATES.index(state) }.map { |state, count| "#{count} #{state}" }.join(", ")
+
   # "2026-11-03 06:12 UTC → —", "... → 2026-11-05 18:30 UTC", or with a resolution and a reopening.
   def finding_dates(finding)
     after = case finding.state

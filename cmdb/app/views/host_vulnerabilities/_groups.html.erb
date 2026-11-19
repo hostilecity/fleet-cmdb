@@ -1,19 +1,46 @@
-<%# Findings grouped by binary package, advisories nested (owner decision Q16). locals: host, groups, caption, id; and triage
-    (FindingTriage, or nil), triage_status, triage_os: Debian's triage under the advisory of open and reopened rows (P2-D08, T1, T5). %>
+<%# Findings grouped by binary package (owner decision Q16), one row per package, its advisories collapsed under it in a
+    native disclosure that works without JavaScript (owner request). The open list's rows say how many findings have a
+    fix; the resolved list's say how they resolved (review of #253, S3). locals: host, groups (HostFindingGroups),
+    caption, id, open (groups expanded: a text search), link_params, pager_label, cursor_prefix; and triage (FindingTriage, or nil),
+    triage_status, triage_os: Debian's triage under the advisory of open and reopened rows (P2-D08, T1, T5).
+    keep-open stops a live refresh (a Turbo morph) from closing a disclosure the operator opened. %>
 <% triage = local_assigns[:triage] %>
-<div class="table-wrap"><table id="<%= id %>" class="findings"><caption class="visually-hidden"><%= caption %></caption>
-  <thead><tr><th scope="col" colspan="2">Package and advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">First seen &rarr; resolved</th></tr></thead>
-  <% groups.each do |group| %>
+<% resolved = groups.rank == :severity %>
+<div class="table-wrap"><table id="<%= id %>" class="findings" data-controller="keep-open" data-action="turbo:before-morph-attribute->keep-open#protect"><caption class="visually-hidden"><%= caption %></caption>
+  <thead><tr><th scope="col">Package</th><th scope="col">Advisories</th><th scope="col">Severity</th><th scope="col"><%= resolved ? "Resolutions" : "Fixes" %></th><th scope="col">State</th><th scope="col">First seen</th></tr></thead>
+  <% groups.groups.each do |group| %>
     <tbody>
-      <tr class="pkg-group"><th scope="rowgroup" colspan="2"><%= link_to "#{group.package}:#{group.architecture}", package_vulnerabilities_host_path(host, package: group.package), class: "mono" %>
-        <span class="muted">installed</span> <span class="mono"><%= group.installed_version %></span></th>
-        <td><%= severity_tag(group.worst) %> <span class="state-note">worst of <%= group.findings.size %></span></td><td colspan="3"><%= pluralize(group.findings.size, "finding") %></td></tr>
-      <% group.findings.each do |finding| %>
-        <tr class="nested finding <%= finding.state %>"><td></td><td><%= advisory_cell(finding.advisory) %><% if triage && finding.state != "resolved" %><%= triage_lines(finding, triage[finding], page: :tab, status: local_assigns[:triage_status], os: local_assigns[:triage_os]) %><% end %></td><td><%= severity_tag(finding.advisory.severity) %></td>
-          <td><%= fixed_in(finding) %></td>
-          <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>
-          <td><%= finding_dates(finding) %></td></tr>
-      <% end %>
+      <tr class="pkg-group"><th scope="row"><%= link_to group.key, package_vulnerabilities_host_path(host, package: group.package), class: "mono" %>
+        <span class="state-note"><span class="muted">installed</span> <span class="mono"><%= group.installed_version %></span></span></th>
+        <td><%= pluralize(group.total, "advisory", plural: "advisories") %></td>
+        <td><%= severity_tag(group.worst) %> <span class="state-note"><%= finding_severity_breakdown(group) %></span></td>
+        <td><%= resolved ? group_resolutions(group) : fixable_count(group) %></td>
+        <td><%= group_states(group) %></td>
+        <td><%= utc(group.first_seen_at) %></td></tr>
+      <tr class="advisories"><td colspan="6">
+        <details class="advisories" id="<%= "#{id}_#{Digest::SHA256.hexdigest(group.key).first(16)}" %>"<%= " open" if local_assigns[:open] %>>
+          <summary><span class="when-closed">Show the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="when-open">Hide the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="visually-hidden"> for <%= group.key %></span></summary>
+          <table class="nested-findings"><caption class="visually-hidden">Advisories for <%= group.key %></caption>
+            <thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">First seen &rarr; resolved</th></tr></thead><tbody>
+            <% group.findings.each do |finding| %>
+              <tr class="nested finding <%= finding.state %>"><td><%= advisory_cell(finding.advisory) %><% if triage && finding.state != "resolved" %><%= triage_lines(finding, triage[finding], page: :tab, status: local_assigns[:triage_status], os: local_assigns[:triage_os]) %><% end %></td><td><%= severity_tag(finding.advisory.severity) %></td>
+                <td><%= fixed_in(finding) %></td>
+                <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>
+                <td><%= finding_dates(finding) %></td></tr>
+            <% end %>
+          </tbody></table>
+        </details></td></tr>
     </tbody>
   <% end %>
 </table></div>
+<% param = local_assigns[:cursor_prefix].to_s %>
+<% order = resolved ? "Sorted by worst severity, then first seen." : "Worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix." %>
+<% if groups.paged? %>
+  <nav class="pager" aria-label="<%= local_assigns[:pager_label] %>" id="<%= id %>_pager">
+    <% if groups.previous %><%= link_to "Previous", vulnerabilities_host_path(host, local_assigns[:link_params].merge(:"#{param}before" => groups.previous)), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+    <span class="muted"><%= pluralize(number_with_delimiter(groups.groups.size), "package") %> shown of <%= number_with_delimiter(groups.package_count) %>. <%= order %></span>
+    <% if groups.next %><%= link_to "Next", vulnerabilities_host_path(host, local_assigns[:link_params].merge(:"#{param}after" => groups.next)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+  </nav>
+<% else %>
+  <p class="pager" id="<%= id %>_pager"><span><%= pluralize(number_with_delimiter(groups.package_count), "package") %>. <%= order %></span></p>
+<% end %>

@@ -1,0 +1,6 @@
+<%# Why a section shows its first page when its link named another (HostFindingGroups#notice, review of #253, S1).
+    locals: groups, id, first_page (the section's first page, the filters kept). %>
+<% if groups.notice %>
+  <p class="notice info" role="status" id="<%= id %>"><% if groups.notice == :moved %>The findings changed since this page was opened, and no packages are left past it, so the first page is shown.<% else %>The page link is not one this list wrote, so the first page is shown.<% end %>
+    <%= link_to "Go to the first page", first_page %></p>
+<% end %>

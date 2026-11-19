@@ -34,6 +34,26 @@ class FindingTriage
     [ advisory.advisory_id.delete_prefix("DEBIAN-"), *advisory.aliases ].grep(DebianTriage::Releases::CVE).uniq.sort
   end
 
+  # The findings of one host that the "Debian: no security update planned" chip counts (T3), in SQL, so the tab never
+  # loads every open finding to count them (review of #253, S6): the same rule as DebianTriageHelper#triage_no_dsa?
+  # over FindingTriage, for a relation of findings with details joined to advisories. The host's triage must be
+  # available (its release mapped, imported, and not stale: status from DebianTriage::Freshness), else none match.
+  # A finding matches when its source package has a tracker entry for the release, for one of the advisory's CVE ids
+  # (its own id without DEBIAN-, or an alias; tracker entries are CVE ids only, so other ids match nothing), with a
+  # no-DSA note and a status other than resolved.
+  NO_DSA = <<~SQL.squish.freeze
+    EXISTS (SELECT 1 FROM triage_entries t
+            WHERE t.tracker = :tracker AND t.release = :release AND t.package = vulnerability_findings.source
+              AND t.no_dsa AND t.status <> 'resolved'
+              AND t.cve_id = ANY (array_append(advisories.aliases, regexp_replace(advisories.advisory_id, '^DEBIAN-', ''))))
+  SQL
+
+  def self.no_dsa(scope, release:, status:)
+    return scope.none if release.nil? || status.nil? || status.never? || status.stale
+
+    scope.where(NO_DSA, tracker: DebianTriage::TRACKER, release:)
+  end
+
   # findings: VulnerabilityFinding records (a relation or an array).
   def self.load(findings, now: Time.current, max_age: Advisories.config.max_age) = new(findings.to_a, now:, max_age:)
 
