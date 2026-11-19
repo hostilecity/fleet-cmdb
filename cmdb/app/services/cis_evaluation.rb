@@ -124,7 +124,7 @@ module CisEvaluation
 
   # { host_id => id of its latest config snapshot }, for hosts that have one.
   def latest_snapshot_ids(host_ids)
-    ConfigSnapshot.where(host_id: host_ids).order(:host_id, LATEST_SNAPSHOT)
+    Partitions.with_set_aside(ConfigSnapshot).where(host_id: host_ids).order(:host_id, LATEST_SNAPSHOT)
                   .pluck(Arel.sql("DISTINCT ON (config_snapshots.host_id) config_snapshots.host_id"), :id).to_h
   end
 
@@ -135,7 +135,7 @@ module CisEvaluation
     names = rules.map { |rule| rule.current_version.fact }.uniq
     named = ConfigSnapshot.sanitize_sql_array([ "(SELECT COALESCE(jsonb_object_agg(fact.key, fact.value), '{}') " \
                                                 "FROM jsonb_each(config_snapshots.facts) fact WHERE fact.key IN (?))", names ])
-    ConfigSnapshot.where(id: host_ids.map { |id| snapshots[id] }).pluck(:host_id, Arel.sql(named)).to_h
+    Partitions.with_set_aside(ConfigSnapshot).where(id: host_ids.map { |id| snapshots[id] }).pluck(:host_id, Arel.sql(named)).to_h
   end
 
   # The result a rule definition has on a host, as stored: not_evaluated when the rule is disabled or the host

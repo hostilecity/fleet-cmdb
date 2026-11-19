@@ -9,12 +9,23 @@ RSpec.describe "Maintenance banner", type: :request do
       expect(page.at_css("#maintenance_banner")).to be_nil
     end
 
-    it "lists what needs attention" do
-      allow(Partitions).to receive(:attention).and_return([ "inventory_report_receipts: the default partition has rows <b>" ])
+    it "lists what needs attention, escaped" do
+      allow(Partitions).to receive(:attention).and_return([ Partitions::Problem.new(severity: :warning, text: "Inventory report ids: rows in the default <b>") ])
       get "/"
       banner = page.at_css("#maintenance_banner")
+      expect(banner["class"]).to eq("notice")
       expect(banner.at_css("strong").text).to eq("Database maintenance needs attention.")
-      expect(banner.css("li").map(&:text)).to eq([ "inventory_report_receipts: the default partition has rows <b>" ])
+      expect(banner.css("li").map(&:text)).to eq([ "Inventory report ids: rows in the default <b>" ])
+      expect(banner.text).to include('section "Partitions"')
+    end
+
+    it "says audited actions will fail, as an alert, when a problem is failing" do
+      allow(Partitions).to receive(:attention).and_return([ Partitions::Problem.new(severity: :failing, text: "The audit log (audit_entries): 1 partitions created ahead, fewer than 2") ])
+      get "/"
+      banner = page.at_css("#maintenance_banner")
+      expect(banner["class"]).to eq("notice error")
+      expect(banner["role"]).to eq("alert")
+      expect(banner.at_css("strong").text).to eq("Database maintenance needs attention now: audited actions will fail when the audit log's months run out.")
     end
 
     it "does not take the page down when the database cannot say" do

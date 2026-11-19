@@ -123,7 +123,7 @@ module CisDryRun
   # host with no snapshot is absent, and a snapshot without the fact gives {} (the fact is missing).
   def latest_facts(host_ids, fact)
     reported = ConfigSnapshot.sanitize_sql_array([ "config_snapshots.facts -> ?", fact ])
-    ConfigSnapshot.where(host_id: host_ids).order(:host_id, CisEvaluation::LATEST_SNAPSHOT)
+    Partitions.with_set_aside(ConfigSnapshot).where(host_id: host_ids).order(:host_id, CisEvaluation::LATEST_SNAPSHOT)
                   .pluck(Arel.sql("DISTINCT ON (config_snapshots.host_id) config_snapshots.host_id"), Arel.sql(reported))
                   .to_h { |host_id, value| [ host_id, value.nil? ? {} : { fact => value } ] }
   end

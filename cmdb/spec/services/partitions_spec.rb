@@ -215,19 +215,19 @@ RSpec.describe Partitions do
     it "warns about rows in a default partition, partitions due for retirement, and too few ahead" do
       receipt(1.year.from_now)
       expect(described_class.health).to eq(:warning)
-      expect(described_class.problems.map(&:text)).to include("#{receipts}: the default partition has rows (the next maintenance run moves them)")
+      expect(described_class.problems.map(&:text)).to include("#{described_class.label(receipts)}: the default partition has rows (the next maintenance run moves them)")
 
       described_class.ensure!(from: 12.days.ago, tables: [ receipts ])
-      expect(described_class.problems.map(&:text)).to include("#{receipts}: a partition has been due for retirement for 3 days")
+      expect(described_class.problems.map(&:text)).to include("#{described_class.label(receipts)}: a partition has been due for retirement for 3 days")
 
       later = described_class.problems(now: 10.days.from_now).map(&:text)
-      expect(later).to include("#{receipts}: 0 partitions created ahead, fewer than 2", "#{receipts}: a partition ahead has been missing for 3 days")
+      expect(later).to include("#{described_class.label(receipts)}: 0 partitions created ahead, fewer than 2", "#{described_class.label(receipts)}: a partition ahead has been missing for 3 days")
     end
 
     it "fails when the audit log has fewer than two months ahead, since its writes would fail" do
       expect(described_class.health(now: 3.months.from_now)).to eq(:failing)
       expect(described_class.problems(now: 3.months.from_now)).to include(
-        described_class::Problem.new(severity: :failing, text: "audit_entries: 0 partitions created ahead, fewer than 2")
+        described_class::Problem.new(severity: :failing, text: "The audit log (audit_entries): 0 partitions created ahead, fewer than 2")
       )
     end
   end
@@ -298,10 +298,24 @@ RSpec.describe Partitions do
       expect(c.table_exists?("#{receipts}_default_moving")).to be(false)
     end
 
+    it "never drops a set-aside table that still has rows, when a batch moved fewer than a whole batch (review of #237)" do
+      stub_const("Partitions::MOVE_BATCH", 1_000)
+      3.times { |i| receipt(first.from - 2.days + i.minutes) }
+      allow(c).to receive(:exec_update).and_call_original
+      allow(c).to receive(:exec_update).with(a_string_starting_with("WITH batch AS")).and_return(0) # as if another run had moved them
+      allow(Rails.logger).to receive(:warn)
+
+      described_class.ensure!(tables: [ receipts ])
+
+      expect(c.select_value("SELECT count(*) FROM #{receipts}_default_moving")).to eq(3)
+      expect(Rails.logger).to have_received(:warn).with("[partitions] #{receipts}: rows are still set aside in #{receipts}_default_moving; left for the next run")
+      expect(described_class.problems.map(&:text)).to include("#{described_class.label(receipts)}: rows set aside from the default partition are still being moved back")
+    end
+
     it "picks up rows set aside by a run that stopped part-way, and says so until they are back" do
       c.execute("CREATE TABLE #{receipts}_default_moving (LIKE #{receipts})")
       c.execute("INSERT INTO #{receipts}_default_moving (id, host_id, report_id, received_at) VALUES (nextval('#{receipts}_id_seq'), #{host.id}, gen_random_uuid(), #{c.quote(first.from - 1.day)})")
-      expect(described_class.problems.map(&:text)).to include("#{receipts}: rows set aside from the default partition are still being moved back")
+      expect(described_class.problems.map(&:text)).to include("#{described_class.label(receipts)}: rows set aside from the default partition are still being moved back")
 
       described_class.ensure!(tables: [ receipts ])
 
@@ -372,10 +386,10 @@ RSpec.describe Partitions do
       receipt(1.year.from_now)
       allow(Rails.logger).to receive(:warn)
       described_class.maintain!
-      expect(Rails.logger).to have_received(:warn).with("[partitions] needs attention: #{receipts}: the default partition has rows (the next maintenance run moves them)")
+      expect(Rails.logger).to have_received(:warn).with("[partitions] needs attention: #{described_class.label(receipts)}: the default partition has rows (the next maintenance run moves them)")
 
       cache.write(described_class::ORPHANS_KEY, { "inventory_report_receipts.host_id" => 2 })
-      expect(described_class.attention).to eq([ "#{receipts}: the default partition has rows (the next maintenance run moves them)",
+      expect(described_class.attention.map(&:text)).to eq([ "#{described_class.label(receipts)}: the default partition has rows (the next maintenance run moves them)",
                                                 "inventory_report_receipts.host_id: 2 recent rows name a host or rule that does not exist (bin/rails partitions:check)" ])
       expect(described_class.health).to eq(:warning)
     end
@@ -383,7 +397,95 @@ RSpec.describe Partitions do
     it "adds an audit guard that does not hold, in production" do
       allow(Rails.env).to receive(:production?).and_return(true)
       described_class.maintain!
-      expect(described_class.attention).to eq([ "The audit log's guard does not hold: the app's PostgreSQL role is a superuser, so no guard can hold against it." ])
+      expect(described_class.attention.map(&:text)).to match([ /\AThe audit log's guard does not hold: the app's PostgreSQL role is (the bootstrap superuser \(OID 10, a container created with POSTGRES_USER=cmdb\), which cannot be demoted|a superuser, so no guard can hold against it): the cluster must be rebuilt \(install-server.md, \"If cmdb is or was a superuser\"\)\.\z/ ])
+    end
+  end
+  describe "while a default partition's rows are set aside (review 2 of #239)" do
+    let(:first) { described_class.list(receipts).reject(&:default?).first }
+
+    def set_aside(table, rows_sql)
+      c.execute("CREATE TABLE #{table}_default_moving (LIKE #{table} INCLUDING ALL)")
+      c.execute("INSERT INTO #{table}_default_moving #{rows_sql}")
+    end
+
+    it "checks a report for a duplicate in one query while nothing is set aside (review 3 of #239, N6)" do
+      ReportReceipts.record!(InventoryReportReceipt, host_id: host.id, report_id: SecureRandom.uuid, now: Time.current)
+      statements = []
+      counter = ->(*, payload) { statements << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:sql].match?(/SAVEPOINT|BEGIN|COMMIT/) }
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+        expect(ReportReceipts.record!(InventoryReportReceipt, host_id: host.id, report_id: SecureRandom.uuid, now: Time.current)).to be(true)
+      end
+      expect(statements.size).to eq(2) # the lookup with the set-aside check, and the insert
+    end
+
+    it "still recognises a retried report whose receipt is set aside" do
+      report_id = SecureRandom.uuid
+      set_aside(receipts, "(id, host_id, report_id, received_at) VALUES (nextval('#{receipts}_id_seq'), #{host.id}, #{c.quote(report_id)}, #{c.quote(first.from - 1.day)})")
+      expect(ReportReceipts.record!(InventoryReportReceipt, host_id: host.id, report_id:, now: Time.current)).to be(false)
+      expect(ReportReceipts.record!(InventoryReportReceipt, host_id: host.id, report_id: SecureRandom.uuid, now: Time.current)).to be(true)
+    end
+
+    it "lets CIS evaluation read a host's latest config snapshot even when it is set aside" do
+      older = ConfigSnapshot.create!(host:, facts: {}, content_hash: "a" * 64, manifest_version: 1, report_id: SecureRandom.uuid,
+                                     collected_at: 2.days.ago, received_at: 2.days.ago)
+      newest_id = c.select_value("SELECT nextval('config_snapshots_id_seq')")
+      set_aside("config_snapshots", "(id, host_id, facts, content_hash, manifest_version, report_id, collected_at, received_at, stored_at) " \
+                                   "VALUES (#{newest_id}, #{host.id}, '{}', '#{'b' * 64}', 1, gen_random_uuid(), now(), now(), now())")
+      expect(ConfigSnapshot.where(host:).pluck(:id)).to eq([ older.id ]) # what a plain reader sees in the window
+      expect(CisEvaluation.send(:latest_snapshot_ids, [ host.id ])).to eq(host.id => newest_id)
+    end
+
+    it "moves the newest rows back first" do
+      stub_const("Partitions::MOVE_BATCH", 1)
+      ids = [ 3, 2, 1 ].map { |days| receipt(first.from - days.days).rows.first.first }
+      statements = []
+      counter = ->(*, payload) { statements << payload[:sql] if payload[:sql].start_with?("WITH batch AS") }
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { described_class.ensure!(tables: [ receipts ]) }
+      expect(statements.first).to include("ORDER BY \"received_at\" DESC LIMIT 1")
+      expect(ids.map { |id| c.select_value("SELECT count(*) FROM #{receipts} WHERE id = #{id}") }).to eq([ 1, 1, 1 ])
+    end
+  end
+
+  describe "skipped runs (review 2 of #239)" do
+    let(:cache) { ActiveSupport::Cache::MemoryStore.new }
+
+    before do
+      allow(Rails).to receive(:cache).and_return(cache)
+      allow(Rails.logger).to receive(:warn)
+    end
+
+    it "still reports what it finds, so the banner stays up, and says so once maintenance has been skipped for hours" do
+      receipt(1.year.from_now)
+      allow(described_class).to receive(:backup_running?).and_return(true)
+      expect(described_class.maintain!).to eq("skipped" => "backup running")
+      expect(described_class.attention.map(&:text)).to eq([ "#{described_class.label(receipts)}: the default partition has rows (the next maintenance run moves them)" ])
+
+      later = 4.hours.from_now
+      described_class.maintain!(now: later)
+      expect(described_class.attention.map(&:text)).to include(a_string_starting_with("Partition maintenance has been skipped since "))
+      expect(described_class.health(now: later)).to eq(:warning)
+
+      allow(described_class).to receive(:backup_running?).and_return(false)
+      described_class.maintain!(now: later)
+      expect(described_class.attention.map(&:text)).not_to include(a_string_starting_with("Partition maintenance has been skipped"))
+      expect(described_class.maintain!(dry_run: true)).to include("created" => {})
+    end
+
+    it "reports a run skipped for the lock too, and does nothing in a dry run" do
+      allow(SessionLock).to receive(:hold).and_return(nil)
+      expect(described_class.maintain!).to eq("skipped" => "another maintenance run is in progress")
+      expect(cache.read(described_class::SKIPPED_KEY)).to be_present
+      expect(described_class.maintain!(dry_run: true)).to eq("skipped" => "another maintenance run is in progress")
+    end
+  end
+
+  describe Partitions::GuardCheck do
+    it "treats CREATEROLE like a superuser before PostgreSQL 16" do
+      c.execute("CREATE ROLE fleet_guard_check_spec NOLOGIN CREATEROLE")
+      c.execute("SET LOCAL ROLE fleet_guard_check_spec")
+      check = described_class.new(c)
+      allow(check).to receive(:before16?).and_return(true)
+      expect(check.problem).to eq("the app's PostgreSQL role has CREATEROLE, which before PostgreSQL 16 can grant itself any role")
     end
   end
 end

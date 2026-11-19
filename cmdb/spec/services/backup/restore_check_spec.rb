@@ -61,9 +61,9 @@ RSpec.describe Backup::RestoreCheck do
 
     it "passes on the partitions, and warns without failing when the event triggers are not installed, as after any restore" do
       result = run
-      expect(result.lines).to include("ok   history partitions: ok (bin/rails partitions:status lists them)",
-                                      "WARN the audit log's guard does not hold (the app's PostgreSQL role is a superuser, so no guard can hold against it): " \
-                                      "after a real restore, the PostgreSQL superuser runs ops/postgres/audit-guard.sql")
+      expect(result.lines).to include("ok   history partitions: ok (bin/rails partitions:status lists them)")
+      # The test session's role is a superuser, the bootstrap one on most clusters: either message (final check of #249).
+      expect(result.lines).to include(a_string_matching(/\AWARN the audit log's guard does not hold \(the app's PostgreSQL role is (the bootstrap superuser \(OID 10, a container created with POSTGRES_USER=cmdb\), which cannot be demoted|a superuser, so no guard can hold against it): the cluster must be rebuilt \(install-server.md, \"If cmdb is or was a superuser\"\)\): after a real restore, the PostgreSQL superuser runs ops\/postgres\/audit-guard.sql\z/))
       expect(result.failures.grep(/partitions|event triggers/)).to be_empty
     end
 

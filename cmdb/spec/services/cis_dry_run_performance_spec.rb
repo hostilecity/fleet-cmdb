@@ -34,6 +34,6 @@ RSpec.describe "CisDryRun at fleet scale" do
     expect(CisResult.count).to eq(hosts * rules)
     expect(preview.counts).to have_attributes(hosts:, pass_to_fail: 0, fail_to_pass: 7) # hosts observing 4 now pass
     expect(elapsed).to be < budget
-    expect(queries).to be <= 6
+    expect(queries).to be <= 7 # one catalog lookup for a set-aside config_snapshots default (Partitions.with_set_aside, #239)
   end
 end

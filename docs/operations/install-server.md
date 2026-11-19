@@ -167,17 +167,121 @@ The deploy stops with a clear message if the network is missing, a required sett
 
 The audit log is append-only (FR-S.3). The app's own triggers refuse updates and deletes, but the app's role `cmdb` owns the tables, so it could still change or drop those triggers. One SQL file, run **once by the PostgreSQL superuser** after the first deploy has migrated the database, closes that ([ADR 0027](../decisions/0027-time-partitioned-history.md), "The audit log's guards"): the superuser takes ownership of the guard function, records the audit log's tables by their PostgreSQL id (so a rename cannot hide one), and adds two event triggers that refuse any command on them, other than adding a month. The app never runs as a superuser, so it cannot do this itself. It belongs with the task that provisions the PostgreSQL container.
 
-**`cmdb` must not be a superuser.** A superuser can turn any guard off, so the file refuses to run when `audit_entries` belongs to one, and `/health` warns while the app's role is one. Check with `docker exec postgres psql -U <superuser> -Atc "SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'cmdb'"` (`f` is right). If the container was created with `POSTGRES_USER=cmdb`, `cmdb` is its superuser: create another superuser, then `ALTER ROLE cmdb NOSUPERUSER`.
-
-From a checkout of this repository, as the container's superuser whatever it is called (the official image names it `POSTGRES_USER`, `postgres` by default):
+**How the superuser connects, every time.** `cmdb` owns `cmdb_production` and its `public` schema, so it can leave things there that run as whoever connects or queries: a login event trigger (PostgreSQL 17 and later) runs when a session connects, before anything is typed; a database `search_path` that puts `public` first makes `cmdb`'s own views, functions, and operators stand in for PostgreSQL's; a database `role` setting makes the superuser's session run as `cmdb`; and a database `client_min_messages` can hide what a file reports. So **every** superuser command in `cmdb_production` (the step, the recovery file, any `DROP` the step prints) connects with event triggers off, the search path pinned, its own role, and messages shown, through `PGOPTIONS`, and with `psql -X` (no `.psqlrc`). The setting differs by version: PostgreSQL 16 has no login triggers and refuses `event_triggers` at connect, which fails closed. Find the version without connecting:
 
 ```sh
-ssh deploy@192.0.2.10 "docker exec -i postgres sh -c 'psql -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-postgres}\" -d cmdb_production'" < ops/postgres/audit-guard.sql
+docker exec postgres postgres --version
 ```
 
-(`postgres` is the container's name, `FLEET_DB_HOST`. If the superuser's name is not in the container's environment, list superusers with `docker exec postgres psql -U <a role you know> -Atc "SELECT rolname FROM pg_roles WHERE rolsuper"` and put it after `-U`.) It refuses to run as any other role, before the migration has partitioned `audit_entries`, or when `cmdb` is a superuser, and it is safe to run again. Run it again after a restore ([backup-and-restore.md](backup-and-restore.md)). Until it has run, the app works normally and `/health` shows `"audit_guard":"warning"`; afterwards `"ok"`. `docker exec fleet-cmdb bin/rails partitions:status` says whether it is installed.
+Then, for the rest of this section, set `PIN` to match (in the shell you run the commands from):
 
-A later migration that alters `audit_entries` or its guard function will need the superuser to disable the event triggers for it; its pull request will say so.
+```sh
+PIN='-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning'   # PostgreSQL 17 and later
+PIN='-c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning'                         # PostgreSQL 16
+```
+
+On PostgreSQL 17 and later both SQL files refuse to run in a session that connected with event triggers on, and say so.
+
+**`cmdb` must not be a superuser, be able to become one, or ever have been one.** A superuser can turn any guard off. So can a member of a superuser role, directly or through other roles (it can `SET ROLE` to it), a member of `pg_execute_server_program` or `pg_write_server_files` (a shell or files as the server, and from there a superuser), a member of `pg_create_subscription` (a subscription applies rows with the row guards skipped), and, before PostgreSQL 16, a role with `CREATEROLE` (it can grant itself those). And a role that **was** a superuser at any time can have left code in PostgreSQL's own schema, or anywhere in the cluster, that runs as the superuser later: demoting it does not remove that, and no check can prove it gone. Run the pre-check, as the superuser, in the `postgres` database (never `cmdb_production`), connected as above. It changes nothing and prints what it finds, or one line saying it found nothing:
+
+```sh
+docker exec -i -e PGOPTIONS="$PIN" postgres sh -c 'psql -X -At -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d postgres' < ops/postgres/audit-guard-precheck.sql
+```
+
+It reports whether `cmdb` has OID 10 (it is the bootstrap superuser: the container was created with `POSTGRES_USER=cmdb`, and PostgreSQL refuses to demote that role), is a superuser, belongs to a superuser role or one of the three roles above, or has `CREATEROLE` before 16. It reports databases `cmdb` owns other than its own `cmdb_*` ones (`template1` and `postgres`, after `POSTGRES_USER=cmdb`), objects it owns in other databases, and anything in that database's `pg_catalog` the bootstrap superuser did not put there. The step runs the same `pg_catalog` check in `cmdb_production`, before anything else. **If it prints anything but "no sign …", or you know `cmdb` was ever a superuser, do not run the step: rebuild the cluster** ("If cmdb is or was a superuser", below). Finding nothing is not proof: a superuser can also replace a built-in function's body, or change files and settings outside the database. Revoke a membership or `CREATEROLE` only if `cmdb` was never a superuser.
+
+**The superuser must not query or change anything in `cmdb_production` by hand**, the audit tables above all (`SELECT ... FROM audit_entries` in psql included). `cmdb` owns them, and PostgreSQL runs the functions their indexes, statistics, and defaults name as whoever plans the query, so a function `cmdb` wrote would run as the superuser. The two files below check for that before they touch anything; ad hoc queries do not. Read the audit log through the app, or connect as `cmdb`.
+
+From a checkout of this repository, as the container's superuser whatever it is called (the official image names it `POSTGRES_USER`, `postgres` by default). PostgreSQL 17 and later:
+
+```sh
+ssh deploy@192.0.2.10 "docker exec -i -e PGOPTIONS='-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-postgres}\" -d cmdb_production'" < ops/postgres/audit-guard.sql
+```
+
+PostgreSQL 16:
+
+```sh
+ssh deploy@192.0.2.10 "docker exec -i -e PGOPTIONS='-c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-postgres}\" -d cmdb_production'" < ops/postgres/audit-guard.sql
+```
+
+(`postgres` is the container's name, `FLEET_DB_HOST`. If the superuser's name is not in the container's environment, list superusers with `docker exec -e PGOPTIONS="$PIN" postgres psql -X -U <a role you know> -d postgres -Atc "SELECT r.rolname FROM pg_catalog.pg_roles r WHERE r.rolsuper"` and put it after `-U`.)
+
+What it does:
+
+- It is one transaction: it installs everything or nothing, and a failure or a dropped connection leaves things as they were. It is safe to run again.
+- It locks the audit tables first, so audit writes queue behind it for up to about 5 seconds (the step itself takes well under a second once it has the lock). If it cannot get the lock within 5 seconds (a backup holds the tables while it runs), it stops with a lock timeout: run it again once the backup has finished.
+- It refuses while any event trigger other than its own exists. It names each one (quoted), its event, owner, and function; a login trigger is marked as running on every connection. One that is `cmdb`'s, or runs `cmdb`'s function, can only have been made while `cmdb` was a superuser: rebuild the cluster. For any other, it prints a ready-made, quoted `DROP EVENT TRIGGER …;` statement. Run exactly that, never a name you typed or copied from elsewhere (a name is whatever its maker chose, statements included), in a session connected as above: `docker exec -i -e PGOPTIONS="$PIN" postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production'`, with the statement pasted at the prompt.
+- It adopts nothing `cmdb` could have prepared and runs none of `cmdb`'s code. Before it touches the audit tables, it checks from PostgreSQL's catalogs alone that no index, statistics object, constraint, default, or column type on them uses a function, operator, or type other than PostgreSQL's own. It writes the guard's function bodies itself. It refuses a `fleet_audit_guard` schema it did not make, a table named `audit_entries_default` that is not its own default partition, an id sequence that is unlogged, counts down, or cycles, and audit tables that carry anything but their own guards (another trigger, a disabled one, a rule, a policy, an unlogged or half-detached partition). Only then does it read the entries (one `max(id)`), as the superuser: the catalog check is what makes that safe. The error lists what it found; before the guard is installed, `cmdb` drops what it lists (as `cmdb`, not as the superuser).
+- It also refuses to run as any other role, before the migration has partitioned `audit_entries`, when `cmdb` is or can become a superuser, or when `pg_catalog` in `cmdb_production` holds anything the bootstrap superuser did not put there (made after initdb, owned by another role, or a function in a language PostgreSQL's own are not in).
+- Besides the event triggers, it adds `audit_entries_default`, a default partition owned by the superuser that refuses every row (so the log still fails closed, and PostgreSQL refuses to detach a month concurrently). It gives the id sequence to the superuser; `cmdb` may only take the next value and read it (the nightly `pg_dump` as `cmdb` reads it and the default partition). A trigger then gives every new entry its id from that sequence, whatever id an insert names, so no entry can repeat or choose an id. It cannot stop `cmdb` from inserting an entry with a backdated time: that is the partition key, which PostgreSQL does not let a trigger change. After the file has run, `cmdb` can no longer create an index or statistics object on the audit tables either.
+
+Run it again after a restore ([backup-and-restore.md](backup-and-restore.md)), connected the same way. Until it has run, the app works normally and `/health` shows `"audit_guard":"warning"`; afterwards `"ok"`. `docker exec fleet-cmdb bin/rails partitions:status` says whether it is installed.
+
+#### Recovery
+
+Once the guard is installed, `cmdb` cannot change an audit table, and the superuser must not by hand. When the step or `/health` names an object on an audit table that uses `cmdb`'s code (one an earlier version of the guard let through):
+
+- **An index or a statistics object:** `cmdb` drops it (`DROP INDEX`, `DROP STATISTICS`); the guard allows that. So is an invalid index left by a refused `CREATE INDEX CONCURRENTLY`.
+- **A column default or a constraint:** run the recovery file as the superuser, connected as above, then the step again. PostgreSQL 17 and later:
+
+  ```sh
+  ssh deploy@192.0.2.10 "docker exec -i -e PGOPTIONS='-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U \"\${POSTGRES_USER:-postgres}\" -d cmdb_production'" < ops/postgres/audit-guard-recover.sql
+  ```
+
+  On PostgreSQL 16, leave out `-c event_triggers=off`. It drops exactly what the guard's own check flags, using the check the step installed (`fleet_audit_guard.untrusted_code()`), so it and the step always agree. A parent's default is dropped on the parent, which drops its copies on every partition, and the app's own default for that column (`occurred_at`, `changeset`, `id`) is set again. It evaluates nothing, prints each change, and with nothing to drop says so and changes nothing. It refuses before the guard is installed, when `cmdb` drops such objects itself.
+- **A column type or the partition key:** neither can be changed while the guard is installed, so it was changed while the guard was off: treat it as an incident. `cmdb` never acts while the guard is off.
+  - **An extra column** (one not in the app's schema, `cmdb/db/schema.rb`) whose type is `cmdb`'s: the superuser drops it, in one session connected as above, then runs the step again. Dropping a column evaluates nothing. Paste the column's name exactly as the step or `/health` printed it (quoted). On PostgreSQL 17 and later the pinned session already has the guard's event triggers off; on 16, pause them for that transaction:
+
+    ```sql
+    BEGIN;
+    SET LOCAL session_replication_role = replica;   -- PostgreSQL 16 only
+    ALTER TABLE public.audit_entries DROP COLUMN <column as printed>;
+    COMMIT;
+    ```
+  - **A column of the app's schema whose type was changed, or the partition key:** that cannot be undone without rewriting the table as the superuser, which would run `cmdb`'s code. Restore the databases from a backup taken before it, as for a lost server ([backup-and-restore.md](backup-and-restore.md), "Restore"), then run the step. Entries written since that backup are lost.
+  - Either way, compare the audit log's ids before and after with what the backups hold: a gap or a backdated entry from the time the guard was off is what to look for.
+
+#### If cmdb is or was a superuser: rebuild the cluster
+
+A cluster where `cmdb` has ever been a superuser, including the bootstrap superuser (`POSTGRES_USER=cmdb`), cannot be cleaned up: it can have left code that runs as the superuser in PostgreSQL's own schema, in other databases, in server settings, or in files, and demoting it removes none of that (the bootstrap superuser cannot be demoted at all). Build a new cluster, with its own superuser and `cmdb` created `NOSUPERUSER`, and move the app's data into it with the backup tooling, which dumps and restores as `cmdb` only. On the app's VM, as the deploy user:
+
+1. **Pause deploys:** in GitHub, **Actions > Deploy > ... > Disable workflow**.
+2. **Take a final backup** of the old cluster, and note its name. The dump holds the app's databases only, never PostgreSQL's own schema. The restore later leaves out the event triggers and the guard's objects.
+
+   ```sh
+   B=~/.local/share/fleet-cmdb/backup/docker.sh
+   $B backup --force
+   $B list                                         # the newest set, for example fleet-cmdb-20261119T101500Z
+   ```
+3. **Stop the app, and set the old PostgreSQL container aside** (keep it and its volume until the new one is verified):
+
+   ```sh
+   docker stop fleet-cmdb-jobs fleet-cmdb          # fleet-cmdb-jobs exists only with FLEET_JOBS_CONTAINER=true
+   docker stop postgres && docker rename postgres postgres-old
+   ```
+4. **Provision a new PostgreSQL container** with the separate task that provisions it: the same name (`postgres`) and Docker network, a **new, empty data volume**, and its own superuser (`POSTGRES_USER=postgres`, never `cmdb`). Then create `cmdb` in it, `NOSUPERUSER`, with `CREATEDB` (the restore creates the four databases) and the password the app already uses (read from the app's container, passed by name, never on a command line):
+
+   ```sh
+   export PW="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-cmdb | sed -n 's/^DATABASE_PASSWORD=//p')"
+   docker exec -i -e PW -e PGOPTIONS='-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres \
+     psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
+   \getenv pw PW
+   CREATE ROLE cmdb LOGIN NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS CREATEDB PASSWORD :'pw';
+   SQL
+   unset PW
+   ```
+
+   (On PostgreSQL 16, leave `-c event_triggers=off` out of `PGOPTIONS`.)
+5. **Restore the set** into the new cluster, as `cmdb`:
+
+   ```sh
+   $B restore fleet-cmdb-20261119T101500Z         # creates the four databases as cmdb, restores, then backs up the restored state
+   ```
+6. **Run the pre-check** (it should print "no sign …"), then **the step**, both as above.
+7. **Start the app** (`docker start fleet-cmdb`, and `fleet-cmdb-jobs`), check that `/health` shows `"audit_guard":"ok"`, and **enable the Deploy workflow again**.
+8. Once you are satisfied, remove the old container and its volume (`docker rm postgres-old`, then its volume), so it is never started again.
+
+A later migration that alters `audit_entries` or its guard function will need the superuser to disable the event triggers for it, in a session connected as above; its pull request will say so.
 
 ## 5. Add the first operator
 

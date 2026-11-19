@@ -224,6 +224,6 @@ RSpec.describe CisDryRun do
     many = count_queries { preview = described_class.call(edited).preview }
     expect(preview.counts.hosts).to eq(small.size + 1)
     expect(many).to eq(few)
-    expect(many).to be <= 6
+    expect(many).to be <= 7 # one catalog lookup for a set-aside config_snapshots default (Partitions.with_set_aside, #239)
   end
 end
