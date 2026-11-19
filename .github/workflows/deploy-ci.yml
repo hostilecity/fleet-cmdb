@@ -464,10 +464,12 @@ jobs:
           expect "the drill of the newest set (the restored state) passes" 0 "$rc"
           if [ "$failed" -ne 0 ]; then docker logs --tail 100 fleet-cmdb; exit 1; fi
 
-      - name: The audit log's guard, installed by the superuser, and a restore of a dump that has it (ADR 0027)
+      - name: The audit log's guard, installed by the superuser, then a real backup as cmdb and its restore (ADR 0027)
         # The one-time superuser step of docs/operations/install-server.md, on the migrated database: /health's audit_guard
-        # turns from warning to ok, and the app's role can no longer detach an audit partition. Then a dump with the event
-        # triggers restores with ops/backup/restore.sh as the app's role (it leaves them out; only a superuser can create one).
+        # turns from warning to ok, and the app's role can no longer detach an audit partition. Then the nightly backup
+        # (docker.sh backup, pg_dump as cmdb) still works after the step (review 3 of #239, B3), and its set, which holds the
+        # event triggers, restores with ops/backup/restore.sh as the app's role (it leaves the guard out; only a superuser
+        # can create an event trigger), and the step runs on the restore.
         run: |
           failed=0
           expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; failed=1; fi; }
@@ -483,11 +485,19 @@ jobs:
           expect "the app's role cannot detach an audit partition" 1 \
             "$(as_cmdb postgres psql -h 127.0.0.1 -U cmdb -d cmdb_production -c "ALTER TABLE audit_entries DETACH PARTITION $partition" 2>&1 | grep -c 'the audit log is append-only')"
 
+          # The nightly backup, as the timer runs it: docker.sh reads cmdb's password from the app's container and dumps as cmdb.
+          tool="$HOME/.local/share/fleet-cmdb/backup/docker.sh"
+          backups=/var/backups/fleet-cmdb
+          out="$("$tool" backup --force 2>&1)" && rc=0 || rc=$?
+          echo "$out" | tail -n 3
+          expect "the backup as cmdb works after the superuser step" 0 "$rc"
+          set="$(sudo find "$backups" -maxdepth 1 -name 'fleet-cmdb-*' -printf '%f\n' | sort | tail -n 1)"
           docker exec postgres psql -q -U postgres -c "ALTER ROLE cmdb CREATEDB"
           docker cp ops/backup/restore.sh postgres:/tmp/restore.sh
-          docker exec postgres sh -c 'rm -rf /tmp/set && mkdir /tmp/set && pg_dump -U postgres -Fc -f /tmp/set/fleet-cmdb.dump cmdb_production && cd /tmp/set \
-            && tar -cf releases.tar -T /dev/null && : > counts && sha256sum fleet-cmdb.dump releases.tar counts > SHA256SUMS'
-          expect "the dump holds the event triggers" 2 "$(docker exec postgres sh -c 'pg_restore --list /tmp/set/fleet-cmdb.dump | grep -c " EVENT TRIGGER "')"
+          sudo tar -C "$backups/$set" -cf - . | docker exec -i postgres sh -c 'rm -rf /tmp/set && mkdir /tmp/set && tar -xf - -C /tmp/set'
+          expect "the backup's dump holds the event triggers" 2 "$(docker exec postgres sh -c 'pg_restore --list /tmp/set/fleet-cmdb.dump | grep -c " EVENT TRIGGER "')"
+          expect "and the id trigger and the default partition, which the restore leaves out" 2 \
+            "$(docker exec postgres sh -c 'pg_restore --list /tmp/set/fleet-cmdb.dump | grep -c -E "TABLE public audit_entries_default |TRIGGER public audit_entries audit_entries_id_from_sequence "')"
           as_cmdb -e PGHOST=127.0.0.1 -e PGUSER=cmdb postgres bash /tmp/restore.sh /tmp/set cmdb_restore_ci /tmp/releases
           expect "the restore has every audit entry" "$(docker exec postgres psql -U postgres -d cmdb_production -Atc 'SELECT count(*) FROM audit_entries')" \
             "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc 'SELECT count(*) FROM audit_entries')"
@@ -495,9 +505,15 @@ jobs:
             "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc 'SELECT count(*) FROM pg_event_trigger')"
           expect "the restore has no copy of the guard's schema owned by the app's role" 0 \
             "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc "SELECT count(*) FROM pg_namespace WHERE nspname = 'fleet_audit_guard'")"
+          expect "the restore has no default partition until the superuser runs the step again" 0 \
+            "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc "SELECT count(*) FROM pg_class WHERE relname = 'audit_entries_default'")"
           docker exec -i postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_restore_ci' < ops/postgres/audit-guard.sql
           expect "the superuser step works on the restored database" 2 \
             "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc 'SELECT count(*) FROM pg_event_trigger')"
+          expect "and makes its own default partition" t \
+            "$(docker exec postgres psql -U postgres -d cmdb_restore_ci -Atc "SELECT r.rolsuper FROM pg_partitioned_table p JOIN pg_class c ON c.oid = p.partdefid JOIN pg_roles r ON r.oid = c.relowner WHERE p.partrelid = 'audit_entries'::regclass")"
+          expect "the restored database dumps as cmdb after the step" 0 \
+            "$(as_cmdb postgres sh -c 'pg_dump -h 127.0.0.1 -U cmdb -Fc -f /tmp/again.dump cmdb_restore_ci > /dev/null 2>&1; echo $?')"
           if [ "$failed" -ne 0 ]; then docker logs --tail 100 fleet-cmdb; exit 1; fi
 
   gate:
