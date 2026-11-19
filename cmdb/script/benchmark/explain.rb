@@ -74,8 +74,11 @@ module FleetBenchmark
           list.packages
           list.open_findings
         },
-        "vulnerabilities tab /hosts/:id/vulnerabilities (findings with details)" => lambda {
-          VulnerabilityFinding.with_details.where(host_id: package_host.id).active.preload(:advisory).to_a
+        "vulnerabilities tab /hosts/:id/vulnerabilities (open findings for the chip, package groups, one page)" => lambda {
+          findings = VulnerabilityFinding.with_details.where(host_id: package_host.id)
+          findings.active.preload(:advisory).to_a
+          groups = HostFindingGroups.new(findings.joins(:advisory).preload(:advisory).where(state: %w[open reopened]), per_page: 10)
+          HostFindingGroups.new(findings.joins(:advisory).preload(:advisory).where(state: %w[open reopened]), after: groups.next, per_page: 10) if groups.next
         },
         "CIS evaluation of one host (after a config snapshot)" => -> { CisEvaluation.evaluate!([ sample_host.id ]) },
         "vulnerability matching of one host (after a package snapshot)" => -> { VulnerabilityMatcher.match!([ package_host.id ]) },

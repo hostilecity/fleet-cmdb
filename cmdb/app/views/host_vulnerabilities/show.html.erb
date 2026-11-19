@@ -46,30 +46,30 @@
     <div class="sheet" id="no_open_findings"><p><span class="none-open"><strong>No open vulnerability findings.</strong></span></p>
       <p class="muted">Evaluated <%= utc(@evaluation.evaluated_at) %>: <%= pluralize(number_with_delimiter(@package_set&.package_count.to_i), "package") %> matched against <%= pluralize(number_with_delimiter(@advisory_count), "#{@evaluation.ecosystem} advisory", plural: "#{@evaluation.ecosystem} advisories") %>. <%= pluralize(@state_counts["resolved"], "resolved finding") %>.</p></div>
   <% end %>
-  <% if @state != "resolved" && (@open_groups.any? || @state_counts["open"].positive? || filtered) %>
-    <% if @triage && @triage_release && @open_groups.any? %>
+  <% link_params = { state: (@state unless @state == "open"), severity: @severity, q: @query.presence, debian: @debian }.compact %>
+  <% if @state != "resolved" && (@open_groups.package_count.positive? || @state_counts["open"].positive? || filtered) %>
+    <% if @triage && @triage_release && @open_groups.package_count.positive? %>
       <p class="triage-legend" id="triage_legend"><span class="triage"><span class="who">Debian:</span> &hellip;</span> lines are the Debian security team's own note for this host's release (<span class="mono"><%= @triage_release %></span>), from the Debian Security Tracker. They are shown beside the finding and never change its severity, its state, or any count: a finding stays open until the installed version is outside the affected range.</p>
     <% end %>
     <section aria-labelledby="open_heading" id="open_findings">
-      <% open = @open_groups.flat_map(&:findings) %>
-      <h2 id="open_heading">Open findings <span class="muted"><%= open.size %><%= ": #{severity_counts(open.map { |f| f.advisory.severity }.tally.sort_by { |s, _| Advisory::SEVERITIES.index(s) })}" if open.any? %></span></h2>
-      <% if @open_groups.empty? %>
+      <h2 id="open_heading">Open findings <span class="muted"><%= @open_groups.finding_count %><%= ": #{severity_counts(@open_groups.severity_counts)}" if @open_groups.finding_count.positive? %></span></h2>
+      <% if @open_groups.package_count.zero? %>
         <p class="muted">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
       <% else %>
-        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_groups, caption: "Open and reopened vulnerability findings", id: "open_list",
+        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_groups, caption: "Open and reopened vulnerability findings by package", id: "open_list",
+                                                  open: @query.present?, link_params:, pager_label: "Open finding pages",
                                                   triage: @triage, triage_status: @triage_status, triage_os: @triage_os %>
       <% end %>
     </section>
   <% end %>
   <% if @state != "open" %>
     <section aria-labelledby="resolved_heading" id="resolved_findings">
-      <% resolved = @resolved_groups.flat_map(&:findings) %>
-      <h2 id="resolved_heading">Resolved findings <span class="muted"><%= resolved.size %></span></h2>
-      <% if @resolved_groups.empty? %>
+      <h2 id="resolved_heading">Resolved findings <span class="muted"><%= @resolved_groups.finding_count %></span></h2>
+      <% if @resolved_groups.package_count.zero? %>
         <p class="muted"><%= filtered ? "No resolved findings match." : "None yet." %></p>
       <% else %>
-        <%= render "host_vulnerabilities/groups", host: @host, groups: @resolved_groups, caption: "Resolved vulnerability findings", id: "resolved_list" %>
-        <p class="pager"><span>Showing <%= pluralize(resolved.size, "resolved finding") %>.</span><span>Sorted by severity, then first seen.</span></p>
+        <%= render "host_vulnerabilities/groups", host: @host, groups: @resolved_groups, caption: "Resolved vulnerability findings by package", id: "resolved_list",
+                                                  open: @query.present?, link_params:, pager_label: "Resolved finding pages", cursor_prefix: "resolved_" %>
       <% end %>
     </section>
   <% end %>
