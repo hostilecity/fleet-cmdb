@@ -568,8 +568,9 @@ mod tests {
         // No swap, so MemoryMax is the real ceiling; systemd stops the whole unit on an OOM kill, so
         // Restart= and OnFailure= (ADR 0030) take over as for any failure.
         for unit_values in [values, recovery_values] {
-            assert_eq!(unit_values("MemoryHigh"), ["192M"]);
-            assert_eq!(unit_values("MemoryMax"), ["256M"]);
+            // No MemoryHigh= (owner, 2026-11-18): a leak is killed and restarted, not slowed down.
+            assert!(unit_values("MemoryHigh").is_empty());
+            assert_eq!(unit_values("MemoryMax"), ["128M"]);
             assert_eq!(unit_values("MemorySwapMax"), ["0"]);
             assert_eq!(unit_values("OOMPolicy"), ["stop"]);
             assert_eq!(unit_values("TasksMax"), ["64"]);

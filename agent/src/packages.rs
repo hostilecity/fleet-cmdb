@@ -57,6 +57,8 @@
 //!
 //! # Memory
 //!
+//! Only one listing runs at a time in the agent ([`ONE_LISTING_AT_A_TIME`], #182): the package report
+//! and `apply_package_updates` wait for each other, so the unit's `MemoryMax=` has to fit one `dpkg-query`.
 //! The command's output is held once (at most [`MAX_OUTPUT`]) and parsed line by line in place into
 //! [`Package`]s; the output is dropped before the report is encoded, and the report is serialized
 //! straight into the gzip encoder ([`crate::report`]), so the JSON is never held whole. Measured peak
@@ -148,6 +150,12 @@ pub enum Collected {
     Stopping,
 }
 
+/// Held while a listing runs and is parsed, so the agent never runs two at once (#182). The package
+/// report and `apply_package_updates` both list packages, and each `dpkg-query` needs about 3.6 KiB per
+/// installed package: two at once on a large host would take twice the memory under the unit's
+/// `MemoryMax=`. The second waits, at most a listing's [`TIMEOUT`].
+static ONE_LISTING_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Detects the manager and lists the packages. Nothing starts once `stop` is requested.
 pub fn collect(host: &dyn Host, stop: Option<&Shutdown>) -> Collected {
     let mut ctx = Ctx::new(host, TIMEOUT);
@@ -171,6 +179,13 @@ fn collect_with(ctx: &Ctx, stop: Option<&Shutdown>) -> Collected {
             return Collected::Unsupported(no_dpkg_reason(ctx));
         }
         Err(e) => return Collected::Unreadable(crate::facts::io_reason(DPKG_STATUS, &e)),
+    }
+    // Until the output is parsed and dropped (#182). A poisoned lock guards nothing: take it anyway.
+    let _one_at_a_time = ONE_LISTING_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if stopping() {
+        return Collected::Stopping;
     }
     let mut command = Command::new(DPKG_QUERY, LIST);
     command.timeout = TIMEOUT;

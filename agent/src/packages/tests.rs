@@ -774,3 +774,75 @@ fn the_real_dpkg_query_lists_a_large_synthetic_host_in_full() {
     assert!(listing.warnings.is_empty(), "{:?}", listing.warnings);
     assert_eq!(listing.packages, parse(&synthetic_output(3000)).packages);
 }
+
+/// A dpkg host whose listing takes a while and counts how many run at once.
+struct SlowDpkg {
+    running: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+}
+
+impl Host for SlowDpkg {
+    fn stat(&self, _: &Path) -> io::Result<crate::facts::host::Stat> {
+        RealHost::new().stat(Path::new("/"))
+    }
+
+    fn read(&self, _: &Path, _: u64) -> io::Result<Vec<u8>> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    fn list(&self, _: &Path, _: usize) -> io::Result<Vec<String>> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    fn run(&self, _: &Command) -> Result<Vec<u8>, RunError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = self.running.fetch_add(1, SeqCst) + 1;
+        self.most.fetch_max(now, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        self.running.fetch_sub(1, SeqCst);
+        Ok(synthetic_output(10))
+    }
+}
+
+#[test]
+fn listings_run_one_at_a_time() {
+    // #182: the package report and apply_package_updates both list packages; two dpkg-query processes
+    // at once would need twice the memory under the unit's MemoryMax=.
+    let host = std::sync::Arc::new(SlowDpkg {
+        running: 0.into(),
+        most: 0.into(),
+    });
+    let started = std::time::Instant::now();
+    let listings: Vec<_> = (0..3)
+        .map(|_| {
+            let host = std::sync::Arc::clone(&host);
+            std::thread::spawn(move || collect(host.as_ref(), None))
+        })
+        .collect();
+    for listing in listings {
+        let Collected::Dpkg(listing) = listing.join().unwrap() else {
+            panic!("not listed");
+        };
+        assert_eq!(listing.packages.len(), 10);
+    }
+    assert_eq!(host.most.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(3 * 50));
+}
+
+#[test]
+fn a_listing_waiting_its_turn_is_not_run_once_the_agent_stops() {
+    let host = SlowDpkg {
+        running: 0.into(),
+        most: 0.into(),
+    };
+    let stop = Shutdown::default();
+    let held = ONE_LISTING_AT_A_TIME.lock().unwrap();
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| collect(&host, Some(&stop)));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        stop.request();
+        drop(held);
+        assert!(matches!(waiting.join().unwrap(), Collected::Stopping));
+    });
+    assert_eq!(host.most.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

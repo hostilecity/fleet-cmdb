@@ -29,9 +29,9 @@
 #                  keeps the configuration, reports in its first inventory, and
 #                  its result is retried until the server accepts it
 #   below minimum  an agent the server answers 426 on inventory still updates (NFR-5)
-#   limits         (#182) the unit's memory and task limits are in force; a release that leaks is held by them
-#                  and rolled back; an agent killed for memory is restarted
-#                  cleanly; and one killed at every start ends in recovery mode, which keeps reporting, and
+#   limits         (#182) the unit's memory and task limits are in force; a release that leaks before it
+#                  confirms is killed at MemoryMax and rolled back; a confirmed agent killed for memory is
+#                  restarted cleanly; and one killed at every start ends in recovery mode, which keeps reporting, and
 #                  is normal again once the limit is raised. The limit is lowered with a drop-in, as an
 #                  operator would raise it.
 set -euo pipefail
@@ -229,8 +229,9 @@ mkscript "$tmp/exits.sh" 1.0.2 'echo "update-smoke: release 1.0.2 refuses to sta
 release exits_at_start 1.0.2 "$tmp/exits.sh"
 mkscript "$tmp/loops.sh" 1.0.3 'echo "update-smoke: release 1.0.3 started" >&2; sleep 2; exit 1'
 release crash_loop 1.0.3 "$tmp/loops.sh"
-# A release that leaks: tail keeps the last 400 MiB of its input, more than the unit's MemoryMax. The kernel
-# throttles it once it passes MemoryHigh, so it creeps towards MemoryMax (agent/contrib/README.md).
+# A release that leaks: tail keeps the last 400 MiB of its input, more than the unit's MemoryMax. It never sends
+# a heartbeat, so it would be rolled back at the confirmation deadline anyway: the scenario shows the ceiling
+# kills it in the service's cgroup without stranding the update, not that the limit causes the rollback.
 mkscript "$tmp/leaks.sh" 1.0.4 'echo "update-smoke: release 1.0.4 started" >&2; head -c 400M /dev/zero | tail -c 400M > /dev/null; sleep 60'
 release leaks 1.0.4 "$tmp/leaks.sh"
 
@@ -318,9 +319,12 @@ remove_dropin() {
     rmdir "$(dirname "$DROPIN")" 2> /dev/null || true
     systemctl daemon-reload
 }
-# oom_killed [SINCE]: systemd logged an OOM kill of the service since SINCE (default: the scenario's start).
+# oom_killed [SINCE]: the kernel's OOM killer acted in the service's cgroup since SINCE (default: the scenario's
+# start). The kernel's line is the reliable sign: systemd's result for the unit can be `oom-kill` or `signal`
+# (status KILL), depending on whether it sees the cgroup's OOM event or the main process's exit first.
 oom_killed() {
-    journalctl -u fleet-agent --since "@${1:-${since%.*}}" --no-pager -o cat 2> /dev/null | grep -Fq "oom-kill"
+    journalctl -k --since "@${1:-${since%.*}}" --no-pager -o cat 2> /dev/null \
+        | grep -Fq "oom_memcg=/system.slice/fleet-agent.service"
 }
 restarts() { systemctl show fleet-agent -p NRestarts --value; }
 recovery_heartbeat() {
@@ -348,17 +352,15 @@ if in_group limits; then
     cgroup=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value)
     echo "limits: the running agent: memory.current $(cat "$cgroup/memory.current"), memory.peak $(cat "$cgroup/memory.peak" 2> /dev/null || echo unknown), pids.current $(cat "$cgroup/pids.current")"
 
-    # The new version leaks before it confirms. The kernel holds it in the service's cgroup (throttled past
-    # MemoryHigh, killed at MemoryMax), and the supervisor and the rollback unit, which run outside that
-    # cgroup, roll it back: at the confirmation deadline, or once the service fails. A sampler records the
-    # cgroup's memory events meanwhile, as proof that the limit, not luck, held the leak.
+    # The new version leaks before it confirms: the kernel kills it at MemoryMax in the service's cgroup, and the
+    # supervisor and the rollback unit, which run outside that cgroup, roll it back. A sampler records the
+    # cgroup's memory meanwhile: it must never hold more than MemoryMax.
     leak_since=$(date +%s)
     (
         set +eo pipefail
         while :; do
             cg=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value 2> /dev/null)
-            { cat "$cg/memory.current" "$cg/memory.events"; } 2> /dev/null | tr '\n' ' '
-            echo
+            cat "$cg/memory.current" 2> /dev/null
             sleep 0.2
         done
     ) > "$tmp/leak-samples" &
@@ -367,18 +369,16 @@ if in_group limits; then
     kill "$sampler" 2> /dev/null || true
     journalctl -u fleet-agent --since "@$leak_since" --no-pager -o cat | grep -Fq "update-smoke: release 1.0.4 started" \
         || fail "leaking release: 1.0.4 never ran"
-    held=$(awk '{ for (i = 2; i < NF; i++) if (($i == "high" || $i == "oom_kill") && $(i + 1) > 0) n++ } END { print n + 0 }' "$tmp/leak-samples")
+    oom_killed "$leak_since" || fail "leaking release: the kernel did not OOM-kill it in fleet-agent.service's cgroup"
     most=$(awk 'BEGIN { m = 0 } $1 ~ /^[0-9]+$/ && $1 > m { m = $1 } END { print m }' "$tmp/leak-samples")
-    if [ "$held" = 0 ] && ! oom_killed "$leak_since"; then
-        fail "leaking release: the cgroup never reached MemoryHigh or MemoryMax (largest sample $most bytes)"
-    fi
-    [ "$most" -le "$(sed -n 's/^MemoryMax=//p' "$UNITS/fleet-agent.service" | sed 's/M$//' | awk '{ print $1 * 1048576 }')" ] \
+    [ "$most" -le "$(systemctl show fleet-agent -p MemoryMax --value)" ] \
         || fail "leaking release: the cgroup held $most bytes, more than MemoryMax"
-    echo "limits: the leaking release was held below MemoryMax (largest sample $most bytes, $held samples past MemoryHigh) and rolled back$(oom_killed "$leak_since" && echo ', after an OOM kill')"
+    echo "limits: the leaking release was OOM-killed at MemoryMax (largest sample $most bytes) and rolled back"
 
     echo "== limits: killed for memory, then restarted cleanly"
     reset
     before=$(restarts)
+    ledger_before=$(cat "$STATE/task-ledger.jsonl")
     since=$(date +%s.%N)
     # Far below what the agent uses, so the kernel kills it at its next allocation.
     lower_memory_max 1M
@@ -390,8 +390,9 @@ if in_group limits; then
     [ "$(restarts)" -gt "$before" ] || fail "killed for memory: systemd did not restart it (NRestarts $(restarts))"
     recovery_stopped || fail "killed for memory: recovery mode runs after a single kill"
     [ -f "$STATE/task-ledger.jsonl" ] || fail "killed for memory: the task ledger is gone"
+    [ "$(cat "$STATE/task-ledger.jsonl")" = "$ledger_before" ] || fail "killed for memory: the task ledger changed"
     [ ! -e "$STATE/update.json" ] || fail "killed for memory: an update record appeared"
-    echo "limits: killed for memory and restarted by systemd ($(restarts) restarts); heartbeat, ledger, and state intact"
+    echo "limits: killed for memory (kernel OOM line seen) and restarted by systemd ($(restarts) restarts); heartbeat and state intact, ledger unchanged ($(wc -l < "$STATE/task-ledger.jsonl") lines)"
 
     echo "== limits: killed at every start: start limit, then recovery mode, then normal again"
     reset
@@ -403,7 +404,7 @@ if in_group limits; then
     reason=$(jq -rs "[.[] | select(.kind == \"heartbeat\" and .recovery != null and .at > $since)] | last | .recovery.reason" "$events")
     echo "limits: recovery mode reports: $reason"
     [ "$(systemctl is-active fleet-agent)" = failed ] || fail "killed at every start: the service is $(systemctl is-active fleet-agent), not failed"
-    oom_killed || fail "killed at every start: no OOM kill was logged"
+    oom_killed || fail "killed at every start: the kernel logged no OOM kill in the service's cgroup"
     [ ! -e "$STATE/update.json" ] || fail "killed at every start: the rollback unit left an update record"
     # The operator raises the limit again and starts the service (troubleshooting.md).
     remove_dropin

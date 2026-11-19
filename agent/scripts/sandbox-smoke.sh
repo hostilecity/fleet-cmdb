@@ -22,8 +22,11 @@
 #    the kernel's own files in their cgroups hold the values of UNIT.
 # 7. A third run, "large", has the same options and a dpkg database of 20,000 installed packages (the most
 #    a package report may list; scripts/dpkg-status-large.py) bound over /var/lib/dpkg. It must send all
-#    20,000 without reaching MemoryHigh, MemoryMax, or TasksMax; its peaks are printed, as the measurement
-#    the limits rest on.
+#    20,000 without reaching MemoryMax or TasksMax; its peaks are printed, as the measurement the limits
+#    rest on.
+# 8. A fourth run, "oomchild", is "large" with MemoryMax=48M: dpkg-query (about 70 MiB) is the OOM victim,
+#    not the agent. OOMPolicy=stop must stop the whole unit (result oom-kill); with `continue`, the agent
+#    would carry on under the same pressure.
 set -eu
 
 binary=${1:?usage: sudo scripts/sandbox-smoke.sh BINARY [UNIT]}
@@ -44,7 +47,7 @@ annotate() {
 }
 journal() { journalctl -u "fleet-agent-smoke-$1" --no-pager -o cat 2>&1 | tail -n 60; }
 cleanup() {
-    for name in sandboxed baseline large; do
+    for name in sandboxed baseline large oomchild; do
         systemctl stop "fleet-agent-smoke-$name" 2>/dev/null || true
         systemctl reset-failed "fleet-agent-smoke-$name" 2>/dev/null || true
         rm -rf "/var/lib/fleet-agent-smoke-$name" "/etc/fleet-agent-smoke-$name"
@@ -76,8 +79,9 @@ properties=$(sed -n '/^\[Service\]/,/^\[/p' "$unit" | grep -E '^[A-Za-z]+=' \
 # The large host's dpkg database, made from this runner's own packages.
 python3 -I "$here/dpkg-status-large.py" /var/lib/dpkg/status 20000 "$tmp/dpkg-large"
 
+started=$(date +%s)
 port=8443
-for name in sandboxed baseline large; do
+for name in sandboxed baseline large oomchild; do
     mkdir -p "$tmp/$name"
     python3 "$here/update-stub.py" "$port" "$tmp/cert.pem" "$tmp/key.pem" "$tmp/$name" &
     pids="$pids $!"
@@ -102,7 +106,11 @@ EOF
 $properties
 EOF
     fi
-    [ "$name" != large ] || set -- "$@" --property="BindReadOnlyPaths=$tmp/dpkg-large:/var/lib/dpkg"
+    case "$name" in
+        large) set -- "$@" --property="BindReadOnlyPaths=$tmp/dpkg-large:/var/lib/dpkg" ;;
+        # After the unit's own MemoryMax=, so this one applies.
+        oomchild) set -- "$@" --property="BindReadOnlyPaths=$tmp/dpkg-large:/var/lib/dpkg" --property=MemoryMax=48M ;;
+    esac
     sleep 1
     if ! out=$(systemd-run "$@" /usr/local/lib/fleet-agent-smoke/fleet-agent run --config "$etc/config.toml" 2>&1); then
         printf '%s\n' "$out" >&2
@@ -195,7 +203,7 @@ printf '%s\n' "$result"
 
 # --- The memory and task limits (#182) -------------------------------------------------------------------
 
-# bytes VALUE: a systemd size (192M, 1G, a plain number) in bytes, as `systemctl show` and the cgroup print it.
+# bytes VALUE: a systemd size (128M, 1G, a plain number) in bytes, as `systemctl show` and the cgroup print it.
 bytes() {
     case "$1" in
         *K) echo $((${1%K} * 1024)) ;;
@@ -213,15 +221,18 @@ $(journal "${2:-sandboxed}")"
 }
 
 memory_high=$(value_in_unit MemoryHigh)
+[ -n "$memory_high" ] || memory_high=infinity
 memory_max=$(value_in_unit MemoryMax)
 swap_max=$(value_in_unit MemorySwapMax)
 tasks_max=$(value_in_unit TasksMax)
 oom_policy=$(value_in_unit OOMPolicy)
-if [ -z "$memory_high" ] || [ -z "$memory_max" ] || [ -z "$swap_max" ] || [ -z "$tasks_max" ] || [ -z "$oom_policy" ]; then
-    limits_failed "$unit does not set all of MemoryHigh=, MemoryMax=, MemorySwapMax=, TasksMax=, and OOMPolicy="
+if [ -z "$memory_max" ] || [ -z "$swap_max" ] || [ -z "$tasks_max" ] || [ -z "$oom_policy" ]; then
+    limits_failed "$unit does not set all of MemoryMax=, MemorySwapMax=, TasksMax=, and OOMPolicy="
 fi
 want="MemoryHigh=$(bytes "$memory_high") MemoryMax=$(bytes "$memory_max") MemorySwapMax=$(bytes "$swap_max") OOMPolicy=$oom_policy TasksMax=$tasks_max"
-want_kernel="memory.high=$(bytes "$memory_high") memory.max=$(bytes "$memory_max") memory.swap.max=$(bytes "$swap_max") pids.max=$tasks_max"
+kernel_high=$(bytes "$memory_high")
+[ "$kernel_high" != infinity ] || kernel_high=max
+want_kernel="memory.high=$kernel_high memory.max=$(bytes "$memory_max") memory.swap.max=$(bytes "$swap_max") pids.max=$tasks_max"
 for name in sandboxed large; do
     service="fleet-agent-smoke-$name"
     shown=$(systemctl show "$service" -p MemoryHigh -p MemoryMax -p MemorySwapMax -p OOMPolicy -p TasksMax \
@@ -241,7 +252,7 @@ cgroup=/sys/fs/cgroup$(systemctl show fleet-agent-smoke-large -p ControlGroup --
 events=$(tr '\n' ' ' < "$cgroup/memory.events")
 peak=$(cat "$cgroup/memory.peak" 2> /dev/null || echo unknown)
 tasks_peak=$(cat "$cgroup/pids.peak" 2> /dev/null || echo unknown)
-echo "sandbox-smoke: 20,000-package report: memory peak $peak bytes (MemoryHigh $(bytes "$memory_high")), tasks peak $tasks_peak (TasksMax $tasks_max); memory.events: $events"
+echo "sandbox-smoke: 20,000-package report: memory peak $peak bytes (MemoryMax $(bytes "$memory_max")), tasks peak $tasks_peak (TasksMax $tasks_max); memory.events: $events"
 for event in high max oom oom_kill; do
     n=$(sed -n "s/^$event //p" "$cgroup/memory.events")
     [ "${n:-0}" = 0 ] || limits_failed "the large host's agent reached a memory limit: memory.events $event $n ($events)" large
@@ -249,3 +260,18 @@ done
 refused=$(sed -n 's/^max //p' "$cgroup/pids.events" 2> /dev/null)
 [ "${refused:-0}" = 0 ] || limits_failed "the large host's agent reached TasksMax ($refused forks refused)" large
 echo "sandbox-smoke: the limits are in force, and a 20,000-package host stays below them"
+
+# OOMPolicy=stop when a child is the victim: the oomchild run's dpkg-query, not the agent.
+waited=0
+until state=$(systemctl show fleet-agent-smoke-oomchild -p ActiveState --value) \
+    && { [ "$state" = failed ] || [ "$state" = inactive ]; }; do
+    waited=$((waited + 1))
+    [ "$waited" -le 90 ] || limits_failed "with MemoryMax=48M, the oomchild service is still $state after 90 s: OOMPolicy=stop did not stop it" oomchild
+    sleep 1
+done
+result=$(systemctl show fleet-agent-smoke-oomchild -p Result --value)
+victim=$(journalctl -k --since "@$started" --no-pager -o cat \
+    | grep -F "oom_memcg=/system.slice/fleet-agent-smoke-oomchild.service" | sed -n 's/.*,task=\([^,]*\),.*/\1/p' | tail -n 1)
+[ "$victim" = dpkg-query ] || limits_failed "the oomchild run's OOM victim was '${victim:-none}', not dpkg-query" oomchild
+[ "$result" = oom-kill ] || limits_failed "the oomchild service ended with result $result, not oom-kill" oomchild
+echo "sandbox-smoke: OOMPolicy=$oom_policy: the kernel killed the agent's dpkg-query, and systemd stopped the whole unit (result $result)"

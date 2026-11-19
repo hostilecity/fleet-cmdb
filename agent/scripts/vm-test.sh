@@ -940,7 +940,7 @@ forced_timeout() {
 # --- Memory and task limits (#182) -------------------------------------------------------------------
 
 # agent_limits LABEL: the service's peaks so far (since its last start) and its limit events; fails if the
-# agent reached MemoryHigh, MemoryMax, or TasksMax. The peaks are kept for scenario 374.
+# agent reached MemoryMax or TasksMax (or a MemoryHigh, if a drop-in sets one). The peaks are kept for scenario 374.
 agent_limits() {
     local seen event count
     # shellcheck disable=SC2016 # expanded in the guest

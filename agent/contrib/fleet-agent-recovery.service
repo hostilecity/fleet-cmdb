@@ -39,8 +39,7 @@ UMask=0077
 
 # Resources (#182): the service's limits. Recovery mode runs no collector, so it uses less; a limit it
 # hits is one more failure, retried after the delay above.
-MemoryHigh=192M
-MemoryMax=256M
+MemoryMax=128M
 MemorySwapMax=0
 OOMPolicy=stop
 TasksMax=64
