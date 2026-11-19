@@ -1,7 +1,7 @@
 # Moves the stored package lists into content-addressed sets (#196, ADR 0028): PackageStoreBackfill, which says how.
 #
 # It runs here, at container start (bin/docker-entrypoint runs db:prepare), only when its estimated time
-# (PackageStoreBackfill#estimated_seconds, from measured rates) is at most INLINE_SECONDS, which leaves the boot, the
+# (PackageStoreBackfill#estimate, from measured rates) is at most INLINE_SECONDS, which leaves the boot, the
 # temporary indexes, DropHostPackages, and a margin inside the deploy's 5-minute wait for /up (a homelab takes
 # seconds). Above that it refuses with UPGRADE_STEP, before it writes anything: the entrypoint recognises the refusal
 # and keeps the container up without serving, so it does not restart into it again and again, and the operator runs
@@ -15,18 +15,25 @@ class BackfillPackageSets < ActiveRecord::Migration[8.1]
   INLINE_SECONDS = 90
   # The text bin/docker-entrypoint looks for.
   UPGRADE_STEP = "fleet-cmdb upgrade step needed".freeze
-  RUNBOOK = "Run the backfill in this waiting container under the backup lock, then restart it: " \
-            "docs/operations/upgrades.md (docker exec fleet-cmdb bin/rails packages:backfill).".freeze
+  RUNBOOK = "On the server VM, as the deploy user, run the backfill in this waiting container under the backup lock: " \
+            "nohup ~/.local/share/fleet-cmdb/backup/package-backfill.sh > ~/packages-backfill.log 2>&1 & (docs/operations/upgrades.md).".freeze
 
   def up
     backfill = PackageStoreBackfill.new(log: ->(message) { say(message, true) })
-    estimate = backfill.estimated_seconds
-    if estimate > INLINE_SECONDS
-      left = backfill.pending
-      raise "#{UPGRADE_STEP}: moving #{left['hashes']} distinct package lists and #{left['findings']} findings into package sets would take " \
-            "about #{(estimate / 60).ceil} minutes, too long for container start; nothing was changed by this step. #{RUNBOOK}"
+    estimate = backfill.estimate(within: INLINE_SECONDS)
+    if estimate.seconds > INLINE_SECONDS
+      raise "#{UPGRADE_STEP}: moving the package lists into package sets would take #{too_long(estimate)}, too long for container start; " \
+            "nothing was changed by this step. #{RUNBOOK}"
     end
     backfill.run!
+  end
+
+  # How long, as far as the estimate counted: past the limit it stopped counting, so then only that it is more.
+  def too_long(estimate)
+    return "about #{(estimate.seconds / 60).ceil} min" if estimate.complete?
+
+    "more than #{INLINE_SECONDS} s (it stopped counting there; bin/rails packages:backfill prints what is left, and " \
+      "docs/operations/upgrades.md has the rates)"
   end
 
   def down

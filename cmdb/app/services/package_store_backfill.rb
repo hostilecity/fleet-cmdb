@@ -21,9 +21,21 @@ class PackageStoreBackfill
   # Another backfill holds the lock (two `docker exec` at once, for example): nothing was done by this one.
   class Busy < StandardError; end
 
-  # Measured seconds per unit of work, on 2 shared CPUs (review of #240): what estimated_seconds adds up.
+  # Seconds per unit of work, what estimated_seconds adds up (reviews of #240 and #250; the calibration is in
+  # docs/operations/upgrades.md). Each distinct list costs SECONDS_PER_LIST, and each package in it SECONDS_PER_PACKAGE
+  # to read, bucket and hash; each package of each distinct chunk of the lists to move costs SECONDS_PER_NEW_PACKAGE to
+  # insert (a fleet whose lists share most chunks pays little of it; large, varied lists pay it for every package; a
+  # chunk already stored is charged too, the safe side); each dpkg row
+  # pointed at a set costs SECONDS_PER_ROW, and each finding copied SECONDS_PER_FINDING. On a quiet 2-CPU machine they
+  # measured about 9.5 ms, 5 us, 53 us, 21 us and 18 us; these are about three times that, and cover the runs on the
+  # same machine under a load average of 9 to 11 (500 lists of 3,000 new packages took 302 s; 400,000 rows 38 s).
   SECONDS_PER_LIST = 0.03
+  SECONDS_PER_PACKAGE = 0.00002
+  SECONDS_PER_NEW_PACKAGE = 0.00018
+  SECONDS_PER_ROW = 0.0001
   SECONDS_PER_FINDING = 0.00012
+  # How long the count of new chunk packages may take. Past it the estimate counts every package as new (the bound).
+  NEW_PACKAGES_TIMEOUT = "30s".freeze
   # The session advisory lock that keeps two backfills from running at once, through SessionLock (#198): on the direct
   # connection behind a transaction-mode pooler, uncached, and checked before each batch. LOCK takes it in a statement
   # of its own (the specs hold it from another session).
@@ -32,6 +44,11 @@ class PackageStoreBackfill
 
   BATCH = 1_000
   FINDINGS_BATCH = 10_000
+  # What estimate returns: its sum in seconds, and the counts it took (in its order, up to where it stopped).
+  Estimate = Data.define(:seconds, :counts) do
+    # Whether every term was counted; if not, seconds is only where it stopped, past the limit.
+    def complete? = counts.key?("new_packages")
+  end
   Package = AgentApi::PackageReport::Package
   UNSET = { manager: "dpkg", package_set_id: nil }.freeze
   INDEXES = [
@@ -48,20 +65,52 @@ class PackageStoreBackfill
   # Whether the old storage is still there to move.
   def needed? = @connection.table_exists?(:host_packages)
 
-  # How much is left: distinct dpkg hashes (hosts and snapshots), unreadable hosts, and finding rows not copied.
+  # How much is left: distinct dpkg hashes (hosts and snapshots), unreadable hosts, the dpkg rows to point at a set, and
+  # finding rows not copied. Each count reads its whole table (packages:backfill prints them).
   def pending
-    return { "hashes" => 0, "unreadable_hosts" => 0, "findings" => 0 } unless needed?
+    return { "hashes" => 0, "unreadable_hosts" => 0, "rows" => 0, "findings" => 0 } unless needed?
 
-    { "hashes" => HostPackageSet.where(UNSET).distinct.count(:content_hash) + PackageSnapshot.where(UNSET).distinct.count(:content_hash),
-      "unreadable_hosts" => HostPackageSet.where(manager: "unreadable", package_set_id: nil).count,
+    { "hashes" => [ HostPackageSet, PackageSnapshot ].sum { |model| model.where(UNSET).distinct.count(:content_hash) },
+      "unreadable_hosts" => unreadable.count,
+      "rows" => [ HostPackageSet, PackageSnapshot ].sum { |model| model.where(UNSET).count },
       "findings" => VulnerabilityFinding.where(last_ecosystem: nil).count }
   end
 
-  # How long the work left should take, in seconds, from the measured rates.
-  def estimated_seconds
-    left = pending
-    (left["hashes"] + left["unreadable_hosts"]) * SECONDS_PER_LIST + left["findings"] * SECONDS_PER_FINDING
+  # How long the work left should take, in seconds, and what it counted, from the rates above. With within: (the
+  # migration's limit) it stops once the sum is past it, and each count stops at what could still fit, so the estimate
+  # reads a bounded part of a large database rather than all of it; the sum it returns is then only a lower bound.
+  # Counted in this order: rows, findings, lists, the lists' packages, and the packages of their distinct chunks; the
+  # estimate is complete? once all five are counted.
+  def estimate(within: nil)
+    counts = {}
+    seconds = 0.0
+    left = ->(rate) { within && ((within - seconds) / rate).floor + 1 }
+    add = lambda do |what, rate, count|
+      counts[what] = count
+      seconds += count * rate
+      within && seconds > within
+    end
+    return Estimate.new(seconds:, counts:) unless needed?
+
+    rows = [ HostPackageSet, PackageSnapshot ].sum { |model| capped(model.where(UNSET), left.call(SECONDS_PER_ROW)) }
+    return Estimate.new(seconds:, counts:) if add.call("rows", SECONDS_PER_ROW, rows)
+    return Estimate.new(seconds:, counts:) if add.call("findings", SECONDS_PER_FINDING, capped(VulnerabilityFinding.where(last_ecosystem: nil), left.call(SECONDS_PER_FINDING)))
+
+    # Rows are within the limit here, so these read at most that many rows.
+    lists = [ HostPackageSet, PackageSnapshot ].sum { |model| model.where(UNSET).distinct.count(:content_hash) } + unreadable.count
+    return Estimate.new(seconds:, counts:) if add.call("lists", SECONDS_PER_LIST, lists)
+
+    packages = [ HostPackageSet, PackageSnapshot ].sum { |model| distinct_packages(model) } + unreadable.sum(:package_count)
+    return Estimate.new(seconds:, counts:) if add.call("packages", SECONDS_PER_PACKAGE, packages)
+
+    # Every package in its own chunk is the bound: count the distinct chunks only when the bound would not fit.
+    fits = !within || seconds + packages * SECONDS_PER_NEW_PACKAGE <= within
+    add.call("new_packages", SECONDS_PER_NEW_PACKAGE, fits ? packages : new_chunk_packages || packages)
+    Estimate.new(seconds:, counts:)
   end
+
+  # The estimate's seconds alone.
+  def estimated_seconds(within: nil) = estimate(within:).seconds
 
   # Runs the backfill under a session advisory lock, so a second one at once refuses (Busy) instead of racing it. A run
   # whose lock was lost part-way stops before its next batch (SessionLock::Lost); run it again to carry on.
@@ -80,9 +129,59 @@ class PackageStoreBackfill
 
   private
 
+  # The packages of the distinct lists of model's dpkg rows with no set yet (one list per content hash).
+  def distinct_packages(model)
+    model.from(model.where(UNSET).select("DISTINCT ON (content_hash) package_count").order(:content_hash), model.table_name).sum(:package_count)
+  end
+
+  def unreadable = HostPackageSet.where(manager: "unreadable", package_set_id: nil)
+
+  # How many rows scope has, counting at most cap of them (all with no cap).
+  def capped(scope, cap) = cap ? scope.limit(cap).count : scope.count
+
+  # The packages of the chunks the backfill would store (ADR 0028: a chunk is a list's packages whose source package
+  # falls in one bucket, as PackageStore.bucket computes it), each distinct chunk counted once, from one row per
+  # distinct list (a list stored as a JSON string is read as the backfill reads it); a chunk already stored counts too. Nil when it takes longer than NEW_PACKAGES_TIMEOUT.
+  def new_chunk_packages
+    ApplicationRecord.transaction(requires_new: true) do
+      before = @connection.select_value("SHOW statement_timeout")
+      @connection.execute("SET LOCAL statement_timeout = '#{NEW_PACKAGES_TIMEOUT}'")
+      @connection.select_value(NEW_CHUNK_PACKAGES).to_i.tap { @connection.execute(ApplicationRecord.sanitize_sql_array([ "SET LOCAL statement_timeout = ?", before ])) }
+    end
+  rescue ActiveRecord::QueryCanceled
+    nil
+  end
+
+  NEW_CHUNK_PACKAGES = <<~SQL.squish.freeze
+    WITH packages AS (
+      SELECT 's' || s.content_hash AS list, e ->> 0 AS name, e ->> 1 AS architecture, e ->> 2 AS version, e ->> 3 AS source
+      FROM (SELECT DISTINCT ON (content_hash) content_hash, packages FROM package_snapshots
+            WHERE manager = 'dpkg' AND package_set_id IS NULL ORDER BY content_hash) s,
+           jsonb_array_elements(CASE jsonb_typeof(s.packages::jsonb) WHEN 'string' THEN (s.packages::jsonb #>> '{}')::jsonb ELSE s.packages::jsonb END) e
+      UNION ALL
+      SELECT 'h' || h.content_hash, p.name, p.architecture, p.version, p.source
+      FROM (SELECT DISTINCT ON (content_hash) content_hash, host_id FROM host_package_sets
+            WHERE manager = 'dpkg' AND package_set_id IS NULL ORDER BY content_hash) h
+      JOIN host_packages p ON p.host_id = h.host_id
+      UNION ALL
+      SELECT 'u' || u.host_id, p.name, p.architecture, p.version, p.source
+      FROM host_package_sets u JOIN host_packages p ON p.host_id = u.host_id
+      WHERE u.manager = 'unreadable' AND u.package_set_id IS NULL
+    ), chunks AS (
+      SELECT get_byte(sha256(convert_to(COALESCE(source, name), 'UTF8')), 1) % #{PackageStore::BUCKETS} AS bucket,
+             md5(string_agg(concat_ws(chr(31), name, architecture, version, COALESCE(source, '')), chr(30)
+                            ORDER BY name, architecture, version, source)) AS content, count(*) AS size
+      FROM packages GROUP BY list, 1
+    )
+    SELECT COALESCE(sum(size), 0) FROM (SELECT DISTINCT ON (bucket, content) size FROM chunks) distinct_chunks
+  SQL
+
   def backfill
-    INDEXES.each { |sql| @connection.execute(sql) }
-    @connection.execute("ANALYZE package_snapshots, host_package_sets")
+    # The temporary indexes only when there are lists to store: a re-run after the step builds none (each scans the table).
+    if [ HostPackageSet, PackageSnapshot ].any? { |model| model.where(UNSET).exists? } || unreadable.exists?
+      INDEXES.each { |sql| @connection.execute(sql) }
+      @connection.execute("ANALYZE package_snapshots, host_package_sets")
+    end
     hosts
     unreadable_hosts
     snapshots
@@ -140,22 +239,33 @@ class PackageStoreBackfill
     end
   end
 
+  # By keyset over the ids of the rows left (not over id ranges), so the time follows the rows, however sparse the ids
+  # are after retention deleted resolved findings (review of #250).
   def findings
-    last = VulnerabilityFinding.maximum(:id).to_i
-    (0..last).step(FINDINGS_BATCH) do |from|
-      @still_held.call
-      VulnerabilityFinding.where(id: (from + 1)..(from + FINDINGS_BATCH), last_ecosystem: nil)
+    keyset(VulnerabilityFinding.where(last_ecosystem: nil), :id) do |ids|
+      VulnerabilityFinding.where(id: ids)
                           .update_all("last_source = source, last_installed_version = installed_version, last_fixed_version = fixed_version, last_ecosystem = ecosystem")
     end
     @log.call("findings: details copied")
   end
 
   def evaluations
-    last = HostVulnerabilityEvaluation.maximum(:host_id).to_i
-    (0..last).step(FINDINGS_BATCH) do |from|
-      @still_held.call
-      HostVulnerabilityEvaluation.where(host_id: (from + 1)..(from + FINDINGS_BATCH), package_set_id: nil)
+    keyset(HostVulnerabilityEvaluation.where(package_set_id: nil), :host_id) do |ids|
+      HostVulnerabilityEvaluation.where(host_id: ids)
                                  .update_all("package_set_id = (SELECT h.package_set_id FROM host_package_sets h WHERE h.host_id = host_vulnerability_evaluations.host_id)")
+    end
+  end
+
+  # Yields the keys of scope's rows in batches of FINDINGS_BATCH, in key order, each after the last one yielded.
+  def keyset(scope, key)
+    after = 0
+    loop do
+      ids = scope.where(key => (after + 1)..).order(key).limit(FINDINGS_BATCH).pluck(key)
+      break if ids.empty?
+
+      @still_held.call
+      yield ids
+      after = ids.last
     end
   end
 

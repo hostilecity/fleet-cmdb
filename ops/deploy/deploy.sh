@@ -7,7 +7,7 @@
 # <dir> holds build-<sha>/ (cmdb, docs/api, agent/trust, agent/release-keys) and the app's env file fleet-cmdb.env,
 # which is deleted once the containers have started.
 #
-# First it takes the backup lock (~/.local/state/fleet-cmdb/backup.lock, ops/backup/docker.sh), held through the build
+# First it takes the backup lock (~/.local/state/fleet-cmdb/backup.lock, ops/backup/lock.sh), held through the build
 # until the new app is up: it refuses at once while a restore runs, or while an unfinished restore left its marker
 # (~/.local/state/fleet-cmdb/restore-incomplete), and waits up to 20 minutes for a running backup or restore drill,
 # well inside cd.yml's 60-minute job timeout, so its own message is what fails the job. A running pg_dump holds a share lock on every table, so the new app's migrations would otherwise

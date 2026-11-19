@@ -7,7 +7,7 @@
 #   - pulls the PostgreSQL client image, so its patch releases arrive (a failure only warns: the copy on the VM is
 #     used, and Docker Hub being down never fails a deploy).
 # It runs before the deploy replaces the app, so whatever fails here stops the deploy with the old app still running.
-# It refuses while a restore runs (the backup lock, see docker.sh), or while an unfinished restore left its marker. The deploy user's systemd instance must run
+# It refuses while a restore runs (the backup lock, see lock.sh), or while an unfinished restore left its marker. The deploy user's systemd instance must run
 # without a login: once, as root, `loginctl enable-linger <user>`. No root is needed here.
 set -euo pipefail
 

@@ -18,7 +18,7 @@ RSpec.describe "packages rake tasks" do
   it "backfills nothing once the old storage is gone, and says so (spec/db/backfill_package_sets_spec.rb moves an old one)" do
     Rake::Task["packages:backfill"].reenable
     expect { Rake::Task["packages:backfill"].invoke }
-      .to output("To move: 0 hashes, 0 unreadable hosts, 0 findings.\nnothing to move: host_packages is gone\nDone. Start the server again: its migrations finish the upgrade.\n").to_stdout
+      .to output("To move: 0 hashes, 0 unreadable hosts, 0 rows, 0 findings.\nnothing to move: host_packages is gone\nDone. Start the server again: its migrations finish the upgrade.\n").to_stdout
   end
 
   def check

@@ -125,6 +125,25 @@ RSpec.describe PackageStore do
   describe ".collect!" do
     let(:list) { [ package("openssl", "amd64", "3.5.0-1", "openssl") ] }
 
+    it "keeps the set a host's findings were last moved from while a resolution may read it, then lets it go (review of #240)" do
+      allow(VulnerabilityMatchJob).to receive(:perform_later)
+      host = debian_host
+      import_advisories(osv_record(id: "DSA-1-1", fixed: "3.5.1-1"))
+      VulnerabilityMatcher.match!([ host.id ])
+      previous = HostVulnerabilityEvaluation.find_by!(host:).package_set_id
+      report_packages(host, [ [ "openssl", "3.5.1-1", "openssl" ] ]) # fixed, not matched yet
+      PackageSet.update_all(last_used_at: now - 10.days)
+      PackageChunk.update_all(last_used_at: now - 10.days)
+      PackageSnapshot.where(host_id: host.id).delete_all # as dropped partitions would
+      described_class.collect!(now:)
+      expect(PackageSet.exists?(previous)).to be(true) # the evaluation still names it
+      VulnerabilityMatcher.match!([ host.id ])
+      expect(VulnerabilityFinding.with_details.sole).to have_attributes(state: "resolved", resolution: "fixed", source: "openssl", fixed_version: "3.5.1-1")
+      described_class.collect!(now:)
+      expect(PackageSet.exists?(previous)).to be(false)
+      expect(described_class.check).to eq([])
+    end
+
     it "keeps sets a host or snapshot references and chunks a kept set holds; deletes the rest once untouched for two days" do
       host = enrolled_host.first
       report_packages(host, [ [ "bash", "5.2.37-1", "bash" ] ])

@@ -12,11 +12,11 @@ class DropHostPackages < ActiveRecord::Migration[8.1]
 
   def up
     execute "SET LOCAL lock_timeout = '#{LOCK_TIMEOUT}'"
-    left = PackageStoreBackfill.new.pending
+    findings = select_value("SELECT count(*) FROM vulnerability_findings WHERE last_ecosystem IS NULL").to_i
     unset = select_value("SELECT count(*) FROM package_snapshots WHERE manager = 'dpkg' AND package_set_id IS NULL").to_i +
             select_value("SELECT count(*) FROM host_package_sets WHERE manager = 'dpkg' AND package_set_id IS NULL").to_i
-    if unset.positive? || left["findings"].positive?
-      raise "#{BackfillPackageSets::UPGRADE_STEP}: #{unset} dpkg package snapshots and hosts have no package set and #{left['findings']} findings " \
+    if unset.positive? || findings.positive?
+      raise "#{BackfillPackageSets::UPGRADE_STEP}: #{unset} dpkg package snapshots and hosts have no package set and #{findings} findings " \
             "have no copied details, so the old storage is kept. #{BackfillPackageSets::RUNBOOK}"
     end
 

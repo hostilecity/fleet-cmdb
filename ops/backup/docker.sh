@@ -38,8 +38,8 @@ set -euo pipefail
 
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 config="${FLEET_BACKUP_ENV:-$HOME/.config/fleet-cmdb/backup.env}"
-lock_file="$HOME/.local/state/fleet-cmdb/backup.lock"
-restore_marker="$HOME/.local/state/fleet-cmdb/restore-incomplete"
+# shellcheck source=ops/backup/lock.sh
+. "$ops/lock.sh" # lock_file, restore_marker, take_lock, check_restore_marker: shared with package-backfill.sh
 app=fleet-cmdb
 volume=fleet-cmdb_storage
 
@@ -104,29 +104,6 @@ app_settings() {
   if [ -z "$PGHOST" ] || [ -z "$PGPASSWORD" ]; then die "the $app container has no PGHOST or DATABASE_PASSWORD setting"; fi
   export PGHOST PGPASSWORD PGUSER=cmdb
   app_image="$(docker inspect -f '{{.Config.Image}}' "$app")"
-}
-
-# The lock shared with the deploy. $1: what is running; $2: seconds to wait for another holder (0: refuse at once).
-# A restore is never waited for: whatever wants the lock refuses while one runs.
-take_lock() {
-  local holder
-  mkdir -p "$(dirname "$lock_file")"
-  exec 9>> "$lock_file"
-  if ! flock -n 9; then
-    holder="$(cat "$lock_file" 2> /dev/null || true)"
-    if [ "$2" -gt 0 ] && [[ "$holder" != restore* ]]; then
-      log "waiting for: $holder"
-      flock -w "$2" 9 || die "still busy after $2 seconds: $holder ($lock_file)"
-    else
-      die "refused: busy with $holder ($lock_file)"
-    fi
-  fi
-  printf '%s since %s, pid %s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock_file"
-}
-
-# A restore that did not finish leaves the databases and the volume in an unknown state.
-check_restore_marker() {
-  [ ! -e "$restore_marker" ] || die "refused: $(cat "$restore_marker")"
 }
 
 # docker run of the PostgreSQL client image on the database network, as uid 1000 with no capabilities, with the
