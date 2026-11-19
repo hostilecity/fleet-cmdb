@@ -23,8 +23,9 @@ class PackageStoreBackfill
 
   # Seconds per unit of work, what estimated_seconds adds up (reviews of #240 and #250; the calibration is in
   # docs/operations/upgrades.md). Each distinct list costs SECONDS_PER_LIST, and each package in it SECONDS_PER_PACKAGE
-  # to read, bucket and hash; each package of a chunk that is not stored yet costs SECONDS_PER_NEW_PACKAGE to insert (a
-  # fleet whose lists share most chunks pays little of it; large, varied lists pay it for every package); each dpkg row
+  # to read, bucket and hash; each package of each distinct chunk of the lists to move costs SECONDS_PER_NEW_PACKAGE to
+  # insert (a fleet whose lists share most chunks pays little of it; large, varied lists pay it for every package; a
+  # chunk already stored is charged too, the safe side); each dpkg row
   # pointed at a set costs SECONDS_PER_ROW, and each finding copied SECONDS_PER_FINDING. On a quiet 2-CPU machine they
   # measured about 9.5 ms, 5 us, 53 us, 21 us and 18 us; these are about three times that, and cover the runs on the
   # same machine under a load average of 9 to 11 (500 lists of 3,000 new packages took 302 s; 400,000 rows 38 s).
@@ -44,7 +45,10 @@ class PackageStoreBackfill
   BATCH = 1_000
   FINDINGS_BATCH = 10_000
   # What estimate returns: its sum in seconds, and the counts it took (in its order, up to where it stopped).
-  Estimate = Data.define(:seconds, :counts)
+  Estimate = Data.define(:seconds, :counts) do
+    # Whether every term was counted; if not, seconds is only where it stopped, past the limit.
+    def complete? = counts.key?("new_packages")
+  end
   Package = AgentApi::PackageReport::Package
   UNSET = { manager: "dpkg", package_set_id: nil }.freeze
   INDEXES = [
@@ -75,7 +79,8 @@ class PackageStoreBackfill
   # How long the work left should take, in seconds, and what it counted, from the rates above. With within: (the
   # migration's limit) it stops once the sum is past it, and each count stops at what could still fit, so the estimate
   # reads a bounded part of a large database rather than all of it; the sum it returns is then only a lower bound.
-  # Counted in this order: rows, findings, lists, the lists' packages, and of those the packages of new chunks.
+  # Counted in this order: rows, findings, lists, the lists' packages, and the packages of their distinct chunks; the
+  # estimate is complete? once all five are counted.
   def estimate(within: nil)
     counts = {}
     seconds = 0.0
@@ -98,7 +103,7 @@ class PackageStoreBackfill
     packages = [ HostPackageSet, PackageSnapshot ].sum { |model| distinct_packages(model) } + unreadable.sum(:package_count)
     return Estimate.new(seconds:, counts:) if add.call("packages", SECONDS_PER_PACKAGE, packages)
 
-    # Every package new is the bound: count the new chunks only when the bound would not fit.
+    # Every package in its own chunk is the bound: count the distinct chunks only when the bound would not fit.
     fits = !within || seconds + packages * SECONDS_PER_NEW_PACKAGE <= within
     add.call("new_packages", SECONDS_PER_NEW_PACKAGE, fits ? packages : new_chunk_packages || packages)
     Estimate.new(seconds:, counts:)

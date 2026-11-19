@@ -103,7 +103,7 @@ RSpec.describe BackfillPackageSets do
   it "refuses at container start, changing nothing, when the work is too long, and the rake task does it, resumably" do
     stub_const("BackfillPackageSets::INLINE_SECONDS", 0.01)
     old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
-    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: moving the package lists .* more than 0.01 s \(counted so far: 2 rows\b.* nothing was changed .*package-backfill.sh/m)
+    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: moving the package lists .* more than 0.01 s \(it stopped counting there; bin\/rails packages:backfill prints what is left.* nothing was changed .*package-backfill.sh/m)
     expect(PackageSet.count).to eq(0)
     expect { quiet { DropHostPackages.new.migrate(:up) } }.to raise_error(/fleet-cmdb upgrade step needed: 2 dpkg package snapshots and hosts have no package set.*package-backfill.sh/m)
 
@@ -146,15 +146,19 @@ RSpec.describe BackfillPackageSets do
                                                               (600 * rates::SECONDS_PER_PACKAGE) + (600 * rates::SECONDS_PER_NEW_PACKAGE))
     end
 
-    it "counts only the packages of distinct new chunks when every package new would not fit, as PackageStore chunks them" do
+    it "counts only the packages of the lists' distinct chunks when every package apart would not fit, as PackageStore chunks them" do
       host = old_host(list)
       snapshot(host, upgraded)
-      shared = chunk_packages(list, upgraded)
-      expect(shared).to be < 400 # the two lists share all but one chunk
-      base = (3 * rates::SECONDS_PER_ROW) + (3 * rates::SECONDS_PER_LIST) + (900 * rates::SECONDS_PER_PACKAGE)
-      within = base + (((shared + 900) / 2) * rates::SECONDS_PER_NEW_PACKAGE) # between the new chunks and the bound
+      # An unreadable host's own list (from its host_packages rows) is a list to move too.
+      own = Array.new(40) { |i| [ "tool-#{i}", "0.#{i}-1", "toolsrc-#{i}" ] }
+      old_host(own, manager: "unreadable", reason: "dpkg broken", hash: "unreadable")
+      distinct = chunk_packages(list, upgraded, own)
+      expect(distinct).to be < 400 + 40 # the two dpkg lists share all but one chunk
+      base = (3 * rates::SECONDS_PER_ROW) + (4 * rates::SECONDS_PER_LIST) + (940 * rates::SECONDS_PER_PACKAGE)
+      within = base + (((distinct + 940) / 2) * rates::SECONDS_PER_NEW_PACKAGE) # between the distinct chunks and the bound
       estimate = backfill.estimate(within:)
-      expect(estimate.counts).to eq("rows" => 3, "findings" => 0, "lists" => 3, "packages" => 900, "new_packages" => shared)
+      expect(estimate.counts).to eq("rows" => 3, "findings" => 0, "lists" => 4, "packages" => 940, "new_packages" => distinct)
+      expect(estimate).to be_complete
       expect(estimate.seconds).to be <= within
     end
 
@@ -169,10 +173,11 @@ RSpec.describe BackfillPackageSets do
     end
 
     it "stops counting once it is past the limit, reading no more rows than could fit" do
-      3.times { old_host([ [ "openssl", "3.5.0-1", "openssl" ] ]) } # six rows
-      estimate = backfill.estimate(within: 2.5 * rates::SECONDS_PER_ROW)
-      expect(estimate.counts).to eq("rows" => 3 + 3) # each table counted up to three rows: past the limit, so it stops
-      expect(estimate.seconds).to be > 2.5 * rates::SECONDS_PER_ROW
+      4.times { old_host([ [ "openssl", "3.5.0-1", "openssl" ] ]) } # four rows in each table
+      estimate = backfill.estimate(within: 1.5 * rates::SECONDS_PER_ROW)
+      expect(estimate.counts).to eq("rows" => 2 + 2) # each table counted up to two rows, not four: past the limit, so it stops
+      expect(estimate).not_to be_complete
+      expect(estimate.seconds).to be > 1.5 * rates::SECONDS_PER_ROW
     end
 
     it "walks the findings by their ids, so sparse ids cost no more batches than rows" do
@@ -186,6 +191,14 @@ RSpec.describe BackfillPackageSets do
       expect(statements.size).to eq(2)
       expect(VulnerabilityFinding.where(last_ecosystem: nil)).to be_empty
     end
+  end
+
+  it "says how long when the estimate counted everything and it is still too long" do
+    old_host([ [ "openssl", "3.5.0-1", "openssl" ] ]) # one list on a host row and a snapshot: one chunk of one package
+    rates = PackageStoreBackfill
+    counted = (2 * rates::SECONDS_PER_ROW) + (2 * rates::SECONDS_PER_LIST) + (2 * rates::SECONDS_PER_PACKAGE)
+    stub_const("BackfillPackageSets::INLINE_SECONDS", counted + (0.5 * rates::SECONDS_PER_NEW_PACKAGE)) # its one chunk does not fit
+    expect { migrate }.to raise_error(/would take about 1 min, too long for container start/)
   end
 
   # Its session lock goes through SessionLock (#198): behind a transaction-mode pooler it is on the direct connection, and

@@ -22,11 +22,18 @@ class BackfillPackageSets < ActiveRecord::Migration[8.1]
     backfill = PackageStoreBackfill.new(log: ->(message) { say(message, true) })
     estimate = backfill.estimate(within: INLINE_SECONDS)
     if estimate.seconds > INLINE_SECONDS
-      counted = estimate.counts.map { |what, count| "#{count} #{what.tr('_', ' ')}" }.join(", ")
-      raise "#{UPGRADE_STEP}: moving the package lists into package sets would take more than #{INLINE_SECONDS} s (counted so far: #{counted}; " \
-            "about #{(estimate.seconds / 60).ceil} minutes or more), too long for container start; nothing was changed by this step. #{RUNBOOK}"
+      raise "#{UPGRADE_STEP}: moving the package lists into package sets would take #{too_long(estimate)}, too long for container start; " \
+            "nothing was changed by this step. #{RUNBOOK}"
     end
     backfill.run!
+  end
+
+  # How long, as far as the estimate counted: past the limit it stopped counting, so then only that it is more.
+  def too_long(estimate)
+    return "about #{(estimate.seconds / 60).ceil} min" if estimate.complete?
+
+    "more than #{INLINE_SECONDS} s (it stopped counting there; bin/rails packages:backfill prints what is left, and " \
+      "docs/operations/upgrades.md has the rates)"
   end
 
   def down
