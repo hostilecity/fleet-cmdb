@@ -1,7 +1,7 @@
 # Moves the stored package lists into content-addressed sets (#196, ADR 0028): PackageStoreBackfill, which says how.
 #
 # It runs here, at container start (bin/docker-entrypoint runs db:prepare), only when its estimated time
-# (PackageStoreBackfill#estimated_seconds, from measured rates) is at most INLINE_SECONDS, which leaves the boot, the
+# (PackageStoreBackfill#estimate, from measured rates) is at most INLINE_SECONDS, which leaves the boot, the
 # temporary indexes, DropHostPackages, and a margin inside the deploy's 5-minute wait for /up (a homelab takes
 # seconds). Above that it refuses with UPGRADE_STEP, before it writes anything: the entrypoint recognises the refusal
 # and keeps the container up without serving, so it does not restart into it again and again, and the operator runs
@@ -20,11 +20,11 @@ class BackfillPackageSets < ActiveRecord::Migration[8.1]
 
   def up
     backfill = PackageStoreBackfill.new(log: ->(message) { say(message, true) })
-    estimate = backfill.estimated_seconds
-    if estimate > INLINE_SECONDS
-      left = backfill.pending
-      raise "#{UPGRADE_STEP}: moving #{left['hashes']} distinct package lists and #{left['findings']} findings into package sets would take " \
-            "about #{(estimate / 60).ceil} minutes, too long for container start; nothing was changed by this step. #{RUNBOOK}"
+    estimate = backfill.estimate(within: INLINE_SECONDS)
+    if estimate.seconds > INLINE_SECONDS
+      counted = estimate.counts.map { |what, count| "#{count} #{what.tr('_', ' ')}" }.join(", ")
+      raise "#{UPGRADE_STEP}: moving the package lists into package sets would take more than #{INLINE_SECONDS} s (counted so far: #{counted}; " \
+            "about #{(estimate.seconds / 60).ceil} minutes or more), too long for container start; nothing was changed by this step. #{RUNBOOK}"
     end
     backfill.run!
   end

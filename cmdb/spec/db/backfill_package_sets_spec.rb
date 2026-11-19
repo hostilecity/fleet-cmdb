@@ -96,33 +96,96 @@ RSpec.describe BackfillPackageSets do
     ActiveSupport::Notifications.subscribed(->(*, payload) { statements << payload[:sql] if payload[:sql].match?(/\AUPDATE "?vulnerability_findings"?/) }, "sql.active_record") { migrate }
     expect(connection.select_rows("SELECT last_source, last_installed_version, last_fixed_version, last_ecosystem FROM vulnerability_findings").uniq)
       .to eq([ %w[openssl 3.5.0-1 3.5.1-1 Debian:13] ])
-    expect(statements.size).to be >= 2 # one batch of ids each
+    expect(statements.size).to eq(2) # one batch of ids each
     expect(HostVulnerabilityEvaluation.find_by!(host:).package_set_id).to eq(set_of(host))
   end
 
   it "refuses at container start, changing nothing, when the work is too long, and the rake task does it, resumably" do
     stub_const("BackfillPackageSets::INLINE_SECONDS", 0.01)
     old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
-    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: moving 2 distinct package lists and 0 findings .* nothing was changed .*package-backfill.sh/m)
+    expect { migrate }.to raise_error(/fleet-cmdb upgrade step needed: moving the package lists .* more than 0.01 s \(counted so far: 2 rows\b.* nothing was changed .*package-backfill.sh/m)
     expect(PackageSet.count).to eq(0)
     expect { quiet { DropHostPackages.new.migrate(:up) } }.to raise_error(/fleet-cmdb upgrade step needed: 2 dpkg package snapshots and hosts have no package set.*package-backfill.sh/m)
 
     log = []
     backfill = PackageStoreBackfill.new(log: ->(message) { log << message })
-    # Two one-package lists and their two rows: the list rate is the larger.
-    expect(backfill.estimated_seconds).to eq(2 * PackageStoreBackfill::SECONDS_PER_LIST + 2 * PackageStoreBackfill::SECONDS_PER_ROW)
+    # Two one-package lists on two rows, every package new.
+    expect(backfill.estimate.counts).to eq("rows" => 2, "findings" => 0, "lists" => 2, "packages" => 2, "new_packages" => 2)
     holding_backfill_lock { expect { backfill.run! }.to raise_error(PackageStoreBackfill::Busy, /another package backfill is running/) }
     expect(PackageSet.count).to eq(0)
-    expect(backfill.pending).to eq("hashes" => 2, "unreadable_hosts" => 0, "packages" => 2, "rows" => 2, "findings" => 0)
+    expect(backfill.pending).to eq("hashes" => 2, "unreadable_hosts" => 0, "rows" => 2, "findings" => 0)
     backfill.run!
-    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "packages" => 0, "rows" => 0, "findings" => 0)
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "rows" => 0, "findings" => 0)
     expect(log).to include("hosts: 1 distinct package lists stored", "snapshots: 1 distinct package lists stored")
     expect(connection.select_value("SELECT count(*) FROM pg_class WHERE relname LIKE '%backfill_196'").to_i).to eq(0) # its indexes are gone
     migrate # nothing left: runs at once
     quiet { DropHostPackages.new.migrate(:up) }
-    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "packages" => 0, "rows" => 0, "findings" => 0)
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "rows" => 0, "findings" => 0)
     backfill.run!
     expect(log.last).to eq("nothing to move: host_packages is gone")
+  end
+
+  describe "the estimate (reviews of #240 and #250)" do
+    let(:backfill) { PackageStoreBackfill.new }
+    let(:rates) { PackageStoreBackfill }
+    # 300 packages over many sources, so over most of the 64 buckets; the second list upgrades one of them.
+    let(:list) { Array.new(300) { |i| [ "pkg-#{i}", "1.0-1", "src-#{i / 3}" ] } }
+    let(:upgraded) { list.each_with_index.map { |(name, version, source), i| i == 7 ? [ name, "1.0-2", source ] : [ name, version, source ] } }
+
+    def chunk_packages(*lists)
+      lists.flat_map { |rows| PackageStore.chunks(rows.map { |n, v, s| PackageStore::Package.from_a([ n, "amd64", v, s ]) }) }
+           .uniq(&:content_hash).sum { |chunk| chunk.packages.size }
+    end
+
+    it "charges every package of each distinct list, once per list however many rows carry it" do
+      host = old_host(list) # its host row and one snapshot, both with the list's hash
+      snapshot(host, list) # a second snapshot with that hash: one more row, not one more list
+      counts = backfill.estimate.counts
+      expect(counts).to eq("rows" => 3, "findings" => 0, "lists" => 2, "packages" => 600, "new_packages" => 600) # no limit: every package new
+      expect(backfill.estimated_seconds).to be_within(1e-9).of((3 * rates::SECONDS_PER_ROW) + (2 * rates::SECONDS_PER_LIST) +
+                                                              (600 * rates::SECONDS_PER_PACKAGE) + (600 * rates::SECONDS_PER_NEW_PACKAGE))
+    end
+
+    it "counts only the packages of distinct new chunks when every package new would not fit, as PackageStore chunks them" do
+      host = old_host(list)
+      snapshot(host, upgraded)
+      shared = chunk_packages(list, upgraded)
+      expect(shared).to be < 400 # the two lists share all but one chunk
+      base = (3 * rates::SECONDS_PER_ROW) + (3 * rates::SECONDS_PER_LIST) + (900 * rates::SECONDS_PER_PACKAGE)
+      within = base + (((shared + 900) / 2) * rates::SECONDS_PER_NEW_PACKAGE) # between the new chunks and the bound
+      estimate = backfill.estimate(within:)
+      expect(estimate.counts).to eq("rows" => 3, "findings" => 0, "lists" => 3, "packages" => 900, "new_packages" => shared)
+      expect(estimate.seconds).to be <= within
+    end
+
+    it "counts every package as new when counting the new chunks takes too long" do
+      old_host(list)
+      stub_const("PackageStoreBackfill::NEW_PACKAGES_TIMEOUT", "10ms")
+      stub_const("PackageStoreBackfill::NEW_CHUNK_PACKAGES", "SELECT pg_sleep(1)")
+      within = (2 * rates::SECONDS_PER_ROW) + (2 * rates::SECONDS_PER_LIST) + (600 * rates::SECONDS_PER_PACKAGE) + (300 * rates::SECONDS_PER_NEW_PACKAGE)
+      expect(backfill).to receive(:new_chunk_packages).and_call_original # the bound does not fit, so it counts, and times out
+      expect(backfill.estimate(within:).counts["new_packages"]).to eq(600)
+      expect(connection.select_value("SHOW statement_timeout")).not_to eq("10ms")
+    end
+
+    it "stops counting once it is past the limit, reading no more rows than could fit" do
+      3.times { old_host([ [ "openssl", "3.5.0-1", "openssl" ] ]) } # six rows
+      estimate = backfill.estimate(within: 2.5 * rates::SECONDS_PER_ROW)
+      expect(estimate.counts).to eq("rows" => 3 + 3) # each table counted up to three rows: past the limit, so it stops
+      expect(estimate.seconds).to be > 2.5 * rates::SECONDS_PER_ROW
+    end
+
+    it "walks the findings by their ids, so sparse ids cost no more batches than rows" do
+      stub_const("PackageStoreBackfill::FINDINGS_BATCH", 1)
+      host = old_host([ [ "openssl", "3.5.0-1", "openssl" ] ])
+      advisory = Advisory.create!(advisory_id: "DSA-1-1", source: "test", severity: "high", modified_at: Time.current)
+      %w[openssl libssl3].each { |package| old_finding(host, advisory, package) }
+      connection.execute("UPDATE vulnerability_findings SET id = 2000000000 WHERE package = 'libssl3'") # retention left a gap
+      statements = []
+      ActiveSupport::Notifications.subscribed(->(*, payload) { statements << payload[:sql] if payload[:sql].match?(/\AUPDATE "?vulnerability_findings"?/) }, "sql.active_record") { migrate }
+      expect(statements.size).to eq(2)
+      expect(VulnerabilityFinding.where(last_ecosystem: nil)).to be_empty
+    end
   end
 
   # Its session lock goes through SessionLock (#198): behind a transaction-mode pooler it is on the direct connection, and
@@ -142,7 +205,7 @@ RSpec.describe BackfillPackageSets do
     expect(backfill.pending["hashes"]).to eq(3) # one host list stored before the lock was lost, of four lists
     allow(SessionLock).to receive(:hold).and_call_original
     backfill.run!
-    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "findings" => 0)
+    expect(backfill.pending).to eq("hashes" => 0, "unreadable_hosts" => 0, "rows" => 0, "findings" => 0)
   end
 
   it "rolls back to no sets" do
