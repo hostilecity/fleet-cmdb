@@ -479,13 +479,18 @@ jobs:
           expect "/health: audit_guard warns before the superuser step" warning "$(check audit_guard)"
           # The command in docs/operations/install-server.md for PostgreSQL 17 (this image), as the container's superuser
           # whatever it is called: connected with event triggers off and search_path pinned (final check of #249, B1).
-          pin='-c event_triggers=off -c search_path=pg_catalog,pg_temp'
+          pin='-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning'
+          out="$(docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -At -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d postgres' < ops/postgres/audit-guard-precheck.sql)"
+          expect "the precheck finds no sign that cmdb is or was a superuser" "no sign that cmdb is or was a superuser (this is not proof: see install-server.md)" "$out"
           out="$(docker exec -i postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql 2>&1)" && rc=0 || rc=$?
           expect "the step refuses a session that connected with event triggers on" "3 1" "$rc $(printf '%s' "$out" | grep -c 'connect with event triggers off')"
           docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
           docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql # safe to run again
+          # cmdb, as the database's owner, may set role and client_min_messages for every session: the pin overrides both.
+          as_cmdb postgres psql -h 127.0.0.1 -U cmdb -d cmdb_production -qc "ALTER DATABASE cmdb_production SET role = cmdb" -c "ALTER DATABASE cmdb_production SET client_min_messages = error"
           out="$(docker exec -i -e PGOPTIONS="$pin" postgres sh -c 'psql -X -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard-recover.sql 2>&1)"
-          expect "the recovery file, with nothing to recover, changes nothing" 1 "$(printf '%s' "$out" | grep -c 'nothing dropped')"
+          expect "the recovery file, with nothing to recover, says so and changes nothing" 1 "$(printf '%s' "$out" | grep -c 'nothing dropped')"
+          as_cmdb postgres psql -h 127.0.0.1 -U cmdb -d cmdb_production -qc "ALTER DATABASE cmdb_production RESET role" -c "ALTER DATABASE cmdb_production RESET client_min_messages"
           expect "/health: audit_guard is ok after it" ok "$(check audit_guard)"
           partition="$(docker exec postgres psql -U postgres -d cmdb_production -Atc "SELECT inhrelid::regclass FROM pg_inherits WHERE inhparent = 'audit_entries'::regclass LIMIT 1")"
           expect "the app's role cannot detach an audit partition" 1 \

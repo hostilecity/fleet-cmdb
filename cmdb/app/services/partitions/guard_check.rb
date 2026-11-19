@@ -23,7 +23,7 @@ module Partitions
 
     def problem
       role_problem("the app's PostgreSQL role", "current_user") || role_problem("the owner of audit_entries", owner_sql) ||
-        search_path_problem || installed_problem || function_problem || code_problem || table_problem || trigger_problem ||
+        search_path_problem || installed_problem || catalog_problem || function_problem || code_problem || table_problem || trigger_problem ||
         default_problem || sequence_problem
     end
 
@@ -34,17 +34,23 @@ module Partitions
 
     def owner_sql = "(SELECT c.relowner::pg_catalog.regrole::text FROM pg_catalog.pg_class c WHERE c.oid = 'public.audit_entries'::pg_catalog.regclass)"
 
+    # Remedy for a role that is or was a superuser: it can have left code anywhere that runs as the superuser later, which
+    # demoting it does not remove (final check of #249, review 2, B1).
+    REBUILD = "the cluster must be rebuilt (install-server.md, \"If cmdb is or was a superuser\")".freeze
+
     def role_problem(who, role)
-      return "#{who} is a superuser, so no guard can hold against it" if value("SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = #{role}")
+      bootstrap, superuser = @c.select_rows("SELECT r.oid = 10::pg_catalog.oid, r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = #{role}").first
+      return "#{who} is the bootstrap superuser (OID 10, a container created with POSTGRES_USER=cmdb), which cannot be demoted: #{REBUILD}" if bootstrap
+      return "#{who} is a superuser, so no guard can hold against it: #{REBUILD}" if superuser
 
       # Membership, direct or through other roles, of a superuser role is as good as being one: SET ROLE (review 3, S1).
       member, superuser = @c.select_rows(<<~SQL.squish).first
-        SELECT g.rolname, g.rolsuper FROM pg_catalog.pg_roles g
+        SELECT pg_catalog.quote_ident(g.rolname), g.rolsuper FROM pg_catalog.pg_roles g
         WHERE g.rolname <> #{role} AND (g.rolsuper OR g.rolname IN (#{DANGEROUS_ROLES.map { |n| @c.quote(n) }.join(', ')}))
           AND pg_catalog.pg_has_role(#{role}, g.oid, 'MEMBER')
         ORDER BY g.rolsuper DESC, 1
       SQL
-      return "#{who} is a member of the superuser role #{member}, so no guard can hold against it" if superuser
+      return "#{who} is a member of the superuser role #{member}, so no guard can hold against it: #{REBUILD}" if superuser
       return "#{who} is a member of #{member}, which is as good as a superuser against the guard" if member
 
       "#{who} has CREATEROLE, which before PostgreSQL 16 can grant itself any role" if before16? && value("SELECT r.rolcreaterole FROM pg_catalog.pg_roles r WHERE r.rolname = #{role}")
@@ -76,8 +82,10 @@ module Partitions
 
       # Any other event trigger would run as the superuser in every superuser step, this guard's included, and a role
       # that was once a superuser can have left one running its own function (second review of #249, S1).
-      name, event, owner, function = @c.select_rows(<<~SQL.squish).first
-        SELECT e.evtname, e.evtevent, e.evtowner::pg_catalog.regrole::text, e.evtfoid::pg_catalog.regprocedure::text
+      name, event, owner, function, apps = @c.select_rows(<<~SQL.squish).first
+        SELECT pg_catalog.quote_ident(e.evtname), e.evtevent, e.evtowner::pg_catalog.regrole::text, e.evtfoid::pg_catalog.regprocedure::text,
+               e.evtowner = (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.oid = 'public.audit_entries'::pg_catalog.regclass)
+                 OR (SELECT f.proowner FROM pg_catalog.pg_proc f WHERE f.oid = e.evtfoid) = (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.oid = 'public.audit_entries'::pg_catalog.regclass)
         FROM pg_catalog.pg_event_trigger e
         WHERE NOT (e.evtname IN (#{AUDIT_EVENT_TRIGGERS.map { |n| @c.quote(n) }.join(', ')})
                    AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
@@ -90,8 +98,19 @@ module Partitions
       # A login trigger (PostgreSQL 17 and later) runs on every connection, every superuser's included, before anything
       # the superuser types (final check of #249, B1).
       runs = event == "login" ? "it runs as whoever connects, on every connection to this database, every superuser included" : "the superuser's next step would run it as the superuser"
-      "event trigger #{name} (on #{event}, owned by #{owner}, running #{function}) is not the audit guard's: #{runs}. " \
-        "The superuser drops it, connected with event triggers off as install-server.md says"
+      # An event trigger of the app's role can only have been made while it was a superuser (review 2 of the final check, B1).
+      remedy = apps ? "it is the app's role's, so that role was a superuser: #{REBUILD}" : "the superuser runs DROP EVENT TRIGGER #{name}; connected as install-server.md says"
+      "event trigger #{name} (on #{event}, owned by #{owner}, running #{function}) is not the audit guard's: #{runs}. #{remedy}"
+    end
+
+    # The step's tripwire, installed with the guard: something in pg_catalog the bootstrap superuser did not put there.
+    def catalog_problem
+      unless value("SELECT pg_catalog.to_regprocedure('fleet_audit_guard.catalog_signs()') IS NOT NULL")
+        return "the audit guard is from an older version of ops/postgres/audit-guard.sql (the superuser runs it again)"
+      end
+
+      found = value("SELECT s.what FROM fleet_audit_guard.catalog_signs() s ORDER BY 1 LIMIT 1")
+      "PostgreSQL's own schema holds #{found}: only a superuser can put it there; if the app's role was ever one, #{REBUILD}" if found
     end
 
     def function_problem
@@ -107,7 +126,7 @@ module Partitions
     # partition) and the truncate guards, enabled, with no condition.
     def trigger_problem
       odd = values(<<~SQL.squish).first
-        SELECT t.tgname || ' on ' || t.tgrelid::pg_catalog.regclass::text FROM #{TREE} p JOIN pg_catalog.pg_trigger t ON t.tgrelid = p.relid
+        SELECT pg_catalog.quote_ident(t.tgname) || ' on ' || t.tgrelid::pg_catalog.regclass::text FROM #{TREE} p JOIN pg_catalog.pg_trigger t ON t.tgrelid = p.relid
         WHERE NOT t.tgisinternal
           AND NOT (t.tgqual IS NULL AND t.tgenabled = 'O' AND t.tgnargs = 0
                    AND ((t.tgfoid = #{GUARD}

@@ -7,12 +7,12 @@
 -- runs as the superuser when the session starts (a login event trigger, PostgreSQL 17 and later) or resolves a name.
 -- PostgreSQL 17 and later (the file refuses to run in a session that connected without event_triggers=off):
 --
---   docker exec -i -e PGOPTIONS='-c event_triggers=off -c search_path=pg_catalog,pg_temp' postgres \
+--   docker exec -i -e PGOPTIONS='-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres \
 --     sh -c 'psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
 --
 -- PostgreSQL 16, which has no login event triggers and refuses that setting at connect:
 --
---   docker exec -i -e PGOPTIONS='-c search_path=pg_catalog,pg_temp' postgres \
+--   docker exec -i -e PGOPTIONS='-c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres \
 --     sh -c 'psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
 --
 -- It is one transaction: it installs everything or nothing, and an error or a dropped connection leaves whatever guard
@@ -98,15 +98,17 @@ BEGIN
                 WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhrelid = i.indexrelid)
       UNION ALL SELECT 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, s.oid FROM pg_catalog.pg_statistic_ext s JOIN tree t ON t.relid = s.stxrelid
       UNION ALL SELECT 'pg_catalog.pg_constraint'::pg_catalog.regclass, k.oid FROM pg_catalog.pg_constraint k JOIN tree t ON t.relid = k.conrelid
-                WHERE k.conparentid = 0
+                WHERE k.conparentid = 0 AND k.conislocal
       UNION ALL SELECT 'pg_catalog.pg_attrdef'::pg_catalog.regclass, a.oid FROM pg_catalog.pg_attrdef a JOIN tree t ON t.relid = a.adrelid
                 WHERE a.adrelid = $1 OR NOT EXISTS (
                   SELECT 1 FROM pg_catalog.pg_attribute pa JOIN pg_catalog.pg_attribute ca ON ca.attname = pa.attname
                   JOIN pg_catalog.pg_attrdef pd ON pd.adrelid = pa.attrelid AND pd.adnum = pa.attnum
                   WHERE pa.attrelid = $1 AND ca.attrelid = a.adrelid AND ca.attnum = a.adnum AND pd.adbin::text = a.adbin::text))
     SELECT DISTINCT a.classid, a.objid, d.objsubid,
-           pg_catalog.format('%s uses %s', pg_catalog.pg_describe_object(a.classid, a.objid, d.objsubid), pg_catalog.pg_describe_object(d.refclassid, d.refobjid, 0)) AS what
+           pg_catalog.format('%s %s uses %s %s', i.type, i.identity, r.type, r.identity) AS what
     FROM attached a JOIN pg_catalog.pg_depend d ON d.classid = a.classid AND d.objid = a.objid
+    CROSS JOIN LATERAL pg_catalog.pg_identify_object(a.classid, a.objid, d.objsubid) i
+    CROSS JOIN LATERAL pg_catalog.pg_identify_object(d.refclassid, d.refobjid, 0) r
     WHERE d.refclassid IN ('pg_catalog.pg_proc'::pg_catalog.regclass, 'pg_catalog.pg_operator'::pg_catalog.regclass, 'pg_catalog.pg_type'::pg_catalog.regclass,
                            'pg_catalog.pg_opclass'::pg_catalog.regclass, 'pg_catalog.pg_opfamily'::pg_catalog.regclass)
       AND NOT COALESCE(CASE d.refclassid
@@ -122,55 +124,130 @@ BEGIN
                                                               FROM pg_catalog.pg_opfamily o JOIN pg_catalog.pg_roles r ON r.oid = o.opfowner WHERE o.oid = d.refobjid)
       END, false)
 $q$, true);
+  -- Signs that a role other than the bootstrap superuser once acted as a superuser in this database (final check of
+  -- #249, review 2, B1): an object in pg_catalog made after initdb, or not the bootstrap superuser's (OID 10), or a
+  -- function there in a language PostgreSQL's own are not in. Such an object can run as the superuser in any query,
+  -- this file's included, and the search path cannot keep pg_catalog out. Written once, here and in
+  -- ops/postgres/audit-guard-precheck.sql (a spec keeps the two the same), and installed as
+  -- fleet_audit_guard.catalog_signs() for /health. Only oid-to-oid comparisons against fixed OIDs, so a planted
+  -- operator for another pair of types is never chosen. It is a tripwire, not proof: a superuser can replace a built-in
+  -- function's body and keep its OID and owner.
+  PERFORM pg_catalog.set_config('fleet_audit_guard.catalog_check', $q$
+-- tripwire begin
+    WITH found (classid, objid, why) AS (
+      SELECT 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_class o
+        WHERE o.relnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.relowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_proc'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_proc o
+        WHERE o.pronamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.proowner <> 10::pg_catalog.oid
+                                                       OR o.prolang NOT IN (12::pg_catalog.oid, 13::pg_catalog.oid, 14::pg_catalog.oid))
+      UNION ALL SELECT 'pg_catalog.pg_type'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_type o
+        WHERE o.typnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.typowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_operator'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_operator o
+        WHERE o.oprnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.oprowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_opclass'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_opclass o
+        WHERE o.opcnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.opcowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_opfamily'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_opfamily o
+        WHERE o.opfnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.opfowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_collation'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_collation o
+        WHERE o.collnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.collowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_conversion'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_conversion o
+        WHERE o.connamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.conowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_ts_config'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_ts_config o
+        WHERE o.cfgnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.cfgowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_ts_dict'::pg_catalog.regclass, o.oid, o.oid >= 16384::pg_catalog.oid FROM pg_catalog.pg_ts_dict o
+        WHERE o.dictnamespace = 11::pg_catalog.oid AND (o.oid >= 16384::pg_catalog.oid OR o.dictowner <> 10::pg_catalog.oid)
+      UNION ALL SELECT 'pg_catalog.pg_ts_parser'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_ts_parser o
+        WHERE o.prsnamespace = 11::pg_catalog.oid AND o.oid >= 16384::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_ts_template'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_ts_template o
+        WHERE o.tmplnamespace = 11::pg_catalog.oid AND o.oid >= 16384::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_statistic_ext o
+        WHERE o.stxnamespace = 11::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_cast'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_cast o
+        JOIN pg_catalog.pg_type s ON s.oid = o.castsource JOIN pg_catalog.pg_type t ON t.oid = o.casttarget
+        WHERE o.oid >= 16384::pg_catalog.oid AND s.typnamespace = 11::pg_catalog.oid AND t.typnamespace = 11::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_amop'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_amop o JOIN pg_catalog.pg_opfamily f ON f.oid = o.amopfamily
+        WHERE o.oid >= 16384::pg_catalog.oid AND f.opfnamespace = 11::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_amproc'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_amproc o JOIN pg_catalog.pg_opfamily f ON f.oid = o.amprocfamily
+        WHERE o.oid >= 16384::pg_catalog.oid AND f.opfnamespace = 11::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_constraint'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_constraint o
+        WHERE o.connamespace = 11::pg_catalog.oid AND o.oid >= 16384::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_trigger'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_trigger o JOIN pg_catalog.pg_class c ON c.oid = o.tgrelid
+        WHERE c.relnamespace = 11::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_rewrite'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_rewrite o JOIN pg_catalog.pg_class c ON c.oid = o.ev_class
+        WHERE c.relnamespace = 11::pg_catalog.oid AND o.oid >= 16384::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_attrdef'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_attrdef o JOIN pg_catalog.pg_class c ON c.oid = o.adrelid
+        WHERE c.relnamespace = 11::pg_catalog.oid
+      UNION ALL SELECT 'pg_catalog.pg_policy'::pg_catalog.regclass, o.oid, true FROM pg_catalog.pg_policy o JOIN pg_catalog.pg_class c ON c.oid = o.polrelid
+        WHERE c.relnamespace = 11::pg_catalog.oid)
+    SELECT pg_catalog.format('%s %s, %s', i.type, i.identity,
+                             CASE WHEN f.why THEN 'which initdb did not make' ELSE 'which is not the bootstrap superuser''s, or not in a built-in language' END) AS what
+    FROM found f, LATERAL pg_catalog.pg_identify_object(f.classid, f.objid, 0) i
+-- tripwire end
+$q$, true);
   IF NOT (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = current_user) THEN
-    RAISE EXCEPTION 'run ops/postgres/audit-guard.sql as the PostgreSQL superuser, not as %', current_user;
+    RAISE EXCEPTION 'run ops/postgres/audit-guard.sql as the PostgreSQL superuser, not as %', pg_catalog.quote_ident(current_user);
   END IF;
   -- PostgreSQL 17 and later: a login event trigger fires when a session connects, before anything here runs, as the
   -- connecting superuser (final check of #249, B1). Only a session that connected with event_triggers=off is safe, so
   -- refuse any other: the operator then connects as install-server.md says.
   IF pg_catalog.current_setting('server_version_num')::int >= 170000 AND pg_catalog.current_setting('event_triggers') <> 'off' THEN
     RAISE EXCEPTION 'connect with event triggers off: this session connected with them on, so a login event trigger in this database may already have run as the superuser'
-      USING HINT = 'Run it as docs/operations/install-server.md says, with PGOPTIONS=''-c event_triggers=off -c search_path=pg_catalog,pg_temp''. If an event trigger other than fleet_audit_guard_* exists, drop it in a session connected that way, then run this again.';
+      USING HINT = 'Run it as docs/operations/install-server.md says, with PGOPTIONS=''-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning''.';
   END IF;
-  -- No event trigger but the guard's own may exist: every DDL statement below would run it as the superuser, and one
-  -- made by a role that was a superuser at the time (a container created with POSTGRES_USER=cmdb, then demoted) keeps
-  -- running that role's function (second review of #249, S1). On PostgreSQL 17 and later event triggers are already off
-  -- for this session (checked above), and a login trigger is named as such; before 17, this refusal is the only control.
-  IF EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger e
-             WHERE NOT (e.evtname IN ('fleet_audit_guard_drop', 'fleet_audit_guard_ddl')
-                        AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
-                                    JOIN pg_catalog.pg_roles fo ON fo.oid = f.proowner JOIN pg_catalog.pg_roles no ON no.oid = n.nspowner
-                                    WHERE f.oid = e.evtfoid AND n.nspname = 'fleet_audit_guard' AND fo.rolsuper AND no.rolsuper))) THEN
-    RAISE EXCEPTION 'the audit guard was not installed: event triggers other than the guard''s exist (%), and this file''s DDL would run them as the superuser: inspect them, then drop them (DROP EVENT TRIGGER) or move what they do elsewhere',
-      (SELECT pg_catalog.string_agg(pg_catalog.format('%s, on %s%s, owned by %s, running %s', e.evtname, e.evtevent,
-                                                      CASE WHEN e.evtevent = 'login' THEN ' (it runs as whoever connects, every superuser included)' ELSE '' END,
-                                                      e.evtowner::pg_catalog.regrole, e.evtfoid::pg_catalog.regprocedure), '; ' ORDER BY e.evtname)
-       FROM pg_catalog.pg_event_trigger e
-       WHERE NOT (e.evtname IN ('fleet_audit_guard_drop', 'fleet_audit_guard_ddl')
-                  AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
-                              JOIN pg_catalog.pg_roles fo ON fo.oid = f.proowner JOIN pg_catalog.pg_roles no ON no.oid = n.nspowner
-                              WHERE f.oid = e.evtfoid AND n.nspname = 'fleet_audit_guard' AND fo.rolsuper AND no.rolsuper)));
+  EXECUTE 'SELECT pg_catalog.array_agg(u.what ORDER BY u.what) FROM (' || pg_catalog.current_setting('fleet_audit_guard.catalog_check') || ') u' INTO found;
+  IF found IS NOT NULL THEN
+    RAISE EXCEPTION 'the audit guard was not installed: PostgreSQL''s own schema in this database holds what the bootstrap superuser did not put there: %', pg_catalog.array_to_string(found, '; ')
+      USING HINT = 'Only a superuser can add to pg_catalog. If the app''s role was ever a superuser in this cluster (a container created with POSTGRES_USER=cmdb included), the cluster cannot be cleaned up: rebuild it as docs/operations/install-server.md, "If cmdb is or was a superuser", says. If you installed these yourself (an extension in pg_catalog), remove them first.';
   END IF;
   IF parent IS NULL OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = parent) <> 'p' THEN
     RAISE EXCEPTION 'audit_entries is not partitioned yet: deploy the app (its migrations convert it), then run this again';
   END IF;
+
+  -- The app's role: no guard holds against a superuser, or a role that can become one or replay rows unguarded.
+  SELECT r.oid, r.rolname INTO app_oid, app FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.oid = c.relowner WHERE c.oid = parent;
+  IF app_oid = 10::pg_catalog.oid THEN
+    RAISE EXCEPTION 'audit_entries is owned by % (OID 10), the bootstrap superuser: the container was created with POSTGRES_USER=%, and that role cannot be demoted', pg_catalog.quote_ident(app), pg_catalog.quote_ident(app)
+      USING HINT = 'Rebuild the cluster as docs/operations/install-server.md, "If cmdb is or was a superuser", says.';
+  END IF;
+  IF (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.oid = app_oid) THEN
+    RAISE EXCEPTION 'audit_entries is owned by a superuser (%): the app''s role must not be a superuser, or no guard can hold', pg_catalog.quote_ident(app)
+      USING HINT = 'A role that is or was a superuser may have left code that runs as the superuser. Rebuild the cluster as docs/operations/install-server.md, "If cmdb is or was a superuser", says.';
+  END IF;
+
+  -- No event trigger but the guard's own may exist: every DDL statement below would run it as the superuser (second
+  -- review of #249, S1). One owned by the app's role, or running its function, can only have been made while that role
+  -- was a superuser: the cluster is then rebuilt (final check, review 2, B1). Any other is listed with a ready-made,
+  -- quoted DROP statement (B2: a name is the role's own text). On PostgreSQL 17 and later event triggers are already off
+  -- for this session (checked above); before 17, this refusal is the only control.
+  SELECT pg_catalog.array_agg(pg_catalog.format('%I (on %s%s, owned by %s, running %s): %s', e.evtname, e.evtevent,
+                                                CASE WHEN e.evtevent = 'login' THEN ', so it runs as whoever connects, every superuser included' ELSE '' END,
+                                                e.evtowner::pg_catalog.regrole, e.evtfoid::pg_catalog.regprocedure,
+                                                CASE WHEN e.evtowner = app_oid OR f.proowner = app_oid
+                                                     THEN pg_catalog.format('%I was a superuser when this was made: rebuild the cluster (install-server.md, "If cmdb is or was a superuser")', app)
+                                                     ELSE pg_catalog.format('DROP EVENT TRIGGER %I;', e.evtname) END) ORDER BY e.evtname)
+    INTO found
+  FROM pg_catalog.pg_event_trigger e LEFT JOIN pg_catalog.pg_proc f ON f.oid = e.evtfoid
+  WHERE NOT (e.evtname IN ('fleet_audit_guard_drop', 'fleet_audit_guard_ddl')
+             AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc g JOIN pg_catalog.pg_namespace n ON n.oid = g.pronamespace
+                         JOIN pg_catalog.pg_roles fo ON fo.oid = g.proowner JOIN pg_catalog.pg_roles no ON no.oid = n.nspowner
+                         WHERE g.oid = e.evtfoid AND n.nspname = 'fleet_audit_guard' AND fo.rolsuper AND no.rolsuper));
+  IF found IS NOT NULL THEN
+    RAISE EXCEPTION 'the audit guard was not installed: event triggers other than the guard''s exist, and this file''s DDL would run them as the superuser: %', pg_catalog.array_to_string(found, '; ')
+      USING HINT = 'Run each DROP statement shown, exactly as printed, in a session connected as install-server.md says; then run this again.';
+  END IF;
+
   -- The parent and every partition, held to the end: no index, statistics object, trigger, constraint, or partition can
   -- be added between the checks below and the changes after them (review of #249). Taking a lock runs no code.
   LOCK TABLE public.audit_entries IN ACCESS EXCLUSIVE MODE;
 
-  -- The app's role: no guard holds against a superuser, or a role that can become one or replay rows unguarded.
-  SELECT r.oid, r.rolname INTO app_oid, app FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.oid = c.relowner WHERE c.oid = parent;
-  IF (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.oid = app_oid) THEN
-    RAISE EXCEPTION 'audit_entries is owned by a superuser (%): the app''s role must not be a superuser, or no guard can hold (see docs/operations/install-server.md)', app;
-  END IF;
   -- A member of a superuser role, directly or through other roles, can SET ROLE to it (review 3 of #239, S1).
-  FOR dangerous IN SELECT g.rolname || CASE WHEN g.rolsuper THEN ', a superuser' ELSE '' END FROM pg_catalog.pg_roles g
+  FOR dangerous IN SELECT pg_catalog.quote_ident(g.rolname) || CASE WHEN g.rolsuper THEN ', a superuser' ELSE '' END FROM pg_catalog.pg_roles g
                    WHERE g.oid <> app_oid AND (g.rolsuper OR g.rolname IN ('pg_execute_server_program', 'pg_write_server_files', 'pg_create_subscription'))
                      AND pg_catalog.pg_has_role(app_oid, g.oid, 'MEMBER') ORDER BY 1 LOOP
-    problems := problems || pg_catalog.format('%s is a member of %s', app, dangerous);
+    problems := problems || pg_catalog.format('%I is a member of %s', app, dangerous);
   END LOOP;
   IF pg_catalog.current_setting('server_version_num')::int < 160000 AND (SELECT r.rolcreaterole FROM pg_catalog.pg_roles r WHERE r.oid = app_oid) THEN
-    problems := problems || pg_catalog.format('%s has CREATEROLE, which before PostgreSQL 16 can grant itself any role', app);
+    problems := problems || pg_catalog.format('%I has CREATEROLE, which before PostgreSQL 16 can grant itself any role', app);
   END IF;
 
   -- Nothing of the guard may be the app role's: it could hold a trigger that would run as the superuser below.
@@ -197,7 +274,7 @@ $q$, true);
   -- The audit tables carry their own guards and nothing else: the append-only triggers, and the id trigger of an earlier
   -- run (its function in the superuser's fleet_audit_guard, which is rebuilt below).
   problems := problems || ARRAY(
-    SELECT pg_catalog.format('trigger %s on %s is not one of the audit log''s guards', t.tgname, t.tgrelid::pg_catalog.regclass)
+    SELECT pg_catalog.format('trigger %I on %s is not one of the audit log''s guards', t.tgname, t.tgrelid::pg_catalog.regclass)
     FROM pg_catalog.pg_partition_tree(parent) p JOIN pg_catalog.pg_trigger t ON t.tgrelid = p.relid
     WHERE NOT t.tgisinternal
       AND NOT (t.tgqual IS NULL AND t.tgenabled = 'O' AND t.tgnargs = 0
@@ -375,6 +452,9 @@ BEGIN
   -- The code check above, for the recovery file and /health: catalog reads only, as the caller.
   EXECUTE pg_catalog.format('CREATE FUNCTION fleet_audit_guard.untrusted_code(parent oid) RETURNS TABLE (classid oid, objid oid, objsubid integer, what text) '
                             'LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS %L', pg_catalog.current_setting('fleet_audit_guard.code_check'));
+
+  EXECUTE pg_catalog.format('CREATE FUNCTION fleet_audit_guard.catalog_signs() RETURNS TABLE (what text) '
+                            'LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS %L', pg_catalog.current_setting('fleet_audit_guard.catalog_check'));
 
   -- 4. What is protected, by OID: kind is schema, parent, partition, sequence, or function.
   CREATE TABLE fleet_audit_guard.protected (kind text NOT NULL, objid oid NOT NULL, PRIMARY KEY (kind, objid));

@@ -6,7 +6,7 @@
 --
 -- Connect as for audit-guard.sql: event triggers off (PostgreSQL 17 and later) and search_path pinned.
 --
---   docker exec -i -e PGOPTIONS='-c event_triggers=off -c search_path=pg_catalog,pg_temp' postgres \
+--   docker exec -i -e PGOPTIONS='-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres \
 --     sh -c 'psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard-recover.sql
 --
 -- (on PostgreSQL 16, leave out "-c event_triggers=off"), then run ops/postgres/audit-guard.sql again.
@@ -25,6 +25,8 @@ BEGIN;
 SET LOCAL ROLE NONE;
 SET LOCAL search_path = pg_catalog, pg_temp;
 SET LOCAL lock_timeout = '5s';
+-- Its WARNING lines are what it reports: the database's owner could have set client_min_messages higher.
+SET LOCAL client_min_messages = warning;
 
 DO $$
 DECLARE
@@ -38,11 +40,11 @@ DECLARE
   changed int := 0;
 BEGIN
   IF NOT (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = current_user) THEN
-    RAISE EXCEPTION 'run ops/postgres/audit-guard-recover.sql as the PostgreSQL superuser, not as %', current_user;
+    RAISE EXCEPTION 'run ops/postgres/audit-guard-recover.sql as the PostgreSQL superuser, not as %', pg_catalog.quote_ident(current_user);
   END IF;
   IF pg_catalog.current_setting('server_version_num')::int >= 170000 AND pg_catalog.current_setting('event_triggers') <> 'off' THEN
     RAISE EXCEPTION 'connect with event triggers off: this session connected with them on, so a login event trigger in this database may already have run as the superuser'
-      USING HINT = 'Run it as docs/operations/install-server.md says, with PGOPTIONS=''-c event_triggers=off -c search_path=pg_catalog,pg_temp''.';
+      USING HINT = 'Run it as docs/operations/install-server.md says, with PGOPTIONS=''-c event_triggers=off -c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning''.';
   END IF;
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger e
              WHERE NOT (e.evtname IN ('fleet_audit_guard_drop', 'fleet_audit_guard_ddl')
@@ -55,9 +57,15 @@ BEGIN
   IF (SELECT pg_catalog.count(*) FROM pg_catalog.pg_event_trigger e WHERE e.evtname IN ('fleet_audit_guard_drop', 'fleet_audit_guard_ddl')) <> 2
      OR NOT COALESCE((SELECT r.rolsuper FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner WHERE n.nspname = 'fleet_audit_guard'), false)
      OR NOT COALESCE((SELECT r.rolsuper FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_roles r ON r.oid = f.proowner
-                      WHERE f.oid = pg_catalog.to_regprocedure('fleet_audit_guard.untrusted_code(oid)')), false) THEN
+                      WHERE f.oid = pg_catalog.to_regprocedure('fleet_audit_guard.untrusted_code(oid)')), false)
+     OR NOT COALESCE((SELECT r.rolsuper FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_roles r ON r.oid = f.proowner
+                      WHERE f.oid = pg_catalog.to_regprocedure('fleet_audit_guard.catalog_signs()')), false) THEN
     RAISE EXCEPTION 'the audit guard is not installed (or is from before this file): the app''s role drops what audit-guard.sql names itself; this file is for after the guard is installed'
       USING HINT = 'If the guard is installed but older, run ops/postgres/audit-guard.sql: it lists what it finds and installs the check this file uses.';
+  END IF;
+  -- The same tripwire as the step's (final check of #249, review 2, B1), installed with the guard.
+  IF EXISTS (SELECT 1 FROM fleet_audit_guard.catalog_signs()) THEN
+    RAISE EXCEPTION 'PostgreSQL''s own schema in this database holds what the bootstrap superuser did not put there (ops/postgres/audit-guard.sql lists it): if the app''s role was ever a superuser, rebuild the cluster as install-server.md says';
   END IF;
   IF parent IS NULL OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = parent) <> 'p' THEN
     RAISE EXCEPTION 'audit_entries is not partitioned: nothing to do';

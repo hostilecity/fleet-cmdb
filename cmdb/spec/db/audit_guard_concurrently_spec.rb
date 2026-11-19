@@ -131,7 +131,7 @@ RSpec.describe "ops/postgres/audit-guard.sql against DETACH ... CONCURRENTLY" do
       plain.close
 
       pinned = connect(database, pinned: true)
-      expect { pinned.exec(file) }.to raise_error(PG::RaiseException, /fleet_spec_login, on login \(it runs as whoever connects, every superuser included\)/)
+      expect { pinned.exec(file) }.to raise_error(PG::RaiseException, /fleet_spec_login \(on login, so it runs as whoever connects, every superuser included, owned by [^,]+, running public.fleet_spec_login\(\)\): #{role} was a superuser when this was made: rebuild the cluster/)
       pinned.exec("ROLLBACK")
       pinned.exec("DROP EVENT TRIGGER fleet_spec_login") # the remedy, in a session connected the documented way
       expect(pinned.exec("SELECT count(*) FROM public.fleet_spec_logins").getvalue(0, 0)).to eq("1") # no further run

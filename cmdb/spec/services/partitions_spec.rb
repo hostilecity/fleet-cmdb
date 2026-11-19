@@ -397,7 +397,7 @@ RSpec.describe Partitions do
     it "adds an audit guard that does not hold, in production" do
       allow(Rails.env).to receive(:production?).and_return(true)
       described_class.maintain!
-      expect(described_class.attention.map(&:text)).to eq([ "The audit log's guard does not hold: the app's PostgreSQL role is a superuser, so no guard can hold against it." ])
+      expect(described_class.attention.map(&:text)).to match([ /\AThe audit log's guard does not hold: the app's PostgreSQL role is (the bootstrap superuser \(OID 10, a container created with POSTGRES_USER=cmdb\), which cannot be demoted|a superuser, so no guard can hold against it): the cluster must be rebuilt \(install-server.md, \"If cmdb is or was a superuser\"\)\.\z/ ])
     end
   end
   describe "while a default partition's rows are set aside (review 2 of #239)" do

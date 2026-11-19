@@ -113,7 +113,7 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
     it "is done by the superuser only, never while the app's role is one or as good as one, and safe to run again" do
       as_login { refused(bare_script, %r{run ops/postgres/audit-guard.sql as the PostgreSQL superuser, not as #{role}}) }
       c.execute("ALTER TABLE audit_entries OWNER TO CURRENT_USER")
-      refused(script, /audit_entries is owned by a superuser/)
+      refused(script, /audit_entries is owned by (a superuser|\S+ \(OID 10\), the bootstrap superuser)/)
       c.execute("ALTER TABLE audit_entries OWNER TO #{role}")
       c.execute("GRANT pg_write_server_files TO #{role}")
       refused(script, /#{role} is a member of pg_write_server_files/)
@@ -123,7 +123,7 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
 
       2.times { install }
       expect(problem).to be_nil
-      expect(Partitions.audit_guard_problem).to eq("the app's PostgreSQL role is a superuser, so no guard can hold against it") # this session
+      expect(Partitions.audit_guard_problem).to match(/\Athe app's PostgreSQL role is (the bootstrap superuser \(OID 10, a container created with POSTGRES_USER=cmdb\), which cannot be demoted|a superuser, so no guard can hold against it): the cluster must be rebuilt \(install-server.md, \"If cmdb is or was a superuser\"\)\z/) # this session
     end
 
     # The second review (#239): the app's role prepares objects before the step, which the step then trusts.
@@ -457,7 +457,8 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       c.execute("GRANT fleet_spec_super TO fleet_spec_middle")
       c.execute("GRANT fleet_spec_middle TO #{role}")
       refused(script, /#{role} is a member of fleet_spec_super, a superuser/)
-      expect(problem).to eq("the app's PostgreSQL role is a member of the superuser role fleet_spec_super, so no guard can hold against it")
+      expect(problem).to eq("the app's PostgreSQL role is a member of the superuser role fleet_spec_super, so no guard can hold against it: " \
+                            "the cluster must be rebuilt (install-server.md, \"If cmdb is or was a superuser\")")
       c.execute("REVOKE fleet_spec_middle FROM #{role}")
       c.execute("GRANT fleet_spec_super TO #{role}")
       refused(script, /#{role} is a member of fleet_spec_super, a superuser/)
@@ -577,10 +578,10 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
     it "S1: refuses to run while an event trigger other than its own exists, and turns event triggers off where it can" do
       as_owner { attempt("CREATE FUNCTION public.fleet_spec_et() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN END $$") }
       c.execute("CREATE EVENT TRIGGER fleet_spec_et ON ddl_command_end EXECUTE FUNCTION public.fleet_spec_et()")
-      refused(script, /event triggers other than the guard's exist \(fleet_spec_et, on ddl_command_end, owned by [^,]+, running public.fleet_spec_et\(\)\)/)
+      refused(script, /event triggers other than the guard's exist, .*: fleet_spec_et \(on ddl_command_end, owned by [^,]+, running public.fleet_spec_et\(\)\): #{role} was a superuser when this was made: rebuild the cluster/)
       c.execute("DROP EVENT TRIGGER fleet_spec_et")
       c.execute("CREATE EVENT TRIGGER fleet_audit_guard_ddl ON ddl_command_end EXECUTE FUNCTION public.fleet_spec_et()") # the guard's name, not its function
-      refused(script, /event triggers other than the guard's exist \(fleet_audit_guard_ddl/)
+      refused(script, /: fleet_audit_guard_ddl \(on ddl_command_end, owned by .*: #{role} was a superuser when this was made/)
       c.execute("DROP EVENT TRIGGER fleet_audit_guard_ddl")
 
       c.execute(script)
@@ -614,7 +615,7 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       # no longer change.
       unguarded { as_owner { attempt(month) } }
       c.execute("INSERT INTO fleet_audit_guard.protected (kind, objid) VALUES ('partition', 'fleet_spec_month'::regclass)")
-      expect(problem).to match(%r{\Adefault value for column action of table public.fleet_spec_month uses function public.fleet_spec_f\(integer\), .*audit-guard-recover.sql})
+      expect(problem).to match(%r{\Adefault value for public.fleet_spec_month.action uses function public.fleet_spec_f\(integer\), .*audit-guard-recover.sql})
       refused(script, %r{uses function public.fleet_spec_f\(integer\).*audit-guard-recover.sql}m)
       as_owner { refused("ALTER TABLE fleet_spec_month ALTER COLUMN action DROP DEFAULT", /default value for .*fleet_spec_month.action may not be dropped/) }
       as_login { refused(bare_recover, /as the PostgreSQL superuser, not as #{role}/) }
@@ -711,12 +712,12 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       c.execute(recover)
       restore_settings
       expect(superuser?).to be(false)
-      expect(c.select_values("SELECT what FROM fleet_audit_guard.untrusted_code('audit_entries'::regclass)")).to eq([ "index public.fleet_spec_idx uses function public.fleet_spec_f(text)" ])
+      expect(c.select_values("SELECT what FROM fleet_audit_guard.untrusted_code('audit_entries'::regclass)")).to eq([ "index public.fleet_spec_idx uses function public.fleet_spec_f(pg_catalog.text)" ])
       expect(defaults).to eq(before) # occurred_at is CURRENT_TIMESTAMP again; action has no default, as in the app's schema
       expect(c.select_value("SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum " \
                             "WHERE d.adrelid = '#{partition}'::regclass AND a.attname = 'target_type'")).to eq("'built-in'::character varying")
       expect(c.select_value("SELECT count(*) FROM pg_constraint WHERE conname IN ('audit_entries_actor_type_valid', 'audit_entries_actor_id_matches_type') AND conrelid = '#{partition}'::regclass")).to eq(2)
-      expect(problem).to start_with("index public.fleet_spec_idx uses function public.fleet_spec_f(text), which is not a superuser's built-in: it would run as the superuser in the audit guard's step (the app's role drops it (DROP INDEX))")
+      expect(problem).to start_with("index public.fleet_spec_idx uses function public.fleet_spec_f(pg_catalog.text), which is not a superuser's built-in: it would run as the superuser in the audit guard's step (the app's role drops it (DROP INDEX))")
       as_owner { attempt("DROP INDEX fleet_spec_idx") }
       install
       expect(problem).to be_nil
@@ -750,6 +751,100 @@ RSpec.describe "ops/postgres/audit-guard.sql" do
       expect(problem).to be_nil
       c.execute("DROP FUNCTION fleet_audit_guard.untrusted_code(oid)")
       expect(problem).to eq("the audit guard is from an older version of ops/postgres/audit-guard.sql (the superuser runs it again)")
+      c.execute("DROP FUNCTION fleet_audit_guard.catalog_signs()") # the tripwire's function, checked first
+      expect(problem).to eq("the audit guard is from an older version of ops/postgres/audit-guard.sql (the superuser runs it again)")
+    end
+  end
+  # The second review of the final check of #249.
+  describe "the final check's second review" do
+    let(:precheck_file) { Rails.root.join("../ops/postgres/audit-guard-precheck.sql").read }
+    # The precheck's query, as psql runs it (its psql-only lines left out), for the spec's role instead of cmdb.
+    def precheck
+      c.execute("SELECT set_config('fleet_audit_guard.app_role', #{c.quote(role)}, true)")
+      sql = precheck_file.lines.reject { |line| line.start_with?("\\", "BEGIN;", "COMMIT;", "SELECT pg_catalog.set_config") }.join
+      c.select_values(sql.sub(/;\s*\z/, ""))
+    end
+
+    def tripwire(text) = text[/^-- tripwire begin\n(.*?)^-- tripwire end$/m, 1]
+
+    def plant_code
+      as_owner do
+        attempt(<<~SQL)
+          CREATE FUNCTION public.fleet_spec_escalate() RETURNS void LANGUAGE plpgsql VOLATILE AS $$
+          BEGIN
+            IF (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) THEN EXECUTE 'ALTER ROLE #{role} SUPERUSER'; END IF;
+          END $$
+        SQL
+        attempt("CREATE FUNCTION public.fleet_spec_eq(oid, regclass) RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN PERFORM public.fleet_spec_escalate(); RETURN $1 = $2::oid; END $$")
+        attempt("CREATE FUNCTION public.fleet_spec_f(text) RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN PERFORM public.fleet_spec_escalate(); RETURN $1; END $$")
+      end
+    end
+
+    it "B1: refuses, before any other query, a pg_catalog the bootstrap superuser did not make, and /health and the precheck report it" do
+      expect(tripwire(precheck_file)).to eq(tripwire(file)) # the precheck and the step test the same things
+      expect(precheck).to eq([ "no sign that #{role} is or was a superuser (this is not proof: see install-server.md)" ])
+      plant_code
+      # As the role could have while it was a superuser: an operator the step's own check would pick for oid = regclass.
+      c.execute("CREATE OPERATOR pg_catalog.= (LEFTARG = oid, RIGHTARG = regclass, FUNCTION = public.fleet_spec_eq)")
+      refused(script, /PostgreSQL's own schema in this database holds what the bootstrap superuser did not put there: operator pg_catalog\.=\(pg_catalog\.oid,pg_catalog\.regclass\), which initdb did not make/)
+      expect(superuser?).to be(false) # the operator never ran: the tripwire compares oids with oids only
+      expect(precheck).to eq([ "in the database #{c.current_database}, pg_catalog holds operator pg_catalog.=(pg_catalog.oid,pg_catalog.regclass), which initdb did not make" ])
+      c.execute("DROP OPERATOR pg_catalog.= (oid, regclass)")
+
+      install
+      c.execute("CREATE FUNCTION pg_catalog.fleet_spec_planted() RETURNS int LANGUAGE sql AS 'SELECT 1'")
+      c.execute("ALTER FUNCTION pg_catalog.fleet_spec_planted() OWNER TO #{role}")
+      expect(problem).to eq("PostgreSQL's own schema holds function pg_catalog.fleet_spec_planted(), which initdb did not make: only a superuser can put it there; " \
+                            "if the app's role was ever one, the cluster must be rebuilt (install-server.md, \"If cmdb is or was a superuser\")")
+      expect(superuser?).to be(false)
+    end
+
+    it "B1: the precheck reports a role that is, or belongs to, a superuser, or owns a database that is not its own" do
+      c.execute("CREATE ROLE fleet_spec_super SUPERUSER NOLOGIN")
+      c.execute("GRANT fleet_spec_super TO #{role}")
+      expect(precheck).to eq([ "#{role} is a member of fleet_spec_super, a superuser" ])
+      c.execute("REVOKE fleet_spec_super FROM #{role}")
+      c.execute("ALTER ROLE #{role} SUPERUSER")
+      expect(precheck).to eq([ "#{role} is a superuser" ])
+      c.execute("ALTER ROLE #{role} NOSUPERUSER")
+      c.execute("ALTER DATABASE template1 OWNER TO #{role}") # as POSTGRES_USER=cmdb leaves the template databases
+      expect(precheck).to eq([ "#{role} owns the database template1, which only its own databases (cmdb_*) should be: it may have been a superuser" ])
+    end
+
+    it "B2: prints every name quoted, and a DROP statement that, run as printed, drops exactly that event trigger" do
+      evil = "IF EXISTS fleet_spec_gone; ALTER ROLE #{role} SUPERUSER"
+      c.execute("CREATE FUNCTION public.fleet_spec_et() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN END $$") # a superuser's, so dropping is the remedy
+      c.execute("CREATE EVENT TRIGGER #{c.quote_column_name(evil)} ON sql_drop EXECUTE FUNCTION public.fleet_spec_et()")
+      stored = c.select_value("SELECT quote_ident(evtname) FROM pg_event_trigger") # PostgreSQL keeps the first 63 bytes
+      printed = nil
+      expect { attempt(script) }.to raise_error(ActiveRecord::StatementInvalid) { |error| printed = error.message[/DROP EVENT TRIGGER "(?:[^"]|"")+";/] }
+      expect(printed).to eq("DROP EVENT TRIGGER #{stored};")
+      c.execute(printed)
+      expect(superuser?).to be(false)
+      expect(c.select_value("SELECT count(*) FROM pg_event_trigger")).to eq(0)
+
+      install
+      c.execute("CREATE EVENT TRIGGER #{c.quote_column_name(evil)} ON sql_drop EXECUTE FUNCTION public.fleet_spec_et()")
+      expect(problem).to end_with("the superuser runs DROP EVENT TRIGGER #{stored}; connected as install-server.md says")
+      c.execute("DROP EVENT TRIGGER #{stored}")
+      as_owner { attempt("CREATE FUNCTION public.fleet_spec_role_et() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN END $$") }
+      c.execute("CREATE EVENT TRIGGER fleet_spec_role_et ON sql_drop EXECUTE FUNCTION public.fleet_spec_role_et()") # the role's function: it was a superuser
+      expect(problem).to end_with("it is the app's role's, so that role was a superuser: the cluster must be rebuilt (install-server.md, \"If cmdb is or was a superuser\")")
+    end
+
+    it "S1: lists a parent's CHECK once, and the recovery drops it with its copies" do
+      install
+      plant_code
+      unguarded { c.execute("ALTER TABLE audit_entries ADD CONSTRAINT fleet_spec_parent_check CHECK (public.fleet_spec_f(action) IS NOT NULL) NOT VALID") }
+      expect(c.select_values("SELECT what FROM fleet_audit_guard.untrusted_code('audit_entries'::regclass)"))
+        .to eq([ "table constraint fleet_spec_parent_check on public.audit_entries uses function public.fleet_spec_f(pg_catalog.text)" ])
+      c.execute("SET LOCAL client_min_messages = error") # as the database's owner could set it
+      c.execute(recover)
+      expect(c.select_value("SHOW client_min_messages")).to eq("warning") # so its report is shown (S2)
+      restore_settings
+      expect(c.select_value("SELECT count(*) FROM pg_constraint WHERE conname = 'fleet_spec_parent_check'")).to eq(0)
+      expect(superuser?).to be(false)
+      expect(problem).to be_nil
     end
   end
 end

@@ -39,7 +39,7 @@ RSpec.describe "partitions rake tasks" do
   it "lists each table's partitions, the problems, and the audit guard" do
     output = run("partitions:status")
     expect(output).to include("audit_entries: ", "inventory_report_receipts: ", ", default", "No problems.",
-                              "Audit guard (ops/postgres/audit-guard.sql): does NOT hold: the app's PostgreSQL role is a superuser")
+                              "Audit guard (ops/postgres/audit-guard.sql): does NOT hold: the app's PostgreSQL role is ") # a superuser, the bootstrap one on most clusters
     first = Partitions.list("inventory_snapshots").reject(&:default?).first
     ApplicationRecord.connection.execute("CREATE TABLE inventory_snapshots_legacy PARTITION OF inventory_snapshots FOR VALUES FROM (MINVALUE) TO ('#{first.from.to_fs(:db)}')")
     InventoryReportReceipt.insert!({ host_id: create(:host).id, report_id: SecureRandom.uuid, received_at: 1.year.from_now })
