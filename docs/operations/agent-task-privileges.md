@@ -33,15 +33,15 @@ No option of `fleet-agent.service` had to change for tasks. (#182 later added me
 
 ### Memory and task limits (#182)
 
-The unit has had limits since #182: `MemoryHigh=192M`, `MemoryMax=256M`, `MemorySwapMax=0`, `OOMPolicy=stop`, `TasksMax=64`. They count everything in the agent's cgroup, so they apply to tasks too, but only to the parts that run there:
+The unit has had limits since #182: `MemoryMax=128M`, `MemorySwapMax=0`, `OOMPolicy=stop`, `TasksMax=64`. They count everything in the agent's cgroup, so they apply to tasks too, but only to the parts that run there:
 
 | Task type | Counted against the agent's limits | Not counted |
 |---|---|---|
 | `refresh_reports` | All of it: the collectors and their children, such as `dpkg-query` (about 81 MiB on a 20,000-package host, the heaviest path measured) | — |
 | `restart_service` | The `systemctl` child, its output readers and watchdog: a few MiB and four tasks | The restart itself, which systemd does in the restarted unit |
-| `apply_package_updates` | The lock probe, the two dpkg listings, `systemd-run`, and the journal reads | apt-get, dpkg, maintainer scripts, and needrestart, in `fleet-agent-task-<id>-<n>.service` units of their own, with no limit |
+| `apply_package_updates` | The lock probe, the two dpkg listings (each waits for any other listing in the agent, such as the package report's, so only one runs at a time), `systemd-run`, and the journal reads | apt-get, dpkg, maintainer scripts, and needrestart, in `fleet-agent-task-<id>-<n>.service` units of their own, with no limit |
 
-If the agent reaches `MemoryMax` while a task runs, the kernel kills it and systemd stops the unit (`OOMPolicy=stop`), including a `systemctl` child. A `restart_service` request already sent to systemd is carried out by systemd. After the restart (`Restart=on-failure`, 10 seconds) the ledger has the task `started`, and it is reported `interrupted`, as after any crash; an upgrade in its task unit runs on and is collected (L8). At `TasksMax`, a step that cannot start a process or thread fails with the error, and the task is reported failed. At `MemoryHigh` the task only runs slower. The task units' properties are unchanged: an upgrade can need far more memory than the agent, and it is the workload, not the agent. Details and measurements: [`agent/contrib/README.md`](../../agent/contrib/README.md#memory-and-task-limits-182).
+If the agent reaches `MemoryMax` while a task runs, the kernel kills it and systemd stops the unit (`OOMPolicy=stop`), including a `systemctl` child. A `restart_service` request already sent to systemd is carried out by systemd. After the restart (`Restart=on-failure`, 10 seconds) the ledger has the task `started`, and it is reported `interrupted`, as after any crash; an upgrade in its task unit runs on and is collected (L8). At `TasksMax`, a step that cannot start a process or thread fails with the error, and the task is reported failed; a network request that cannot start its DNS thread instead fails the agent's loop, and the agent is restarted (the task is then `interrupted`). The task units' properties are unchanged: an upgrade can need far more memory than the agent, and it is the workload, not the agent. Details and measurements: [`agent/contrib/README.md`](../../agent/contrib/README.md#memory-and-task-limits-182).
 
 ## The task unit's properties
 

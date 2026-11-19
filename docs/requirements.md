@@ -199,7 +199,7 @@ Retiring a host keeps its history and audit trail but removes it from the active
 - The agent runs as a systemd service under the privilege model chosen in DEC-03. The unit file applies systemd sandboxing appropriate to that model.
 - The agent logs to the systemd journal with structured, timestamped lines, and logs each report's outcome without logging the credential.
 - The agent must run for days without leaking memory, file handles, or disk.
-- The unit also bounds the agent's memory and tasks (#182: `MemoryHigh=192M`, `MemoryMax=256M`, no swap, `TasksMax=64`, far above what it uses), so a leak or a runaway loop in a release is stopped in the agent's own cgroup and handled as a crash (restart, rollback, recovery mode), not at the cost of the VM's workload. (proposed figures)
+- The unit also bounds the agent's memory and tasks (#182: `MemoryMax=128M`, no swap, `TasksMax=64`; the heaviest path, a refresh on a host with 20,000 packages, peaks at about 81 MiB, and the agent runs one package listing at a time), so a leak or a runaway loop in a release is stopped in the agent's own cgroup and handled as a crash (restart, rollback, recovery mode), not at the cost of the VM's workload. (proposed figures)
 
 ### Phase 1 acceptance criteria
 
