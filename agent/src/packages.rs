@@ -153,8 +153,26 @@ pub enum Collected {
 /// Held while a listing runs and is parsed, so the agent never runs two at once (#182). The package
 /// report and `apply_package_updates` both list packages, and each `dpkg-query` needs about 3.6 KiB per
 /// installed package: two at once on a large host would take twice the memory under the unit's
-/// `MemoryMax=`. The second waits, at most a listing's [`TIMEOUT`].
+/// `MemoryMax=`. The second waits, at most a listing's [`TIMEOUT`]. The wait comes out of the waiter's own
+/// [`TIMEOUT`] budget, which keeps a task's deadline; if its listing then fails, the reason says how long
+/// it waited for the other one.
 static ONE_LISTING_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A wait for [`ONE_LISTING_AT_A_TIME`] at least this long is named in a failed listing's reason.
+const WAIT_WORTH_NAMING: Duration = Duration::from_secs(1);
+
+/// A failed listing's reason, naming the wait for [`ONE_LISTING_AT_A_TIME`] when it was long enough to
+/// matter: it came out of the listing's own time budget.
+fn after_wait(reason: String, waited: Duration) -> String {
+    if waited >= WAIT_WORTH_NAMING {
+        format!(
+            "{reason} (after waiting {} s for another package listing to finish)",
+            waited.as_secs()
+        )
+    } else {
+        reason
+    }
+}
 
 /// Detects the manager and lists the packages. Nothing starts once `stop` is requested.
 pub fn collect(host: &dyn Host, stop: Option<&Shutdown>) -> Collected {
@@ -180,13 +198,13 @@ fn collect_with(ctx: &Ctx, stop: Option<&Shutdown>) -> Collected {
         }
         Err(e) => return Collected::Unreadable(crate::facts::io_reason(DPKG_STATUS, &e)),
     }
-    // Until the output is parsed and dropped (#182). A poisoned lock guards nothing: take it anyway.
+    // Until the output is parsed and dropped (#182). A poisoned lock guards nothing: take it anyway. A stop
+    // requested meanwhile is seen by `ctx.run`, which then starts nothing.
+    let waiting = std::time::Instant::now();
     let _one_at_a_time = ONE_LISTING_AT_A_TIME
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if stopping() {
-        return Collected::Stopping;
-    }
+    let waited = waiting.elapsed();
     let mut command = Command::new(DPKG_QUERY, LIST);
     command.timeout = TIMEOUT;
     command.max_output = MAX_OUTPUT;
@@ -194,7 +212,9 @@ fn collect_with(ctx: &Ctx, stop: Option<&Shutdown>) -> Collected {
         Ok(output) => output,
         Err(RunError::Stopping) => return Collected::Stopping,
         Err(_) if stopping() => return Collected::Stopping,
-        Err(e) => return Collected::Unreadable(e.reason("dpkg-query --show")),
+        Err(e) => {
+            return Collected::Unreadable(after_wait(e.reason("dpkg-query --show"), waited));
+        }
     };
     let listing = parse(&output);
     drop(output);

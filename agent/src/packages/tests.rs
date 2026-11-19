@@ -846,3 +846,19 @@ fn a_listing_waiting_its_turn_is_not_run_once_the_agent_stops() {
     });
     assert_eq!(host.most.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+#[test]
+fn a_failed_listing_says_how_long_it_waited_for_another() {
+    // Review of #248 (N2): the wait for the other listing comes out of this one's time budget, so a
+    // failure names it. (Tested on the reason itself: holding the shared lock for seconds would slow the
+    // other tests' listings.)
+    let reason = || "dpkg-query --show did not finish within 20 seconds".to_owned();
+    assert_eq!(
+        after_wait(reason(), std::time::Duration::from_millis(18_400)),
+        "dpkg-query --show did not finish within 20 seconds (after waiting 18 s for another package listing to finish)"
+    );
+    assert_eq!(
+        after_wait(reason(), std::time::Duration::from_millis(900)),
+        reason()
+    );
+}

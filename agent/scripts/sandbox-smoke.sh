@@ -26,7 +26,8 @@
 #    rest on.
 # 8. A fourth run, "oomchild", is "large" with MemoryMax=48M: dpkg-query (about 70 MiB) is the OOM victim,
 #    not the agent. OOMPolicy=stop must stop the whole unit (result oom-kill); with `continue`, the agent
-#    would carry on under the same pressure.
+#    would carry on under the same pressure. Every run here starts under DefaultOOMPolicy=continue (a
+#    system.conf.d drop-in, undone at the end), so it is the unit's own line that stops it, not the default.
 set -eu
 
 binary=${1:?usage: sudo scripts/sandbox-smoke.sh BINARY [UNIT]}
@@ -55,8 +56,24 @@ cleanup() {
     # shellcheck disable=SC2086 # one word per process id
     [ -z "$pids" ] || kill $pids 2>/dev/null || true
     rm -rf "$tmp" /usr/local/lib/fleet-agent-smoke
+    if [ -e "$oom_default" ]; then
+        rm -f "$oom_default"
+        systemctl daemon-reexec || true
+    fi
 }
+oom_default=/etc/systemd/system.conf.d/90-fleet-agent-sandbox-smoke.conf
+if [ -e "$oom_default" ]; then
+    echo "sandbox-smoke: $oom_default exists; another run is in progress or was interrupted" >&2
+    exit 2
+fi
 trap cleanup EXIT
+
+# The opposite of the unit's OOMPolicy= as systemd's default, so the oomchild run (8) tests the unit's line.
+mkdir -p "$(dirname "$oom_default")"
+printf '[Manager]\nDefaultOOMPolicy=continue\n' > "$oom_default"
+systemctl daemon-reexec
+[ "$(systemctl show -p DefaultOOMPolicy --value)" = continue ] \
+    || { echo "sandbox-smoke: could not set DefaultOOMPolicy=continue for the test" >&2; exit 1; }
 
 # The binary outside the home directories, as installed (ProtectHome= makes /home read-only, not hidden).
 install -D -m 0755 "$binary" /usr/local/lib/fleet-agent-smoke/fleet-agent
@@ -274,4 +291,4 @@ victim=$(journalctl -k --since "@$started" --no-pager -o cat \
     | grep -F "oom_memcg=/system.slice/fleet-agent-smoke-oomchild.service" | sed -n 's/.*,task=\([^,]*\),.*/\1/p' | tail -n 1)
 [ "$victim" = dpkg-query ] || limits_failed "the oomchild run's OOM victim was '${victim:-none}', not dpkg-query" oomchild
 [ "$result" = oom-kill ] || limits_failed "the oomchild service ended with result $result, not oom-kill" oomchild
-echo "sandbox-smoke: OOMPolicy=$oom_policy: the kernel killed the agent's dpkg-query, and systemd stopped the whole unit (result $result)"
+echo "sandbox-smoke: OOMPolicy=$oom_policy, under DefaultOOMPolicy=$(systemctl show -p DefaultOOMPolicy --value): the kernel killed the agent's dpkg-query, and systemd stopped the whole unit (result $result)"
