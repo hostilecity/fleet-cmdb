@@ -36,9 +36,11 @@ Nothing else is copied into GitHub, so there is nothing to keep in sync: change 
 |---|---|
 | Phase 0 — Scaffolding | 3: agent crate and CI, server CI, API contract workspace |
 | Phase 1 — CMDB & inventory | 21: server (hosts, access, API/enrollment, onboarding, heartbeat, inventory, operability, releases, rollouts), dashboard (3: fleet, actions, audit log), agent (core, install, collectors, reporting, packaging, updater), deployment, verification, acceptance |
-| Phase 2 — Config, CIS & vulnerabilities | 14 |
+| Phase 2 — Config, CIS & vulnerabilities | 13 |
 | Phase 3 — Remote tasks | 12 |
-| Vulnerability triage (proposed) | 9: an epic and 8 slices (VT-EPIC), not approved; built after Phase 2 acceptance and not gating Phase 3. No gate |
+| Vulnerability triage (proposed) | 9: an epic and 8 slices (VT-EPIC), not approved; gated by `P2-ACCEPT`, not gating Phase 3. The milestone is created on GitHub only when the owner approves the proposal |
+
+The Phase 2 and Phase 3 counts were corrected to what `import.rb check` prints (13 and 12) in the vulnerability triage proposal (#265).
 
 Run `ruby docs/backlog/import.rb plan` for the full list in creation order with blockers.
 

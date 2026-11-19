@@ -20,51 +20,58 @@
 <div class="table-wrap"><table>
 <thead><tr><th scope="col">Screen</th><th scope="col">What it shows</th><th scope="col">Built in</th></tr></thead>
 <tbody>
-<tr><td><a href="host-vulns.html">Host: Vulnerabilities</a></td><td>3,844 open findings in four buckets with reasons; work remaining (5 upgrades and a reboot); 30-day progress; suggested controls for Needs attention; #253's package groups inside each bucket.</td><td>VT-HOST-TAB <span class="muted">(VT-D01 review)</span></td></tr>
+<tr><td><a href="host-vulns.html">Host: Vulnerabilities</a></td><td>3,765 open findings in four buckets with reasons; work remaining (4 upgrades and a kernel reboot); 30-day progress in work items; suggested controls for Needs attention; an accepted risk; #253's package groups inside each bucket.</td><td>VT-HOST-TAB <span class="muted">(VT-D01 review)</span></td></tr>
 <tr><td><a href="fleet.html">Fleet (with Exposure and Work)</a></td><td>The fleet list with sortable Exposure and Work columns and a bucket line in the compliance panel; not evaluated and stale hosts.</td><td>VT-SCORES <span class="muted">(VT-D01 review)</span></td></tr>
 <tr><td><a href="risk-overview.html">Risk (new page)</a></td><td>Fleet bucket totals, burn-down charts, most exposed hosts, most work, quick wins, streaks, decisions due.</td><td>VT-RISK-PAGE <span class="muted">(VT-D01 review)</span></td></tr>
 <tr><td><a href="override.html">Record a decision</a></td><td>Control in place or accept the risk: form, errors, saved with audit entry, suspended by new evidence.</td><td>VT-OVERRIDES <span class="muted">(VT-D01 review)</span></td></tr>
-<tr><td><a href="tiles.html">Summary tiles and score</a></td><td>Host tiles today and proposed, tile states, the points table, a score breakdown, the Compliance page's bucket line.</td><td>VT-SCORES <span class="muted">(VT-D01 review)</span></td></tr>
-<tr><td><a href="states.html">Missing and stale data</a></td><td>Stale KEV or EPSS, an agent without in-use data, not evaluated, old package report, and what a badge may say.</td><td>VT-BUCKETS, VT-SCORES <span class="muted">(VT-D01 review)</span></td></tr>
+<tr><td><a href="tiles.html">Summary tiles and score</a></td><td>Host tiles today and proposed, tile states, the tier and points table, a worked breakdown (394 points), the Compliance page's bucket line.</td><td>VT-SCORES <span class="muted">(VT-D01 review)</span></td></tr>
+<tr><td><a href="states.html">Missing and stale data</a></td><td>Stale KEV or EPSS (still used), a source never imported, an agent without listening data, not evaluated, old package report, and what a badge may say, including during a run's grace.</td><td>VT-BUCKETS, VT-SCORES <span class="muted">(VT-D01 review)</span></td></tr>
 <tr><td><a href="data-sources.html">Data sources: KEV and EPSS</a></td><td>Two new panels with freshness, entries, imports, and offline tasks.</td><td>VT-SIGNALS <span class="muted">(VT-D01 review)</span></td></tr>
 </tbody></table></div>
 
 <h2 id="model">The triage model</h2>
-<p>Every open finding is in exactly one bucket, decided by the first rule that matches, in this order. The bucket never changes a finding's state, its severity, or the open count. Missing or stale data makes a rule not fire, so a finding can only stay in a more cautious bucket.</p>
+<p>Every open finding is in exactly one bucket, decided by the first rule that matches, in this order. The bucket never changes a finding's state, its severity, or the open count. Stale data keeps being used and is shown as stale; missing data never makes a finding look safer or lowers a score.</p>
 <div class="table-wrap model"><table><caption class="visually-hidden">Triage rules in order</caption><thead><tr><th scope="col">Rule</th><th scope="col">Bucket</th><th scope="col">When</th></tr></thead><tbody>
-<tr><td>I1</td><td><span class="bk ign">Ignorable</span></td><td>A kernel image that is installed but not the running kernel.</td></tr>
+<tr><td>I1</td><td><span class="bk ign">Ignorable</span></td><td>A kernel image that is installed but not the running kernel (older, or newer and not booted yet).</td></tr>
 <tr><td>I2</td><td><span class="bk ign">Ignorable</span></td><td>A package with no runtime code of its source (<span class="mono">linux-libc-dev</span>, kernel headers).</td></tr>
+<tr><td>K1</td><td><span class="bk fix">Fix available</span></td><td>The running kernel has a fix, and a kernel at or above it is installed: reboot.</td></tr>
+<tr><td>K2</td><td><span class="bk fix">Fix available</span></td><td>The running kernel has a fix, and no such kernel is installed: install the new kernel package (manual; the update task installs no new packages), then reboot.</td></tr>
 <tr><td>F1</td><td><span class="bk fix">Fix available</span></td><td>The advisory names a fixed version for this release.</td></tr>
+<tr><td>F2</td><td><span class="bk fix">Fix available</span></td><td>Debian's tracker has a fixed version for this release that the advisory data does not have yet.</td></tr>
 <tr><td>I3, I4</td><td><span class="bk ign">Ignorable</span></td><td>Debian says this release is not affected, or marks it fixed at a version the host already has.</td></tr>
-<tr><td>O1, O2</td><td><span class="bk low">Low risk</span></td><td>An operator recorded a control or accepted the risk, not expired and not suspended.</td></tr>
-<tr><td>N1</td><td><span class="bk attn">Needs attention</span></td><td>On CISA's Known Exploited Vulnerabilities list.</td></tr>
-<tr><td>N2</td><td><span class="bk attn">Needs attention</span></td><td>FIRST EPSS at 10% or more (stays until it falls below 7%).</td></tr>
-<tr><td>I5</td><td><span class="bk ign">Ignorable</span></td><td>Debian rates it unimportant, and KEV and EPSS data are current.</td></tr>
-<tr><td>N3</td><td><span class="bk attn">Needs attention</span></td><td>Debian: end-of-life, no security support for the package in this release.</td></tr>
-<tr><td>N4</td><td><span class="bk attn">Needs attention</span></td><td>Medium or worse, network, no privileges, no user action, and not known idle.</td></tr>
+<tr><td>O1</td><td><span class="bk low">Low risk</span></td><td>An operator recorded a control, not expired and not suspended. (An accepted risk changes no bucket.)</td></tr>
+<tr><td>N1</td><td><span class="bk attn">Needs attention</span></td><td>In the stored CISA Known Exploited Vulnerabilities list.</td></tr>
+<tr><td>N2</td><td><span class="bk attn">Needs attention</span></td><td>Stored FIRST EPSS band high: 10% or more, staying until it falls below 7%.</td></tr>
+<tr><td>I5</td><td><span class="bk ign">Ignorable</span></td><td>Debian rates it unimportant, once KEV data has been imported.</td></tr>
+<tr><td>N3</td><td><span class="bk attn">Needs attention</span></td><td>Debian: end-of-life, or removed from the release but still installed: no security support.</td></tr>
+<tr><td>N4</td><td><span class="bk attn">Needs attention</span></td><td>Medium or worse, network, no login, no user action, and not known idle.</td></tr>
 <tr><td>L1</td><td><span class="bk low">Low risk</span></td><td>The agent reports the package idle.</td></tr>
-<tr><td>L2, L3</td><td><span class="bk low">Low risk</span></td><td>Local or physical access needed; or privileges or a user's action needed.</td></tr>
+<tr><td>L2, L3</td><td><span class="bk low">Low risk</span></td><td>Local or physical access needed; or a login or a user's action needed.</td></tr>
 <tr><td>L4</td><td><span class="bk low">Low risk</span></td><td>Debian: no-DSA, postponed, or ignored (minor; no update planned).</td></tr>
 <tr><td>L5</td><td><span class="bk low">Low risk</span></td><td>Anything else.</td></tr>
 </tbody></table></div>
 
 <h2 id="questions">Review questions for the owner</h2>
-<p>The full list with recommended defaults is in <a href="../../backlog/specs/vt-epic.md">the epic spec</a>, "Open questions". The ones a screen decides:</p>
+<p>The full list of 26 questions with recommended defaults is in <a href="../../backlog/specs/vt-epic.md">the epic spec</a>, "Open questions"; the numbers here are the same. The ones a screen decides:</p>
 <ol class="index-list">
-<li id="v1"><strong>V1 (epic Q1).</strong> Bucket names: "Fix available", "Needs attention", "Low risk", "Ignorable". Recommended. Alternative: "Safe to ignore" for the last. <span class="muted">Every screen.</span></li>
-<li id="v2"><strong>V2 (Q2).</strong> Debian end-of-life is Needs attention, not ignorable. Recommended. <span class="muted"><a href="host-vulns.html#attn">host-vulns.html</a></span></li>
-<li id="v8"><strong>V8 (Q8).</strong> Old kernels not running and kernel headers are Ignorable, with "remove old kernels" as a tidy-up. Recommended. <span class="muted"><a href="host-vulns.html#ign">host-vulns.html</a>, <a href="risk-overview.html#quick-panel">risk-overview.html</a></span></li>
-<li id="v9"><strong>V9 (Q9).</strong> "In use: N processes" and "Listening" need ptrace read access on the agent. Recommended: off unless the VM enables it; then the signals appear only on those hosts. <span class="muted"><a href="states.html#no-in-use">states.html</a></span></li>
-<li id="v10"><strong>V10 (Q10, Q11).</strong> Decisions: reason and expiry required (90 days, 30 for KEV), no second factor except for more than 10 hosts at once. Recommended. <span class="muted"><a href="override.html">override.html</a></span></li>
-<li id="v12"><strong>V12 (Q12).</strong> The exposure score is a published points table with a tier word. Recommended. Alternative: tier only. <span class="muted"><a href="tiles.html#score">tiles.html</a></span></li>
-<li id="v14"><strong>V14 (Q14).</strong> Host tab section order: Fix available first (recommended) or Needs attention first. <span class="muted"><a href="host-vulns.html">host-vulns.html</a></span></li>
-<li id="v15"><strong>V15 (Q15).</strong> The fleet list's "Open vulnerabilities" column becomes Exposure and Work. Recommended. <span class="muted"><a href="fleet.html">fleet.html</a></span></li>
-<li id="v16"><strong>V16 (Q16).</strong> A new top-level Risk page after Compliance. Recommended. Alternative: these panels on Compliance. <span class="muted"><a href="risk-overview.html">risk-overview.html</a></span></li>
+<li id="v1"><strong>V1.</strong> Four buckets where you asked for three: "not fixable" splits into Needs attention and Low risk. Recommended. <span class="muted">Every screen.</span></li>
+<li id="v2"><strong>V2.</strong> Debian end-of-life is Needs attention, not Ignorable. Recommended. <span class="muted"><a href="host-vulns.html#attn">host-vulns.html</a></span></li>
+<li id="v7"><strong>V7.</strong> Age limits: KEV and EPSS stale after 7 days, badges withheld after a 3-day-old package report, a 7-day grace for a run. Recommended, as settings. <span class="muted"><a href="states.html">states.html</a></span></li>
+<li id="v10"><strong>V10.</strong> Kernel fixes as "reboot" (K1) or "install the new kernel package, then reboot" (K2); kernels not running and headers Ignorable. Recommended. <span class="muted"><a href="host-vulns.html#fix">host-vulns.html</a>, <a href="risk-overview.html#quick-panel">risk-overview.html</a></span></li>
+<li id="v12"><strong>V12.</strong> An accepted risk keeps its bucket, points, and tier; only a recorded control moves a finding to Low risk. Recommended. <span class="muted"><a href="override.html">override.html</a></span></li>
+<li id="v13"><strong>V13.</strong> Tier first, then points from the published table, with the values shown. Recommended. <span class="muted"><a href="tiles.html#score">tiles.html</a></span></li>
+<li id="v14"><strong>V14.</strong> No second factor for decisions, except more than 10 hosts at once. Recommended. <span class="muted"><a href="override.html">override.html</a></span></li>
+<li id="v16"><strong>V16.</strong> Host tab section order: Fix available first (recommended) or Needs attention first. <span class="muted"><a href="host-vulns.html">host-vulns.html</a></span></li>
+<li id="v17"><strong>V17.</strong> The tab bar shows "N to act on" instead of the open count. Recommended. <span class="muted"><a href="host-vulns.html">host-vulns.html</a></span></li>
+<li id="v18"><strong>V18.</strong> Host tiles: "Open vulnerabilities" becomes Exposure and Work remaining; the Packages tile is dropped. Recommended. <span class="muted"><a href="tiles.html">tiles.html</a></span></li>
+<li id="v19"><strong>V19.</strong> Fleet list: Exposure and Work columns; the hostname moves under the name. Recommended. <span class="muted"><a href="fleet.html">fleet.html</a></span></li>
+<li id="v20"><strong>V20.</strong> A new top-level Risk page after Compliance. Recommended. <span class="muted"><a href="risk-overview.html">risk-overview.html</a></span></li>
+<li id="v21"><strong>V21.</strong> First cut: the host tab, tiles, and fleet columns (with their server slices) first; decisions, agent changes, and the Risk page after. Recommended. <span class="muted">host-vulns.html, tiles.html, fleet.html are the first cut.</span></li>
 </ol>
 
 <h2>Wording, data, and accessibility</h2>
 <ul>
-<li>Hosts are <code>*.example.lan</code>. Advisory and CVE ids such as <code>DEBIAN-CVE-2026-90777</code> are invented and name no real vulnerability; the KEV listing and EPSS scores shown are invented too. Package names are real Debian names with invented versions.</li>
+<li>Hosts are <code>*.example.lan</code>. Advisory and CVE ids such as <code>DEBIAN-CVE-2026-90777</code> are invented and name no real vulnerability; the KEV listing and EPSS scores shown are invented too. Package names are real Debian names with invented versions. Attack vectors are shown in words, with the CVSS vector as secondary text.</li>
 <li>No badge says "secure", "safe", "clean", "compliant", or "protected"; every badge states its claim and scope. Nothing ranks people.</li>
 <li>No JavaScript, no inline styles, and no external requests: the screens render offline and under the app's CSP (<code>style-src 'self'</code>). Bars and charts are SVG with geometry in attributes and colours in <code>triage.css</code>.</li>
 <li>Buckets, tiers, signals, and badges are words plus shapes, never colour alone; meters are native <code>&lt;meter&gt;</code> with the numbers in text; charts have a title, a description, and a table of the numbers; sections are native <code>&lt;details&gt;</code>; forms have labels and errors beside the field.</li>

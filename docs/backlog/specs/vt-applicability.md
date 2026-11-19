@@ -1,38 +1,41 @@
-# VT-APPLICABILITY: The agent reports the running kernel's build, a pending reboot, and which packages are in use
+# VT-APPLICABILITY: The agent reports listening services, the reboot flag, and (where enabled) library use
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed). It feeds rules I1, L1, and N4 and the reboot item of work remaining. It is an agent contract change ([FR-2.3](../../requirements.md#fr-23-package-reporting)); no backward compatibility is needed before Phase 3 ends (NFR-5). The agent keeps its model: it reports facts, the server decides (design principles), and nothing here runs a command chosen by the server.
+Part of [VT-EPIC](vt-epic.md) (proposed), not in the recommended first cut (epic question 21), and blocked by VT-HOST-TAB because it adds the in-use signals to the tab (the agent half can be written earlier). It feeds rules L1 and N4 and the reboot work item. It is an agent contract change ([FR-2.3](../../requirements.md#fr-23-package-reporting)); no backward compatibility is needed before Phase 3 ends (NFR-5). The agent reports facts and the server decides; nothing here runs a command chosen by the server.
 
-## What the agent reports today
+## What the server already knows without this slice
 
-`kernel_version` (`/proc/sys/kernel/osrelease`, the kernel release such as `6.12.48+deb13-amd64`), `services.running` and `services.enabled` (config facts, from `systemctl`), and every installed package with its source. Enough for rule I1 (which kernel image is running) on the server alone. Not enough for: whether the running kernel is older than the installed image of the same release (Debian updates an image package in place within an ABI), a pending reboot, or which packages a running process uses.
+The package report lists every installed kernel image and the inventory has the running kernel release (`kernel_version`), so rules I1, K1, and K2 and "reboot into the installed kernel" need no agent change (VT-S05). In trixie each kernel update is a new package, so "a newer image is installed and not running" is exactly a pending kernel reboot. This slice adds what the server cannot infer.
 
-## VT-A01: Without new privileges
-
-### Scope
-
-- Inventory: `kernel_build`, from `/proc/sys/kernel/version` (`uname -v`). On Debian it names the image's package version (for example `#1 SMP PREEMPT_DYNAMIC Debian 6.12.48-1 (...)`); the server extracts the version with a per-distribution pattern (the applicability table, VT-S05) and compares it with the installed image's version by dpkg order. No match: the reboot item is not known, never "no reboot needed".
-- Inventory: `reboot_required` (true, false, or null when the distribution has no flag): Debian's `/run/reboot-required` exists. The package names in `/run/reboot-required.pkgs`, at most 50, are reported too.
-- Package report: `in_use.services`: for each running service unit, the binary package owning its main executable (`systemctl show --property=ExecStart` for the units already listed, then the owning package from dpkg's file lists under `/var/lib/dpkg/info/`, read-only). Bounded: at most 1,000 units, 10 s.
-- Everything is read-only, from files and the `systemctl` commands the agent already runs with fixed arguments.
-
-### Acceptance criteria
-
-- [ ] On a test VM after a kernel package update without a reboot, the server shows a pending reboot from `kernel_build`, and after the reboot it does not
-- [ ] A running service's package is reported in use; an unparseable `kernel_build` leaves the reboot item "not known"
-
-## VT-A02: Library and socket use (needs the owner's decision, epic question 9)
+## VT-A01: Listening services and the reboot flag, with no new privilege
 
 ### Scope
 
-- Package report: `in_use.packages`: each binary package with a file mapped by a running process (`/proc/<pid>/maps`, `/proc/<pid>/exe`) and whether one of those processes owns a listening socket on a non-loopback address (`network`) or only loopback (`loopback`), from `/proc/net/{tcp,tcp6,udp,udp6}` and the socket inodes in `/proc/<pid>/fd`. Also `stale`: a process still maps a deleted version of one of the package's files (it runs old code until restarted). A report with `in_use_complete: true` means a package not listed is idle; otherwise rule L1 never applies.
-- Reported: package names and the three classes only. Never process ids, command lines, user names, addresses, or ports.
-- Reading other users' processes needs ptrace read access. The agent's unit grants only `CAP_DAC_READ_SEARCH` today, so this needs `CAP_SYS_PTRACE` in the bounding set (epic question 9; the recommended default is off unless the VM's local config enables it, `[packages] in_use = true`, which also keeps the decision on the VM as ADR 0014 does for tasks). Without it the agent reports what it can read (root's own processes) with `in_use_complete: false`.
-- Bounded: at most 4,096 processes and 50,000 mapped paths per report, 10 s; mapped paths are matched against dpkg's file lists in one streaming pass. Measure CPU and memory on a 2,000-package host and record them here.
-- The threat model gains a row: a compromised agent already has root (ADR 0003); a compromised server learns which packages are used, which it can mostly infer already. Agent-reported classes are untrusted input to triage: a host that lies can only move its own findings.
+- **Listening sockets**: read `/proc/net/{tcp,tcp6,udp,udp6}` (no privilege): local address, port, state, uid, and socket inode for each listening TCP socket and bound UDP socket.
+- **Socket to service**: ask the kernel's `sock_diag` netlink interface for the same sockets with their cgroup id (`INET_DIAG_CGROUP_ID`, what `ss --cgroup` shows); map the cgroup id to its cgroup path under `/sys/fs/cgroup` (the directory's inode number is the id), the path to the systemd unit, the unit to its main executable (`systemctl show --property=ExecStart`, which the agent already runs with fixed arguments), and the executable to its binary package (dpkg's file lists under `/var/lib/dpkg/info/`, read-only). The unit already allows `AF_NETLINK` (`agent/src/install/fleet-agent.service`), so nothing in it changes; the exposure stays 1.9 (`agent/scripts/check-unit.sh` fails above 2.0).
+- **Report**, in the package report: `in_use.listening`, each binary package owning a listening service with its class, `network` (any non-loopback address) or `loopback`, and `in_use.services`, the packages of running services' executables. Never process ids, command lines, user names, addresses, or ports. A socket whose cgroup is not a systemd service (a container, a user session) is counted, not named.
+- **Reboot flag** in the inventory: `reboot_required` is true when Debian's `/run/reboot-required` exists, with `/run/reboot-required.pkgs` (at most 50 names); **null, never false, when it does not**, because Debian's kernel packages have not reliably created it (Debian bug #1010699, as the review notes). The server's own kernel rule (a newer image installed and not running) is the main signal; the flag adds reboots for other packages (for example libc).
+- **Kernel build** (`/proc/sys/kernel/version`, which on Debian names the image's package version) is reported for distributions that update a kernel package in place (#163); Debian 13 does not need it.
+- Bounded: at most 10,000 sockets and 1,000 units, 10 s. Measure on a 2,000-package host and record CPU and memory here.
 
 ### Acceptance criteria
 
-- [ ] On a test VM, `smbd` listening on a LAN address marks `samba` `network`, a library used only by a stopped service is idle, and after an upgrade without a restart the library is `stale`
-- [ ] The report contains no process id, command line, address, or port, and stays within its time and memory bounds
+- [ ] On a test VM, `smbd` listening on a LAN address marks `samba` `network`, and `sshd` bound to 127.0.0.1 only marks `openssh-server` `loopback`, with no change to the agent's unit and its exposure still 1.9
+- [ ] A missing `/run/reboot-required` is reported as null, and the report has no process id, command line, address, or port
+
+## VT-A02: Library use and stale code (optional, off by default)
+
+### Scope
+
+- Which packages' files are mapped by running processes (`/proc/<pid>/maps`, `/proc/<pid>/exe`), and `stale` (a process still maps a deleted version of a package's file, so it runs old code until restarted). Only this needs ptrace read access to other processes.
+- **Never in the main unit.** `CAP_SYS_PTRACE` is not read-only: it allows `PTRACE_MODE_ATTACH` and reading `/proc/<pid>/mem` of every process, so in the network-facing agent a file-read bug would disclose other processes' secrets (threat model F-2: the sandbox exists for non-exec bugs). Adding it to `fleet-agent.service` raises its `systemd-analyze security` exposure from 1.9 to 2.2, above the 2.0 gate (measured in the review). And the agent cannot work around it: `ProtectProc=invisible` and the capability rules hide every other user's process and every root daemon with more capabilities than the agent's.
+- **A separate, short-lived unit**, as `apply_package_updates` runs apt (threat model F-1): the agent starts a transient oneshot (`systemd-run`, fixed unit name and properties) running its own binary in a scan mode with `CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`, `PrivateNetwork=yes`, `ProtectSystem=strict`, no write access except one result file in the state directory, `RuntimeMaxSec=30`. The main agent reads the file. The scan receives no input from the server.
+- **Off by default.** Enabled only on the VM, `[packages] library_scan = true` in the local config (as task types are enabled locally, ADR 0014). With it off nothing carries the capability. A report says whether the scan ran (`in_use_complete`); without it, rule L1 applies only to packages whose only use is a service that is not running.
+- Reported: package names and classes only. Bounded: at most 4,096 processes and 50,000 mapped paths, 30 s.
+- A threat model row is added when built: the capability lives only in a no-network oneshot with a fixed program and no server input, for at most 30 s every package report.
+
+### Acceptance criteria
+
+- [ ] With the scan off, no unit on the VM carries `CAP_SYS_PTRACE`; with it on, only the transient scan unit does, and it has no network
+- [ ] With the scan on, a library used only by a stopped service is idle, and after an upgrade without a restart the library is `stale`

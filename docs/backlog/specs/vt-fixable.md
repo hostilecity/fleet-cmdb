@@ -2,7 +2,7 @@
 
 Implementation details for the GitHub issue with this key. The issue states only the goal and acceptance criteria; this file is the source of truth for everything else. Goal, requirement IDs, acceptance criteria, and blockers live in [`../issues.yml`](../issues.yml).
 
-Part of [VT-EPIC](vt-epic.md) (proposed). This slice **folds in #252**: its definition of "fix available" (the advisory names a fixed version for the host's release, the range the installed version is in) and its filter, built so that VT-BUCKETS later only adds buckets beside it. It gives the owner the first visible answer ("what is fixable") before any new data source.
+Part of [VT-EPIC](vt-epic.md) (proposed). This slice **folds in #252**: its definition of "fix available" (the advisory names a fixed version for the host's release, the range the installed version is in) and its filter, built so that VT-BUCKETS later only adds buckets beside it. It gives the owner the first visible answer ("what is fixable") before any new data source. The flag says only whether the advisory data names a fix for the release; kernel fixes (K1, K2) and Debian's own fixed version (F2) are VT-BUCKETS' rules, so until then a running kernel's fix shows here as "Fix available" on its package row, and the tab says a kernel fix needs a new package and a reboot.
 
 ## VT-S01: A fix flag on the open finding, kept by the matcher, counted by the summaries
 
@@ -11,7 +11,7 @@ Part of [VT-EPIC](vt-epic.md) (proposed). This slice **folds in #252**: its defi
 - `vulnerability_findings.fixable boolean` (null while resolved), written by the host's transitions in the same statements that write an open finding's moved fix today (ADR 0028, "As built", item 6): when a finding opens or reopens, and whenever its verdict's fixed version appears, moves, or disappears. A host whose flags do not change writes nothing.
 - An advisory import that moves fixes runs the existing `EvaluationRun::Advisories`, whose transitions write the flag; no separate recount is needed (this is #252's option (a)).
 - `host_compliance_summaries` gains `vuln_fixable` (open and reopened findings with a fix) and `vuln_fix_packages` (distinct package and architecture among them), recounted by the existing triggers (ADR 0026); `bin/rails compliance_summaries:check` and `rebuild` cover them.
-- `bin/benchmark explain` gains the recount with the flag at 100,000 hosts; record the before and after.
+- `bin/benchmark explain` gains the recount with the flag at 100,000 hosts and about 4,000 open findings per host; record the before and after.
 
 ### Acceptance criteria
 

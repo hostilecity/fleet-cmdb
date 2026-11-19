@@ -172,3 +172,13 @@ h2.section { margin-top: 1.75rem; }
   .propbar rect { fill: CanvasText; }
   .propbar rect.f-track { fill: Canvas; stroke: CanvasText; }
 }
+
+/* Review of #265 (N7): attack vectors in words, the CVSS vector as secondary text */
+.vecraw { display: block; font-family: var(--mono); font-size: 0.6875rem; font-weight: 400; color: var(--ink-soft); }
+.sig.vec { font-family: var(--sans); font-weight: 400; white-space: normal; }
+.override-tag.accepted { border-color: #7a5410; color: #7a5410; background: #fdf3e1; }
+.host-line { display: block; font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); }
+.honest.grace { border-color: #b7791f; background: var(--warn-bg); color: #6a4a10; }
+.honest.grace::before { content: "\25B8"; content: "\25B8" / ""; }
+.per-host { margin: 0.5rem 0 0; padding: 0; list-style: none; }
+.per-host li { border: 1px solid var(--rule); border-radius: 4px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; background: var(--sheet); }

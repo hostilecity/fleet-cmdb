@@ -554,7 +554,8 @@
     - "The delivery note includes the per-task privilege table and the no-arbitrary-shell review note."
   blocked_by: [P3-SECURITY, P3-TASK-MODEL, P3-TASK-API, P3-TASK-CONTROLS, P3-DASH-CREATE, P3-DASH-TASKS, P3-AGENT-LEDGER, P3-AGENT-EXEC, P3-AGENT-TASKS, P3-AGENT-UPDATES]
 
-# Proposed (VT-EPIC, ADR 0032): vulnerability triage. Not approved; built after Phase 2 acceptance, not gating Phase 3.
+# Proposed (VT-EPIC, ADR 0032): vulnerability triage. Not approved; built after Phase 2 acceptance (the milestone's gate), not gating Phase 3.
+# Recommended first cut (epic question 21): VT-FIXABLE, VT-SIGNALS, VT-BUCKETS, VT-HOST-TAB, VT-SCORES.
 - key: VT-FIXABLE
   title: "FR-2.6: store whether each open finding has a fix, count it in the summaries, and filter by it (folds in #252)"
   milestone: 4
@@ -573,31 +574,32 @@
   covers: [FR-2.6, NFR-1, FR-2.5]
   goal: "The server imports CISA's KEV catalog and FIRST's EPSS scores with the advisory feeds' safeguards and stores each advisory's CVSS attack vector, privileges, and user interaction."
   done:
-    - "Each feed is fetched over verified HTTPS with limits, a truncation guard, freshness, audit, an offline import task, and a setting that turns it off."
-    - "EPSS keeps only the fleet's CVEs with a band that enters at 0.10 and leaves below 0.07, and the data sources page shows both feeds' states."
+    - "Each feed is fetched over verified HTTPS with limits, a truncation guard, freshness, audit, an offline import task, and a setting that stops it and keeps the last data."
+    - "EPSS keeps only the fleet's CVEs with a band that enters at 0.10 and leaves below 0.07, and stale data keeps being used and is shown as stale."
   blocked_by: [P2-DEBIAN-TRIAGE]
 
 - key: VT-APPLICABILITY
-  title: "FR-2.6: the agent reports the running kernel's build, a pending reboot, and which packages are in use"
+  title: "FR-2.6: the agent reports listening services, the reboot flag, and (where enabled) library use"
   milestone: 4
   labels: ["area:agent", "area:api", "security"]
   covers: [FR-2.6, FR-2.3, FR-1.3]
-  goal: "The agent reports, read-only and bounded, the running kernel's build, the reboot flag, running services' packages, and (when the VM enables it) library and socket use by package."
+  goal: "The agent reports listening services by package and the reboot flag with no new privilege, and, only where the VM enables it, library use from a separate short-lived scan unit."
   done:
-    - "After a kernel update without a reboot the server shows a pending reboot, and after the reboot it does not."
-    - "In-use reports name packages and classes only (no process ids, command lines, addresses, or ports) and stay within their time and memory bounds."
-  blocked_by: [P2-AGENT-PACKAGES, P2-AGENT-FACTS]
+    - "A service listening on a LAN address marks its package as network-listening, with no change to the agent's unit and its exposure still 1.9."
+    - "With the library scan off no unit carries CAP_SYS_PTRACE; with it on only the transient no-network scan unit does."
+    - "Reports name packages and classes only, and a missing reboot flag is reported as unknown, never false."
+  blocked_by: [P2-AGENT-PACKAGES, P2-AGENT-FACTS, VT-HOST-TAB]
 
 - key: VT-BUCKETS
   title: "FR-2.6: put every open finding in exactly one triage bucket with a reason"
   milestone: 4
   labels: ["area:server"]
   covers: [FR-2.6, FR-2.4, NFR-3]
-  goal: "A classifier puts every open finding in one of four buckets by the published rules, stored on the finding, re-triaged when a signal or host fact changes, and counted in the summaries."
+  goal: "A classifier puts every open finding in one of four buckets by the published rules, including kernel reboot and new-kernel work, stored with a KEV flag, re-triaged when a signal or host fact changes, and counted in the summaries."
   done:
-    - "Every open finding of an evaluated host has exactly one bucket and rule, and the four summary counts add up to the open count."
-    - "A rule that relaxes a finding because of KEV, EPSS, tracker, or in-use data fires only when that data is present and current."
-    - "A KEV import that adds one CVE re-triages only its advisories' findings, measured at 100,000 hosts."
+    - "Every open finding of an evaluated host has exactly one bucket and rule, the four summary counts add up to the open count, and a reboot into a fixed kernel is recorded as work done."
+    - "A source going stale or turned off changes no finding's bucket, KEV flag, points, or tier."
+    - "A KEV import that adds one CVE re-triages only hosts on sets holding its chunks, measured at 100,000 hosts with about 4,000 findings each."
   blocked_by: [VT-FIXABLE, VT-SIGNALS]
 
 - key: VT-HOST-TAB
@@ -605,10 +607,10 @@
   milestone: 4
   labels: ["area:dashboard"]
   covers: [FR-2.6, FR-2.5]
-  goal: "The host's Vulnerabilities tab shows the four buckets with reasons, work remaining, 30-day progress, and suggested controls, as the approved mockup draws."
+  goal: "The host's Vulnerabilities tab shows the four buckets with reasons, work remaining, 30-day progress, and suggested controls; later slices add the score, decisions, and in-use signals."
   done:
-    - "The four bucket counts add up to the open count, and each finding shows its reason and rule id."
-    - "The tab sends a fixed number of statements whatever the host's finding count and passes axe-core with no violations."
+    - "The four bucket counts add up to the open count, each finding shows its reason and rule id, and a kernel fix reads as a reboot or a new kernel package."
+    - "Work and progress are in work items, progress counts only actions the host's reports show, and the tab passes axe-core with a fixed statement count."
   blocked_by: [VT-BUCKETS]
 
 - key: VT-OVERRIDES
@@ -618,29 +620,29 @@
   covers: [FR-2.6, FR-S.3]
   goal: "Operators record a control in place or accept a risk per host and advisory, with a reason and an expiry, audited, and suspended when the evidence gets worse."
   done:
-    - "A decision moves the finding to Low risk with its reason shown, is audited with the evidence, and leaves the open count unchanged."
+    - "A control moves the finding to Low risk scored above plain Low risk; an accepted risk keeps its bucket, points, and tier; both are audited with the evidence."
     - "A decision ends at expiry or when a fix appears, and is suspended when its CVE is added to KEV, each audited by the system."
-  blocked_by: [VT-BUCKETS]
+  blocked_by: [VT-BUCKETS, VT-HOST-TAB]
 
 - key: VT-SCORES
-  title: "FR-2.6: exposure score and work remaining on the summaries, the fleet list, and the tiles"
+  title: "FR-2.6: exposure tier and points and work remaining on the summaries, the fleet list, and the tiles"
   milestone: 4
   labels: ["area:server", "area:dashboard"]
   covers: [FR-2.6, FR-1.5, FR-2.5, NFR-3]
-  goal: "Each host's summary holds its exposure points, tier, and work remaining, and the fleet list and host tiles show and sort by them."
+  goal: "Each host's summary holds its exposure tier, points, and work items, and the fleet list and host tiles show and sort by them, tier first."
   done:
-    - "A host's points equal the published table applied to its findings, and the summaries check finds no drift."
-    - "Sorting the fleet list by Exposure or Work costs a fixed number of statements, and a not evaluated or stale host never shows 0 points or a streak."
-  blocked_by: [VT-BUCKETS]
+    - "A host's points equal the published table applied to its findings, a KEV change updates them, and the summaries check finds no drift."
+    - "Sorting by Exposure (tier, then points) or Work costs a fixed number of statements, and a not evaluated or stale host never shows 0 points or a run badge."
+  blocked_by: [VT-BUCKETS, VT-HOST-TAB]
 
 - key: VT-RISK-PAGE
-  title: "FR-2.6: fleet risk overview with burn-down, leaderboards, quick wins, and streaks"
+  title: "FR-2.6: fleet risk overview with burn-down, leaderboards, quick wins, and runs"
   milestone: 4
   labels: ["area:server", "area:dashboard"]
   covers: [FR-2.6, FR-2.5, NFR-3]
-  goal: "A fleet Risk page shows bucket totals, a 90-day burn-down, the most exposed hosts and most work, quick wins, streaks, and decisions due."
+  goal: "A fleet Risk page shows bucket totals, a 90-day burn-down, the most exposed hosts and most work, quick wins, runs, and decisions due."
   done:
-    - "Daily totals and quick wins are built from summaries and chunks, not per host, within times measured at 100,000 hosts."
+    - "Daily totals and quick wins are built once a day within times measured at 100,000 hosts with about 4,000 findings each."
     - "The page costs a fixed number of statements per view, its charts have text equivalents, and no badge implies a host is safe."
   blocked_by: [VT-SCORES, VT-OVERRIDES]
 

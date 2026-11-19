@@ -25,7 +25,7 @@
   <dl class="facts tight">
     <dt>Freshness</dt><dd><span class="lamp online">Up to date</span> · last success 5 hours ago, catalog version 2026.11.19</dd>
     <dt>Entries</dt><dd>1,771 CVEs, of which 3 match open findings in this fleet</dd>
-    <dt>Source</dt><dd><span class="mono">www.cisa.gov/…/known_exploited_vulnerabilities.json</span> · every 6 hours with the advisory refresh, conditional request</dd>
+    <dt>Source</dt><dd><span class="mono">raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json</span> (CISA's mirror) · every 6 hours with the advisory refresh, conditional request</dd>
   </dl>
   <h3>Latest imports</h3>
   <div class="table-wrap"><table><caption class="visually-hidden">Latest KEV imports</caption><thead><tr><th scope="col">When</th><th scope="col">Outcome</th><th scope="col">Changes</th></tr></thead><tbody>
@@ -40,13 +40,13 @@
   <p>FIRST's daily estimate of the probability that a CVE sees exploitation activity in the next 30 days. Used by rule N2 (at or above 10%) and shown beside findings. Free to use with attribution: <q>See EPSS at https://www.first.org/epss</q>.</p>
   <dl class="facts tight">
     <dt>Freshness</dt><dd><span class="lamp online">Up to date</span> · scores of 2026-11-19 (the model version and date are read from the file's first line)</dd>
-    <dt>Entries</dt><dd>Only CVEs named by advisories in the database are kept: 41,206 of 302,114 in the file</dd>
+    <dt>Entries</dt><dd>Only CVEs named by advisories in the database are kept: 41,206 of about 300,000 in the file</dd>
     <dt>Crossed the threshold today</dt><dd>4 CVEs rose to 10% or more (1 matches open findings: re-triaged); 2 fell below 7%</dd>
-    <dt>Source</dt><dd><span class="mono">epss.empiricalsecurity.com/epss_scores-current.csv.gz</span> · daily at 14:30 UTC</dd>
+    <dt>Source</dt><dd><span class="mono">epss.empiricalsecurity.com/epss_scores-current.csv.gz</span> · daily at 14:30 UTC · redirects followed only to the hosts allowed in the configuration</dd>
   </dl>
   <p class="state-note">A finding enters Needs attention at 10% and leaves below 7%, so a score that wobbles around the line does not move findings back and forth every day. Offline: <code>bin/rails signals:epss_import FILE=...</code>.</p>
 </section>
-<p class="note">Freshness limits: KEV and EPSS are stale after 7 days (one week of failed refreshes). Stale or turned off, the rules that need them stop applying in the cautious direction (<a href="states.html#stale-signals">states.html</a>). Neither source ever opens, resolves, or reopens a finding, or changes its severity.</p>
+<p class="note">Freshness limits: KEV and EPSS are stale after 7 days (one week of failed refreshes). Stale or stopped, the last data keeps being used and is shown as stale; nothing is rewritten (<a href="states.html#stale-signals">states.html</a>). Never imported, findings are shown as "not checked" against the source (<a href="states.html#never">states.html</a>). Neither source ever opens, resolves, or reopens a finding, or changes its severity.</p>
 </main>
 </body>
 </html>

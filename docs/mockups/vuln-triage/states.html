@@ -15,37 +15,45 @@
   <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
 </header>
 <main>
-<p class="note">VT-D01 review. What the triage screens say when data is missing or old. The rule throughout: missing data never makes a finding look safer. It can only keep a finding in a more cautious bucket, and the page says which data is missing.</p>
+<p class="note">VT-D01 review. What the triage screens say when data is old or missing. Two rules hold throughout. First, stale data is still evidence: it keeps being used, and nothing moves because a feed is late. Second, missing data never makes a finding look safer or lowers a score; the page says what is missing instead.</p>
 <h1>Triage states</h1>
 
-<h2 id="stale-signals">Exploitation data is stale or turned off</h2>
-<div class="notice" role="status"><strong>Known exploited data (CISA KEV) is 9 days old.</strong><p>The last 3 refreshes failed. Until it is refreshed, no finding is put in Ignorable because Debian rates it unimportant (rule I5); those 236 findings are in Low risk instead, and Low risk reasons say "not checked against KEV". <a href="data-sources.html#kev">Data sources</a></p></div>
-<div class="table-wrap"><table><caption class="visually-hidden">A Low risk reason while KEV data is stale</caption><thead><tr><th scope="col">Reason</th><th scope="col" class="num">Findings</th></tr></thead><tbody>
-<tr><td><span class="reason low">Debian rates it unimportant, but whether it is known exploited could not be checked (KEV data 9 days old).<span class="rule-id">L5</span></span></td><td class="num">236</td></tr>
+<h2 id="stale-signals">Exploitation data is stale</h2>
+<div class="notice" role="status"><strong>Known exploited data (CISA KEV) was last refreshed 9 days ago.</strong><p>The last 3 refreshes failed. Triage keeps using the KEV list from 2026-11-10: the 1 known exploited finding stays in Needs attention, and no finding has moved. Findings that are Ignorable because Debian rates them unimportant stay there, marked "not re-checked against KEV since 2026-11-10". Badges that depend on KEV are withheld until it is refreshed. <a href="data-sources.html#kev">Data sources</a></p></div>
+<div class="table-wrap"><table><caption class="visually-hidden">Reasons and tier while KEV data is stale</caption><thead><tr><th scope="col">Where</th><th scope="col">What it says</th></tr></thead><tbody>
+<tr><td>A known exploited finding</td><td><span class="reason attn">On CISA's Known Exploited Vulnerabilities list since 2026-11-02 (list last refreshed 2026-11-10).<span class="rule-id">N1</span></span></td></tr>
+<tr><td>An unimportant finding</td><td><span class="reason ign">Debian rates it unimportant. Not on the KEV list as of 2026-11-10; not re-checked since.<span class="rule-id">I5</span></span></td></tr>
+<tr><td>The host's tier</td><td><span class="tier t4">Known exploited</span> <span class="muted">KEV data 9 days old</span></td></tr>
 </tbody></table></div>
-<p class="state-note">The same for EPSS: past its age limit (7 days by default) rule N2 cannot fire, rule I5 is held back, and the freshness line says so. Badges that depend on it ("no known exploited exposure") are withheld.</p>
+<p class="state-note">EPSS works the same way: the last stored bands keep being used past its age limit (7 days by default), and nothing is rewritten when it goes stale or recovers. Turning a feed off in the configuration keeps its last data, which then shows as stale. It never lowers a score.</p>
 
-<h2 id="no-in-use">The agent does not report what is in use</h2>
-<div class="notice info" role="status"><strong>This host's agent (0.3.2) does not report which packages are in use.</strong><p>"Installed but not running" (rule L1) and "Listening" cannot be judged here, so network-reachable findings stay in Needs attention (rule N4) rather than Low risk. Update the agent to 0.4.0 or later.</p></div>
+<h2 id="never">A source was never imported</h2>
+<div class="notice info" role="status"><strong>Known exploited data (CISA KEV) has never been imported on this server.</strong><p>No finding can be marked known exploited, so tiers and scores are shown as "not checked against KEV". Findings Debian rates unimportant stay in Low risk rather than Ignorable until KEV data exists.</p></div>
+<p><span class="tier t2">Fixes waiting</span> <span class="muted">88 points · not checked against KEV</span></p>
+<p class="state-note">A CVE with no EPSS score (new CVEs are scored late) is the same on a small scale: its reason says "no EPSS score yet", and nothing else changes. Debian's "unimportant" does not depend on EPSS, so EPSS being off or late never moves a finding into or out of Ignorable.</p>
+
+<h2 id="no-in-use">The agent does not report listening services</h2>
+<div class="notice info" role="status"><strong>This host's agent (0.3.2) does not report which services are listening.</strong><p>"Listening" and "belongs to a service that is not running" (rule L1) cannot be judged here, so findings reachable over the network stay in Needs attention (rule N4) rather than Low risk. Update the agent to 0.4.0 or later.</p></div>
 
 <h2 id="not-evaluated">Host not evaluated</h2>
 <div class="glance" role="group" aria-label="Summary for a host that is not evaluated">
   <a href="host-vulns.html"><span class="label">Vulnerability exposure</span><span class="big"><span class="not-eval">Not evaluated</span></span><span class="detail">No package report yet</span></a>
   <a href="host-vulns.html#work"><span class="label">Work remaining</span><span class="big"><span class="muted">Not known</span></span><span class="detail">Needs a package report</span></a>
 </div>
-<p class="state-note">As today (#128): no buckets, no score, no badge, never zeros. Findings kept from an earlier evaluation keep their buckets with the "from an earlier evaluation, may be out of date" notice, and the host counts as not evaluated on the fleet pages.</p>
+<p class="state-note">As today (#128): no buckets, no tier, no badge, never zeros. Findings kept from an earlier evaluation keep their buckets with the "from an earlier evaluation, may be out of date" notice, and the host counts as not evaluated on the fleet pages.</p>
 
 <h2 id="stale">Old package report</h2>
 <p><span class="honest withheld">No fixable critical <span class="scope">withheld: last package report 9 days ago</span></span></p>
-<p class="state-note">A streak or badge is withheld when the host's last package report is older than 3 days (the threshold the fleet uses for stale reports) or the advisory data is past its age limit. The numbers stay, with their date.</p>
+<p class="state-note">A run or badge is withheld when the host's last package report is older than 3 days, or when the data it depends on is stale. The numbers stay, with their date.</p>
 
 <h2 id="badges">What a badge may and may not say</h2>
 <div class="table-wrap"><table><caption class="visually-hidden">Badges and their exact claims</caption><thead><tr><th scope="col">Badge</th><th scope="col">Shown when</th><th scope="col">Never shown when</th></tr></thead><tbody>
-<tr><td><span class="honest">Nothing to install</span></td><td>No finding in Fix available, and no reboot pending.</td><td>Not evaluated; stale report or data. Always followed by the Needs attention count when it is not zero.</td></tr>
-<tr><td><span class="honest streak">No fixable critical <span class="scope">for 12 days</span></span></td><td>No critical in Fix available for longer than 7 days (grace for new advisories), counted from the summary's timestamp.</td><td>Not evaluated; stale report or data.</td></tr>
-<tr><td><span class="honest">No known exploited exposure</span></td><td>No KEV advisory outside Ignorable.</td><td>KEV data stale or off; not evaluated.</td></tr>
+<tr><td><span class="honest">Nothing to install</span></td><td>No work items: no upgrade, no new kernel, no reboot.</td><td>Not evaluated; stale report or data. Always followed by the Needs attention count when it is not zero.</td></tr>
+<tr><td><span class="honest streak">No fixable critical <span class="scope">for 12 days</span></span></td><td>No critical finding in Fix available, now.</td><td>Not evaluated; stale report or data.</td></tr>
+<tr><td><span class="honest grace">12-day run <span class="scope">1 fixable critical, 4 days left</span></span></td><td>A fixable critical appeared less than 7 days ago. The run is kept, and the badge says a critical is open and how long is left. After 7 days the run ends.</td><td>As above. It never says "no fixable critical" while one is open.</td></tr>
+<tr><td><span class="honest">No known exploited exposure</span></td><td>No KEV advisory outside Ignorable.</td><td>KEV data stale or never imported; not evaluated.</td></tr>
 </tbody></table></div>
-<p class="note">No badge uses the words "secure", "safe", "compliant", "clean", or "protected". There are no badges for low counts of Low risk or Ignorable findings, because those can be lowered by changing nothing real.</p>
+<p class="note">No badge uses the words "secure", "safe", "compliant", "clean", or "protected", and every badge is true at the moment it is shown. There are no badges for low counts of Low risk or Ignorable findings, because those can be lowered by changing nothing real.</p>
 </main>
 </body>
 </html>
