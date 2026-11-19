@@ -63,12 +63,15 @@ jobs:
 
       - name: Lint (actionlint also shellchecks the workflows' scripts)
         run: |
-          shellcheck -x ops/backup/*.sh ops/deploy/*.sh # -x: docker.sh and package-backfill.sh source lock.sh
+          shellcheck -x ops/backup/*.sh ops/deploy/*.sh ops/test/*.sh # -x: docker.sh and package-backfill.sh source lock.sh
           curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/actionlint.tar.gz" \
             https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
           echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/cd.yml .github/workflows/deploy-ci.yml
+
+      - name: Test #196's upgrade step against a stub docker (the paths the real app below does not reach)
+        run: bash ops/test/package-backfill-test.sh
 
       - name: Build the image (as cd.yml does)
         run: docker build -q --build-context api=docs/api --build-context trust=agent/trust --build-context release-keys=agent/release-keys -t fleet-cmdb:ci cmdb
@@ -353,9 +356,15 @@ jobs:
           flock "$lock" sh -c 'echo "backup (Deploy CI) running" > "$1"; sleep 5' sh "$lock" & holder=$!
           sleep 1
           before_start="$(docker inspect -f '{{.State.StartedAt}}' fleet-cmdb)"
-          out="$("$backfill" 2>&1)" && rc=0 || rc=$?
+          "$backfill" > "$RUNNER_TEMP/backfill-196.log" 2>&1 & backfill_pid=$!
+          # Once it has said "restarting", it is restarting the app or waiting for /up: the lock must still be held.
+          for _ in $(seq 1 300); do grep -q "restarting fleet-cmdb" "$RUNNER_TEMP/backfill-196.log" && break; sleep 0.1; done
+          held="$(flock -n "$lock" true && echo free || echo held)"
+          wait "$backfill_pid" && rc=0 || rc=$?
           wait "$holder" 2> /dev/null || true
+          out="$(cat "$RUNNER_TEMP/backfill-196.log")"
           echo "$out"
+          expect "it holds the lock while the app restarts and until /up" held "$held"
           expect "the backfill step succeeds" 0 "$rc"
           contains "after waiting for the backup" "waiting for: backup (Deploy CI)" "$out"
           contains "with nothing left to move" "nothing to move" "$out"
@@ -363,6 +372,20 @@ jobs:
           expect "the app was restarted" yes "$([ "$(docker inspect -f '{{.State.StartedAt}}' fleet-cmdb)" != "$before_start" ] && echo yes || echo no)"
           contains "its holder line is #236's" "package backfill since " "$(cat "$lock")"
           contains "with its pid" ", pid " "$(cat "$lock")"
+          echo "-- #196's upgrade step checks the restore marker again once it holds the lock"
+          # shellcheck disable=SC2016 # expanded by sh
+          flock "$lock" sh -c 'echo "backup (Deploy CI) running" > "$1"; sleep 4' sh "$lock" & holder=$!
+          sleep 1
+          before_start="$(docker inspect -f '{{.State.StartedAt}}' fleet-cmdb)"
+          "$backfill" > "$RUNNER_TEMP/backfill-196-marker.log" 2>&1 & backfill_pid=$!
+          sleep 1
+          echo "the restore of fleet-cmdb-test (Deploy CI) did not finish" > "$marker"
+          wait "$holder" 2> /dev/null || true
+          wait "$backfill_pid" && rc=0 || rc=$?
+          rm -f "$marker"
+          expect "it fails" 1 "$rc"
+          contains "with the marker, read after the wait" "refused: the restore of fleet-cmdb-test (Deploy CI) did not finish" "$(cat "$RUNNER_TEMP/backfill-196-marker.log")"
+          expect "and the app was not restarted" "$before_start" "$(docker inspect -f '{{.State.StartedAt}}' fleet-cmdb)"
           echo "-- a restore holds the lock"
           # shellcheck disable=SC2016 # expanded by sh
           flock "$lock" sh -c 'echo "restore of fleet-cmdb-test (Deploy CI)" > "$1"; sleep 45' sh "$lock" & holder=$!
