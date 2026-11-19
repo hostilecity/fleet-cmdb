@@ -39,7 +39,7 @@ class HostVulnerabilitiesController < ApplicationController
   def show
     load_evaluation
     findings = VulnerabilityFinding.with_details.where(host_id: @host.id)
-    # Counted on the findings alone, in one query: the details' joins add no rows (#perf).
+    # Counted on the findings alone, in one query: the details' joins add no rows (#254).
     by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state).count
     @state_counts = { "open" => by_state.values_at("open", "reopened").compact.sum, "resolved" => by_state.fetch("resolved", 0) }
     @state_counts["all"] = @state_counts.values.sum

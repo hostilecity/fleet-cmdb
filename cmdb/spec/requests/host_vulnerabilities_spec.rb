@@ -65,7 +65,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(page.at_css("#advisory_freshness").text.squish).to start_with("Advisory data last updated: Debian:13")
     end
 
-    it "draws one page of rows, a package going on over the next page, with the counts of every finding (#perf)" do
+    it "draws one page of rows, a package going on over the next page, with the counts of every finding (#254)" do
       stub_const("HostVulnerabilitiesController::ROWS_PER_PAGE", 3)
       get "/hosts/#{host.id}/vulnerabilities"
       expect(words(page.at_css("#open_heading"))).to eq("Open findings 5: 2 high, 1 medium, 2 low")
@@ -96,7 +96,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(page.css("#open_list tr.nested").size).to eq(2)
     end
 
-    it "with resolved findings too, lists the open groups first and says where each section's rows are (#perf)" do
+    it "with resolved findings too, lists the open groups first and says where each section's rows are (#254)" do
       stub_const("HostVulnerabilitiesController::ROWS_PER_PAGE", 2)
       report_packages(host, [ [ "acme-daemon", "1.0-1", "acme" ], [ "libacme1", "1.0-1", "acme" ], [ "bash", "5.2.37-1", "bash" ], [ "acme-docs", "2.0-1", "acme-docs", "all" ] ])
       match(host, at: start + 1.hour)
@@ -108,7 +108,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(groups("resolved_list").map(&:first)).to eq([ "acme-docs:all installed 2.0-1 Medium worst of 1 1 finding" ])
     end
 
-    it "runs the same statements and draws one page whatever the number of findings (#perf)" do
+    it "runs the same statements and draws one page whatever the number of findings (#254)" do
       stub_const("HostVulnerabilitiesController::ROWS_PER_PAGE", 4)
       statements = lambda do
         sql = []
