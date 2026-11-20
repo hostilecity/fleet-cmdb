@@ -29,7 +29,7 @@ class ComplianceFixRecount
   # Whether there is a recount to do: the progress row exists until the migration that finishes it drops it.
   def needed? = @conn.table_exists?(TABLE)
 
-  def last_host_id = @conn.select_value("SELECT last_host_id FROM #{TABLE} WHERE id = 1").to_i
+  def last_host_id = @conn.select_value("SELECT last_host_id FROM compliance_fix_recounts WHERE id = 1").to_i
 
   # The time the hosts left would take. With within (seconds), it counts only far enough to tell that the time is past
   # it, and then says it stopped counting (complete: false), so it reads little of a large database.
@@ -38,11 +38,11 @@ class ComplianceFixRecount
 
     after = last_host_id
     host_limit = within && ((within / HOST_SECONDS).floor + 1)
-    hosts = bounded("SELECT 1 FROM hosts WHERE id > #{after}", host_limit)
+    hosts = bounded("SELECT 1 FROM hosts WHERE id > ?", after, host_limit)
     return Estimate.new(seconds: hosts * HOST_SECONDS, hosts:, findings: 0, complete: false) if host_limit && hosts >= host_limit
 
     finding_limit = within && (((within - hosts * HOST_SECONDS) / FINDING_SECONDS).floor + 1)
-    findings = bounded("SELECT 1 FROM vulnerability_findings WHERE state IN ('open', 'reopened') AND host_id > #{after}", finding_limit)
+    findings = bounded("SELECT 1 FROM vulnerability_findings WHERE state IN ('open', 'reopened') AND host_id > ?", after, finding_limit)
     Estimate.new(seconds: hosts * HOST_SECONDS + findings * FINDING_SECONDS, hosts:, findings:, complete: !(finding_limit && findings >= finding_limit))
   end
 
@@ -50,15 +50,15 @@ class ComplianceFixRecount
   def run!(batch: BATCH)
     return 0 unless needed?
 
-    @conn.execute("INSERT INTO #{TABLE} (id, last_host_id) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
+    @conn.execute("INSERT INTO compliance_fix_recounts (id, last_host_id) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
     done = 0
     loop do
-      ids = @conn.select_values("SELECT id FROM hosts WHERE id > #{last_host_id} ORDER BY id LIMIT #{Integer(batch)}").map(&:to_i)
+      ids = @conn.select_values(sql("SELECT id FROM hosts WHERE id > ? ORDER BY id LIMIT ?", last_host_id, batch)).map(&:to_i)
       break if ids.empty?
 
       ApplicationRecord.transaction do
-        @conn.execute("SELECT host_compliance_summaries_refresh(ARRAY[#{ids.join(',')}]::bigint[])")
-        @conn.execute("UPDATE #{TABLE} SET last_host_id = #{ids.last} WHERE id = 1")
+        @conn.execute(sql("SELECT host_compliance_summaries_refresh(ARRAY[?]::bigint[])", ids))
+        @conn.execute(sql("UPDATE compliance_fix_recounts SET last_host_id = ? WHERE id = 1", ids.last))
       end
       done += ids.size
       @log.call("#{done} hosts recounted, up to host #{ids.last}") if done / LOG_EVERY > (done - ids.size) / LOG_EVERY
@@ -69,5 +69,8 @@ class ComplianceFixRecount
 
   private
 
-  def bounded(sql, limit) = @conn.select_value("SELECT count(*) FROM (#{sql}#{" LIMIT #{limit}" if limit}) s").to_i
+  # count(*) of a query with one bound value, read at most limit rows deep (no limit: all of them).
+  def bounded(query, value, limit) = @conn.select_value(sql("SELECT count(*) FROM (#{query} LIMIT ?) s", value, limit)).to_i
+
+  def sql(*parts) = ApplicationRecord.sanitize_sql_array(parts)
 end
