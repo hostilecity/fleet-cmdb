@@ -9,6 +9,8 @@ RSpec.describe Signals::EpssImport do
     Advisory.create!(advisory_id: "DSA-9999-1", source: "test", aliases: %w[CVE-2026-93330 TEMP-0001], severity: "low", modified_at: Time.current)
   end
 
+  around { |example| freeze_time { example.run } }
+
   def band(cve_id) = EpssScore.find_by!(cve_id:).band
 
   it "keeps only the CVEs stored advisories name, with the model version and score date, audited" do
@@ -19,7 +21,7 @@ RSpec.describe Signals::EpssImport do
                                                                           score_date: Date.new(2026, 11, 19))
     expect(import).to have_attributes(signal: "epss", state: "succeeded", version: "v2025.03.14", score_date: Date.new(2026, 11, 19),
                                       counts: { "rows" => 6, "valid" => 6, "malformed" => 0, "repeated" => 0, "kept" => 4, "stored" => 0, "dropped" => 0,
-                                                "high" => 3, "rose" => 3, "fell" => 0 })
+                                                "high" => 3, "rose" => 3, "fell" => 0, "matching" => 0, "matching_at" => Time.current.utc.iso8601 })
     expect(AuditEntry.where("action LIKE 'signal.%'").sole).to have_attributes(action: "signal.epss_imported", target_id: import.id)
     expect(pending_changes("epss")).to eq(%w[CVE-2026-90777 CVE-2026-91402 CVE-2026-93330])
   end

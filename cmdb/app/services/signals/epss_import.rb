@@ -10,10 +10,13 @@ module Signals
   # - Truncation guard, as KEV's: a file that would drop more than FLEET_ADVISORY_WITHDRAW_SHARE (10%) of the stored
   #   scores stores nothing and is held back with its counts; allowed_drops (ALLOW_DROPS) is a ceiling.
   # - The CVEs whose band changed between high and not high (or that gained or lost a high score) are handed to the
-  #   daily triage run (TriageSignalChange kind epss). Nothing here touches a finding.
+  #   daily triage run (TriageSignalChange kind epss), in SQL. Nothing here touches a finding.
+  # - The transaction is limited (Signals.lock!), and how many high-band CVEs match open findings is counted after it
+  #   commits (Signals.count_matching!), so the panel never counts findings on a page view.
   class EpssImport
     STAGING = "epss_staging".freeze
     KEPT = "epss_kept".freeze
+    CHANGED = "epss_changed".freeze
     BATCH = 5_000
     COPY_ENCODER = PG::TextEncoder::CopyRow.new
 
@@ -33,7 +36,7 @@ module Signals
       SignalImport.transaction do
         Signals.lock!(EPSS)
         stage(reader)
-        stored_date = SignalImport.epss.succeeded.maximum(:score_date)
+        stored_date = Signals::Freshness.stored_score_date
         if stored_date && reader.score_date < stored_date
           raise Older, "the file's scores are of #{reader.score_date.iso8601}, older than the stored scores of #{stored_date.iso8601}, so nothing was imported"
         end
@@ -49,7 +52,7 @@ module Signals
                      target: import, changes: { "origin" => @origin, "source" => @source, "version" => reader.model_version,
                                                 "score_date" => reader.score_date.iso8601, "counts" => counts, "reason" => import.reason }.compact)
         import
-      end
+      end.tap { |import| Signals.count_matching!(import) }
     end
 
     private
@@ -97,23 +100,29 @@ module Signals
                e.band AS old_band
         FROM #{KEPT} k LEFT JOIN epss_scores e ON e.cve_id = k.cve_id
       SQL
-      changed = connection.select_values(<<~SQL.squish)
-        SELECT cve_id FROM epss_next WHERE (band = 'high') IS DISTINCT FROM (coalesce(old_band, 'normal') = 'high')
+      # The band changes, kept in SQL: a CVE whose band moved between high and not high, or a high CVE the file drops.
+      connection.execute(<<~SQL.squish)
+        CREATE TEMPORARY TABLE #{CHANGED} ON COMMIT DROP AS
+        SELECT cve_id, band = 'high' AS rose FROM epss_next WHERE (band = 'high') IS DISTINCT FROM (coalesce(old_band, 'normal') = 'high')
         UNION ALL
-        SELECT e.cve_id FROM epss_scores e WHERE e.band = 'high' AND NOT EXISTS (SELECT 1 FROM epss_next n WHERE n.cve_id = e.cve_id)
+        SELECT e.cve_id, false FROM epss_scores e WHERE e.band = 'high' AND NOT EXISTS (SELECT 1 FROM epss_next n WHERE n.cve_id = e.cve_id)
       SQL
-      rose = connection.select_value("SELECT count(*) FROM epss_next WHERE band = 'high' AND coalesce(old_band, 'normal') <> 'high'").to_i
+      rose, fell = connection.select_rows("SELECT count(*) FILTER (WHERE rose), count(*) FILTER (WHERE NOT rose) FROM #{CHANGED}").first.map(&:to_i)
+      connection.execute("INSERT INTO triage_signal_changes (id, kind, cve_id, created_at) " \
+                         "SELECT #{TriageSignalChange::NEXT_ID}, 'epss', cve_id, now() FROM #{CHANGED} " \
+                         "ON CONFLICT #{TriageSignalChange::CVE_TARGET} #{TriageSignalChange::ON_CONFLICT_SET}")
       connection.execute("DELETE FROM epss_scores")
       connection.execute("INSERT INTO epss_scores (cve_id, score, percentile, band, score_date) SELECT cve_id, score, percentile, band, #{date} FROM epss_next")
       connection.execute("DROP TABLE epss_next")
-      TriageSignalChange.record!(:epss, cve_ids: changed)
-      { "high" => EpssScore.where(band: "high").count, "rose" => rose, "fell" => changed.size - rose }
+      connection.execute("DROP TABLE #{CHANGED}")
+      { "high" => EpssScore.where(band: "high").count, "rose" => rose, "fell" => fell }
     end
 
     def drop_staging
       connection.execute("DROP TABLE IF EXISTS #{KEPT}")
       connection.execute("DROP TABLE IF EXISTS #{STAGING}")
       connection.execute("DROP TABLE IF EXISTS epss_next")
+      connection.execute("DROP TABLE IF EXISTS #{CHANGED}")
     end
 
     def held_reason(counts)

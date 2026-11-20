@@ -32,9 +32,10 @@ Rails.application.configure do
   end
 
   # The EPSS band's hysteresis (owner decision 6): high from a score of at least ENTER, until it falls below LEAVE.
+  # Exact decimals, as the stored scores are.
   share = lambda do |name, default|
     value = ENV[name].presence || default
-    number = Float(value, exception: false)
+    number = value.match?(/\A\d*\.?\d+\z/) ? BigDecimal(value) : nil
     raise "#{name} must be a decimal from 0 to 1 (got #{value.inspect})" unless number&.between?(0, 1)
 
     number

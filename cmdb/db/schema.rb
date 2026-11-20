@@ -311,8 +311,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
 
   create_table "epss_scores", force: :cascade do |t|
     t.string "cve_id", limit: 32, null: false
-    t.decimal "score", null: false
-    t.decimal "percentile", null: false
+    t.decimal "score", precision: 11, scale: 10, null: false
+    t.decimal "percentile", precision: 11, scale: 10, null: false
     t.string "band", limit: 8, null: false
     t.date "score_date", null: false
     t.index ["cve_id"], name: "index_epss_scores_on_cve_id", unique: true
