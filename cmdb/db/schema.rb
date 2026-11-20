@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_256001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -373,6 +373,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
     t.virtual "nothing_evaluated", type: :boolean, as: "((((cis_passed + cis_failed) + cis_not_readable) = 0) AND (NOT (vuln_evaluated OR (((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown) > 0))))", stored: true
     t.virtual "fleet_cis_key", type: :decimal, as: "\nCASE\n    WHEN (((enrollment_state)::text = 'active'::text) AND (((cis_passed + cis_failed) + cis_not_readable) > 0)) THEN ((cis_passed)::numeric / (((cis_passed + cis_failed) + cis_not_readable))::numeric)\n    ELSE NULL::numeric\nEND", stored: true
     t.virtual "fleet_vulns_key", type: :integer, as: "\nCASE\n    WHEN (((enrollment_state)::text = 'active'::text) AND (vuln_evaluated OR (((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown) > 0))) THEN ((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown)\n    ELSE NULL::integer\nEND", stored: true
+    t.integer "vuln_fixable", default: 0, null: false
+    t.integer "vuln_fix_packages", default: 0, null: false
+    t.integer "vuln_fix_severities", limit: 2, default: 0, null: false
     t.index "lower(os_name) DESC NULLS LAST, name_key, host_id", name: "host_compliance_summaries_os_desc", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index "lower(os_name), name_key, host_id", name: "host_compliance_summaries_os", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index "nothing_evaluated, ((- (cis_critical + vuln_critical))), ((- (cis_high + vuln_high))), ((- (cis_medium + vuln_medium))), ((- (cis_low + vuln_low))), ((- vuln_unknown)), COALESCE(pass_rate, (2)::numeric), name_key, host_id", name: "host_compliance_summaries_worst", where: "((enrollment_state)::text = 'active'::text)"
@@ -946,6 +949,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
     t.string "last_installed_version", limit: 256
     t.string "last_fixed_version", limit: 256
     t.string "last_ecosystem", limit: 64
+    t.virtual "fixable", type: :boolean, as: "\nCASE\n    WHEN ((state)::text <> 'resolved'::text) THEN (last_fixed_version IS NOT NULL)\n    ELSE NULL::boolean\nEND", stored: true
     t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
     t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
     t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
@@ -1216,17 +1220,26 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
 
   create_function :host_compliance_counts, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.host_compliance_counts(host_ids bigint[])
-       RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean)
+       RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean, vuln_fixable integer, vuln_fix_packages integer, vuln_fix_severities smallint)
        LANGUAGE sql
        STABLE
       AS $function$
         -- A host's compliance counts, computed from the rows the host pages show (P2-D05, #193): CIS results with the
         -- severity of the rule version that produced them (the current version when a result names none), open and
         -- reopened findings with their advisory's severity, and whether its last matching run evaluated it.
+        --
+        -- v02 (VT-FIXABLE, #256): of the open and reopened findings, how many have a fix (the finding's stored flag), how
+        -- many distinct binary packages and architectures they are on, and which severities have one (a bit per severity,
+        -- critical 1, high 2, medium 4, low 8, unknown 16, for the Compliance page's "of this severity, with a fix"). A
+        -- host its last matching run did not evaluate counts none of them (#252 question 6), though its kept findings are
+        -- still open.
         SELECT h.id,
                cis.passed, cis.failed, cis.not_readable, cis.critical, cis.high, cis.medium, cis.low,
                vulns.critical, vulns.high, vulns.medium, vulns.low, vulns.unknown,
-               COALESCE(hve.state = 'evaluated', false)
+               COALESCE(hve.state = 'evaluated', false),
+               CASE WHEN hve.state = 'evaluated' THEN vulns.fixable ELSE 0 END,
+               CASE WHEN hve.state = 'evaluated' THEN vulns.fix_packages ELSE 0 END,
+               CASE WHEN hve.state = 'evaluated' THEN vulns.fix_severities ELSE 0::smallint END
           FROM (SELECT DISTINCT unnest(host_ids) AS id) h
           LEFT JOIN LATERAL (
             SELECT count(*) FILTER (WHERE r.result = 'pass')::integer AS passed,
@@ -1247,7 +1260,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
                    count(*) FILTER (WHERE a.severity = 'high')::integer AS high,
                    count(*) FILTER (WHERE a.severity = 'medium')::integer AS medium,
                    count(*) FILTER (WHERE a.severity = 'low')::integer AS low,
-                   count(*) FILTER (WHERE a.severity = 'unknown')::integer AS unknown
+                   count(*) FILTER (WHERE a.severity = 'unknown')::integer AS unknown,
+                   count(*) FILTER (WHERE f.fixable)::integer AS fixable,
+                   count(DISTINCT (f.package, f.architecture)) FILTER (WHERE f.fixable)::integer AS fix_packages,
+                   COALESCE(bit_or(CASE a.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 4 WHEN 'low' THEN 8 ELSE 16 END)
+                                   FILTER (WHERE f.fixable), 0)::smallint AS fix_severities
               FROM vulnerability_findings f
               JOIN advisories a ON a.id = f.advisory_id
              WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')
@@ -1263,7 +1280,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
       AS $function$
       BEGIN
         -- Recomputes the hosts' compliance counts (#193). Called from host_compliance_summaries_flush at commit, which has
-        -- already locked these rows in one sorted statement, and by the rebuild and the recount queue.
+        -- already locked these rows in one sorted statement, and by the rebuild and the recount queue. v02 (VT-FIXABLE,
+        -- #256): also the open findings with a fix, their packages, and their severities.
         IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
           RETURN;
         END IF;
@@ -1277,14 +1295,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
            SET cis_passed = c.cis_passed, cis_failed = c.cis_failed, cis_not_readable = c.cis_not_readable,
                cis_critical = c.cis_critical, cis_high = c.cis_high, cis_medium = c.cis_medium, cis_low = c.cis_low,
                vuln_critical = c.vuln_critical, vuln_high = c.vuln_high, vuln_medium = c.vuln_medium, vuln_low = c.vuln_low,
-               vuln_unknown = c.vuln_unknown, vuln_evaluated = c.vuln_evaluated
+               vuln_unknown = c.vuln_unknown, vuln_evaluated = c.vuln_evaluated,
+               vuln_fixable = c.vuln_fixable, vuln_fix_packages = c.vuln_fix_packages, vuln_fix_severities = c.vuln_fix_severities
           FROM host_compliance_counts(host_ids) c
          WHERE s.host_id = c.host_id
            AND (s.cis_passed, s.cis_failed, s.cis_not_readable, s.cis_critical, s.cis_high, s.cis_medium, s.cis_low,
-                s.vuln_critical, s.vuln_high, s.vuln_medium, s.vuln_low, s.vuln_unknown, s.vuln_evaluated)
+                s.vuln_critical, s.vuln_high, s.vuln_medium, s.vuln_low, s.vuln_unknown, s.vuln_evaluated,
+                s.vuln_fixable, s.vuln_fix_packages, s.vuln_fix_severities)
                IS DISTINCT FROM
                (c.cis_passed, c.cis_failed, c.cis_not_readable, c.cis_critical, c.cis_high, c.cis_medium, c.cis_low,
-                c.vuln_critical, c.vuln_high, c.vuln_medium, c.vuln_low, c.vuln_unknown, c.vuln_evaluated);
+                c.vuln_critical, c.vuln_high, c.vuln_medium, c.vuln_low, c.vuln_unknown, c.vuln_evaluated,
+                c.vuln_fixable, c.vuln_fix_packages, c.vuln_fix_severities);
       END;
       $function$
   SQL
@@ -1498,7 +1519,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
             $q$ INTO host_ids USING counted;
           END IF;
 
-        -- vulnerability_findings (statement): a finding opened, reopened, or resolved, or an open one moved.
+        -- vulnerability_findings (statement): a finding opened, reopened, or resolved, an open one moved, or an open one's
+        -- fix flag changed (v04, VT-FIXABLE #256: an advisory import that adds, moves to or from nothing, or removes a fixed
+        -- version writes it with no change of state).
         ELSIF TG_TABLE_NAME = 'vulnerability_findings' THEN
           IF TG_OP = 'INSERT' THEN
             EXECUTE 'SELECT ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY ($1))' INTO host_ids USING open_states;
@@ -1510,7 +1533,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_19_270001) do
                 SELECT DISTINCT v.host_id
                   FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
                  WHERE (o.state = ANY ($1) OR n.state = ANY ($1))
-                   AND ((o.state = ANY ($1)) <> (n.state = ANY ($1)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id))
+                   AND ((o.state = ANY ($1)) <> (n.state = ANY ($1)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id
+                        OR o.fixable IS DISTINCT FROM n.fixable))
             $q$ INTO host_ids USING open_states;
           END IF;
         END IF;

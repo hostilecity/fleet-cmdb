@@ -153,11 +153,13 @@ RSpec.describe HostComplianceSummary do
     record_config(host)
     CisEvaluation.evaluate!([ host.id ])
     record_heartbeat(host)
-    findings!(host, "low")
+    findings!(host, "low", fixed: "1.0-2")
+    vulns_evaluated!(host)
     before = version_of(host)
     CisEvaluation.evaluate!([ host.id ])
     record_heartbeat(host)
-    VulnerabilityFinding.where(host_id: host.id).update_all(last_fixed_version: "1.0-2", updated_at: Time.current)
+    # An open finding's fix moving to another version leaves its fix flag, so its host's counts, as they were (#256).
+    VulnerabilityFinding.where(host_id: host.id).update_all(last_fixed_version: "1.0-3", updated_at: Time.current)
     expect(version_of(host)).to eq(before)
   end
 
