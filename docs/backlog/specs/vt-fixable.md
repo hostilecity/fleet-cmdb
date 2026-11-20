@@ -15,8 +15,8 @@ Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19). This slice **
 
 ### Acceptance criteria
 
-- [ ] After an import that adds a fixed version to an open finding's range, the finding's flag and its host's summary say it has a fix, with no change of state
-- [ ] `compliance_summaries:check` finds no drift after matching, imports, and package reports in the suite
+- [x] After an import that adds a fixed version to an open finding's range, the finding's flag and its host's summary say it has a fix, with no change of state (`spec/services/vulnerability_fix_flag_spec.rb`)
+- [x] `compliance_summaries:check` finds no drift after matching, imports, and package reports in the suite (the same spec, and `spec/models/host_compliance_summary_spec.rb`)
 
 ## VT-D02: The filter and the counts in the dashboard
 
@@ -29,5 +29,17 @@ Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19). This slice **
 
 ### Acceptance criteria
 
-- [ ] On the host tab, "Fix available" and "No fix available" add up to the open list's count, and the filter is kept in the URL
-- [ ] The Compliance page's "with a fix" numbers equal the host tabs' and are read from the summaries in a fixed number of statements
+- [x] On the host tab, "Fix available" and "No fix available" add up to the open list's count, and the filter is kept in the URL (`spec/requests/host_vulnerabilities_spec.rb`)
+- [x] The Compliance page's "with a fix" numbers equal the host tabs' and are read from the summaries in a fixed number of statements (`spec/models/fleet_compliance_spec.rb`, `spec/requests/compliance_spec.rb`; the page's statement count spec is unchanged)
+
+## As built (#256)
+
+- **The flag is a stored generated column**, `fixable = CASE WHEN state <> 'resolved' THEN last_fixed_version IS NOT NULL END`. The matcher already wrote `last_fixed_version` in the transitions named above (open, reopen, and an open finding's fix appearing, moving, or disappearing), so the flag is written in those statements by the database and cannot drift from the stored fix. Adding it rewrites `vulnerability_findings` once (NFR-5).
+- **The tab reads the stored fix.** `VulnerabilityFinding.with_details` reads an active finding's fixed version from `last_fixed_version` instead of its live verdict, so "Fixed in", the package rows' "Fix for N of M", the chips, the Compliance page, and the fleet list always agree. Between an import committing and its run reaching a host, the host shows the fix it had (as its counts do); the run then writes both.
+- **Summaries:** `vuln_fixable` and `vuln_fix_packages` as specified, plus `vuln_fix_severities` (a bit per severity with a fix: critical 1, high 2, medium 4, low 8, unknown 16), which `vuln=<severity>&fix=available` needs to mean "an open finding of that severity with a fix" (#252 question 8); two counts could not answer it. All three are zero for a host that is not evaluated (#252 question 6), in the counting function itself, so no reader can count it by mistake. The host tab still filters a not-evaluated host's kept findings by their stored flags, under its "earlier evaluation" notice.
+- **Trigger:** `host_compliance_summaries_changed` v04 also notes an update whose flag changed; a fix moving from one version to another writes the finding but not the summary.
+- **Live refresh:** a matching run counts an open finding whose fix or source moved as a change of what the host shows, so its pages refresh.
+- **Host tab:** the chips are counted in the state chips' grouped query (`group(:state, :fixable)`), so the tab sends the same number of statements as before, with or without the filter. The chip of the current filter clears it; links keep the other filters and drop the cursors.
+- **Compliance page:** the "N with a fix" line is under the host's name (with the "not evaluated now" line), not under the five severity cells, so the table keeps one row per host; it links to the host's tab with `?fix=available`. A line under the vulnerability strip gives the fleet's hosts and findings with a fix, linking to the filter, and the filter form has a "Fixes" select.
+- **Benchmark:** `bin/benchmark seed --advisories-per-source 5` gives the template host 4,450 open findings (most with no fix); `bin/benchmark explain` has the recount, the Compliance filter, and the tab's filter as probes.
+
