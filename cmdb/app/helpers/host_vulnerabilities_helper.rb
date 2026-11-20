@@ -58,7 +58,10 @@ module HostVulnerabilitiesHelper
     end
   end
 
-  # Debian's kernel image package names (linux-image-<release>, -unsigned, -dbg). A pattern here until VT-BUCKETS brings
+  # Debian's versioned kernel image package names (linux-image-<release>, -unsigned, -dbg), which are never upgraded in
+  # place: the fix is a new package, and the old image keeps its findings until it is removed. Not the
+  # linux-image-<arch> metapackages (linux-image-amd64, linux-image-cloud-amd64): once they carry findings (#272),
+  # apt upgrade clears them, so "remove this old image" would be wrong advice (review of #272, item 3). A pattern here until VT-BUCKETS brings
   # the per-distribution applicability table (cmdb/config/triage_applicability.yml) with the kernel rules K1 and K2,
   # which replace this note with a work item.
   #
@@ -66,7 +69,7 @@ module HostVulnerabilitiesHelper
   # the source: in practice the -unsigned and -dbg images. The signed images, the default on amd64 and arm64, and the
   # linux-image-<arch> metapackage come from linux-signed-<arch>, which no advisory names, so they get no finding and
   # no note (#270).
-  KERNEL_IMAGE = /\Alinux-image-/
+  KERNEL_IMAGE = /\Alinux-image-\d/
 
   # Under a kernel image package with an open finding that has a fix (VT-FIXABLE #256, the spec's intro): until
   # VT-BUCKETS, a running kernel's fix shows as "Fix available" on its package row, but in Debian each kernel update is

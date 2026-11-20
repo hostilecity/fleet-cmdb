@@ -385,9 +385,21 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     get "/hosts/#{host.id}/vulnerabilities/package", params: { package: old.first } # removed: only open findings count (review of #267, N2)
     expect([ response.status, page.at_css(".kernel-fix") ]).to eq([ 200, nil ])
     expect(VulnerabilityFinding.find_by!(host_id: host.id, package: old.first)).to have_attributes(state: "resolved", last_fixed_version: "6.12.57-1")
-    # Every kernel image name, the metapackage too, should #270 give it findings; nothing else.
+    # Versioned kernel images only: not the metapackages, whose findings apt upgrade clears (review of #272, item 3).
     helpers = ApplicationController.helpers
-    expect(%w[linux-image-amd64 linux-image-6.12.48+deb13-arm64 linux-headers-amd64 linux-libc-dev].map { |name| helpers.kernel_fix_note(name, 1).present? }).to eq([ true, true, false, false ])
+    names = %w[linux-image-6.12.48+deb13-arm64 linux-image-6.12.48+deb13-amd64-unsigned linux-image-amd64 linux-image-cloud-amd64 linux-headers-amd64 linux-libc-dev]
+    expect(names.map { |name| helpers.kernel_fix_note(name, 1).present? }).to eq([ true, true, false, false, false, false ])
+  end
+
+  it "gives no kernel note to the linux-image-amd64 metapackage when it has a finding with a fix (as after #272)" do
+    host = debian_host(packages: [ [ "linux-image-amd64", "6.12.48-1", "linux" ], [ "linux-image-6.12.48+deb13-amd64-unsigned", "6.12.48-1", "linux" ] ])
+    import_advisories(advisory("DEBIAN-CVE-2026-2002", "linux", fixed: "6.12.57-1"), full: true)
+    match(host)
+    get "/hosts/#{host.id}/vulnerabilities"
+    notes = page.css("#open_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix").present? ] }
+    expect(notes).to eq("linux-image-amd64:amd64" => false, "linux-image-6.12.48+deb13-amd64-unsigned:amd64" => true)
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-amd64" }
+    expect(page.at_css(".kernel-fix")).to be_nil
   end
 
   it "says evaluated and nothing found only when the host was evaluated" do
