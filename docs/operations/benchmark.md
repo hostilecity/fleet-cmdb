@@ -108,7 +108,9 @@ The same container, PostgreSQL 16, its default settings. Seed `--hosts 100000 --
 | The counts of 50 hosts in one call (as a flush or the recount job batches them) | 193 to 202 ms | 260 to 318 ms |
 | `host_compliance_summaries_refresh` of one host (lock, count, compare) | | 7.0 to 7.9 ms |
 | Migration `20261120256001` (summary columns, functions) | | 18 ms; nothing is rewritten |
-| Migration `20261120256002` (recount every host) | | 25 s for 100,001 hosts (1,201 with open findings) |
+| Migration `20261120256002` (recount every host; 100-host batches since the re-check of #267) | | 25 to 27 s for 100,001 hosts (1,201 with open findings): run inline, since its estimate was 77 s (counted in 1.2 s) |
+| One recount batch: 100 hosts with 3,560 open findings each (how long a flush for them can wait) | | 0.78 to 0.86 s |
+| `compliance_summaries:recount_fixes` (the upgrade step), then the migration on restart | | 22.8 s; the migration then finds nothing left (14 ms) |
 | `compliance_summaries:rebuild` | | 51 to 73 s |
 
 The extra cost is about 1 ms a host with thousands of open findings (the distinct count of packages with a fix), paid only for hosts whose counts a transaction changed. `bin/benchmark explain` after: `/compliance` 5 statements, 113 to 134 ms; `?fix=available` and `?fix=available&vuln=high` 6 statements, 61 to 83 ms for both pages and the filtered count (the count reads the summaries, as the other filters' counts do); the recount probe 11.5 ms; the Vulnerabilities tab 10 statements as before, 89 ms, with the state and fix chips one grouped count of 5 ms; the tab filtered by `?fix=available` and `?fix=none` 41 ms for both pages.

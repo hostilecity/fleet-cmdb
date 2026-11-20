@@ -21,4 +21,17 @@ namespace :compliance_summaries do
             "#{', ...' if drifted.size > 20}). Run bin/rails compliance_summaries:rebuild."
     end
   end
+
+  # The upgrade step of migration 20261120256002 on a large database (#256, docs/operations/upgrades.md): resumable.
+  desc "Recount every host's vulnerability fix counts after the upgrade that added them (resumable); then restart the server"
+  task recount_fixes: :environment do
+    $stdout.sync = true # progress as it goes, also into a log file
+    recount = ComplianceFixRecount.new(log: ->(message) { puts message })
+    next puts("Nothing to recount: the upgrade's recount is finished.") unless recount.needed?
+
+    estimate = recount.estimate
+    puts "To recount: #{estimate.hosts} hosts with #{estimate.findings} open findings, about #{(estimate.seconds / 60).ceil} min at the estimate's rates."
+    recount.run!
+    puts "Done. Start the server again: its migrations finish the upgrade."
+  end
 end

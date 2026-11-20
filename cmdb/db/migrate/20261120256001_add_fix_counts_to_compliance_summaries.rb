@@ -15,7 +15,8 @@
 #
 # One transaction, touching only the summaries (a metadata-only ADD COLUMN with a constant default) and the functions,
 # so a summary flush never sees the counts function half replaced. Every row reads 0 until the next migration
-# (20261120256002) recounts it.
+# (20261120256002), or bin/rails compliance_summaries:recount_fixes on a large database, recounts it; the progress of
+# that recount is the one row of compliance_fix_recounts, made here (ComplianceFixRecount).
 class AddFixCountsToComplianceSummaries < ActiveRecord::Migration[8.1]
   COLUMNS = { vuln_fixable: :integer, vuln_fix_packages: :integer, vuln_fix_severities: :smallint }.freeze
   # Each function's version going up, and the one down restores.
@@ -25,9 +26,20 @@ class AddFixCountsToComplianceSummaries < ActiveRecord::Migration[8.1]
     COLUMNS.each { |name, type| add_column :host_compliance_summaries, name, type, default: 0, null: false }
     execute "DROP FUNCTION host_compliance_counts(bigint[])" # its result columns change
     FUNCTIONS.each { |name, (up, _down)| execute function_sql(name, up) }
+    create_progress
+  end
+
+  # The recount's progress: the last host id recounted (ComplianceFixRecount). Also used by 20261120256002's down.
+  def create_progress
+    create_table :compliance_fix_recounts, id: :smallint do |t|
+      t.bigint :last_host_id, null: false, default: 0
+      t.check_constraint "id = 1", name: "compliance_fix_recounts_one_row"
+    end
+    execute "INSERT INTO compliance_fix_recounts (id, last_host_id) VALUES (1, 0)"
   end
 
   def down
+    drop_table :compliance_fix_recounts, if_exists: true
     execute "DROP FUNCTION host_compliance_counts(bigint[])"
     FUNCTIONS.each { |name, (_up, down)| execute function_sql(name, down) }
     COLUMNS.each_key { |name| remove_column :host_compliance_summaries, name }

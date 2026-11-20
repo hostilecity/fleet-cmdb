@@ -84,3 +84,26 @@ When it refuses, on the server VM, as the deploy user:
 - Do not run `bin/rails db:migrate:redo` or roll the migrations back: rolling back `BackfillPackageSets` empties the package store, matched verdicts included.
 - The old space stays: the findings keep their wider rows, and `package_snapshots` keeps the space of its JSON lists, until rows are rewritten (old snapshots also leave with retention). To get it back at once on a large database, rebuild the tables at a quiet time (`VACUUM FULL vulnerability_findings` and `VACUUM FULL package_snapshots`, which lock each table while they run).
 - After the upgrade no package chunk is matched yet: findings keep the state they had and show their copied details, and each host's chunks are matched at its next package report or advisory import. `bin/rails vulnerabilities:match` matches everything at once.
+
+## Vulnerability fix counts (#256)
+
+The upgrade adds per-host counts of open findings with a fix to the compliance summaries, then recounts every host (migrations `20261120256001` and `20261120256002`; [compliance-summaries.md](compliance-summaries.md)).
+
+- **Small databases (a homelab):** nothing to do. The recount runs at container start when its estimate is at most 90 s. The estimate (`ComplianceFixRecount#estimate`) adds 0.5 ms for each host and 5 microseconds for each open or reopened finding, about three times the rates measured on 2 shared CPUs (0.17 ms a host and about 1.6 microseconds a finding, [benchmark.md](benchmark.md)). It counts only until it is past 90 s, so the refusal on a large database says "more than 90 s". So the step is needed from about 180,000 hosts with no findings, or about 16,000 hosts with 1,000 open findings each. 100,001 hosts, 1,201 of them with 4,450 open findings each, took 25 s.
+- **Large databases:** above that, the migration refuses with `fleet-cmdb upgrade step needed` before it recounts anything (see the top of this page: the container stays up without serving). The recount is linear in hosts and findings: about 2 hours for a million hosts with 4,450 open findings each.
+
+When it refuses, on the server VM, as the deploy user:
+
+1. **Keep the deploy away while it runs:** disable the Deploy workflow (`gh workflow disable Deploy`) and merge nothing to `main`. A deploy would replace the waiting container and stop the recount; that loses nothing, since it is resumable, but the new container would refuse again. Backups can run meanwhile: the recount only updates summary rows.
+2. **Recount in the waiting container, then restart it:**
+
+   ```sh
+   nohup docker exec fleet-cmdb bin/rails compliance_summaries:recount_fixes > ~/fix-recount.log 2>&1 &
+   tail -f ~/fix-recount.log    # what is left, then progress every 10,000 hosts; Ctrl-C stops only the tail
+   docker restart fleet-cmdb    # when the log ends with "Done": the migration finds nothing left and finishes
+   ```
+
+   The task recounts 100 hosts at a time, each batch committed with its progress (the last host id done, in `compliance_fix_recounts`). If it stops (interrupted, the container restarted, the connection lost), run it again: it carries on after the last batch committed. Running it after the recount is finished says "Nothing to recount".
+3. **Check, and turn the deploy back on:** `docker exec fleet-cmdb bin/rails compliance_summaries:check` ("Every host's compliance summary matches its rows"), then enable the Deploy workflow again. If `FLEET_JOBS_CONTAINER` is `true`, run the workflow once to bring the jobs container back.
+
+- Do not roll `20261120256002` back to recount again: `compliance_summaries:rebuild` recounts every host whenever needed, with the server up.
