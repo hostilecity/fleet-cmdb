@@ -56,6 +56,27 @@ When the package name of such a line is readable (the version, the architecture,
 
 One thing the server does not do yet (P2-S11): a skipped package is not in the stored set, so its vulnerability findings are resolved as removed and reopen when the package is listed again.
 
+## What is in use (FR-2.6)
+
+With a dpkg listing the report also says what running processes use (`in_use`, [VT-APPLICABILITY](../backlog/specs/vt-applicability.md)), for the vulnerability triage rules L1 and N4. It names binary packages and classes only, never a process id, command line, user name, address, or port.
+
+**Listening and running services, always, with no extra privilege.** The agent reads the listening TCP and bound UDP sockets from `/proc/net/{tcp,tcp6,udp,udp6}`, asks the kernel's `sock_diag` netlink interface for each socket's cgroup (what `ss --cgroup` shows), finds the cgroup's directory under `/sys/fs/cgroup` (its inode number is the id), and from its path the systemd service (only inside `system.slice`). A socket systemd itself holds for socket activation is matched with `systemctl list-sockets`. The services' executables come from `systemctl show --property=Id,ExecStart`, and their packages from dpkg's file lists under `/var/lib/dpkg/info/` (a path is looked up on both sides of the `/usr` merge). The report has:
+
+- `listening`: each package with `network` (any socket on a non-loopback address, the wildcard included) or `loopback` (127.0.0.0/8 or ::1 only);
+- `services`: the packages of the running services' executables;
+- `unnamed_listeners`: sockets counted but not named: a container, a user session, the kernel, or a service whose executable no package owns (for example under `/opt`). A service started through a wrapper (`/bin/sh -c`, `env`) is named by the wrapper's package.
+
+All of it is readable under the agent's unit as it is; the unit does not change. If the sockets, their cgroups, the services, or the file lists cannot be read whole, `in_use` is `null` with a warning (`field: in_use`), so no package looks idle. Limits: 10,000 sockets, 1,000 services, 10 seconds.
+
+**The library-use scan, only where the VM enables it.** With
+
+```toml
+[packages]
+library_scan = true
+```
+
+in `/etc/fleet-agent/config.toml` (and `systemctl restart fleet-agent`), each package report also runs `fleet-agent-library-scan.service`: a transient unit the agent starts with `systemd-run`, which runs the agent's own binary as `fleet-agent library-scan`. It reads every process's `/proc/<pid>/maps` (at most 4,096 processes and 50,000 files), maps the files to packages, and reports `libraries`: each package with a file mapped by a running process, `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). `complete` is then `true`. Reading other processes' maps needs `CAP_SYS_PTRACE`, so only this unit has it, together with `CAP_DAC_READ_SEARCH`, no network (`PrivateNetwork=yes`, `IPAddressDeny=any`), a read-only filesystem with the agent's config and state hidden, no input but its mode, its result on a pipe, and at most 30 seconds (`RuntimeMaxSec=30`). The agent's own unit never has it ([threat model](../decisions/phase-3-threat-model.md) F-13). A scan that fails is reported as `library_scan: failed` with a warning; the services are still reported. To see a run: `journalctl -u fleet-agent-library-scan`.
+
 ## Seeing what was reported
 
 `journalctl -u fleet-agent` shows one line per report (for example):

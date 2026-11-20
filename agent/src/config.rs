@@ -36,6 +36,10 @@
 //! [tasks]                                    # optional (Phase 3); see crate::tasks::settings
 //! enabled = ["refresh_reports"]              # the default; restart_service, apply_package_updates
 //! allowed_services = []                      # units restart_service may restart (DEC-15)
+//!
+//! [packages]                                 # optional (FR-2.6, VT-A02)
+//! library_scan = false                       # the default; true runs the library-use scan in its own
+//!                                            # short-lived unit, the only one with CAP_SYS_PTRACE
 //! ```
 //!
 //! A mistake in `[tasks]` does not stop the agent: it fails safe with every task off
@@ -240,6 +244,9 @@ pub struct Config {
     /// The owner's task settings (P3-A01). After a mistake in `[tasks]` nothing is enabled and
     /// [`TaskSettings::problem`] says why; the rest of the config still applies.
     pub tasks: TaskSettings,
+    /// `[packages] library_scan`: run the library-use scan with each package report (VT-A02). Off
+    /// unless the VM's owner turns it on, as task types are (ADR 0014).
+    pub library_scan: bool,
 }
 
 /// Why a config could not be loaded. Every message says what to change.
@@ -309,6 +316,13 @@ struct RawConfig {
     task_poll: Option<RawInterval>,
     /// Checked by [`TaskSettings`], which fails safe instead of refusing the whole file.
     tasks: Option<toml::Value>,
+    packages: Option<RawPackages>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPackages {
+    library_scan: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
@@ -422,6 +436,11 @@ impl Config {
             )?,
             task_poll: validate_interval(&TASK_POLL_LIMITS, raw.task_poll.unwrap_or_default())?,
             tasks: TaskSettings::from_value(raw.tasks.as_ref()),
+            library_scan: raw
+                .packages
+                .unwrap_or_default()
+                .library_scan
+                .unwrap_or(false),
         })
     }
 }
