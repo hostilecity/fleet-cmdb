@@ -48,7 +48,7 @@
     <label>Search name or hostname<%= search_field_tag :q, @compliance.q, placeholder: "vm-01 or Media server", maxlength: FleetCompliance::QUERY_MAX %></label>
     <label>Tag<%= select_tag :tag, options_for_select(@tags, @compliance.tag), include_blank: "All tags" %></label>
     <label>Status<%= select_tag :status, options_for_select(FleetCompliance::STATUSES.invert, @compliance.status), include_blank: "All hosts" %></label>
-    <label>Fixes<%= select_tag :fix, options_for_select(FleetCompliance::FIXES.invert, @compliance.fix), include_blank: "Any" %></label>
+    <label>Fixes<%= select_tag :fix, options_for_select(FleetCompliance::FIXES.invert, @compliance.fix), include_blank: "All hosts" %></label>
     <label>Sort<%= select_tag :sort, options_for_select(FleetCompliance::SORTS.invert, @compliance.sort) %></label>
     <%= hidden_field_tag :ecosystem, @compliance.ecosystem if @compliance.ecosystem %>
     <%= hidden_field_tag :cis, @compliance.cis if @compliance.cis %>
@@ -64,12 +64,13 @@
   <% if @compliance.cis || @compliance.vuln %>
     <p class="applied" id="severity_filter">
       <span>Showing hosts with <%= [ ("open #{@compliance.cis} CIS-aligned check failures" if @compliance.cis), ("open #{@compliance.vuln} vulnerability findings#{' with a fix' if @compliance.fix}" if @compliance.vuln) ].compact.join(" and ") %>.</span>
-      <%= link_to "Show every host", compliance_path(@compliance.params_with(cis: nil, vuln: nil)) %>
+      <%= link_to "Show every host", compliance_path(@compliance.params_with(cis: nil, vuln: nil, fix: nil)) %>
     </p>
   <% end %>
-  <% if @compliance.fix %>
+  <%# With vuln, the sentence above already says "with a fix" (review of #267, N1). %>
+  <% if @compliance.fix && !@compliance.vuln %>
     <p class="applied" id="fix_filter">
-      <span>Showing evaluated hosts with <%= @compliance.vuln ? "an open #{@compliance.vuln} finding" : "an open finding" %> that has a fix available.</span>
+      <span>Showing evaluated hosts with an open finding that has a fix available.</span>
       <%= link_to "Show hosts with or without a fix", compliance_path(@compliance.params_with(fix: nil)) %>
     </p>
   <% end %>

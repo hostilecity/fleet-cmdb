@@ -215,7 +215,7 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       expect([ link.text, link["href"] ]).to eq([ "2 with a fix", "/hosts/#{web.id}/vulnerabilities?fix=available" ])
       expect(page.at_css("tr#compliance_host_#{old.id} th .fix-detail")).to be_nil
       expect(page.css("#compliance_table th .fix-detail").size).to eq(1) # build and backup have nothing open
-      expect(page.css("select[name=fix] option").map { |o| [ o.text, o["value"] ] }).to eq([ [ "Any", "" ], [ "Has open findings with a fix", "available" ] ])
+      expect(page.css("select[name=fix] option").map { |o| [ o.text, o["value"] ] }).to eq([ [ "All hosts", "" ], [ "Has open findings with a fix", "available" ] ])
 
       get "/compliance", params: { fix: "available" }
       expect(row_names).to eq([ "Web A" ])
@@ -225,7 +225,8 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       get "/compliance", params: { fix: "available", vuln: "low" }
       expect(row_names).to eq([ "Web A" ])
       expect(words(page.at_css("#severity_filter span"))).to eq("Showing hosts with open low vulnerability findings with a fix.")
-      expect(words(page.at_css("#fix_filter span"))).to eq("Showing evaluated hosts with an open low finding that has a fix available.")
+      expect(page.at_css("#severity_filter a")["href"]).to eq("/compliance") # one sentence, one link that clears both (review of #267, N1)
+      expect(page.at_css("#fix_filter")).to be_nil
       get "/compliance", params: { fix: "available", vuln: "critical" }
       expect(words(page.at_css("#no_matches strong"))).to eq("No hosts match open critical vulnerability findings with a fix.")
       get "/compliance", params: { fix: "available", tag: "storage" }

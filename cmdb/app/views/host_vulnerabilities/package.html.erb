@@ -39,6 +39,7 @@
       <p class="none-open"><strong>No findings.</strong></p>
     <% else %>
       <p><strong><%= open.size %> open</strong><%= " (#{open.count { |f| f.state == 'reopened' }} reopened)" if open.any? { |f| f.state == "reopened" } %>, <strong><%= resolved.size %> resolved</strong>.</p>
+      <% if (note = kernel_fix_note(@package, open.count(&:fixed_version))) %><p class="muted"><%= note %></p><% end %>
       <% open.select(&:fixed_version).each do |finding| %>
         <p class="muted">For <span class="mono"><%= finding.advisory.advisory_id %></span>, the affected range the installed version is in is fixed in <span class="mono"><%= finding.fixed_version %></span>. Check the advisory for any other affected range before relying on a later version.</p>
       <% end %>

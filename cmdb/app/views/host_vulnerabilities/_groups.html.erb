@@ -14,7 +14,7 @@
         <span class="state-note"><span class="muted">installed</span> <span class="mono"><%= group.installed_version %></span></span></th>
         <td><%= pluralize(group.total, "advisory", plural: "advisories") %></td>
         <td><%= severity_tag(group.worst) %> <span class="state-note"><%= finding_severity_breakdown(group) %></span></td>
-        <td><%= resolved ? group_resolutions(group) : fixable_count(group) %></td>
+        <td><%= resolved ? group_resolutions(group) : safe_join([ fixable_count(group), kernel_fix_note(group.package, group.fixable) ].compact) %></td>
         <td><%= group_states(group) %></td>
         <td><%= utc(group.first_seen_at) %></td></tr>
       <tr class="advisories"><td colspan="6">

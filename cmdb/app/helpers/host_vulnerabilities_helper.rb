@@ -58,6 +58,22 @@ module HostVulnerabilitiesHelper
     end
   end
 
+  # Debian's kernel image packages (linux-image-6.12.57+deb13-amd64, -unsigned, the linux-image-amd64 metapackage). A
+  # pattern here until VT-BUCKETS brings the per-distribution applicability table (cmdb/config/triage_applicability.yml)
+  # with the kernel rules K1 and K2, which replace this note with a work item.
+  KERNEL_IMAGE = /\Alinux-image-/
+
+  # Under a kernel image package with a fix (VT-FIXABLE #256, the spec's intro): until VT-BUCKETS, a running kernel's
+  # fix shows as "Fix available" on its package row, but in Debian each kernel update is a new binary package, which
+  # apt upgrade and the update task (apply_package_updates, DEC-16) never install, and it fixes nothing until the host
+  # boots it. nil for any other package, or with no fix.
+  def kernel_fix_note(package, fixable)
+    return nil unless fixable.positive? && KERNEL_IMAGE.match?(package)
+
+    tag.span(safe_join([ "A kernel fix comes in a new package, which neither ", tag.code("apt upgrade"), " nor the update task installs: install it (",
+                         tag.code("apt full-upgrade"), "), then reboot into it." ]), class: "state-note kernel-fix")
+  end
+
   # How a resolved package row's findings resolved, in the order RESOLUTIONS lists them: "2 fixed, 1 removed".
   def group_resolutions(group) = group.resolutions.sort_by { |resolution, _| RESOLUTIONS.keys.index(resolution) }.map { |resolution, count| "#{count} #{resolution.tr('_', ' ')}" }.join(", ")
 
