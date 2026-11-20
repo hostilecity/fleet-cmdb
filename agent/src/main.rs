@@ -22,6 +22,7 @@ mod collect;
 mod config;
 mod facts;
 mod fsx;
+mod in_use;
 mod install;
 mod logging;
 mod owner;
@@ -78,6 +79,8 @@ Commands:
   self-test     Check that this binary can start with this host's config (run on a downloaded release)
   update-supervise, update-rollback
                 Internal: run by the agent and by systemd while updating (see `fleet-agent self-test --help`)
+  library-scan  Internal: the optional library-use scan, run only in its own transient unit when
+                `[packages] library_scan = true` (VT-A02)
 
 Options:
   -c, --config PATH  Config file [default: /etc/fleet-agent/config.toml]
@@ -560,6 +563,15 @@ fn main() -> ExitCode {
     }
     if args.first().and_then(|a| a.to_str()) == Some("verify-release") {
         return release::main(args);
+    }
+    // The library-use scan (VT-A02): run only by the transient unit the agent starts; it takes no
+    // argument, so anything after it is a usage error.
+    if args.first().and_then(|a| a.to_str()) == Some(in_use::scan::MODE) {
+        if args.len() > 1 {
+            eprintln!("fleet-agent: {} takes no arguments", in_use::scan::MODE);
+            return ExitCode::from(EXIT_USAGE);
+        }
+        return in_use::scan::main();
     }
     if matches!(
         args.first().and_then(|a| a.to_str()),

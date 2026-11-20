@@ -43,6 +43,28 @@ pub fn parse_kernel_version(bytes: &[u8]) -> Result<String, String> {
     single_value(bytes, 256)
 }
 
+/// `/proc/sys/kernel/version`, the running kernel's build string (`#1 SMP PREEMPT_DYNAMIC Debian
+/// 6.12.48-1 (2025-09-20)`), for distributions that update a kernel package in place (#163).
+pub fn parse_kernel_build(bytes: &[u8]) -> Result<String, String> {
+    single_value(bytes, 256)
+}
+
+/// `/run/reboot-required.pkgs`: one binary package name per line. Each name once, in the file's order;
+/// lines that are not package names are left out; at most 50 (the contract's limit).
+pub fn parse_reboot_packages(bytes: &[u8]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in String::from_utf8_lossy(bytes).lines() {
+        let name = line.trim();
+        if crate::packages::valid_name(name) && !names.iter().any(|n| n == name) {
+            names.push(name.to_owned());
+        }
+        if names.len() == 50 {
+            break;
+        }
+    }
+    names
+}
+
 /// The `uname(2)` machine field. The contract accepts only `x86_64` (DEC-01).
 pub fn parse_architecture(machine: &str) -> Result<String, String> {
     match machine.trim() {

@@ -198,6 +198,9 @@ fn expected() -> Inventory {
                 addresses: vec!["198.51.100.10/24".to_owned()],
             },
         ]),
+        reboot_required: None,
+        reboot_required_packages: None,
+        kernel_build: Some("#1 SMP PREEMPT_DYNAMIC Debian 6.12.48-1 (2025-09-20)".to_owned()),
         warnings: vec![],
     }
 }
@@ -246,15 +249,16 @@ fn serialises_to_exactly_the_contract_fact_fields() {
         "report_id",
         "schema_version",
     ];
-    let mut required: Vec<&str> = schema["required"]
-        .as_array()
-        .expect("required")
-        .iter()
-        .map(|v| v.as_str().expect("name"))
+    // Every property the contract declares, the optional ones (FR-2.6) included.
+    let mut declared: Vec<&str> = schema["properties"]
+        .as_object()
+        .expect("properties")
+        .keys()
+        .map(String::as_str)
         .filter(|name| !envelope.contains(name))
         .collect();
-    required.sort_unstable();
-    assert_eq!(keys, required);
+    declared.sort_unstable();
+    assert_eq!(keys, declared);
 }
 
 #[test]
@@ -296,6 +300,7 @@ const SOURCES: &[(&str, &[Field])] = &[
     ("/proc/sys/kernel/random/boot_id", &[Field::BootId]),
     ("/etc/machine-id", &[Field::MachineId]),
     ("/proc/self/mounts", &[Field::Disks]),
+    ("/proc/sys/kernel/version", &[Field::KernelBuild]),
 ];
 
 /// The inventory as JSON without its warnings.
@@ -364,6 +369,72 @@ fn a_corrupt_source_file_yields_null_plus_a_warning_and_the_rest_intact() {
             assert_only_these_fields_degraded(&inventory, source, fields);
         }
     }
+}
+
+#[test]
+fn the_reboot_flag_is_true_or_null_never_false() {
+    // FR-2.6, VT-A01: Debian's kernel packages do not reliably create the flag, so no flag is unknown.
+    let inventory = collect_from(&fixture_root(), FakeSystem::new());
+    assert_eq!(inventory.reboot_required, None);
+    assert_eq!(inventory.reboot_required_packages, None);
+    assert_eq!(
+        as_report(&inventory)["reboot_required"],
+        serde_json::Value::Null
+    );
+
+    let root = FakeRoot::new();
+    root.write("/run/reboot-required", b"*** System restart required ***\n");
+    root.write(
+        "/run/reboot-required.pkgs",
+        b"libc6\nlinux-image-6.12.57+deb13-amd64\nlibc6\nNot A Package\n\n",
+    );
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(inventory.reboot_required, Some(true));
+    assert_eq!(
+        inventory.reboot_required_packages.as_deref(),
+        Some(
+            &[
+                "libc6".to_owned(),
+                "linux-image-6.12.57+deb13-amd64".to_owned()
+            ][..]
+        )
+    );
+    assert!(inventory.warnings.is_empty(), "{:#?}", inventory.warnings);
+    contract::assert_conforms("v1", "inventory.request", &as_report(&inventory));
+
+    // The flag without its list: true, and no names.
+    root.remove("/run/reboot-required.pkgs");
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(inventory.reboot_required, Some(true));
+    assert_eq!(inventory.reboot_required_packages, None);
+
+    // A list without the flag says nothing.
+    root.remove("/run/reboot-required");
+    root.write("/run/reboot-required.pkgs", b"libc6\n");
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(inventory.reboot_required, None);
+    assert_eq!(inventory.reboot_required_packages, None);
+
+    // At most 50 names.
+    let many: String = (0..80).map(|i| format!("pkg{i}\n")).collect();
+    root.write("/run/reboot-required", b"");
+    root.write("/run/reboot-required.pkgs", many.as_bytes());
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(
+        inventory.reboot_required_packages.map(|p| p.len()),
+        Some(50)
+    );
+}
+
+#[test]
+fn an_unreadable_reboot_flag_is_null_with_a_warning() {
+    let root = FakeRoot::new();
+    fs::create_dir_all(root.path("/run/reboot-required")).expect("mkdir");
+    let inventory = collect_from(&root.0, FakeSystem::new());
+    assert_eq!(inventory.reboot_required, None);
+    let message = warning_for(&inventory, Field::RebootRequired).expect("warning");
+    assert!(message.starts_with("/run/reboot-required"), "{message}");
+    contract::assert_conforms("v1", "inventory.request", &as_report(&inventory));
 }
 
 #[test]

@@ -250,6 +250,18 @@ impl<'a> Ctx<'a> {
         self.host.list(std::path::Path::new(dir), max_entries)
     }
 
+    /// [`Host::socket_cgroups`], within the budget.
+    pub fn socket_cgroups(&self, max: usize) -> io::Result<Vec<host::SocketCgroup>> {
+        self.in_time()?;
+        self.host.socket_cgroups(max)
+    }
+
+    /// [`Host::directories`], within the budget.
+    pub fn directories(&self, root: &str, max: usize) -> io::Result<Vec<(u64, String)>> {
+        self.in_time()?;
+        self.host.directories(std::path::Path::new(root), max)
+    }
+
     /// Filesystem calls share the budget with commands (review of #114): none starts once it is used
     /// up, so 512 paths on a dead mount cost at most the budget plus one [`host::IO_TIMEOUT`], not
     /// 512 of them.

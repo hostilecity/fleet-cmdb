@@ -50,6 +50,8 @@
 //! | `machine_id` | `/etc/machine-id` |
 //! | `disks` | `/proc/self/mounts` and `statvfs(3)`; see [`disk`] for which mounts count |
 //! | `network_interfaces` | `getifaddrs(3)`, `/proc/net/route`, `/proc/net/ipv6_route`; see [`network`] |
+//! | `reboot_required`, `reboot_required_packages` | `/run/reboot-required` and `/run/reboot-required.pkgs` (Debian's flag, FR-2.6): `true` when the flag exists, **`null`, never `false`, when it does not** (Debian's kernel packages do not reliably create it) |
+//! | `kernel_build` | `/proc/sys/kernel/version` (#163) |
 
 mod disk;
 mod network;
@@ -98,6 +100,8 @@ pub enum Field {
     MachineId,
     Disks,
     NetworkInterfaces,
+    RebootRequired,
+    KernelBuild,
 }
 
 impl Field {
@@ -161,6 +165,10 @@ pub struct Inventory {
     pub machine_id: Option<String>,
     pub disks: Option<Vec<Disk>>,
     pub network_interfaces: Option<Vec<NetworkInterface>>,
+    /// `Some(true)` or `None`; never `Some(false)` (FR-2.6, VT-A01).
+    pub reboot_required: Option<bool>,
+    pub reboot_required_packages: Option<Vec<String>>,
+    pub kernel_build: Option<String>,
     pub warnings: Vec<Warning>,
 }
 
@@ -188,6 +196,10 @@ pub struct StableFacts {
     pub machine_id: Option<String>,
     pub disks: Option<Vec<StableDisk>>,
     pub network_interfaces: Option<Vec<NetworkInterface>>,
+    /// `Some(true)` or `None`; never `Some(false)` (FR-2.6, VT-A01).
+    pub reboot_required: Option<bool>,
+    pub reboot_required_packages: Option<Vec<String>>,
+    pub kernel_build: Option<String>,
 }
 
 impl Inventory {
@@ -214,6 +226,9 @@ impl Inventory {
                     .collect()
             }),
             network_interfaces: self.network_interfaces.clone(),
+            reboot_required: self.reboot_required,
+            reboot_required_packages: self.reboot_required_packages.clone(),
+            kernel_build: self.kernel_build.clone(),
         }
     }
 }
@@ -281,6 +296,9 @@ impl Collector {
         };
         let route = self.read("/proc/net/route");
         let ipv6_route = self.read_optional(IPV6_ROUTE);
+        let reboot_flag = self.read_optional(REBOOT_REQUIRED);
+        let reboot_packages = self.read_optional(REBOOT_REQUIRED_PKGS);
+        let kernel_build = self.read("/proc/sys/kernel/version");
 
         let mut warnings = Warnings::default();
         let limit = self.timeout;
@@ -362,6 +380,25 @@ impl Collector {
             &mut warnings,
         );
 
+        let kernel_build = warnings.field(
+            Field::KernelBuild,
+            kernel_build
+                .wait(deadline, limit)
+                .and_then(|(path, bytes)| at(&path, system::parse_kernel_build(&bytes))),
+        );
+        // Present: true. Missing: null, never false. Unreadable: null with a warning.
+        let reboot_required = warnings
+            .field(Field::RebootRequired, reboot_flag.wait(deadline, limit))
+            .flatten()
+            .map(|_| true);
+        let reboot_required_packages = match reboot_required {
+            Some(true) => warnings
+                .field(Field::RebootRequired, reboot_packages.wait(deadline, limit))
+                .flatten()
+                .map(|bytes| system::parse_reboot_packages(&bytes)),
+            _ => None,
+        };
+
         Inventory {
             hostname,
             os,
@@ -376,6 +413,9 @@ impl Collector {
             machine_id,
             disks,
             network_interfaces,
+            reboot_required,
+            reboot_required_packages,
+            kernel_build,
             warnings: warnings.finish(),
         }
     }
@@ -581,6 +621,8 @@ fn parse_with<T>(
 }
 
 const IPV6_ROUTE: &str = "/proc/net/ipv6_route";
+const REBOOT_REQUIRED: &str = "/run/reboot-required";
+const REBOOT_REQUIRED_PKGS: &str = "/run/reboot-required.pkgs";
 
 impl Collector {
     /// Runs `read` on a new thread, unless a read of the same `source` is still running (for

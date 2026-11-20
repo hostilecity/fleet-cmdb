@@ -22,6 +22,8 @@ pub struct Carried {
     pub update_confirm_seconds: Option<u64>,
     /// The `[tasks]` settings (P3-A01), so re-running the installer never turns a task on or off.
     pub tasks: TaskSettings,
+    /// `[packages] library_scan` (VT-A02), so re-running the installer never turns the scan on or off.
+    pub library_scan: bool,
 }
 
 impl Carried {
@@ -41,6 +43,7 @@ impl Carried {
                 != defaults.update_confirm_seconds)
                 .then_some(config.update_confirm_seconds),
             tasks: config.tasks.clone(),
+            library_scan: config.library_scan,
         }
     }
 
@@ -54,6 +57,7 @@ impl Carried {
             task_poll: None,
             update_confirm_seconds: None,
             tasks: TaskSettings::default(),
+            library_scan: false,
         }
     }
 }
@@ -204,6 +208,13 @@ pub fn render(
         &mut out,
     );
     tasks(&carried.tasks, &mut out);
+    if carried.library_scan {
+        out.push_str("\n[packages]\nlibrary_scan = true\n");
+    } else {
+        out.push_str(
+            "\n# [packages]                                 # what is in use (VT-A02)\n# library_scan = false                       # true: the library-use scan, in its own unit with CAP_SYS_PTRACE\n",
+        );
+    }
     // Never write a config the agent would refuse. The parse error never contains the credential.
     Config::from_toml(&out).map_err(|e| format!("the config to be written is not valid: {e}"))?;
     Ok(out)
@@ -295,6 +306,34 @@ mod tests {
         assert!(text.contains("`reboot`"), "{text}");
         let (_, _, text) = render_from("");
         assert!(text.contains("# [tasks]"), "{text}");
+    }
+
+    #[test]
+    fn the_library_scan_setting_is_carried_over() {
+        for (section, on) in [
+            ("", false),
+            ("[packages]\nlibrary_scan = true\n", true),
+            ("[packages]\n", false),
+        ] {
+            let old = Config::from_toml(&format!("{}{section}", minimal())).unwrap();
+            assert_eq!(old.library_scan, on, "{section}");
+            let text = render(
+                "https://agent.example.lan",
+                &Credential::new(CREDENTIAL),
+                None,
+                &Carried::from(&old),
+            )
+            .unwrap();
+            assert_eq!(Config::from_toml(&text).unwrap().library_scan, on, "{text}");
+        }
+        assert!(
+            Config::from_toml(&format!(
+                "{}[packages]\nlibrary_scan = \"yes\"\n",
+                minimal()
+            ))
+            .is_err()
+        );
+        assert!(Config::from_toml(&format!("{}[packages]\nscan = true\n", minimal())).is_err());
     }
 
     #[test]

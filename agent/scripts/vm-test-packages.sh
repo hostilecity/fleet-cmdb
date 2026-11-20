@@ -10,6 +10,11 @@
 #
 # fvt-demo ships /usr/libexec/fvt-demo, a copy of sleep(1) whose bytes differ per version, so a
 # service running it uses an old executable once it is upgraded (what needrestart looks for).
+#
+# For the in-use scenario (FR-2.6, VT-APPLICABILITY): fvt-listen-* ship /usr/libexec/NAME, which listens
+# on the TCP address and port it is given; fvt-lib and fvt-idlelib ship a data file under /usr/lib/fvt
+# whose bytes differ per version; fvt-uselib and fvt-idle ship /usr/libexec/NAME, which maps the given
+# file into memory and waits, as a program maps a library.
 set -euo pipefail
 
 case ${1:?} in
@@ -25,6 +30,28 @@ case ${1:?} in
             cp /usr/bin/sleep "$d/usr/libexec/fvt-demo"
             printf '%s' "$version" >> "$d/usr/libexec/fvt-demo"
         fi
+        case $name in
+            fvt-listen-*)
+                mkdir -p "$d/usr/libexec"
+                printf '%s\n' '#!/usr/bin/python3' 'import socket, sys, time' \
+                    's = socket.socket(socket.AF_INET, socket.SOCK_STREAM)' \
+                    's.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)' \
+                    's.bind((sys.argv[1], int(sys.argv[2])))' 's.listen()' 'time.sleep(86400)' > "$d/usr/libexec/$name"
+                chmod 0755 "$d/usr/libexec/$name"
+                ;;
+            fvt-lib | fvt-idlelib)
+                mkdir -p "$d/usr/lib/fvt"
+                head -c 8192 /dev/zero > "$d/usr/lib/fvt/lib$name.so.1"
+                printf '%s' "$version" >> "$d/usr/lib/fvt/lib$name.so.1"
+                ;;
+            fvt-uselib | fvt-idle)
+                mkdir -p "$d/usr/libexec"
+                printf '%s\n' '#!/usr/bin/python3' 'import mmap, sys, time' \
+                    'with open(sys.argv[1], "rb") as f:' '    m = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)' \
+                    'time.sleep(86400)' > "$d/usr/libexec/$name"
+                chmod 0755 "$d/usr/libexec/$name"
+                ;;
+        esac
         if [ -n "$postinst" ]; then
             printf '#!/bin/sh\nset -e\n%s\n' "$postinst" > "$d/DEBIAN/postinst"
             chmod 0755 "$d/DEBIAN/postinst"

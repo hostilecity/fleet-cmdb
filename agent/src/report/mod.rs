@@ -50,7 +50,7 @@ mod envelope;
 mod heartbeat;
 mod intervals;
 mod inventory;
-mod packages;
+pub(crate) mod packages;
 pub mod refresh;
 mod requests;
 mod time;
@@ -257,6 +257,7 @@ fn run_with(
                 shutdown,
                 requests,
                 refresh,
+                library_scan(config.library_scan),
             );
         });
         // P3-A02: the task poller. It opens the ledger and reports any task left unreported, and
@@ -549,6 +550,23 @@ fn config_loop(
     }
 }
 
+/// The library scan's setting (VT-A02): off, or on with this binary, which the scan unit runs.
+fn library_scan(enabled: bool) -> crate::in_use::Scan {
+    if !enabled {
+        return crate::in_use::Scan::Off;
+    }
+    crate::in_use::Scan::On(
+        std::env::current_exe()
+            .map_err(|e| format!("the agent's own path cannot be read: {e}"))
+            .and_then(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "the agent's own path is not valid UTF-8".to_owned())
+            }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn packages_loop(
     interval: Duration,
     first_at: Instant,
@@ -557,6 +575,7 @@ fn packages_loop(
     shutdown: &Shutdown,
     requests: &ReportRequests,
     refresh: &Refresh,
+    scan: crate::in_use::Scan,
 ) {
     let mut reporter = packages::Reporter::new(
         host,
@@ -565,7 +584,8 @@ fn packages_loop(
         seeded(8),
     )
     .first_report_at(first_at)
-    .stopping_on(shutdown);
+    .stopping_on(shutdown)
+    .with_in_use(scan);
     while !shutdown.is_requested() {
         // Both are taken: one report answers the directive and the task (P3-A04).
         let directive = requests.take(ReportType::Packages).is_some();
