@@ -22,6 +22,8 @@ struct TestHost {
     denied: std::collections::HashSet<String>,
     /// Files with an execute bit.
     executables: std::collections::HashSet<String>,
+    /// Set-user-ID files.
+    setid: std::collections::HashSet<String>,
     /// Symlinks: path -> target (absolute).
     symlinks: HashMap<String, String>,
     log: Mutex<Vec<String>>,
@@ -109,7 +111,17 @@ impl Host for TestHost {
             return Ok(Inspect::Symlink);
         }
         if self.files.contains_key(&path) {
-            return Ok(Inspect::File(self.executables.contains(&path)));
+            let mode = if self.executables.contains(&path) {
+                0o755
+            } else {
+                0o644
+            };
+            let mode = if self.setid.contains(&path) {
+                mode | 0o4000
+            } else {
+                mode
+            };
+            return Ok(Inspect::File(mode));
         }
         if self
             .files
@@ -1480,6 +1492,54 @@ fn a_script_anywhere_in_a_package_makes_it_not_native() {
 }
 
 #[test]
+fn code_loaded_on_demand_is_never_native() {
+    // Owner decision 2026-11-20 (re-review of #268, S3): PAM, NSS, SASL, gconv and the like are mapped
+    // only while a login or lookup runs, so unmapped at the scan proves nothing.
+    let mut host = scan_host()
+        .file("/var/lib/dpkg/info/libpam-modules.list", "/usr/lib/x86_64-linux-gnu/security/pam_unix.so\n/usr/lib/x86_64-linux-gnu/libpamx.so.1\n")
+        .file("/var/lib/dpkg/info/libnss-x.list", "/usr/lib/x86_64-linux-gnu/libnss_x.so.2\n")
+        .file("/var/lib/dpkg/info/libsasl2-modules.list", "/usr/lib/x86_64-linux-gnu/sasl2/libplain.so.2\n")
+        .file("/var/lib/dpkg/info/libc-bin-gconv.list", "/usr/lib/x86_64-linux-gnu/gconv/UTF-7.so\n")
+        .file("/var/lib/dpkg/info/libpam-runtime-helper.list", "/usr/sbin/unix_chkpwd\n/usr/lib/libhelper.so.1\n")
+        .file("/usr/lib/x86_64-linux-gnu/security/pam_unix.so", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/libpamx.so.1", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/libnss_x.so.2", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/sasl2/libplain.so.2", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/gconv/UTF-7.so", "\x7fELF....")
+        .file("/usr/sbin/unix_chkpwd", "\x7fELF....")
+        .file("/usr/lib/libhelper.so.1", "\x7fELF....");
+    host.executables.insert("/usr/sbin/unix_chkpwd".into());
+    host.setid.insert("/usr/sbin/unix_chkpwd".into());
+    add_lists(
+        &mut host,
+        &[
+            "libc-bin-gconv.list",
+            "libnss-x.list",
+            "libpam-modules.list",
+            "libpam-runtime-helper.list",
+            "libsasl2-modules.list",
+        ],
+    );
+    let native = scan::scan(&host).unwrap().native;
+    for package in [
+        "libpam-modules",
+        "libnss-x",
+        "libsasl2-modules",
+        "libc-bin-gconv",
+        "libpam-runtime-helper",
+    ] {
+        assert!(
+            !native.contains(&package.to_owned()),
+            "{package} is native: {native:?}"
+        );
+    }
+    assert!(
+        native.contains(&"libidle".to_owned()),
+        "the control is still native"
+    );
+}
+
+#[test]
 fn a_diverted_or_shared_file_marks_every_package_that_lists_it() {
     // Review of #268, S7.
     let mut host = scan_host()
@@ -1633,7 +1693,7 @@ fn the_scan_runs_at_most_once_an_hour_however_often_reports_are_asked_for() {
     assert_eq!(runs(&host), 1);
 
     let mut memo = scan::Memo::default();
-    let start = std::time::Instant::now();
+    let start = std::time::SystemTime::now();
     let mut count = 0;
     let scanned = |n| scan::Scanned {
         result: Ok(scan::Output {
@@ -1661,6 +1721,91 @@ fn the_scan_runs_at_most_once_an_hour_however_often_reports_are_asked_for() {
         (a.at.as_str(), b.at.as_str(), c.at.as_str(), count),
         ("1", "1", "3", 2)
     );
+}
+
+fn scanned_as(at: &str) -> scan::Scanned {
+    scan::Scanned {
+        result: Ok(scan::Output {
+            libraries: vec![Library {
+                package: "libc6".into(),
+                stale: false,
+            }],
+            native: vec!["libc6".into()],
+        }),
+        at: at.into(),
+    }
+}
+
+#[test]
+fn the_last_scan_is_kept_in_the_state_directory_across_restarts() {
+    // Owner decision 2026-11-20 (re-review of #268, S4).
+    use std::os::unix::fs::PermissionsExt;
+    let dir = crate::test_support::TempDir::new();
+    let start = std::time::SystemTime::now();
+    let first = scan::Memo::in_dir(&dir.path("")).get(start, || scanned_as("first"));
+    let record = dir.path(scan::RECORD);
+    assert_eq!(
+        std::fs::metadata(&record).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    // A new agent process, half an hour later: the same scan, not a new one.
+    let again = scan::Memo::in_dir(&dir.path(""))
+        .get(start + std::time::Duration::from_secs(1800), || {
+            panic!("scanned again")
+        });
+    assert_eq!(again, first);
+    // After a suspend, by the wall clock more than an hour on: a new scan.
+    let later = scan::Memo::in_dir(&dir.path("")).get(start + scan::EVERY, || scanned_as("later"));
+    assert_eq!(later.at, "later");
+    // A clock set back before the record: a new scan.
+    let back = scan::Memo::in_dir(&dir.path("")).get(start, || scanned_as("back"));
+    assert_eq!(back.at, "back");
+    // A failure is kept too.
+    let dir2 = crate::test_support::TempDir::new();
+    let failed = scan::Memo::in_dir(&dir2.path("")).get(start, || scan::Scanned {
+        result: Err("no".into()),
+        at: "f".into(),
+    });
+    assert!(failed.result.is_err());
+    let kept = scan::Memo::in_dir(&dir2.path("")).get(start, || panic!("retried"));
+    assert_eq!(kept.result, Err("no".into()));
+}
+
+#[test]
+fn a_corrupt_or_unreadable_record_means_a_new_scan_never_a_crash() {
+    let dir = crate::test_support::TempDir::new();
+    let now = std::time::SystemTime::now();
+    std::fs::write(dir.path(scan::RECORD), b"{not json").unwrap();
+    assert_eq!(
+        scan::Memo::in_dir(&dir.path(""))
+            .get(now, || scanned_as("new"))
+            .at,
+        "new"
+    );
+    std::fs::write(
+        dir.path(scan::RECORD),
+        br#"{"ran_at":1,"at":"x","output":null,"error":null}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        scan::Memo::in_dir(&dir.path(""))
+            .get(now, || scanned_as("again"))
+            .at,
+        "again"
+    );
+    // A record that is a directory, and a state directory that cannot be written: scan, use the result.
+    let odd = crate::test_support::TempDir::new();
+    std::fs::create_dir(odd.path(scan::RECORD)).unwrap();
+    assert_eq!(
+        scan::Memo::in_dir(&odd.path(""))
+            .get(now, || scanned_as("dir"))
+            .at,
+        "dir"
+    );
+    let missing = odd.path("no-such-directory");
+    let mut memo = scan::Memo::in_dir(&missing);
+    assert_eq!(memo.get(now, || scanned_as("unwritable")).at, "unwritable");
+    assert_eq!(memo.get(now, || panic!("kept in memory")).at, "unwritable");
 }
 
 #[test]

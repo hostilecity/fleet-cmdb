@@ -148,9 +148,10 @@ impl<'a, R: Rng> Reporter<'a, R> {
     }
 
     /// Collects what is in use with each dpkg listing ([`crate::in_use`]), with the library scan when
-    /// `scan` turns it on.
-    pub fn with_in_use(mut self, scan: in_use::Scan) -> Self {
+    /// `scan` turns it on; the last scan is kept in `state_dir` ([`in_use::scan::Memo`]).
+    pub fn with_in_use(mut self, scan: in_use::Scan, state_dir: &std::path::Path) -> Self {
         self.in_use = Some(scan);
+        self.scan_memo = in_use::scan::Memo::in_dir(state_dir);
         self
     }
 

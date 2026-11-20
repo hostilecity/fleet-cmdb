@@ -203,8 +203,8 @@ pub trait Host: Send + Sync {
 /// What [`Host::inspect`] found at a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inspect {
-    /// A regular file; `true` when any execute bit is set.
-    File(bool),
+    /// A regular file, with its permission bits (`st_mode & 0o7777`).
+    File(u32),
     Symlink,
     Directory,
     Other,
@@ -221,7 +221,7 @@ impl Inspect {
         } else if kind.is_dir() {
             Self::Directory
         } else if kind.is_file() {
-            Self::File(metadata.permissions().mode() & 0o111 != 0)
+            Self::File(metadata.permissions().mode() & 0o7777)
         } else {
             Self::Other
         })

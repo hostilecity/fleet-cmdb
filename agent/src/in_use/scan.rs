@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::process::ExitCode;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -128,26 +128,123 @@ pub struct Scanned {
 }
 
 /// The last scan, so it runs at most once per [`EVERY`], however often a report is asked for (by the
-/// schedule, the heartbeat's `report_request`, or the `refresh_reports` task). A failed scan is kept too,
-/// so a scan that fails is not retried more often either.
+/// schedule, the heartbeat's `report_request`, or the `refresh_reports` task), and across agent restarts
+/// and updates: it is kept in the state directory as [`RECORD`] (mode 0600, written atomically), aged by
+/// the wall clock, so a scan older than an hour after a suspend is not reused (owner decision 2026-11-20,
+/// re-review of #268, S4). A failed scan is kept too, so a scan that fails is not retried more often
+/// either. A record that is missing, corrupt, unreadable, or dated in the future means a new scan; a
+/// record that cannot be written is logged, and the scan's result is still used.
 #[derive(Debug, Default)]
 pub struct Memo {
-    last: Option<(Instant, Scanned)>,
+    dir: Option<std::path::PathBuf>,
+    last: Option<Record>,
 }
 
 /// The least time between two scans.
 pub const EVERY: Duration = Duration::from_secs(3600);
+/// The record's name in the state directory.
+pub const RECORD: &str = "library-scan.json";
+const MAX_RECORD_BYTES: u64 = 4 * 1024 * 1024;
+
+/// What [`Memo`] keeps: when the scan ran (seconds since the epoch, wall clock), and what it found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Record {
+    ran_at: u64,
+    at: String,
+    output: Option<Output>,
+    error: Option<String>,
+}
+
+impl Record {
+    fn scanned(&self) -> Scanned {
+        Scanned {
+            result: match (&self.output, &self.error) {
+                (Some(output), _) => Ok(output.clone()),
+                (None, Some(error)) => Err(error.clone()),
+                (None, None) => Err("the last scan left no result".into()),
+            },
+            at: self.at.clone(),
+        }
+    }
+}
+
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 impl Memo {
-    /// The last scan if it is younger than [`EVERY`] at `now`, else a new one from `run`.
-    pub fn get(&mut self, now: Instant, run: impl FnOnce() -> Scanned) -> Scanned {
-        match &self.last {
-            Some((at, scanned)) if now.saturating_duration_since(*at) < EVERY => scanned.clone(),
-            _ => {
-                let scanned = run();
-                self.last = Some((now, scanned.clone()));
-                scanned
+    /// A memo kept in `dir` (the agent's state directory) as well as in memory.
+    pub fn in_dir(dir: &std::path::Path) -> Self {
+        Self {
+            dir: Some(dir.to_owned()),
+            last: None,
+        }
+    }
+
+    /// The last scan if it ran less than [`EVERY`] before `now` (the wall clock) and not after it, else a
+    /// new one from `run`, which is then kept.
+    pub fn get(&mut self, now: SystemTime, run: impl FnOnce() -> Scanned) -> Scanned {
+        if self.last.is_none() {
+            self.last = self.load();
+        }
+        let now_s = unix_seconds(now);
+        if let Some(last) = &self.last
+            && last.ran_at <= now_s
+            && now_s - last.ran_at < EVERY.as_secs()
+        {
+            return last.scanned();
+        }
+        let scanned = run();
+        let (output, error) = match &scanned.result {
+            Ok(output) => (Some(output.clone()), None),
+            Err(error) => (None, Some(error.clone())),
+        };
+        let record = Record {
+            ran_at: now_s,
+            at: scanned.at.clone(),
+            output,
+            error,
+        };
+        self.store(&record);
+        self.last = Some(record);
+        scanned
+    }
+
+    fn load(&self) -> Option<Record> {
+        let dir = self.dir.as_ref()?;
+        match crate::state::read_record(dir, RECORD, MAX_RECORD_BYTES) {
+            Ok(Some(bytes)) => match serde_json::from_slice::<Record>(&bytes) {
+                Ok(record) => Some(record),
+                Err(e) => {
+                    tracing::warn!(
+                        "the last library scan's record cannot be read ({e}); scanning again"
+                    );
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    "the last library scan's record cannot be read ({e}); scanning again"
+                );
+                None
             }
+        }
+    }
+
+    fn store(&self, record: &Record) {
+        let Some(dir) = &self.dir else {
+            return;
+        };
+        let written = serde_json::to_vec(record)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| crate::state::write_record(dir, RECORD, &bytes));
+        if let Err(e) = written {
+            tracing::warn!(
+                "cannot keep the library scan's result in {} ({e}); the next agent start scans again",
+                dir.display()
+            );
         }
     }
 }
@@ -294,6 +391,30 @@ fn code_candidate(path: &str) -> bool {
         || name.contains(".so.")
 }
 
+/// Directories of code loaded or run on demand, never while nothing asks for it: PAM modules, NSS,
+/// SASL, gconv, PKCS #11, OpenSSL providers and engines, Kerberos, GIO, GDK pixbuf, and GTK modules, and
+/// `libnss_*` (owner decision 2026-11-20, re-review of #268, S3). A package with any file here is never
+/// native, so never idle. Set-user-ID and set-group-ID programs (`unix_chkpwd`) count too ([`classify`]).
+pub const ON_DEMAND: &[&str] = &[
+    "/security/",
+    "/sasl2/",
+    "/gconv/",
+    "/pkcs11/",
+    "/ossl-modules/",
+    "/engines-3/",
+    "/engines-1.1/",
+    "/krb5/plugins/",
+    "/gio/modules/",
+    "/gdk-pixbuf-2.0/",
+    "/gtk-3.0/modules/",
+    "/gtk-4.0/modules/",
+];
+
+fn on_demand(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or("");
+    name.starts_with("libnss_") || ON_DEMAND.iter().any(|dir| path.contains(dir))
+}
+
 /// Interpreted code a package ships; its documentation's examples (`/usr/share/doc`) are not code.
 fn interpreted(path: &str) -> bool {
     !path.starts_with("/usr/share/doc/") && INTERPRETED.iter().any(|end| path.ends_with(end))
@@ -377,7 +498,7 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
                         .insert(package.to_owned());
                 }
             }
-            interpreted_code |= interpreted(line);
+            interpreted_code |= interpreted(line) || on_demand(line);
             candidate |= code_candidate(line);
             if !interpreted_code && line.starts_with('/') && line != "/." {
                 files.push(line.to_owned());
@@ -416,7 +537,7 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
 /// Whether a package's files are native code only (owner decision 2026-11-20, review of #268):
 ///
 /// - `Some(true)`: at least one ELF file under the package-managed prefixes, and no script;
-/// - `Some(false)`: a script (`#!`) anywhere, as a file with an execute bit, a file named like code, or
+/// - `Some(false)`: a set-user-ID or set-group-ID file (run on demand, S3); a script (`#!`) anywhere, as a file with an execute bit, a file named like code, or
 ///   the target of one of its symlinks; an ELF file outside those prefixes (`/opt`, B1); or no ELF file;
 /// - `None`: something could not be read or judged (permission denied, an I/O error): not provable.
 ///
@@ -434,7 +555,10 @@ fn classify(ctx: &Ctx, files: &[String], limit: Duration) -> Result<Option<bool>
     let mut elf = false;
     for file in files {
         let target = match ctx.inspect(file) {
-            Ok(Inspect::File(executable)) => {
+            // A set-user-ID or set-group-ID program (`unix_chkpwd`) runs on demand (S3).
+            Ok(Inspect::File(mode)) if mode & 0o6000 != 0 => return Ok(Some(false)),
+            Ok(Inspect::File(mode)) => {
+                let executable = mode & 0o111 != 0;
                 if !(executable && !file.starts_with("/usr/share/doc/")) && !code_candidate(file) {
                     continue;
                 }
