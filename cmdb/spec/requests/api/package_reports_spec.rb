@@ -447,10 +447,12 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(stored.in_use_changed_at).to eq(changed_at)
     end
 
-    it "keeps it through an unreadable report and clears it when a report has none" do
+    it "clears it when a report has none: an unreadable one, or one that could not read it" do
       send_report(report(in_use: scanned["in_use"]))
+      expect(stored).to have_attributes(native_packages: %w[libc6 openssh-server samba], library_scanned_at: Time.iso8601("2026-01-01T11:30:00Z"))
       send_report(ApiContract.example("packages.request", "unreadable-manager").merge("report_id" => SecureRandom.uuid))
-      expect(stored.in_use_reported).to be(true)
+      expect(stored.in_use_reported).to be(false) # review of #268, S1: old use data never looks current
+      send_report(report(in_use: scanned["in_use"]))
       failed = ApiContract.example("packages.request", "in-use-unreadable")
       send_report(failed.merge("report_id" => SecureRandom.uuid))
       expect(stored).to have_attributes(in_use_reported: false, libraries: [], library_scan: nil)

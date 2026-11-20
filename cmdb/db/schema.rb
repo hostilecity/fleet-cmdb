@@ -347,6 +347,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_258001) do
     t.string "library_scan", limit: 8
     t.string "libraries", default: [], null: false, array: true
     t.string "stale_libraries", default: [], null: false, array: true
+    t.string "native_packages", default: [], null: false, array: true
+    t.datetime "library_scanned_at"
     t.datetime "in_use_changed_at"
     t.check_constraint "in_use_reported = (library_scan IS NOT NULL)", name: "host_applicability_in_use_reported"
     t.check_constraint "library_scan::text = ANY (ARRAY['off'::character varying, 'ran'::character varying, 'failed'::character varying]::text[])", name: "host_applicability_library_scan_valid"

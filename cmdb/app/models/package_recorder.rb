@@ -14,8 +14,8 @@
 #   are not in the PackageSet, so findings for them resolve as removed at the next matching, and reopen when the
 #   package is listed again (P2-S08, P2-S11 owner decision).
 # - A new report, changed or not, satisfies the host's pending packages report request (ReportRequests, P2-S03).
-# - What is in use (in_use, FR-2.6) goes to HostApplicability, written only when it changes; an unreadable report keeps
-#   it, a report without it clears it.
+# - What is in use (in_use, FR-2.6) goes to HostApplicability, written only when it changes; a report without it
+#   (unreadable and unsupported ones included) clears it.
 #
 # Vulnerability matching (P2-S11) runs after a new snapshot, for that host, once the transaction commits.
 module PackageRecorder

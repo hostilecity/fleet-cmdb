@@ -6,7 +6,7 @@ RSpec.describe HostApplicability do
   let(:now) { Time.zone.parse("2026-11-20 12:00:00") }
 
   def inventory(**fields) = Struct.new(:applicability).new({ "reboot_required" => nil, "reboot_packages" => [], "kernel_build" => nil }.merge(fields.transform_keys(&:to_s)))
-  def package_report(in_use, unreadable: false) = Struct.new(:in_use, :unreadable?).new(in_use, unreadable)
+  def package_report(in_use) = Struct.new(:in_use).new(in_use)
 
   def in_use(**fields)
     HostApplicability::IN_USE_DEFAULTS.merge("in_use_reported" => true, "library_scan" => "off", "listening_network" => [ "samba" ],
@@ -34,7 +34,7 @@ RSpec.describe HostApplicability do
     expect(row.reload).to have_attributes(reboot_required: nil, reboot_packages: [], kernel_build: "#1 SMP Debian 6.12.57-1", reboot_changed_at: now + 2.hours)
   end
 
-  it "stores what is in use, writes again only when it changes, and keeps it through an unreadable report" do
+  it "stores what is in use and writes again only when it changes" do
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(in_use), now:)).to be(true)
     row = host.reload.applicability
     expect(row).to have_attributes(in_use_reported: true, listening_network: [ "samba" ], running_services: %w[cron samba],
@@ -42,16 +42,31 @@ RSpec.describe HostApplicability do
     expect(row.packages_in_use).to eq(%w[cron samba])
     version = xmin
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(in_use), now: now + 1.hour)).to be(false)
-    expect(described_class.record_in_use!(host_id: host.id, report: package_report(nil, unreadable: true), now: now + 1.hour)).to be(false)
     expect(xmin).to eq(version)
 
-    scanned = in_use(library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ])
+    scanned = in_use(library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ],
+                     native_packages: %w[libc6 libidle libssl3t64 samba], library_scanned_at: now)
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 2.hours)).to be(true)
     expect(row.reload.packages_in_use).to eq(%w[cron libc6 libssl3t64 samba])
-    expect(row.stale_libraries).to eq([ "libssl3t64" ])
+    expect(row).to have_attributes(stale_libraries: [ "libssl3t64" ], library_scanned_at: now)
   end
 
-  it "clears what is in use when a report has none, so nothing reads as idle" do
+  # Owner decision 2026-11-20 (review of #268, B1, B2): idle needs the scan and native code.
+  it "calls a package idle only when the scan judged it native and found it unused" do
+    row = described_class.new(host_id: host.id, **in_use(library_scan: "ran", libraries: [ "libc6" ], native_packages: %w[libc6 libidle samba],
+                                                         listening_loopback: [ "chrony" ], running_services: [ "chrony" ]))
+    expect(row.provably_idle?("libidle")).to be(true)
+    expect(row.provably_idle?("libc6")).to be(false) # mapped
+    expect(row.provably_idle?("samba")).to be(false) # listening on the network
+    expect(row.provably_idle?("chrony")).to be(false) # not judged native, and a running service
+    expect(row.provably_idle?("python3-urllib3")).to be(false) # interpreted code: never judged
+    row.assign_attributes(library_scan: "off", libraries: [], native_packages: [])
+    expect(row.provably_idle?("libidle")).to be(false) # without the scan nothing is idle
+    row.assign_attributes(library_scan: "ran", native_packages: [ "chrony" ], listening_network: [], listening_loopback: [ "chrony" ], running_services: [])
+    expect(row.provably_idle?("chrony")).to be(false) # listening on loopback
+  end
+
+  it "clears what is in use when a report has none, unreadable ones included, so nothing reads as idle" do
     described_class.record_in_use!(host_id: host.id, report: package_report(in_use), now:)
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(nil), now: now + 1.hour)).to be(true)
     expect(host.reload.applicability).to have_attributes(in_use_reported: false, listening_network: [], running_services: [],
