@@ -4,7 +4,7 @@ What each remote task type may do on a VM, how the agent gets that privilege und
 
 ## The model in one paragraph
 
-The agent runs as root under `fleet-agent.service` (`agent/src/install/fleet-agent.service`): the whole file system read-only except its state directory, one capability (`CAP_DAC_READ_SEARCH`), no new privileges, a system call filter. **That unit is not loosened for tasks.** Each program a task runs declares the privilege it needs (`Program::privilege`), and it runs only for a type whose catalog `privilege` is at least that. A `read_only` or `service_manager` program runs as a child of the agent, inside the same sandbox. A `package_manager` program runs as its own transient systemd unit (`fleet-agent-task-<task id>-<step>.service`) outside the sandbox, started with `systemd-run` over the local socket the unit already allows for the update supervisor, with fixed properties. Every program: absolute path and fixed arguments in the agent's code, at most one validated operand after `--`, no shell, environment exactly `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `LANG=C`, `DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=l`, `APT_LISTCHANGES_FRONTEND=none`, `UCF_FORCE_CONFFOLD=1` (the last three for package upgrades: needrestart's apt hook only lists, apt-listchanges neither pages nor mails, ucf keeps local files; P3-AGENT-UPDATES), working directory `/`, standard input from `/dev/null`, a deadline, bounded output.
+The agent runs as root under `fleet-agent.service` (`agent/src/install/fleet-agent.service`): the whole file system read-only except its state directory, one capability (`CAP_DAC_READ_SEARCH`), no new privileges, a system call filter. **That unit is not loosened for tasks.** Each program a task runs declares the privilege it needs (`Program::privilege`), and it runs only for a type whose catalog `privilege` is at least that. A `read_only` or `service_manager` program runs as a child of the agent, inside the same sandbox. A `package_manager` program runs as its own transient systemd unit (`fleet-agent-task-<task id>-<step>.service`) outside the sandbox, started with `systemd-run` over the local socket the unit already allows for the update supervisor, with fixed properties. Every program the executor starts (`spawn.rs` for a child, `unit.rs` for a task unit): absolute path and fixed arguments in the agent's code, at most one validated operand after `--`, no shell, environment exactly `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `LANG=C`, `DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=l`, `APT_LISTCHANGES_FRONTEND=none`, `UCF_FORCE_CONFFOLD=1` (the last three for package upgrades: needrestart's apt hook only lists, apt-listchanges neither pages nor mails, ucf keeps local files; P3-AGENT-UPDATES), working directory `/`, standard input from `/dev/null`, a deadline, bounded output. The read-only work a task does inside the agent goes through the report collectors instead, as the scheduled reports do: `refresh_reports` asks the report loops, and `apply_package_updates` lists packages with `/usr/bin/dpkg-query --show` (`agent/src/packages.rs`). Those programs come from a fixed list with fixed arguments too, run by `agent/src/facts/host.rs` (`run`) with the environment cleared and set to `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `LC_ALL=C`, `SYSTEMD_PAGER=`, `SYSTEMD_COLORS=0`, standard input from `/dev/null`, inside the agent's sandbox. In recovery mode (`fleet-agent-recovery.service`, ADR 0030) the agent only heartbeats, reports no task capabilities, and runs no task.
 
 ## Per-task-type privilege table
 
@@ -74,6 +74,24 @@ Against what a real `apt-get upgrade` does (unpacking into `/usr` and `/etc`, `/
 - `read_only`, interruptible: stopped at once and reported `failed`/`interrupted`.
 - A direct child that cannot be interrupted (`restart_service`): up to 45 seconds to finish (below systemd's 90-second stop timeout), then stopped and reported `interrupted`.
 - A transient unit that cannot be interrupted (`apply_package_updates`): left running. The ledger keeps the task `started`; the next agent start finds the unit, polls for nothing until it has ended, then reports its exit and output (threat model L8). The type decides the outcome from its steps' exits (`TaskImpl::recovered`): an upgrade (step 2) that ended with 0, or any later step, is `succeeded`, with `reboot_required` from `/run/reboot-required`, and a package report is requested; a failed upgrade is `nonzero_exit` or `lock_timeout`; only the index refresh is `interrupted`.
+
+## Where each claim is in the code
+
+Checked on `78047da`. Check the line numbers again when an agent change merges before a release is cut.
+
+| Claim | Code |
+|---|---|
+| The agent's sandbox: root, `CAP_DAC_READ_SEARCH` only, `NoNewPrivileges=yes`, `ProtectSystem=strict`, the address families, the system call filter | `agent/src/install/fleet-agent.service:42`, `:43`, `:48`, `:64`, `:73` |
+| Each type's privilege | `docs/api/tasks/task-catalog.json:10`, `:27`, `:52` |
+| A program needing more than its type's privilege never runs | `agent/src/tasks/executor/mod.rs:243` |
+| `package_manager` programs go to a task unit, the others run as children | `agent/src/tasks/executor/mod.rs:255` |
+| The one place a task child starts: `env_clear`, the fixed environment, `/`, `/dev/null`, its own process group | `agent/src/tasks/executor/spawn.rs:44`, `:207` to `:216` |
+| Programs are `&'static str` paths and arguments, at most one `ValidatedArg` after `--` | `agent/src/tasks/executor/spawn.rs:73`, `:94` |
+| The task unit's properties and the helpers it uses | `agent/src/tasks/executor/unit.rs:33` to `:35`, `:56` to `:79` |
+| The timeout is the lower of the server's and the catalog's | `agent/src/tasks/executor/mod.rs:477` |
+| `restart_service`: checks before anything runs, then `systemctl` | `agent/src/tasks/restart_service.rs:60`, `:130` to `:138`, `:259` to `:287`; protected list `agent/src/tasks/settings.rs:262` |
+| `apply_package_updates`: no parameters, the apt-get and needrestart vectors | `agent/src/tasks/apply_updates.rs:207` to `:220`; `agent/src/tasks/apply_updates/apt.rs:33` to `:85` |
+| `refresh_reports`: no parameters, no program | `agent/src/tasks/refresh_reports.rs:55` to `:67` |
 
 ## Checking it
 

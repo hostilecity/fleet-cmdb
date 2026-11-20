@@ -15,3 +15,10 @@ Implementation details for the GitHub issue with this key. The issue states only
 - [ ] All AC-3.x checked off on the Phase 3 acceptance issue with evidence
 - [ ] Delivery note posted, including the per-task privilege table
 - [ ] Owner accepts Phase 3 and closes the milestone
+
+## Prepared (#39)
+
+- **Runbook:** [`docs/operations/phase-3-acceptance.md`](../../operations/phase-3-acceptance.md): for each AC-3.x, what CI already proves (job, scenario, test names), the steps on a disposable Debian 13 VM, what counts as a pass, and what evidence to save; the CI runs for the earlier suites and the empty database; the no-shell, no-reboot, and out-of-scope checks.
+- **Documentation:** enabling task types, allowlists, the step-up, creating and cancelling, and every result and reason in [`fleet-operations.md`](../../operations/fleet-operations.md#remote-tasks); recovery from a half-configured package database in [`troubleshooting.md`](../../operations/troubleshooting.md#the-package-database-needs-repair); the privilege model, checked against the code with file references, in [`agent-task-privileges.md`](../../operations/agent-task-privileges.md).
+- **Delivery note:** drafted in the pull request's description, as Phases 1 and 2 posted theirs on the acceptance issue; the owner fills the evidence and posts it on #39.
+- **Not checked, by scope:** earlier agent releases and frozen fixtures (NFR-5). The database is built from empty by loading the schema in CI; running every migration from empty gives the same structure (checked by hand on `78047da`).

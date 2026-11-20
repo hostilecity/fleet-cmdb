@@ -213,6 +213,38 @@ Fix the cause (a busy or stuck systemd, or something other than a regular file i
 
    Install those by hand (`apt-get install <package>`) once you have checked what they change.
 
+## The package database needs repair
+
+**Apply package updates** timed out, failed during the upgrade, or failed at once with `dpkg was interrupted` in its output, and the task page (when it timed out) or its output (when it failed) says the package database may need repair. dpkg was stopped part-way, so some packages are unpacked but not configured (`half-configured`, `half-installed`, `unpacked`). The agent never repairs it itself (ADR 0016): it is a job for root on the console. Until it is repaired, every new **Apply package updates** fails with `nonzero_exit`, and the agent's package report names those packages as skipped (the host's **Packages > Compare** shows them as "Skipped / incomplete", never as removed).
+
+On the VM, as root:
+
+1. Make sure the task has really ended, so you do not race it:
+
+   ```sh
+   systemctl list-units --all 'fleet-agent-task-*'   # nothing active; a task unit still running is still upgrading
+   pgrep -a 'apt|dpkg'                                # nothing
+   ```
+
+2. See what is incomplete:
+
+   ```sh
+   dpkg --audit
+   dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' | grep -v '^ii' | grep -v '^rc'
+   ```
+
+3. Finish configuring them. This runs the packages' own maintainer scripts, as the upgrade would have:
+
+   ```sh
+   DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+   ```
+
+   If it hangs or fails again, the same maintainer script is the cause (often what made the task time out): `ps -ef --forest` shows which one; fix what it waits for, then run it again.
+4. If apt still reports broken dependencies, look before you act: `apt-get -s -f install` shows what it would change. It may remove packages, which the task never does, so run `apt-get -f install` only if that is what you want.
+5. `dpkg --audit` prints nothing when it is repaired. Then run **Apply package updates** again from the dashboard (packages upgraded before the stop stay upgraded), or **Refresh reports** to see the repaired state on the host's **Packages** and **Vulnerabilities** tabs.
+
+If the agent was restarted while the upgrade ran, the upgrade went on in its own unit and the task reports how it ended once it has; there is nothing to repair unless that result says so ([agent-task-privileges.md](agent-task-privileges.md#agent-restarts-while-a-task-runs)).
+
 ## `/health` is unhealthy
 
 `docker exec fleet-cmdb curl -s http://localhost:3000/health` on the server (or `curl --cacert <(cat agent/trust/*.pem) https://fleet-vm.example.com/health` from a VM on your network) names the failing check; [health-and-jobs.md](health-and-jobs.md) explains each. `backup` fails until a backup has run (the first deploy takes one), and `job_liveness` until a minute or two after a start; both are expected. `audit_guard` is `warning` until the PostgreSQL superuser has run `ops/postgres/audit-guard.sql` ([install-server.md](install-server.md)); it does not make `/health` 503. If `backup` stays `failing`, see "Backups fail" below.
