@@ -58,3 +58,38 @@ Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19); decided in [A
 
 - [ ] Both panels render the up-to-date, stale, off, and held-back states as drawn
 - [ ] Every value from a feed is escaped, and only the source's host and path are shown
+
+## As built (#257)
+
+What the code does where the spec left a choice, or where it differs. Items marked *owner's OK* are listed in the pull request for approval.
+
+- **Hand-off to the triage run.** VT-S05 (#259) is not built yet, so "handed to the triage run" is a queue: `triage_signal_changes`, one row per kind and CVE or advisory, written in the import's transaction and coalesced by unique indexes. Kinds: `kev` (a CVE added to or removed from KEV; the run starts at once for these), `kev_all` (KEV data appeared for the first time or was cleared, which turns rule I5 on or off for every finding), `epss` (a CVE whose band changed between high and not high, or that gained or lost a high score; daily run), and `advisory` (an advisory whose CVSS vector parts or severity changed at import; a new advisory needs none, since its findings are triaged when matched). VT-BUCKETS reads and deletes the rows. *Owner's OK.*
+- **KEV clear** needs `CONFIRM=1`, since it deletes the only data rule N1 uses. It is recorded as an import with state `cleared` (origin `task`), so freshness reads "never imported" afterwards and the panel lists it. *Owner's OK.*
+- **EPSS redirect target not recorded.** The build environment could not reach `epss.empiricalsecurity.com`, so the current redirect target is unknown. `FLEET_EPSS_REDIRECT_HOSTS` defaults to none (only the URL's own host). A redirect to another host fails the refresh with a message naming that host, and `docs/operations/configuration.md`, "Outbound access", says how to add it. A real fetch of either source is unverified; the code is tested with recorded files in the published formats. *Owner's OK.*
+- **EPSS freshness** also counts the file's score date: the data is stale when the last success or the score date is older than `FLEET_SIGNAL_MAX_AGE_HOURS`, since a source that stops publishing can still answer "not modified".
+- **EPSS offline import** accepts the same CSV uncompressed as well as gzip (the reader checks the gzip magic bytes), with the same limits. Each line is at most 4 KiB.
+- **EPSS guard** compares the CVEs kept (those stored advisories name): a file that would drop more than 10% of the stored scores is held back. A file with the same score date as the stored scores imports again; only an older one is refused, recorded as a failed import, and not retried.
+- **Older-file check** happens after the file is streamed into the staging table, so a refused file costs one read; nothing is stored.
+- **Scores are exact decimals** (`numeric`), so 0.0999 never rounds up to the threshold.
+- **CVSS backfill** is migration `20261120257003`, run at deploy (about 74,000 advisories, seconds).
+- **A GIN index on `advisories.aliases`** (migration `20261120257004`) lets the panels look each KEV or EPSS CVE up rather than unnest every advisory's aliases (see "Measured").
+- **Data sources page.** The heading is "Data sources", as the approved mockup has it. Deviations from the mockup: the import tables add "How" and "By" columns, as the tracker panel has; a KEV import's changes say "N match open findings: handed to triage" rather than "on N hosts: re-triaged", because the triage run is not built and counting hosts per CVE costs a scan of the findings of that advisory on every host; the EPSS panel adds how many high-band CVEs match open findings. The panels show the off, never-imported, out-of-date, and held-back states with their own notices.
+- **Freshness line.** KEV and EPSS are named on every page that shows advisory freshness (fleet, Compliance, host Vulnerabilities and package pages, Data sources), from one query for both.
+- **Schedule.** KEV at minute 11 of every sixth hour from 01:00 (30 minutes after the OSV refresh), EPSS at `30 14 * * * UTC`.
+
+### Measured
+
+A container with 2 CPUs, PostgreSQL 16 with default settings; a database with 74,000 advisories (74,000 distinct CVEs named) and 1,000 hosts with 4,000 findings each (4 million findings, a fifth resolved). Medians of 3, rough.
+
+| What | Result |
+|---|---|
+| EPSS import, 300,000 rows (2.4 MB gzip), all 74,000 named CVEs kept | 4.0 s; the Ruby process's memory 111 MiB before, 114 MiB peak (the rows are streamed into the database, a batch of 5,000 at a time) |
+| EPSS import of the same file again (replacing 74,000 scores) | 4.2 s, no growth |
+| KEV import, 1,800 entries (262 KB) | 0.24 s, the matching count for the 1,800 CVEs added included |
+| Panels: KEV CVEs that match open findings (1,800 CVEs) | 17 to 28 ms |
+| Panels: high-band EPSS CVEs that match open findings | 400 to 480 ms for 16,700 high CVEs (the synthetic file's 23%; real EPSS has about 5% at 0.10 or more, so about 2,000 of 40,000 kept, about 60 ms) |
+| Both panels together | about 0.5 s |
+| Freshness line (both signals, one query) | about 1 ms |
+| CVSS backfill migration, 74,000 advisories with a v3 vector | 5.7 s |
+
+Before the GIN index on `advisories.aliases` and the per-CVE lookup, the KEV count probed every advisory's findings (1 s), and JIT compilation alone took about 190 ms of a 20 ms query; it is off for that statement (`SET LOCAL`). `epss_scores` is rewritten each day (about 40,000 rows), so autovacuum reclaims the old rows; the table measured 60 MB after five rewrites of 74,000 rows in a row.
