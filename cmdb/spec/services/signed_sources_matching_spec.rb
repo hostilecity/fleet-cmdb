@@ -3,7 +3,8 @@ require "rails_helper"
 # Signed-template packages get the findings of the source they are built from (#270): the running kernel's signed
 # image and its metapackage as linux, shim-signed as shim. Package names, sources, and versions are a Debian 13 amd64
 # host's (linux-signed-amd64 6.12.48+1 and 6.12.88+1, built from linux 6.12.48-1 and 6.12.88-1; shim-signed
-# 1.51~1+deb13u1 from shim 16.1-2~deb13u1; grub-efi-amd64-signed 1+2.12+9+deb13u2 from grub2 2.12-9+deb13u2;
+# 1.51~1+deb13u1 from shim 16.1-2~deb13u1, which depends on shim-helpers-amd64-signed 1+16.1+2~deb13u1, which depends
+# on shim-unsigned 16.1-2~deb13u1 (source shim); grub-efi-amd64-signed 1+2.12+9+deb13u2 from grub2 2.12-9+deb13u2;
 # fwupd-amd64-signed 1:1.7+1 from fwupd-efi 1:1.7-1). The advisory ids are made up.
 RSpec.describe "Matching signed-template packages (#270)" do # rubocop:disable RSpec/DescribeClass
   before { allow(VulnerabilityMatchJob).to receive(:perform_later) }
@@ -19,6 +20,7 @@ RSpec.describe "Matching signed-template packages (#270)" do # rubocop:disable R
     [ running, meta, libc,
       [ "linux-headers-6.12.48+deb13-amd64", "6.12.48-1", "linux" ], [ "linux-headers-6.12.48+deb13-common", "6.12.48-1", "linux" ],
       shim, [ "shim-signed-common", "1.51~1+deb13u1+16.1-2~deb13u1", "shim-signed" ],
+      [ "shim-helpers-amd64-signed", "1+16.1+2~deb13u1", "shim-helpers-amd64-signed" ], [ "shim-unsigned", "16.1-2~deb13u1", "shim" ],
       [ "grub-efi-amd64-signed", "1+2.12+9+deb13u2", "grub-efi-amd64-signed" ], [ "grub-common", "2.12-9+deb13u2", "grub2" ],
       [ "grub-efi-amd64-bin", "2.12-9+deb13u2", "grub2" ], [ "fwupd-amd64-signed", "1:1.7+1", "fwupd-amd64-signed" ], [ "openssl", "3.5.0-1", "openssl" ] ]
   end
@@ -54,16 +56,19 @@ RSpec.describe "Matching signed-template packages (#270)" do # rubocop:disable R
     expect(open_findings(host)).to eq("grub-common" => [ "DEBIAN-CVE-2026-91006" ], "grub-efi-amd64-bin" => [ "DEBIAN-CVE-2026-91006" ],
                                       "linux-headers-6.12.48+deb13-amd64" => %w[DEBIAN-CVE-2026-91001 DEBIAN-CVE-2026-91002],
                                       "linux-headers-6.12.48+deb13-common" => %w[DEBIAN-CVE-2026-91001 DEBIAN-CVE-2026-91002],
-                                      "linux-libc-dev" => %w[DEBIAN-CVE-2026-91001 DEBIAN-CVE-2026-91002])
+                                      "linux-libc-dev" => %w[DEBIAN-CVE-2026-91001 DEBIAN-CVE-2026-91002],
+                                      "shim-unsigned" => [ "DEBIAN-CVE-2026-91004" ])
 
     allow(SignedSources).to receive(:table).and_return(before)
     VulnerabilityMatcher.match_again!
     expect(open_findings(host)).to include("linux-image-6.12.48+deb13-amd64" => %w[DEBIAN-CVE-2026-91001 DEBIAN-CVE-2026-91002],
                                            "linux-image-amd64" => %w[DEBIAN-CVE-2026-91001 DEBIAN-CVE-2026-91002],
                                            "shim-signed" => [ "DEBIAN-CVE-2026-91004" ])
-    # Left out on purpose: shim-signed-common is not shim; grub2's advisories stay on grub-common, which the signed
+    # Left out on purpose: shim-signed-common is not shim; shim-helpers-amd64-signed's version cannot be read back and
+    # shim's findings are on shim-unsigned and shim-signed; grub2's advisories stay on grub-common, which the signed
     # image depends on at the same grub2 version; Debian lists nothing for fwupd-efi that would apply.
-    expect(open_findings(host).keys).not_to include("shim-signed-common", "grub-efi-amd64-signed", "fwupd-amd64-signed")
+    expect(open_findings(host).keys).not_to include("shim-signed-common", "shim-helpers-amd64-signed", "grub-efi-amd64-signed", "fwupd-amd64-signed")
+    expect(open_findings(host)).to include("shim-unsigned" => [ "DEBIAN-CVE-2026-91004" ])
     expect(finding(host, running[0], "DEBIAN-CVE-2026-91001"))
       .to have_attributes(source: "linux", installed_version: "6.12.48-1", fixed_version: "6.12.88-1", state: "open")
     expect(finding(host, "shim-signed", "DEBIAN-CVE-2026-91004")).to have_attributes(source: "shim", installed_version: shim[1], fixed_version: nil)
@@ -93,13 +98,33 @@ RSpec.describe "Matching signed-template packages (#270)" do # rubocop:disable R
     expect(finding(host, running[0], "DEBIAN-CVE-2026-91001")).to have_attributes(state: "resolved", resolution: "removed")
   end
 
-  it "resolves a signed image's finding as not affected when the advisory stops naming linux" do
-    host = debian_host(packages: [ running ])
-    import_advisories(osv_record(id: "DEBIAN-CVE-2026-91002", package: "linux", fixed: nil))
+  it "resolves a signed package's finding as fixed past the fix, and as not affected only when the advisory names neither of its sources" do
+    host = debian_host(packages: [ running, meta ])
+    import_advisories(osv_record(id: "DEBIAN-CVE-2026-91001", package: "linux", fixed: "6.12.88-1"),
+                      osv_record(id: "DEBIAN-CVE-2026-91002", package: "linux", fixed: nil))
     match(host)
-    import_advisories(osv_record(id: "DEBIAN-CVE-2026-91002", package: "linux-6.1", fixed: nil, modified: "2026-11-01T00:00:00Z"))
+    report(host, [ running, [ "linux-image-amd64", "6.12.88-1", "linux-signed-amd64" ] ])
+    match(host, at: now + 1.hour)
+    expect(finding(host, "linux-image-amd64", "DEBIAN-CVE-2026-91001")).to have_attributes(state: "resolved", resolution: "fixed", source: "linux")
+
+    # An advisory moved from linux to the signed source itself still names the image: it stays affected.
+    import_advisories(osv_record(id: "DEBIAN-CVE-2026-91002", package: "linux-signed-amd64", fixed: nil, modified: "2026-11-01T00:00:00Z"))
     VulnerabilityMatcher.match_again!
-    expect(finding(host, running[0], "DEBIAN-CVE-2026-91002")).to have_attributes(state: "resolved", resolution: "not_affected", source: "linux")
+    expect(finding(host, running[0], "DEBIAN-CVE-2026-91002")).to have_attributes(state: "open", source: "linux-signed-amd64")
+    import_advisories(osv_record(id: "DEBIAN-CVE-2026-91002", package: "linux-6.1", fixed: nil, modified: "2026-11-02T00:00:00Z"))
+    VulnerabilityMatcher.match_again!
+    expect(finding(host, running[0], "DEBIAN-CVE-2026-91002")).to have_attributes(state: "resolved", resolution: "not_affected")
+  end
+
+  it "only adds: an advisory naming the signed source matches at the binary's version, and one naming both sources is one finding" do
+    host = debian_host(packages: [ running, shim ])
+    import_advisories(osv_record(id: "DEBIAN-CVE-2026-91008", package: "shim-signed", fixed: "1.52"), # reported source, binary version
+                      osv_record(id: "DEBIAN-CVE-2026-91009", package: "linux", fixed: "6.12.88-1")
+                        .tap { |r| r["affected"] << r["affected"].first.deep_merge("package" => { "name" => "linux-signed-amd64" }) })
+    match(host)
+    expect(open_findings(host)).to eq(running[0] => [ "DEBIAN-CVE-2026-91009" ], "shim-signed" => [ "DEBIAN-CVE-2026-91008" ])
+    expect(finding(host, "shim-signed", "DEBIAN-CVE-2026-91008")).to have_attributes(source: "shim-signed", fixed_version: "1.52")
+    expect(finding(host, running[0], "DEBIAN-CVE-2026-91009")).to have_attributes(source: "linux")
   end
 
   it "lists a shim-signed whose shim version cannot be read as not evaluated, with why" do
