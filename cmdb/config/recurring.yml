@@ -117,6 +117,16 @@ production:
   debian_triage_refresh:
     class: DebianTriageRefreshJob
     schedule: "56 */6 * * *"
+  # VT-S02 (#257, ADR 0032): CISA KEV from FLEET_KEV_URL (does nothing when it is empty), every 6 hours, 30 minutes after
+  # the advisory refresh. Its own job, so its failures never hold up the advisory data, triage, or matching.
+  kev_refresh:
+    class: KevRefreshJob
+    schedule: "11 1-23/6 * * *"
+  # VT-S03 (#257): FIRST EPSS from FLEET_EPSS_URL (does nothing when it is empty), daily at 14:30 UTC (scores are published
+  # shortly after 13:30 UTC), whatever the server's time zone.
+  epss_refresh:
+    class: EpssRefreshJob
+    schedule: "30 14 * * * UTC"
   # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
   advisory_upload_pruning:
     class: AdvisoryUploadPruneJob

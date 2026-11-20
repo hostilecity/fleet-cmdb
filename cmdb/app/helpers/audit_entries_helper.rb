@@ -47,6 +47,14 @@ module AuditEntriesHelper
     Audit::Actions::ADVISORY_TRIAGE_IMPORTED => "Debian triage imported",
     Audit::Actions::ADVISORY_TRIAGE_IMPORT_FAILED => "Debian triage import failed",
     Audit::Actions::ADVISORY_TRIAGE_IMPORT_HELD_BACK => "Debian triage import held back (would drop too many entries)",
+    # Exploitation signals (VT-SIGNALS, #257).
+    Audit::Actions::SIGNAL_KEV_IMPORTED => "Known exploited list (CISA KEV) imported",
+    Audit::Actions::SIGNAL_KEV_IMPORT_FAILED => "Known exploited list (CISA KEV) import failed",
+    Audit::Actions::SIGNAL_KEV_IMPORT_HELD_BACK => "Known exploited list (CISA KEV) import held back (would drop too many entries)",
+    Audit::Actions::SIGNAL_KEV_CLEARED => "Known exploited list (CISA KEV) data cleared",
+    Audit::Actions::SIGNAL_EPSS_IMPORTED => "Exploit prediction (FIRST EPSS) imported",
+    Audit::Actions::SIGNAL_EPSS_IMPORT_FAILED => "Exploit prediction (FIRST EPSS) import failed",
+    Audit::Actions::SIGNAL_EPSS_IMPORT_HELD_BACK => "Exploit prediction (FIRST EPSS) import held back (would drop too many scores)",
     Audit::Actions::TASK_BATCH_CREATED => "Task batch created",
     Audit::Actions::TASK_CREATED => "Task created",
     Audit::Actions::TASK_CREATION_REFUSED => "Task creation refused", # create-task flow (P3-S08, #32)
@@ -76,7 +84,7 @@ module AuditEntriesHelper
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "task" => "Tasks", "task_setting" => "Task settings", "second_factor" => "Second factor" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "signal" => "Exploitation signals", "task" => "Tasks", "task_setting" => "Task settings", "second_factor" => "Second factor" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
   INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze

@@ -6,6 +6,10 @@ module Advisories
   #
   # Nothing secret reaches a log or an error: messages name only the feed's host, never its path, query, or
   # the token (NFR-1). The token, when configured, is sent as a bearer credential.
+  #
+  # redirect_hosts (VT-SIGNALS, ADR 0032 point 5): nil follows HTTPS redirects to any host, as the OSV and tracker
+  # refreshes do; a list allows only the configured URL's own host and the hosts listed ([] for none), so an
+  # allowlisted egress needs only those. redirect_setting names the setting in the refusal.
   class Feed
     OPEN_TIMEOUT = 15
     READ_TIMEOUT = 60
@@ -33,8 +37,11 @@ module Advisories
     # label: what messages call the source ("advisory feed"). accept: the Accept header. suffix: the temporary
     # file's extension, which the reader may go by.
     def initialize(url: Advisories.config.feed_url, token: Advisories.config.feed_token, max_bytes: Advisories.config.max_download_bytes,
-                   label: "advisory feed", accept: "application/zip, application/octet-stream", suffix: ".zip")
+                   label: "advisory feed", accept: "application/zip, application/octet-stream", suffix: ".zip",
+                   redirect_hosts: nil, redirect_setting: nil)
       @url = url
+      @redirect_hosts = redirect_hosts&.map(&:downcase)
+      @redirect_setting = redirect_setting
       @token = token
       @max_bytes = max_bytes
       @label = label
@@ -92,6 +99,7 @@ module Advisories
             location = response["location"] or raise Unavailable, "the #{@label} at #{host} sent a redirect without a location"
             # The credential goes only to the configured host.
             target = URI.join(url, location)
+            allowed_redirect!(target)
             return get(target.to_s, target.host == host ? headers : headers.except("Authorization"), file, redirects - 1)
           else
             raise Unavailable, "the #{@label} at #{host} answered HTTP #{response.code.to_i}"
@@ -102,6 +110,18 @@ module Advisories
       raise Unavailable, "the #{@label} at #{host} redirected to an invalid URL"
     rescue Timeout::Error, SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError, Net::HTTPBadResponse, Net::ProtocolError => e
       raise Unavailable, "could not download from the #{@label} at #{host} (#{e.class.name.demodulize})"
+    end
+
+    # Refuses a redirect to a host redirect_hosts does not allow. The refused host is named (never a path or query),
+    # so the operator can add it if it is the source's new download host.
+    def allowed_redirect!(target)
+      return if @redirect_hosts.nil?
+
+      to = target.host.to_s.downcase
+      return if to == host.to_s.downcase || @redirect_hosts.include?(to)
+
+      allowed = @redirect_setting ? "#{@redirect_setting} does not list it" : "redirects to another host are not followed"
+      raise Unavailable, "the #{@label} at #{host} redirected to #{to.first(253).presence || 'a URL without a host'}, and #{allowed}"
     end
 
     def read(response, file)
