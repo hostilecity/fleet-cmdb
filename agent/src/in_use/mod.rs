@@ -142,7 +142,7 @@ pub fn collect(
         }
     };
     if let Scan::On(binary) = scan {
-        let scanned = memo.get(std::time::Instant::now(), || match binary {
+        let scanned = memo.get(std::time::SystemTime::now(), || match binary {
             Ok(binary) => scan::run(host, binary, stop),
             Err(why) => scan::Scanned {
                 result: Err(why.clone()),

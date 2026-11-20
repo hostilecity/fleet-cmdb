@@ -804,7 +804,7 @@ in_use_cleanup() {
     vm "systemctl stop fvt-lo fvt-lan fvt-uselib fvt-sock.socket fvt-sock.service 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
         rm -f /etc/systemd/system/fvt-sock.socket /etc/systemd/system/fvt-sock.service
         dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle > /dev/null 2>&1
-        rm -rf $SCAN_DROPIN /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
+        rm -rf $SCAN_DROPIN $STATE/library-scan.json /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
         sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml; sed -i -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' /etc/fleet-agent/config.toml
         systemctl reset-failed fleet-agent; systemctl restart fleet-agent" || true
 }
@@ -920,8 +920,19 @@ in_use_reported() {
         || fail "the scan unit ran again within the hour"
     vm_ok '! systemctl is-active --quiet fleet-agent-library-scan' || fail "the scan unit is still running"
 
-    # Upgraded under the running program, which still maps the old file: stale.
-    vm "rm -rf $SCAN_DROPIN && systemctl daemon-reload && dpkg -i /srv/fvt/debs/fvt-lib_1.1_all.deb > /dev/null"
+    # Kept in the state directory (owner decision 2026-11-20, S4): private to the agent, and reused after
+    # the agent restarts, without a new scan.
+    [ "$(vm "stat -c '%a %U' $STATE/library-scan.json")" = "600 root" ] \
+        || fail "the scan's record is not private to the agent: $(vm "stat -c '%a %U' $STATE/library-scan.json")"
+    fresh_reports
+    wait_until "a package report after the agent restarted" 120 packages_since
+    [ "$(in_use '.in_use.scanned_at')" = "$first_scan" ] || fail "a restart ran the scan again: $(in_use '.in_use.scanned_at'), first $first_scan"
+    [ "$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c '^Started fleet-agent-library-scan' || true")" = "$scans" ] \
+        || fail "the scan unit ran again after the restart, within the hour"
+
+    # Upgraded under the running program, which still maps the old file: stale. The record is removed
+    # (test scaffolding) so the restarted agent scans again now rather than in an hour.
+    vm "rm -rf $SCAN_DROPIN $STATE/library-scan.json && systemctl daemon-reload && dpkg -i /srv/fvt/debs/fvt-lib_1.1_all.deb > /dev/null"
     fresh_reports
     wait_until "a package report after the upgrade" 120 packages_since
     in_use '.in_use.libraries' | jq -e 'index({"package": "fvt-lib", "stale": true})' > /dev/null \

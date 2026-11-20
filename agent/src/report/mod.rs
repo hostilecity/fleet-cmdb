@@ -258,6 +258,7 @@ fn run_with(
                 requests,
                 refresh,
                 library_scan(config.library_scan),
+                &config.state_dir,
             );
         });
         // P3-A02: the task poller. It opens the ledger and reports any task left unreported, and
@@ -576,6 +577,7 @@ fn packages_loop(
     requests: &ReportRequests,
     refresh: &Refresh,
     scan: crate::in_use::Scan,
+    state_dir: &std::path::Path,
 ) {
     let mut reporter = packages::Reporter::new(
         host,
@@ -585,7 +587,7 @@ fn packages_loop(
     )
     .first_report_at(first_at)
     .stopping_on(shutdown)
-    .with_in_use(scan);
+    .with_in_use(scan, state_dir);
     while !shutdown.is_requested() {
         // Both are taken: one report answers the directive and the task (P3-A04).
         let directive = requests.take(ReportType::Packages).is_some();
