@@ -12,7 +12,7 @@ module Signals
   # - The CVEs whose band changed between high and not high (or that gained or lost a high score) are handed to the
   #   daily triage run (TriageSignalChange kind epss), in SQL. Nothing here touches a finding.
   # - The transaction is limited (Signals.lock!), and how many high-band CVEs match open findings is counted after it
-  #   commits (Signals.count_matching!), so the panel never counts findings on a page view.
+  #   commits, by a job (Signals.count_later), so the panel never counts findings on a page view.
   class EpssImport
     STAGING = "epss_staging".freeze
     KEPT = "epss_kept".freeze
@@ -52,7 +52,7 @@ module Signals
                      target: import, changes: { "origin" => @origin, "source" => @source, "version" => reader.model_version,
                                                 "score_date" => reader.score_date.iso8601, "counts" => counts, "reason" => import.reason }.compact)
         import
-      end.tap { |import| Signals.count_matching!(import) }
+      end.tap { |import| Signals.count_later(import) }
     end
 
     private

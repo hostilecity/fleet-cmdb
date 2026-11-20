@@ -59,6 +59,17 @@ module Signals
     connection.execute("SET LOCAL idle_in_transaction_session_timeout = '#{IDLE_TIMEOUT}s'")
   end
 
+  # The database ended the import's connection (its idle_in_transaction_session_timeout fired, or the server went away),
+  # which rolled the import back. Recorded as a failed import with this reason, by the refresh job and the rake tasks.
+  CONNECTION_ERRORS = [ PG::ConnectionBad, ActiveRecord::ConnectionNotEstablished, ActiveRecord::ConnectionFailed ].freeze
+  CONNECTION_LOST = "the database ended the import's connection (for example after #{IDLE_TIMEOUT} s idle inside its transaction), " \
+                    "so nothing was imported".freeze
+
+  def connection_lost?(error) = CONNECTION_ERRORS.any? { |klass| error.is_a?(klass) }
+
+  # Reopens the connection after connection_lost?, so the failure can be recorded.
+  def reconnect! = SignalImport.connection.reconnect!
+
   # Records an import that stored nothing (the download or the file could not be read), audited, in its own transaction.
   def record_failure(signal, reason:, origin:, source:, operator: nil, started_at: Time.current)
     SignalImport.transaction do
@@ -103,24 +114,60 @@ module Signals
     end
   end
 
-  # After an import commits: how many of the signal's CVEs (every KEV entry, or the EPSS high band) match open findings,
-  # stored on the import for the Data sources panels, so a page view never counts findings (review of #269). added:
-  # the CVEs a KEV import added, counted the same way. Its own short transaction, limited by MATCHING_TIMEOUT; past it
-  # the counts say so and the panel shows "not counted". Returns the import.
+  # How many of the signal's CVEs (every KEV entry, or the EPSS high band) match open findings, stored on the import for
+  # the Data sources panels, so a page view never counts findings (reviews of #269). It runs in SignalMatchCountJob,
+  # queued once the import has committed (count_later), so a slow or failing count can never hold up an import, keep an
+  # operator's terminal, or turn a stored import into a failed one. added: the CVEs a KEV import added (at most
+  # ADDED_LIMIT are passed to the job), counted the same way.
+  #
+  # The import's counts say what happened, with matching_at: matching_state "counted" (and matching, added_matching),
+  # "timed_out" (a statement passed MATCHING_TIMEOUT: too large to count at this fleet's size), or "failed" (any other
+  # error, after the job's retries). bin/rails signals:recount counts the latest imports again.
   MATCHING_TIMEOUT = 300
+  ADDED_LIMIT = 10_000
+  MATCHING_KEYS = %w[matching added_matching matching_state matching_at matching_error].freeze
 
+  # Queues the count after an import commits. Never raises: the import is stored whatever happens here.
+  def count_later(import, added: nil)
+    return unless import.state == "succeeded"
+
+    SignalMatchCountJob.perform_later(import.id, (added if added && added.size <= ADDED_LIMIT))
+  rescue StandardError => e
+    Rails.logger.error("[signals] could not queue the matching count for #{import.signal} import #{import.id}: #{e.class.name}: #{e.message}")
+  end
+
+  # Counts and stores. A timeout is stored as such; any other error is raised, for the job to retry, and stored by
+  # record_count_failure! after the last attempt.
   def count_matching!(import, added: nil)
-    return import unless import.state == "succeeded"
-
     sql = import.signal == KEV ? "SELECT cve_id FROM kev_entries" : "SELECT cve_id FROM epss_scores WHERE band = 'high'"
     counts = { "matching" => matching_open_findings(sql) }
     counts["added_matching"] = matching_open_findings(added) if added
-    import.update_columns(counts: import.counts.merge(counts, "matching_at" => Time.current.utc.iso8601))
-    import
+    store_count(import, counts.merge("matching_state" => "counted"))
   rescue ActiveRecord::QueryCanceled
-    Rails.logger.warn("[signals] counting the #{import.signal} CVEs that match open findings took longer than #{MATCHING_TIMEOUT} s; not counted")
-    import.update_columns(counts: import.counts.merge("matching_timed_out" => true))
+    Rails.logger.warn("[signals] counting the #{import.signal} CVEs that match open findings took longer than #{MATCHING_TIMEOUT} s; stopped")
+    store_count(import, "matching_state" => "timed_out")
+  end
+
+  def record_count_failure!(import, error)
+    Rails.logger.error("[signals] counting the #{import.signal} CVEs that match open findings failed: #{error.class.name}: #{error.message}")
+    store_count(import, "matching_state" => "failed", "matching_error" => error.class.name)
+  end
+
+  def store_count(import, counts)
+    import.update_columns(counts: import.counts.except(*MATCHING_KEYS).merge(counts, "matching_at" => Time.current.utc.iso8601))
     import
+  end
+  private_class_method :store_count
+
+  # The way to count again (bin/rails signals:recount): the latest import that stored data, per signal. Returns the
+  # imports queued.
+  def recount_later
+    [ KEV, EPSS ].filter_map do |signal|
+      cleared = SignalImport.where(signal:, state: "cleared").maximum(:finished_at)
+      scope = SignalImport.where(signal:).succeeded.where("counts ->> 'not_modified' IS NULL")
+      scope = scope.where(SignalImport.arel_table[:finished_at].gt(cleared)) if cleared
+      scope.order(finished_at: :desc, id: :desc).first&.tap { |import| SignalMatchCountJob.perform_later(import.id, nil) }
+    end
   end
 
   # How many of the given CVEs a stored advisory with an open or reopened finding names, for the data sources page and
@@ -137,6 +184,8 @@ module Signals
 
       cves = "SELECT unnest(#{connection.quote(PG::TextEncoder::Array.new.encode(cves))}::varchar[])"
     end
+    # Run outside any transaction (SignalMatchCountJob), so this block is a transaction of its own and its SET LOCAL
+    # settings end with it. Inside an outer transaction it would be a savepoint, and they would last until the outer one ends.
     SignalImport.transaction(requires_new: true) do
       connection.execute("SET LOCAL jit = off")
       connection.execute("SET LOCAL statement_timeout = '#{MATCHING_TIMEOUT}s'")

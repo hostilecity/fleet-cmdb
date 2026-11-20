@@ -14,14 +14,15 @@ RSpec.describe Signals::EpssImport do
   def band(cve_id) = EpssScore.find_by!(cve_id:).band
 
   it "keeps only the CVEs stored advisories name, with the model version and score date, audited" do
-    import = import_epss(SignalHelpers::SIGNAL_FIXTURES.join("epss_scores-current.csv.gz"))
+    import = import_epss(SignalHelpers::SIGNAL_FIXTURES.join("epss_scores-current.csv.gz")).reload
     expect(EpssScore.order(:cve_id).pluck(:cve_id, :band)).to eq([ %w[CVE-2026-90777 high], %w[CVE-2026-91402 high], %w[CVE-2026-92010 normal],
                                                                    %w[CVE-2026-93330 high] ])
     expect(EpssScore.find_by!(cve_id: "CVE-2026-90777")).to have_attributes(score: BigDecimal("0.94321"), percentile: BigDecimal("0.99901"),
                                                                           score_date: Date.new(2026, 11, 19))
     expect(import).to have_attributes(signal: "epss", state: "succeeded", version: "v2025.03.14", score_date: Date.new(2026, 11, 19),
                                       counts: { "rows" => 6, "valid" => 6, "malformed" => 0, "repeated" => 0, "kept" => 4, "stored" => 0, "dropped" => 0,
-                                                "high" => 3, "rose" => 3, "fell" => 0, "matching" => 0, "matching_at" => Time.current.utc.iso8601 })
+                                                "high" => 3, "rose" => 3, "fell" => 0, "matching" => 0, "matching_state" => "counted",
+                                                "matching_at" => Time.current.utc.iso8601 })
     expect(AuditEntry.where("action LIKE 'signal.%'").sole).to have_attributes(action: "signal.epss_imported", target_id: import.id)
     expect(pending_changes("epss")).to eq(%w[CVE-2026-90777 CVE-2026-91402 CVE-2026-93330])
   end

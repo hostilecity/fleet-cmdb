@@ -11,16 +11,14 @@ class SignalDataSources
 
   # One panel. status: Signals::Freshness::Status. entries: stored rows; high: EPSS scores in the high band (nil for KEV).
   # How many match open findings is not counted here (at a million hosts that walks resolved findings for seconds or
-  # minutes; review of #269): it is the latest import's counts["matching"], counted after that import committed
-  # (Signals.count_matching!), so a page view reads two small tables only. latest: the last
+  # minutes; reviews of #269): it is the latest import's counts["matching"], counted by SignalMatchCountJob after that
+  # import committed, so a page view reads two small tables only. latest: the last
   # import that stored data (its counts say what changed). held: the newest held-back import while it is the latest.
   Panel = Data.define(:signal, :status, :source, :entries, :high, :latest, :held, :failed, :imports, :next_refresh) do
     def configured? = status.configured
     def kev? = signal == Signals::KEV
 
-    # The count of matching CVEs from the latest import, and when it was counted; nil when it was not (none yet, or
-    # it took too long), or 0 when nothing is stored.
-    def matching = entries.zero? ? 0 : latest&.counts&.fetch("matching", nil)
+    # When the latest import's matching count was made, timed out, or failed (SignalsHelper#signal_matching_text).
     def matching_at = (at = latest&.counts&.fetch("matching_at", nil)) && Time.iso8601(at)
   end
 

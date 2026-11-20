@@ -37,6 +37,14 @@ namespace :signals do
     puts "#{import.counts['deleted']} EPSS scores deleted. #{import.reason}."
   end
 
+  # The Data sources panels' "matches open findings" counts are made by a job after each import; this queues them again
+  # for the latest imports, after a count that failed or was too slow (reviews of #269).
+  desc "Count again how many KEV and high-band EPSS CVEs match open findings (the Data sources panels), in the background"
+  task recount: :environment do
+    imports = Signals.recount_later
+    puts imports.empty? ? "Nothing to count: no KEV or EPSS data is stored." : "Queued: #{imports.map { |i| "#{i.signal.upcase} (import #{i.id})" }.join(', ')}."
+  end
+
   desc "Import FIRST's EPSS scores from a .csv.gz (or .csv) file: FILE=... [ALLOW_DROPS=count]"
   task epss_import: :environment do
     path = ENV["FILE"].presence or abort "Usage: bin/rails signals:epss_import FILE=path/to/epss_scores-current.csv.gz [ALLOW_DROPS=120]"
@@ -69,6 +77,10 @@ module SignalsTask
     rescue Advisories::Unreadable, Signals::EpssImport::Older => e
       Signals.record_failure(signal, origin: "file", source:, reason: e.message)
       abort "Nothing imported: #{e.message}"
+    rescue *Signals::CONNECTION_ERRORS
+      Signals.reconnect!
+      Signals.record_failure(signal, origin: "file", source:, reason: Signals::CONNECTION_LOST)
+      abort "Nothing imported: #{Signals::CONNECTION_LOST}"
     end
     print(import, command)
   end

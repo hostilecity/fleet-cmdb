@@ -101,4 +101,27 @@ RSpec.describe "signals rake tasks" do
     expect(run("signals:epss_reset", "CONFIRM" => "1")).to include("1 EPSS scores deleted. EPSS scores deleted: rule N2 stops applying")
     expect(EpssScore.count).to eq(0)
   end
+
+  # Re-review of #269: a file ending inside a string after a backslash is recorded and audited as unreadable, and a
+  # connection the database ended (the idle timeout) as a failed import that says so.
+  it "records a KEV file that ends after a backslash as unreadable, audited" do
+    path = kev_file(raw: '{"a":"\\')
+    expect { run("signals:kev_import", "FILE" => path.to_s) }.to raise_error(SystemExit).and output(/Nothing imported: known_exploited_vulnerabilities.json is not valid JSON/).to_stderr
+    expect(SignalImport.sole).to have_attributes(state: "failed")
+    expect(AuditEntry.where(action: "signal.kev_import_failed").count).to eq(1)
+  end
+
+  it "records an import whose connection the database ended as failed, saying why" do
+    allow(Signals).to receive(:reconnect!) # a real reconnect would end the test's transaction
+    allow_any_instance_of(Signals::EpssImport).to receive(:call).and_raise(PG::ConnectionBad, "terminating connection due to idle-in-transaction timeout")
+    expect { run("signals:epss_import", "FILE" => epss_file([ %w[CVE-2026-0001 0.2 0.9] ]).to_s) }
+      .to raise_error(SystemExit).and output(/Nothing imported: the database ended the import's connection/).to_stderr
+    expect(SignalImport.sole).to have_attributes(state: "failed", reason: Signals::CONNECTION_LOST)
+  end
+
+  it "queues the matching counts again with signals:recount" do
+    expect(run("signals:recount")).to eq("Nothing to count: no KEV or EPSS data is stored.\n")
+    import = import_kev(kev_file("CVE-2026-0001"))
+    expect(run("signals:recount")).to eq("Queued: KEV (import #{import.id}).\n")
+  end
 end

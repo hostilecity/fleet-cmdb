@@ -45,16 +45,37 @@ RSpec.describe Signals do
     end
   end
 
-  describe ".count_matching!" do
-    it "stores the counts after the import, and notes when counting took too long" do
-      open_finding_for(advisory_for("CVE-2026-0001"))
-      import = import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002"))
-      expect(import.reload.counts).to include("matching" => 1, "added_matching" => 1)
+  describe "the matching count after an import (SignalMatchCountJob)" do
+    include ActiveJob::TestHelper
+
+    before { open_finding_for(advisory_for("CVE-2026-0001")) }
+
+    it "counts in a job after the import commits and stores what it found, with when" do
+      import = import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002")).reload
+      expect(import.counts).to include("matching" => 1, "added_matching" => 1, "matching_state" => "counted", "matching_at" => be_present)
+    end
+
+    it "stores a count that passed the time limit as timed out, and a failed one after the job's retries, never failing the import" do
       allow(described_class).to receive(:matching_open_findings).and_raise(ActiveRecord::QueryCanceled, "canceling statement due to statement timeout")
-      later = import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002"))
-      expect(later.reload.counts).to include("matching_timed_out" => true).and(not_include("matching"))
+      import = import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002")).reload
+      expect(import).to have_attributes(state: "succeeded")
+      expect(import.counts).to include("matching_state" => "timed_out").and(not_include("matching"))
+      allow(described_class).to receive(:matching_open_findings).and_raise(ActiveRecord::StatementInvalid, "lost")
+      import = perform_enqueued_jobs { import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002")) }.reload # with the job's retries
+      expect(import).to have_attributes(state: "succeeded")
+      expect(import.counts).to include("matching_state" => "failed", "matching_error" => "ActiveRecord::StatementInvalid")
+      allow(described_class).to receive(:matching_open_findings).and_call_original
+      expect(described_class.recount_later.map(&:id)).to eq([ import.id ])
+      expect(import.reload.counts).to include("matching_state" => "counted", "matching" => 1).and(not_include("matching_error"))
+    end
+
+    it "queues nothing for an import that stored nothing, and never raises when queueing fails" do
+      expect(described_class.recount_later).to eq([]) # nothing stored yet
       held = SignalImport.create!(signal: "kev", origin: "file", source: "x", state: "held_back", started_at: Time.current, finished_at: Time.current)
-      expect(described_class.count_matching!(held).counts).to eq({})
+      expect { described_class.count_later(held) }.not_to have_enqueued_job(SignalMatchCountJob)
+      allow(SignalMatchCountJob).to receive(:perform_later).and_raise(ActiveJob::EnqueueError, "queue down")
+      expect(import_kev(kev_file("CVE-2026-0001")).state).to eq("succeeded")
+      expect(SignalMatchCountJob.perform_now(0)).to be_nil # an import gone meanwhile
     end
   end
 

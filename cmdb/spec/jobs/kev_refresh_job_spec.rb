@@ -113,9 +113,19 @@ RSpec.describe KevRefreshJob, type: :job do
     expect { refresh }.to raise_error(Advisories::Unreadable)
     expect(SignalImport.sole.reason).to eq("known_exploited_vulnerabilities.json is not valid JSON, so nothing was imported")
     stub_kev
-    allow_any_instance_of(Signals::KevImport).to receive(:call).and_raise(ActiveRecord::ConnectionNotEstablished, "secret detail")
-    expect { refresh }.to raise_error(ActiveRecord::ConnectionNotEstablished)
-    expect(SignalImport.order(:id).last.reason).to eq("the refresh failed on the server (ActiveRecord::ConnectionNotEstablished); see the server log")
+    allow_any_instance_of(Signals::KevImport).to receive(:call).and_raise(ActiveRecord::StatementInvalid, "secret detail")
+    expect { refresh }.to raise_error(ActiveRecord::StatementInvalid)
+    expect(SignalImport.order(:id).last.reason).to eq("the refresh failed on the server (ActiveRecord::StatementInvalid); see the server log")
+  end
+
+  # Re-review of #269: when the import's idle_in_transaction_session_timeout ends its connection, the failure says so.
+  it "records a connection the database ended as a failed import that says why, after reconnecting" do
+    stub_kev
+    allow(Signals).to receive(:reconnect!) # a real reconnect would end the test's transaction
+    allow_any_instance_of(Signals::KevImport).to receive(:call).and_raise(PG::ConnectionBad, "server closed the connection unexpectedly")
+    expect { refresh }.to raise_error(PG::ConnectionBad)
+    expect(Signals).to have_received(:reconnect!)
+    expect(SignalImport.sole).to have_attributes(state: "failed", reason: Signals::CONNECTION_LOST)
   end
 
   it "does nothing when FLEET_KEV_URL is empty, keeping the stored entries" do

@@ -59,6 +59,9 @@ class SignalRefreshJob < ApplicationJob
   def give_up(error)
     reason = case error
     when Advisories::Feed::Unavailable, Advisories::Unreadable then error.message
+    when *Signals::CONNECTION_ERRORS
+      Signals.reconnect!
+      Signals::CONNECTION_LOST
     else "the refresh failed on the server (#{error.class.name}); see the server log"
     end
     logger.error("[signals] #{label} refresh failed after #{[ executions, 1 ].max} attempts: #{reason}")
@@ -70,7 +73,7 @@ class SignalRefreshJob < ApplicationJob
 
   # The import whose validators may be sent, or nil: the latest import that stored or checked data, if it is a clean
   # success from this feed and source with nothing cleared since. After a file import, another URL, a held-back import,
-  # malformed rows, or kev_clear, the whole file is needed again.
+  # malformed rows, or a clear (kev_clear, epss_reset), the whole file is needed again.
   def conditional_base
     latest = SignalImport.where(signal:, state: %w[succeeded held_back cleared]).order(finished_at: :desc, id: :desc).first
     return nil unless latest&.state == "succeeded" && latest.origin == "feed" && latest.source == @source

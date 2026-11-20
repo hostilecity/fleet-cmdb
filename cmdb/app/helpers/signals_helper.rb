@@ -51,14 +51,25 @@ module SignalsHelper
     safe_join([ lamp, " · ", details.join(", ") ])
   end
 
-  # "of which 3 match open findings in this fleet (counted 5 hours ago, after the last import)", or why it is not known.
+  # "of which 3 match open findings in this fleet (counted 5 hours ago, after the last import)", or what happened to the
+  # count: still being counted, too large to count (it passed the time limit), or failed, each with its time.
   def signal_matching_text(panel)
-    matching = panel.matching
     return "none matching open findings" if panel.entries.zero?
-    return "how many match open findings is not counted yet" if matching.nil?
 
-    counted = panel.matching_at ? " (counted #{seen_ago(panel.matching_at)}, after the last import)" : ""
-    "of which #{number_with_delimiter(matching)} #{matching == 1 ? 'matches' : 'match'} open findings in this fleet#{counted}"
+    counts = panel.latest&.counts || {}
+    at = panel.matching_at
+    when_text = at ? "#{seen_ago(at)}, #{utc(at)}" : nil
+    case counts["matching_state"]
+    when "counted"
+      matching = counts["matching"].to_i
+      "of which #{number_with_delimiter(matching)} #{matching == 1 ? 'matches' : 'match'} open findings in this fleet (counted #{seen_ago(at)}, after the last import)"
+    when "timed_out"
+      "too large to count how many match open findings (stopped after #{Signals::MATCHING_TIMEOUT / 60} minutes, #{when_text}); bin/rails signals:recount tries again"
+    when "failed"
+      "count of those matching open findings failed (#{when_text}); bin/rails signals:recount tries again"
+    else
+      "how many match open findings is being counted"
+    end
   end
 
   # A CVSS v3 vector's parts in words (VT-S04, epic N7): "network, no login, no user action". nil without a vector. The
@@ -82,7 +93,7 @@ module SignalsHelper
 
   def signal_import_how(import)
     if import.origin == "file" then "File import on the server"
-    elsif import.origin == "task" then "bin/rails signals:kev_clear"
+    elsif import.origin == "task" then import.source # bin/rails signals:kev_clear or signals:epss_reset
     elsif import.operator_id then "Refresh now, after the advisory feed"
     else "Scheduled refresh"
     end
@@ -95,7 +106,7 @@ module SignalsHelper
     counts = import.counts
     return "Nothing imported: #{import.reason}" if import.state == "failed"
     return "Nothing downloaded" if import.not_modified?
-    return "Entries deleted (#{number_with_delimiter(counts['deleted'].to_i)}): rules N1 and I5 stop applying until KEV is imported again" if import.state == "cleared"
+    return "#{number_with_delimiter(counts['deleted'].to_i)} deleted. #{import.reason}" if import.state == "cleared"
     if import.state == "held_back"
       what = import.signal == Signals::KEV ? "entries" : "scores"
       return "Held back: it would remove #{number_with_delimiter(counts['removed'] || counts['dropped'])} of #{number_with_delimiter(counts['stored'])} stored #{what}"

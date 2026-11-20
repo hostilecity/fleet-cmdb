@@ -58,5 +58,18 @@ RSpec::Matchers.define_negated_matcher :not_include, :include unless RSpec::Matc
 
 RSpec.configure do |config|
   config.include SignalHelpers
+  # The matching count after a signal import (SignalMatchCountJob) runs as soon as it is queued, as a worker would, unless
+  # tagged signal_counts: :enqueued. Added to whatever the test adapter already performs (rollouts.rb's hook).
+  config.around do |example|
+    adapter = ActiveJob::Base.queue_adapter
+    next example.run if example.metadata[:signal_counts] == :enqueued || !adapter.is_a?(ActiveJob::QueueAdapters::TestAdapter)
+
+    saved = [ adapter.perform_enqueued_jobs, adapter.filter ]
+    adapter.filter = adapter.perform_enqueued_jobs ? (Array(adapter.filter) + [ SignalMatchCountJob ] if adapter.filter) : [ SignalMatchCountJob ]
+    adapter.perform_enqueued_jobs = true
+    example.run
+  ensure
+    adapter.perform_enqueued_jobs, adapter.filter = saved if saved
+  end
   config.after { @signal_dirs&.each { |dir| FileUtils.rm_rf(dir) } }
 end

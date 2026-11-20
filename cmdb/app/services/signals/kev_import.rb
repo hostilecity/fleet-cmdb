@@ -44,8 +44,9 @@ module Signals
                      target: import, changes: { "origin" => @origin, "source" => @source, "version" => catalog.version, "counts" => counts, "reason" => import.reason }.compact)
         import
       end
-      # How many entries, and how many of those added, match open findings: counted after the commit (Signals.count_matching!).
-      Signals.count_matching!(import, added:)
+      # How many entries, and how many of those added, match open findings: counted by a job after the commit.
+      Signals.count_later(import, added:)
+      import
     end
 
     private

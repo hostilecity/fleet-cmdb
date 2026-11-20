@@ -12,9 +12,11 @@ RSpec.describe Signals::KevImport do
     finding = open_finding_for(advisory)
     import = import_kev(fixture)
     expect(KevEntry.order(:cve_id).pluck(:cve_id, :known_ransomware)).to eq([ [ "CVE-2025-80001", false ], [ "CVE-2026-90777", true ], [ "CVE-2026-91402", false ] ])
+    import.reload # the matching count is stored by a job after the commit
     expect(import).to have_attributes(signal: "kev", origin: "file", source: "kev.json", state: "succeeded", version: "2026.11.19",
                                       counts: { "in_file" => 3, "stored" => 0, "added" => 3, "removed" => 0, "malformed" => 0, "repeated" => 0,
-                                                "catalog_count" => 3, "added_matching" => 1, "matching" => 1, "matching_at" => Time.current.utc.iso8601 })
+                                                "catalog_count" => 3, "added_matching" => 1, "matching" => 1, "matching_state" => "counted",
+                                                "matching_at" => Time.current.utc.iso8601 })
     expect(AuditEntry.where("action LIKE ?", "signal.%").sole).to have_attributes(action: "signal.kev_imported", actor_type: "system", target_type: "SignalImport", target_id: import.id)
     expect(pending_changes("kev")).to eq(%w[CVE-2025-80001 CVE-2026-90777 CVE-2026-91402])
     expect(pending_changes("kev_all")).to eq(%w[kev_all])

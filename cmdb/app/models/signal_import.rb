@@ -1,6 +1,6 @@
 # One import of an exploitation signal (VT-SIGNALS, ADR 0032): CISA KEV or FIRST EPSS, from the scheduled refresh
-# (origin feed), a file imported by hand (file), or the KEV data cleared by bin/rails signals:kev_clear (task, state
-# cleared). Kept, as advisory and triage imports are, so freshness and each import's outcome can be shown; the
+# (origin feed), a file imported by hand (file), or the stored data deleted by bin/rails signals:kev_clear or
+# signals:epss_reset (task, state cleared). Kept, as advisory and triage imports are, so freshness and each import's outcome can be shown; the
 # audit log records each one too.
 class SignalImport < ApplicationRecord
   SIGNALS = %w[kev epss].freeze
