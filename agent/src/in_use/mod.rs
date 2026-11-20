@@ -194,14 +194,24 @@ fn services(ctx: &Ctx) -> Result<InUse, String> {
             .map_or(Owner::Other, |path| units::unit_of(path))
     };
     let mut owned: Vec<(Owner, &Socket)> = sockets.iter().map(|s| (owner(s), s)).collect();
-    if owned.iter().any(|(o, _)| *o == Owner::Systemd) {
+    if owned.iter().any(|(o, _)| matches!(o, Owner::Systemd(_))) {
         // All or nothing: without systemd's list, socket-activated services would drop out.
         let activated = activated(ctx).map_err(|why| {
             format!("the sockets systemd holds for socket activation cannot be named: {why}")
         })?;
         for (owner, socket) in &mut owned {
-            if *owner == Owner::Systemd {
-                *owner = match_activated(socket, &activated);
+            if let Owner::Systemd(unit) = owner {
+                *owner = match unit {
+                    Some(unit) => {
+                        let only: Vec<units::Activated> = activated
+                            .iter()
+                            .filter(|a| a.unit == *unit)
+                            .cloned()
+                            .collect();
+                        match_activated(socket, &only)
+                    }
+                    None => match_activated(socket, &activated),
+                };
             }
         }
     }

@@ -853,7 +853,7 @@ in_use_reported() {
     in_use '.in_use.listening' | jq -e 'index({"package": "fvt-listen-lan", "class": "network"})' > /dev/null \
         || fail "fvt-listen-lan (on $lan) is not network: $(in_use .in_use.listening)"
     in_use '.in_use.listening' | jq -e 'index({"package": "fvt-listen-sock", "class": "loopback"})' > /dev/null \
-        || fail "the socket-activated fvt-sock.service (systemd holds 127.0.0.1:18082) is not named: $(in_use .in_use.listening)"
+        || fail "the socket-activated fvt-sock.service (systemd holds 127.0.0.1:18082) is not named: $(in_use .in_use.listening); the socket: $(vm "ss -Hltn --cgroup 'sport = :18082'"); systemd: $(vm 'systemctl list-sockets --all --show-types --full --no-legend --no-pager | grep 18082')"
     in_use '.in_use.listening' | jq -e 'index({"package": "openssh-server", "class": "network"})' > /dev/null \
         || fail "openssh-server is not network: $(in_use .in_use.listening)"
     in_use '.in_use.services' | jq -e 'index("fvt-uselib") and index("fvt-listen-lo")' > /dev/null \
