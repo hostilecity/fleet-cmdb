@@ -21,15 +21,30 @@
 # - binaries (optional): only these binaries are matched as source; the signed source's others keep their own
 #   source. shim-signed-common is shim-signed's helper scripts, not shim, and is not Built-Using shim.
 #
+# A mapping only adds: a binary is still matched under its reported source too, at its own version, so an advisory
+# that names the signed source itself keeps matching.
+#
+# Why shim-signed is mapped although shim's advisories already show: on amd64 and arm64 shim-signed depends on
+# shim-helpers-<arch>-signed, which depends on shim-unsigned (>= its shim version, source shim), so shim's findings
+# open on shim-unsigned. But shim-signed's shimx64.efi.signed is the binary that boots, and shim-unsigned can be newer
+# than the shim it was signed from (">="), so only shim-signed tells whether the booting shim is fixed.
+#
 # Checked against Debian 13 and left out (docs/operations/health-and-jobs.md, "Advisory data"):
 # - grub-efi-<arch>-signed: Depends: grub-common (= its grub2 version), built from grub2, so grub2's advisories
 #   already open and resolve on grub-common in step with it. Its own version (1+2.12+9+deb13u2 for grub2
 #   2.12-9+deb13u2) cannot be turned back into grub2's when grub2's upstream version has a "+" (2.02+dfsg1).
+# - shim-helpers-<arch>-signed (MokManager and the fallback loader, built from shim): its version
+#   (1+16.1+2~deb13u1 for shim 16.1-2~deb13u1) cannot be turned back into shim's, like grub's, and shim's findings
+#   already open on shim-unsigned and shim-signed.
 # - fwupd-<arch>-signed (fwupd-signed is a virtual name it provides): Built-Using fwupd-efi, which Debian's tracker
-#   lists no CVE for; fwupd's own advisories match the fwupd package as before.
+#   lists no CVE for yet; fwupd's own advisories match the fwupd package as before. A future fwupd-efi advisory would
+#   need a row here (its version, 1:1.7+1, cannot be turned back either) or #271's Built-Using.
 #
 # Adding a row is a data change: another architecture (linux-signed-i386 on releases that have it), or a kernel
 # series with a source of its own (linux-signed-6.1-amd64, built from linux-6.1). Checked when the server starts.
+# Chunk verdicts are kept until an import changes their sources' advisories, so after adding or changing a row,
+# queue a re-match of its source: bin/rails vulnerabilities:rematch SOURCES=<source> (or a migration, as
+# RematchSignedSources did for these rows).
 Debian:
   - { signed: linux-signed-amd64, source: linux, version: binary }
   - { signed: linux-signed-arm64, source: linux, version: binary }
