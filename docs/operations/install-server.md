@@ -215,7 +215,7 @@ What it does:
 - It also refuses to run as any other role, before the migration has partitioned `audit_entries`, when `cmdb` is or can become a superuser, or when `pg_catalog` in `cmdb_production` holds anything the bootstrap superuser did not put there (made after initdb, owned by another role, or a function in a language PostgreSQL's own are not in).
 - Besides the event triggers, it adds `audit_entries_default`, a default partition owned by the superuser that refuses every row (so the log still fails closed, and PostgreSQL refuses to detach a month concurrently). It gives the id sequence to the superuser; `cmdb` may only take the next value and read it (the nightly `pg_dump` as `cmdb` reads it and the default partition). A trigger then gives every new entry its id from that sequence, whatever id an insert names, so no entry can repeat or choose an id. It cannot stop `cmdb` from inserting an entry with a backdated time: that is the partition key, which PostgreSQL does not let a trigger change. After the file has run, `cmdb` can no longer create an index or statistics object on the audit tables either.
 
-Run it again after a restore ([backup-and-restore.md](backup-and-restore.md)), connected the same way. Until it has run, the app works normally and `/health` shows `"audit_guard":"warning"`; afterwards `"ok"`. `docker exec fleet-cmdb bin/rails partitions:status` says whether it is installed.
+When it has run, run `docker exec fleet-cmdb bin/rails partitions:status` to check it and update the dashboard banner (otherwise it updates at the next hourly run). It ends with `Audit guard (ops/postgres/audit-guard.sql): installed` and `Banner updated.`; it takes no maintenance lock and does no DDL, and its only write is the banner's entry in the cache. Run it again after a restore ([backup-and-restore.md](backup-and-restore.md)), connected the same way, and run `partitions:status` again after it. Until it has run, the app works normally and `/health` shows `"audit_guard":"warning"`; afterwards `"ok"` (read it with `docker exec fleet-cmdb curl -s http://localhost:3000/health`: `/health` is served on the agent hostname and on localhost only, and the dashboard hostname answers it with 404).
 
 #### Recovery
 
@@ -278,7 +278,7 @@ A cluster where `cmdb` has ever been a superuser, including the bootstrap superu
    $B restore fleet-cmdb-20261119T101500Z         # creates the four databases as cmdb, restores, then backs up the restored state
    ```
 6. **Run the pre-check** (it should print "no sign …"), then **the step**, both as above.
-7. **Start the app** (`docker start fleet-cmdb`, and `fleet-cmdb-jobs`), check that `/health` shows `"audit_guard":"ok"`, and **enable the Deploy workflow again**.
+7. **Start the app** (`docker start fleet-cmdb`, and `fleet-cmdb-jobs`), then run `docker exec fleet-cmdb bin/rails partitions:status` to check the guard and update the dashboard banner (otherwise it updates at the next hourly run); check that `docker exec fleet-cmdb curl -s http://localhost:3000/health` shows `"audit_guard":"ok"`, and **enable the Deploy workflow again**.
 8. Once you are satisfied, remove the old container and its volume (`docker rm postgres-old`, then its volume), so it is never started again.
 
 A later migration that alters `audit_entries` or its guard function will need the superuser to disable the event triggers for it, in a session connected as above; its pull request will say so.
@@ -299,7 +299,8 @@ Then sign in with Google as that account. To manage other operators, see [fleet-
 docker ps --filter name=fleet-cmdb        # Up …
 docker logs -f fleet-cmdb                 # the app: one JSON object per line (health-and-jobs.md)
 docker logs -f fleet-cmdb-jobs            # background jobs, only with FLEET_JOBS_CONTAINER=true
-docker exec fleet-cmdb curl -s http://localhost:3000/health
+docker exec fleet-cmdb curl -s http://localhost:3000/health   # /health: localhost or the agent hostname only, 404 on the dashboard hostname
+docker exec fleet-cmdb bin/rails partitions:status       # partitions and the audit guard; also updates the dashboard banner
 systemctl --user list-timers fleet-cmdb-backup.timer   # the next backup
 journalctl --user -u fleet-cmdb-backup.service -n 30   # the last backups (as root, journalctl _SYSTEMD_USER_UNIT=fleet-cmdb-backup.service if the journal is not persistent)
 ```

@@ -114,6 +114,8 @@ PostgreSQL 16 (which refuses `event_triggers` at connect):
 docker exec -i -e PGOPTIONS='-c search_path=pg_catalog,pg_temp -c role=none -c client_min_messages=warning' postgres sh -c 'psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d cmdb_production' < ops/postgres/audit-guard.sql
 ```
 
+When it has run, run `docker exec fleet-cmdb bin/rails partitions:status` to check it and update the dashboard banner (otherwise it updates at the next hourly run). It should end with `Audit guard (ops/postgres/audit-guard.sql): installed` and `Banner updated.`
+
 ## The restore drill
 
 The drill restores a backup set into **scratch** databases (all four) and a scratch release volume, then boots the deployed image against the scratch **primary** and checks the result. The queue, cache, and cable dumps are proven by restoring them; the app's queue and cable connections stay the live ones, but the drill enqueues no job and opens no cable, and it sets `FLEET_RESTORE_DRILL=1`, which swaps the live Solid Cache database for an in-process store. So it writes nothing live, and it removes its scratch data afterwards.
