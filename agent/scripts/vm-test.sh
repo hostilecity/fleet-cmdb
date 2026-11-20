@@ -53,7 +53,8 @@
 #
 # Then what is in use (FR-2.6, VT-APPLICABILITY, scenario 309): test services listening on loopback and on
 # the VM's LAN address named by package and class, sshd on every address, the reboot flag null without
-# Debian's file and true with it, no address or port in the report, the agent's unit unchanged; then the
+# Debian's file and true with it, a socket-activated test service (systemd holds its socket) named, no
+# address or port in the report, the agent's unit unchanged; then the
 # library scan enabled in the local config, its transient unit carrying CAP_SYS_PTRACE alone with no
 # network, a library only a stopped service would use not listed, and one upgraded under a running
 # program stale.
@@ -800,8 +801,9 @@ fresh_reports() {
 }
 # Puts the VM back as the other scenarios expect it (the configuration unchanged), however the scenario ends.
 in_use_cleanup() {
-    vm "systemctl stop fvt-lo fvt-lan fvt-uselib 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
-        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-lib fvt-uselib fvt-idlelib fvt-idle > /dev/null 2>&1
+    vm "systemctl stop fvt-lo fvt-lan fvt-uselib fvt-sock.socket fvt-sock.service 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
+        rm -f /etc/systemd/system/fvt-sock.socket /etc/systemd/system/fvt-sock.service
+        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle > /dev/null 2>&1
         rm -rf $SCAN_DROPIN /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
         sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml; sed -i -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' /etc/fleet-agent/config.toml
         systemctl reset-failed fleet-agent; systemctl restart fleet-agent" || true
@@ -826,17 +828,21 @@ in_use_reported() {
     trap in_use_cleanup EXIT
     local p='bash /tmp/vm-test-packages.sh' lan props
     put "$here/vm-test-packages.sh" /tmp/vm-test-packages.sh
-    vm "$p build fvt-listen-lo 1.0 && $p build fvt-listen-lan 1.0 && $p build fvt-lib 1.0 && $p build fvt-lib 1.1
+    vm "$p build fvt-listen-lo 1.0 && $p build fvt-listen-lan 1.0 && $p build fvt-listen-sock 1.0 && $p build fvt-lib 1.0 && $p build fvt-lib 1.1
         $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0
-        dpkg -i /srv/fvt/debs/fvt-listen-lo_1.0_all.deb /srv/fvt/debs/fvt-listen-lan_1.0_all.deb /srv/fvt/debs/fvt-lib_1.0_all.deb \
+        dpkg -i /srv/fvt/debs/fvt-listen-lo_1.0_all.deb /srv/fvt/debs/fvt-listen-lan_1.0_all.deb /srv/fvt/debs/fvt-listen-sock_1.0_all.deb \
+            /srv/fvt/debs/fvt-lib_1.0_all.deb \
             /srv/fvt/debs/fvt-uselib_1.0_all.deb /srv/fvt/debs/fvt-idlelib_1.0_all.deb /srv/fvt/debs/fvt-idle_1.0_all.deb > /dev/null"
     lan=$(vm "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n 1")
     [ -n "$lan" ] || fail "the VM has no LAN address"
     vm "systemd-run --quiet --unit=fvt-lo /usr/libexec/fvt-listen-lo 127.0.0.1 18080
         systemd-run --quiet --unit=fvt-lan /usr/libexec/fvt-listen-lan $lan 18081
         systemd-run --quiet --unit=fvt-uselib /usr/libexec/fvt-uselib /usr/lib/fvt/libfvt-lib.so.1
+        printf '%s\n' '[Socket]' 'ListenStream=127.0.0.1:18082' > /etc/systemd/system/fvt-sock.socket
+        printf '%s\n' '[Service]' 'ExecStart=/usr/libexec/fvt-listen-sock 127.0.0.1 18083' > /etc/systemd/system/fvt-sock.service
+        systemctl daemon-reload && systemctl start fvt-sock.socket
         rm -f /run/reboot-required /run/reboot-required.pkgs"
-    wait_until "the test services to listen" 30 vm_ok "ss -Hltn 'sport = :18080' | grep -q . && ss -Hltn 'sport = :18081' | grep -q ."
+    wait_until "the test services to listen" 30 vm_ok "ss -Hltn 'sport = :18080' | grep -q . && ss -Hltn 'sport = :18081' | grep -q . && ss -Hltn 'sport = :18082' | grep -q ."
 
     fresh_reports
     wait_until "a package report" 120 packages_since
@@ -846,6 +852,8 @@ in_use_reported() {
         || fail "fvt-listen-lo (127.0.0.1 only) is not loopback: $(in_use .in_use.listening)"
     in_use '.in_use.listening' | jq -e 'index({"package": "fvt-listen-lan", "class": "network"})' > /dev/null \
         || fail "fvt-listen-lan (on $lan) is not network: $(in_use .in_use.listening)"
+    in_use '.in_use.listening' | jq -e 'index({"package": "fvt-listen-sock", "class": "loopback"})' > /dev/null \
+        || fail "the socket-activated fvt-sock.service (systemd holds 127.0.0.1:18082) is not named: $(in_use .in_use.listening)"
     in_use '.in_use.listening' | jq -e 'index({"package": "openssh-server", "class": "network"})' > /dev/null \
         || fail "openssh-server is not network: $(in_use .in_use.listening)"
     in_use '.in_use.services' | jq -e 'index("fvt-uselib") and index("fvt-listen-lo")' > /dev/null \
@@ -854,7 +862,7 @@ in_use_reported() {
         || fail "the library scan is not off: $(in_use)"
     jq -e '[.warnings[] | select(.field == "in_use")] == []' "$stub/packages.json" > /dev/null \
         || fail "in_use warnings: $(jq -c .warnings "$stub/packages.json")"
-    for leak in "$lan" 127.0.0.1 18080 18081 '"pid' argv; do
+    for leak in "$lan" 127.0.0.1 18080 18081 18082 '"pid' argv; do
         ! in_use | grep -qF -- "$leak" || fail "the in_use report contains '$leak'"
     done
     jq -e 'has("reboot_required") and .reboot_required == null and .reboot_required_packages == null' "$stub/inventory.json" > /dev/null \

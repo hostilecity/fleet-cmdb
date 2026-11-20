@@ -298,6 +298,7 @@ fn activated(ctx: &Ctx) -> Result<Vec<units::Activated>, String> {
         &[
             "list-sockets",
             "--all",
+            "--show-types",
             "--full",
             "--no-legend",
             "--no-pager",
