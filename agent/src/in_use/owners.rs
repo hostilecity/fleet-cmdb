@@ -29,20 +29,13 @@ pub fn aliases(path: &str) -> Vec<String> {
     out
 }
 
-/// The package that owns each of `wanted`, for those some package owns. The lists are read in name
-/// order and the first owner is kept. An unreadable info directory or list is an error: a file whose
-/// package is not known would make a package look unused.
-pub fn owners(ctx: &Ctx, wanted: &HashSet<String>) -> Result<HashMap<String, String>, String> {
-    let mut lookup: HashMap<String, Vec<&String>> = HashMap::new();
-    for path in wanted {
-        for alias in aliases(path) {
-            lookup.entry(alias).or_default().push(path);
-        }
-    }
-    let mut found = HashMap::new();
-    if lookup.is_empty() {
-        return Ok(found);
-    }
+/// Calls `each` with every package's name and its file list's lines, in name order, until it returns
+/// `false`. An unreadable info directory or list is an error: a file whose package is not known would
+/// make a package look unused.
+pub fn each_list(
+    ctx: &Ctx,
+    mut each: impl FnMut(&str, &mut dyn Iterator<Item = &str>) -> bool,
+) -> Result<(), String> {
     let names = ctx
         .list(DPKG_INFO, MAX_INFO_ENTRIES)
         .map_err(|e| crate::facts::io_reason(DPKG_INFO, &e))?;
@@ -58,21 +51,56 @@ pub fn owners(ctx: &Ctx, wanted: &HashSet<String>) -> Result<HashMap<String, Str
         let bytes = ctx
             .read(&path, MAX_LIST_BYTES)
             .map_err(|e| crate::facts::io_reason(&path, &e))?;
-        for line in bytes.split(|b| *b == b'\n') {
-            let Ok(line) = std::str::from_utf8(line) else {
-                continue;
-            };
-            if let Some(originals) = lookup.get(line) {
-                for original in originals {
-                    found
-                        .entry((*original).clone())
-                        .or_insert_with(|| package.to_owned());
-                }
-            }
-        }
-        if found.len() == wanted.len() {
+        let mut lines = bytes
+            .split(|b| *b == b'\n')
+            .filter_map(|line| std::str::from_utf8(line).ok());
+        if !each(package, &mut lines) {
             break;
         }
     }
+    Ok(())
+}
+
+/// The package that owns each of `wanted`, for those some package owns. The lists are read in name
+/// order and the first owner is kept.
+pub fn owners(ctx: &Ctx, wanted: &HashSet<String>) -> Result<HashMap<String, String>, String> {
+    let lookup = lookup(wanted);
+    let mut found = HashMap::new();
+    if lookup.is_empty() {
+        return Ok(found);
+    }
+    each_list(ctx, |package, lines| {
+        for line in lines {
+            note(&lookup, line, package, &mut found);
+        }
+        found.len() < wanted.len()
+    })?;
     Ok(found)
+}
+
+/// Each spelling of each wanted path ([`aliases`]), to the wanted paths it stands for.
+pub fn lookup(wanted: &HashSet<String>) -> HashMap<String, Vec<&String>> {
+    let mut lookup: HashMap<String, Vec<&String>> = HashMap::new();
+    for path in wanted {
+        for alias in aliases(path) {
+            lookup.entry(alias).or_default().push(path);
+        }
+    }
+    lookup
+}
+
+/// Records `package` as the owner of the wanted paths `line` spells, unless one was found first.
+pub fn note(
+    lookup: &HashMap<String, Vec<&String>>,
+    line: &str,
+    package: &str,
+    found: &mut HashMap<String, String>,
+) {
+    if let Some(originals) = lookup.get(line) {
+        for original in originals {
+            found
+                .entry((*original).clone())
+                .or_insert_with(|| package.to_owned());
+        }
+    }
 }

@@ -112,6 +112,8 @@ pub struct Reporter<'a, R: Rng> {
     /// What is in use (FR-2.6, VT-A01) is collected and sent with a dpkg listing; `None` leaves it
     /// out, as reports did before (the tests that are not about it).
     in_use: Option<in_use::Scan>,
+    /// The last library scan, reused for an hour (owner decision 2026-11-20).
+    scan_memo: in_use::scan::Memo,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -141,6 +143,7 @@ impl<'a, R: Rng> Reporter<'a, R> {
             tick_started: Instant::now(),
             first_at: None,
             in_use: None,
+            scan_memo: in_use::scan::Memo::default(),
         }
     }
 
@@ -256,7 +259,12 @@ impl<'a, R: Rng> Reporter<'a, R> {
         }
         let in_use_started = Instant::now();
         let in_use = match (&collected, &self.in_use) {
-            (Collected::Dpkg(_), Some(scan)) => Some(in_use::collect(self.host, scan, self.stop)),
+            (Collected::Dpkg(_), Some(scan)) => Some(in_use::collect(
+                self.host,
+                scan,
+                &mut self.scan_memo,
+                self.stop,
+            )),
             _ => None,
         };
         let in_use_ms = in_use_started.elapsed().as_millis() as u64;
@@ -482,18 +490,37 @@ pub fn encode_with(
     };
     let (body, json_bytes) = match collected {
         Collected::Dpkg(listing) => {
-            let mut body = Body::new(report_id, collected_at, None, listing);
-            if let Some(found) = in_use {
-                body.in_use = Some(found.in_use.as_ref());
-                // The listing's warnings come first; the contract allows 64 in all.
-                let room = packages::MAX_WARNINGS.saturating_sub(body.warnings.len());
-                body.warnings
-                    .extend(in_use_warnings.iter().take(room).map(|message| Warning {
-                        field: "in_use",
-                        message,
-                    }));
-            }
-            match compress(&body) {
+            const TOO_LARGE: &str = "what is in use was left out: with it the report would be larger than a package report may be";
+            let with_in_use = |in_use: Option<Option<&InUse>>,
+                               extra: &[&str]|
+             -> Result<(Vec<u8>, usize), String> {
+                let mut body = Body::new(report_id, collected_at, None, listing);
+                if in_use.is_some() {
+                    body.in_use = in_use;
+                    // The listing's warnings come first; the contract allows 64 in all.
+                    let room = packages::MAX_WARNINGS.saturating_sub(body.warnings.len());
+                    body.warnings.extend(
+                        in_use_warnings
+                            .iter()
+                            .map(String::as_str)
+                            .chain(extra.iter().copied())
+                            .take(room)
+                            .map(|message| Warning {
+                                field: "in_use",
+                                message,
+                            }),
+                    );
+                }
+                compress(&body)
+            };
+            let first = with_in_use(in_use.map(|found| found.in_use.as_ref()), &[]);
+            // Too large with in_use: send the listing without it (null, with a warning), rather than
+            // lose a good listing to `unreadable` (review of #268, N4).
+            let result = match (first, in_use) {
+                (Err(_), Some(_)) => with_in_use(Some(None), &[TOO_LARGE]),
+                (result, _) => result,
+            };
+            match result {
                 Ok(done) => done,
                 Err(why) => {
                     let (body, json_bytes) = without_packages("unreadable", &why);
