@@ -182,6 +182,52 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(rows.map { |row| row.split.first }).to eq(%w[curl:amd64 zlib:amd64 xml:amd64])
     end
 
+    def chips = page.css("#fix_filters a").map { |a| [ words(a), a["aria-current"], Rack::Utils.parse_query(URI(a["href"]).query) ] }
+
+    it "filters by whether a fix is available, counting over the open list whatever the other filters, in the URL (VT-FIXABLE #256)" do
+      tab = "/hosts/#{host.id}/vulnerabilities"
+      get tab
+      expect(chips).to eq([ [ "Fix available 5", nil, { "fix" => "available" } ], [ "No fix available 7", nil, { "fix" => "none" } ] ])
+      expect(chips.sum { |label, *| label.split.last.to_i }).to eq(page.at_css("#state_filters a[aria-current]").at_css(".n").text.to_i) # 12 open
+
+      get tab, params: { fix: "available" }
+      at = "2026-11-06 09:00 UTC"
+      expect(rows).to eq([ "kernel:amd64 installed 1.0-1 2 advisories High 2 high Fix for all 2 2 open #{at}", # counts only what the filter keeps
+                           "curl:amd64 installed 1.0-1 2 advisories Medium 2 medium Fix for all 2 2 open #{at}",
+                           "zlib:amd64 installed 1.0-1 1 advisory Medium 1 medium Fix available 1 open #{at}" ])
+      expect(words(page.at_css("#open_heading"))).to eq("Open findings 5: 2 high, 3 medium")
+      expect(chips).to eq([ [ "Fix available 5", "true", {} ], [ "No fix available 7", nil, { "fix" => "none" } ] ]) # the current chip clears it
+      expect(page.at_css("#finding_filters input[name=fix]")["value"]).to eq("available")
+      expect(Rack::Utils.parse_query(URI(page.at_css("#triage_filter a")["href"]).query)).to eq("debian" => "no_dsa", "fix" => "available")
+      expect(page.css("#state_filters a").map { |a| Rack::Utils.parse_query(URI(a["href"]).query) }).to eq([ { "fix" => "available" }, { "state" => "resolved" }, { "state" => "all" } ])
+
+      get tab, params: { fix: "none", severity: "medium" } # combined, and counted whatever the severity filter
+      expect(rows.map { |row| row.split.first }).to eq(%w[xml:amd64 zlib:amd64])
+      expect(chips.map(&:first)).to eq([ "Fix available 5", "No fix available 7" ])
+      expect(chips.first.last).to eq("severity" => "medium", "fix" => "available")
+
+      get tab, params: { fix: "none", q: "curl" }
+      expect(page.at_css("#open_findings").text.squish).to include("No open findings match. Clear the filters")
+      get tab, params: { fix: "bogus" }
+      expect(rows.size).to eq(5)
+      get tab, params: { fix: "available", state: "resolved" } # offered on the open list only (#252 question 7)
+      expect(page.at_css("#fix_filters")).to be_nil
+      expect(page.at_css("#resolved_findings")).to be_present
+    end
+
+    it "reads the stored fixed version and flag, which the next matching run brings up to date (#256)" do
+      advisory = Advisory.find_by!(advisory_id: "DSA-9200-1")
+      ChunkMatch.where(advisory_id: advisory.id).update_all(fixed_version: "2.0-1") # a verdict moved, its host not yet matched
+      get "/hosts/#{host.id}/vulnerabilities", params: { q: "ssl" }
+      expect(rows.sole).to include("No fix available")
+      expect(chips.map(&:first)).to eq([ "Fix available 5", "No fix available 7" ])
+      match(host)
+      get "/hosts/#{host.id}/vulnerabilities", params: { q: "ssl" }
+      expect(rows.sole).to include("Fix available")
+      expect(groups("open_list").sole.last.sole[2]).to eq("Fixed in 2.0-1")
+      expect(chips.map(&:first)).to eq([ "Fix available 6", "No fix available 6" ])
+    end
+
     it "collapses each package's advisories in a labelled native disclosure, opened by a text search" do
       get "/hosts/#{host.id}/vulnerabilities"
       details = page.css("#open_list details.advisories")
@@ -291,10 +337,11 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
         sql.size
       end
       tab = "/hosts/#{host.id}/vulnerabilities"
-      before = [ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa") ]
+      before = [ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?fix=available") ]
       import_advisories(*Array.new(30) { |i| advisory("DSA-94#{format('%02d', i)}-1", %w[kernel curl xml][i % 3], fixed: nil) })
       match(host)
-      expect([ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa") ]).to eq(before)
+      expect([ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?fix=available") ]).to eq(before)
+      expect(before.last).to eq(before.first) # the fix filter and its counts add no statement (#256)
       get tab
       expect(words(page.at_css("#open_heading"))).to start_with("Open findings 42:")
       expect(page.css("#open_list > tbody > tr.pkg-group").size).to eq(2)

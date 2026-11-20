@@ -1,7 +1,8 @@
 <% host = row.host %>
 <tr id="<%= dom_id(host, :compliance) %>" class="<%= "not-evaluated" if row.nothing_evaluated? %>">
   <th scope="row"><%= link_to host.name, host_path(host) %><span class="state-note"><%= status_lamp(host) %></span><% if host.tags.any? %><span class="state-note"><% host.tags.each do |t| %><%= link_to t, compliance_path(tag: t), class: "tag" %><% end %></span><% end %>
-    <% if !row.vulns_evaluated? && row.vulns_shown? %><span class="reason-line">Vulnerabilities not evaluated now (<%= vuln_reason_line(row).downcase_first %>); the open findings are from an earlier evaluation</span><% end %></th>
+    <% if !row.vulns_evaluated? && row.vulns_shown? %><span class="reason-line">Vulnerabilities not evaluated now (<%= vuln_reason_line(row).downcase_first %>); the open findings are from an earlier evaluation</span><% end %>
+    <%= fix_detail(host, row) %></th>
   <% if row.cis_evaluated? %>
     <%= pass_rate_cell(row) %>
     <% if row.cis_failed.zero? %>
