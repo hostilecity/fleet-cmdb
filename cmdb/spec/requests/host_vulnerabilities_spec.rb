@@ -357,20 +357,37 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     end
   end
 
-  it "says a kernel image's fix needs a new package and a reboot, which apt upgrade and the update task never install (VT-FIXABLE spec, review of #267, S1)" do
-    host = debian_host(packages: [ [ "linux-image-6.12.48+deb13-amd64", "6.12.48-1", "linux" ], [ "linux-libc-dev", "6.12.48-1", "linux" ],
-                                   [ "linux-image-6.12.40+deb13-amd64", "6.12.40-1", "linux-old" ] ])
+  it "says a kernel image's fix needs a new package and a reboot, and the old image's removal (VT-FIXABLE spec, review of #267, S1)" do
+    # As the agent reports a Debian amd64 host: the signed image and the metapackage come from linux-signed-amd64.
+    running = [ "linux-image-6.12.48+deb13-amd64-unsigned", "6.12.48-1", "linux" ]
+    old = [ "linux-image-6.12.30+deb13-amd64-unsigned", "6.12.30-1", "linux" ]
+    packages = [ running, [ "linux-image-6.12.48+deb13-amd64", "6.12.48-1", "linux-signed-amd64" ], [ "linux-image-amd64", "6.12.48-1", "linux-signed-amd64" ],
+                 [ "linux-libc-dev", "6.12.48-1", "linux" ], [ "linux-image-6.12.40+deb13-amd64-unsigned", "6.12.40-1", "linux-old" ] ]
+    host = debian_host(packages: packages + [ old ])
     import_advisories(advisory("DEBIAN-CVE-2026-2000", "linux", fixed: "6.12.57-1"), advisory("DEBIAN-CVE-2026-2001", "linux-old", fixed: nil), full: true)
+    match(host)
+    report_packages(host, packages) # the old image removed: its finding resolves and keeps its stored fix
     match(host)
     get "/hosts/#{host.id}/vulnerabilities"
     notes = page.css("#open_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix")&.text&.squish ] }
-    expect(notes).to eq("linux-image-6.12.48+deb13-amd64:amd64" => "A kernel fix comes in a new package, which neither apt upgrade nor the update task installs: install it (apt full-upgrade), then reboot into it.",
+    expect(notes).to eq("linux-image-6.12.48+deb13-amd64-unsigned:amd64" =>
+                          "A kernel fix comes in a new package, which apt-get upgrade and the update task don't install: install it with apt upgrade " \
+                          "(or apt full-upgrade where that holds it back; it can also remove packages), reboot into it, then remove this old image " \
+                          "(apt autoremove): it keeps its findings until then.",
                         "linux-libc-dev:amd64" => nil, # not a kernel image: its fix is an ordinary upgrade
-                        "linux-image-6.12.40+deb13-amd64:amd64" => nil) # a kernel image with no fix
-    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-6.12.48+deb13-amd64" }
+                        "linux-image-6.12.40+deb13-amd64-unsigned:amd64" => nil) # a kernel image with no fix
+    # The signed image and the metapackage have no finding at all, so no note: #270.
+    expect(VulnerabilityFinding.where(host_id: host.id, package: %w[linux-image-6.12.48+deb13-amd64 linux-image-amd64])).to be_empty
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: running.first }
     expect(page.at_css(".kernel-fix").text.squish).to start_with("A kernel fix comes in a new package")
-    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-6.12.40+deb13-amd64" }
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-6.12.40+deb13-amd64-unsigned" }
     expect(page.at_css(".kernel-fix")).to be_nil
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: old.first } # removed: only open findings count (review of #267, N2)
+    expect([ response.status, page.at_css(".kernel-fix") ]).to eq([ 200, nil ])
+    expect(VulnerabilityFinding.find_by!(host_id: host.id, package: old.first)).to have_attributes(state: "resolved", last_fixed_version: "6.12.57-1")
+    # Every kernel image name, the metapackage too, should #270 give it findings; nothing else.
+    helpers = ApplicationController.helpers
+    expect(%w[linux-image-amd64 linux-image-6.12.48+deb13-arm64 linux-headers-amd64 linux-libc-dev].map { |name| helpers.kernel_fix_note(name, 1).present? }).to eq([ true, true, false, false ])
   end
 
   it "says evaluated and nothing found only when the host was evaluated" do

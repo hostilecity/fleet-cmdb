@@ -58,20 +58,28 @@ module HostVulnerabilitiesHelper
     end
   end
 
-  # Debian's kernel image packages (linux-image-6.12.57+deb13-amd64, -unsigned, the linux-image-amd64 metapackage). A
-  # pattern here until VT-BUCKETS brings the per-distribution applicability table (cmdb/config/triage_applicability.yml)
-  # with the kernel rules K1 and K2, which replace this note with a work item.
+  # Debian's kernel image package names (linux-image-<release>, -unsigned, -dbg). A pattern here until VT-BUCKETS brings
+  # the per-distribution applicability table (cmdb/config/triage_applicability.yml) with the kernel rules K1 and K2,
+  # which replace this note with a work item.
+  #
+  # Limitation: only images built from the source package "linux" have findings, since matching joins advisories on
+  # the source: in practice the -unsigned and -dbg images. The signed images, the default on amd64 and arm64, and the
+  # linux-image-<arch> metapackage come from linux-signed-<arch>, which no advisory names, so they get no finding and
+  # no note (#270).
   KERNEL_IMAGE = /\Alinux-image-/
 
-  # Under a kernel image package with a fix (VT-FIXABLE #256, the spec's intro): until VT-BUCKETS, a running kernel's
-  # fix shows as "Fix available" on its package row, but in Debian each kernel update is a new binary package, which
-  # apt upgrade and the update task (apply_package_updates, DEC-16) never install, and it fixes nothing until the host
-  # boots it. nil for any other package, or with no fix.
+  # Under a kernel image package with an open finding that has a fix (VT-FIXABLE #256, the spec's intro): until
+  # VT-BUCKETS, a running kernel's fix shows as "Fix available" on its package row, but in Debian each kernel update is
+  # a new binary package. apt-get upgrade and the update task (apply_package_updates, DEC-16: Upgrade-Allow-New=false)
+  # never install it; apt upgrade does, as a dependency of the linux-image-<arch> metapackage, and apt full-upgrade
+  # also may remove packages. It fixes nothing until the host boots it, and this versioned image keeps its findings
+  # until it is removed. nil for any other package, or with no fix.
   def kernel_fix_note(package, fixable)
     return nil unless fixable.positive? && KERNEL_IMAGE.match?(package)
 
-    tag.span(safe_join([ "A kernel fix comes in a new package, which neither ", tag.code("apt upgrade"), " nor the update task installs: install it (",
-                         tag.code("apt full-upgrade"), "), then reboot into it." ]), class: "state-note kernel-fix")
+    tag.span(safe_join([ "A kernel fix comes in a new package, which ", tag.code("apt-get upgrade"), " and the update task don't install: install it with ",
+                         tag.code("apt upgrade"), " (or ", tag.code("apt full-upgrade"), " where that holds it back; it can also remove packages), reboot into it, ",
+                         "then remove this old image (", tag.code("apt autoremove"), "): it keeps its findings until then." ]), class: "state-note kernel-fix")
   end
 
   # How a resolved package row's findings resolved, in the order RESOLUTIONS lists them: "2 fixed, 1 removed".
