@@ -13,15 +13,20 @@
 # Recorded in the transaction that made the change, so a rolled-back import hands nothing over. Nothing here changes
 # a finding.
 #
-# Claim protocol (race-free; review of #269). Every record! gives the row a new id from the table's sequence, also
+# Claim protocol (race-free; reviews of #269). Every record! gives the row a new id from the table's sequence, also
 # when the row was already pending, so a row's id names the version of the change a consumer saw:
-#   1. claim(kinds:, limit:) reads up to limit rows, oldest id first, with a plain SELECT: no lock, so imports never
-#      wait on a consumer.
+#   1. claim(kinds:, limit:) reads up to limit rows, oldest id first, with a plain SELECT: no lock.
 #   2. The consumer recomputes from the current data and commits its work.
-#   3. release!(ids) deletes exactly the claimed ids, in a short transaction of its own. A change recorded between 1 and
-#      3 has a new id, so it is not deleted and is picked up by the next claim. A consumer that fails releases nothing,
-#      and the rows stay.
-# Never hold claimed rows in the run's transaction, and never delete by kind or key.
+#   3. release!(ids) deletes the claimed ids in a transaction of its own, skipping any row an import has locked
+#      (FOR UPDATE SKIP LOCKED). A change recorded between 1 and 3 has a new id, so it is not deleted and is picked up by
+#      the next claim. A row locked by an import that is re-recording it is skipped: if that import commits, the row
+#      has a new id and must stay; if it rolls back, the row is processed again, which is harmless. So release! never
+#      waits on an import and can never deadlock with one (it deleted in id order while imports upsert in their own
+#      order). It refuses to run inside an open transaction, where its delete would commit or roll back with the run.
+#      A consumer that fails releases nothing, and the rows stay.
+# Never hold claimed rows in the run's transaction, and never delete by kind or key. Within one run, process the
+# advisory rows after the kev rows: an advisory import that adds an alias reads KEV before a concurrent KEV import
+# commits that CVE, and the kev row then covers it.
 class TriageSignalChange < ApplicationRecord
   KINDS = %w[kev kev_all epss advisory].freeze
   NEXT_ID = "nextval(pg_get_serial_sequence('triage_signal_changes', 'id'))".freeze
@@ -59,6 +64,11 @@ class TriageSignalChange < ApplicationRecord
   # Up to limit pending changes of the kinds, oldest first, read without locking (step 1 of the claim protocol).
   def self.claim(kinds: KINDS, limit: 1_000) = where(kind: kinds).order(:id).limit(limit).to_a
 
-  # Deletes exactly the claimed rows (step 3); a row re-recorded since has a new id and stays. Returns how many went.
-  def self.release!(ids) = transaction { where(id: ids).delete_all }
+  # Deletes the claimed rows (step 3), skipping any an import has locked; a row re-recorded since has a new id and
+  # stays. Returns how many went. Raises inside an open transaction.
+  def self.release!(ids)
+    raise ArgumentError, "TriageSignalChange.release! must run outside a transaction (the claim protocol)" if connection.transaction_open?
+
+    transaction { where(id: where(id: ids).lock("FOR UPDATE SKIP LOCKED").select(:id)).delete_all }
+  end
 end
