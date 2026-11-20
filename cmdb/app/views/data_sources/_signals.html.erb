@@ -35,9 +35,9 @@
     <dl class="facts tight">
       <dt>Freshness</dt><dd id="<%= id %>_freshness"><%= signal_freshness_value(panel) %></dd>
       <% if kev %>
-        <dt>Entries</dt><dd><%= number_with_delimiter(panel.entries) %> <%= "CVE".pluralize(panel.entries) %>, of which <%= number_with_delimiter(panel.matching) %> <%= panel.matching == 1 ? "matches" : "match" %> open findings in this fleet</dd>
+        <dt>Entries</dt><dd><%= number_with_delimiter(panel.entries) %> <%= "CVE".pluralize(panel.entries) %>, <%= signal_matching_text(panel) %></dd>
       <% else %>
-        <dt>Entries</dt><dd>Only CVEs named by advisories in the database are kept: <%= number_with_delimiter(panel.entries) %><% if panel.latest %> of <%= number_with_delimiter(panel.latest.counts["rows"].to_i) %> in the last file<% end %>. <%= number_with_delimiter(panel.high) %> at or above the threshold, of which <%= number_with_delimiter(panel.high_matching) %> <%= panel.high_matching == 1 ? "matches" : "match" %> open findings</dd>
+        <dt>Entries</dt><dd>Only CVEs named by advisories in the database are kept: <%= number_with_delimiter(panel.entries) %><% if panel.latest %> of <%= number_with_delimiter(panel.latest.counts["rows"].to_i) %> in the last file<% end %>. <%= number_with_delimiter(panel.high) %> at or above the threshold, <%= signal_matching_text(panel) %></dd>
         <% if panel.latest %>
           <dt>Crossed the threshold</dt><dd><%= number_with_delimiter(panel.latest.counts["rose"].to_i) %> rose to <%= signal_percent(Signals.config.epss_enter) %> or more; <%= number_with_delimiter(panel.latest.counts["fell"].to_i) %> fell below <%= signal_percent(Signals.config.epss_leave) %> (scores of <%= panel.latest.score_date&.iso8601 %>)</dd>
         <% end %>

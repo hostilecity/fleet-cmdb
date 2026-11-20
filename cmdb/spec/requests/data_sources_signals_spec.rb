@@ -33,12 +33,13 @@ RSpec.describe "Data sources: exploitation signals", :signed_in, type: :request 
     expect(page.at_css("h1").text).to eq("Data sources")
     kev = facts(panel("kev").at_css("dl"))
     expect(kev["Freshness"]).to start_with("Up to date · last success").and(end_with("catalog version 2026.11.19"))
-    expect(kev["Entries"]).to eq("3 CVEs, of which 1 matches open findings in this fleet")
+    expect(kev["Entries"]).to match(/\A3 CVEs, of which 1 matches open findings in this fleet \(counted .+ ago, after the last import\)\z/)
     expect(kev["Source"]).to start_with("kev.example.lan/cisagov/kev.json · every 6 hours with the advisory refresh, conditional request")
     expect(panel("kev").to_html).not_to include("pass-secret", "query-secret", "user:")
     epss = facts(panel("epss").at_css("dl"))
     expect(epss["Freshness"]).to include("Up to date", "scores of 2026-11-19", "model v2025.03.14")
-    expect(epss["Entries"]).to eq("Only CVEs named by advisories in the database are kept: 2 of 6 in the last file. 2 at or above the threshold, of which 1 matches open findings")
+    expect(epss["Entries"]).to start_with("Only CVEs named by advisories in the database are kept: 2 of 6 in the last file. 2 at or above the threshold, " \
+                                          "of which 1 matches open findings in this fleet (counted")
     expect(epss["Crossed the threshold"]).to eq("2 rose to 10% or more; 0 fell below 7% (scores of 2026-11-19)")
     expect(epss["Source"]).to start_with("epss.example.lan/epss_scores-current.csv.gz · daily at 14:30 UTC · redirects followed only")
     expect(page.at_css("#epss_attribution").text).to eq("See EPSS at https://www.first.org/epss")
@@ -71,7 +72,7 @@ RSpec.describe "Data sources: exploitation signals", :signed_in, type: :request 
       notice = panel("kev").at_css("#kev_stale").text.squish
       expect(notice).to start_with("Out of date, still used. Last refreshed 9 days ago")
       expect(notice).to include("Triage keeps using this data; no finding moves because the source is late.", "The last 2 refreshes failed")
-      expect(facts(panel("kev").at_css("dl"))["Freshness"]).to start_with("Out of date: older than 168 hours · last success 9 days ago")
+      expect(facts(panel("kev").at_css("dl"))["Freshness"]).to start_with("Out of date: older than 7 days · last success 9 days ago")
       expect(panel("kev").at_css("#kev_import_list tbody tr td:nth-child(4)").text).to eq("Nothing imported: the CISA KEV catalog at kev.example.lan answered HTTP 503")
       expect(page.at_css("#signal_freshness").text.squish).to start_with("Known exploited (CISA KEV): out of date (9 days ago); still used until refreshed.")
       expect(page.at_css("#signal_freshness .stale-word")).to be_present
