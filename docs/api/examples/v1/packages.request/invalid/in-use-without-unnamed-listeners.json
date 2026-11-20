@@ -73,6 +73,8 @@
     ],
     "library_scan": "off",
     "libraries": null,
+    "native": null,
+    "scanned_at": null,
     "complete": false
   },
   "warnings": []

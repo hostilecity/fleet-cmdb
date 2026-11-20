@@ -82,6 +82,8 @@
         "stale": false
       }
     ],
+    "native": null,
+    "scanned_at": null,
     "complete": false
   },
   "warnings": []

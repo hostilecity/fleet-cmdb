@@ -120,7 +120,7 @@
       }
     },
     "in_use": {
-      "description": "What running processes use (FR-2.6, VT-A01, VT-A02), for the triage rules L1 and N4: binary package names and classes only, never process ids, command lines, user names, addresses, or ports. Optional, and only with `manager: dpkg`. Absent or `null` means the agent did not report use (an older agent, or it could not read the sockets or services; a `warnings` entry with field `in_use` says why): the server then treats no package as idle.",
+      "description": "What running processes use (FR-2.6, VT-A01, VT-A02), for the triage rules L1 and N4: binary package names and classes only, never process ids, command lines, user names, addresses, or ports. Optional, and only with `manager: dpkg`. Absent or `null` means the agent did not report use (an older agent, or it could not read the sockets or services whole; a `warnings` entry with field `in_use` says why): the server then treats no package as idle. Every list here is positive evidence only: a package left out of `listening`, `services`, or `libraries` is never evidence that it is idle. Only a package in `native` and not in `libraries` may be called idle (owner decision 2026-11-20).",
       "type": [
         "object",
         "null"
@@ -131,11 +131,13 @@
         "unnamed_listeners",
         "library_scan",
         "libraries",
+        "native",
+        "scanned_at",
         "complete"
       ],
       "properties": {
         "listening": {
-          "description": "Each binary package owning the main executable of a systemd service with a listening TCP socket or bound UDP socket, once, sorted by name: `network` when any of its sockets is on a non-loopback address (including the wildcard), `loopback` when all are on 127.0.0.0/8 or ::1.",
+          "description": "Each binary package owning the `ExecStart=` executable of a systemd service with a listening TCP socket or bound UDP socket, once, sorted by name: `network` when any of its sockets is on a non-loopback address (including the wildcard), `loopback` when all are on 127.0.0.0/8 or ::1. The package is the command's: a wrapper (`pg_ctlcluster` of `postgresql-common` for PostgreSQL, `sh -c`, `env`, an interpreter) is named, not the program it starts, which the agent cannot see without a new privilege. Positive evidence only.",
           "type": "array",
           "maxItems": 1000,
           "items": {
@@ -162,7 +164,7 @@
           }
         },
         "services": {
-          "description": "The binary packages owning the main executables of running systemd services, each once, sorted.",
+          "description": "The binary packages owning the `ExecStart=` executables of running systemd services, each once, sorted. As in `listening`, a wrapper's package is named. Positive evidence only.",
           "type": "array",
           "maxItems": 1000,
           "uniqueItems": true,
@@ -201,7 +203,7 @@
           ]
         },
         "libraries": {
-          "description": "With `library_scan: ran`, every binary package with a file mapped by a running process, once, sorted by name; `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). `null` otherwise.",
+          "description": "With `library_scan: ran`, every binary package with a file mapped by a running process, once, sorted by name; `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). Interpreted code (Python, Perl, Ruby, Node, Java) is read, not mapped, so it is listed only when something of it is mapped. `null` otherwise.",
           "type": [
             "array",
             "null"
@@ -225,8 +227,30 @@
             }
           }
         },
+        "native": {
+          "description": "With `library_scan: ran`, the packages the scan can judge: those that ship at least one ELF executable or shared library and no interpreted code (no script in a `bin` directory, no Python, Perl, Ruby, JavaScript, Java, PHP, Lua, or Tcl file outside `/usr/share/doc`), and whose code files the scan could read. Only a package listed here and absent from `libraries` may be called idle. Each once, sorted. `null` otherwise.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 20000,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+          }
+        },
+        "scanned_at": {
+          "description": "When the library scan whose result this is started (agent clock, RFC 3339 UTC). The agent runs it at most once an hour and reuses the last result, or the last failure, in reports made in between, so this can be up to an hour older than `collected_at`. `null` when `library_scan` is `off`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 35,
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+        },
         "complete": {
-          "description": "`true` exactly when the library scan ran, so `libraries` lists every package in use; `false` when only services were looked at.",
+          "description": "`true` exactly when the library scan ran: `libraries` then lists every package with native code mapped by running processes, and `native` the packages that claim covers. `false` when only services were looked at.",
           "type": "boolean"
         }
       },
@@ -249,6 +273,9 @@
               },
               "complete": {
                 "const": true
+              },
+              "native": {
+                "type": "array"
               }
             }
           },
@@ -259,6 +286,35 @@
               },
               "complete": {
                 "const": false
+              },
+              "native": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "library_scan": {
+                "const": "off"
+              }
+            },
+            "required": [
+              "library_scan"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scanned_at": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "scanned_at": {
+                "type": "string"
               }
             }
           }

@@ -86,6 +86,12 @@
         "stale": true
       }
     ],
+    "native": [
+      "libc6",
+      "openssh-server",
+      "samba"
+    ],
+    "scanned_at": "2026-01-01T11:30:00Z",
     "complete": true
   },
   "warnings": []

@@ -77,6 +77,12 @@
     },
     "library_scan": "ran",
     "libraries": [],
+    "native": [
+      "libc6",
+      "openssh-server",
+      "samba"
+    ],
+    "scanned_at": "2026-01-01T11:30:00Z",
     "complete": false
   },
   "warnings": []
