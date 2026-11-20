@@ -896,18 +896,19 @@ in_use_reported() {
     in_use '.in_use.native' | jq -e 'index("fvt-idlelib") and index("fvt-lib") and (index("fvt-uselib") | not)' > /dev/null \
         || fail "native is wrong (fvt-lib and fvt-idlelib ship a shared library, fvt-uselib only a Python script): $(in_use .in_use.native | head -c 600)"
     in_use '.in_use.scanned_at | type == "string"' | grep -qx true || fail "no scanned_at"
-    echo "CPU: the scan unit $(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -o 'Consumed .*CPU time' | tail -n 1"); the agent since its start $(vm 'systemctl show -p CPUUsageNSec --value fleet-agent') ns"
+    echo "CPU: the agent since its start, the scan unit's run included in the elapsed time above: $(vm 'systemctl show -p CPUUsageNSec --value fleet-agent') ns"
 
     # Asked for again within the hour (the heartbeat's report_request): the last scan is reused, not run again.
     local first_scan scans
     first_scan=$(in_use '.in_use.scanned_at')
-    scans=$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c 'Consumed' || true")
+    scans=$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c '^Started fleet-agent-library-scan' || true")
+    [ "$scans" -ge 1 ] || fail "the journal shows no run of the scan unit"
     since=$(date +%s.%N)
     set_plan '{"report_request": ["packages"]}'
     wait_until "a package report on request" 120 packages_since
     set_plan '{}'
     [ "$(in_use '.in_use.scanned_at')" = "$first_scan" ] || fail "a report on request ran the scan again: $(in_use '.in_use.scanned_at'), first $first_scan"
-    [ "$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c 'Consumed' || true")" = "$scans" ] \
+    [ "$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c '^Started fleet-agent-library-scan' || true")" = "$scans" ] \
         || fail "the scan unit ran again within the hour"
     vm_ok '! systemctl is-active --quiet fleet-agent-library-scan' || fail "the scan unit is still running"
 
