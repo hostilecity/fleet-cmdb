@@ -26,7 +26,7 @@ class EvaluationRun
     def prepare!
       stamp = AdvisoryImport.newest_succeeded_id # before any advisory data is read
       supported.each do |ecosystem, sources|
-        evaluated = ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(sources)).pluck(:package_chunk_id)
+        evaluated = ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(ecosystem, sources)).pluck(:package_chunk_id)
         VulnerabilityMatcher::Chunks.ensure!(evaluated, ecosystem, stamp:, force: true)
       end
       VulnerabilityMatcher::Chunks.restamp!(stamp)
@@ -53,7 +53,9 @@ class EvaluationRun
 
     def supported = packages.select { |ecosystem, sources| Ecosystems.supported?(ecosystem) && sources.any? }
 
-    def changed_chunks(sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources).select(:package_chunk_id)
+    # With the signed-template sources built from them (SignedSources): a change to linux's advisories is one to
+    # linux-signed-amd64's images.
+    def changed_chunks(ecosystem, sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", SignedSources.reported(sources, ecosystem)).select(:package_chunk_id)
 
     # host_package_sets rows on a set holding a chunk with a changed source (the source index, then the GIN index).
     def affected_hosts
