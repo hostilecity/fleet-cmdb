@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_258001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -331,6 +331,26 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
     t.index ["kind", "state"], name: "index_evaluation_runs_unfinished", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
     t.check_constraint "kind::text = ANY (ARRAY['cis_rules'::character varying, 'advisories'::character varying]::text[])", name: "evaluation_runs_kind_valid"
     t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'finished'::character varying, 'superseded'::character varying, 'failed'::character varying]::text[])", name: "evaluation_runs_state_valid"
+  end
+
+  create_table "host_applicability", primary_key: "host_id", id: :bigint, default: nil, force: :cascade do |t|
+    t.boolean "reboot_required"
+    t.string "reboot_packages", default: [], null: false, array: true
+    t.string "kernel_build", limit: 256
+    t.datetime "reboot_changed_at"
+    t.boolean "in_use_reported", default: false, null: false
+    t.string "listening_network", default: [], null: false, array: true
+    t.string "listening_loopback", default: [], null: false, array: true
+    t.string "running_services", default: [], null: false, array: true
+    t.integer "unnamed_network", default: 0, null: false
+    t.integer "unnamed_loopback", default: 0, null: false
+    t.string "library_scan", limit: 8
+    t.string "libraries", default: [], null: false, array: true
+    t.string "stale_libraries", default: [], null: false, array: true
+    t.datetime "in_use_changed_at"
+    t.check_constraint "in_use_reported = (library_scan IS NOT NULL)", name: "host_applicability_in_use_reported"
+    t.check_constraint "library_scan::text = ANY (ARRAY['off'::character varying, 'ran'::character varying, 'failed'::character varying]::text[])", name: "host_applicability_library_scan_valid"
+    t.check_constraint "reboot_required IS NULL OR reboot_required", name: "host_applicability_reboot_true_or_null"
   end
 
   create_table "host_compliance_flushes", primary_key: "xact_id", id: :bigint, default: nil, force: :cascade do |t|
@@ -975,6 +995,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
   add_foreign_key "enrollment_tokens", "hosts"
   add_foreign_key "evaluation_batches", "evaluation_runs", on_delete: :cascade
   add_foreign_key "evaluation_runs", "evaluation_runs", column: "superseded_by_id", on_delete: :nullify
+  add_foreign_key "host_applicability", "hosts"
   add_foreign_key "host_compliance_summaries", "hosts"
   add_foreign_key "host_configs", "hosts"
   add_foreign_key "host_inventories", "hosts"
