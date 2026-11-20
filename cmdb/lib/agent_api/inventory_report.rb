@@ -16,7 +16,7 @@ module AgentApi
     WARNING_FIELDS = %w[field message].freeze
     CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
-    attr_reader :report_id, :schema_version, :collected_at, :stable, :volatile, :warnings
+    attr_reader :report_id, :schema_version, :collected_at, :stable, :volatile, :warnings, :applicability
 
     def initialize(payload)
       data = strip_control_characters(payload)
@@ -29,6 +29,7 @@ module AgentApi
       @warnings = data["warnings"].map { |w| w.slice(*WARNING_FIELDS) }.sort_by { |w| [ w["field"], w["message"] ] }
       @stable = build_stable(data)
       @volatile = build_volatile(data)
+      @applicability = build_applicability(data)
     end
 
     # SHA-256 of the canonical stable fields: equal inventories hash equally whatever order the agent listed
@@ -47,6 +48,16 @@ module AgentApi
         { "name" => nic["name"], "primary" => nic["primary"], "addresses" => nic["addresses"].map { |a| normalize_address(a) }.uniq.sort }
       end&.sort_by { |nic| nic["name"] }
       fields
+    end
+
+    # FR-2.6 (#258): the reboot flag, true or nil (the schema refuses false), its packages, and the kernel build. Kept
+    # out of the stable fields, so they never make a snapshot; HostApplicability stores them.
+    def build_applicability(data)
+      {
+        "reboot_required" => data["reboot_required"],
+        "reboot_packages" => Array(data["reboot_required_packages"]).uniq.sort,
+        "kernel_build" => data["kernel_build"]
+      }
     end
 
     def build_volatile(data)

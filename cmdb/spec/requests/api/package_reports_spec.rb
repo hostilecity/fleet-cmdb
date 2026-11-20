@@ -417,4 +417,50 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
     Rails.logger.info("[package_reports_spec] 3,000 packages, #{first.to_json.bytesize} bytes (#{body.bytesize} gzip): #{timings.transform_values { |t| t.round(3) }}")
     expect(timings.values).to all(be < 5.0)
   end
+
+  describe "what is in use (FR-2.6, #258)" do
+    let(:scanned) { ApiContract.example("packages.request", "in-use-library-scan") }
+
+    def stored = HostApplicability.find_by(host_id: host.id)
+
+    it "stores listening packages by class, running services, unnamed listeners, and the scan, apart from the package set" do
+      send_report(report)
+      set_hash = HostPackageSet.find_by!(host:).content_hash
+      in_use = scanned["in_use"].merge("listening" => scanned["in_use"]["listening"] + [ { "package" => "openssh-server", "class" => "network" } ])
+      expect { send_report(report(in_use:)) }.not_to change(PackageSnapshot, :count)
+      expect(response).to have_http_status(:ok)
+      expect(HostPackageSet.find_by!(host:).content_hash).to eq(set_hash)
+      expect(stored).to have_attributes(in_use_reported: true, listening_network: %w[openssh-server samba], listening_loopback: [],
+                                        running_services: %w[cron openssh-server samba], unnamed_network: 1, unnamed_loopback: 0,
+                                        library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ])
+    end
+
+    it "writes only when what is in use changes" do
+      send_report(report(in_use: scanned["in_use"]))
+      changed_at = stored.in_use_changed_at
+      writes = []
+      counter = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE)[^"]*"host_applicability"/) }
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+        travel(1.hour) { send_report(report(in_use: scanned["in_use"])) }
+      end
+      expect(writes).to eq([])
+      expect(stored.in_use_changed_at).to eq(changed_at)
+    end
+
+    it "keeps it through an unreadable report and clears it when a report has none" do
+      send_report(report(in_use: scanned["in_use"]))
+      send_report(ApiContract.example("packages.request", "unreadable-manager").merge("report_id" => SecureRandom.uuid))
+      expect(stored.in_use_reported).to be(true)
+      failed = ApiContract.example("packages.request", "in-use-unreadable")
+      send_report(failed.merge("report_id" => SecureRandom.uuid))
+      expect(stored).to have_attributes(in_use_reported: false, libraries: [], library_scan: nil)
+      expect(HostPackageSet.find_by!(host:).warnings).to include("field" => "in_use", "message" => failed["warnings"][0]["message"])
+    end
+
+    it "refuses in_use with an unsupported package manager, and writes nothing" do
+      payload = ApiContract.examples_for("packages.request", kind: "invalid").find { |e| e.name == "in-use-with-unsupported" }.data
+      expect { send_report(payload.merge("report_id" => SecureRandom.uuid)) }.not_to change(HostApplicability, :count)
+      expect_error(:bad_request, "validation_failed")
+    end
+  end
 end

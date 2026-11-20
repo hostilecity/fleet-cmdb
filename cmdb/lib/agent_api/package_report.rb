@@ -20,7 +20,7 @@ module AgentApi
       def to_h = { "name" => name, "reason" => reason }
     end
 
-    attr_reader :report_id, :schema_version, :collected_at, :manager, :unsupported_reason, :packages, :skipped, :warnings
+    attr_reader :report_id, :schema_version, :collected_at, :manager, :unsupported_reason, :packages, :skipped, :warnings, :in_use
 
     def initialize(payload)
       problems = duplicates(payload["packages"])
@@ -36,6 +36,7 @@ module AgentApi
                                           .sort_by { |s| [ s.name, s.reason ] }.uniq
       @warnings = payload["warnings"].map { |w| w.slice(*WARNING_FIELDS).transform_values { |v| v.gsub(InventoryReport::CONTROL_CHARACTERS, "") } }
                                      .sort_by { |w| [ w["field"], w["message"] ] }
+      @in_use = build_in_use(payload["in_use"])
     end
 
     def unsupported? = manager == "unsupported"
@@ -52,6 +53,28 @@ module AgentApi
     end
 
     private
+
+    # FR-2.6 (#258): what is in use, as HostApplicability's columns, or nil when the report has none (absent or null;
+    # the schema allows it only with dpkg). A package listed twice is network if either entry is, so the classes never
+    # overlap. Not part of content_hash: a change of use is not a new package set.
+    def build_in_use(in_use)
+      return nil if in_use.nil?
+
+      network = in_use["listening"].select { |l| l["class"] == "network" }.map { |l| l["package"] }.uniq.sort
+      loopback = (in_use["listening"].map { |l| l["package"] }.uniq - network).sort
+      libraries = Array(in_use["libraries"])
+      {
+        "in_use_reported" => true,
+        "listening_network" => network,
+        "listening_loopback" => loopback,
+        "running_services" => in_use["services"].uniq.sort,
+        "unnamed_network" => in_use["unnamed_listeners"]["network"],
+        "unnamed_loopback" => in_use["unnamed_listeners"]["loopback"],
+        "library_scan" => in_use["library_scan"],
+        "libraries" => libraries.map { |l| l["package"] }.uniq.sort,
+        "stale_libraries" => libraries.select { |l| l["stale"] }.map { |l| l["package"] }.uniq.sort
+      }
+    end
 
     def duplicates(packages)
       seen = Set.new

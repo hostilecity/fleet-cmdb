@@ -8,6 +8,7 @@
 # - A machine id different from the one the credential was enrolled with sets a visible warning on the host
 #   and is audited once; the first inventory is audited too. Ordinary reports write no audit entries.
 # - A new report, changed or not, satisfies the host's pending inventory report request (ReportRequests, P2-S03).
+# - The reboot flag and the kernel build (FR-2.6) go to HostApplicability, written only when they change.
 module InventoryRecorder
   Result = Data.define(:report_id, :duplicate, :snapshot)
 
@@ -40,6 +41,7 @@ module InventoryRecorder
                    changes: { "stable_hash" => [ nil, hash ] })
     end
     check_machine_id(host, credential_id, report.machine_id, now)
+    HostApplicability.record_inventory!(host_id:, report:, now:) # the reboot flag (FR-2.6, #258), only when it changes
     # A rule's applies_to depends on the operating system, so a host whose os changes (or is first known) is
     # evaluated again (P2-S06).
     CisEvaluationJob.after_snapshot(host_id) if os_before != report.stable["os"]
