@@ -56,6 +56,34 @@ module HostTabsHelper
   # "1 high, 2 medium, 1 unknown".
   def severity_counts(pairs) = pairs.map { |severity, count| "#{count} #{severity}" }.join(", ")
 
+  # The reports tile's headline (owner decision on #255): "Missing packages" for a type that never arrived within its
+  # grace period, "Config and packages overdue" for types older than about twice their interval (both, joined, when
+  # both apply), "Waiting for packages" for a newly seen host's first reports, and "On schedule" otherwise.
+  def reports_headline(summary)
+    missing = summary.report_types(:missing)
+    overdue = summary.report_types(:overdue)
+    if missing.any? || overdue.any?
+      words = [ ("missing #{missing.to_sentence}" if missing.any?), ("#{overdue.to_sentence} overdue" if overdue.any?) ].compact.join(", ")
+      tag.span(words.upcase_first, class: "overdue")
+    elsif (awaited = summary.report_types(:awaited)).any?
+      tag.span("Waiting for #{awaited.to_sentence}", class: "not-eval")
+    else
+      tag.span("On schedule", class: "none-open")
+    end
+  end
+
+  # The reports tile's detail, one line per type in a fixed order (as in the approved mockup, so a refresh never moves
+  # them): "Config 3 hours ago", "No package report yet", and for an overdue type, as the advisory data notice words
+  # staleness, "Packages about 14 hours ago, older than 12 hours".
+  def reports_detail(summary)
+    safe_join(HostSummary::REPORT_TYPES.map do |type|
+      line = report_age(type, summary.received[type])
+      next line unless summary.report_state(type) == :overdue
+
+      "#{line}, older than #{human_duration(ReportSchedule::OVERDUE_INTERVALS * summary.intervals.fetch(type))}"
+    end, tag.br)
+  end
+
   # "dpkg, set last changed 1 day ago" for the packages tile.
   def package_tile_detail(summary)
     set = summary.package_set

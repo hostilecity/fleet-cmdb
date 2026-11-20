@@ -539,8 +539,9 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     queries = tab.call(large)
     expect(queries).to eq(tab.call(small))
     # +1: the host's liveness, in its own table since #192; +1: the advisories preloaded beside the details (#196); +2: the
-    # package groups (HostFindingGroups) and the chip's count, in place of loading every open finding (#253).
-    expect(queries).to be <= 24 + 8
+    # package groups (HostFindingGroups) and the chip's count, in place of loading every open finding (#253); +1: the
+    # operator's inventory interval, for the reports tile's on-schedule headline (#255).
+    expect(queries).to be <= 24 + 9
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
     expect(filtered).to eq(queries) # the chip's filter is a condition in the same statements
@@ -549,7 +550,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
 
     package = ->(host) { count_queries { get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "acme1" } } }
     expect(package.call(large)).to eq(package.call(small))
-    expect(package.call(large)).to be <= 24 + 7 # +1: the host's set's chunk ids, before its package's entries (#196)
+    expect(package.call(large)).to be <= 24 + 8 # +1: the host's set's chunk ids, before its package's entries (#196); +1: the inventory interval (#255)
     puts format("\n  500 findings: tab %d queries, %.0f ms (best of 3); package page %d queries", queries, timings.min * 1000, package.call(large)) if ENV["SHOW_TIMINGS"]
   end
 end
