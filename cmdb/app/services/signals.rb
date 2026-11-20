@@ -43,10 +43,20 @@ module Signals
 
   def feed_for(signal) = signal == KEV ? kev_feed : epss_feed
 
-  # Takes the lock a signal's imports are serialised by, until the current transaction ends.
+  # Seconds one statement of an import may take, and that its transaction may sit idle between statements (while the
+  # reader parses a batch), so an import can never hold a snapshot open for long and keep vacuum back for the whole
+  # database (review of #269). The EPSS reader's own DEADLINE bounds the reading.
+  STATEMENT_TIMEOUT = 300
+  IDLE_TIMEOUT = 60
+
+  # Takes the lock a signal's imports are serialised by, until the current transaction ends, then limits the rest of
+  # the transaction (SET LOCAL, so a pooled connection is never left changed). The staging tables stay inside the
+  # transaction for the same reason: a temporary table across transactions would not survive a transaction pooler.
   def lock!(signal)
     connection = SignalImport.connection
     connection.execute("SELECT pg_advisory_xact_lock(hashtext(#{connection.quote("signals.#{signal}.import")}))")
+    connection.execute("SET LOCAL statement_timeout = '#{STATEMENT_TIMEOUT}s'")
+    connection.execute("SET LOCAL idle_in_transaction_session_timeout = '#{IDLE_TIMEOUT}s'")
   end
 
   # Records an import that stored nothing (the download or the file could not be read), audited, in its own transaction.
@@ -60,24 +70,57 @@ module Signals
     end
   end
 
-  # Deletes the stored KEV entries (bin/rails signals:kev_clear, VT-S02): the only way they are ever deleted, since
-  # stale or turned-off data keeps being used (B1). Rules N1 and I5 stop applying, so every finding is handed to the
-  # triage run (kev_all). Audited, with what it means; returns the SignalImport recording it.
-  CLEARED = "KEV entries deleted: rule N1 (known exploited) and rule I5 (Debian unimportant is ignorable once KEV data exists) " \
-            "stop applying until KEV data is imported again".freeze
+  # Deletes a signal's stored data (bin/rails signals:kev_clear and signals:epss_reset): the only way it is ever
+  # deleted, since stale or turned-off data keeps being used (B1). Audited, with what it means; returns the SignalImport
+  # recording it (state cleared), after which freshness reads "never imported" and, for EPSS, a file of any date
+  # imports again (the way out of a wrong stored score date).
+  #
+  # KEV: rules N1 and I5 stop applying, so every finding is handed to the triage run (kev_all). EPSS: the CVEs that
+  # were high are handed over (epss), since rule N2 stops applying to them.
+  CLEARED = {
+    KEV => "KEV entries deleted: rule N1 (known exploited) and rule I5 (Debian unimportant is ignorable once KEV data exists) " \
+           "stop applying until KEV data is imported again",
+    EPSS => "EPSS scores deleted: rule N2 stops applying until EPSS is imported again, and the next file is imported whatever its score date"
+  }.freeze
+  CLEAR_TASKS = { KEV => "bin/rails signals:kev_clear", EPSS => "bin/rails signals:epss_reset" }.freeze
 
-  def clear_kev!(operator: nil)
+  def clear!(signal, operator: nil)
     SignalImport.transaction do
-      lock!(KEV)
+      lock!(signal)
       now = Time.current
-      deleted = KevEntry.delete_all
-      TriageSignalChange.record!(:kev_all)
-      import = SignalImport.create!(signal: KEV, origin: "task", source: "bin/rails signals:kev_clear", operator:, state: "cleared",
-                                    counts: { "deleted" => deleted }, reason: CLEARED, started_at: now, finished_at: now)
-      Audit.record(actor: operator || Audit::SYSTEM, action: Audit::Actions::SIGNAL_KEV_CLEARED, target: import,
-                   changes: { "counts" => import.counts, "reason" => CLEARED })
+      if signal == KEV
+        deleted = KevEntry.delete_all
+        TriageSignalChange.record!(:kev_all)
+      else
+        TriageSignalChange.record!(:epss, cve_ids: EpssScore.where(band: "high").pluck(:cve_id))
+        deleted = EpssScore.delete_all
+      end
+      import = SignalImport.create!(signal:, origin: "task", source: CLEAR_TASKS.fetch(signal), operator:, state: "cleared",
+                                    counts: { "deleted" => deleted }, reason: CLEARED.fetch(signal), started_at: now, finished_at: now)
+      action = signal == KEV ? Audit::Actions::SIGNAL_KEV_CLEARED : Audit::Actions::SIGNAL_EPSS_CLEARED
+      Audit.record(actor: operator || Audit::SYSTEM, action:, target: import, changes: { "counts" => import.counts, "reason" => import.reason })
       import
     end
+  end
+
+  # After an import commits: how many of the signal's CVEs (every KEV entry, or the EPSS high band) match open findings,
+  # stored on the import for the Data sources panels, so a page view never counts findings (review of #269). added:
+  # the CVEs a KEV import added, counted the same way. Its own short transaction, limited by MATCHING_TIMEOUT; past it
+  # the counts say so and the panel shows "not counted". Returns the import.
+  MATCHING_TIMEOUT = 300
+
+  def count_matching!(import, added: nil)
+    return import unless import.state == "succeeded"
+
+    sql = import.signal == KEV ? "SELECT cve_id FROM kev_entries" : "SELECT cve_id FROM epss_scores WHERE band = 'high'"
+    counts = { "matching" => matching_open_findings(sql) }
+    counts["added_matching"] = matching_open_findings(added) if added
+    import.update_columns(counts: import.counts.merge(counts, "matching_at" => Time.current.utc.iso8601))
+    import
+  rescue ActiveRecord::QueryCanceled
+    Rails.logger.warn("[signals] counting the #{import.signal} CVEs that match open findings took longer than #{MATCHING_TIMEOUT} s; not counted")
+    import.update_columns(counts: import.counts.merge("matching_timed_out" => true))
+    import
   end
 
   # How many of the given CVEs a stored advisory with an open or reopened finding names, for the data sources page and
@@ -94,8 +137,9 @@ module Signals
 
       cves = "SELECT unnest(#{connection.quote(PG::TextEncoder::Array.new.encode(cves))}::varchar[])"
     end
-    SignalImport.transaction do
+    SignalImport.transaction(requires_new: true) do
       connection.execute("SET LOCAL jit = off")
+      connection.execute("SET LOCAL statement_timeout = '#{MATCHING_TIMEOUT}s'")
       connection.select_value(<<~SQL.squish).to_i
         WITH k AS (SELECT DISTINCT cve_id FROM (#{cves}) AS s(cve_id)),
         named AS (

@@ -60,7 +60,7 @@ RSpec.describe KevRefreshJob, type: :job do
     refresh
     expect(a_request(:get, url).with { |r| !r.headers.key?("If-None-Match") }).to have_been_made.twice
     SignalImport.last.update!(counts: SignalImport.last.counts.merge("malformed" => 0))
-    Signals.clear_kev!
+    Signals.clear!("kev")
     refresh
     expect(a_request(:get, url).with { |r| !r.headers.key?("If-None-Match") }).to have_been_made.times(3)
   end

@@ -3,12 +3,12 @@ require "rails_helper"
 # The exploitation signals' shared parts (VT-SIGNALS, ADR 0032): clearing KEV data, counting CVEs that match open
 # findings, recording failures, and the truncation guard's rule.
 RSpec.describe Signals do
-  describe ".clear_kev!" do
+  describe ".clear!" do
     it "deletes the stored entries, hands every finding to triage, audits what it means, and reads as never imported" do
       import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002"))
       TriageSignalChange.delete_all
       operator = create(:operator)
-      import = described_class.clear_kev!(operator:)
+      import = described_class.clear!("kev", operator:)
       expect(KevEntry.count).to eq(0)
       expect(import).to have_attributes(signal: "kev", origin: "task", state: "cleared", counts: { "deleted" => 2 }, operator:)
       expect(pending_changes("kev_all")).to eq(%w[kev_all])
@@ -17,6 +17,44 @@ RSpec.describe Signals do
       expect(entry.changeset["reason"]).to include("rule N1", "rule I5", "stop applying")
       expect(Signals::Freshness.status("kev")).to be_never
       expect(Signals::Freshness).not_to be_kev_imported
+    end
+
+    # Review of #269: the way out of a wrong stored EPSS score date.
+    it "resets EPSS: deletes the scores, hands the high CVEs to triage, and lets a file of any date import again" do
+      advisory_for("CVE-2026-0001", "CVE-2026-0002")
+      import_epss(epss_file([ %w[CVE-2026-0001 0.5 0.5], %w[CVE-2026-0002 0.01 0.5] ], date: Date.current.iso8601))
+      expect { import_epss(epss_file([ %w[CVE-2026-0001 0.5 0.5] ], date: "2026-11-10")) }.to raise_error(Signals::EpssImport::Older)
+      TriageSignalChange.delete_all
+      import = described_class.clear!("epss")
+      expect(import).to have_attributes(state: "cleared", source: "bin/rails signals:epss_reset", counts: { "deleted" => 2 })
+      expect(EpssScore.count).to eq(0)
+      expect(pending_changes("epss")).to eq(%w[CVE-2026-0001])
+      expect(AuditEntry.where(action: "signal.epss_cleared").sole.changeset["reason"]).to include("rule N2 stops applying", "whatever its score date")
+      expect(Signals::Freshness.status("epss")).to be_never
+      expect(import_epss(epss_file([ %w[CVE-2026-0001 0.5 0.5] ], date: "2026-11-10")).state).to eq("succeeded")
+    end
+  end
+
+  describe ".lock!" do
+    it "limits the rest of the import's transaction with SET LOCAL timeouts" do
+      SignalImport.transaction(requires_new: true) do
+        described_class.lock!("epss")
+        expect(SignalImport.connection.select_value("SHOW statement_timeout")).to eq("5min")
+        expect(SignalImport.connection.select_value("SHOW idle_in_transaction_session_timeout")).to eq("1min")
+      end
+    end
+  end
+
+  describe ".count_matching!" do
+    it "stores the counts after the import, and notes when counting took too long" do
+      open_finding_for(advisory_for("CVE-2026-0001"))
+      import = import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002"))
+      expect(import.reload.counts).to include("matching" => 1, "added_matching" => 1)
+      allow(described_class).to receive(:matching_open_findings).and_raise(ActiveRecord::QueryCanceled, "canceling statement due to statement timeout")
+      later = import_kev(kev_file("CVE-2026-0001", "CVE-2026-0002"))
+      expect(later.reload.counts).to include("matching_timed_out" => true).and(not_include("matching"))
+      held = SignalImport.create!(signal: "kev", origin: "file", source: "x", state: "held_back", started_at: Time.current, finished_at: Time.current)
+      expect(described_class.count_matching!(held).counts).to eq({})
     end
   end
 

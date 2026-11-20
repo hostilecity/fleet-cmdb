@@ -5,6 +5,8 @@ require "rails_helper"
 RSpec.describe Signals::KevImport do
   let(:fixture) { SignalHelpers::SIGNAL_FIXTURES.join("known_exploited_vulnerabilities.json") }
 
+  around { |example| freeze_time { example.run } }
+
   it "stores the catalog, keeps its version and counts on the import, audits it, and hands every finding to triage on the first import" do
     advisory = advisory_for("CVE-2026-90777")
     finding = open_finding_for(advisory)
@@ -12,7 +14,7 @@ RSpec.describe Signals::KevImport do
     expect(KevEntry.order(:cve_id).pluck(:cve_id, :known_ransomware)).to eq([ [ "CVE-2025-80001", false ], [ "CVE-2026-90777", true ], [ "CVE-2026-91402", false ] ])
     expect(import).to have_attributes(signal: "kev", origin: "file", source: "kev.json", state: "succeeded", version: "2026.11.19",
                                       counts: { "in_file" => 3, "stored" => 0, "added" => 3, "removed" => 0, "malformed" => 0, "repeated" => 0,
-                                                "catalog_count" => 3, "added_matching" => 1 })
+                                                "catalog_count" => 3, "added_matching" => 1, "matching" => 1, "matching_at" => Time.current.utc.iso8601 })
     expect(AuditEntry.where("action LIKE ?", "signal.%").sole).to have_attributes(action: "signal.kev_imported", actor_type: "system", target_type: "SignalImport", target_id: import.id)
     expect(pending_changes("kev")).to eq(%w[CVE-2025-80001 CVE-2026-90777 CVE-2026-91402])
     expect(pending_changes("kev_all")).to eq(%w[kev_all])

@@ -53,6 +53,7 @@ module Audit
     SIGNAL_EPSS_IMPORTED = "signal.epss_imported"
     SIGNAL_EPSS_IMPORT_FAILED = "signal.epss_import_failed"
     SIGNAL_EPSS_IMPORT_HELD_BACK = "signal.epss_import_held_back"
+    SIGNAL_EPSS_CLEARED = "signal.epss_cleared"
     # Tasks (FR-3.4, P3-S02, P3-S07): a batch and its tasks created, then one entry per state transition.
     TASK_BATCH_CREATED = "task.batch_created"
     TASK_CREATED = "task.created"

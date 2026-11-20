@@ -22,8 +22,19 @@ namespace :signals do
     abort "This deletes every stored KEV entry: rule N1 (known exploited) and rule I5 stop applying until KEV is imported again.\n" \
           "Run it again with CONFIRM=1 to go ahead: bin/rails signals:kev_clear CONFIRM=1" unless ENV["CONFIRM"] == "1"
 
-    import = Signals.clear_kev!
-    puts "#{import.counts['deleted']} KEV entries deleted. #{Signals::CLEARED}."
+    import = Signals.clear!(Signals::KEV)
+    puts "#{import.counts['deleted']} KEV entries deleted. #{import.reason}."
+  end
+
+  # The way out of a wrong stored EPSS score date (a file dated in the future, review of #269): a file older than the
+  # stored scores is refused, so this deletes them and lets the next file of any date import.
+  desc "Delete the stored EPSS scores so the next file imports whatever its date (rule N2 stops applying until then): CONFIRM=1"
+  task epss_reset: :environment do
+    abort "This deletes every stored EPSS score: rule N2 stops applying until EPSS is imported again.\n" \
+          "Run it again with CONFIRM=1 to go ahead: bin/rails signals:epss_reset CONFIRM=1" unless ENV["CONFIRM"] == "1"
+
+    import = Signals.clear!(Signals::EPSS)
+    puts "#{import.counts['deleted']} EPSS scores deleted. #{import.reason}."
   end
 
   desc "Import FIRST's EPSS scores from a .csv.gz (or .csv) file: FILE=... [ALLOW_DROPS=count]"

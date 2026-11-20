@@ -45,6 +45,15 @@ module Signals
     end
     private_class_method :build
 
+    # The score date of the stored EPSS scores: the newest successful import's since the last reset, or nil. A file older
+    # than it is refused (Signals::EpssImport::Older).
+    def stored_score_date
+      cleared = SignalImport.epss.where(state: "cleared").maximum(:finished_at)
+      scope = SignalImport.epss.succeeded
+      scope = scope.where(SignalImport.arel_table[:finished_at].gt(cleared)) if cleared
+      scope.maximum(:score_date)
+    end
+
     # Whether KEV data is stored (imported at least once and not cleared since), which rule I5 needs (VT-M1).
     def kev_imported? = KevEntry.exists?
 

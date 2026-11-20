@@ -16,12 +16,13 @@ RSpec.describe Signals::KevReader do
     path = kev_file("CVE-2026-0001", kev_vulnerability("CVE-2026-0001", date_added: "2026-01-01"), 5, kev_vulnerability("CVE-2026"),
                     kev_vulnerability("CVE-2026-0002", date_added: "2026-13-45"), kev_vulnerability("CVE-2026-0003", date_added: nil),
                     kev_vulnerability("CVE-2026-0004", due_date: 5),
-                    kev_vulnerability("CVE-2026-0005", due_date: nil, vendorProject: "Evil\u0000 <b>Corp</b>#{'x' * 200}", product: 12))
+                    kev_vulnerability("CVE-2026-0005", due_date: nil, vendorProject: "Evil\u0000 <b>Corp</b>#{'x' * 200}", product: 12),
+                    *(1..60).map { |i| format("CVE-2025-%04d", i) }) # enough valid entries that the malformed ones stay under 10% of the count
     catalog = described_class.new(path).read
-    expect(catalog.entries.map(&:cve_id)).to eq(%w[CVE-2026-0001 CVE-2026-0005])
+    expect(catalog.entries.map(&:cve_id).first(2)).to eq(%w[CVE-2026-0001 CVE-2026-0005])
     expect(catalog.entries.first.date_added).to eq(Date.new(2026, 11, 2))
-    expect(catalog.entries.last).to have_attributes(due_date: nil, product: nil)
-    expect(catalog.entries.last.vendor).to start_with("Evil <b>Corp</b>xxx").and(have_attributes(length: 128))
+    expect(catalog.entries.second).to have_attributes(due_date: nil, product: nil)
+    expect(catalog.entries.second.vendor).to start_with("Evil <b>Corp</b>xxx").and(have_attributes(length: 128))
     expect(catalog).to have_attributes(malformed: 5, repeated: 1)
     expect(catalog.problems).to eq([ { "index" => 2, "problem" => "is not an object" }, { "index" => 3, "problem" => "has no valid cveID" },
                                      { "index" => 4, "id" => "CVE-2026-0002", "problem" => "has no valid dateAdded" },
@@ -43,5 +44,34 @@ RSpec.describe Signals::KevReader do
     end
     expect { described_class.new("/nonexistent/kev.json").read }.to raise_error(Advisories::Unreadable, "kev.json is not a file, so nothing was imported")
     expect { described_class.new(kev_file("CVE-2026-0001"), max_bytes: 10).read }.to raise_error(Advisories::Unreadable, /is larger than 0 MiB/)
+  end
+
+  # Review of #269: a catalog with no valid entry, or far fewer than its count, is a broken file; and the shape is
+  # bounded before JSON.parse builds anything.
+  it "refuses a catalog with no valid entry, or whose valid entries fall short of its count by more than 10%" do
+    expect { described_class.new(kev_file(kev_vulnerability("CVE-1"), kev_vulnerability("bad")), name: "kev.json").read }
+      .to raise_error(Advisories::Unreadable, "kev.json has no valid entry (2 malformed), so nothing was imported")
+    ten = (1..10).map { |i| format("CVE-2026-%04d", i) }
+    expect(described_class.new(kev_file(*ten.first(9), kev_vulnerability("CVE-x"))).read.entries.size).to eq(9) # 10% short is allowed
+    expect { described_class.new(kev_file(*ten.first(8), kev_vulnerability("CVE-x"), kev_vulnerability("CVE-y"))).read }
+      .to raise_error(Advisories::Unreadable, /has 8 valid entries of the 10 its count gives \(2 malformed\)/)
+  end
+
+  it "refuses too many entries, objects and arrays, or an entry too large, before parsing" do
+    expect(JSON).not_to receive(:parse)
+    stub_const("Signals::KevReader::MAX_ENTRIES", 2)
+    expect { described_class.new(kev_file("CVE-2026-0001", "CVE-2026-0002", "CVE-2026-0003")).read }.to raise_error(Advisories::Unreadable, /has more than 2 entries/)
+    stub_const("Signals::KevReader::MAX_CONTAINERS", 3)
+    expect { described_class.new(kev_file("CVE-2026-0001")).read }.to raise_error(Advisories::Unreadable, /has more than 3 objects and arrays/)
+    stub_const("Signals::KevReader::MAX_CONTAINERS", 100)
+    stub_const("Signals::KevReader::MAX_ENTRY_BYTES", 500)
+    expect { described_class.new(kev_file(kev_vulnerability("CVE-2026-0001", notes: "x" * 600))).read }.to raise_error(Advisories::Unreadable, /has an entry larger than 0 KiB/)
+    expect { described_class.new(kev_file(raw: '{"vulnerabilities": ["unterminated')).read }.to raise_error(Advisories::Unreadable, /is not valid JSON/)
+  end
+
+  it "does not count braces or escaped quotes inside strings" do
+    stub_const("Signals::KevReader::MAX_CONTAINERS", 4)
+    entry = kev_vulnerability("CVE-2026-0001", notes: '{[{[ "quoted \\" {braces}" ]}]}', cwes: "none")
+    expect(described_class.new(kev_file(entry)).read.entries.map(&:cve_id)).to eq(%w[CVE-2026-0001])
   end
 end

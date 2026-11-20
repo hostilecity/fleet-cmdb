@@ -55,6 +55,7 @@ module AuditEntriesHelper
     Audit::Actions::SIGNAL_EPSS_IMPORTED => "Exploit prediction (FIRST EPSS) imported",
     Audit::Actions::SIGNAL_EPSS_IMPORT_FAILED => "Exploit prediction (FIRST EPSS) import failed",
     Audit::Actions::SIGNAL_EPSS_IMPORT_HELD_BACK => "Exploit prediction (FIRST EPSS) import held back (would drop too many scores)",
+    Audit::Actions::SIGNAL_EPSS_CLEARED => "Exploit prediction (FIRST EPSS) scores reset",
     Audit::Actions::TASK_BATCH_CREATED => "Task batch created",
     Audit::Actions::TASK_CREATED => "Task created",
     Audit::Actions::TASK_CREATION_REFUSED => "Task creation refused", # create-task flow (P3-S08, #32)

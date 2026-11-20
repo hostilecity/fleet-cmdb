@@ -31,10 +31,10 @@ RSpec.describe "signals rake tasks" do
   end
 
   it "imports a KEV file, printing the counts and malformed entries, audited with the system actor" do
-    path = kev_file("CVE-2026-0001", kev_vulnerability("CVE-2026-0002", dateAdded: "x"))
+    path = kev_file(*(1..10).map { |i| format("CVE-2026-%04d", i) }, kev_vulnerability("CVE-2026-0099", dateAdded: "x"))
     output = run("signals:kev_import", "FILE" => path.to_s)
-    expect(output).to include("known_exploited_vulnerabilities.json (2026.11.19): in file 1, stored 0, added 1, removed 0, malformed 1",
-                              "  malformed: index 1, id CVE-2026-0002, problem has no valid dateAdded")
+    expect(output).to include("known_exploited_vulnerabilities.json (2026.11.19): in file 10, stored 0, added 10, removed 0, malformed 1",
+                              "  malformed: index 10, id CVE-2026-0099, problem has no valid dateAdded")
     expect(SignalImport.sole).to have_attributes(origin: "file", state: "succeeded")
     expect(AuditEntry.sole).to have_attributes(action: "signal.kev_imported", actor_type: "system")
   end
@@ -79,7 +79,7 @@ RSpec.describe "signals rake tasks" do
 
   it "prints the refusal when a refresh finds an older EPSS file" do
     advisory_for("CVE-2026-0001")
-    import_epss(epss_file([ %w[CVE-2026-0001 0.2 0.9] ], date: "2026-11-30"))
+    travel_to(Time.utc(2026, 11, 30)) { import_epss(epss_file([ %w[CVE-2026-0001 0.2 0.9] ], date: "2026-11-30")) }
     stub_request(:get, "https://epss.example.org/epss.csv.gz").to_return(status: 200, body: epss_file([ %w[CVE-2026-0001 0.2 0.9] ]).binread)
     expect { run("signals:epss_refresh") }.to raise_error(SystemExit).and output(/Nothing imported: the file's scores are of 2026-11-19, older than/).to_stderr
   end
@@ -91,5 +91,14 @@ RSpec.describe "signals rake tasks" do
     expect(run("signals:kev_clear", "CONFIRM" => "1")).to include("1 KEV entries deleted. KEV entries deleted: rule N1 (known exploited) and rule I5")
     expect(KevEntry.count).to eq(0)
     expect(AuditEntry.where(action: "signal.kev_cleared").sole).to have_attributes(actor_type: "system")
+  end
+
+  it "resets EPSS only with CONFIRM=1, so the next file imports whatever its date (review of #269)" do
+    advisory_for("CVE-2026-0001")
+    import_epss(epss_file([ %w[CVE-2026-0001 0.2 0.9] ]))
+    expect { run("signals:epss_reset") }.to raise_error(SystemExit).and output(/bin\/rails signals:epss_reset CONFIRM=1/).to_stderr
+    expect(EpssScore.count).to eq(1)
+    expect(run("signals:epss_reset", "CONFIRM" => "1")).to include("1 EPSS scores deleted. EPSS scores deleted: rule N2 stops applying")
+    expect(EpssScore.count).to eq(0)
   end
 end

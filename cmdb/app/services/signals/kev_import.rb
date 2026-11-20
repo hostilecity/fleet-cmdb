@@ -22,7 +22,8 @@ module Signals
 
     def call(catalog)
       started_at = Time.current
-      SignalImport.transaction do
+      added = []
+      import = SignalImport.transaction do
         Signals.lock!(KEV)
         stored = KevEntry.pluck(:cve_id).to_set
         incoming = catalog.entries.map(&:cve_id)
@@ -33,7 +34,6 @@ module Signals
         held = Signals.too_many_dropped?(dropped: removed.size, stored: stored.size, allowed: @allowed_drops)
         unless held
           replace(catalog.entries)
-          counts["added_matching"] = Signals.matching_open_findings(added)
           TriageSignalChange.record!(:kev, cve_ids: added + removed)
           TriageSignalChange.record!(:kev_all) if stored.empty?
         end
@@ -44,6 +44,8 @@ module Signals
                      target: import, changes: { "origin" => @origin, "source" => @source, "version" => catalog.version, "counts" => counts, "reason" => import.reason }.compact)
         import
       end
+      # How many entries, and how many of those added, match open findings: counted after the commit (Signals.count_matching!).
+      Signals.count_matching!(import, added:)
     end
 
     private
