@@ -1,0 +1,184 @@
+/* Vulnerability triage proposal mockups (VT-D01). Loaded after ../phase-1/mockup.css and ../phase-2/phase2.css, which supply
+   the palette, top bar, tables, lamps, chips, severity pips, notices, and review notes. This file adds only what the triage
+   screens need. Static: no JavaScript, no inline style attributes (the app's CSP is style-src 'self' with nonces), and no
+   external requests. Bars and charts are SVG whose geometry is in attributes and whose colours are classes here. */
+
+/* Four buckets. Each has a word, a shape, and a colour, never colour alone. The shapes are drawn as text glyphs hidden from
+   screen readers (the word carries the meaning). */
+.bk { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 700; white-space: nowrap; }
+.bk::before { font-weight: 700; width: 1.25rem; height: 1.25rem; display: inline-grid; place-items: center; border-radius: 3px; font-size: 0.8125rem; line-height: 1; flex: none; }
+.bk.fix::before { content: "\2191"; content: "\2191" / ""; background: #dcebf0; color: var(--petrol-dark); box-shadow: inset 0 0 0 1px var(--petrol); }
+.bk.attn::before { content: "!"; content: "!" / ""; background: #fbe3e0; color: #8c1d13; box-shadow: inset 0 0 0 1px #b42318; clip-path: polygon(50% 0, 100% 100%, 0 100%); padding-top: 0.25rem; border-radius: 0; }
+.bk.low::before { content: "\2022"; content: "\2022" / ""; background: #ece8dc; color: #5c4a14; box-shadow: inset 0 0 0 1px #9a8540; border-radius: 50%; }
+.bk.ign::before { content: "\2013"; content: "\2013" / ""; background: var(--panel); color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--lamp-off); }
+.bk.fix { color: var(--petrol-dark); }
+.bk.attn { color: #8c1d13; }
+.bk.low { color: #5c4a14; }
+.bk.ign { color: var(--ink-soft); }
+
+/* The bucket strip: the one bold element on the host tab and the risk page */
+.bucket-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; margin: 0 0 0.5rem; }
+.bucket-strip a { display: block; padding: 0.875rem 1rem 0.75rem; color: inherit; text-decoration: none; border-right: 1px solid var(--rule); border-top: 4px solid transparent; }
+.bucket-strip a:last-child { border-right: 0; }
+.bucket-strip a:hover { background: #f1f4f1; }
+.bucket-strip a[aria-current="true"] { background: #eef3f4; }
+.bucket-strip a.fix { border-top-color: var(--petrol); }
+.bucket-strip a.attn { border-top-color: #b42318; }
+.bucket-strip a.low { border-top-color: #9a8540; }
+.bucket-strip a.ign { border-top-color: var(--lamp-off); }
+.bucket-strip .count { display: block; font-size: 2rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; margin-top: 0.25rem; }
+.bucket-strip .what { display: block; font-size: 0.875rem; color: var(--ink-soft); }
+.bucket-strip .act { display: block; font-size: 0.875rem; margin-top: 0.25rem; }
+
+/* Proportion bar: an SVG with a text equivalent beside it */
+.propbar { display: block; width: 100%; height: 0.75rem; margin: 0.25rem 0 0.375rem; }
+.propbar rect { shape-rendering: crispEdges; }
+.f-fix { fill: var(--petrol); }
+.f-attn { fill: #b42318; }
+.f-low { fill: #c2ad5c; }
+.f-ign { fill: #c7d0cb; }
+.f-done { fill: #2e8540; }
+.f-track { fill: #dfe5e1; }
+.propbar-legend { font-size: 0.8125rem; color: var(--ink-soft); margin: 0 0 1rem; }
+
+/* Progress: native <meter> with a sentence beside it */
+.progress-line { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; margin: 0.25rem 0 0; }
+meter { width: 12rem; height: 0.875rem; }
+meter.small { width: 6rem; height: 0.625rem; vertical-align: middle; }
+meter::-webkit-meter-bar { background: #dfe5e1; border: 1px solid #aab5b0; border-radius: 2px; }
+meter::-webkit-meter-optimum-value { background: var(--petrol); }
+meter::-moz-meter-bar { background: var(--petrol); }
+.progress-line .big { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Work and score panel on the host tab */
+.work { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1rem; margin: 0 0 1.25rem; }
+.work .sheet h2 { margin: 0 0 0.25rem; font-size: 1rem; }
+.work .sheet p { margin: 0.25rem 0 0; }
+.work ul { margin: 0.375rem 0 0; padding-left: 1.125rem; }
+.score { font-size: 1.75rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.score small { font-size: 0.9375rem; font-weight: 400; color: var(--ink-soft); }
+table.points { font-size: 0.875rem; }
+table.points td, table.points th { padding: 0.25rem 0.5rem; }
+table.points td.num, table.points th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Exposure tier words: a word plus a bar count, never colour alone */
+.tier { display: inline-flex; align-items: center; gap: 0.375rem; font-weight: 700; font-size: 0.875rem; white-space: nowrap; }
+.tier::before { font-size: 0.5625rem; letter-spacing: 0.0625rem; font-weight: 400; color: var(--ink); }
+.tier.t4::before { content: "\25AE\25AE\25AE\25AE"; content: "\25AE\25AE\25AE\25AE" / ""; }
+.tier.t3::before { content: "\25AE\25AE\25AE\25AF"; content: "\25AE\25AE\25AE\25AF" / ""; }
+.tier.t2::before { content: "\25AE\25AE\25AF\25AF"; content: "\25AE\25AE\25AF\25AF" / ""; }
+.tier.t1::before { content: "\25AE\25AF\25AF\25AF"; content: "\25AE\25AF\25AF\25AF" / ""; }
+.tier.t0::before { content: "\25AF\25AF\25AF\25AF"; content: "\25AF\25AF\25AF\25AF" / ""; }
+.tier.t4 { color: #8c1d13; }
+.tier.t3 { color: #a2381a; }
+.tier.t2 { color: #7a5410; }
+.tier.t1, .tier.t0 { color: #3d4f4b; }
+
+/* Exploitation and exposure signals beside an advisory: labelled, quoted from their source */
+.sig { display: inline-block; font-size: 0.75rem; font-weight: 700; padding: 0 0.375rem; border-radius: 3px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); white-space: nowrap; margin: 0 0.25rem 0.25rem 0; }
+.sig.kev { background: #fbe3e0; border-color: #b42318; color: #8c1d13; }
+.sig.epss { background: #fdf3e1; border-color: #b7791f; color: #6a4a10; }
+.sig.vec { font-family: var(--mono); font-weight: 400; }
+.sig.use { background: #e6f0f2; border-color: var(--petrol); color: var(--petrol-dark); }
+.sig.idle { border-style: dashed; color: var(--ink-soft); font-weight: 400; }
+
+/* The reason a finding is in its bucket: one plain sentence, always shown */
+.reason { display: block; font-size: 0.875rem; margin-top: 0.25rem; padding-left: 0.625rem; border-left: 3px solid var(--rule); max-width: 62ch; }
+.reason.fix { border-left-color: var(--petrol); }
+.reason.attn { border-left-color: #b42318; }
+.reason.low { border-left-color: #9a8540; }
+.reason.ign { border-left-color: var(--lamp-off); color: var(--ink-soft); }
+.reason .rule-id { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-soft); margin-left: 0.25rem; }
+
+/* Bucket sections on the host tab */
+details.bucket { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; margin: 0 0 0.875rem; }
+details.bucket > summary { cursor: pointer; padding: 0.75rem 1rem; display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: baseline; list-style-position: inside; }
+details.bucket > summary h2 { display: inline; font-size: 1.0625rem; margin: 0; }
+details.bucket > summary .muted { font-size: 0.875rem; }
+details.bucket > .inner { padding: 0 1rem 1rem; }
+details.bucket .table-wrap { border-radius: 4px; }
+.controls { margin: 0.5rem 0 0.75rem; padding: 0.625rem 0.875rem; background: #fbf4f3; border: 1px solid #e7c4bf; border-radius: 4px; }
+.controls h3 { margin: 0 0 0.25rem; font-size: 0.9375rem; }
+.controls ul { margin: 0.25rem 0 0; padding-left: 1.125rem; font-size: 0.9375rem; }
+.controls .src { font-size: 0.8125rem; color: var(--ink-soft); margin: 0.375rem 0 0; }
+
+/* Honest badges: the claim and its scope are both words in the badge */
+.honest { display: inline-flex; gap: 0.375rem; align-items: baseline; font-size: 0.8125rem; padding: 0.0625rem 0.5rem; border-radius: 999px; border: 1px solid var(--lamp-online); background: #e7f3ea; color: #1d5a2b; white-space: nowrap; }
+.honest::before { content: "\2713"; content: "\2713" / ""; font-weight: 700; }
+.honest .scope { color: var(--ink-soft); }
+.honest.streak { border-color: var(--petrol); background: #e6f0f2; color: var(--petrol-dark); }
+.honest.streak::before { content: "\25B8"; content: "\25B8" / ""; }
+.honest.withheld { border-style: dashed; border-color: var(--lamp-off); background: var(--panel); color: var(--ink-soft); }
+.honest.withheld::before { content: "\2205"; content: "\2205" / ""; }
+
+/* Burn-down chart */
+figure.chart { margin: 0 0 1rem; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 0.875rem 1rem; }
+figure.chart figcaption { font-weight: 700; margin-bottom: 0.25rem; }
+figure.chart .sub { font-size: 0.875rem; color: var(--ink-soft); font-weight: 400; display: block; }
+svg.burndown { width: 100%; height: auto; max-height: 16rem; display: block; }
+svg.burndown .grid { stroke: #dfe5e1; stroke-width: 1; }
+svg.burndown .axis { fill: var(--ink-soft); font-size: 11px; font-family: var(--sans); }
+svg.burndown .l-fix { stroke: var(--petrol); stroke-width: 2.5; fill: none; }
+svg.burndown .l-attn { stroke: #b42318; stroke-width: 2.5; fill: none; stroke-dasharray: 6 3; }
+svg.burndown .l-low { stroke: #9a8540; stroke-width: 1.5; fill: none; stroke-dasharray: 2 3; }
+svg.burndown .mark { fill: var(--ink); font-size: 11px; font-family: var(--sans); }
+svg.burndown .event { stroke: var(--ink-soft); stroke-width: 1; stroke-dasharray: 2 2; }
+.legend { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; font-size: 0.875rem; margin: 0.25rem 0 0; padding: 0; list-style: none; }
+.legend li::before { content: ""; display: inline-block; width: 1.5rem; height: 0; vertical-align: middle; margin-right: 0.375rem; border-top: 3px solid var(--petrol); }
+.legend li.attn::before { border-top: 3px dashed #b42318; }
+.legend li.low::before { border-top: 2px dotted #9a8540; }
+
+/* Two- and three-column layouts on the risk page */
+.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; align-items: start; }
+.cols-3 > *, .work > * { min-width: 0; }
+.panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 0.875rem 1rem; }
+.panel h2 { margin: 0 0 0.5rem; font-size: 1rem; }
+.panel table { font-size: 0.875rem; }
+.panel th, .panel td { padding: 0.375rem 0.5rem; }
+.panel .more { display: block; font-size: 0.875rem; margin-top: 0.5rem; }
+ol.rank { margin: 0; padding-left: 1.5rem; }
+ol.rank li { margin-bottom: 0.5rem; }
+ol.rank .line { display: block; font-size: 0.875rem; color: var(--ink-soft); }
+
+/* Override form and audit */
+.radio-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+.radio-cards .choice { margin: 0; }
+.evidence { font-size: 0.9375rem; }
+.evidence dt { font-weight: 700; }
+.expiry-hint { font-size: 0.875rem; color: var(--ink-soft); margin: 0.125rem 0 0; }
+.override-tag { display: inline-block; font-size: 0.75rem; padding: 0 0.375rem; border-radius: 3px; border: 1px solid #5c4a14; color: #5c4a14; background: #f6f1e1; font-weight: 700; white-space: nowrap; }
+.override-tag.suspended { border-color: #b42318; color: #8c1d13; background: #fbe3e0; }
+
+/* Mockup index */
+.index-list { margin: 0; padding: 0; list-style: none; max-width: 75ch; }
+.index-list > li { margin-bottom: 0.875rem; }
+.model td:first-child { white-space: nowrap; }
+.model td, .model th { font-size: 0.875rem; }
+
+.mt0 { margin-top: 0; }
+.mb0 { margin-bottom: 0; }
+.nowrap { white-space: nowrap; }
+.right { text-align: right; }
+h2.section { margin-top: 1.75rem; }
+
+@media (max-width: 52rem) {
+  .bucket-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bucket-strip a { border-bottom: 1px solid var(--rule); }
+  .work, .cols-3, .radio-cards { grid-template-columns: minmax(0, 1fr); }
+  meter { width: 100%; }
+}
+@media (forced-colors: active) {
+  .bk::before, .sig, .honest, .override-tag { forced-color-adjust: auto; border: 1px solid CanvasText; }
+  .propbar rect { fill: CanvasText; }
+  .propbar rect.f-track { fill: Canvas; stroke: CanvasText; }
+}
+
+/* Review of #265 (N7): attack vectors in words, the CVSS vector as secondary text */
+.vecraw { display: block; font-family: var(--mono); font-size: 0.6875rem; font-weight: 400; color: var(--ink-soft); }
+.sig.vec { font-family: var(--sans); font-weight: 400; white-space: normal; }
+.override-tag.accepted { border-color: #7a5410; color: #7a5410; background: #fdf3e1; }
+.host-line { display: block; font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); }
+.honest.grace { border-color: #b7791f; background: var(--warn-bg); color: #6a4a10; }
+.honest.grace::before { content: "\25B8"; content: "\25B8" / ""; }
+.per-host { margin: 0.5rem 0 0; padding: 0; list-style: none; }
+.per-host li { border: 1px solid var(--rule); border-radius: 4px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; background: var(--sheet); }

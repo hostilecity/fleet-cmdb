@@ -4,14 +4,14 @@ Source for the GitHub issues that track the Fleet CMDB build, designed to be che
 
 | Path | Purpose |
 |---|---|
-| `issues.yml` | The 49 issues: key, title, milestone, labels, covered requirement IDs, one-sentence goal, 2 or 3 acceptance criteria, blockers |
+| `issues.yml` | The 58 issues: key, title, milestone, labels, covered requirement IDs, one-sentence goal, 2 or 3 acceptance criteria, blockers |
 | `specs/<key>.md` | One file per issue with the implementation details (scope, constraints, edge cases, test notes). This is what agents read |
 | `config.yml` | Labels, milestones, and phase gates |
 | `import.rb` | Validates the sources and creates the GitHub issues |
 | `review-notes.md` | What the requirements review found (R-01 to R-37) |
 | `_original-requirements.md` | The requirements draft as received, for diffing |
 
-Decisions are not issues: all are decided and recorded as ADRs in `docs/decisions/` (see its index). There are no epic issues either; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. SETUP-01 and SETUP-02 are done.
+Decisions are not issues: all are decided and recorded as ADRs in `docs/decisions/` (see its index). There are no epic issues for the phases; each milestone shows phase progress and its exit criteria are the `AC-*` items in `docs/requirements.md`. The one exception is the vulnerability triage work (`VT-EPIC`, [specs/vt-epic.md](specs/vt-epic.md), approved 2026-11-19), opened on GitHub as a parent issue with its slices as sub-issues because it sits outside the phases. SETUP-01 and SETUP-02 are done.
 
 ## What a GitHub issue looks like
 
@@ -36,14 +36,17 @@ Nothing else is copied into GitHub, so there is nothing to keep in sync: change 
 |---|---|
 | Phase 0 — Scaffolding | 3: agent crate and CI, server CI, API contract workspace |
 | Phase 1 — CMDB & inventory | 21: server (hosts, access, API/enrollment, onboarding, heartbeat, inventory, operability, releases, rollouts), dashboard (3: fleet, actions, audit log), agent (core, install, collectors, reporting, packaging, updater), deployment, verification, acceptance |
-| Phase 2 — Config, CIS & vulnerabilities | 14 |
-| Phase 3 — Remote tasks | 11 |
+| Phase 2 — Config, CIS & vulnerabilities | 13 |
+| Phase 3 — Remote tasks | 12 |
+| Vulnerability triage | 9: an epic and 8 slices (VT-EPIC), approved by the owner 2026-11-19; gated by `P2-ACCEPT`, not gating Phase 3 |
+
+The Phase 2 and Phase 3 counts were corrected to what `import.rb check` prints (13 and 12) in the vulnerability triage PR (#265).
 
 Run `ruby docs/backlog/import.rb plan` for the full list in creation order with blockers.
 
 **Phase gates.** Every Phase 2 issue with no blocker inside Phase 2 is blocked by `P1-ACCEPT`, and likewise Phase 3 by `P2-ACCEPT`, so a phase's code cannot start before the previous phase is accepted. Blockers are shown only when direct (a blocker already implied through another blocker is omitted).
 
-**Traceability.** `check` fails if any `FR-*`, `NFR-*`, or `AC-*` ID in `docs/requirements.md` is not covered by some issue, and if any `DEC-*` lacks an ADR. Currently 50 of 50 covered.
+**Traceability.** `check` fails if any `FR-*`, `NFR-*`, or `AC-*` ID in `docs/requirements.md` is not covered by some issue, and if any `DEC-*` lacks an ADR. Currently 51 of 51 covered.
 
 ## Commands
 

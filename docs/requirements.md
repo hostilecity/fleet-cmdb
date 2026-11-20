@@ -261,6 +261,15 @@ Phase 2 starts only after Phase 1 is accepted.
 - Rules are managed in the dashboard: list and filter, view versions, add one rule from a form and edit a rule, each with a preview of the hosts that would change result before saving, enable and disable, and import a file with a preview of what would change. Rules with several conditions are added by importing a file.
 - Advisory data is managed in the dashboard: sources (OSV and the distribution's triage source), last import, an upload, and a manual feed refresh that is limited to one every 5 minutes.
 
+### FR-2.6 Vulnerability triage and risk exposure
+
+Approved by the owner on 2026-11-19 ([VT-EPIC](backlog/specs/vt-epic.md), [ADR 0032](decisions/0032-vulnerability-triage-buckets.md), PR #265); not built yet. Built after Phase 2 acceptance (milestone "Vulnerability triage", gated by P2-ACCEPT) and does not gate Phase 3.
+
+- Every open finding is in exactly one triage bucket (fix available, needs attention, low risk, ignorable), decided by published rules over stored data, with a reason the operator can read. The bucket never changes a finding's state, its normalised severity, or the open counts, and the bucket counts add up to the open count. A kernel fix is shown as its own work (install the new kernel package, or reboot into the installed one). Stale data is still used, and missing or stale data never puts a finding in a less cautious bucket or lowers a score.
+- The server imports exploitation signals (CISA's Known Exploited Vulnerabilities catalog and FIRST's EPSS scores) on a schedule, with the same safeguards as the advisory feeds, and the agent reports what is needed to judge applicability: listening services and a pending reboot, and, where the VM enables it, which libraries are in use. Agents need no internet access and gain no new privilege in their main service.
+- Operators can record that a compensating control is in place or accept a risk for a finding, with a reason and an expiry; every decision is audited, never removes a finding from the open count, and is suspended when the evidence gets worse. Accepting a risk never lowers a finding's bucket, points, or tier.
+- The dashboard shows per-host exposure (a tier, then a published points table), work remaining and progress in work items (package upgrades, a new kernel, a reboot; progress counts only actions the host's reports show), and a fleet risk page with a burn-down, the most exposed hosts and the most work, and quick wins. No badge or streak implies a host is safe, and fleet views read precomputed summaries, as NFR-3 requires.
+
 ### Phase 2 acceptance criteria
 
 - [ ] **AC-2.1** A config snapshot taken before and after an SSH setting change shows the changed value in the diff and flips the related CIS rule between pass and fail

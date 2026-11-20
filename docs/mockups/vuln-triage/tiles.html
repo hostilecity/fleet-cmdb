@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summary tiles and the exposure score · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01, approved by the owner 2026-11-19 (PR #265). The host summary tiles (under the host header on every tab) and the exposure score's explanation. Today the second tile is "Open vulnerabilities: 3,765". Approved: it becomes two tiles, <strong>Vulnerability exposure</strong> and <strong>Work remaining</strong>, and the Packages tile is dropped because the Packages tab already shows the count. Decided (<a href="index.html#v18">V18</a>).</p>
+<h1>Summary tiles</h1>
+
+<h2 id="today">Today</h2>
+<div class="glance" role="group" aria-label="Host summary, today">
+  <a href="../phase-2/host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="../phase-2/host-vulns.html"><span class="label">Open vulnerabilities</span><span class="big">3,765</span><span class="detail">31 critical, 398 high, 2,150 medium, 1,145 low, 41 unknown</span></a>
+  <a href="../phase-2/host-packages.html"><span class="label">Packages</span><span class="big">1,243</span><span class="detail">dpkg, set last changed yesterday</span></a>
+  <a href="../phase-2/report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<p class="state-note">This is the number that does not move when you run <code>apt upgrade</code>.</p>
+
+<h2 id="proposed">Approved design</h2>
+<div class="glance" role="group" aria-label="Host summary, approved design">
+  <a href="../phase-2/host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="host-vulns.html"><span class="label">Vulnerability exposure</span><span class="big"><span class="tier t4">Known exploited</span></span><span class="detail">394 points · 1 known exploited · 9 findings need attention · <span class="muted">why: below</span></span></a>
+  <a href="host-vulns.html#work"><span class="label">Work remaining</span><span class="big">5 <small>work items</small></span><span class="detail">4 upgrades and a reboot · clears 78 findings<br><meter class="small" min="0" max="14" value="9">9 of 14</meter> 9 of 14 done in 30 days</span></a>
+  <a href="../phase-2/report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<p class="state-note">The raw count is not hidden: the tab's heading says "3,765 open findings" with the four buckets under it. Each tile names its unit: findings, advisories (points), or work items.</p>
+
+<h2 id="tile-states">Tile states</h2>
+<div class="glance" role="group" aria-label="Tile states">
+  <a href="host-vulns.html"><span class="label">Vulnerability exposure</span><span class="big"><span class="tier t0">Minimal</span></span><span class="detail">0 points · 412 open findings, all ignorable</span></a>
+  <a href="host-vulns.html#work"><span class="label">Work remaining</span><span class="big">0 <small>work items</small></span><span class="detail"><span class="none-open">Nothing to install</span><br>2 findings need attention, no fix yet</span></a>
+  <a href="states.html#not-evaluated"><span class="label">Vulnerability exposure</span><span class="big"><span class="not-eval">Not evaluated</span></span><span class="detail">No package report yet</span></a>
+  <a href="states.html#never"><span class="label">Vulnerability exposure</span><span class="big"><span class="tier t2">Fixes waiting</span></span><span class="detail">88 points · not checked against KEV (never imported)</span></a>
+</div>
+<p class="state-note">"Nothing to install" always says what still needs attention beside it. A host that is not evaluated never shows 0 points or "Nothing to install". A source that was never imported is named beside the tier; it is never shown as a plain lower tier.</p>
+
+<h2 id="score">How exposure is ranked</h2>
+<p>The <strong>tier</strong> comes first, and hosts sort by it. <strong>Points</strong> order hosts within a tier, so one known exploited host always ranks above a host with many medium findings.</p>
+<div class="cols-2">
+<section class="sheet" aria-labelledby="pts-h">
+  <h3 id="pts-h" class="mt0">Points per open advisory on the host</h3>
+  <table class="points"><caption class="visually-hidden">Points by bucket and severity</caption><thead><tr><th scope="col">Bucket</th><th scope="col" class="num">Critical</th><th scope="col" class="num">High</th><th scope="col" class="num">Medium</th><th scope="col" class="num">Low or unknown</th></tr></thead><tbody>
+  <tr><th scope="row"><span class="bk attn">Needs attention</span> <span class="state-note">accepted risks included</span></th><td class="num">40</td><td class="num">20</td><td class="num">8</td><td class="num">2</td></tr>
+  <tr><th scope="row"><span class="bk fix">Fix available</span></th><td class="num">20</td><td class="num">10</td><td class="num">4</td><td class="num">1</td></tr>
+  <tr><th scope="row"><span class="bk low">Low risk</span> <span class="state-note">by a recorded control</span></th><td class="num">10</td><td class="num">5</td><td class="num">2</td><td class="num">1</td></tr>
+  <tr><th scope="row"><span class="bk low">Low risk</span></th><td class="num">2</td><td class="num">1</td><td class="num">0</td><td class="num">0</td></tr>
+  <tr><th scope="row"><span class="bk ign">Ignorable</span></th><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+  </tbody></table>
+  <p class="state-note">A known exploited (KEV) advisory scores double, except in Ignorable. An advisory counts once per host, in its worst bucket, however many binary packages it matches. The values are a published constant (decided, <a href="index.html#v13">V13</a>).</p>
+  <p class="state-note"><strong>Tier:</strong> <span class="tier t4">Known exploited</span> if a KEV advisory is in Needs attention or Fix available, or under a control; else <span class="tier t3">Exposed, no fix</span> if a critical or high needs attention; else <span class="tier t2">Fixes waiting</span> if a critical or high has a fix; else <span class="tier t1">Low</span> if any points; else <span class="tier t0">Minimal</span>.</p>
+</section>
+<section class="sheet" aria-labelledby="why-h">
+  <h3 id="why-h" class="mt0">Why Media server has 394 points</h3>
+  <table class="points"><caption class="visually-hidden">Score breakdown for Media server</caption><thead><tr><th scope="col">From</th><th scope="col" class="num">Advisories</th><th scope="col" class="num">Points</th></tr></thead><tbody>
+  <tr><td>Needs attention, known exploited (1 high, doubled)</td><td class="num">1</td><td class="num">40</td></tr>
+  <tr><td>Needs attention, critical</td><td class="num">1</td><td class="num">40</td></tr>
+  <tr><td>Needs attention: 1 high, 2 medium (1 with an accepted risk)</td><td class="num">3</td><td class="num">36</td></tr>
+  <tr><td>Fix available, kernel reboot: 2 high, 30 medium, 9 low</td><td class="num">41</td><td class="num">149</td></tr>
+  <tr><td>Fix available, package upgrades: 1 high, 10 medium, 17 low</td><td class="num">28</td><td class="num">67</td></tr>
+  <tr><td>Low risk: 2 critical, 58 high</td><td class="num">60</td><td class="num">62</td></tr>
+  <tr><td>Low risk medium and low, and Ignorable</td><td class="num">the rest</td><td class="num">0</td></tr>
+  <tr><th scope="row">Total</th><td class="num"></td><td class="num"><strong>394</strong></td></tr>
+  </tbody></table>
+  <p class="state-note">The package upgrades: openssl 9 advisories (1 high, 4 medium, 4 low) = 30; curl 8 (3 medium, 5 low) = 17; libxml2 6 (2 medium, 4 low) = 12; expat 5 (1 medium, 4 low) = 8. The reboot alone would take 149 points off.</p>
+</section>
+</div>
+
+<h2 id="compliance-strip">On the Compliance page</h2>
+<p>The vulnerability severity strip stays as it is. Under it, one line with the bucket counts (findings), each a link that filters the table:</p>
+<p class="sheet flat"><a href="../phase-2/compliance.html?bucket=fix"><span class="bk fix">412 fix available</span></a> &middot; <a href="../phase-2/compliance.html?bucket=attention"><span class="bk attn">47 need attention</span></a> &middot; <a href="../phase-2/compliance.html?bucket=low"><span class="bk low">11,280 low risk</span></a> &middot; <a href="../phase-2/compliance.html?bucket=ignorable"><span class="bk ign">23,173 ignorable</span></a> <span class="muted">on 9 of 10 hosts evaluated</span></p>
+</main>
+</body>
+</html>

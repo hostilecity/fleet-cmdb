@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media server: vulnerabilities by triage bucket · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01, approved by the owner 2026-11-19 (PR #265). The host's Vulnerabilities tab with every open finding in exactly one of four buckets, each with a reason. It builds on the grouping by package from #253. Example data: a Debian 13 host with 3,765 open findings. It runs kernel <span class="mono">6.12.48+deb13</span> and has <span class="mono">6.12.57+deb13</span> installed but not yet booted. Parts added by later slices are marked: the score breakdown and the run badge (VT-SCORES), decisions (VT-OVERRIDES), and "Listening" (VT-APPLICABILITY).</p>
+<div class="host-head">
+  <div>
+    <h1>Media server</h1>
+    <div class="sub"><span class="mono">vm-01.example.lan</span><span class="lamp online">Online</span><span>Last seen 28 seconds ago</span><span><span class="tag">media</span></span></div>
+  </div>
+  <div class="actions"><a class="btn quiet" href="../phase-1/host-edit.html">Edit</a></div>
+</div>
+<div class="glance" role="group" aria-label="Host summary">
+  <a href="../phase-2/host-config.html#results"><span class="label">CIS-aligned checks</span><span class="big">80.6% <small>pass</small></span><span class="detail">29 of 36 pass · 5 fail · 2 not readable</span></a>
+  <a href="tiles.html#score"><span class="label">Vulnerability exposure</span><span class="big"><span class="tier t4">Known exploited</span></span><span class="detail">394 points · 1 known exploited · 9 findings need attention</span></a>
+  <a href="#work"><span class="label">Work remaining</span><span class="big">5 <small>work items</small></span><span class="detail">4 upgrades and a reboot · clears 78 findings</span></a>
+  <a href="../phase-2/report-requests.html"><span class="label">Last reports received</span><span class="big">3 min <small>ago</small></span><span class="detail">Config, packages, and inventory</span></a>
+</div>
+<nav class="tabs" aria-label="Host sections"><a href="../phase-2/host-overview.html">Overview</a><a href="../phase-2/host-config.html">Configuration</a><a href="../phase-2/host-packages.html">Packages <span class="count">1,243</span></a><a href="host-vulns.html" aria-current="page">Vulnerabilities <span class="count">87 to act on</span></a></nav>
+
+<p class="freshness" id="advisory_freshness"><span>Advisory data: <span class="mono">Debian:13</span> 3 hours ago.</span> <span>Debian's triage for trixie: 3 hours ago.</span> <span>Known exploited (CISA KEV): 5 hours ago.</span> <span>Exploit prediction (FIRST EPSS): scores of 2026-11-19.</span> <a href="data-sources.html">Data sources</a></p>
+
+<h2 class="mt0" id="buckets-h">3,765 open findings, by what you can do about them</h2>
+<div class="bucket-strip" role="group" aria-labelledby="buckets-h">
+  <a class="fix" href="#fix"><span class="bk fix">Fix available</span><span class="count">78</span><span class="what">4 package upgrades and a kernel reboot</span><span class="act">Upgrade, then reboot</span></a>
+  <a class="attn" href="#attn"><span class="bk attn">Needs attention</span><span class="count">9</span><span class="what">5 advisories, no fix yet</span><span class="act">4 need a decision</span></a>
+  <a class="low" href="#low"><span class="bk low">Low risk</span><span class="count">1,230</span><span class="what">no fix; local, minor, or idle</span><span class="act">Watch</span></a>
+  <a class="ign" href="#ign"><span class="bk ign">Ignorable</span><span class="count">2,448</span><span class="what">does not apply here</span><span class="act">Nothing to do</span></a>
+</div>
+<svg class="propbar" viewBox="0 0 1000 12" preserveAspectRatio="none" role="img" aria-label="Share of the 3,765 open findings: fix available 2 percent, needs attention under 1 percent, low risk 33 percent, ignorable 65 percent">
+  <rect class="f-fix" x="0" y="0" width="21" height="12"/><rect class="f-attn" x="21" y="0" width="3" height="12"/><rect class="f-low" x="24" y="0" width="326" height="12"/><rect class="f-ign" x="350" y="0" width="650" height="12"/>
+</svg>
+<p class="propbar-legend">Findings: fix available 2% · needs attention under 1% · low risk 33% · ignorable 65%. Every open finding is counted once, in one bucket; the buckets add up to 3,765. The bucket never changes a finding's severity or state.</p>
+
+<div class="work" id="work">
+  <section class="sheet" aria-labelledby="work-h">
+    <h2 id="work-h">Work remaining: 5 work items</h2>
+    <ul>
+      <li><strong>4 package upgrades</strong> clear 37 findings: <span class="mono">openssl</span> (also <span class="mono">libssl3t64</span>), <span class="mono">curl</span>, <span class="mono">libxml2</span>, <span class="mono">expat</span>. <code>apt upgrade</code> or the update task installs them.</li>
+      <li><strong>1 reboot</strong> into <span class="mono">linux-image-6.12.57+deb13-amd64</span>, which is installed but not running. It clears 41 kernel advisories on the running kernel, <span class="mono">6.12.48+deb13</span>. Nothing else fixes them: a kernel update is a new package, and an installed kernel does nothing until it is booted.</li>
+    </ul>
+    <p class="state-note">On a host where the new kernel is not installed yet, the kernel item reads: "Install the new kernel package (<code>apt full-upgrade</code>), then reboot." The update task installs no new packages (ADR 0016), so that step is manual.</p>
+    <p><strong>4 advisories need a decision</strong> (a fifth has an accepted risk until 2026-12-31). A decision is not work: there may be nothing to do.</p>
+    <p class="actions"><a class="btn quiet" href="../phase-3/create-confirm.html">Apply package updates on this host&hellip;</a></p>
+    <p class="state-note">Opens the existing task flow with this host filled in. It covers the 4 package upgrades only: it installs every pending upgrade, no new packages (so not the kernel), and never reboots. Second factor and confirmation as for any task.</p>
+  </section>
+  <section class="sheet" aria-labelledby="prog-h">
+    <h2 id="prog-h">Progress, last 30 days</h2>
+    <div class="progress-line"><meter id="m-host" min="0" max="14" value="9" aria-describedby="m-host-t">9 of 14</meter> <span class="big">9 of 14</span></div>
+    <p id="m-host-t">9 of 14 work items done (7 upgrades, a new kernel installed, a reboot). They cleared 212 findings. 5 are left.</p>
+    <p><span class="honest streak">No fixable critical <span class="scope">for 12 days</span></span> <span class="muted">(VT-SCORES)</span></p>
+    <p class="state-note">Done means the host's own reports show it: an installed version changed, a new kernel appeared, or the running kernel changed. A finding resolved because the advisory data changed counts nothing. Low risk and Ignorable findings never count, so ignoring things cannot raise the meter.</p>
+  </section>
+</div>
+
+<ul class="chips" aria-label="Filter findings by state">
+  <li><a href="host-vulns.html" aria-current="true">Open and reopened <span class="n">3,765</span></a></li>
+  <li><a href="host-vulns.html?state=resolved">Resolved <span class="n">1,012</span></a></li>
+</ul>
+<form class="filters" role="search" action="host-vulns.html" method="get">
+  <label>Severity<select name="severity"><option>All severities</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option><option>Unknown</option></select></label>
+  <label>Signal<select name="signal"><option>Any</option><option>Known exploited (KEV)</option><option>EPSS at or above 10%</option><option>Network, no login, no user action</option><option>Listening on the network</option></select></label>
+  <label>Package or advisory<input type="search" name="q" placeholder="openssl or CVE-2026-90777" maxlength="100"></label>
+  <button class="btn quiet" type="submit">Apply</button>
+</form>
+
+<details class="bucket" id="fix" open>
+  <summary><h2><span class="bk fix">Fix available</span></h2><span class="muted">78 findings · a kernel reboot and 4 package upgrades</span></summary>
+  <div class="inner">
+  <div class="table-wrap"><table><caption class="visually-hidden">Fix available, by package</caption><thead><tr><th scope="col">Package</th><th scope="col">Advisories</th><th scope="col">Severity</th><th scope="col">Action</th></tr></thead>
+  <tbody>
+  <tr class="pkg-group"><th scope="row"><a class="mono" href="../phase-2/host-vuln-package.html">linux-image-6.12.48+deb13-amd64:amd64</a> <span class="state-note"><span class="muted">the running kernel,</span> <span class="mono">6.12.48-1</span></span></th><td>41 advisories</td><td><span class="sev high">High</span> <span class="state-note">2 high, 30 medium, 9 low</span></td><td><strong>Reboot</strong> into <span class="mono">6.12.57+deb13</span> (installed)</td></tr>
+  <tr class="advisories"><td colspan="4"><details class="advisories"><summary>Show the 41 advisories<span class="visually-hidden"> for the running kernel</span></summary>
+  <table class="nested-findings"><caption class="visually-hidden">Advisories for linux-image-6.12.48+deb13-amd64</caption><thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">Why this bucket</th></tr></thead><tbody>
+  <tr><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-94021" rel="noopener noreferrer">DEBIAN-CVE-2026-94021</a><span class="state-note">Example: use-after-free in a network driver.</span></td><td><span class="sev high">High</span></td><td class="mono">6.12.57-1</td><td><span class="reason fix">Fixed in <span class="mono">6.12.57+deb13</span>, which is installed. Reboot into it.<span class="rule-id">K1</span></span></td></tr>
+  <tr><td colspan="4" class="muted">40 more advisory rows, as on the tab today.</td></tr>
+  </tbody></table></details></td></tr>
+  </tbody>
+  <tbody>
+  <tr class="pkg-group"><th scope="row"><a class="mono" href="../phase-2/host-vuln-package.html">libssl3t64:amd64</a>, <a class="mono" href="../phase-2/host-vuln-package.html">openssl:amd64</a> <span class="state-note"><span class="muted">source</span> <span class="mono">openssl</span>, <span class="muted">installed</span> <span class="mono">3.5.1-1</span></span></th><td>9 advisories <span class="state-note">18 findings</span></td><td><span class="sev high">High</span> <span class="state-note">1 high, 4 medium, 4 low</span></td><td>Upgrade to <span class="mono">3.5.1-1+deb13u2</span></td></tr>
+  <tr class="advisories"><td colspan="4"><details class="advisories"><summary>Show the 9 advisories<span class="visually-hidden"> for openssl</span></summary>
+  <table class="nested-findings"><caption class="visually-hidden">Advisories for openssl</caption><thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">Why this bucket</th></tr></thead><tbody>
+  <tr><td><a href="https://security.example.lan/advisories/DSA-9201-1" rel="noopener noreferrer">DSA-9201-1</a><span class="state-note">Example: certificate check flaw in OpenSSL.</span></td><td><span class="sev high">High</span></td><td class="mono">3.5.1-1+deb13u2</td><td><span class="reason fix">Debian fixed it in <span class="mono">3.5.1-1+deb13u2</span>; this host has <span class="mono">3.5.1-1</span>.<span class="rule-id">F1</span></span></td></tr>
+  <tr><td colspan="4" class="muted">8 more advisory rows, as on the tab today.</td></tr>
+  </tbody></table></details></td></tr>
+  </tbody>
+  <tbody>
+  <tr class="pkg-group"><th scope="row"><a class="mono" href="../phase-2/host-vuln-package.html">libcurl4t64:amd64</a> <span class="state-note"><span class="muted">source</span> <span class="mono">curl</span>, <span class="muted">installed</span> <span class="mono">8.14.1-2</span></span></th><td>8 advisories</td><td><span class="sev medium">Medium</span> <span class="state-note">3 medium, 5 low</span></td><td>Upgrade to <span class="mono">8.14.1-2+deb13u1</span></td></tr>
+  <tr class="advisories"><td colspan="4"><details class="advisories"><summary>Show the 8 advisories<span class="visually-hidden"> for curl</span></summary><p class="muted">Advisory rows as on the tab today.</p></details></td></tr>
+  </tbody>
+  <tbody>
+  <tr class="pkg-group"><th scope="row"><a class="mono" href="../phase-2/host-vuln-package.html">libxml2:amd64</a> <span class="state-note"><span class="muted">installed</span> <span class="mono">2.12.7+dfsg-3</span></span></th><td>6 advisories</td><td><span class="sev medium">Medium</span> <span class="state-note">2 medium, 4 low</span></td><td>Upgrade to <span class="mono">2.12.7+dfsg-3+deb13u1</span></td></tr>
+  <tr class="advisories"><td colspan="4"><details class="advisories"><summary>Show the 6 advisories<span class="visually-hidden"> for libxml2</span></summary><p class="muted">Advisory rows as on the tab today.</p></details></td></tr>
+  </tbody>
+  <tbody>
+  <tr class="pkg-group"><th scope="row"><a class="mono" href="../phase-2/host-vuln-package.html">libexpat1:amd64</a> <span class="state-note"><span class="muted">source</span> <span class="mono">expat</span>, <span class="muted">installed</span> <span class="mono">2.7.1-2</span></span></th><td>5 advisories</td><td><span class="sev medium">Medium</span> <span class="state-note">1 medium, 4 low</span></td><td>Upgrade to <span class="mono">2.7.1-2+deb13u1</span></td></tr>
+  <tr class="advisories"><td colspan="4"><details class="advisories"><summary>Show the 5 advisories<span class="visually-hidden"> for expat</span></summary><p class="muted">Advisory rows as on the tab today.</p></details></td></tr>
+  </tbody>
+  </table></div>
+  <p class="state-note">The kernel comes first because its action differs. Package rows follow #253's order, grouped by source package here so one row is one upgrade. A row's fix comes from the advisory data (F1), or from Debian's tracker when the advisory data has not caught up (F2, shown with its own reason). Whether the host's mirror has the fix yet is not known (#252, question 3).</p>
+  </div>
+</details>
+
+<details class="bucket" id="attn" open>
+  <summary><h2><span class="bk attn">Needs attention</span></h2><span class="muted">9 findings, 5 advisories · no fix for trixie, and evidence it can be exploited here</span></summary>
+  <div class="inner">
+  <div class="table-wrap"><table><caption class="visually-hidden">Needs attention, by advisory</caption><thead><tr><th scope="col">Advisory and packages</th><th scope="col">Severity</th><th scope="col">Signals</th><th scope="col">Why this bucket</th><th scope="col">Decision</th></tr></thead>
+  <tbody>
+  <tr><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-90777" rel="noopener noreferrer">DEBIAN-CVE-2026-90777</a><span class="state-note">Example: authentication bypass in the SSH server. <span class="mono">openssh-server</span> <span class="mono">1:10.0p1-7</span></span><span class="triage"><span class="who">Debian:</span> postponed to a later update or point release</span></td><td><span class="sev high">High</span></td><td><span class="sig kev">Known exploited</span><span class="sig vec">Network, no login, no user action<span class="vecraw">AV:N/PR:N/UI:N</span></span><span class="sig use">Listening: network</span></td><td><span class="reason attn">On CISA's Known Exploited Vulnerabilities list since 2026-11-02: attackers use it in the wild. No fix for trixie yet.<span class="rule-id">N1</span></span></td><td><a href="override.html">Record a decision&hellip;</a></td></tr>
+  <tr><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-92010" rel="noopener noreferrer">DEBIAN-CVE-2026-92010</a><span class="state-note">Example: memory corruption in the SMB server. 3 packages: <span class="mono">samba</span>, <span class="mono">samba-libs</span>, <span class="mono">libwbclient0</span></span></td><td><span class="sev critical">Critical</span></td><td><span class="sig epss">EPSS 4%</span><span class="sig vec">Network, no login, no user action<span class="vecraw">AV:N/PR:N/UI:N</span></span><span class="sig use">Listening: network</span></td><td><span class="reason attn">Reachable over the network with no login and no user action, and <span class="mono">smbd</span> is listening on a network address.<span class="rule-id">N4</span></span></td><td><a href="override.html">Record a decision&hellip;</a></td></tr>
+  <tr><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-91402" rel="noopener noreferrer">DEBIAN-CVE-2026-91402</a><span class="state-note">Example: heap overflow in a video decoder. 2 packages: <span class="mono">libavcodec61</span>, <span class="mono">libavformat61</span></span></td><td><span class="sev high">High</span></td><td><span class="sig epss">EPSS 31%</span><span class="sig vec">Network, a user must open a file<span class="vecraw">AV:N/PR:N/UI:R</span></span></td><td><span class="reason attn">FIRST estimates a 31% chance of exploitation activity in the next 30 days (threshold 10%).<span class="rule-id">N2</span></span></td><td><a href="override.html">Record a decision&hellip;</a></td></tr>
+  <tr><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-93517" rel="noopener noreferrer">DEBIAN-CVE-2026-93517</a><span class="state-note">Example: crafted image handling flaw. 2 packages: <span class="mono">libmagickcore-7.q16-10</span>, <span class="mono">libmagickwand-7.q16-10</span></span><span class="triage"><span class="who">Debian:</span> urgency end-of-life</span></td><td><span class="sev medium">Medium</span></td><td><span class="sig epss">EPSS 1%</span><span class="sig vec">Local, a user must open a file<span class="vecraw">AV:L/PR:N/UI:R</span></span></td><td><span class="reason attn">Debian no longer supports this package in trixie, so no fix will come. Replace it, remove it, or isolate it.<span class="rule-id">N3</span></span></td><td><span class="override-tag accepted">Risk accepted</span><span class="state-note">until 2026-12-31. Still counted here, with its points; not "due".</span></td></tr>
+  <tr><td><a href="https://security.example.lan/advisories/DEBIAN-CVE-2026-93330" rel="noopener noreferrer">DEBIAN-CVE-2026-93330</a><span class="state-note">Example: out-of-bounds read in TIFF parsing. <span class="mono">libtiff6</span></span></td><td><span class="sev medium">Medium</span></td><td><span class="sig epss">EPSS 12%</span><span class="sig vec">Local, a user must open a file<span class="vecraw">AV:L/PR:N/UI:R</span></span></td><td><span class="reason attn">FIRST estimates a 12% chance of exploitation activity in the next 30 days (threshold 10%).<span class="rule-id">N2</span></span></td><td><a href="override.html">Record a decision&hellip;</a></td></tr>
+  </tbody></table></div>
+  <div class="controls" aria-labelledby="ctl-h">
+    <h3 id="ctl-h">Suggested compensating controls</h3>
+    <ul>
+      <li><strong>Network service, no login needed</strong> (<span class="mono">smbd</span>, <span class="mono">sshd</span>): limit who can reach the port with the host firewall (this host's firewall is <em>enabled</em>, <a href="../phase-2/host-config.html#results">nftables</a>), bind the service to the LAN interface only, or stop it if unused.</li>
+      <li><strong>Known exploited</strong>: treat as urgent. Check the vendor advisory for a mitigation, watch the service's logs, and consider taking the service off the network until Debian ships a fix.</li>
+      <li><strong>Crafted files</strong> (image and video decoders): process untrusted files in a sandboxed service account, or turn off automatic thumbnailing.</li>
+      <li><strong>Unsupported package</strong> (end-of-life): plan a replacement; until then keep it away from untrusted input.</li>
+    </ul>
+    <p class="src">Suggestions come from a short table in the repository keyed by rule and attack vector (VT-S05), never from a third party. They are advice; nothing is changed on the host. A recorded control moves a finding to Low risk; an accepted risk does not.</p>
+  </div>
+  </div>
+</details>
+
+<details class="bucket" id="low">
+  <summary><h2><span class="bk low">Low risk</span></h2><span class="muted">1,230 findings · no fix for trixie, and no sign it can be exploited from outside this host</span></summary>
+  <div class="inner">
+  <div class="table-wrap"><table><caption class="visually-hidden">Low risk, by reason</caption><thead><tr><th scope="col">Reason</th><th scope="col" class="num">Findings</th><th scope="col">Largest package</th></tr></thead><tbody>
+  <tr><td><span class="reason low">Needs local access: an attacker must already run code on this host (attack vector local or physical, or Debian scope local).<span class="rule-id">L2</span></span></td><td class="num">1,066</td><td class="mono">linux-image-6.12.48+deb13-amd64 (1,043)</td></tr>
+  <tr><td><span class="reason low">Debian judged it a minor issue and plans no security update for trixie (no-DSA, postponed, or ignored), and nothing says it is exploited. 14 have a fix expected in the next point release.<span class="rule-id">L4</span></span></td><td class="num">112</td><td class="mono">binutils (21)</td></tr>
+  <tr><td><span class="reason low">Low or unknown severity, with no exploitation signal.<span class="rule-id">L5</span></span></td><td class="num">31</td><td class="mono">libgcrypt20 (4)</td></tr>
+  <tr><td><span class="reason low">Belongs to a service that is not running, and nothing of it listens.<span class="rule-id">L1</span></span></td><td class="num">21</td><td class="mono">cups-daemon (6)</td></tr>
+  </tbody></table></div>
+  <p class="state-note">Each row opens the package groups for that reason. Low risk is not "safe": a finding moves to Needs attention by itself if a signal appears (a KEV listing, EPSS at 10% or more, or the package starts listening). Findings under a recorded control are listed here too, with rule O1 and the control's text.</p>
+  </div>
+</details>
+
+<details class="bucket" id="ign">
+  <summary><h2><span class="bk ign">Ignorable</span></h2><span class="muted">2,448 findings · Debian or this host's own state says it does not apply here</span></summary>
+  <div class="inner">
+  <div class="table-wrap"><table><caption class="visually-hidden">Ignorable, by reason</caption><thead><tr><th scope="col">Reason</th><th scope="col" class="num">Findings</th><th scope="col">What you can do</th></tr></thead><tbody>
+  <tr><td><span class="reason ign"><span class="mono">linux-image-6.12.57+deb13-amd64</span> is installed but not running yet (running: <span class="mono">6.12.48+deb13-amd64</span>). It is triaged when the host boots it.<span class="rule-id">I1</span></span></td><td class="num">1,089</td><td>Reboot (see Work remaining). After the reboot, the older kernel's findings move here instead, and removing it clears them.</td></tr>
+  <tr><td><span class="reason ign"><span class="mono">linux-libc-dev</span> holds kernel header files, not kernel code. The same advisories are counted on the running kernel.<span class="rule-id">I2</span></span></td><td class="num">1,089</td><td>Nothing.</td></tr>
+  <tr><td><span class="reason ign">Debian rates it unimportant: it does not affect the Debian binary packages, or is thought unexploitable in most situations. Not on the KEV list; no high EPSS.<span class="rule-id">I5</span></span></td><td class="num">236</td><td>Nothing. It moves out of here if CISA lists it or EPSS rises.</td></tr>
+  <tr><td><span class="reason ign">Debian says trixie is not affected (the vulnerable code is not in this release).<span class="rule-id">I3</span></span></td><td class="num">34</td><td>Nothing. The advisory data and Debian's tracker disagree; the tracker's per-release verdict is used.</td></tr>
+  </tbody></table></div>
+  </div>
+</details>
+
+<p class="note">Order of the sections: Fix available first because it is the work an operator can do now; Needs attention second, open by default; Low risk and Ignorable closed. Decided (<a href="index.html#v16">V16</a>): Fix available first.</p>
+<p class="note">The rules (I1, I2, K1, K2, F1, F2, I3, I4, O1, N1 to N4, I5, L1 to L5) and their order are in the <a href="index.html#model">index</a> and in <code>docs/backlog/specs/vt-epic.md</code>. "Listening" comes from the agent's report of listening services (VT-APPLICABILITY, no new privilege). On a host whose agent does not send it, no listening signal is shown and rule L1 never applies.</p>
+</main>
+</body>
+</html>

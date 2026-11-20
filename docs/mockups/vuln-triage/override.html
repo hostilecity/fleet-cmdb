@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Record a decision for a finding · Fleet CMDB mockup</title>
+<link rel="stylesheet" href="../phase-1/mockup.css">
+<link rel="stylesheet" href="../phase-2/phase2.css">
+<link rel="stylesheet" href="triage.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="fleet.html"><span class="lamp online" aria-hidden="true"></span>Fleet CMDB</a>
+  <nav aria-label="Main"><a href="fleet.html" aria-current="page">Fleet</a><a href="../phase-2/compliance.html">Compliance</a><a href="risk-overview.html">Risk</a><a href="../phase-2/rules.html">Rules</a><a href="data-sources.html">Data sources</a><a href="../phase-1/agents.html">Agents</a><a href="../phase-1/audit.html">Audit log</a><a href="../phase-1/settings.html">Settings</a></nav>
+  <div class="who"><span class="live"><span class="lamp online"></span>Live</span><span>Example Operator</span><button type="button">Sign out</button></div>
+</header>
+<main>
+<p class="note">VT-D01, approved by the owner 2026-11-19 (PR #265). The override flow: an operator records that a compensating control is in place, or accepts a risk for a while. It is its own page, like the Phase 1 host actions, reached from "Record a control&hellip;" or "Accept the risk&hellip;" on the Needs attention section. Four states are drawn: the form, the form with errors, the saved result with its audit entry, and a suspended decision.</p>
+<p><a href="host-vulns.html#attn">&larr; Media server: vulnerabilities</a></p>
+<div class="page-head"><div><h1>Record a decision</h1><p><span class="mono">DEBIAN-CVE-2026-92010</span> on <a href="host-vulns.html">Media server</a> (<span class="mono">vm-01.example.lan</span>)</p></div></div>
+
+<div class="columns">
+<form class="form wide" action="override.html#saved" method="post" aria-labelledby="form-h">
+  <h2 id="form-h" class="mt0">What are you recording?</h2>
+  <fieldset>
+    <legend>Decision</legend>
+    <div class="radio-cards">
+      <label class="choice"><input type="radio" name="kind" value="control" checked><strong>A control is in place</strong><p>Something on or around this host stops the attack, such as a firewall rule or the service bound to a private interface. The finding moves to Low risk while the decision lasts, still scored well above plain Low risk. A known exploited finding keeps its "Known exploited" tier.</p></label>
+      <label class="choice"><input type="radio" name="kind" value="accepted"><strong>Accept the risk for now</strong><p>Nothing stops the attack, and you have decided to live with it until a date, for example until a fix ships. The finding stays in Needs attention with its points and tier, marked accepted, and is no longer listed as a decision due.</p></label>
+    </div>
+  </fieldset>
+  <div class="field">
+    <label for="what">What is the control, or why is the risk acceptable?</label>
+    <textarea id="what" name="reason" maxlength="1000" aria-describedby="what-hint">smbd bound to the storage VLAN only (interfaces = br-storage); nftables drops 445/tcp from every other network.</textarea>
+    <p class="hint" id="what-hint">Required, 10 to 1,000 characters. Shown beside the finding and in the audit log. Do not paste secrets.</p>
+  </div>
+  <div class="field">
+    <label for="until">Until</label>
+    <input id="until" name="expires_on" type="date" value="2027-02-17" min="2026-11-20" max="2027-02-17" aria-describedby="until-hint">
+    <p class="expiry-hint" id="until-hint">At most 90 days (30 days for a known exploited finding). When it ends, the finding goes back to its bucket and the decision is listed under "Decisions due". No decision lasts for ever.</p>
+  </div>
+  <fieldset>
+    <legend>Applies to</legend>
+    <p class="hint">Other hosts with the same open finding are listed with their own evidence. A control must be confirmed for each host, because a control on one host says nothing about another.</p>
+    <ul class="per-host">
+      <li><label><input type="checkbox" name="hosts[]" value="1" checked> <strong>Media server</strong> (this host)</label><span class="state-note"><span class="sig use">Listening: network</span> smbd · firewall enabled</span><label class="state-note"><input type="checkbox" name="confirm[1]" checked> I confirm this control exists on Media server</label></li>
+      <li><label><input type="checkbox" name="hosts[]" value="7"> <strong>File server</strong> <span class="host-line">vm-07.example.lan</span></label><span class="state-note"><span class="sig use">Listening: network</span> smbd · firewall <em>disabled</em></span><label class="state-note"><input type="checkbox" name="confirm[7]"> I confirm this control exists on File server</label></li>
+      <li><label><input type="checkbox" name="hosts[]" value="9"> <strong>Print server</strong> <span class="host-line">vm-09.example.lan</span></label><span class="state-note"><span class="sig use">Listening: loopback only</span> smbd · firewall enabled</span><label class="state-note"><input type="checkbox" name="confirm[9]"> I confirm this control exists on Print server</label></li>
+    </ul>
+    <p class="hint">A decision covers the advisory on a host, for every binary package it matches there (here: <span class="mono">samba</span>, <span class="mono">samba-libs</span>, <span class="mono">libwbclient0</span>). Each host gets its own decision and audit entry.</p>
+  </fieldset>
+  <div class="actions"><button class="btn" type="submit">Save decision</button><a class="btn quiet" href="host-vulns.html#attn">Cancel</a></div>
+</form>
+<aside class="sheet" aria-labelledby="ev-h">
+  <h2 id="ev-h" class="mt0">Evidence now</h2>
+  <dl class="facts tight evidence">
+    <dt>Bucket</dt><dd><span class="bk attn">Needs attention</span> (rule N4)</dd>
+    <dt>Severity</dt><dd><span class="sev critical">Critical</span></dd>
+    <dt>Reached</dt><dd><span class="sig vec">Network, no login, no user action<span class="vecraw">AV:N/PR:N/UI:N</span></span></dd>
+    <dt>Fix</dt><dd>None for trixie</dd>
+    <dt>Known exploited</dt><dd>No (CISA KEV, 5 hours ago)</dd>
+    <dt>EPSS</dt><dd>4% (2026-11-19)</dd>
+    <dt>On this host</dt><dd><span class="sig use">Listening: network</span> <span class="mono">smbd</span></dd>
+  </dl>
+  <p class="state-note">The decision keeps this evidence. If the evidence gets worse while it lasts (CISA lists it as exploited, EPSS reaches 10%, or the severity rises), the decision is <strong>suspended</strong>: the finding goes back to Needs attention with the reason. If a fix appears, the finding moves to Fix available and the decision ends. A suspended control stops applying; a suspended acceptance makes the finding due a new decision.</p>
+</aside>
+</div>
+
+<h2 class="state-title" id="errors">With errors</h2>
+<div class="notice error" role="alert"><strong>The decision was not saved.</strong><p>3 problems: fix them and save again.</p></div>
+<form class="form wide" action="override.html" method="post" aria-label="Record a decision, with errors">
+  <div class="field invalid">
+    <label for="what2">What is the control, or why is the risk acceptable?</label>
+    <textarea id="what2" name="reason" aria-invalid="true" aria-describedby="what2-err">ok</textarea>
+    <p class="error-text" id="what2-err">Say what the control is or why the risk is acceptable, in at least 10 characters.</p>
+  </div>
+  <div class="field invalid">
+    <label for="until2">Until</label>
+    <input id="until2" name="expires_on" type="date" value="2027-06-01" aria-invalid="true" aria-describedby="until2-err">
+    <p class="error-text" id="until2-err">Pick a date no later than 2027-02-17 (90 days from today).</p>
+  </div>
+  <div class="field invalid">
+    <label for="conf2"><input id="conf2" type="checkbox" name="confirm[7]" aria-invalid="true" aria-describedby="conf2-err"> I confirm this control exists on File server</label>
+    <p class="error-text" id="conf2-err">Confirm the control on File server, or untick File server. Its firewall is disabled.</p>
+  </div>
+</form>
+
+<h2 class="state-title" id="saved">Saved</h2>
+<div class="notice info" role="status"><strong>Decision saved for Media server.</strong><p><span class="mono">DEBIAN-CVE-2026-92010</span> is now in Low risk with "Control in place" until 2027-02-17. The host's points went from 394 to 364 (a critical needing attention is 40 points; under a control it is 10). Its tier is still "Known exploited", because of another advisory.</p><p>Had you accepted the risk instead, nothing would have changed in the bucket, the points, or the tier; the finding would only be marked accepted and no longer listed as due.</p></div>
+<div class="table-wrap"><table><caption>The finding on the host tab, after saving</caption><thead><tr><th scope="col">Advisory and packages</th><th scope="col">Severity</th><th scope="col">Why this bucket</th></tr></thead><tbody>
+<tr><td><span class="mono">DEBIAN-CVE-2026-92010</span><span class="state-note">3 packages: samba, samba-libs, libwbclient0</span></td><td><span class="sev critical">Critical</span></td><td><span class="override-tag">Control in place</span><span class="reason low">Example Operator recorded on 2026-11-19, until 2027-02-17: "smbd bound to the storage VLAN only (interfaces = br-storage); nftables drops 445/tcp from every other network." Without it: Needs attention (N4).<span class="rule-id">O1</span></span> <a href="override.html">Change or end</a></td></tr>
+</tbody></table></div>
+<div class="table-wrap audit"><table><caption>The audit log entry</caption><thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">What</th><th scope="col">Details</th></tr></thead><tbody>
+<tr><td class="when">2026-11-19 15:42 UTC</td><td>Example Operator</td><td>Finding decision recorded<span class="kind">vulnerability.decision_recorded</span></td><td><ul class="change-list"><li><span class="key">host</span> Media server</li><li><span class="key">advisory</span> DEBIAN-CVE-2026-92010</li><li><span class="key">kind</span> control in place</li><li><span class="key">until</span> 2027-02-17</li><li><span class="key">bucket</span> <del>needs attention</del> <ins>low risk</ins></li><li><span class="key">evidence</span> critical; network, no login, no user action; not KEV; EPSS 0.04; listening on the network</li><li><span class="key">confirmed for</span> Media server</li></ul></td></tr>
+</tbody></table></div>
+
+<h2 class="state-title" id="suspended">Suspended by new evidence</h2>
+<div class="table-wrap"><table><caption>A suspended decision on Web A</caption><thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Why this bucket</th></tr></thead><tbody>
+<tr><td><span class="mono">DEBIAN-CVE-2026-90777</span><span class="state-note">openssh-server</span></td><td><span class="sev high">High</span></td><td><span class="override-tag suspended">Decision suspended</span><span class="reason attn">Risk accepted by Example Operator on 2026-10-20 ("only reachable from the admin VLAN"), but on 2026-11-02 CISA listed it as known exploited. The acceptance no longer applies; the finding (still in Needs attention, as it always was) is due a new decision.<span class="rule-id">N1</span></span> <a href="override.html">Record a new decision</a></td></tr>
+</tbody></table></div>
+<p class="note">Audit entries, one action each: <code>vulnerability.decision_recorded</code>, <code>vulnerability.decision_changed</code>, <code>vulnerability.decision_ended</code> (by an operator), <code>vulnerability.decision_expired</code> and <code>vulnerability.decision_suspended</code> (by the system, with the evidence that changed). A decision never changes a finding's state or severity, and it never removes the finding from any open count: the totals stay honest, only the bucket moves. Second factor: not required, except for one action covering more than 10 hosts (decided, <a href="index.html#v14">V14</a>).</p>
+</main>
+</body>
+</html>
