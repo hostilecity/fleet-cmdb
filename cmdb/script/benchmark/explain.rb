@@ -93,7 +93,7 @@ module FleetBenchmark
           findings.active.preload(:advisory).to_a
           VulnerabilityFinding.where(host_id: package_host.id).group(:state, :fixable).count # the state and fix chips (#256)
           groups = HostFindingGroups.new(findings.joins(:advisory).preload(:advisory).where(state: %w[open reopened]), per_page: 10)
-          HostFindingGroups.new(findings.joins(:advisory).preload(:advisory).where(state: %w[open reopened]), after: groups.next, per_page: 10) if groups.next
+          HostFindingGroups.new(findings.joins(:advisory).preload(:advisory).where(state: %w[open reopened]), after: HostFindingGroups.cursor(groups.next, :offenders), per_page: 10) if groups.next
         },
         "vulnerabilities tab ?fix=available and ?fix=none (package groups, one page each)" => lambda {
           open = VulnerabilityFinding.with_details.where(host_id: package_host.id).joins(:advisory).preload(:advisory).where(state: %w[open reopened])
