@@ -229,4 +229,30 @@ RSpec.describe "vulnerabilities rake tasks" do
     expect { Rake::Task["vulnerabilities:match"].invoke }
       .to output("1 hosts evaluated, 1 not evaluated; 1 findings opened, 0 reopened, 0 resolved.\n").to_stdout
   end
+
+  describe "vulnerabilities:rematch (#270: after a row is added to config/signed_sources.yml)" do
+    include ActiveJob::TestHelper
+
+    def rematch(sources)
+      Rake::Task["vulnerabilities:rematch"].reenable
+      saved = ENV.fetch("SOURCES", nil)
+      ENV["SOURCES"] = sources
+      Rake::Task["vulnerabilities:rematch"].invoke
+    ensure
+      ENV["SOURCES"] = saved
+    end
+
+    it "queues a background re-match of the sources in every supported ecosystem, labelled as a matching change" do
+      expect { rematch(" shim , linux") }.to output(/\AQueued re-match \d+ for shim, linux in Debian:13: its progress is on the Data sources page\.\n\z/).to_stdout
+      run = EvaluationRun.sole
+      expect(run).to have_attributes(kind: "advisories", scope: { "packages" => { "Debian:13" => %w[linux shim] }, "reason" => "matching" })
+      expect(EvaluationRunJob).to have_been_enqueued.with(run.id)
+    end
+
+    it "refuses no source or a name that is not a source package's" do
+      expect { rematch("") }.to raise_error(SystemExit).and output(/Usage: bin\/rails vulnerabilities:rematch SOURCES=/).to_stderr
+      expect { rematch("linux,Shim;rm") }.to raise_error(SystemExit).and output(/Not a source package name: Shim;rm/).to_stderr
+      expect(EvaluationRun.count).to eq(0)
+    end
+  end
 end

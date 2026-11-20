@@ -57,6 +57,12 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       expect(page.at_css("#evaluation_progress_text")).to be_nil
     end
 
+    it "says a re-match started by a matching change, not an import, is one (review of #272)" do
+      EvaluationRun.start!("advisories", EvaluationRun::Advisories.matching_scope(%w[linux shim]))
+      get "/data-sources"
+      expect(page.at_css("#evaluation_progress_text").text).to eq("Re-matching the hosts a change to how packages are matched affects: starting.")
+    end
+
     it "shows freshness, current and withdrawn advisories, and hosts per ecosystem, counted in the database" do
       debian_host
       debian_host

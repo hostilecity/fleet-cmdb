@@ -148,6 +148,19 @@ module AdvisoriesTask
 end
 
 namespace :vulnerabilities do
+  # After a row is added to config/signed_sources.yml (#270): chunk verdicts are kept until an import changes their
+  # sources' advisories, so the new row has no effect until the chunks holding its sources are matched again.
+  desc "Queue a background re-match of the chunks and hosts holding packages built from SOURCES (comma-separated advisory source names, e.g. SOURCES=linux)"
+  task rematch: :environment do
+    sources = ENV["SOURCES"].to_s.split(",").map(&:strip)
+    abort "Usage: bin/rails vulnerabilities:rematch SOURCES=linux[,shim] (the source names Debian's advisories use)" if sources.empty?
+    abort "Not a source package name: #{sources.grep_v(SignedSources::NAME).join(', ')}" if sources.grep_v(SignedSources::NAME).any?
+
+    scope = EvaluationRun::Advisories.matching_scope(sources)
+    run = EvaluationRun.start!("advisories", scope)
+    puts "Queued re-match #{run.id} for #{sources.join(', ')} in #{scope['packages'].keys.join(', ')}: its progress is on the Data sources page."
+  end
+
   desc "Match every package chunk and host in the fleet against the advisory data again (normally done after each package report and import)"
   task match: :environment do
     outcome = VulnerabilityMatcher.match_again!

@@ -19,15 +19,18 @@ RSpec.describe RematchSignedSources do
 
     expect { migrate }.to change(EvaluationRun, :count).by(1)
     run = EvaluationRun.last
-    expect(run).to have_attributes(kind: "advisories", scope: { "packages" => { "Debian:13" => %w[linux shim] } })
+    expect(run).to have_attributes(kind: "advisories", scope: { "packages" => { "Debian:13" => %w[linux shim] }, "reason" => "matching" })
     expect(EvaluationRunJob).to have_been_enqueued.with(run.id)
     perform_enqueued_jobs { EvaluationRunJob.perform_now(run.id) }
     expect(VulnerabilityFinding.with_details.pluck(:package, :source, :state)).to eq([ [ "linux-image-6.12.48+deb13-amd64", "linux", "open" ] ])
     expect(run.reload.state).to eq("finished")
   end
 
-  it "queues nothing on a server that has matched nothing yet, and rolls back without a change" do
+  it "queues nothing on a server that has matched nothing yet, or with no source to match, and rolls back without a change" do
     expect { migrate }.not_to change(EvaluationRun, :count)
+    expect(EvaluationRun::Advisories.matching_scope([ "", nil ])).to be_nil
+    allow(Ecosystems).to receive(:supported).and_return([])
+    expect(EvaluationRun::Advisories.matching_scope(%w[linux])).to be_nil
     expect { ActiveRecord::Migration.suppress_messages { described_class.new.migrate(:down) } }.not_to change(EvaluationRun, :count)
   end
 end

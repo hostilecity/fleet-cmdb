@@ -17,6 +17,16 @@ class EvaluationRun
   # A chunk matched against the data before the import (by a report in flight while it committed) is matched again
   # before any host uses it, by the transitions' check that every chunk is current with the newest import.
   class Advisories
+    # The scope of a re-match started because how packages of sources are matched changed, not their advisories
+    # (#270: a row added to config/signed_sources.yml), in every supported ecosystem: the same work as an import that
+    # changed them, labelled for its progress line. nil when no ecosystem is supported or no source is given.
+    def self.matching_scope(sources)
+      sources = Array(sources).compact_blank.uniq.sort
+      return nil if sources.empty? || Ecosystems.supported.empty?
+
+      { "packages" => Ecosystems.supported.index_with { sources }, "reason" => "matching" }
+    end
+
     def initialize(scope)
       @packages = scope["packages"].to_h.transform_values { |sources| Array(sources) }
     end

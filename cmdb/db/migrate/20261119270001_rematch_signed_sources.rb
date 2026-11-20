@@ -4,14 +4,15 @@
 # affected. This queues the same re-match an advisory import of linux and shim would (EvaluationRun::Advisories,
 # after this migration commits): every evaluated chunk holding those sources, or a signed source built from them, is
 # matched again, then the hosts on sets holding them move their findings. It runs in the background on the
-# evaluation queue, shown on the Data sources page, at about the cost of a routine import that changes a kernel
-# advisory (every Debian host has a kernel). docs/operations/upgrades.md says what operators see.
+# evaluation queue, shown on the Data sources page. Since this change, a routine import that changes a kernel advisory
+# reaches every host with a signed kernel image too, so this run costs what each such import now costs (it opens the
+# new findings as well). docs/operations/upgrades.md says what operators see and what it costs.
 class RematchSignedSources < ActiveRecord::Migration[8.1]
   def up
-    packages = Ecosystems.supported.to_h { |ecosystem| [ ecosystem, SignedSources.sources(ecosystem) ] }.reject { |_, sources| sources.empty? }
-    return if packages.empty? || !ChunkEvaluation.exists? # nothing matched yet: the first match uses the table
+    scope = EvaluationRun::Advisories.matching_scope(Ecosystems.supported.flat_map { |ecosystem| SignedSources.sources(ecosystem) })
+    return if scope.nil? || !ChunkEvaluation.exists? # nothing matched yet: the first match uses the table
 
-    EvaluationRun.after_commit_start("advisories", "packages" => packages)
+    EvaluationRun.after_commit_start("advisories", scope)
   end
 
   def down
