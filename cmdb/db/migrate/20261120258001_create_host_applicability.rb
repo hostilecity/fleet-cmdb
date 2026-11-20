@@ -3,6 +3,9 @@
 # packages, unnamed listener counts, and the optional library scan's packages and stale ones). The triage rules L1
 # and N4 (#259) read it.
 #
+# Only a package the scan judged native (native_packages) and found unmapped may be called idle (owner decision
+# 2026-11-20); every other list is positive evidence only.
+#
 # One narrow row per host, written only when what it holds changes (as hosts is after #220, ADR 0029): a steady fleet
 # writes nothing here. No row means nothing reported. reboot_required is true or NULL, never false (Debian bug
 # #1010699). A new table, so the migration takes no lock on a busy one.
@@ -22,6 +25,8 @@ class CreateHostApplicability < ActiveRecord::Migration[8.1]
       t.string :library_scan, limit: 8
       t.string :libraries, array: true, null: false, default: []
       t.string :stale_libraries, array: true, null: false, default: []
+      t.string :native_packages, array: true, null: false, default: []
+      t.datetime :library_scanned_at
       t.datetime :in_use_changed_at
       t.check_constraint "reboot_required IS NULL OR reboot_required", name: "host_applicability_reboot_true_or_null"
       t.check_constraint "library_scan IN ('off', 'ran', 'failed')", name: "host_applicability_library_scan_valid"
