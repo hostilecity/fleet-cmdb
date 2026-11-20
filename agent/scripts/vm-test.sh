@@ -795,7 +795,16 @@ SCAN_DROPIN=/etc/systemd/system/fleet-agent-library-scan.service.d
 # and sets $since for the reports that follow.
 fresh_reports() {
     since=$(date +%s.%N)
-    vm "systemctl stop fleet-agent && rm -f $STATE/inventory.json && systemctl start fleet-agent"
+    # reset-failed: these restarts would otherwise reach the unit's start limit (4 in 5 minutes).
+    vm "systemctl stop fleet-agent && rm -f $STATE/inventory.json && systemctl reset-failed fleet-agent && systemctl start fleet-agent"
+}
+# Puts the VM back as the other scenarios expect it (the configuration unchanged), however the scenario ends.
+in_use_cleanup() {
+    vm "systemctl stop fvt-lo fvt-lan fvt-uselib 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
+        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-lib fvt-uselib fvt-idlelib fvt-idle > /dev/null 2>&1
+        rm -rf $SCAN_DROPIN /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
+        sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml; sed -i -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' /etc/fleet-agent/config.toml
+        systemctl reset-failed fleet-agent; systemctl restart fleet-agent" || true
 }
 packages_since() { event_exists "[.[] | select(.kind == \"packages\" and .status == 200 and .at > $since)] | length > 0"; }
 inventory_since_now() { event_exists "[.[] | select(.kind == \"inventory\" and .status == 200 and .at > $since)] | length > 0"; }
@@ -814,6 +823,7 @@ no_ptrace_in_the_agent() {
 # stopped service would use is not listed, and one upgraded under a running program is stale.
 in_use_reported() {
     reset
+    trap in_use_cleanup EXIT
     local p='bash /tmp/vm-test-packages.sh' lan props
     put "$here/vm-test-packages.sh" /tmp/vm-test-packages.sh
     vm "$p build fvt-listen-lo 1.0 && $p build fvt-listen-lan 1.0 && $p build fvt-lib 1.0 && $p build fvt-lib 1.1
@@ -890,10 +900,9 @@ in_use_reported() {
     in_use '.in_use.libraries' | jq -e 'index({"package": "fvt-lib", "stale": true})' > /dev/null \
         || fail "fvt-lib, upgraded under a running program, is not stale: $(in_use .in_use.libraries)"
 
-    vm "systemctl stop fvt-lo fvt-lan fvt-uselib 2>/dev/null || true
-        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-lib fvt-uselib fvt-idlelib fvt-idle > /dev/null
-        sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml && $LIB/current/fleet-agent check-config > /dev/null
-        systemctl restart fleet-agent"
+    in_use_cleanup
+    trap - EXIT
+    [ "$(vm 'sha256sum /etc/fleet-agent/config.toml')" = "$config_sum" ] || fail "the configuration was not put back"
     echo "listening: loopback and network named by package, sshd network; reboot flag null then true; the scan unit alone had CAP_SYS_PTRACE and no network; idle and stale libraries"
     agent_limits "in-use reports and the library scan"
     printf '%s' "loopback, network, reboot null/true, scan unit only with ptrace, stale library" > "$tmp/last-result"
