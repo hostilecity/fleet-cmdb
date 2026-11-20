@@ -152,9 +152,15 @@ namespace :vulnerabilities do
   # sources' advisories, so the new row has no effect until the chunks holding its sources are matched again.
   desc "Queue a background re-match of the chunks and hosts holding packages built from SOURCES (comma-separated advisory source names, e.g. SOURCES=linux)"
   task rematch: :environment do
-    sources = ENV["SOURCES"].to_s.split(",").map(&:strip)
-    abort "Usage: bin/rails vulnerabilities:rematch SOURCES=linux[,shim] (the source names Debian's advisories use)" if sources.empty?
-    abort "Not a source package name: #{sources.grep_v(SignedSources::NAME).join(', ')}" if sources.grep_v(SignedSources::NAME).any?
+    items = ENV["SOURCES"].to_s.split(",", -1).map(&:strip)
+    abort "Usage: bin/rails vulnerabilities:rematch SOURCES=linux[,shim] (the source names Debian's advisories use)" if items.all?(&:empty?)
+    abort "SOURCES has an empty name (#{ENV['SOURCES'].inspect}): separate source names with single commas" if items.any?(&:empty?)
+    abort "Not a source package name: #{items.grep_v(SignedSources::NAME).join(', ')}" if items.grep_v(SignedSources::NAME).any?
+
+    sources = items.uniq
+    held = PackageChunkEntry.where("COALESCE(source, name) IN (?)", SignedSources.reported(sources)).distinct.pluck(Arel.sql("COALESCE(source, name)"))
+    unknown = sources.reject { |source| held.include?(source) || SignedSources.reported([ source ]).intersect?(held) }
+    warn "Warning: no stored package is built from #{unknown.join(', ')}; check the spelling (the re-match finds nothing to do for it)." if unknown.any?
 
     scope = EvaluationRun::Advisories.matching_scope(sources)
     run = EvaluationRun.start!("advisories", scope)

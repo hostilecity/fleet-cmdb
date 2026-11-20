@@ -127,6 +127,24 @@ RSpec.describe "Matching signed-template packages (#270)" do # rubocop:disable R
     expect(finding(host, running[0], "DEBIAN-CVE-2026-91009")).to have_attributes(source: "linux")
   end
 
+  it "never lets a fixed verdict under one source hide an affected one under the other (review of #272)" do
+    host = debian_host(packages: [ running ])
+    record = osv_record(id: "DEBIAN-CVE-2026-92001", package: "linux", fixed: "6.12.40-1")
+    record["affected"] << osv_record(id: "x", package: "linux-signed-amd64", fixed: "6.12.90+1")["affected"].first
+    import_advisories(record)
+    match(host)
+    expect(finding(host, running[0], "DEBIAN-CVE-2026-92001")).to have_attributes(state: "open", source: "linux-signed-amd64")
+  end
+
+  it "resolves as fixed a finding fixed under an advisory that names the reported source (review of #272)" do
+    host = debian_host(packages: [ shim ])
+    import_advisories(osv_record(id: "DEBIAN-CVE-2026-92002", package: "shim-signed", fixed: "1.52"))
+    match(host)
+    report(host, [ [ "shim-signed", "1.52+16.1-2~deb13u1", "shim-signed" ] ])
+    match(host, at: now + 1.hour)
+    expect(finding(host, "shim-signed", "DEBIAN-CVE-2026-92002")).to have_attributes(state: "resolved", resolution: "fixed")
+  end
+
   it "lists a shim-signed whose shim version cannot be read as not evaluated, with why" do
     host = debian_host(packages: [ [ "shim-signed", "1.32+15+1533136590.3beb971-5", "shim-signed" ] ])
     import_advisories(osv_record(id: "DEBIAN-CVE-2026-91005", package: "shim", fixed: "15.8-1"))

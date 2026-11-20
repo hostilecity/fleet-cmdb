@@ -217,6 +217,8 @@ RSpec.describe "advisories rake tasks" do
   end
 end
 
+RSpec::Matchers.define_negated_matcher :not_output, :output
+
 RSpec.describe "vulnerabilities rake tasks" do
   before(:all) { Rails.application.load_tasks if Rake::Task.tasks.none? { |task| task.name == "vulnerabilities:match" } }
 
@@ -243,14 +245,27 @@ RSpec.describe "vulnerabilities rake tasks" do
     end
 
     it "queues a background re-match of the sources in every supported ecosystem, labelled as a matching change" do
+      allow(VulnerabilityMatchJob).to receive(:perform_later)
+      debian_host(packages: [ [ "linux-image-6.12.48+deb13-amd64", "6.12.48-1", "linux-signed-amd64" ], [ "shim-unsigned", "16.1-2~deb13u1", "shim" ] ])
       expect { rematch(" shim , linux") }.to output(/\AQueued re-match \d+ for shim, linux in Debian:13: its progress is on the Data sources page\.\n\z/).to_stdout
+        .and not_output.to_stderr
       run = EvaluationRun.sole
       expect(run).to have_attributes(kind: "advisories", scope: { "packages" => { "Debian:13" => %w[linux shim] }, "reason" => "matching" })
       expect(EvaluationRunJob).to have_been_enqueued.with(run.id)
     end
 
-    it "refuses no source or a name that is not a source package's" do
+    it "warns about a source no stored package is built from, and still queues the run" do
+      expect { rematch("linx") }.to output(/Queued re-match/).to_stdout
+        .and output("Warning: no stored package is built from linx; check the spelling (the re-match finds nothing to do for it).\n").to_stderr
+      expect(EvaluationRun.count).to eq(1)
+    end
+
+    it "refuses no source, an empty item, or a name that is not a source package's" do
       expect { rematch("") }.to raise_error(SystemExit).and output(/Usage: bin\/rails vulnerabilities:rematch SOURCES=/).to_stderr
+      expect { rematch(" ") }.to raise_error(SystemExit).and output(/Usage:/).to_stderr
+      [ ",linux", "linux,,shim", "linux, " ].each do |sources|
+        expect { rematch(sources) }.to raise_error(SystemExit).and output(/SOURCES has an empty name .*: separate source names with single commas/).to_stderr
+      end
       expect { rematch("linux,Shim;rm") }.to raise_error(SystemExit).and output(/Not a source package name: Shim;rm/).to_stderr
       expect(EvaluationRun.count).to eq(0)
     end
