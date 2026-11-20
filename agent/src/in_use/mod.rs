@@ -30,9 +30,19 @@
 //!
 //! # Library use (VT-A02): optional, off by default
 //!
-//! With `[packages] library_scan = true` in the VM's local config, the scan unit ([`scan`]) also lists
-//! every package whose files running processes map, and which are stale. Only that short-lived unit,
-//! with no network, carries `CAP_SYS_PTRACE`. `complete` says whether it ran.
+//! With `[packages] library_scan = true` in the VM's local config, the scan unit ([`scan`]), at most once
+//! an hour, also lists every package whose files running processes map, which are stale, and which it
+//! can judge (`native`: native code only). That short-lived unit, with no network, is the only agent unit
+//! that reads other processes' maps, with `CAP_SYS_PTRACE` alone. `complete` says whether it ran.
+//!
+//! # What the lists prove (owner decision 2026-11-20)
+//!
+//! Every list is positive evidence only. A service is named by its `ExecStart=` executable's package, so
+//! a wrapper hides the program it starts (`pg_ctlcluster` of `postgresql-common` for PostgreSQL, `sh -c`,
+//! `env`, an interpreter); naming the real program would need `/proc/<pid>/exe` of other users'
+//! processes, which needs ptrace access the agent's unit does not have. So a package missing from
+//! `services` and `listening` is never idle on that account: only one in the scan's `native` and absent
+//! from `libraries` is.
 
 pub mod netlink;
 pub mod owners;
@@ -94,6 +104,10 @@ pub struct InUse {
     pub unnamed_listeners: Unnamed,
     pub library_scan: &'static str,
     pub libraries: Option<Vec<Library>>,
+    /// The packages the scan can judge (native code only); `None` unless it ran.
+    pub native: Option<Vec<String>>,
+    /// When the scan whose result this is ran, or was last tried; `None` when it is off.
+    pub scanned_at: Option<String>,
     pub complete: bool,
 }
 
@@ -104,14 +118,20 @@ pub struct Collected {
     pub warnings: Vec<String>,
 }
 
-/// Collects what is in use. Never fails: what cannot be read is a warning.
-pub fn collect(host: &dyn Host, scan: &Scan, stop: Option<&Shutdown>) -> Collected {
+/// Collects what is in use. Never fails: what cannot be read is a warning. The library scan runs only
+/// when `memo` holds none younger than an hour ([`scan::Memo`]).
+pub fn collect(
+    host: &dyn Host,
+    scan: &Scan,
+    memo: &mut scan::Memo,
+    stop: Option<&Shutdown>,
+) -> Collected {
     let mut ctx = Ctx::new(host, BUDGET);
     if let Some(stop) = stop {
         ctx = ctx.stopping_on(stop);
     }
     let mut warnings = Vec::new();
-    let mut in_use = match services(&ctx, &mut warnings) {
+    let mut in_use = match services(&ctx) {
         Ok(in_use) => in_use,
         Err(why) => {
             warnings.push(why);
@@ -122,14 +142,19 @@ pub fn collect(host: &dyn Host, scan: &Scan, stop: Option<&Shutdown>) -> Collect
         }
     };
     if let Scan::On(binary) = scan {
-        match binary
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|binary| scan::run(host, binary, stop))
-        {
-            Ok(libraries) => {
+        let scanned = memo.get(std::time::Instant::now(), || match binary {
+            Ok(binary) => scan::run(host, binary, stop),
+            Err(why) => scan::Scanned {
+                result: Err(why.clone()),
+                at: crate::report::rfc3339(std::time::SystemTime::now()),
+            },
+        });
+        in_use.scanned_at = Some(scanned.at);
+        match scanned.result {
+            Ok(output) => {
                 in_use.library_scan = "ran";
-                in_use.libraries = Some(libraries);
+                in_use.libraries = Some(output.libraries);
+                in_use.native = Some(output.native);
                 in_use.complete = true;
             }
             Err(why) => {
@@ -145,7 +170,7 @@ pub fn collect(host: &dyn Host, scan: &Scan, stop: Option<&Shutdown>) -> Collect
 }
 
 /// VT-A01: listening and running services, or why they cannot be read whole.
-fn services(ctx: &Ctx, warnings: &mut Vec<String>) -> Result<InUse, String> {
+fn services(ctx: &Ctx) -> Result<InUse, String> {
     let sockets = read_sockets(ctx)?;
     let cgroup_of: HashMap<u64, u64> = ctx
         .socket_cgroups(MAX_SOCKETS)
@@ -160,11 +185,7 @@ fn services(ctx: &Ctx, warnings: &mut Vec<String>) -> Result<InUse, String> {
     let path_of: HashMap<u64, String> = if wanted.is_empty() {
         HashMap::new()
     } else {
-        ctx.directories(CGROUP_ROOT, MAX_CGROUPS)
-            .map_err(|e| crate::facts::io_reason(CGROUP_ROOT, &e))?
-            .into_iter()
-            .filter(|(inode, _)| wanted.contains(inode))
-            .collect()
+        cgroup_paths(ctx, &wanted)?
     };
     let owner = |socket: &Socket| {
         cgroup_of
@@ -174,17 +195,14 @@ fn services(ctx: &Ctx, warnings: &mut Vec<String>) -> Result<InUse, String> {
     };
     let mut owned: Vec<(Owner, &Socket)> = sockets.iter().map(|s| (owner(s), s)).collect();
     if owned.iter().any(|(o, _)| *o == Owner::Systemd) {
-        match activated(ctx) {
-            Ok(activated) => {
-                for (owner, socket) in &mut owned {
-                    if *owner == Owner::Systemd {
-                        *owner = match_activated(socket, &activated);
-                    }
-                }
+        // All or nothing: without systemd's list, socket-activated services would drop out.
+        let activated = activated(ctx).map_err(|why| {
+            format!("the sockets systemd holds for socket activation cannot be named: {why}")
+        })?;
+        for (owner, socket) in &mut owned {
+            if *owner == Owner::Systemd {
+                *owner = match_activated(socket, &activated);
             }
-            Err(why) => warnings.push(format!(
-                "sockets systemd holds for socket activation are counted, not named: {why}"
-            )),
         }
     }
 
@@ -249,6 +267,8 @@ fn services(ctx: &Ctx, warnings: &mut Vec<String>) -> Result<InUse, String> {
         unnamed_listeners: unnamed,
         library_scan: "off",
         libraries: None,
+        native: None,
+        scanned_at: None,
         complete: false,
     })
 }
@@ -289,21 +309,46 @@ fn activated(ctx: &Ctx) -> Result<Vec<units::Activated>, String> {
     units::parse_list_sockets(&output)
 }
 
-/// The service systemd listens on `socket` for, if exactly one is named.
+/// The service systemd listens on `socket` for, if exactly one is named: an entry of the same protocol
+/// and port, on the socket's own address, else on the wildcard address.
 fn match_activated(socket: &Socket, activated: &[units::Activated]) -> Owner {
+    let same = |a: &&units::Activated| a.udp == socket.udp && a.port == socket.port;
     activated
         .iter()
-        .find(|a| {
-            a.port == socket.port
-                && (a.address.is_none()
-                    || a.address == Some(socket.address)
-                    || socket.address.is_unspecified())
-        })
+        .filter(same)
+        .find(|a| a.address == Some(socket.address))
+        .or_else(|| activated.iter().filter(same).find(|a| a.address.is_none()))
         .and_then(|a| match a.services.as_slice() {
             [one] => Some(Owner::Service(one.clone())),
             _ => None,
         })
         .unwrap_or(Owner::Other)
+}
+
+/// The paths of the cgroups in `wanted`, looking only where a socket can be named: `system.slice` and
+/// `init.scope` ([`units::unit_of`]). Users' delegated subtrees are not walked, so they cannot make the
+/// walk too large.
+fn cgroup_paths(ctx: &Ctx, wanted: &HashSet<u64>) -> Result<HashMap<u64, String>, String> {
+    let mut found = HashMap::new();
+    for top in ["system.slice", "init.scope"] {
+        let root = format!("{CGROUP_ROOT}/{top}");
+        let dirs = match ctx.directories(&root, MAX_CGROUPS) {
+            Ok(dirs) => dirs,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(crate::facts::io_reason(&root, &e)),
+        };
+        for (inode, path) in dirs {
+            if wanted.contains(&inode) {
+                let path = if path.is_empty() {
+                    top.to_owned()
+                } else {
+                    format!("{top}/{path}")
+                };
+                found.insert(inode, path);
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Each unit's executables, from `systemctl show` in chunks.

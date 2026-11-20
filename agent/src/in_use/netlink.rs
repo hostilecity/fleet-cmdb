@@ -167,6 +167,13 @@ pub fn parse(bytes: &[u8], sequence: u32, found: &mut Vec<SocketCgroup>) -> Resu
             continue; // not ours (cannot happen on a socket of our own; skipped all the same)
         }
         match kind {
+            // Its payload is an error code: negative when the kernel cut the dump short.
+            NLMSG_DONE if body.len() >= 4 && (u32_at(body, 0) as i32) < 0 => {
+                return Err(format!(
+                    "the sock_diag dump ended early: {}",
+                    io::Error::from_raw_os_error(-(u32_at(body, 0) as i32))
+                ));
+            }
             NLMSG_DONE => return Ok(true),
             NLMSG_ERROR => {
                 let errno = if body.len() >= 4 {

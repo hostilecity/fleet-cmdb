@@ -18,6 +18,8 @@ struct TestHost {
     cgroups: Option<Vec<(u64, String)>>,
     /// `systemctl show` answers from this, one block per unit asked about, when no output is canned.
     exec: HashMap<String, String>,
+    /// Paths whose reads are refused (permission denied).
+    denied: std::collections::HashSet<String>,
     log: Mutex<Vec<String>>,
 }
 
@@ -43,6 +45,9 @@ impl Host for TestHost {
     fn read(&self, path: &Path, max: u64) -> io::Result<Vec<u8>> {
         let path = path.to_string_lossy().into_owned();
         self.log.lock().unwrap().push(format!("read {path}"));
+        if self.denied.contains(&path) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
         let bytes = self
             .files
             .get(&path)
@@ -100,11 +105,33 @@ impl Host for TestHost {
         }
         Ok(sockets)
     }
+    /// Only `system.slice` and `init.scope` are walked: anything else is a test failure.
     fn directories(&self, root: &Path, _: usize) -> io::Result<Vec<(u64, String)>> {
-        assert_eq!(root, Path::new("/sys/fs/cgroup"));
-        self.cgroups
+        let root = root.to_string_lossy().into_owned();
+        self.log.lock().unwrap().push(format!("walk {root}"));
+        let top = root
+            .strip_prefix("/sys/fs/cgroup/")
+            .expect("under the cgroup root");
+        assert!(["system.slice", "init.scope"].contains(&top), "{top}");
+        let all = self
+            .cgroups
             .clone()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::PermissionDenied))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::PermissionDenied))?;
+        let found: Vec<(u64, String)> = all
+            .into_iter()
+            .filter_map(|(id, path)| {
+                if path == top {
+                    Some((id, String::new()))
+                } else {
+                    path.strip_prefix(&format!("{top}/"))
+                        .map(|rest| (id, rest.to_owned()))
+                }
+            })
+            .collect();
+        if found.is_empty() {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        Ok(found)
     }
 }
 
@@ -166,9 +193,10 @@ const EXEC: [(&str, &str); 7] = [
 ];
 
 const LIST_SOCKETS: &str = "\
-/run/cups/cups.sock          cups.socket          cups.service
-127.0.0.1:631                cups.socket          cups.service
-/run/dbus/system_bus_socket  dbus.socket          dbus.service
+/run/cups/cups.sock          Stream    cups.socket          cups.service
+127.0.0.1:631                Stream    cups.socket          cups.service
+127.0.0.1:631                Datagram  cupsudp.socket       cups-browsed.service
+/run/dbus/system_bus_socket  Stream    dbus.socket          dbus.service
 ";
 
 fn debian_host() -> TestHost {
@@ -262,7 +290,7 @@ fn listening(entries: &[(&str, &'static str)]) -> Vec<Listening> {
 #[test]
 fn listening_services_are_named_by_package_and_class() {
     let host = debian_host();
-    let found = collect(&host, &Scan::Off, None);
+    let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     let in_use = found.in_use.expect("in use");
     assert_eq!(
@@ -301,7 +329,7 @@ fn listening_services_are_named_by_package_and_class() {
 #[test]
 fn the_report_has_no_process_id_command_line_address_or_port() {
     let host = debian_host();
-    let found = collect(&host, &Scan::Off, None);
+    let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     let text = serde_json::to_string(&found.in_use).unwrap();
     for forbidden in [
         "192.0.2", "127.0.0", "0.0.0.0", ":22", "445", "8080", "631", "secret", "/usr/", "argv",
@@ -314,7 +342,7 @@ fn the_report_has_no_process_id_command_line_address_or_port() {
 #[test]
 fn in_use_conforms_to_the_package_report_contract() {
     let host = debian_host();
-    let found = collect(&host, &Scan::Off, None);
+    let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     let report = report_with(&found);
     contract::assert_conforms("v1", "packages.request", &report);
     assert_eq!(report["in_use"]["listening"][2]["class"], "network");
@@ -369,7 +397,7 @@ fn decode(encoded: &crate::report::packages::Encoded) -> serde_json::Value {
 #[test]
 fn only_fixed_commands_run_and_unit_names_follow_a_double_dash() {
     let host = debian_host();
-    collect(&host, &Scan::Off, None);
+    collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     let runs: Vec<String> = host
         .log()
         .into_iter()
@@ -451,7 +479,7 @@ fn what_cannot_be_read_whole_is_null_with_a_warning() {
     for (what, breaks) in cases {
         let mut host = debian_host();
         breaks(&mut host);
-        let found = collect(&host, &Scan::Off, None);
+        let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
         assert_eq!(found.in_use, None, "{what}");
         assert_eq!(found.warnings.len(), 1, "{what}: {:?}", found.warnings);
         assert!(
@@ -467,21 +495,42 @@ fn ipv6_turned_off_is_not_an_error() {
     let mut host = debian_host();
     host.files.remove("/proc/net/tcp6");
     host.files.remove("/proc/net/udp6");
-    let found = collect(&host, &Scan::Off, None);
+    let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     assert!(found.in_use.is_some());
 }
 
 #[test]
-fn sockets_systemd_holds_are_counted_when_list_sockets_fails() {
+fn without_systemds_socket_list_in_use_is_null() {
+    // All or nothing (review of #268, S2): socket-activated services would otherwise drop out.
     let mut host = debian_host();
     host.commands.remove("list-sockets");
-    let found = collect(&host, &Scan::Off, None);
-    let in_use = found.in_use.expect("in use");
-    assert!(!in_use.listening.iter().any(|l| l.package == "cups-daemon"));
-    assert_eq!(in_use.unnamed_listeners.loopback, 2);
+    let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
+    assert_eq!(found.in_use, None);
     assert_eq!(found.warnings.len(), 1);
-    assert!(found.warnings[0].contains("socket activation"));
+    assert!(
+        found.warnings[0].contains("socket activation"),
+        "{:?}",
+        found.warnings
+    );
+}
+
+#[test]
+fn the_cgroup_walk_stays_inside_system_slice_and_init_scope() {
+    let host = debian_host();
+    collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
+    let walks: Vec<String> = host
+        .log()
+        .into_iter()
+        .filter(|l| l.starts_with("walk "))
+        .collect();
+    assert_eq!(
+        walks,
+        [
+            "walk /sys/fs/cgroup/system.slice",
+            "walk /sys/fs/cgroup/init.scope"
+        ]
+    );
 }
 
 #[test]
@@ -494,7 +543,9 @@ fn a_host_with_nothing_listening_needs_no_cgroup_walk() {
     host.files
         .insert("/proc/net/udp".into(), TCP_HEADER.as_bytes().to_vec());
     host.cgroups = None;
-    let in_use = collect(&host, &Scan::Off, None).in_use.expect("in use");
+    let in_use = collect(&host, &Scan::Off, &mut scan::Memo::default(), None)
+        .in_use
+        .expect("in use");
     assert!(in_use.listening.is_empty());
     assert_eq!(in_use.unnamed_listeners, Unnamed::default());
     assert_eq!(in_use.services.len(), 5);
@@ -508,7 +559,7 @@ fn too_many_units_is_null() {
         .collect();
     host.commands
         .insert("list-units".into(), Ok(many.into_bytes()));
-    let found = collect(&host, &Scan::Off, None);
+    let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     assert_eq!(found.in_use, None);
     assert!(found.warnings[0].contains("1000"), "{:?}", found.warnings);
 }
@@ -765,13 +816,13 @@ fn systemctl_show_gives_each_unit_its_executables_and_nothing_else() {
 #[test]
 fn list_sockets_gives_ip_listeners_and_their_services() {
     let output = "\
-[::]:22          ssh.socket     ssh.service
-0.0.0.0:80       web.socket     web-a.service, web-b.service
-127.0.0.1:631    cups.socket    cups.service
-*:9              tpl.socket     tpl@.service
-/run/x.sock      x.socket       x.service
-vsock:2:1        v.socket       v.service
-[fe80::1%eth0]:5 odd.socket     odd.service
+[::]:22          Stream    ssh.socket     ssh.service
+0.0.0.0:80       Stream    web.socket     web-a.service, web-b.service
+127.0.0.1:631    Datagram  cups.socket    cups.service
+*:9              Stream    tpl.socket     tpl@.service
+/run/x.sock      Stream    x.socket       x.service
+vsock:2:1        Stream    v.socket       v.service
+[fe80::1%eth0]:5 Stream    odd.socket     odd.service
 ";
     let found = units::parse_list_sockets(output.as_bytes()).unwrap();
     assert_eq!(found.len(), 4, "{found:?}");
@@ -780,19 +831,25 @@ vsock:2:1        v.socket       v.service
     assert_eq!(found[0].services, ["ssh.service"]);
     assert_eq!(found[1].services, ["web-a.service", "web-b.service"]);
     assert_eq!(found[2].address.unwrap().to_string(), "127.0.0.1");
+    assert!(found[2].udp && !found[0].udp);
     assert!(found[3].services.is_empty(), "a template is not named");
     assert!(units::parse_list_sockets(b"\xff").is_err());
 }
 
 #[test]
-fn a_socket_systemd_holds_is_matched_by_port_and_address() {
-    let socket = |address: &str, port| Socket {
+fn a_socket_systemd_holds_is_matched_by_protocol_port_and_address() {
+    let socket = |address: &str, port, udp| Socket {
         inode: 1,
         address: address.parse().unwrap(),
         port,
+        udp,
     };
     let activated = units::parse_list_sockets(
-        b"0.0.0.0:22 ssh.socket ssh.service\n127.0.0.1:631 cups.socket cups.service\n0.0.0.0:80 w.socket a.service, b.service\n",
+        b"0.0.0.0:22 Stream ssh.socket ssh.service\n\
+          127.0.0.1:631 Stream cups.socket cups.service\n\
+          [::]:631 Stream all.socket cups-all.service\n\
+          0.0.0.0:631 Datagram browsed.socket cups-browsed.service\n\
+          0.0.0.0:80 Stream w.socket a.service, b.service\n",
     )
     .unwrap();
     let service = |s: &Socket| match match_activated(s, &activated) {
@@ -800,21 +857,124 @@ fn a_socket_systemd_holds_is_matched_by_port_and_address() {
         _ => None,
     };
     assert_eq!(
-        service(&socket("0.0.0.0", 22)).as_deref(),
+        service(&socket("0.0.0.0", 22, false)).as_deref(),
         Some("ssh.service")
     );
-    assert_eq!(service(&socket("::", 22)).as_deref(), Some("ssh.service"));
     assert_eq!(
-        service(&socket("127.0.0.1", 631)).as_deref(),
+        service(&socket("::", 22, false)).as_deref(),
+        Some("ssh.service")
+    );
+    // The entry on the socket's own address wins over the wildcard one, whichever comes first.
+    assert_eq!(
+        service(&socket("127.0.0.1", 631, false)).as_deref(),
         Some("cups.service")
     );
-    assert_eq!(service(&socket("192.0.2.1", 631)), None);
+    // Another address on the same port: the wildcard entry.
     assert_eq!(
-        service(&socket("0.0.0.0", 80)),
+        service(&socket("192.0.2.1", 631, false)).as_deref(),
+        Some("cups-all.service")
+    );
+    // The protocol must match (review of #268, S2).
+    assert_eq!(
+        service(&socket("192.0.2.1", 631, true)).as_deref(),
+        Some("cups-browsed.service")
+    );
+    assert_eq!(service(&socket("0.0.0.0", 22, true)), None);
+    assert_eq!(
+        service(&socket("0.0.0.0", 80, false)),
         None,
         "two services: not named"
     );
-    assert_eq!(service(&socket("0.0.0.0", 23)), None);
+    assert_eq!(service(&socket("0.0.0.0", 23, false)), None);
+    let specific_only =
+        units::parse_list_sockets(b"127.0.0.1:9 Stream x.socket x.service\n").unwrap();
+    assert_eq!(
+        match_activated(&socket("0.0.0.0", 9, false), &specific_only),
+        Owner::Other
+    );
+}
+
+#[test]
+fn list_sockets_lines_without_a_known_type_are_skipped() {
+    let found = units::parse_list_sockets(
+        b"0.0.0.0:22 ssh.socket ssh.service\n/run/x FIFO x.socket x.service\n0.0.0.0:7 SequentialPacket s.socket s.service\n",
+    )
+    .unwrap();
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_cut_short_sock_diag_dump_is_an_error() {
+    let mut found = Vec::new();
+    let message =
+        netlink::parse(&header(3, 1, &(-libc::EINTR).to_ne_bytes()), 1, &mut found).unwrap_err();
+    assert!(message.contains("ended early"), "{message}");
+}
+
+#[test]
+fn a_non_ascii_address_is_an_error_not_a_panic() {
+    let line = format!("{TCP_HEADER}   0: 0000\u{e9}0000:0016 00000000:0000 0A 0:0 0:0 0 0 0 1\n");
+    assert!(sockets::parse(line.as_bytes(), false).is_err());
+}
+
+#[test]
+fn an_argument_that_looks_like_a_path_is_not_an_executable() {
+    let output = "Id=a.service\nExecStart={ path=/usr/bin/a ; argv[]=/usr/bin/a --socket-path=/usr/lib/x ; ignore_errors=no }\n";
+    let units = units::parse_show(output.as_bytes(), 1).unwrap();
+    assert_eq!(units["a.service"], ["/usr/bin/a"]);
+}
+
+#[test]
+fn a_report_too_large_with_in_use_keeps_the_listing_and_drops_in_use() {
+    // Review of #268, N4: the listing must not become `unreadable` because of in_use.
+    let packages: Vec<crate::packages::Package> = (0..20_000)
+        .map(|i| crate::packages::Package {
+            name: format!("{:a<120}{i:05}", "p"),
+            version: "1.0".into(),
+            architecture: "amd64".into(),
+            source: None,
+        })
+        .collect();
+    let listing = crate::packages::Collected::Dpkg(crate::packages::Listing {
+        packages,
+        ..Default::default()
+    });
+    let libraries: Vec<Library> = (0..20_000)
+        .map(|i| Library {
+            package: format!("lib{i:05}-with-a-long-name"),
+            stale: false,
+        })
+        .collect();
+    let found = Collected {
+        in_use: Some(InUse {
+            listening: vec![],
+            services: vec![],
+            unnamed_listeners: Unnamed::default(),
+            library_scan: "ran",
+            libraries: Some(libraries),
+            native: Some(vec![]),
+            scanned_at: Some("2026-11-20T12:00:00Z".into()),
+            complete: true,
+        }),
+        warnings: vec![],
+    };
+    let encoded = crate::report::packages::encode_with(
+        "00000000-0000-4000-8000-000000000001",
+        "2026-11-20T12:00:00Z",
+        &listing,
+        Some(&found),
+    );
+    assert_eq!(encoded.refused, None);
+    let report = decode(&encoded);
+    assert_eq!(report["manager"], "dpkg");
+    assert_eq!(report["packages"].as_array().unwrap().len(), 20_000);
+    assert_eq!(report["in_use"], serde_json::Value::Null);
+    assert!(
+        report["warnings"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("left out")
+    );
 }
 
 // --- dpkg file lists ---------------------------------------------------------------------------------
@@ -886,7 +1046,10 @@ fn scan_host() -> TestHost {
             "/var/lib/dpkg/info/libssl3t64:amd64.list",
             "/usr/lib/x86_64-linux-gnu/libssl.so.3\n",
         )
-        .file("/var/lib/dpkg/info/libidle.list", "/usr/lib/libidle.so.1\n");
+        .file("/var/lib/dpkg/info/libidle.list", "/usr/lib/libidle.so.1\n")
+        .file("/usr/sbin/sshd", "\x7fELF....")
+        .file("/lib/x86_64-linux-gnu/libc.so.6", "\x7fELF....")
+        .file("/usr/lib/libidle.so.1", "\x7fELF....");
     host.dirs.insert(
         "/proc".into(),
         ["1", "812", "900", "933", "self", "net", "sys"]
@@ -911,7 +1074,8 @@ fn scan_host() -> TestHost {
 fn the_scan_names_packages_in_use_and_stale_ones() {
     // Process 933 ended between the listing and its read: skipped.
     let host = scan_host();
-    let libraries = scan::scan(&host).unwrap();
+    let output = scan::scan(&host).unwrap();
+    let libraries = output.libraries;
     assert_eq!(
         libraries,
         [
@@ -929,8 +1093,84 @@ fn the_scan_names_packages_in_use_and_stale_ones() {
             },
         ]
     );
-    // A library only a stopped service would use is not in the list: idle.
+    // A library only a stopped service would use is not in the list, and it is native: idle.
     assert!(!libraries.iter().any(|l| l.package == "libidle"));
+    assert_eq!(output.native, ["libc6", "libidle", "openssh-server"]);
+}
+
+#[test]
+fn only_native_code_packages_can_be_judged() {
+    // Owner decision 2026-11-20 (review of #268, B2): interpreted code is read, not mapped.
+    let mut host = scan_host()
+        .file(
+            "/var/lib/dpkg/info/python3-urllib3.list",
+            "/usr/lib/python3/dist-packages/urllib3/__init__.py\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/mixed.list",
+            "/usr/lib/mixed/libm.so.1\n/usr/share/mixed/tool.pl\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/scripted.list",
+            "/usr/bin/scripted\n/usr/lib/libscripted.so.1\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/docs-only.list",
+            "/usr/share/doc/docs-only/example.py\n/usr/lib/libdocs.so.1\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/data-only.list",
+            "/usr/share/data-only/table.bin\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/secret.list",
+            "/usr/lib/libsecret.so.0\n",
+        )
+        .file("/usr/lib/mixed/libm.so.1", "\x7fELF....")
+        .file("/usr/bin/scripted", "#!/bin/sh\nexit 0\n")
+        .file("/usr/lib/libscripted.so.1", "\x7fELF....")
+        .file("/usr/lib/libdocs.so.1", "\x7fELF....");
+    host.denied.insert("/usr/lib/libsecret.so.0".into());
+    let names = host.dirs.get_mut("/var/lib/dpkg/info").unwrap();
+    names.extend(
+        [
+            "data-only.list",
+            "docs-only.list",
+            "mixed.list",
+            "python3-urllib3.list",
+            "scripted.list",
+            "secret.list",
+        ]
+        .map(String::from),
+    );
+    names.sort();
+    let native = scan::scan(&host).unwrap().native;
+    assert_eq!(
+        native,
+        ["docs-only", "libc6", "libidle", "openssh-server"],
+        "a package with interpreted code, a script, no ELF file, or an unreadable code file cannot be judged"
+    );
+}
+
+#[test]
+fn only_package_managed_files_count_toward_the_limit() {
+    let mut host = scan_host();
+    let many: String = (0..=scan::MAX_PATHS)
+        .map(|i| format!("7f00-7f01 r--p 0 fe:01 1 /home/user/data/{i}\n"))
+        .collect();
+    host.files
+        .insert("/proc/812/maps".into(), many.into_bytes());
+    assert!(
+        scan::scan(&host).is_ok(),
+        "files outside the package-managed prefixes are not counted"
+    );
+    let many: String = (0..=scan::MAX_PATHS)
+        .map(|i| format!("7f00-7f01 r--p 0 fe:01 1 /usr/lib/x/{i}.so\n"))
+        .collect();
+    host.files
+        .insert("/proc/812/maps".into(), many.into_bytes());
+    let message = scan::scan(&host).unwrap_err();
+    assert!(message.contains("50000"), "{message}");
 }
 
 #[test]
@@ -957,7 +1197,9 @@ fn the_scan_unit_alone_carries_the_capability_and_has_no_network() {
         "--wait",
         "--pipe",
         "--collect",
-        "--property=CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH",
+        "--property=CapabilityBoundingSet=CAP_SYS_PTRACE",
+        "--property=ProtectHome=yes",
+        "--property=ProcSubset=pid",
         "--property=PrivateNetwork=yes",
         "--property=IPAddressDeny=any",
         "--property=RuntimeMaxSec=30",
@@ -974,6 +1216,8 @@ fn the_scan_unit_alone_carries_the_capability_and_has_no_network() {
             "library-scan"
         ]
     );
+    // CAP_SYS_PTRACE alone (review of #268, S4): nothing reads other users' files.
+    assert!(!args.iter().any(|a| a.contains("CAP_DAC")));
     // Nothing writable: no ReadWritePaths=, no StateDirectory=.
     assert!(
         !args
@@ -989,15 +1233,19 @@ fn the_scan_unit_alone_carries_the_capability_and_has_no_network() {
 #[test]
 fn the_scan_result_is_checked_against_the_contract() {
     let ok = scan::parse_output(
-        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}]}"#,
+        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}],"native":["openssl","libc6"]}"#,
     )
     .unwrap();
-    assert_eq!(ok[0].package, "libc6");
+    assert_eq!(ok.libraries[0].package, "libc6");
+    assert_eq!(ok.native, ["libc6", "openssl"]);
     for bad in [
         &br#"not json"#[..],
-        br#"{"libraries":[{"package":"Bad","stale":false}]}"#,
-        br#"{"libraries":[{"package":"a","stale":false},{"package":"a","stale":true}]}"#,
-        br#"{"libraries":[{"package":"a"}]}"#,
+        br#"{"libraries":[]}"#,
+        br#"{"libraries":[{"package":"Bad","stale":false}],"native":[]}"#,
+        br#"{"libraries":[{"package":"a","stale":false},{"package":"a","stale":true}],"native":[]}"#,
+        br#"{"libraries":[{"package":"a"}],"native":[]}"#,
+        br#"{"libraries":[],"native":["a","a"]}"#,
+        br#"{"libraries":[],"native":["Bad"]}"#,
     ] {
         assert!(scan::parse_output(bad).is_err());
     }
@@ -1007,11 +1255,12 @@ fn the_scan_result_is_checked_against_the_contract() {
 fn with_the_scan_on_the_report_is_complete() {
     let host = debian_host().command(
         "--unit=fleet-agent-library-scan.service",
-        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}]}"#),
+        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}],"native":["libc6","libssl3t64","zlib1g"]}"#),
     );
     let found = collect(
         &host,
         &Scan::On(Ok("/usr/lib/fleet-agent/current/fleet-agent".into())),
+        &mut scan::Memo::default(),
         None,
     );
     assert!(found.warnings.is_empty(), "{:?}", found.warnings);
@@ -1019,7 +1268,78 @@ fn with_the_scan_on_the_report_is_complete() {
     assert_eq!(in_use.library_scan, "ran");
     assert!(in_use.complete);
     assert_eq!(in_use.libraries.as_ref().unwrap().len(), 2);
+    assert_eq!(in_use.native.as_ref().unwrap().len(), 3);
+    assert!(in_use.scanned_at.is_some());
     contract::assert_conforms("v1", "packages.request", &report_with(&found));
+}
+
+#[test]
+fn the_scan_runs_at_most_once_an_hour_however_often_reports_are_asked_for() {
+    // Owner decision 2026-11-20 (review of #268, S3).
+    let host = debian_host().command(
+        "--unit=fleet-agent-library-scan.service",
+        Ok(r#"{"libraries":[],"native":[]}"#),
+    );
+    let scan = Scan::On(Ok("/usr/lib/fleet-agent/current/fleet-agent".into()));
+    let mut memo = scan::Memo::default();
+    let first = collect(&host, &scan, &mut memo, None).in_use.unwrap();
+    let again = collect(&host, &scan, &mut memo, None).in_use.unwrap();
+    assert_eq!(first.scanned_at, again.scanned_at);
+    let runs = |host: &TestHost| {
+        host.log()
+            .iter()
+            .filter(|l| l.contains("systemd-run"))
+            .count()
+    };
+    assert_eq!(runs(&host), 1);
+
+    let mut memo = scan::Memo::default();
+    let start = std::time::Instant::now();
+    let mut count = 0;
+    let scanned = |n| scan::Scanned {
+        result: Ok(scan::Output {
+            libraries: vec![],
+            native: vec![],
+        }),
+        at: format!("{n}"),
+    };
+    let a = memo.get(start, || {
+        count += 1;
+        scanned(1)
+    });
+    let b = memo.get(
+        start + scan::EVERY - std::time::Duration::from_secs(1),
+        || {
+            count += 1;
+            scanned(2)
+        },
+    );
+    let c = memo.get(start + scan::EVERY, || {
+        count += 1;
+        scanned(3)
+    });
+    assert_eq!(
+        (a.at.as_str(), b.at.as_str(), c.at.as_str(), count),
+        ("1", "1", "3", 2)
+    );
+}
+
+#[test]
+fn a_failed_scan_is_not_retried_within_the_hour() {
+    let host = debian_host();
+    let scan = Scan::On(Ok("/usr/lib/fleet-agent/current/fleet-agent".into()));
+    let mut memo = scan::Memo::default();
+    for _ in 0..3 {
+        let found = collect(&host, &scan, &mut memo, None);
+        assert_eq!(found.in_use.unwrap().library_scan, "failed");
+    }
+    assert_eq!(
+        host.log()
+            .iter()
+            .filter(|l| l.contains("systemd-run"))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -1036,7 +1356,7 @@ fn a_failed_scan_says_so_and_keeps_the_services() {
         ),
     ] {
         let host = debian_host();
-        let found = collect(&host, &scan, None);
+        let found = collect(&host, &scan, &mut scan::Memo::default(), None);
         let in_use = found.in_use.as_ref().expect("in use");
         assert_eq!(in_use.library_scan, "failed");
         assert!(!in_use.complete);
@@ -1052,7 +1372,7 @@ fn a_failed_scan_says_so_and_keeps_the_services() {
     }
     // With the scan off, systemd-run is never run.
     let host = debian_host();
-    collect(&host, &Scan::Off, None);
+    collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     assert!(!host.log().iter().any(|l| l.contains("systemd-run")));
 }
 
@@ -1080,7 +1400,71 @@ fn the_real_directory_walk_gives_inodes_breadth_first() {
 fn in_use_on_this_host() {
     let host = crate::facts::host::RealHost::new();
     let started = std::time::Instant::now();
-    let found = collect(&host, &Scan::Off, None);
+    let found = collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
     println!("{:?} in {:?}", found, started.elapsed());
     contract::assert_conforms("v1", "packages.request", &report_with(&found));
+}
+
+/// `cargo test cpu_on_this_host -- --ignored --nocapture`: the CPU time of the two passes that grow with
+/// the host (dpkg's file lists for the services' executables, and the whole library scan).
+#[test]
+#[ignore = "reads the real host; run by hand"]
+fn cpu_on_this_host() {
+    fn cpu() -> std::time::Duration {
+        // SAFETY: getrusage fills the zeroed struct it is given.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+        let t = |tv: libc::timeval| {
+            std::time::Duration::from_secs(tv.tv_sec as u64)
+                + std::time::Duration::from_micros(tv.tv_usec as u64)
+        };
+        t(usage.ru_utime) + t(usage.ru_stime)
+    }
+    let host = crate::facts::host::RealHost::new();
+    let ctx = Ctx::new(&host, std::time::Duration::from_secs(60));
+    let wanted: HashSet<String> = ["/usr/sbin/cron", "/usr/sbin/sshd", "/usr/bin/python3"]
+        .map(String::from)
+        .into();
+    let (c, w) = (cpu(), std::time::Instant::now());
+    let found = owners::owners(&ctx, &wanted).unwrap();
+    println!(
+        "owners: {} found, cpu {:?}, wall {:?}",
+        found.len(),
+        cpu() - c,
+        w.elapsed()
+    );
+    // Without CAP_SYS_PTRACE (as here) only this process's maps are readable: list just it.
+    struct OwnProcess(crate::facts::host::RealHost);
+    impl Host for OwnProcess {
+        fn stat(&self, p: &Path) -> io::Result<Stat> {
+            self.0.stat(p)
+        }
+        fn read(&self, p: &Path, m: u64) -> io::Result<Vec<u8>> {
+            self.0.read(p, m)
+        }
+        fn list(&self, d: &Path, m: usize) -> io::Result<Vec<String>> {
+            if d == Path::new("/proc") {
+                return Ok(vec![std::process::id().to_string()]);
+            }
+            self.0.list(d, m)
+        }
+        fn run(&self, c: &Command) -> Result<Vec<u8>, RunError> {
+            self.0.run(c)
+        }
+        fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
+            scan::ScanHost(self.0.clone()).head(p, n)
+        }
+    }
+    let host = OwnProcess(host);
+    let (c, w) = (cpu(), std::time::Instant::now());
+    match scan::scan(&host) {
+        Ok(out) => println!(
+            "scan: {} libraries, {} native, cpu {:?}, wall {:?}",
+            out.libraries.len(),
+            out.native.len(),
+            cpu() - c,
+            w.elapsed()
+        ),
+        Err(e) => println!("scan failed: {e}"),
+    }
 }

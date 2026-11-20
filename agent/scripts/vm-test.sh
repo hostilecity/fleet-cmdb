@@ -54,7 +54,7 @@
 # Then what is in use (FR-2.6, VT-APPLICABILITY, scenario 309): test services listening on loopback and on
 # the VM's LAN address named by package and class, sshd on every address, the reboot flag null without
 # Debian's file and true with it, no address or port in the report, the agent's unit unchanged; then the
-# library scan enabled in the local config, its transient unit alone carrying CAP_SYS_PTRACE with no
+# library scan enabled in the local config, its transient unit carrying CAP_SYS_PTRACE alone with no
 # network, a library only a stopped service would use not listed, and one upgraded under a running
 # program stale.
 #
@@ -877,9 +877,11 @@ in_use_reported() {
         mkdir -p $SCAN_DROPIN && printf '%s\n' '[Service]' 'ExecStartPre=/bin/sleep 8' > $SCAN_DROPIN/hold.conf && systemctl daemon-reload"
     fresh_reports
     wait_until "the library scan unit to start" 120 vm_ok "systemctl is-active --quiet fleet-agent-library-scan || systemctl show -p ActiveState --value fleet-agent-library-scan | grep -q activating"
-    props=$(vm 'systemctl show -p CapabilityBoundingSet -p PrivateNetwork -p IPAddressDeny -p ProtectSystem -p NoNewPrivileges fleet-agent-library-scan')
+    props=$(vm 'systemctl show -p CapabilityBoundingSet -p PrivateNetwork -p IPAddressDeny -p ProtectSystem -p ProtectHome -p ProcSubset -p NoNewPrivileges fleet-agent-library-scan')
     echo "the scan unit while it runs: $(printf '%s' "$props" | tr '\n' ' ')"
-    printf '%s\n' "$props" | grep -qx 'CapabilityBoundingSet=cap_dac_read_search cap_sys_ptrace' || fail "the scan unit's capabilities: $props"
+    printf '%s\n' "$props" | grep -qx 'CapabilityBoundingSet=cap_sys_ptrace' || fail "the scan unit's capabilities: $props"
+    printf '%s\n' "$props" | grep -qx 'ProtectHome=yes' || fail "the scan unit can read home directories: $props"
+    printf '%s\n' "$props" | grep -qx 'ProcSubset=pid' || fail "the scan unit sees all of /proc: $props"
     printf '%s\n' "$props" | grep -qx 'PrivateNetwork=yes' || fail "the scan unit has a network: $props"
     printf '%s\n' "$props" | grep -qx 'ProtectSystem=strict' || fail "the scan unit can write the system: $props"
     no_ptrace_in_the_agent
@@ -891,6 +893,22 @@ in_use_reported() {
         || fail "fvt-lib, mapped by a running program, is not listed: $(in_use .in_use.libraries)"
     in_use '.in_use.libraries' | jq -e '[.[] | select(.package == "fvt-idlelib")] == []' > /dev/null \
         || fail "fvt-idlelib, used only by a stopped service, is listed"
+    in_use '.in_use.native' | jq -e 'index("fvt-idlelib") and index("fvt-lib") and (index("fvt-uselib") | not)' > /dev/null \
+        || fail "native is wrong (fvt-lib and fvt-idlelib ship a shared library, fvt-uselib only a Python script): $(in_use .in_use.native | head -c 600)"
+    in_use '.in_use.scanned_at | type == "string"' | grep -qx true || fail "no scanned_at"
+    echo "CPU: the scan unit $(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -o 'Consumed .*CPU time' | tail -n 1"); the agent since its start $(vm 'systemctl show -p CPUUsageNSec --value fleet-agent') ns"
+
+    # Asked for again within the hour (the heartbeat's report_request): the last scan is reused, not run again.
+    local first_scan scans
+    first_scan=$(in_use '.in_use.scanned_at')
+    scans=$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c 'Consumed' || true")
+    since=$(date +%s.%N)
+    set_plan '{"report_request": ["packages"]}'
+    wait_until "a package report on request" 120 packages_since
+    set_plan '{}'
+    [ "$(in_use '.in_use.scanned_at')" = "$first_scan" ] || fail "a report on request ran the scan again: $(in_use '.in_use.scanned_at'), first $first_scan"
+    [ "$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c 'Consumed' || true")" = "$scans" ] \
+        || fail "the scan unit ran again within the hour"
     vm_ok '! systemctl is-active --quiet fleet-agent-library-scan' || fail "the scan unit is still running"
 
     # Upgraded under the running program, which still maps the old file: stale.

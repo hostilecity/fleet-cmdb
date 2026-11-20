@@ -250,6 +250,18 @@ impl<'a> Ctx<'a> {
         self.host.list(std::path::Path::new(dir), max_entries)
     }
 
+    /// [`Host::head`], within the budget; refuses secret files.
+    pub fn head(&self, path: &str, bytes: usize) -> io::Result<Vec<u8>> {
+        self.in_time()?;
+        if host::is_secret_path(path) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refused: a secret file",
+            ));
+        }
+        self.host.head(std::path::Path::new(path), bytes)
+    }
+
     /// [`Host::socket_cgroups`], within the budget.
     pub fn socket_cgroups(&self, max: usize) -> io::Result<Vec<host::SocketCgroup>> {
         self.in_time()?;

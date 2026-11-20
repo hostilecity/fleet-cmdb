@@ -20,6 +20,8 @@ pub struct Socket {
     pub inode: u64,
     pub address: IpAddr,
     pub port: u16,
+    /// UDP (from `udp`, `udp6`), else TCP: matched against the type of a socket systemd holds.
+    pub udp: bool,
 }
 
 impl Socket {
@@ -63,6 +65,7 @@ pub fn parse(text: &[u8], udp: bool) -> Result<Vec<Socket>, String> {
                 inode,
                 address,
                 port,
+                udp,
             });
         }
     }
@@ -73,6 +76,10 @@ pub fn parse(text: &[u8], udp: bool) -> Result<Vec<Socket>, String> {
 /// the address in its own byte order (little-endian on x86_64, DEC-01), and the port as a number.
 fn endpoint(field: &str) -> Option<(IpAddr, u16)> {
     let (address, port) = field.split_once(':')?;
+    // Hex digits only, so the slices below fall on character boundaries.
+    if !address.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let port = u16::from_str_radix(port, 16).ok()?;
     let words = |hex: &str| -> Option<Vec<u32>> {
         (0..hex.len() / 8)

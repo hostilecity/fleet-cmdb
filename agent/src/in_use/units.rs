@@ -93,7 +93,7 @@ pub fn parse_show(output: &[u8], expected: usize) -> Result<HashMap<String, Vec<
 /// `{ path=/usr/sbin/sshd ; argv[]=/usr/sbin/sshd -D ; ignore_errors=no ; ... }`, one group per command.
 fn exec_paths(value: &str) -> Vec<String> {
     value
-        .split("path=")
+        .split("{ path=")
         .skip(1)
         .filter_map(|rest| {
             let path = rest.split(" ;").next().unwrap_or("").trim();
@@ -108,12 +108,15 @@ pub struct Activated {
     /// `None` for the wildcard address.
     pub address: Option<IpAddr>,
     pub port: u16,
+    /// `Datagram` (UDP), else `Stream` (TCP).
+    pub udp: bool,
     pub services: Vec<String>,
 }
 
-/// `systemctl list-sockets --full --no-legend --no-pager` output: `LISTEN UNIT ACTIVATES` per line.
-/// Lines that are not IP sockets (`/run/...`, netlink, vsock) are skipped; an activated name that is
-/// not a service name (a template) is left out, so that socket stays unnamed.
+/// `systemctl list-sockets --show-types --full --no-legend --no-pager` output: `LISTEN TYPE UNIT
+/// ACTIVATES` per line. Lines that are not IP stream or datagram sockets (`/run/...`, netlink, vsock,
+/// FIFOs) are skipped; an activated name that is not a service name (a template) is left out, so that
+/// socket stays unnamed.
 pub fn parse_list_sockets(output: &[u8]) -> Result<Vec<Activated>, String> {
     let text = std::str::from_utf8(output)
         .map_err(|_| "systemctl list-sockets printed something that is not UTF-8")?;
@@ -122,6 +125,11 @@ pub fn parse_list_sockets(output: &[u8]) -> Result<Vec<Activated>, String> {
         let mut fields = line.split_whitespace();
         let Some(listen) = fields.next() else {
             continue;
+        };
+        let udp = match fields.next() {
+            Some("Stream") => false,
+            Some("Datagram") => true,
+            _ => continue,
         };
         let _unit = fields.next();
         let services: Vec<String> = fields
@@ -148,6 +156,7 @@ pub fn parse_list_sockets(output: &[u8]) -> Result<Vec<Activated>, String> {
         out.push(Activated {
             address,
             port,
+            udp,
             services,
         });
     }

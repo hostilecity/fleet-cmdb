@@ -150,6 +150,14 @@ pub trait Host: Send + Sync {
     /// Standard output of the command.
     fn run(&self, command: &Command) -> Result<Vec<u8>, RunError>;
 
+    /// The first `bytes` bytes of a regular file, without following a symlink at the last component
+    /// (the library scan's ELF check, VT-A02). The default reads the file through [`Host::read`].
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        let mut all = self.read(path, 64 * 1024 * 1024)?;
+        all.truncate(bytes);
+        Ok(all)
+    }
+
     /// The listening TCP and bound UDP sockets (IPv4 and IPv6) the kernel's `sock_diag` netlink
     /// interface lists, with their cgroup ids. More than `max` is an error. Hosts that cannot answer
     /// (the test fakes, unless a test gives them sockets) say so.
@@ -218,6 +226,7 @@ enum Op {
     List,
     Sockets,
     Walk,
+    Head,
 }
 
 type Blocked = Arc<Mutex<HashSet<(Op, PathBuf)>>>;
@@ -330,6 +339,13 @@ impl Host for RealHost {
 
     fn run(&self, command: &Command) -> Result<Vec<u8>, RunError> {
         run(command)
+    }
+
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        if path.to_str().is_none_or(is_secret_path) {
+            return Err(refused());
+        }
+        self.bounded(Op::Head, path, move |path| fsx::read_head(path, bytes))
     }
 
     fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
