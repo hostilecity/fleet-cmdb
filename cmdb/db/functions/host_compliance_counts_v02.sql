@@ -47,10 +47,10 @@ AS $$
              count(*) FILTER (WHERE a.severity = 'medium')::integer AS medium,
              count(*) FILTER (WHERE a.severity = 'low')::integer AS low,
              count(*) FILTER (WHERE a.severity = 'unknown')::integer AS unknown,
-             count(*) FILTER (WHERE f.fixable)::integer AS fixable,
-             count(DISTINCT (f.package, f.architecture)) FILTER (WHERE f.fixable)::integer AS fix_packages,
+             count(*) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fixable,
+             count(DISTINCT (f.package, f.architecture)) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fix_packages,
              COALESCE(bit_or(CASE a.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 4 WHEN 'low' THEN 8 ELSE 16 END)
-                             FILTER (WHERE f.fixable), 0)::smallint AS fix_severities
+                             FILTER (WHERE f.last_fixed_version IS NOT NULL), 0)::smallint AS fix_severities
         FROM vulnerability_findings f
         JOIN advisories a ON a.id = f.advisory_id
        WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')

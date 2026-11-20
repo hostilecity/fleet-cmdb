@@ -91,14 +91,14 @@ module FleetBenchmark
         "vulnerabilities tab /hosts/:id/vulnerabilities (open findings for the chip, package groups, one page)" => lambda {
           findings = VulnerabilityFinding.with_details.where(host_id: package_host.id)
           findings.active.preload(:advisory).to_a
-          VulnerabilityFinding.where(host_id: package_host.id).group(:state, :fixable).count # the state and fix chips (#256)
+          VulnerabilityFinding.where(host_id: package_host.id).group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL)).count # the state and fix chips (#256)
           groups = HostFindingGroups.new(findings.joins(:advisory).preload(:advisory).where(state: %w[open reopened]), per_page: 10)
           HostFindingGroups.new(findings.joins(:advisory).preload(:advisory).where(state: %w[open reopened]), after: HostFindingGroups.cursor(groups.next, :offenders), per_page: 10) if groups.next
         },
         "vulnerabilities tab ?fix=available and ?fix=none (package groups, one page each)" => lambda {
           open = VulnerabilityFinding.with_details.where(host_id: package_host.id).joins(:advisory).preload(:advisory).where(state: %w[open reopened])
-          HostFindingGroups.new(open.where(fixable: true), per_page: 50)
-          HostFindingGroups.new(open.where(fixable: false), per_page: 50)
+          HostFindingGroups.new(open.with_fix, per_page: 50)
+          HostFindingGroups.new(open.without_fix, per_page: 50)
         },
         "CIS evaluation of one host (after a config snapshot)" => -> { CisEvaluation.evaluate!([ sample_host.id ]) },
         "vulnerability matching of one host (after a package snapshot)" => -> { VulnerabilityMatcher.match!([ package_host.id ]) },

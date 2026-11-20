@@ -32,9 +32,9 @@ class HostVulnerabilitiesController < ApplicationController
   def show
     load_evaluation
     findings = VulnerabilityFinding.with_details.where(host_id: @host.id)
-    # Counted on the findings alone, in one query: the details' joins add no rows (#254). The fix flag is NULL on
-    # resolved findings, true or false on active ones, so the same query gives the fix chips' counts (#256).
-    by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state, :fixable).count
+    # Counted on the findings alone, in one query: the details' joins add no rows (#254). Grouped by whether the stored
+    # fixed version is known too, which on an open or reopened finding is its fix (#256), for the fix chips.
+    by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL)).count
     count = ->(states, fixable = :any) { by_state.sum { |(state, flag), n| states.include?(state) && (fixable == :any || flag == fixable) ? n : 0 } }
     @state_counts = { "open" => count.(%w[open reopened]), "resolved" => count.(%w[resolved]) }
     @state_counts["all"] = @state_counts.values.sum
@@ -53,7 +53,7 @@ class HostVulnerabilitiesController < ApplicationController
       # text filters (T3), in one SQL count (review of #253, S6).
       @no_dsa_count = FindingTriage.no_dsa(findings.active.joins(:advisory), release: @triage_release, status: @triage_status).count
       scope = FindingTriage.no_dsa(scope, release: @triage_release, status: @triage_status) if @debian
-      scope = scope.where(fixable: @fix == "available") if @fix
+      scope = @fix == "available" ? scope.with_fix : scope.without_fix if @fix
     end
     @open_groups = (groups(scope.where(state: %w[open reopened]), :open) unless @state == "resolved")
     @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")

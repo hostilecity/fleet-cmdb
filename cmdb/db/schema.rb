@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_20_256001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -949,7 +949,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256001) do
     t.string "last_installed_version", limit: 256
     t.string "last_fixed_version", limit: 256
     t.string "last_ecosystem", limit: 64
-    t.virtual "fixable", type: :boolean, as: "\nCASE\n    WHEN ((state)::text <> 'resolved'::text) THEN (last_fixed_version IS NOT NULL)\n    ELSE NULL::boolean\nEND", stored: true
     t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
     t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
     t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
@@ -1261,10 +1260,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256001) do
                    count(*) FILTER (WHERE a.severity = 'medium')::integer AS medium,
                    count(*) FILTER (WHERE a.severity = 'low')::integer AS low,
                    count(*) FILTER (WHERE a.severity = 'unknown')::integer AS unknown,
-                   count(*) FILTER (WHERE f.fixable)::integer AS fixable,
-                   count(DISTINCT (f.package, f.architecture)) FILTER (WHERE f.fixable)::integer AS fix_packages,
+                   count(*) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fixable,
+                   count(DISTINCT (f.package, f.architecture)) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fix_packages,
                    COALESCE(bit_or(CASE a.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 4 WHEN 'low' THEN 8 ELSE 16 END)
-                                   FILTER (WHERE f.fixable), 0)::smallint AS fix_severities
+                                   FILTER (WHERE f.last_fixed_version IS NOT NULL), 0)::smallint AS fix_severities
               FROM vulnerability_findings f
               JOIN advisories a ON a.id = f.advisory_id
              WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')
@@ -1520,8 +1519,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256001) do
           END IF;
 
         -- vulnerability_findings (statement): a finding opened, reopened, or resolved, an open one moved, or an open one's
-        -- fix flag changed (v04, VT-FIXABLE #256: an advisory import that adds, moves to or from nothing, or removes a fixed
-        -- version writes it with no change of state).
+        -- fix appeared or disappeared (v04, VT-FIXABLE #256: an advisory import that adds or takes back a fixed version
+        -- writes last_fixed_version with no change of state; a fix moving from one version to another changes no count).
         ELSIF TG_TABLE_NAME = 'vulnerability_findings' THEN
           IF TG_OP = 'INSERT' THEN
             EXECUTE 'SELECT ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY ($1))' INTO host_ids USING open_states;
@@ -1534,7 +1533,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256001) do
                   FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
                  WHERE (o.state = ANY ($1) OR n.state = ANY ($1))
                    AND ((o.state = ANY ($1)) <> (n.state = ANY ($1)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id
-                        OR o.fixable IS DISTINCT FROM n.fixable))
+                        OR (o.last_fixed_version IS NULL) <> (n.last_fixed_version IS NULL)))
             $q$ INTO host_ids USING open_states;
           END IF;
         END IF;

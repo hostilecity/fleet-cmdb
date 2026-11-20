@@ -89,8 +89,8 @@ BEGIN
     END IF;
 
   -- vulnerability_findings (statement): a finding opened, reopened, or resolved, an open one moved, or an open one's
-  -- fix flag changed (v04, VT-FIXABLE #256: an advisory import that adds, moves to or from nothing, or removes a fixed
-  -- version writes it with no change of state).
+  -- fix appeared or disappeared (v04, VT-FIXABLE #256: an advisory import that adds or takes back a fixed version
+  -- writes last_fixed_version with no change of state; a fix moving from one version to another changes no count).
   ELSIF TG_TABLE_NAME = 'vulnerability_findings' THEN
     IF TG_OP = 'INSERT' THEN
       EXECUTE 'SELECT ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY ($1))' INTO host_ids USING open_states;
@@ -103,7 +103,7 @@ BEGIN
             FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
            WHERE (o.state = ANY ($1) OR n.state = ANY ($1))
              AND ((o.state = ANY ($1)) <> (n.state = ANY ($1)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id
-                  OR o.fixable IS DISTINCT FROM n.fixable))
+                  OR (o.last_fixed_version IS NULL) <> (n.last_fixed_version IS NULL)))
       $q$ INTO host_ids USING open_states;
     END IF;
   END IF;

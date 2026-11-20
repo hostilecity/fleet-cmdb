@@ -8,7 +8,7 @@
 #   (bytewise, "C" collation). The resolved list (rank: :severity) keeps the tab's earlier order, worst severity then
 #   the earliest first seen, since a resolved finding is not something to act on (review of #253, S3). Counts are of
 #   the findings shown, so the severity, text, and triage filters rank what they keep.
-# - Fixable: the finding's stored fix flag (VulnerabilityFinding#fixable, VT-FIXABLE #256): its fixed version is
+# - Fixable: the finding's stored fix (VulnerabilityFinding#fixable, VT-FIXABLE #256): its fixed version is
 #   known, that is, the advisory's affected range for the host's release (its ecosystem, such as Debian:13) that the
 #   installed version is in has a "fixed" event. Nothing in the data says whether that version is already in the
 #   host's repositories, so it is not checked. The summaries count the same flag, so the fleet pages agree.
@@ -130,7 +130,7 @@ class HostFindingGroups
 
   def aggregates
     Advisory::SEVERITIES.map { |severity| Arel.sql(VulnerabilityFinding.sanitize_sql([ "count(*) FILTER (WHERE advisories.severity = ?) AS #{severity}", severity ])) } +
-      [ Arel.sql("count(*) FILTER (WHERE vulnerability_findings.fixable) AS fixable"),
+      [ Arel.sql("count(*) FILTER (WHERE #{VulnerabilityFinding::FIX_SQL}) AS fixable"),
         Arel.sql("min(array_position(ARRAY['critical', 'high', 'medium', 'low', 'unknown']::varchar[], advisories.severity)) AS worst_rank"),
         Arel.sql("min(vulnerability_findings.first_seen_at) AS first_seen_at"),
         Arel.sql("vulnerability_findings.package"), Arel.sql("vulnerability_findings.architecture") ]
