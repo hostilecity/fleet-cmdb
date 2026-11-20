@@ -1,0 +1,73 @@
+<%# The exploitation signal panels (VT-D03, ADR 0032; approved mockup docs/mockups/vuln-triage/data-sources.html): CISA KEV and
+    FIRST EPSS, in the trimmed style of the tracker panel (#148): status, problems, latest activity. Stale or turned-off data is still
+    used by the triage rules (B1), and the panels say so. Only each source's host and path are shown. No upload and no button of their
+    own: the advisory feed's Refresh now refreshes them. locals: signals (SignalDataSources), feed_configured. %>
+<% signals.panels.each do |panel| %>
+  <% kev = panel.kev? %>
+  <% status = panel.status %>
+  <% id = panel.signal %>
+  <section class="sheet spaced" aria-labelledby="<%= id %>" id="<%= id %>_panel">
+    <h2 id="<%= id %>"><%= kev ? "Known exploited vulnerabilities (CISA KEV)" : "Exploit prediction (FIRST EPSS)" %></h2>
+    <% if kev %>
+      <p class="measure">CISA's list of vulnerabilities with evidence of exploitation in the wild. Used by rule N1 and the "known exploited" marks. Public domain (CC0).</p>
+    <% else %>
+      <p class="measure">FIRST's daily estimate of the probability that a CVE sees exploitation activity in the next 30 days. Used by rule N2 (at or above <%= signal_percent(Signals.config.epss_enter) %>) and shown beside findings. Free to use with attribution: <q id="epss_attribution"><%= Signals::EPSS_ATTRIBUTION %></q>.</p>
+    <% end %>
+    <% if !panel.configured? %>
+      <div class="notice info" role="status" id="<%= id %>_off"><strong>Turned off on this server.</strong>
+        <p><%= status.never? ? "Nothing has been imported, so no finding is checked against it." : "The last data, #{signal_when(status)}, is kept and still used; it shows as out of date." %>
+          Its data changes only when a file is imported on the server.</p></div>
+    <% elsif status.stale %>
+      <div class="notice info" role="status" id="<%= id %>_stale">
+        <% if status.never? %>
+          <strong>Never imported on this server.</strong>
+          <p>No finding is checked against it yet<%= kev ? ", and findings Debian rates unimportant stay in Low risk rather than Ignorable until KEV data exists" : "" %>.
+        <% else %>
+          <strong>Out of date, still used.</strong>
+          <p>Last refreshed <%= seen_ago(status.updated_at) %> (<%= utc(status.updated_at) %>)<%= ", #{signal_when(status)}" if status.score_date %>. Triage keeps using this data; no finding moves because the source is late.
+        <% end %>
+          <% if panel.failed.positive? %><%= panel.failed == 1 ? "The last refresh failed" : "The last #{panel.failed} refreshes failed" %> (see the <%= link_to "failed jobs", failed_jobs_path %>).<% end %></p></div>
+    <% end %>
+    <% if (held = panel.held) %>
+      <div class="notice" role="status" id="<%= id %>_held"><strong>The last refresh was held back.</strong>
+        <p><%= signal_import_summary(held) %>, more than <%= number_to_percentage(Advisories.config.withdraw_share * 100, precision: 0) %>. The previous data is kept. If the source really dropped them, import again with <code>ALLOW_DROPS=<%= held.counts["removed"] || held.counts["dropped"] %></code>.</p></div>
+    <% end %>
+    <dl class="facts tight">
+      <dt>Freshness</dt><dd id="<%= id %>_freshness"><%= signal_freshness_value(panel) %></dd>
+      <% if kev %>
+        <dt>Entries</dt><dd><%= number_with_delimiter(panel.entries) %> <%= "CVE".pluralize(panel.entries) %>, of which <%= number_with_delimiter(panel.matching) %> <%= panel.matching == 1 ? "matches" : "match" %> open findings in this fleet</dd>
+      <% else %>
+        <dt>Entries</dt><dd>Only CVEs named by advisories in the database are kept: <%= number_with_delimiter(panel.entries) %><% if panel.latest %> of <%= number_with_delimiter(panel.latest.counts["rows"].to_i) %> in the last file<% end %>. <%= number_with_delimiter(panel.high) %> at or above the threshold, of which <%= number_with_delimiter(panel.high_matching) %> <%= panel.high_matching == 1 ? "matches" : "match" %> open findings</dd>
+        <% if panel.latest %>
+          <dt>Crossed the threshold</dt><dd><%= number_with_delimiter(panel.latest.counts["rose"].to_i) %> rose to <%= signal_percent(Signals.config.epss_enter) %> or more; <%= number_with_delimiter(panel.latest.counts["fell"].to_i) %> fell below <%= signal_percent(Signals.config.epss_leave) %> (scores of <%= panel.latest.score_date&.iso8601 %>)</dd>
+        <% end %>
+      <% end %>
+      <% if panel.configured? %>
+        <dt>Source</dt><dd><span class="mono"><%= panel.source %></span><% if kev %><% if panel.source.start_with?("raw.githubusercontent.com/cisagov/") %> (CISA's mirror)<% end %> · every 6 hours with the advisory refresh, conditional request<% else %> · daily at 14:30 UTC · redirects followed only to the hosts allowed in the configuration<% end %><% if panel.next_refresh %> · next in <%= distance_of_time_in_words(Time.current, panel.next_refresh) %><% end %></dd>
+      <% end %>
+    </dl>
+    <h3 id="<%= id %>_imports">Latest imports</h3>
+    <% if panel.imports.empty? %>
+      <p class="muted" id="<%= id %>_no_imports">Nothing imported yet.</p>
+    <% else %>
+      <div class="table-wrap"><table id="<%= id %>_import_list"><caption class="visually-hidden">Latest <%= kev ? "KEV" : "EPSS" %> imports</caption>
+        <thead><tr><th scope="col">When (UTC)</th><th scope="col">How</th><th scope="col">Outcome</th><th scope="col">Changes</th><th scope="col">By</th></tr></thead>
+        <tbody>
+        <% panel.imports.each do |import| %>
+          <tr id="<%= dom_id(import) %>">
+            <td><%= import.finished_at.utc.strftime("%Y-%m-%d %H:%M") %></td>
+            <td><%= signal_import_how(import) %></td>
+            <td><%= signal_import_lamp(import) %></td>
+            <td><%= signal_import_summary(import) %></td>
+            <td><%= signal_import_by(import) %></td>
+          </tr>
+        <% end %>
+        </tbody>
+      </table></div>
+    <% end %>
+    <p class="state-note"><% if kev %>A file that would remove more than <%= number_to_percentage(Advisories.config.withdraw_share * 100, precision: 0) %> of the entries is held back, as the other sources are.<% else %>A finding enters Needs attention at <%= signal_percent(Signals.config.epss_enter) %> and leaves below <%= signal_percent(Signals.config.epss_leave) %>, so a score that wobbles around the line does not move findings back and forth every day.<% end %>
+      <% if feed_configured && panel.configured? %><strong>Refresh now</strong> above refreshes it too.<% end %>
+      Offline: <code>bin/rails signals:<%= id %>_import FILE=...</code>.</p>
+  </section>
+<% end %>
+<p class="muted small" id="signals_note">Known exploited and exploit prediction data are stale after <%= signal_hours %>. Stale or turned off, the last data keeps being used and is shown as out of date; nothing is rewritten. Neither source ever opens, resolves, or reopens a finding, or changes its severity. How they work: <span class="mono">docs/operations/health-and-jobs.md</span>, "Exploitation signals".</p>

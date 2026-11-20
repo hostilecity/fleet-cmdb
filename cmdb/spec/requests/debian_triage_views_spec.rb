@@ -102,7 +102,8 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       expect(row.at_css(".triage q").text).to eq("Minor issue")
       expect(row.at_css(".triage .lamp, .triage .sev")).to be_nil # no lamp and no severity colour (T1)
       expect(page.at_css("#open_heading").text.squish).to eq("Open findings 1: 1 high")
-      expect(page.at_css("#advisory_freshness").text.squish).to eq("Advisory data last updated: Debian:13 less than 5 seconds ago. Debian's triage for trixie: less than 5 seconds ago. Data sources")
+      expect(page.at_css("#advisory_freshness").text.squish).to eq("Advisory data last updated: Debian:13 less than 5 seconds ago. Debian's triage for trixie: less than 5 seconds ago. Data sources " \
+                                                                   "Known exploited (CISA KEV): not imported yet. Exploit prediction (FIRST EPSS): not imported yet.")
       expect(page.at_css("#triage_freshness a")["href"]).to eq("/data-sources#tracker")
       expect(page.at_css("#triage_legend").text.squish).to eq(
         "Debian: … lines are the Debian security team's own note for this host's release (trixie), from the Debian Security Tracker. They are shown beside the finding " \
@@ -467,10 +468,10 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     it "says in the refresh confirmation, in one sentence, that Debian's triage is refreshed right after, and attributes it to the operator (T2)" do
       get "/data-sources/refresh"
       sentence = "Debian's triage data (the Debian Security Tracker) is refreshed right after it; if that fails, the advisory data is still imported."
-      expect(page.at_css("#refresh_dialog p").text.squish).to end_with(sentence)
+      expect(page.at_css("#refresh_dialog p").text.squish).to include(sentence)
       post "/data-sources/refresh"
-      expect(flash[:notice]).to end_with("Debian's triage is refreshed right after it.")
-      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.with(attempt_id: AdvisoryRefreshAttempt.sole.id, triage: true)
+      expect(flash[:notice]).to include("Debian's triage is refreshed right after it.")
+      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.with(attempt_id: AdvisoryRefreshAttempt.sole.id, triage: true, signals: true)
 
       TriageImport.create!(tracker: "debian", origin: "feed", source: "security-tracker.example.org/tracker/data/json", operator:, state: "failed",
                            reason: "the Debian Security Tracker at security-tracker.example.org answered HTTP 503", started_at: Time.current, finished_at: Time.current)
@@ -540,8 +541,9 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     expect(queries).to eq(tab.call(small))
     # +1: the host's liveness, in its own table since #192; +1: the advisories preloaded beside the details (#196); +2: the
     # package groups (HostFindingGroups) and the chip's count, in place of loading every open finding (#253); +1: the
-    # operator's inventory interval, for the reports tile's on-schedule headline (#255).
-    expect(queries).to be <= 24 + 9
+    # operator's inventory interval, for the reports tile's on-schedule headline (#255); +1: KEV's and EPSS's freshness in
+    # the freshness line (#257).
+    expect(queries).to be <= 24 + 10
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
     expect(filtered).to eq(queries) # the chip's filter is a condition in the same statements
@@ -550,7 +552,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
 
     package = ->(host) { count_queries { get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "acme1" } } }
     expect(package.call(large)).to eq(package.call(small))
-    expect(package.call(large)).to be <= 24 + 8 # +1: the host's set's chunk ids, before its package's entries (#196); +1: the inventory interval (#255)
+    expect(package.call(large)).to be <= 24 + 9 # +1: the host's set's chunk ids, before its package's entries (#196); +1: the inventory interval (#255); +1: KEV's and EPSS's freshness (#257)
     puts format("\n  500 findings: tab %d queries, %.0f ms (best of 3); package page %d queries", queries, timings.min * 1000, package.call(large)) if ENV["SHOW_TIMINGS"]
   end
 end
