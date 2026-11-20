@@ -203,7 +203,7 @@
           ]
         },
         "libraries": {
-          "description": "With `library_scan: ran`, every binary package with a file mapped by a running process, once, sorted by name; `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). Interpreted code (Python, Perl, Ruby, Node, Java) is read, not mapped, so it is listed only when something of it is mapped. `null` otherwise.",
+          "description": "With `library_scan: ran`, every binary package that lists a file mapped by a running process (each package that lists it, for a diverted or shared file), once, sorted by name; `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). Interpreted code (Python, Perl, Ruby, Node, Java) is read, not mapped, so it is listed only when something of it is mapped. `null` otherwise.",
           "type": [
             "array",
             "null"
@@ -228,7 +228,7 @@
           }
         },
         "native": {
-          "description": "With `library_scan: ran`, the packages the scan can judge: those that ship at least one ELF executable or shared library and no interpreted code (no script in a `bin` directory, no Python, Perl, Ruby, JavaScript, Java, PHP, Lua, or Tcl file outside `/usr/share/doc`), and whose code files the scan could read. Only a package listed here and absent from `libraries` may be called idle. Each once, sorted. `null` otherwise.",
+          "description": "With `library_scan: ran`, the packages the scan can judge: the packages that ship at least one ELF executable or shared library under `/usr`, `/bin`, `/sbin`, or `/lib*`, no ELF file elsewhere (code under `/opt` is not judged), no file ending in `.py`, `.pyc`, `.pyo`, `.pyz`, `.pm`, `.pl`, `.rb`, `.js`, `.mjs`, `.cjs`, `.jar`, `.class`, `.war`, `.beam`, `.php`, `.lua`, `.tcl`, `.sh`, or `.bash` outside `/usr/share/doc`, and no `#!` script anywhere (a file with an execute bit, a file named like code, or the target of one of its symlinks), and all of whose files the scan could read. A scan that runs out of time fails rather than judge part of a package. Only a package listed here and absent from `libraries` may be called idle. Each once, sorted. `null` otherwise.",
           "type": [
             "array",
             "null"

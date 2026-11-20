@@ -14,16 +14,19 @@
 //! (`--pipe`), so it needs no writable path at all. It runs at most once an hour, whatever asks for a
 //! report ([`Memo`], owner decision 2026-11-20); reports in between carry the last result and its time.
 //!
-//! The scan ([`main`]) reads at most [`MAX_PROCESSES`] processes' maps and [`MAX_PATHS`] distinct mapped
-//! files under the package-managed prefixes (`/usr`, `/bin`, `/sbin`, `/lib*`), maps them to packages
-//! through dpkg's file lists ([`super::owners`]), and prints the package names with a `stale` flag.
+//! The scan ([`main`]) reads at most [`MAX_PROCESSES`] processes' maps, [`MAX_PATHS`] distinct mapped
+//! files under the package-managed prefixes (`/usr`, `/bin`, `/sbin`, `/lib*`) and [`MAX_OTHER_PATHS`]
+//! elsewhere, maps every one to each package that lists it ([`super::owners`]; a diverted file marks
+//! both), and prints the package names with a `stale` flag. Within its 25 s budget, or it fails.
 //!
 //! **What it can prove (owner decision 2026-11-20).** Python, Perl, Ruby, Node, and Java read their code
 //! with `read(2)` rather than mapping it, so a package of such code can be in use with nothing of it in
 //! any process's maps. The scan therefore also lists `native`: the packages it can judge, those that ship
-//! at least one ELF executable or shared library and no interpreted code (no script in a `bin` directory,
-//! no file with a [`INTERPRETED`] extension), and none of whose code files it could not read. Only a
-//! package in `native` and not in `libraries` may be called idle. Nothing else leaves the scan: no paths,
+//! at least one ELF executable or shared library under the package-managed prefixes, no ELF file outside
+//! them (code under `/opt` is not judged), no file with an [`INTERPRETED`] extension, and no script
+//! (`#!`) anywhere: not as a file with an execute bit, not as a file named like code, and not as the
+//! target of one of its symlinks ([`classify`]). A package with a file the scan could not read or
+//! judge is left out. Only a package in `native` and not in `libraries` may be called idle. Nothing else leaves the scan: no paths,
 //! no process ids.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -230,6 +233,12 @@ impl Host for ScanHost {
     fn head(&self, path: &std::path::Path, bytes: usize) -> std::io::Result<Vec<u8>> {
         crate::fsx::read_head(path, bytes)
     }
+    fn inspect(&self, path: &std::path::Path) -> std::io::Result<crate::facts::host::Inspect> {
+        crate::facts::host::Inspect::of(path)
+    }
+    fn resolve(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+        std::fs::canonicalize(path)
+    }
 }
 
 /// `fleet-agent library-scan`: run by the transient unit only. Prints the result on standard output.
@@ -257,19 +266,25 @@ pub fn main() -> ExitCode {
 /// File name endings of interpreted code, which runs without being mapped.
 pub const INTERPRETED: &[&str] = &[
     ".py", ".pyc", ".pyo", ".pyz", ".pm", ".pl", ".rb", ".js", ".mjs", ".cjs", ".jar", ".class",
-    ".war", ".php", ".lua", ".tcl",
+    ".war", ".beam", ".php", ".lua", ".tcl", ".sh", ".bash",
 ];
 
-/// Where dpkg-managed code lives. Mapped files elsewhere (a user's home, `/tmp`, `/srv`) belong to no
-/// package, so they are not counted toward [`MAX_PATHS`].
+/// Most mapped files outside the package-managed prefixes (a user's home, `/tmp`, `/opt`, `/srv`): looked
+/// up too, so a package under `/opt` that a process maps is in `libraries` (review of #268, B1), but kept
+/// apart from [`MAX_PATHS`], so files a user maps cannot push the package-managed ones out. Over it the
+/// scan fails rather than guess.
+pub const MAX_OTHER_PATHS: usize = 50_000;
+
+/// Where dpkg-managed code normally lives: the scan judges native code only there.
 fn package_managed(path: &str) -> bool {
     ["/usr/", "/bin/", "/sbin/", "/lib"]
         .iter()
         .any(|prefix| path.starts_with(prefix))
 }
 
-/// A file a package ships that could be native code: anything in a `bin`, `sbin`, or `libexec`
-/// directory, or a shared library (`*.so`, `*.so.*`).
+/// A file a package ships that could be native code by its name: anything in a `bin`, `sbin`, or
+/// `libexec` directory, or a shared library (`*.so`, `*.so.*`). Files with an execute bit are looked at
+/// wherever they are ([`classify`]).
 fn code_candidate(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or("");
     path.contains("/bin/")
@@ -284,9 +299,14 @@ fn interpreted(path: &str) -> bool {
     !path.starts_with("/usr/share/doc/") && INTERPRETED.iter().any(|end| path.ends_with(end))
 }
 
-/// The scan itself, on any host.
+/// The scan itself, on any host, within [`BUDGET`].
 pub fn scan(host: &dyn Host) -> Result<Output, String> {
-    let ctx = Ctx::new(host, BUDGET);
+    scan_within(host, BUDGET)
+}
+
+/// [`scan`] with another budget (the tests).
+pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> {
+    let ctx = Ctx::new(host, budget);
     let pids: Vec<String> = ctx
         .list("/proc", 1_000_000)
         .map_err(|e| crate::facts::io_reason("/proc", &e))?
@@ -299,8 +319,9 @@ pub fn scan(host: &dyn Host) -> Result<Output, String> {
             pids.len()
         ));
     }
-    // Path -> mapped deleted (stale) by any process.
+    // Path -> mapped deleted (stale) by any process, and how many of them are package-managed.
     let mut mapped: BTreeMap<String, bool> = BTreeMap::new();
+    let (mut managed, mut other) = (0usize, 0usize);
     for pid in &pids {
         let path = format!("/proc/{pid}/maps");
         let bytes = match ctx.read(&path, MAX_MAPS_BYTES) {
@@ -315,50 +336,68 @@ pub fn scan(host: &dyn Host) -> Result<Output, String> {
             Err(e) => return Err(crate::facts::io_reason(&path, &e)),
         };
         for (file, deleted) in parse_maps(&bytes) {
-            if package_managed(&file) {
-                *mapped.entry(file).or_insert(false) |= deleted;
+            let entry = mapped.entry(file.clone());
+            if matches!(entry, std::collections::btree_map::Entry::Vacant(_)) {
+                if package_managed(&file) {
+                    managed += 1;
+                } else {
+                    other += 1;
+                }
             }
+            *entry.or_insert(false) |= deleted;
         }
-        if mapped.len() > MAX_PATHS {
+        if managed > MAX_PATHS {
             return Err(format!(
-                "processes map more than {MAX_PATHS} files, more than the scan reads"
+                "processes map more than {MAX_PATHS} files under /usr, /bin, /sbin, and /lib, more than the scan reads"
+            ));
+        }
+        if other > MAX_OTHER_PATHS {
+            return Err(format!(
+                "processes map more than {MAX_OTHER_PATHS} files elsewhere, more than the scan reads"
             ));
         }
     }
 
-    // One pass over dpkg's file lists: the owners of the mapped files, and each package's code files.
+    // One pass over dpkg's file lists: every package that lists a mapped file (a diverted or shared
+    // file marks each of them, review of #268, S7), and each package's files when it may be native.
     let wanted: HashSet<String> = mapped.keys().cloned().collect();
     let lookup = super::owners::lookup(&wanted);
-    let mut owners = HashMap::new();
-    let mut not_native: HashSet<String> = HashSet::new();
-    let mut candidates: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut owners: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut files_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
     super::owners::each_list(&ctx, |package, lines| {
+        let mut files = Vec::new();
+        let mut interpreted_code = false;
+        let mut candidate = false;
         for line in lines {
-            super::owners::note(&lookup, line, package, &mut owners);
-            if interpreted(line) {
-                not_native.insert(package.to_owned());
-            } else if code_candidate(line) {
-                candidates
-                    .entry(package.to_owned())
-                    .or_default()
-                    .push(line.to_owned());
+            if let Some(originals) = lookup.get(line) {
+                for original in originals {
+                    owners
+                        .entry((*original).clone())
+                        .or_default()
+                        .insert(package.to_owned());
+                }
             }
+            interpreted_code |= interpreted(line);
+            candidate |= code_candidate(line);
+            if !interpreted_code && line.starts_with('/') && line != "/." {
+                files.push(line.to_owned());
+            }
+        }
+        if candidate && !interpreted_code {
+            files_of.insert(package.to_owned(), files);
         }
         true
     })?;
     let mut native = BTreeSet::new();
-    for (package, files) in candidates {
-        if not_native.contains(&package) {
-            continue;
-        }
-        if judge(&ctx, &files) == Some(true) {
+    for (package, files) in files_of {
+        if classify(&ctx, &files, budget)? == Some(true) {
             native.insert(package);
         }
     }
 
     let mut packages: BTreeMap<String, bool> = BTreeMap::new();
     for (file, deleted) in mapped {
-        if let Some(package) = owners.get(&file) {
+        for package in owners.get(&file).into_iter().flatten() {
             *packages.entry(package.clone()).or_insert(false) |= deleted;
         }
     }
@@ -374,21 +413,62 @@ pub fn scan(host: &dyn Host) -> Result<Output, String> {
     })
 }
 
-/// Whether a package's code files are native only: `Some(true)` with an ELF file and no script,
-/// `Some(false)` with a script (`#!`) or no ELF file at all, `None` when a code file could not be read
-/// (it cannot be judged). Directories, symlinks (alternatives), and files gone meanwhile are skipped.
-fn judge(ctx: &Ctx, files: &[String]) -> Option<bool> {
+/// Whether a package's files are native code only (owner decision 2026-11-20, review of #268):
+///
+/// - `Some(true)`: at least one ELF file under the package-managed prefixes, and no script;
+/// - `Some(false)`: a script (`#!`) anywhere, as a file with an execute bit, a file named like code, or
+///   the target of one of its symlinks; an ELF file outside those prefixes (`/opt`, B1); or no ELF file;
+/// - `None`: something could not be read or judged (permission denied, an I/O error): not provable.
+///
+/// Only a missing file, a directory, or a dangling symlink is skipped. `Err` when the scan's budget ran
+/// out: the scan then fails rather than report a partial judgement as complete (B2).
+fn classify(ctx: &Ctx, files: &[String], limit: Duration) -> Result<Option<bool>, String> {
+    use crate::facts::host::Inspect;
+    let budget = || {
+        format!(
+            "the scan ran out of its {} second budget while judging native code",
+            limit.as_secs()
+        )
+    };
+    let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
     let mut elf = false;
     for file in files {
-        match ctx.head(file, 4) {
-            Ok(head) if head == b"\x7fELF" => elf = true,
-            Ok(head) if head.starts_with(b"#!") => return Some(false),
+        let target = match ctx.inspect(file) {
+            Ok(Inspect::File(executable)) => {
+                if !(executable && !file.starts_with("/usr/share/doc/")) && !code_candidate(file) {
+                    continue;
+                }
+                file.clone()
+            }
+            Ok(Inspect::Symlink) => match ctx.resolve(file) {
+                Ok(target) => target,
+                Err(e) if gone(&e) => continue,
+                Err(_) if ctx.out_of_time() => return Err(budget()),
+                Err(_) => return Ok(None),
+            },
+            Ok(Inspect::Directory) => continue,
+            Ok(Inspect::Other) => return Ok(None),
+            Err(e) if gone(&e) => continue,
+            Err(_) if ctx.out_of_time() => return Err(budget()),
+            Err(_) => return Ok(None),
+        };
+        let followed = target != *file;
+        match ctx.head(&target, 4) {
+            Ok(head) if head.starts_with(b"#!") => return Ok(Some(false)),
+            Ok(head) if head == b"\x7fELF" && !package_managed(&target) => return Ok(Some(false)),
+            Ok(head) if head == b"\x7fELF" && !followed => elf = true,
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
-            Err(_) => {}
+            Err(e) if gone(&e) => {}
+            // A symlink to a directory, or to something that is not a regular file.
+            Err(e) if followed && e.kind() == std::io::ErrorKind::Other => {}
+            Err(_) if ctx.out_of_time() => return Err(budget()),
+            Err(_) => return Ok(None),
         }
     }
-    Some(elf)
+    if ctx.out_of_time() {
+        return Err(budget());
+    }
+    Ok(Some(elf))
 }
 
 /// The files of one `/proc/<pid>/maps`: `address perms offset dev inode path`, the path from the sixth

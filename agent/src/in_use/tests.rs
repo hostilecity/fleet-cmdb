@@ -20,6 +20,10 @@ struct TestHost {
     exec: HashMap<String, String>,
     /// Paths whose reads are refused (permission denied).
     denied: std::collections::HashSet<String>,
+    /// Files with an execute bit.
+    executables: std::collections::HashSet<String>,
+    /// Symlinks: path -> target (absolute).
+    symlinks: HashMap<String, String>,
     log: Mutex<Vec<String>>,
 }
 
@@ -94,6 +98,46 @@ impl Host for TestHost {
             .get(&first)
             .cloned()
             .unwrap_or(Err(RunError::NotInstalled(first)))
+    }
+    fn inspect(&self, path: &Path) -> io::Result<crate::facts::host::Inspect> {
+        use crate::facts::host::Inspect;
+        let path = path.to_string_lossy().into_owned();
+        if self.denied.contains(&path) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        if self.symlinks.contains_key(&path) {
+            return Ok(Inspect::Symlink);
+        }
+        if self.files.contains_key(&path) {
+            return Ok(Inspect::File(self.executables.contains(&path)));
+        }
+        if self
+            .files
+            .keys()
+            .any(|f| f.starts_with(&format!("{path}/")))
+        {
+            return Ok(Inspect::Directory);
+        }
+        Err(io::ErrorKind::NotFound.into())
+    }
+    fn resolve(&self, path: &Path) -> io::Result<std::path::PathBuf> {
+        let mut path = path.to_string_lossy().into_owned();
+        for _ in 0..8 {
+            match self.symlinks.get(&path) {
+                Some(target) => path = target.clone(),
+                None => break,
+            }
+        }
+        if self.files.contains_key(&path)
+            || self
+                .files
+                .keys()
+                .any(|f| f.starts_with(&format!("{path}/")))
+        {
+            Ok(path.into())
+        } else {
+            Err(io::ErrorKind::NotFound.into())
+        }
     }
     fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
         let sockets = self
@@ -405,7 +449,8 @@ fn only_fixed_commands_run_and_unit_names_follow_a_double_dash() {
         .collect();
     assert_eq!(runs.len(), 3, "{runs:?}");
     assert!(
-        runs[0].starts_with("run /usr/bin/systemctl list-sockets"),
+        runs[0]
+            == "run /usr/bin/systemctl list-sockets --all --show-types --full --no-legend --no-pager",
         "{runs:?}"
     );
     assert!(
@@ -894,6 +939,61 @@ fn a_socket_systemd_holds_is_matched_by_protocol_port_and_address() {
     );
 }
 
+/// `systemctl list-sockets --all --show-types --full --no-legend --no-pager` on Debian 13 (systemd 257),
+/// with a socket-activated SSH on every address and a CUPS one on loopback, as systemd prints it.
+const REAL_LIST_SOCKETS: &str = "\
+/dev/log                        Datagram         systemd-journald-dev-log.socket systemd-journald.service
+/run/dbus/system_bus_socket     Stream           dbus.socket                     dbus.service
+/run/initctl                    FIFO             systemd-initctl.socket          systemd-initctl.service
+/run/systemd/journal/socket     Datagram         systemd-journald.socket         systemd-journald.service
+/run/systemd/journal/stdout     Stream           systemd-journald.socket         systemd-journald.service
+/run/udev/control               SequentialPacket systemd-udevd-control.socket    systemd-udevd.service
+127.0.0.1:631                   Stream           cups.socket                     cups.service
+[::]:22                         Stream           ssh.socket                      ssh.service
+audit 1                         Netlink          systemd-journald-audit.socket   systemd-journald.service
+kobject-uevent 1                Netlink          systemd-udevd-kernel.socket     systemd-udevd.service
+";
+
+#[test]
+fn real_list_sockets_output_names_socket_activated_services() {
+    // Review of #268, S1: the TYPE column is there only with --show-types.
+    let found = units::parse_list_sockets(REAL_LIST_SOCKETS.as_bytes()).unwrap();
+    assert_eq!(found.len(), 2, "{found:?}");
+    let ssh = Socket {
+        inode: 1,
+        address: "::".parse().unwrap(),
+        port: 22,
+        udp: false,
+    };
+    let cups = Socket {
+        inode: 2,
+        address: "127.0.0.1".parse().unwrap(),
+        port: 631,
+        udp: false,
+    };
+    assert_eq!(
+        match_activated(&ssh, &found),
+        Owner::Service("ssh.service".into())
+    );
+    assert_eq!(
+        match_activated(&cups, &found),
+        Owner::Service("cups.service".into())
+    );
+    // The same lines without --show-types name nothing: the agent must ask for the column.
+    let without: String = REAL_LIST_SOCKETS
+        .lines()
+        .map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            format!("{} {}\n", f[0], f[f.len() - 2..].join(" "))
+        })
+        .collect();
+    assert!(
+        units::parse_list_sockets(without.as_bytes())
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn list_sockets_lines_without_a_known_type_are_skipped() {
     let found = units::parse_list_sockets(
@@ -909,6 +1009,17 @@ fn a_cut_short_sock_diag_dump_is_an_error() {
     let message =
         netlink::parse(&header(3, 1, &(-libc::EINTR).to_ne_bytes()), 1, &mut found).unwrap_err();
     assert!(message.contains("ended early"), "{message}");
+}
+
+#[test]
+fn a_multibyte_character_across_a_word_boundary_is_an_error_not_a_panic() {
+    // Review of #268, N2: 32 bytes, with the 8th and 9th in one character, so slicing would panic.
+    let address = format!("0000000\u{e9}{}", "0".repeat(23));
+    assert_eq!(address.len(), 32);
+    let line = format!(
+        "{TCP_HEADER}   0: {address}:0016 00000000000000000000000000000000:0000 0A 0:0 0:0 0 0 0 1\n"
+    );
+    assert!(sockets::parse(line.as_bytes(), false).is_err());
 }
 
 #[test]
@@ -1124,8 +1235,9 @@ fn only_native_code_packages_can_be_judged() {
         )
         .file(
             "/var/lib/dpkg/info/secret.list",
-            "/usr/lib/libsecret.so.0\n",
+            "/usr/lib/libsecret-ok.so.0\n/usr/lib/libsecret.so.0\n",
         )
+        .file("/usr/lib/libsecret-ok.so.0", "\x7fELF....")
         .file("/usr/lib/mixed/libm.so.1", "\x7fELF....")
         .file("/usr/bin/scripted", "#!/bin/sh\nexit 0\n")
         .file("/usr/lib/libscripted.so.1", "\x7fELF....")
@@ -1153,24 +1265,217 @@ fn only_native_code_packages_can_be_judged() {
 }
 
 #[test]
-fn only_package_managed_files_count_toward_the_limit() {
+fn package_managed_files_and_other_files_have_limits_of_their_own() {
     let mut host = scan_host();
-    let many: String = (0..=scan::MAX_PATHS)
-        .map(|i| format!("7f00-7f01 r--p 0 fe:01 1 /home/user/data/{i}\n"))
-        .collect();
-    host.files
-        .insert("/proc/812/maps".into(), many.into_bytes());
-    assert!(
-        scan::scan(&host).is_ok(),
-        "files outside the package-managed prefixes are not counted"
+    let maps = |prefix: &str, n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|i| format!("7f00-7f01 r--p 0 fe:01 1 {prefix}/{i}.so\n"))
+            .collect::<String>()
+            .into_bytes()
+    };
+    // As many other files as allowed do not push package-managed ones out, and the reverse.
+    let mut both = maps("/home/user/data", scan::MAX_OTHER_PATHS);
+    both.extend(maps("/usr/lib/x", scan::MAX_PATHS - 10));
+    host.files.insert("/proc/812/maps".into(), both);
+    assert!(scan::scan(&host).is_ok());
+    host.files.insert(
+        "/proc/812/maps".into(),
+        maps("/home/user/data", scan::MAX_OTHER_PATHS + 1),
     );
-    let many: String = (0..=scan::MAX_PATHS)
-        .map(|i| format!("7f00-7f01 r--p 0 fe:01 1 /usr/lib/x/{i}.so\n"))
-        .collect();
-    host.files
-        .insert("/proc/812/maps".into(), many.into_bytes());
     let message = scan::scan(&host).unwrap_err();
-    assert!(message.contains("50000"), "{message}");
+    assert!(message.contains("50000 files elsewhere"), "{message}");
+    host.files.insert(
+        "/proc/812/maps".into(),
+        maps("/usr/lib/x", scan::MAX_PATHS + 1),
+    );
+    let message = scan::scan(&host).unwrap_err();
+    assert!(message.contains("50000 files under /usr"), "{message}");
+}
+
+#[test]
+fn a_package_with_code_under_opt_is_never_native_and_is_named_when_mapped() {
+    // Review of #268, B1: a vendor agent under /opt ran while it looked idle.
+    let mut host = scan_host()
+        .file(
+            "/var/lib/dpkg/info/vendor-agent.list",
+            "/opt/vendor/bin/agentd\n/usr/lib/libvendor.so.1\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/vendor-idle.list",
+            "/opt/idle/lib/libidle.so\n/usr/lib/libvidle.so.1\n",
+        )
+        .file("/opt/vendor/bin/agentd", "\x7fELF....")
+        .file("/opt/idle/lib/libidle.so", "\x7fELF....")
+        .file("/usr/lib/libvendor.so.1", "\x7fELF....")
+        .file("/usr/lib/libvidle.so.1", "\x7fELF....")
+        .file(
+            "/proc/900/maps",
+            "7f00-7f01 r-xp 0 fe:01 9 /opt/vendor/bin/agentd\n",
+        );
+    host.executables.insert("/opt/vendor/bin/agentd".into());
+    add_lists(&mut host, &["vendor-agent.list", "vendor-idle.list"]);
+    let output = scan::scan(&host).unwrap();
+    assert!(
+        output.libraries.iter().any(|l| l.package == "vendor-agent"),
+        "{:?}",
+        output.libraries
+    );
+    assert!(!output.native.contains(&"vendor-agent".to_owned()));
+    assert!(
+        !output.native.contains(&"vendor-idle".to_owned()),
+        "ELF code outside the scanned prefixes"
+    );
+}
+
+#[test]
+fn a_scan_out_of_time_fails_rather_than_judge_on_part_of_a_package() {
+    // Review of #268, B2: the script read after the deadline would have left aaa-tool native.
+    struct Slow(TestHost);
+    impl Host for Slow {
+        fn stat(&self, p: &Path) -> io::Result<Stat> {
+            self.0.stat(p)
+        }
+        fn read(&self, p: &Path, m: u64) -> io::Result<Vec<u8>> {
+            self.0.read(p, m)
+        }
+        fn list(&self, d: &Path, m: usize) -> io::Result<Vec<String>> {
+            self.0.list(d, m)
+        }
+        fn run(&self, c: &Command) -> Result<Vec<u8>, RunError> {
+            self.0.run(c)
+        }
+        fn inspect(&self, p: &Path) -> io::Result<crate::facts::host::Inspect> {
+            self.0.inspect(p)
+        }
+        fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
+            if p == Path::new("/usr/bin/aaa-tool") {
+                std::thread::sleep(std::time::Duration::from_millis(1200));
+            }
+            self.0.head(p, n)
+        }
+    }
+    let mut host = scan_host()
+        .file(
+            "/var/lib/dpkg/info/aaa-tool.list",
+            "/usr/bin/aaa-tool\n/usr/sbin/aaa-tool-wrapper\n",
+        )
+        .file("/usr/bin/aaa-tool", "\x7fELF....")
+        .file("/usr/sbin/aaa-tool-wrapper", "#!/bin/sh\n");
+    add_lists(&mut host, &["aaa-tool.list"]);
+    let message = scan::scan_within(&Slow(host), std::time::Duration::from_secs(1)).unwrap_err();
+    assert!(message.contains("budget"), "{message}");
+}
+
+#[test]
+fn a_script_anywhere_in_a_package_makes_it_not_native() {
+    // Review of #268, S2: executable files anywhere, symlinks followed, and .sh files.
+    let mut host = scan_host();
+    type Pairs<'a> = &'a [(&'a str, &'a str)];
+    let cases: [(&str, &str, Pairs, &[&str], Pairs); 5] = [
+        (
+            "hook-pkg",
+            "/usr/lib/hook-pkg/libh.so.1\n/usr/lib/hook-pkg/hook\n",
+            &[("/usr/lib/hook-pkg/hook", "#!/bin/sh\n")],
+            &["/usr/lib/hook-pkg/hook"],
+            &[],
+        ),
+        (
+            "cron-pkg",
+            "/usr/lib/libcron-pkg.so.1\n/etc/cron.daily/cron-pkg\n",
+            &[("/etc/cron.daily/cron-pkg", "#!/bin/sh\n")],
+            &["/etc/cron.daily/cron-pkg"],
+            &[],
+        ),
+        (
+            "job-pkg",
+            "/usr/lib/libjob.so.1\n/usr/share/job-pkg/job.sh\n",
+            &[("/usr/share/job-pkg/job.sh", "echo\n")],
+            &[],
+            &[],
+        ),
+        (
+            "link-pkg",
+            "/usr/lib/liblink.so.1\n/usr/bin/link-tool\n/usr/share/link-pkg/tool\n",
+            &[("/usr/share/link-pkg/tool", "#!/usr/bin/perl\n")],
+            &[],
+            &[("/usr/bin/link-tool", "/usr/share/link-pkg/tool")],
+        ),
+        (
+            "elf-pkg",
+            "/usr/lib/libelf-pkg.so.1\n/usr/bin/elf-tool\n/usr/lib/libelf-pkg.so\n/usr/share/elf-pkg/data\n",
+            &[("/usr/bin/elf-tool", "\x7fELF....")],
+            &["/usr/bin/elf-tool"],
+            &[("/usr/lib/libelf-pkg.so", "/usr/lib/libelf-pkg.so.1")],
+        ),
+    ];
+    let mut lists = Vec::new();
+    for (package, list, files, executables, links) in cases {
+        host.files.insert(
+            format!("/var/lib/dpkg/info/{package}.list"),
+            list.as_bytes().to_vec(),
+        );
+        lists.push(format!("{package}.list"));
+        let first = list.lines().next().unwrap();
+        host.files.insert(first.into(), b"\x7fELF....".to_vec());
+        for (path, text) in files {
+            host.files.insert((*path).into(), text.as_bytes().to_vec());
+        }
+        host.files
+            .insert("/usr/share/elf-pkg/data".into(), b"plain data".to_vec());
+        host.executables
+            .extend(executables.iter().map(|e| (*e).to_owned()));
+        host.symlinks.extend(
+            links
+                .iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned())),
+        );
+    }
+    let names: Vec<&str> = lists.iter().map(String::as_str).collect();
+    add_lists(&mut host, &names);
+    let native = scan::scan(&host).unwrap().native;
+    for package in ["hook-pkg", "cron-pkg", "job-pkg", "link-pkg"] {
+        assert!(
+            !native.contains(&package.to_owned()),
+            "{package} is native: {native:?}"
+        );
+    }
+    assert!(
+        native.contains(&"elf-pkg".to_owned()),
+        "ELF only, a library symlink, and data: native"
+    );
+}
+
+#[test]
+fn a_diverted_or_shared_file_marks_every_package_that_lists_it() {
+    // Review of #268, S7.
+    let mut host = scan_host()
+        .file(
+            "/var/lib/dpkg/info/libgl1.list",
+            "/usr/lib/x86_64-linux-gnu/libGL.so.1\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/nvidia-glx.list",
+            "/usr/lib/x86_64-linux-gnu/libGL.so.1\n",
+        )
+        .file("/usr/lib/x86_64-linux-gnu/libGL.so.1", "\x7fELF....")
+        .file(
+            "/proc/900/maps",
+            "7f00-7f01 r-xp 0 fe:01 9 /usr/lib/x86_64-linux-gnu/libGL.so.1\n",
+        );
+    add_lists(&mut host, &["libgl1.list", "nvidia-glx.list"]);
+    let libraries = scan::scan(&host).unwrap().libraries;
+    for package in ["libgl1", "nvidia-glx"] {
+        assert!(
+            libraries.iter().any(|l| l.package == package),
+            "{package}: {libraries:?}"
+        );
+    }
+}
+
+fn add_lists(host: &mut TestHost, lists: &[&str]) {
+    let names = host.dirs.get_mut("/var/lib/dpkg/info").unwrap();
+    names.extend(lists.iter().map(|l| (*l).to_owned()));
+    names.sort();
 }
 
 #[test]
@@ -1453,6 +1758,12 @@ fn cpu_on_this_host() {
         }
         fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
             scan::ScanHost(self.0.clone()).head(p, n)
+        }
+        fn inspect(&self, p: &Path) -> io::Result<crate::facts::host::Inspect> {
+            scan::ScanHost(self.0.clone()).inspect(p)
+        }
+        fn resolve(&self, p: &Path) -> io::Result<std::path::PathBuf> {
+            scan::ScanHost(self.0.clone()).resolve(p)
         }
     }
     let host = OwnProcess(host);

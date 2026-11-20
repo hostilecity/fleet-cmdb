@@ -158,6 +158,25 @@ pub trait Host: Send + Sync {
         Ok(all)
     }
 
+    /// What is at `path`, without following a symlink there (`lstat(2)`): its kind and whether anyone
+    /// may execute it (the library scan's native-code check, VT-A02). The default says unsupported.
+    fn inspect(&self, path: &Path) -> io::Result<Inspect> {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot inspect files",
+        ))
+    }
+
+    /// Where `path` leads, every symlink followed (`realpath(3)`). The default says unsupported.
+    fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot resolve paths",
+        ))
+    }
+
     /// The listening TCP and bound UDP sockets (IPv4 and IPv6) the kernel's `sock_diag` netlink
     /// interface lists, with their cgroup ids. More than `max` is an error. Hosts that cannot answer
     /// (the test fakes, unless a test gives them sockets) say so.
@@ -178,6 +197,34 @@ pub trait Host: Send + Sync {
             io::ErrorKind::Unsupported,
             "this host cannot walk directories",
         ))
+    }
+}
+
+/// What [`Host::inspect`] found at a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inspect {
+    /// A regular file; `true` when any execute bit is set.
+    File(bool),
+    Symlink,
+    Directory,
+    Other,
+}
+
+impl Inspect {
+    /// `lstat(2)`'s answer for `path`, on this machine, with no time limit (the caller bounds it).
+    pub fn of(path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::symlink_metadata(path)?;
+        let kind = metadata.file_type();
+        Ok(if kind.is_symlink() {
+            Self::Symlink
+        } else if kind.is_dir() {
+            Self::Directory
+        } else if kind.is_file() {
+            Self::File(metadata.permissions().mode() & 0o111 != 0)
+        } else {
+            Self::Other
+        })
     }
 }
 
@@ -227,6 +274,8 @@ enum Op {
     Sockets,
     Walk,
     Head,
+    Inspect,
+    Resolve,
 }
 
 type Blocked = Arc<Mutex<HashSet<(Op, PathBuf)>>>;
@@ -339,6 +388,14 @@ impl Host for RealHost {
 
     fn run(&self, command: &Command) -> Result<Vec<u8>, RunError> {
         run(command)
+    }
+
+    fn inspect(&self, path: &Path) -> io::Result<Inspect> {
+        self.bounded(Op::Inspect, path, Inspect::of)
+    }
+
+    fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
+        self.bounded(Op::Resolve, path, |path| fs::canonicalize(path))
     }
 
     fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
