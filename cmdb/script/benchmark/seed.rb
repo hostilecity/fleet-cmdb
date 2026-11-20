@@ -21,7 +21,10 @@ module FleetBenchmark
       audit_entries: 4,       # per host, besides those the template's tasks write
       task_hosts: 10_000,     # hosts that get finished tasks
       tasks_per_host: 2,
-      queued_tasks: 1_000     # hosts with one queued task each, among the first hosts
+      queued_tasks: 1_000,    # hosts with one queued task each, among the first hosts
+      # More simulated advisories per source package (VT-FIXABLE #256), so a package host has a realistic number of open
+      # findings: 5 gives about 4,450 (the epic's example host has 3,765), most with no fix. 0: the simulator's 450.
+      advisories_per_source: 0
     }.freeze
 
     def initialize(**options)
@@ -63,6 +66,7 @@ module FleetBenchmark
     # The template host, through the real API and jobs.
     def template
       log FleetSimulator::Phase2.prepare!
+      log more_advisories if @o[:advisories_per_source].positive?
       host = Host.create!(name: "bench-0000000", hostname: "bench-0000000.example.lan", tags: [ FleetBenchmark::TAG ])
       Host.where(id: host.id).update_all(enrollment_state: "active")
       plaintext = FleetBenchmark.credential(0)
@@ -78,6 +82,27 @@ module FleetBenchmark
       @template = host.id
       log "template host #{host.id}: #{HostPackageSet.find_by!(host_id: host.id).package_count} packages, #{CisResult.where(host_id: host.id).count} CIS results, " \
           "#{VulnerabilityFinding.where(host_id: host.id).count} findings"
+    end
+
+    # advisories_per_source more advisories for every simulated source (BENCH-<source>-<n>, ids no real record uses), each
+    # affecting every version below 3.0-1, so they match every package the template has. One in twenty names a fix (the
+    # first advisory of every fourth source), as most of a real Debian host's findings have none; the severities cycle.
+    def more_advisories
+      n = @o[:advisories_per_source]
+      records = Array.new(FleetSimulator::Phase2::SOURCES) do |source|
+        Array.new(n) do |i|
+          events = [ { "introduced" => "0" }, ({ "fixed" => "3.0-1" } if i.zero? && (source % 4).zero?) ].compact
+          { "id" => format("BENCH-%03d-%02d", source, i), "modified" => "2026-11-01T00:00:00Z", "summary" => "Benchmark advisory #{i} for #{FleetSimulator::Phase2.source_name(source)}",
+            "database_specific" => { "severity" => %w[low medium high critical unknown][(source + i) % 5] },
+            "affected" => [ { "package" => { "ecosystem" => "Debian:13", "name" => FleetSimulator::Phase2.source_name(source) },
+                              "ranges" => [ { "type" => "ECOSYSTEM", "events" => events } ] } ] }
+        end
+      end.flatten
+      Dir.mktmpdir("benchmark-osv-") do |dir|
+        records.each { |record| File.write(File.join(dir, "#{record['id']}.json"), JSON.generate(record)) }
+        Advisories::Import.new(origin: "file", source: "benchmark").call(Advisories::Reader.new(dir))
+      end
+      "imported #{records.size} more benchmark advisories (#{n} per source)"
     end
 
     # Hosts bench-0000001.. as pending (the database's rule for new hosts), then active and online, each with a credential.

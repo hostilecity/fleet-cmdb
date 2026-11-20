@@ -6,13 +6,14 @@ The fleet list and the compliance page read one row per host from `host_complian
 
 - The host's CIS-aligned pass, fail, and not readable counts, and its open failures by severity (the severity of the rule version each failure was counted under).
 - Its open and reopened vulnerability findings by its advisories' severities, and whether its last matching run evaluated it.
+- How many of those findings have a fix (`vuln_fixable`), on how many distinct packages and architectures (`vuln_fix_packages`), and which severities have one (`vuln_fix_severities`, a bit per severity: critical 1, high 2, medium 4, low 8, unknown 16). They come from the findings' stored fix flag (`vulnerability_findings.fixable`, #256). A host that is not evaluated now counts none, though its kept findings stay open.
 - Copies of the host fields the fleet list sorts and filters by: name, hostname, tags, agent version, enrollment state and liveness, and the operating system name from its inventory.
 
 The pass rate and the sort keys are generated from these columns. Retired hosts keep their row; they are left out of every list and count.
 
 ## What keeps it right
 
-Triggers in the database, whichever code makes the change: a CIS evaluation, a rule enabled, disabled, edited, or deleted, vulnerability matching, a host edited, revoked, re-enrolled, or retired, a liveness change (a row trigger on `host_liveness` that fires only when the status changes, so a steady heartbeat costs nothing here, #192), an inventory report with a new operating system. The triggers only note which hosts a transaction changed; when it commits, the summaries of those hosts are synced and recounted in one step, with their rows locked in host order. So a transaction never waits on a summary row in the middle of its work, and two transactions never deadlock on them; at most, one waits a moment for another's commit. A host whose shown values did not change is not rewritten, and a change of liveness alone moves only the status sort key.
+Triggers in the database, whichever code makes the change: a CIS evaluation, a rule enabled, disabled, edited, or deleted, vulnerability matching (including an open finding gaining or losing a fix after an advisory import, which writes its fix flag with no change of state), a host edited, revoked, re-enrolled, or retired, a liveness change (a row trigger on `host_liveness` that fires only when the status changes, so a steady heartbeat costs nothing here, #192), an inventory report with a new operating system. The triggers only note which hosts a transaction changed; when it commits, the summaries of those hosts are synced and recounted in one step, with their rows locked in host order. So a transaction never waits on a summary row in the middle of its work, and two transactions never deadlock on them; at most, one waits a moment for another's commit. A host whose shown values did not change is not rewritten, and a change of liveness alone moves only the status sort key.
 
 An advisory import that changes a severity is different: it can move the counts of every host with an open finding for that advisory, and it is one long transaction. It only queues those hosts (`host_compliance_recounts`); `ComplianceSummaryRecountJob` recounts them in batches of 1,000 just after the import commits, then refreshes open fleet pages. Until it has run, those hosts' severity counts are a few seconds behind.
 
@@ -23,6 +24,8 @@ Nothing else writes the table, and there is no setting.
 ## Upgrading
 
 The migration that creates the table (`20261110193000`) runs outside a transaction, so agents keep reporting while it runs: it creates the table and the triggers (each takes its table's lock for a moment), fills every existing host's row in batches of 1,000, each in its own short transaction, then builds the indexes concurrently and adds the foreign key without a long lock. At 100,000 hosts it took under a minute, and no heartbeat waited more than 0.3 s. If it stops partway, roll it back (`bin/rails db:migrate:down:primary VERSION=20261110193000`) and run it again.
+
+The migration that adds the fix counts (`20261120256001`, #256) adds `vulnerability_findings.fixable` as a stored generated column, which rewrites that table once under an exclusive lock (matching waits for it; agents' reports do not), replaces the counting functions in one transaction, then recounts every host in batches of 1,000.
 
 ## Checking and rebuilding
 
