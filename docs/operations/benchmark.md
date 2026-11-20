@@ -97,3 +97,18 @@ A day's retirement in the steady state is one receipt partition of each type and
 | Package report, 5 packages upgraded (in process) | 13 statements, 824 rows, SQL p50 57 ms | 12 statements, 10 rows, SQL p50 27 ms |
 | Packages tab, one page (page 9; search "lib" page 2) | 5.8 ms; 1.3 ms | 4.6 ms; 3.0 ms |
 | A host's open findings with their details (450) | 9.9 ms | 7.3 ms |
+
+### Fix counts on the summaries (#256, VT-FIXABLE)
+
+The same container, PostgreSQL 16, its default settings. Seed `--hosts 100000 --package-hosts 1500 --advisories-per-source 5` with triggers off, then `compliance_summaries:rebuild`: 6.68 million findings (1.93 GB), 4,450 open findings per package host, 650 of them with a fix. The seed's step that resolves "a fifth" of the findings resolves whole hosts when `--package-hosts` is a multiple of 5 (300 hosts here), so only hosts with open findings were sampled. Medians over 50 such hosts, each the median of 5 runs; other suites were running for part of it, so the ranges are of three runs.
+
+| What | Before (`host_compliance_counts` v01) | After (v02) |
+|---|---|---|
+| The counts of one host | 4.0 to 5.0 ms | 4.9 to 5.2 ms |
+| The counts of 50 hosts in one call (as a flush or the recount job batches them) | 193 to 202 ms | 260 to 318 ms |
+| `host_compliance_summaries_refresh` of one host (lock, count, compare) | | 7.0 to 7.9 ms |
+| Migration `20261120256001` (summary columns, functions) | | 18 ms; nothing is rewritten |
+| Migration `20261120256002` (recount every host) | | 25 s for 100,001 hosts (1,201 with open findings) |
+| `compliance_summaries:rebuild` | | 51 to 73 s |
+
+The extra cost is about 1 ms a host with thousands of open findings (the distinct count of packages with a fix), paid only for hosts whose counts a transaction changed. `bin/benchmark explain` after: `/compliance` 5 statements, 113 to 134 ms; `?fix=available` and `?fix=available&vuln=high` 6 statements, 61 to 83 ms for both pages and the filtered count (the count reads the summaries, as the other filters' counts do); the recount probe 11.5 ms; the Vulnerabilities tab 10 statements as before, 89 ms, with the state and fix chips one grouped count of 5 ms; the tab filtered by `?fix=available` and `?fix=none` 41 ms for both pages.
