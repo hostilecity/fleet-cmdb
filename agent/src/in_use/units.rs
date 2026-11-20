@@ -17,8 +17,9 @@ use std::net::IpAddr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Owner {
     Service(String),
-    /// systemd itself (`init.scope`): socket activation.
-    Systemd,
+    /// A socket systemd holds for socket activation: created by PID 1 (`init.scope`), or in the socket
+    /// unit's own cgroup (`system.slice/<name>.socket`, as systemd 257 does; VM scenario 309 found it).
+    Systemd(Option<String>),
     /// Not a systemd service: counted, not named.
     Other,
 }
@@ -26,7 +27,7 @@ pub enum Owner {
 /// The owner of a cgroup, given its path relative to the cgroup root.
 pub fn unit_of(path: &str) -> Owner {
     if path == "init.scope" {
-        return Owner::Systemd;
+        return Owner::Systemd(None);
     }
     let mut parts = path.split('/');
     if parts.next() != Some("system.slice") {
@@ -35,6 +36,11 @@ pub fn unit_of(path: &str) -> Owner {
     for part in parts {
         if part.ends_with(".service") && service_name(part) {
             return Owner::Service(part.to_owned());
+        }
+        if let Some(stem) = part.strip_suffix(".socket")
+            && service_name(&format!("{stem}.service"))
+        {
+            return Owner::Systemd(Some(part.to_owned()));
         }
         if !part.ends_with(".slice") {
             return Owner::Other;
@@ -110,6 +116,8 @@ pub struct Activated {
     pub port: u16,
     /// `Datagram` (UDP), else `Stream` (TCP).
     pub udp: bool,
+    /// The `.socket` unit.
+    pub unit: String,
     pub services: Vec<String>,
 }
 
@@ -131,7 +139,7 @@ pub fn parse_list_sockets(output: &[u8]) -> Result<Vec<Activated>, String> {
             Some("Datagram") => true,
             _ => continue,
         };
-        let _unit = fields.next();
+        let unit = fields.next().unwrap_or("").to_owned();
         let services: Vec<String> = fields
             .flat_map(|f| f.split(','))
             .map(str::trim)
@@ -157,6 +165,7 @@ pub fn parse_list_sockets(output: &[u8]) -> Result<Vec<Activated>, String> {
             address,
             port,
             udp,
+            unit,
             services,
         });
     }

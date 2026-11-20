@@ -561,6 +561,36 @@ fn without_systemds_socket_list_in_use_is_null() {
 }
 
 #[test]
+fn a_socket_in_its_socket_units_cgroup_is_named_by_that_unit() {
+    // systemd 257 creates a socket unit's sockets in the unit's own cgroup (VM scenario 309).
+    let mut host = debian_host();
+    host.cgroups
+        .as_mut()
+        .unwrap()
+        .push((18, "system.slice/cups.socket".into()));
+    for socket in host.sockets.as_mut().unwrap() {
+        if socket.inode == 1005 {
+            socket.cgroup = 18;
+        }
+    }
+    let in_use = collect(&host, &Scan::Off, &mut scan::Memo::default(), None)
+        .in_use
+        .expect("in use");
+    assert!(
+        in_use.listening.contains(&Listening {
+            package: "cups-daemon".into(),
+            class: "loopback"
+        }),
+        "{:?}",
+        in_use.listening
+    );
+    assert_eq!(
+        in_use.unnamed_listeners.loopback, 1,
+        "only the tool no package owns"
+    );
+}
+
+#[test]
 fn the_cgroup_walk_stays_inside_system_slice_and_init_scope() {
     let host = debian_host();
     collect(&host, &Scan::Off, &mut scan::Memo::default(), None);
@@ -815,7 +845,11 @@ fn a_cgroup_names_a_service_only_inside_system_slice() {
         units::unit_of("system.slice/docker.service/sub/x.service"),
         Service("docker.service".into())
     );
-    assert_eq!(units::unit_of("init.scope"), Systemd);
+    assert_eq!(units::unit_of("init.scope"), Systemd(None));
+    assert_eq!(
+        units::unit_of("system.slice/cups.socket"),
+        Systemd(Some("cups.socket".into()))
+    );
     for other in [
         "",
         "system.slice",
