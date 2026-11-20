@@ -253,6 +253,34 @@
         }
       }
     },
+    "reboot_required": {
+      "description": "Stable. `true` when Debian's `/run/reboot-required` exists (a package asked for a reboot); `null` when it does not exist or cannot be read (with a `warnings` entry then). Never `false`: Debian's kernel packages have not reliably created the file (Debian bug #1010699), so its absence does not mean no reboot is needed (FR-2.6, VT-A01). Optional; absent is the same as `null`.",
+      "enum": [
+        true,
+        null
+      ]
+    },
+    "reboot_required_packages": {
+      "description": "Stable. The binary package names in `/run/reboot-required.pkgs` that asked for the reboot, each once, at most 50 (the rest are left out); `null` unless `reboot_required` is `true`, or when that file is missing or unreadable. Optional.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+      }
+    },
+    "kernel_build": {
+      "description": "Stable. `/proc/sys/kernel/version`, the running kernel's build string; on Debian it names the image's package version, for distributions that update a kernel package in place (#163). `null` with a `warnings` entry when unreadable. Optional.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
     "warnings": {
       "description": "One entry per fact that could not be collected; that fact is null. A list fact (`disks`, `network_interfaces`) that could be read only in part keeps the entries that were read and gets an entry saying what is missing.",
       "type": "array",
@@ -280,7 +308,9 @@
               "boot_id",
               "machine_id",
               "disks",
-              "network_interfaces"
+              "network_interfaces",
+              "reboot_required",
+              "kernel_build"
             ]
           },
           "message": {
@@ -292,5 +322,26 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "reboot_required": {
+            "const": true
+          }
+        },
+        "required": [
+          "reboot_required"
+        ]
+      },
+      "else": {
+        "properties": {
+          "reboot_required_packages": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
 }
