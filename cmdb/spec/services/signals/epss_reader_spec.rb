@@ -75,9 +75,20 @@ RSpec.describe Signals::EpssReader do
     expect(reader.rows).to eq(1.megabyte + 2) # the blank lines (one more where the row is joined on) and the row
   end
 
-  it "stops reading past the deadline" do
+  it "stops reading past the deadline, also part-way through a file" do
     stub_const("Signals::EpssReader::DEADLINE", -1)
     expect { rows_of(described_class.new(epss_file([ %w[CVE-2026-0001 0.5 0.5] ]))) }.to raise_error(Advisories::Unreadable, /took longer than -1 seconds to read/)
+  end
+
+  # Re-review of #269: the deadline is checked as reading goes on, not only at the start.
+  it "stops part-way when the clock passes the deadline while reading" do
+    stub_const("Signals::EpssReader::CHUNK", 16)
+    path = epss_file((1..20).map { |i| [ format("CVE-2026-%04d", i), "0.5", "0.5" ] })
+    clock = 0.0
+    allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { clock += 100 } # 100 s more at every look
+    yielded = []
+    expect { described_class.new(path).each { |row| yielded << row } }.to raise_error(Advisories::Unreadable, /took longer than 600 seconds to read/)
+    expect(yielded.size).to be_between(0, 19) # it stopped before the end
   end
 
   it "splits lines across chunk boundaries exactly, and refuses a line longer than the limit across chunks" do

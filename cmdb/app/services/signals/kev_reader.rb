@@ -11,7 +11,7 @@ module Signals
   #
   # Bounded before parsing (review of #269): 16 MiB of "{}" would otherwise parse into 5.6 million Hashes (1.1 GB). A
   # scan of the bytes, outside strings, refuses more than MAX_CONTAINERS objects and arrays in all, more than MAX_ENTRIES
-  # entries, or an entry larger than MAX_ENTRY_BYTES, so JSON.parse only ever sees a catalog-shaped document. After
+  # values two levels deep (entries of any type), or an entry larger than MAX_ENTRY_BYTES, so JSON.parse only ever sees a catalog-shaped document. After
   # parsing, a catalog with no valid entry, or whose valid entries fall short of its own count by more than
   # FLEET_ADVISORY_WITHDRAW_SHARE, is refused too: it is a broken file, not a smaller catalog.
   class KevReader
@@ -22,7 +22,7 @@ module Signals
     MAX_ENTRIES = 50_000 # the catalog had 1,786 in November 2026
     MAX_ENTRY_BYTES = 64.kilobytes # an entry is about 1 KB
     MAX_CONTAINERS = 4 * MAX_ENTRIES # each entry is an object and its cwes array
-    STRUCTURE = /["{}\[\]]/n
+    STRUCTURE = /["{}\[\],]/n
     STRING_END = /["\\]/n
     PROBLEM_LIMIT = 100
     DATE = /\A\d{4}-\d\d-\d\d\z/
@@ -61,30 +61,27 @@ module Signals
 
     private
 
-    # Counts objects and arrays outside strings, and sizes the entries (objects two levels deep), without building
-    # anything; raises Unreadable past a limit.
+    # Counts, outside strings, the objects and arrays in all and the values two levels deep (the catalog's entries, of
+    # any type: a comma at that depth starts another one), and sizes the entries, without building anything; raises
+    # Unreadable past a limit, or at a string the file ends inside. So "[1,1,1,...]" or "["","",...]" is refused here
+    # as quickly as "[{},{},...]" (re-review of #269).
     def check_shape(bytes)
       scanner = StringScanner.new(bytes)
-      depth = containers = entries = 0
+      depth = containers = values = 0
       entry_start = nil
       while scanner.skip_until(STRUCTURE)
-        case bytes.getbyte(scanner.pos - 1)
+        byte = bytes.getbyte(scanner.pos - 1)
+        case byte
         when 0x22 # a string: to its closing quote, over escapes
-          loop do
-            raise unreadable("is not valid JSON") unless scanner.skip_until(STRING_END)
-            break if bytes.getbyte(scanner.pos - 1) == 0x22
-
-            scanner.pos += 1
-          end
+          skip_string(scanner, bytes)
+        when 0x2C # ,
+          values = count_value(values) if depth == 2
         when 0x7B, 0x5B # { [
           containers += 1
           raise unreadable("has more than #{MAX_CONTAINERS.to_fs(:delimited)} objects and arrays") if containers > MAX_CONTAINERS
-          if depth == 2 && bytes.getbyte(scanner.pos - 1) == 0x7B
-            entries += 1
-            raise unreadable("has more than #{MAX_ENTRIES.to_fs(:delimited)} entries") if entries > MAX_ENTRIES
 
-            entry_start = scanner.pos
-          end
+          values = count_value(values) if depth == 1 # the first value of a top-level list (one too many when it is empty)
+          entry_start = scanner.pos if depth == 2 && byte == 0x7B
           depth += 1
         else # } ]
           depth -= 1
@@ -94,6 +91,23 @@ module Signals
             entry_start = nil
           end
         end
+      end
+    end
+
+    def count_value(values)
+      raise unreadable("has more than #{MAX_ENTRIES.to_fs(:delimited)} entries") if values + 1 > MAX_ENTRIES
+
+      values + 1
+    end
+
+    # From just past an opening quote to just past its closing one, stepping over escapes.
+    def skip_string(scanner, bytes)
+      loop do
+        raise unreadable("is not valid JSON") unless scanner.skip_until(STRING_END)
+        break if bytes.getbyte(scanner.pos - 1) == 0x22
+        raise unreadable("is not valid JSON") if scanner.eos? # a backslash as the last byte
+
+        scanner.pos += 1
       end
     end
 

@@ -74,4 +74,25 @@ RSpec.describe Signals::KevReader do
     entry = kev_vulnerability("CVE-2026-0001", notes: '{[{[ "quoted \\" {braces}" ]}]}', cwes: "none")
     expect(described_class.new(kev_file(entry)).read.entries.map(&:cve_id)).to eq(%w[CVE-2026-0001])
   end
+
+  # Re-review of #269: entries of any type count toward the cap before parsing, and a file ending in a backslash
+  # inside a string is unreadable, not a crash.
+  it "counts values of any type toward the entry cap before parsing" do
+    expect(JSON).not_to receive(:parse)
+    stub_const("Signals::KevReader::MAX_ENTRIES", 3)
+    [ '{"vulnerabilities":[1,1,1,1]}', '{"vulnerabilities":["","","",""]}', '{"vulnerabilities":[null,null,null,null]}',
+      '{"vulnerabilities":[1.5e300,1.5e300,1.5e300,1.5e300]}' ].each do |raw|
+      expect { described_class.new(kev_file(raw:)).read }.to raise_error(Advisories::Unreadable, /has more than 3 entries/), raw
+    end
+  end
+
+  it "reads a real-shaped catalog at the entry cap, commas inside entries and strings not counted" do
+    stub_const("Signals::KevReader::MAX_ENTRIES", 3)
+    entries = (1..3).map { |i| kev_vulnerability(format("CVE-2026-%04d", i), cwes: %w[CWE-1 CWE-2], notes: "a, b, c") }
+    expect(described_class.new(kev_file(*entries)).read.entries.size).to eq(3)
+  end
+
+  it "refuses a file that ends after a backslash inside a string" do
+    expect { described_class.new(kev_file(raw: '{"a":"\\'), name: "kev.json").read }.to raise_error(Advisories::Unreadable, "kev.json is not valid JSON, so nothing was imported")
+  end
 end
