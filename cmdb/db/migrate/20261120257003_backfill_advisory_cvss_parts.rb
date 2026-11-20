@@ -1,6 +1,8 @@
 # Fills advisories.cvss_av, cvss_pr, and cvss_ui from the stored severity_raw (VT-S04): the raw value is the v3 vector
-# when the severity rule used one (Advisories::Severity). In batches by id, one UPDATE a batch: 74,000 advisories, all
-# with a v3 vector, took about 6 s (one UPDATE a row took 111 s).
+# when the severity rule used one (Advisories::Severity). One UPDATE per batch of ids, for speed: 74,000 advisories, all
+# with a v3 vector, took about 6 s (one UPDATE a row took 111 s). The batches do not shorten locking: the migration is
+# one transaction, so every advisory updated stays locked until it commits (about 6 s at that size, while nothing else
+# writes advisories but the advisory import, which waits).
 # No triage run exists before this (#259), so nothing is handed to one.
 class BackfillAdvisoryCvssParts < ActiveRecord::Migration[8.1]
   BATCH = 2_000

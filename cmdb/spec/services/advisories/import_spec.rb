@@ -74,6 +74,28 @@ RSpec.describe Advisories::Import do
     expect(Advisory.find_by!(advisory_id: "DSA-3-1")).to have_attributes(cvss_av: nil, severity: "unknown")
   end
 
+  it "hands over a vector change that leaves the severity the same (review of #269)" do
+    vector = ->(v) { [ { "type" => "CVSS_V3", "score" => v } ] }
+    import_advisories(osv_record(id: "DSA-1-1", severity: vector.("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"))) # 8.8 high
+    import_advisories(osv_record(id: "DSA-1-1", modified: "2026-10-21T08:00:00Z", severity: vector.("CVSS:3.1/AV:A/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"))) # 8.0 high
+    expect(Advisory.sole).to have_attributes(severity: "high", cvss_av: "A")
+    expect(TriageSignalChange.where(kind: "advisory").pluck(:advisory_id)).to eq([ Advisory.sole.id ])
+  end
+
+  it "hands over an advisory whose CVE set gains or loses a CVE in KEV or in the EPSS high band, and no other alias change" do
+    import_kev(kev_file("CVE-2026-0010"))
+    EpssScore.create!(cve_id: "CVE-2026-0020", score: 0.5, percentile: 0.9, band: "high", score_date: Date.current)
+    EpssScore.create!(cve_id: "CVE-2026-0030", score: 0.01, percentile: 0.1, band: "normal", score_date: Date.current)
+    import_advisories(osv_record(id: "DSA-1-1"), osv_record(id: "DSA-2-1", package: "curl", aliases: %w[CVE-2026-0020]),
+                      osv_record(id: "DSA-3-1", package: "zlib"))
+    TriageSignalChange.delete_all
+    later = "2026-10-21T08:00:00Z"
+    import_advisories(osv_record(id: "DSA-1-1", modified: later, aliases: %w[CVE-2026-0010]), # gains a KEV CVE
+                      osv_record(id: "DSA-2-1", package: "curl", modified: later), # loses an EPSS-high CVE
+                      osv_record(id: "DSA-3-1", package: "zlib", modified: later, aliases: %w[CVE-2026-0030 CVE-2026-0040])) # neither
+    expect(TriageSignalChange.where(kind: "advisory").pluck(:advisory_id).sort).to eq(Advisory.where(advisory_id: %w[DSA-1-1 DSA-2-1]).pluck(:id).sort)
+  end
+
   it "ignores an older version, so an old archive never moves data backwards" do
     import_advisories(osv_record(id: "DSA-1-1", fixed: "3.5.2-1", modified: "2026-10-21T00:00:00Z"))
     result = import_advisories(osv_record(id: "DSA-1-1", fixed: "3.5.1-1", modified: "2026-10-20T00:00:00Z"))
