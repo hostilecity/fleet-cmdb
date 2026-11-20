@@ -25,6 +25,15 @@ RSpec.describe Advisories::Severity do
       end
     end
 
+    # VT-S04 (#257): the parts the triage rules read, from the same vectors base_score scores.
+    it "parts: stores N, N, N for a network, no login, no user action vector, and nil for a v2 or v4 vector (AC)" do
+      expect(described_class.parts("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")).to eq(av: "N", pr: "N", ui: "N")
+      expect(described_class.parts("CVSS:3.0/AV:L/AC:L/PR:H/UI:R/S:U/C:H/I:N/A:N")).to eq(av: "L", pr: "H", ui: "R")
+      expect(described_class.parts("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N")).to be_nil
+      expect(described_class.parts("AV:N/AC:L/Au:N/C:P/I:P/A:P")).to be_nil
+      expect(described_class.parts("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H")).to be_nil
+    end
+
     it "rounds up on integers, so floating point error never adds a tenth" do
       expect(described_class.roundup(4.000000001)).to eq(4.0)
       expect(described_class.roundup(4.02)).to eq(4.1)

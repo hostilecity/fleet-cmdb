@@ -213,16 +213,29 @@ module Advisories
 
       rows = records.map do |r|
         { advisory_id: r.advisory_id, source: @source, summary: r.summary, aliases: r.aliases, severity: r.severity, severity_raw: r.severity_raw,
+          cvss_av: r.cvss&.fetch(:av), cvss_pr: r.cvss&.fetch(:pr), cvss_ui: r.cvss&.fetch(:ui),
           reference_url: r.reference_url, published_at: r.published_at, modified_at: r.modified_at, withdrawn_at: r.withdrawn_at,
           withdrawn_reason: (r.withdrawn? ? "withdrawn" : nil), created_at: now, updated_at: now }
       end
       ids = Advisory.upsert_all(rows, unique_by: :advisory_id, returning: %i[id advisory_id], record_timestamps: false,
                                       update_only: rows.first.keys - %i[advisory_id created_at]).rows.to_h(&:reverse)
+      hand_to_triage(records, existing, ids)
       AdvisoryPackage.where(advisory_id: ids.values).delete_all
       packages = records.flat_map do |r|
         r.packages.map { |p| { advisory_id: ids.fetch(r.advisory_id), ecosystem: p.ecosystem, package: p.package, ranges: p.ranges, fixed_version: p.fixed_version } }
       end
       AdvisoryPackage.insert_all(packages) if packages.any?
+    end
+
+    # VT-SIGNALS (#257): a stored advisory whose CVSS vector parts or severity changed is handed to the triage run
+    # (VT-S05), in this transaction. A new advisory needs no hand-off: its findings are triaged when they are matched.
+    def hand_to_triage(records, existing, ids)
+      changed = records.filter_map do |r|
+        stored = existing[r.advisory_id] or next
+        parts = r.cvss ? r.cvss.values_at(:av, :pr, :ui) : [ nil, nil, nil ]
+        ids.fetch(r.advisory_id) if [ stored.cvss_av, stored.cvss_pr, stored.cvss_ui, stored.severity ] != [ *parts, r.severity ]
+      end
+      TriageSignalChange.record!(:advisory, advisory_ids: changed)
     end
 
     # Marks withdrawn, as absent, the current advisories of the imported ecosystems that this full import did
