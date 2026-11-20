@@ -52,6 +52,35 @@ RSpec.describe "partitions rake tasks" do
     expect(run("partitions:status")).to include("audit_entries: not partitioned yet (run bin/rails db:migrate)")
   end
 
+  it "updates the banner's list at once, so a problem fixed since the last hourly run goes, without the maintenance lock" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    allow(Rails).to receive(:cache).and_return(cache)
+    allow(Rails.env).to receive(:production?).and_return(true)
+    allow(Partitions).to receive(:exclusively)
+    allow(Partitions).to receive(:ensure!)
+    guard = "the audit log's event triggers are not installed"
+    allow(Partitions).to receive(:audit_guard_problem).and_return(guard)
+    Partitions.report_changes(Partitions.run_problems)
+    expect(Partitions.attention.map(&:text)).to eq([ "The audit log's guard does not hold: #{guard}." ])
+
+    allow(Partitions).to receive(:audit_guard_problem).and_return(nil) # the superuser has run the step
+    expect(run("partitions:status")).to end_with("Audit guard (ops/postgres/audit-guard.sql): installed\nBanner updated.\n")
+    expect(Partitions.attention).to be_empty
+    expect(Partitions).not_to have_received(:exclusively)
+    expect(Partitions).not_to have_received(:ensure!)
+
+    allow(Partitions).to receive(:audit_guard_problem).and_return(guard) # and a problem that appears shows at once too
+    run("partitions:status")
+    expect(Partitions.attention.map(&:text)).to eq([ "The audit log's guard does not hold: #{guard}." ])
+  end
+
+  it "leaves the audit guard off the banner outside production, as the hourly run does" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    allow(Rails).to receive(:cache).and_return(cache)
+    expect(run("partitions:status")).to include("does NOT hold", "Banner updated.")
+    expect(Partitions.attention).to be_empty
+  end
+
   it "checks for rows without their host, and fails when it finds any" do
     expect(run("partitions:check")).to eq("No rows without their host or rule.\n")
     InventoryReportReceipt.insert!({ host_id: 2_000_000_000, report_id: SecureRandom.uuid, received_at: Time.current })

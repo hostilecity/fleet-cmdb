@@ -10,7 +10,7 @@ namespace :partitions do
     puts(made.any? ? made.map { |table, names| "#{table}: created #{names.join(', ')}" } : "Every partition ahead exists.")
   end
 
-  desc "List each partitioned table's partitions and anything /health would report about them"
+  desc "List each partitioned table's partitions and anything /health would report about them, and update the dashboard banner"
   task status: :environment do
     Partitions::TABLES.each_key do |table|
       next puts("#{table}: not partitioned yet (run bin/rails db:migrate)") unless Partitions.partitioned?(table)
@@ -24,6 +24,11 @@ namespace :partitions do
     puts(problems.empty? ? "No problems." : problems.map { |p| "#{p.severity}: #{p.text}" })
     problem = Partitions.audit_guard_problem
     puts "Audit guard (ops/postgres/audit-guard.sql): #{problem ? "does NOT hold: #{problem}" : 'installed'}"
+    # The banner reads what the hourly run last found (Partitions.attention). Write it now, as the run does (the audit
+    # guard only in production), so a fix shows at once rather than at the next run. No maintenance lock and no DDL:
+    # catalog reads and one cache write.
+    Partitions.report_changes(Partitions.run_problems)
+    puts "Banner updated."
   end
 
   desc "Report rows whose host, CIS rule, or rule version does not exist (the nightly check)"
