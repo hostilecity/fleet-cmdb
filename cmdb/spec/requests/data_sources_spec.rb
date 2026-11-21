@@ -38,7 +38,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
       get "/data-sources"
       expect(response).to have_http_status(:ok)
       expect(page.at_css('nav[aria-label="Main"] a[aria-current="page"]').text).to eq("Data sources")
-      expect(page.at_css("h1").text).to eq("Advisory data sources")
+      expect(page.at_css("h1").text).to eq("Data sources")
       # Uploads are for small files; a full archive comes through the feed or the rake task (owner decision on #129).
       expect(page.at_css("#advisory_file_hint").text.squish).to include("up to 64 MiB, for small files",
                                                                          "comes through the scheduled feed or bin/rails advisories:import")
@@ -174,7 +174,7 @@ RSpec.describe "Advisory data sources", :signed_in, type: :request do
         expect(flash[:notice]).to start_with("Refresh started.")
         attempt = AdvisoryRefreshAttempt.sole
         expect(attempt).to have_attributes(kind: "manual", operator:)
-        expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id, triage: true)
+        expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id, triage: true, signals: true)
         expect(AuditEntry.where(action: "advisory.refresh_requested").sole).to have_attributes(actor_type: "operator", actor_id: operator.id)
 
         travel 1.minute

@@ -3,6 +3,7 @@ module Advisories
   # rule in Advisories::Severity. Returns nil for anything that is not a complete, valid v3 base vector.
   #
   #   Advisories::Cvss3.base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") # => 9.8
+  #   Advisories::Cvss3.parts("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")      # => { av: "N", pr: "N", ui: "N" }
   module Cvss3
     WEIGHTS = {
       "AV" => { "N" => 0.85, "A" => 0.62, "L" => 0.55, "P" => 0.2 },
@@ -21,13 +22,7 @@ module Advisories
     module_function
 
     def base_score(vector)
-      return nil unless vector.is_a?(String) && vector.match?(PREFIX)
-
-      parts = vector.sub(PREFIX, "").split("/").map { |part| part.split(":", 2) }
-      return nil unless parts.all? { |pair| pair.size == 2 } # "/A" rather than "/A:H" (review of #103)
-
-      metrics = parts.to_h
-      return nil unless WEIGHTS.all? { |metric, values| values.key?(metrics[metric]) }
+      metrics = metrics(vector) or return nil
 
       changed = metrics["S"] == "C"
       iss = 1 - %w[C I A].map { |m| 1 - WEIGHTS[m][metrics[m]] }.reduce(:*)
@@ -37,6 +32,25 @@ module Advisories
       return 0.0 if impact <= 0
 
       roundup([ (changed ? 1.08 : 1) * (impact + exploitability), 10 ].min)
+    end
+
+    # The attack vector, privileges required, and user interaction of a complete, valid v3 base vector (VT-S04), for
+    # advisories.cvss_av, cvss_pr, and cvss_ui; nil for anything base_score would not score (v2, v4, a word).
+    def parts(vector)
+      metrics = metrics(vector) or return nil
+
+      { av: metrics["AV"], pr: metrics["PR"], ui: metrics["UI"] }
+    end
+
+    # The vector's metrics, when it is a complete, valid v3 base vector; otherwise nil.
+    def metrics(vector)
+      return nil unless vector.is_a?(String) && vector.match?(PREFIX)
+
+      parts = vector.sub(PREFIX, "").split("/").map { |part| part.split(":", 2) }
+      return nil unless parts.all? { |pair| pair.size == 2 } # "/A" rather than "/A:H" (review of #103)
+
+      metrics = parts.to_h
+      metrics if WEIGHTS.all? { |metric, values| values.key?(metrics[metric]) }
     end
 
     # The specification's Roundup (v3.1, appendix A): the smallest one-decimal number not below x, computed on

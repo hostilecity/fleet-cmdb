@@ -25,7 +25,8 @@
 # A manual refresh with triage: true (Advisories::ManualRefresh, P2-D08, owner decision T2 on #134) then refreshes
 # Debian's triage: once this refresh is done, whatever its outcome (imported, not modified, held back, or failed
 # after its last attempt), it enqueues DebianTriageRefreshJob once, attributed to the same operator. That job's
-# failures are its own: they never change this refresh's outcome, and enqueueing it never fails this job.
+# failures are its own: they never change this refresh's outcome, and enqueueing it never fails this job. With
+# signals: true (VT-D03, #257) it enqueues KevRefreshJob and EpssRefreshJob in the same way, for the sources that are on.
 class AdvisoryFeedRefreshJob < ApplicationJob
   queue_as :default
 
@@ -37,8 +38,9 @@ class AdvisoryFeedRefreshJob < ApplicationJob
   # attempt_id: the manual attempt Advisories::ManualRefresh.request! recorded. kind: what to record a run
   # without one as ("scheduled", or "task" from bin/rails advisories:refresh). allowed_withdrawals: per
   # ecosystem, how many advisories an operator confirmed this refresh may withdraw ({ "Debian:13" => 41 }).
-  def perform(attempt_id: nil, kind: "scheduled", allowed_withdrawals: {}, triage: false)
+  def perform(attempt_id: nil, kind: "scheduled", allowed_withdrawals: {}, triage: false, signals: false)
     @triage = triage == true
+    @signals = signals == true
     @allowed_withdrawals = allowed_withdrawals.to_h.transform_keys(&:to_s)
     feed = Advisories::Feed.new
     if feed.url.nil?
@@ -99,15 +101,22 @@ class AdvisoryFeedRefreshJob < ApplicationJob
 
   private
 
-  # The tracker refresh after a manual refresh that asked for it, once. Never raises: the OSV refresh's outcome
-  # stands whatever happens here.
+  # The tracker refresh, and the exploitation signals' (#257), after a manual refresh that asked for them, once.
+  # Never raises: the OSV refresh's outcome stands whatever happens here.
   def refresh_triage
-    return unless @triage && !@triage_enqueued
+    return if @followers_enqueued
 
-    @triage_enqueued = true
-    DebianTriageRefreshJob.perform_later(operator_id: @operator&.id)
+    @followers_enqueued = true
+    DebianTriageRefreshJob.perform_later(operator_id: @operator&.id) if @triage
+    refresh_signals if @signals
   rescue StandardError => e
-    logger.error("[advisories] could not start the Debian triage refresh after the feed refresh: #{e.class.name}: #{e.message}")
+    logger.error("[advisories] could not start the refreshes that follow the feed refresh: #{e.class.name}: #{e.message}")
+  end
+
+  # VT-D03 (#257): KEV and EPSS, each when its URL is set.
+  def refresh_signals
+    KevRefreshJob.perform_later(operator_id: @operator&.id) if Signals.config.kev_url
+    EpssRefreshJob.perform_later(operator_id: @operator&.id) if Signals.config.epss_url
   end
 
   def import(download)

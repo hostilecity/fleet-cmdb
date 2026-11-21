@@ -25,7 +25,7 @@ module Advisories
     CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
     attr_reader :advisory_id, :summary, :aliases, :severity, :severity_raw, :reference_url, :rejected_urls,
-                :published_at, :modified_at, :withdrawn_at, :packages
+                :published_at, :modified_at, :withdrawn_at, :packages, :cvss
 
     # Parses the bytes of one JSON document.
     def self.parse(bytes)
@@ -64,6 +64,8 @@ module Advisories
       severity = Severity.of(data, affected)
       @severity = severity.level
       @severity_raw = severity.raw
+      # The v3 vector's attack vector, privileges, and user interaction (VT-S04), or nil: { av:, pr:, ui: }.
+      @cvss = Cvss3.parts(@severity_raw)
       @reference_url, @rejected_urls = pick_reference(data["references"])
     end
 

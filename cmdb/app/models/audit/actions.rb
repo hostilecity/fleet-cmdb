@@ -45,6 +45,15 @@ module Audit
     ADVISORY_TRIAGE_IMPORTED = "advisory.triage_imported"
     ADVISORY_TRIAGE_IMPORT_FAILED = "advisory.triage_import_failed"
     ADVISORY_TRIAGE_IMPORT_HELD_BACK = "advisory.triage_import_held_back"
+    # Exploitation signals (VT-SIGNALS, #257, ADR 0032): CISA KEV and FIRST EPSS imports, and clearing the KEV data.
+    SIGNAL_KEV_IMPORTED = "signal.kev_imported"
+    SIGNAL_KEV_IMPORT_FAILED = "signal.kev_import_failed"
+    SIGNAL_KEV_IMPORT_HELD_BACK = "signal.kev_import_held_back"
+    SIGNAL_KEV_CLEARED = "signal.kev_cleared"
+    SIGNAL_EPSS_IMPORTED = "signal.epss_imported"
+    SIGNAL_EPSS_IMPORT_FAILED = "signal.epss_import_failed"
+    SIGNAL_EPSS_IMPORT_HELD_BACK = "signal.epss_import_held_back"
+    SIGNAL_EPSS_CLEARED = "signal.epss_cleared"
     # Tasks (FR-3.4, P3-S02, P3-S07): a batch and its tasks created, then one entry per state transition.
     TASK_BATCH_CREATED = "task.batch_created"
     TASK_CREATED = "task.created"

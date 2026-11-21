@@ -1,8 +1,9 @@
-<% content_for :title, "Advisory data sources" %>
+<% content_for :title, "Data sources" %>
 <%# The refresh-after timer on "Refresh now" refreshes the page by morphing, and the upload form keeps a chosen file and an open
     confirmation through it (keep-edits, as on the Agents page; review of #129). %>
 <%= turbo_refreshes_with method: :morph, scroll: :preserve %>
-<div class="page-head"><div><h1>Advisory data sources</h1><p>Where vulnerability data comes from, how fresh it is, and what the last imports did. Findings are only as current as this data.</p></div></div>
+<%# VT-D03 (#257): "Data sources" with the exploitation signals, as the approved mockup docs/mockups/vuln-triage/data-sources.html. %>
+<div class="page-head"><div><h1>Data sources</h1><p>Advisory data, Debian's triage, and exploitation signals: where they come from, how fresh they are, and what the last imports did. Every source is fetched by the server; agents never contact them.</p></div></div>
 <% triage_line = safe_join(@tracker.releases.filter_map { |row| triage_freshness_text(row.release, row.status) }.uniq, " ") %>
 <%= render "hosts/advisory_freshness", statuses: @statuses, here: true, failed_refreshes: @failed_refreshes, triage: triage_line.presence %>
 
@@ -125,3 +126,4 @@
 </section>
 
 <%= render "data_sources/tracker", tracker: @tracker, feed_configured: @feed.source.present? %>
+<%= render "data_sources/signals", signals: @signals, feed_configured: @feed.source.present? %>
