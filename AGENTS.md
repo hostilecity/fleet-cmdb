@@ -14,7 +14,7 @@ How to work on this repository. Keep context small: read what a task needs, not 
 
 ## Commands
 
-- Server (`cmdb/`): use Ruby 3.4.10 through chruby (not the macOS system Ruby). `bin/setup`, then `bin/ci` (rubocop, brakeman, bundler-audit, RSpec). See `cmdb/README.md`.
+- Server (`cmdb/`): use Ruby 3.4.13 through chruby (not the macOS system Ruby). `bin/setup`, then `bin/ci` (rubocop, brakeman, bundler-audit, RSpec). See `cmdb/README.md`.
 - Agent (`agent/`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 - Backlog tooling: `ruby docs/backlog/import.rb check` validates `docs/backlog/issues.yml` and the specs.
 

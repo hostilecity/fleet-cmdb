@@ -4,7 +4,7 @@ The Rails application: host records, dashboard, agent API, evaluation, and audit
 
 | | |
 |---|---|
-| Ruby | 3.4.10 (`.ruby-version`) |
+| Ruby | 3.4.13 (`.ruby-version`) |
 | Rails | 8.1 |
 | Database | PostgreSQL (primary, plus separate cache, queue, and cable databases) |
 | Background jobs, cache, cable | Solid Queue, Solid Cache, Solid Cable |
@@ -17,9 +17,9 @@ The Rails application: host records, dashboard, agent API, evaluation, and audit
 **Do not use the macOS system Ruby.** `/usr/bin/ruby` is 2.6.10 and cannot run Rails 8. Use Ruby 3.4.x through [chruby](https://github.com/postmodern/chruby) and [ruby-install](https://github.com/postmodern/ruby-install):
 
 ```sh
-ruby-install ruby 3.4.10        # once
-chruby ruby-3.4.10              # per shell; or add auto-switching so .ruby-version is honoured
-ruby -v                         # must print 3.4.10
+ruby-install ruby 3.4.13        # once
+chruby ruby-3.4.13              # per shell; or add auto-switching so .ruby-version is honoured
+ruby -v                         # must print 3.4.13
 ```
 
 PostgreSQL comes from Homebrew and must be running:
