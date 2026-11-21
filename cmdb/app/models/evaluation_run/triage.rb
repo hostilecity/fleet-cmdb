@@ -27,8 +27,10 @@ class EvaluationRun
     REASONS = %w[kev daily all].freeze
     CLAIM = 1_000
     CHUNK_BATCH = 5_000
-    # Up to this many advisories, the run re-triages only their findings on each host (VulnerabilityMatcher.retriage!);
-    # above it (a first tracker import names most of them), each host's transitions run in full.
+    # Up to this many advisories, the run re-triages only their findings on each host (VulnerabilityMatcher.retriage!,
+    # about 1 ms a host); above it (a first tracker import names most of them), each host's transitions run in full,
+    # about 80 ms a host at 4,450 findings: 21 thread-hours at a million hosts, as the migration's full run costs. The
+    # advisory ids are kept in the run's scope, so the limit also bounds that row.
     ADVISORY_LIMIT = 20_000
 
     # Starts a run once the current transaction commits.
@@ -48,20 +50,28 @@ class EvaluationRun
     # The advisories whose findings it re-triages, or nil for every finding of its hosts.
     def advisory_ids = full? ? nil : scope["advisory_ids"]&.map(&:to_i)
 
-    # Claims, recomputes, records, releases; returns the scope the run keeps (EvaluationRun#fan_out! stores it).
+    # Claims, recomputes, records, releases; returns the scope the run keeps (EvaluationRun#fan_out! stores it too).
+    # Crash-safe (review of #277, B2): the run's id is in its stored scope before anything is recorded under it, each
+    # slice's changed chunks are recorded in the transaction that changes them, and the prepared scope is stored before
+    # the claims are released. So a fan-out retried after a failure, or a retry started from the failed run's scope,
+    # reaches every host a committed slice changed, and claims still pending are claimed again.
     def prepare!
       return scope if prepared?
 
+      store!(scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).uniq))
       claimed, kinds, cves, advisories = claim_all
       full = full? || kinds.include?("kev_all")
       advisory_ids = full ? nil : advisories_for(cves, advisories)
+      VulnerabilityMatcher::Chunks.signals_barrier! # every match that read the signals before they changed has committed
       chunk_ids = full ? ChunkEvaluation.distinct.pluck(:package_chunk_id) : ChunkMatch.where(advisory_id: advisory_ids).distinct.pluck(:package_chunk_id)
-      changed = chunk_ids.each_slice(CHUNK_BATCH).flat_map { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:) }
-      record_chunks(changed) unless full
+      stats = Hash.new(0)
+      record = full ? nil : ->(ids) { record_chunks(ids) }
+      changed = chunk_ids.each_slice(CHUNK_BATCH).flat_map { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:) }
+      store!(scope.merge("full" => full, "prepared" => true, "changes" => claimed.size, "advisories" => advisory_ids&.size,
+                         "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
+                         "chunks_changed" => changed.size, "verdicts_changed" => stats[:verdicts]))
       TriageSignalChange.release!(claimed) if claimed.any?
-      @scope = scope.merge("full" => full, "prepared" => true, "chunk_runs" => (chunk_runs + [ @run_id ]).uniq, "changes" => claimed.size,
-                           "advisories" => advisory_ids&.size, "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
-                           "chunks_changed" => changed.size)
+      scope
     end
 
     def hosts
@@ -78,10 +88,13 @@ class EvaluationRun
       advisory_ids ? VulnerabilityMatcher.retriage!(ids, advisory_ids:) : VulnerabilityMatcher.match!(ids).changed_host_ids
     end
 
+    # A run started from a failed run's scope covers it, prepared or not: it re-runs the hosts of the chunks that run
+    # recorded, and claims again whatever that run had claimed but not released.
     def covers?(other)
-      return false unless other.is_a?(Triage) && other.prepared?
+      return false unless other.is_a?(Triage) && (other.prepared? || other.chunk_runs.any?)
       return true if full?
       return false if other.full? || !(other.chunk_runs - chunk_runs).empty?
+      return true unless other.prepared?
 
       advisory_ids.nil? || (!other.advisory_ids.nil? && (other.advisory_ids - advisory_ids).empty?)
     end
@@ -116,8 +129,14 @@ class EvaluationRun
       (named + advisories).uniq
     end
 
+    # Inside a refresh slice's transaction; a retried slice records its chunks again, which changes nothing.
     def record_chunks(ids)
       ids.each_slice(5_000) { |slice| TriageRunChunk.insert_all(slice.map { |id| { evaluation_run_id: @run_id, package_chunk_id: id } }) }
+    end
+
+    def store!(scope)
+      @scope = scope
+      EvaluationRun.where(id: @run_id).update_all(scope:, updated_at: Time.current)
     end
   end
 end

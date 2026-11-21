@@ -175,6 +175,11 @@ namespace :vulnerabilities do
     puts "Queued re-triage #{run.id} of every host: its progress is on the Data sources page."
   end
 
+  desc "Validate the triage checks on chunk_matches and vulnerability_findings (after an upgrade left them NOT VALID on a large database)"
+  task validate_triage_checks: :environment do
+    puts VulnerabilityTriage::Checks.validate!
+  end
+
   desc "Match every package chunk and host in the fleet against the advisory data again (normally done after each package report and import)"
   task match: :environment do
     outcome = VulnerabilityMatcher.match_again!

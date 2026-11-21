@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_21_259002) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_21_259003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -212,7 +212,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_21_259002) do
     t.string "triage_fixed_version", limit: 256
     t.index ["advisory_id"], name: "index_chunk_matches_on_advisory_id"
   end
-  add_check_constraint "chunk_matches", "(base_rule IS NULL) = (base_bucket IS NULL) AND (base_rule IS NULL) = (kev IS NULL) AND (base_rule IS NULL OR base_bucket =\nCASE\n    WHEN base_rule = ANY (ARRAY[3, 4, 5, 6]) THEN 1\n    WHEN base_rule = ANY (ARRAY[10, 11, 13, 14]) THEN 2\n    WHEN base_rule = ANY (ARRAY[9, 15, 16, 17, 18, 19]) THEN 3\n    WHEN base_rule = ANY (ARRAY[1, 2, 7, 8, 12]) THEN 4\n    ELSE NULL::integer\nEND)", name: "chunk_matches_base_valid", validate: false
+  add_check_constraint "chunk_matches", "(base_rule IS NULL) = (base_bucket IS NULL) AND (base_rule IS NULL) = (kev IS NULL) AND (base_rule IS NULL OR base_bucket =\nCASE\n    WHEN base_rule = ANY (ARRAY[3, 4, 5, 6]) THEN 1\n    WHEN base_rule = ANY (ARRAY[10, 11, 13, 14]) THEN 2\n    WHEN base_rule = ANY (ARRAY[9, 15, 16, 17, 18, 19]) THEN 3\n    WHEN base_rule = ANY (ARRAY[1, 2, 7, 8, 12]) THEN 4\n    ELSE NULL::integer\nEND)", name: "chunk_matches_base_valid"
 
   create_table "cis_result_changes", primary_key: ["id", "occurred_at"], options: "PARTITION BY RANGE (occurred_at)", force: :cascade do |t|
     t.bigserial "id", null: false
@@ -1035,7 +1035,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_21_259002) do
     t.check_constraint "(state::text = 'resolved'::text) = (resolution IS NOT NULL) AND (resolution::text = ANY (ARRAY['fixed'::character varying, 'removed'::character varying, 'withdrawn'::character varying, 'not_affected'::character varying]::text[]))", name: "vulnerability_findings_resolution_valid"
     t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'reopened'::character varying]::text[])", name: "vulnerability_findings_state_valid"
   end
-  add_check_constraint "vulnerability_findings", "(bucket_rule IS NULL) = (bucket IS NULL) AND (bucket_rule IS NULL) = (kev IS NULL) AND (bucket_rule IS NULL OR state::text <> 'resolved'::text AND bucket =\nCASE\n    WHEN bucket_rule = ANY (ARRAY[3, 4, 5, 6]) THEN 1\n    WHEN bucket_rule = ANY (ARRAY[10, 11, 13, 14]) THEN 2\n    WHEN bucket_rule = ANY (ARRAY[9, 15, 16, 17, 18, 19]) THEN 3\n    WHEN bucket_rule = ANY (ARRAY[1, 2, 7, 8, 12]) THEN 4\n    ELSE NULL::integer\nEND)", name: "vulnerability_findings_bucket_valid", validate: false
+  add_check_constraint "vulnerability_findings", "(bucket_rule IS NULL) = (bucket IS NULL) AND (bucket_rule IS NULL) = (kev IS NULL) AND (bucket_rule IS NULL OR state::text <> 'resolved'::text AND bucket =\nCASE\n    WHEN bucket_rule = ANY (ARRAY[3, 4, 5, 6]) THEN 1\n    WHEN bucket_rule = ANY (ARRAY[10, 11, 13, 14]) THEN 2\n    WHEN bucket_rule = ANY (ARRAY[9, 15, 16, 17, 18, 19]) THEN 3\n    WHEN bucket_rule = ANY (ARRAY[1, 2, 7, 8, 12]) THEN 4\n    ELSE NULL::integer\nEND)", name: "vulnerability_findings_bucket_valid"
 
   create_table "vulnerability_work_events", primary_key: ["id", "occurred_at"], options: "PARTITION BY RANGE (occurred_at)", force: :cascade do |t|
     t.bigserial "id", null: false

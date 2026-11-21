@@ -11,7 +11,15 @@ Nothing to do: the upgrade queues its own work.
 - **What runs.** The migration `TriageEveryFinding` queues one background re-triage of every host (an `EvaluationRun` of kind `triage`, reason "all"): every chunk verdict's base bucket is computed, then every host's findings get their bucket, rule, and KEV flag. It runs on the `evaluation` queue after the container starts, and its progress line on **Data sources** reads "Re-triaging every host's findings". If it stops, **Re-triage again** there, or `bin/rails vulnerabilities:triage`, starts it again.
 - **What operators see meanwhile.** The open counts do not change. Until the run reaches a host, its bucket counts read 0 and do not yet add up to its open count. Nothing shows buckets yet: the host tab (VT-HOST-TAB, #260) and the fleet columns (VT-SCORES, #262) are later slices.
 - **Cost.** About what a full re-match (`bin/rails vulnerabilities:match`) costs: each host's transitions read its verdicts and write each active finding once. The measurements are in the VT-BUCKETS PR and [vt-buckets.md](../backlog/specs/vt-buckets.md#as-built-259).
-- **Rolling back.** The columns and the counts stay and are ignored by the older code. After rolling forward again, run `bin/rails vulnerabilities:triage`: findings matched by the old code meanwhile have no bucket until a host's next report or the next re-triage gives them one (the matcher computes a missing base in memory, so any host it matches again gets its buckets).
+- **Large databases.** `ValidateTriageChecks` validates the two new checks at container start only on tables of at most 10 million rows (a scan that lets writes go on). Above that it leaves them `NOT VALID` (new rows are still checked) and logs it; run `docker exec fleet-cmdb bin/rails vulnerabilities:validate_triage_checks` while the server runs.
+- **Rolling back.** The older code resolves findings without clearing their bucket, which the new check on `vulnerability_findings` refuses, so every package report that resolves a finding would fail. Drop the two checks first, then deploy the older image. The columns, counts, and functions can stay; the older code ignores them:
+
+  ```sql
+  ALTER TABLE vulnerability_findings DROP CONSTRAINT vulnerability_findings_bucket_valid;
+  ALTER TABLE chunk_matches DROP CONSTRAINT chunk_matches_base_valid;
+  ```
+
+  (`docker exec -i fleet-cmdb bin/rails dbconsole` runs them.) After rolling forward again, run `bin/rails vulnerabilities:validate_triage_checks`, which clears the buckets the older code left on resolved findings, adds both checks back, and validates them, then `bin/rails vulnerabilities:triage`: findings the older code opened meanwhile have no bucket until it, or their host's next report, gives them one.
 
 ## Signed kernel images get their findings (#270)
 

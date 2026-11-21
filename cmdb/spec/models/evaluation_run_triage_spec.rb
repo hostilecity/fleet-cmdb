@@ -44,4 +44,30 @@ RSpec.describe EvaluationRun::Triage do
     prepared = { "reason" => "kev", "prepared" => true, "chunk_runs" => [ 7 ] }
     expect(described_class.new(prepared, record.id).prepare!).to eq(prepared)
   end
+
+  # Review of #277, B3: a match that read the signals before a KEV import committed must have committed before the run
+  # reads which chunks hold the advisory, or its new chunk keeps its pre-KEV base. The match holds the signals lock
+  # shared from before it reads them until it commits; the run's barrier waits for it.
+  it "waits, before it reads which chunks hold the advisories, for every match that read the signals before they changed" do
+    session = separate_session
+    session.begin_db_transaction
+    session.execute("SELECT pg_advisory_xact_lock_shared(#{VulnerabilityMatcher::Chunks::SIGNALS_LOCK.join(', ')})") # a match in flight
+    TriageSignalChange.record!(:kev, cve_ids: %w[CVE-2026-0001])
+    record = run("kev")
+    order = Queue.new
+    allow(ChunkMatch).to receive(:where).and_wrap_original do |original, *args, **kwargs|
+      order << :chunks_read
+      original.call(*args, **kwargs)
+    end
+    runner = Thread.new { ApplicationRecord.connection_pool.with_connection { described_class.new(record.scope, record.id).prepare! } }
+    sleep 0.5
+    expect(runner).to be_alive # waiting at the barrier
+    order << :match_committed
+    session.commit_db_transaction
+    runner.join(10)
+    expect(runner.value).to include("prepared" => true)
+    expect(Array.new(order.size) { order.pop }.first(2)).to eq(%i[match_committed chunks_read])
+  ensure
+    session&.disconnect!
+  end
 end

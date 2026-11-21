@@ -271,6 +271,12 @@ RSpec.describe "vulnerabilities rake tasks" do
     end
   end
 
+  it "vulnerabilities:validate_triage_checks says what it validated (VT-BUCKETS #259)" do
+    Rake::Task["vulnerabilities:validate_triage_checks"].reenable
+    expect { Rake::Task["vulnerabilities:validate_triage_checks"].invoke }
+      .to output("chunk_matches_base_valid: already validated\nvulnerability_findings_bucket_valid: already validated\n").to_stdout
+  end
+
   describe "vulnerabilities:triage (VT-BUCKETS #259)" do
     include ActiveJob::TestHelper
 

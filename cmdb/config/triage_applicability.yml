@@ -7,7 +7,8 @@
 #   source: the source package the kernel's advisories name (findings on the signed images carry it too, #270).
 #   image: a pattern for a versioned kernel image package, with the named groups release (what `uname -r` reports
 #     when that image runs) and flavour (images of the same flavour replace each other). Debian: linux-image-<release>
-#     and its -unsigned twin. The flavour metapackages (linux-image-amd64, linux-image-cloud-amd64) have no release in
+#     and its -unsigned twin; the release is <version>+deb<N>-<flavour> since trixie and <version>-<ABI>-<flavour>
+#     before (bookworm), so a flavour such as 686-pae is read whole in both. The flavour metapackages (linux-image-amd64, linux-image-cloud-amd64) have no release in
 #     their name and do not match; nor do the -dbg packages (debug symbols).
 #   compare: how two images' versions are ordered: the package manager's version order (dpkg).
 # no_runtime_code: per source package, patterns for the binary packages that hold none of its code that runs on the
@@ -20,7 +21,7 @@
 Debian:
   kernel:
     source: linux
-    image: '\Alinux-image-(?!.*-dbg\z)(?<release>[0-9][^-]*(?:-[0-9]+)?-(?<flavour>[a-z0-9]+(?:-[a-z0-9]+)*?))(?:-unsigned)?\z'
+    image: '\Alinux-image-(?!.*-dbg\z)(?<release>(?:[0-9][^-+]*-[0-9]+|[0-9][^-]*\+[^-]*)-(?<flavour>[a-z0-9]+(?:-[a-z0-9]+)*?))(?:-unsigned)?\z'
     compare: dpkg
   no_runtime_code:
     linux:
@@ -31,5 +32,5 @@ Debian:
       - '\Alinux-doc'
       - '\Alinux-source'
       - '\Alinux-support-'
-      - '\Alinux-image-[a-z]'         # the flavour metapackages (#270 proposal, above)
+      - '\Alinux-image-[a-z0-9-]*\z'  # the flavour metapackages (#270 proposal, above): no version in the name
       - '\Alinux-image-.*-dbg\z'      # debug symbols

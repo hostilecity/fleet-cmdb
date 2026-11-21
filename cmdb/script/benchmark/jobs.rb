@@ -97,12 +97,14 @@ module FleetBenchmark
       tracker = Advisory.where("advisory_id LIKE 'BENCH-%'").order(:id).limit(TRACKER_CVES).pluck(:id)
       tracker_chunks = ChunkMatch.where(advisory_id: tracker).distinct.pluck(:package_chunk_id)
       verdicts = ChunkMatch.count
+      kev_verdicts = ChunkMatch.where(advisory_id: advisory).count
+      tracker_verdicts = ChunkMatch.where(advisory_id: tracker).count
       {
-        "triage: one KEV CVE, base of its verdicts (per chunk)" => [ chunks.size, -> { rolled_back { list.call && VulnerabilityTriage::Base.refresh!(chunks, advisory_ids: [ advisory ]) } } ],
+        "triage: one KEV CVE, base of its verdicts (per verdict)" => [ kev_verdicts, -> { rolled_back { list.call && VulnerabilityTriage::Base.refresh!(chunks, advisory_ids: [ advisory ]) } } ],
         "triage: one KEV CVE, its hosts' transitions (per affected host)" => [ hosts.size, lambda {
           rolled_back { list.call && VulnerabilityTriage::Base.refresh!(chunks, advisory_ids: [ advisory ]) && VulnerabilityMatcher.retriage!(hosts, advisory_ids: [ advisory ]) }
         } ],
-        "triage: #{TRACKER_CVES} changed tracker CVEs, base (per CVE)" => [ tracker.size, -> { rolled_back { VulnerabilityTriage::Base.refresh!(tracker_chunks, advisory_ids: tracker) } } ],
+        "triage: #{TRACKER_CVES} changed tracker CVEs, base (per verdict)" => [ tracker_verdicts, -> { rolled_back { VulnerabilityTriage::Base.refresh!(tracker_chunks, advisory_ids: tracker) } } ],
         "triage: every verdict's base again (per verdict)" => [ verdicts, -> { rolled_back { VulnerabilityTriage::Base.refresh!(ChunkEvaluation.pluck(:package_chunk_id)) } } ],
         "summary counts, host_compliance_counts (per package host)" => [ package_hosts.size, lambda {
           # Every bucket column read, so no part of the function is planned away; uncached, so each run counts again.
