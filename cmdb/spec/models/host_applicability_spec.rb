@@ -80,6 +80,26 @@ RSpec.describe HostApplicability do
     end
 
     # Review of #268, S5: a stale scan proves nothing.
+    # Third review, S2: each bound, just inside and just outside.
+    it "holds each freshness bound to the second" do
+      collected = report.collected_at
+      at = ->(scanned:, received: report.received_at, now_at: now) do
+        row.library_scanned_at = scanned
+        idle?("libidle", at: now_at, package_set: Struct.new(:collected_at, :received_at).new(collected, received))
+      end
+      expect(at.call(scanned: collected - 2.hours + 1)).to be(true) # lag
+      expect(at.call(scanned: collected - 2.hours - 1)).to be(false)
+      expect(at.call(scanned: collected + 5.minutes - 1)).to be(true) # lead
+      expect(at.call(scanned: collected + 5.minutes + 1)).to be(false)
+      ok = collected - 10.minutes
+      expect(at.call(scanned: ok, now_at: report.received_at + 12.hours - 1)).to be(true) # report age
+      expect(at.call(scanned: ok, now_at: report.received_at + 12.hours + 1)).to be(false)
+      expect(at.call(scanned: ok, received: collected + 1.hour - 1, now_at: collected + 2.hours)).to be(true) # transit
+      expect(at.call(scanned: ok, received: collected + 1.hour + 1, now_at: collected + 2.hours)).to be(false)
+      expect(at.call(scanned: ok, received: collected - 1.hour + 1)).to be(true) # an agent clock ahead
+      expect(at.call(scanned: ok, received: collected - 1.hour - 1)).to be(false)
+    end
+
     it "needs a fresh scan and a recent report" do
       expect(idle?("libidle", at: now + 11.hours)).to be(true)
       expect(idle?("libidle", at: now + 13.hours)).to be(false) # the report is more than 12 hours old

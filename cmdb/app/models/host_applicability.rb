@@ -43,11 +43,16 @@ class HostApplicability < ApplicationRecord
   # most an hour (scan::EVERY), plus an hour of slack. A scan time after collected_at is allowed a few minutes.
   SCAN_MAX_LAG = 2.hours
   SCAN_MAX_LEAD = 5.minutes
+  # The most a report's arrival (server clock) may differ from its collection (agent clock), either way: the agent
+  # re-sends a failed report for up to an interval, and that report's scan is as old as the report (third review,
+  # S2). A host whose clock is skewed by more than this never gets L1.
+  REPORT_MAX_TRANSIT = 1.hour
 
   # Whether the report proves the package idle: the scan ran, judged it (native code only), and found nothing of it
   # mapped, and no service of it runs or listens (owner decision 2026-11-20); and the scan is fresh (review of #268,
-  # S5): the host's latest package report (package_set, its HostPackageSet) arrived within REPORT_MAX_AGE of now, and
-  # the scan ran at most SCAN_MAX_LAG before that report was collected and not after it.
+  # S5): the host's latest package report (package_set, its HostPackageSet) arrived within REPORT_MAX_AGE of now and
+  # within REPORT_MAX_TRANSIT of when it was collected, and the scan ran at most SCAN_MAX_LAG before that report was
+  # collected and at most SCAN_MAX_LEAD after it.
   def provably_idle?(package, package_set:, now:)
     library_scan == "ran" && scan_fresh?(package_set, now:) && native_packages.include?(package) &&
       !packages_in_use.include?(package) && !listening_network.include?(package) && !listening_loopback.include?(package)
@@ -56,6 +61,7 @@ class HostApplicability < ApplicationRecord
   def scan_fresh?(package_set, now:)
     return false if library_scanned_at.nil? || package_set&.received_at.nil? || package_set.collected_at.nil?
     return false if now - package_set.received_at > REPORT_MAX_AGE
+    return false if (package_set.received_at - package_set.collected_at).abs > REPORT_MAX_TRANSIT
 
     lag = package_set.collected_at - library_scanned_at
     lag <= SCAN_MAX_LAG && lag >= -SCAN_MAX_LEAD
