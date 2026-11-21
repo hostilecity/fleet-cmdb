@@ -24,6 +24,8 @@ struct TestHost {
     executables: std::collections::HashSet<String>,
     /// Set-user-ID files.
     setid: std::collections::HashSet<String>,
+    /// Paths that are not regular files when read (a masked unit's link to /dev/null).
+    irregular: std::collections::HashSet<String>,
     /// Symlinks: path -> target (absolute).
     symlinks: HashMap<String, String>,
     log: Mutex<Vec<String>>,
@@ -53,6 +55,9 @@ impl Host for TestHost {
         self.log.lock().unwrap().push(format!("read {path}"));
         if self.denied.contains(&path) {
             return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        if self.irregular.contains(&path) {
+            return Err(io::Error::other("not a regular file"));
         }
         let bytes = self
             .files
@@ -1721,6 +1726,150 @@ fn a_damaged_but_parseable_record_means_a_new_scan() {
             .at,
         "2026-11-20T12:00:00Z"
     );
+}
+
+/// A scan host with one more package, `name`, that ships only an ELF program at `program`.
+fn with_program(mut host: TestHost, name: &str, program: &str) -> TestHost {
+    host.files.insert(
+        format!("/var/lib/dpkg/info/{name}.list"),
+        format!("{program}\n").into_bytes(),
+    );
+    host.files.insert(program.into(), b"\x7fELF....".to_vec());
+    host.executables.insert(program.into());
+    add_lists(&mut host, &[&format!("{name}.list")]);
+    host
+}
+
+fn dir(host: &mut TestHost, path: &str, names: &[&str]) {
+    host.dirs
+        .insert(path.into(), names.iter().map(|n| (*n).to_owned()).collect());
+}
+
+#[test]
+fn a_program_d_bus_starts_is_never_native() {
+    // Owner decision 2026-11-21 (third review, S3).
+    let mut host = with_program(scan_host(), "dbusd", "/usr/libexec/dbusd");
+    host = with_program(host, "foo-daemon", "/usr/sbin/foo-daemon");
+    host = with_program(host, "ships-activation", "/usr/lib/libships.so.1");
+    host.files.insert(
+        "/var/lib/dpkg/info/ships-activation.list".into(),
+        b"/usr/lib/libships.so.1\n/usr/share/dbus-1/system-services/org.example.Ships.service\n"
+            .to_vec(),
+    );
+    dir(
+        &mut host,
+        "/usr/share/dbus-1/system-services",
+        &["org.example.D.service", "org.example.Foo.service"],
+    );
+    host = host
+        .file("/usr/share/dbus-1/system-services/org.example.D.service", "[D-BUS Service]\nName=org.example.D\nExec=/usr/libexec/dbusd --system\nUser=root\n")
+        .file("/usr/share/dbus-1/system-services/org.example.Foo.service", "[D-BUS Service]\nName=org.example.Foo\nExec=/bin/false\nSystemdService=dbus-foo.service\n");
+    dir(&mut host, "/usr/lib/systemd/system", &["dbus-foo.service"]);
+    host = host.file(
+        "/usr/lib/systemd/system/dbus-foo.service",
+        "[Service]\nExecStart=-/usr/sbin/foo-daemon --flag\n",
+    );
+    let native = scan::scan(&host).unwrap().native;
+    for package in ["dbusd", "foo-daemon", "ships-activation"] {
+        assert!(
+            !native.contains(&package.to_owned()),
+            "{package}: {native:?}"
+        );
+    }
+    assert!(native.contains(&"libidle".to_owned()), "the control");
+}
+
+#[test]
+fn a_program_a_timer_starts_is_never_native() {
+    let mut host = with_program(scan_host(), "timerd", "/usr/sbin/timerd");
+    host = with_program(host, "other-job", "/usr/bin/other-job");
+    host = with_program(host, "ships-timer", "/usr/lib/libtimer.so.1");
+    host.files.insert(
+        "/var/lib/dpkg/info/ships-timer.list".into(),
+        b"/usr/lib/libtimer.so.1\n/usr/lib/systemd/system/ships.timer\n".to_vec(),
+    );
+    dir(
+        &mut host,
+        "/usr/lib/systemd/system",
+        &["timerd.service", "timerd.timer"],
+    );
+    dir(
+        &mut host,
+        "/etc/systemd/system",
+        &["local.timer", "renamed.service"],
+    );
+    host = host
+        .file(
+            "/usr/lib/systemd/system/timerd.timer",
+            "[Timer]\nOnCalendar=daily\n",
+        )
+        .file(
+            "/usr/lib/systemd/system/timerd.service",
+            "[Service]\nType=oneshot\nExecStart=/usr/sbin/timerd\n",
+        )
+        .file(
+            "/etc/systemd/system/local.timer",
+            "[Timer]\nOnCalendar=hourly\nUnit=renamed.service\n",
+        )
+        .file(
+            "/etc/systemd/system/renamed.service",
+            "[Service]\nExecStartPre=/bin/true\nExecStart=/usr/bin/other-job\n",
+        );
+    let native = scan::scan(&host).unwrap().native;
+    for package in ["timerd", "other-job", "ships-timer"] {
+        assert!(
+            !native.contains(&package.to_owned()),
+            "{package}: {native:?}"
+        );
+    }
+    assert!(native.contains(&"libidle".to_owned()), "the control");
+    // A masked timer (a link to /dev/null) starts nothing and is no error.
+    host.dirs
+        .get_mut("/etc/systemd/system")
+        .unwrap()
+        .push("masked.timer".into());
+    host.irregular
+        .insert("/etc/systemd/system/masked.timer".into());
+    assert!(scan::scan(&host).is_ok());
+    // A timer that cannot be read fails the scan rather than miss a start.
+    host.denied
+        .insert("/usr/lib/systemd/system/timerd.timer".into());
+    assert!(scan::scan(&host).unwrap_err().contains("timerd.timer"));
+}
+
+#[test]
+fn a_program_cron_starts_is_never_native() {
+    let mut host = with_program(scan_host(), "cronjob", "/usr/sbin/cronjob");
+    host = with_program(host, "sysjob", "/usr/bin/sysjob");
+    host = with_program(host, "userjob", "/usr/bin/userjob");
+    host = with_program(host, "privatejob", "/usr/bin/privatejob");
+    host = with_program(host, "ships-cron", "/usr/lib/libcron.so.1");
+    host.files.insert(
+        "/var/lib/dpkg/info/ships-cron.list".into(),
+        b"/usr/lib/libcron.so.1\n/etc/cron.d/ships-cron\n".to_vec(),
+    );
+    dir(&mut host, "/etc/cron.d", &["crond-job", "ships-cron"]);
+    dir(&mut host, "/var/spool/cron/crontabs", &["alice", "bob"]);
+    host = host
+        .file("/etc/cron.d/crond-job", "# m h dom mon dow user command\n0 * * * * root test -x /usr/sbin/cronjob && /usr/sbin/cronjob --quiet\n")
+        .file("/etc/cron.d/ships-cron", "@daily root true\n")
+        .file("/etc/crontab", "17 * * * * root cd / && /usr/bin/sysjob\n")
+        .file("/var/spool/cron/crontabs/alice", "*/5 * * * * /usr/bin/userjob\n")
+        .file("/var/spool/cron/crontabs/bob", "* * * * * /usr/bin/privatejob\n");
+    // Bob's crontab is private to him: skipped, not an error (a limit the docs state).
+    host.denied.insert("/var/spool/cron/crontabs/bob".into());
+    let native = scan::scan(&host).unwrap().native;
+    for package in ["cronjob", "sysjob", "userjob", "ships-cron"] {
+        assert!(
+            !native.contains(&package.to_owned()),
+            "{package}: {native:?}"
+        );
+    }
+    assert!(
+        native.contains(&"privatejob".to_owned()),
+        "a crontab the scan cannot read"
+    );
+    assert!(native.contains(&"libidle".to_owned()), "the control");
 }
 
 #[test]

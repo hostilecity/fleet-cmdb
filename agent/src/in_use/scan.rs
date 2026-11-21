@@ -36,6 +36,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use super::units;
 use crate::facts::Ctx;
 use crate::facts::host::{Command, Host, RealHost};
 
@@ -436,7 +437,166 @@ pub const ON_DEMAND: &[&str] = &[
 
 fn on_demand(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or("");
-    name.starts_with("libnss_") || ON_DEMAND.iter().any(|dir| path.contains(dir))
+    name.starts_with("libnss_")
+        || ON_DEMAND.iter().any(|dir| path.contains(dir))
+        // A package that ships a D-Bus activation file, a systemd timer, or a cron entry (owner
+        // decision 2026-11-21, third review S3).
+        || path.contains("/dbus-1/system-services/")
+        || path.contains("/dbus-1/services/")
+        || (path.contains("/systemd/system/") && name.ends_with(".timer"))
+        || path.starts_with("/etc/cron.")
+        || path == "/etc/crontab"
+}
+
+/// Where systemd unit files are, in its order of precedence.
+const UNIT_DIRS: &[&str] = &[
+    "/etc/systemd/system",
+    "/run/systemd/system",
+    "/usr/local/lib/systemd/system",
+    "/usr/lib/systemd/system",
+    "/lib/systemd/system",
+];
+/// Where D-Bus looks for activation files.
+const DBUS_DIRS: &[&str] = &[
+    "/usr/share/dbus-1/system-services",
+    "/usr/share/dbus-1/services",
+    "/usr/local/share/dbus-1/system-services",
+    "/etc/dbus-1/system-services",
+];
+/// Where cron reads crontabs: the system's, and each user's.
+const CRON_FILES: &[&str] = &["/etc/crontab"];
+const CRON_DIRS: &[&str] = &["/etc/cron.d", "/var/spool/cron/crontabs"];
+/// The most files read to find what is started on demand, and the largest one.
+const MAX_START_FILES: usize = 10_000;
+const MAX_START_BYTES: u64 = 1024 * 1024;
+
+/// The programs started on demand, as absolute paths: every absolute path in the commands of the cron
+/// tables the scan can read (`/etc/crontab`, `/etc/cron.d`, and the users' crontabs root may read;
+/// `/etc/cron.{hourly,daily,...}` hold scripts, which make their packages not native already), in the
+/// `ExecStart=` lines of the services systemd timers start, and in the `Exec=` lines of D-Bus
+/// activation files (or the `ExecStart=` of the unit their `SystemdService=` names). Every absolute
+/// path counts, arguments included (`test -x /usr/sbin/x && /usr/sbin/x`): that can only make more
+/// packages not native. A cron table that cannot be read is skipped (a user's own crontab is private);
+/// any other file that cannot be read fails the scan rather than miss a start.
+fn started_on_demand(ctx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let mut found = BTreeSet::new();
+    let read = std::cell::Cell::new(0usize);
+    let take = |path: &str, optional: bool| -> Result<Option<String>, String> {
+        read.set(read.get() + 1);
+        if read.get() > MAX_START_FILES {
+            return Err(format!(
+                "more than {MAX_START_FILES} cron, timer, and D-Bus files"
+            ));
+        }
+        match ctx.read(path, MAX_START_BYTES) {
+            Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            // A masked unit is a symlink to /dev/null: it starts nothing.
+            Err(e) if e.to_string() == "not a regular file" => Ok(None),
+            Err(e) if optional && e.kind() == std::io::ErrorKind::PermissionDenied => Ok(None),
+            Err(e) => Err(crate::facts::io_reason(path, &e)),
+        }
+    };
+    let list = |dir: &str| -> Result<Vec<String>, String> {
+        match ctx.list(dir, MAX_START_FILES) {
+            Ok(names) => Ok(names),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(crate::facts::io_reason(dir, &e)),
+        }
+    };
+    let paths_in = |text: &str, found: &mut BTreeSet<String>| {
+        for token in text.split(|c: char| {
+            c.is_whitespace() || matches!(c, ';' | '&' | '|' | '"' | '\'' | '(' | ')' | '=')
+        }) {
+            let token = token.trim_start_matches(['-', '@', ':', '+', '!']);
+            if token.starts_with('/') && token.len() > 1 {
+                found.insert(token.to_owned());
+            }
+        }
+    };
+    // cron
+    let mut tables: Vec<String> = CRON_FILES.iter().map(|f| (*f).to_owned()).collect();
+    for dir in CRON_DIRS {
+        tables.extend(list(dir)?.into_iter().map(|name| format!("{dir}/{name}")));
+    }
+    for table in tables {
+        if let Some(text) = take(&table, true)? {
+            for line in text.lines().map(str::trim) {
+                if !line.is_empty() && !line.starts_with('#') {
+                    paths_in(line, &mut found);
+                }
+            }
+        }
+    }
+    // A unit's ExecStart= lines, from the first unit directory that has it.
+    let unit_exec = |unit: &str, found: &mut BTreeSet<String>| -> Result<(), String> {
+        for dir in UNIT_DIRS {
+            if let Some(text) = take(&format!("{dir}/{unit}"), false)? {
+                for line in text.lines().map(str::trim) {
+                    if let Some(command) = line
+                        .strip_prefix("ExecStart=")
+                        .or_else(|| line.strip_prefix("ExecStartPre="))
+                        .or_else(|| line.strip_prefix("ExecStartPost="))
+                    {
+                        paths_in(command, found);
+                    }
+                }
+                return Ok(());
+            }
+        }
+        Ok(())
+    };
+    // systemd timers
+    let mut timers = BTreeSet::new();
+    for dir in UNIT_DIRS {
+        for name in list(dir)? {
+            if name.ends_with(".timer") && units::service_name(&name.replace(".timer", ".service"))
+            {
+                timers.insert(format!("{dir}/{name}"));
+            }
+        }
+    }
+    let mut services = BTreeSet::new();
+    for timer in timers {
+        let stem = timer
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".timer")
+            .to_owned();
+        let mut service = format!("{stem}.service");
+        if let Some(text) = take(&timer, false)? {
+            for line in text.lines().map(str::trim) {
+                if let Some(unit) = line.strip_prefix("Unit=") {
+                    service = unit.trim().to_owned();
+                }
+            }
+        }
+        services.insert(service);
+    }
+    // D-Bus activation
+    for dir in DBUS_DIRS {
+        for name in list(dir)? {
+            if !name.ends_with(".service") {
+                continue;
+            }
+            if let Some(text) = take(&format!("{dir}/{name}"), false)? {
+                for line in text.lines().map(str::trim) {
+                    if let Some(command) = line.strip_prefix("Exec=") {
+                        paths_in(command, &mut found);
+                    } else if let Some(unit) = line.strip_prefix("SystemdService=") {
+                        services.insert(unit.trim().to_owned());
+                    }
+                }
+            }
+        }
+    }
+    for service in services {
+        if units::service_name(&service) {
+            unit_exec(&service, &mut found)?;
+        }
+    }
+    Ok(found)
 }
 
 /// Interpreted code a package ships; its documentation's examples (`/usr/share/doc`) are not code.
@@ -509,6 +669,12 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
     // a time (third review, S1).
     let wanted: HashSet<String> = mapped.keys().cloned().collect();
     let lookup = super::owners::lookup(&wanted);
+    // Programs that cron, a systemd timer, or D-Bus activation starts, by each spelling (owner decision
+    // 2026-11-21, third review S3): their packages are never native.
+    let started: HashSet<String> = started_on_demand(&ctx)?
+        .iter()
+        .flat_map(|path| super::owners::aliases(path))
+        .collect();
     let mut owners: HashMap<String, BTreeSet<String>> = HashMap::new();
     let mut native = BTreeSet::new();
     let mut group = Group::default();
@@ -533,7 +699,7 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
                         .insert(package.to_owned());
                 }
             }
-            group.add(&line);
+            group.add(&line, &started);
         }
         true
     })?;
@@ -571,11 +737,15 @@ struct Group {
 }
 
 impl Group {
-    fn add(&mut self, line: &str) {
+    fn add(&mut self, line: &str, started: &HashSet<String>) {
         if self.excluded {
             return;
         }
-        if line.contains('\u{FFFD}') || interpreted(line) || on_demand(line) {
+        if line.contains('\u{FFFD}')
+            || interpreted(line)
+            || on_demand(line)
+            || started.contains(line)
+        {
             self.excluded = true;
             self.files = Vec::new();
             return;
