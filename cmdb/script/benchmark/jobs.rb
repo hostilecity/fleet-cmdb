@@ -71,12 +71,45 @@ module FleetBenchmark
           work.prepare!
           work.call(Host.minimum(:id)..Host.maximum(:id))
         }, nil, true ],
+        **triage_measurements(package_hosts),
         # Row deletes: the tables that are not partitioned, and the legacy partition of a converted table (ADR 0027).
         "retention prune, row deletes (rolled back; per row deleted)" => [ retention_rows, -> { rolled_back { Retention.prune! } } ],
         # Partitions past the window detached and dropped, each host's newest row moved forward first (ADR 0027).
         "retention retire partitions (rolled back; per partition)" => [ retired["partitions"], -> { rolled_back { Retention.retire! } } ],
         "retention dry run (counts only)" => [ 1, -> { Retention.prune!(dry_run: true) && Retention.retire!(dry_run: true) } ],
         "task expiry and leases (per run)" => [ 1, -> { rolled_back { TaskLeases.expire! && TaskLeases.lapse! } } ]
+      }
+    end
+
+    # VT-BUCKETS #259: a KEV listing of one CVE every package host has (the seed's advisories name CVE-2099-...), a day's
+    # tracker changes, every verdict's base, and the summary recount. Rolled back, so each run starts from the seed.
+    TRIAGE_CVE = "CVE-2099-0000100".freeze # source 1's first advisory: no fix, on every package host
+    TRACKER_CVES = 100
+
+    def triage_measurements(package_hosts)
+      advisory = Advisory.where("aliases @> ARRAY[?]::varchar[]", TRIAGE_CVE).pick(:id)
+      return {} unless advisory
+
+      chunks = ChunkMatch.where(advisory_id: advisory).distinct.pluck(:package_chunk_id)
+      sets = PackageSet.where("chunk_ids && ARRAY[?]::bigint[]", chunks).select(:id)
+      hosts = Host.in_fleet.where(id: HostPackageSet.where(package_set_id: sets).select(:host_id)).order(:id).limit(@samples).pluck(:id)
+      list = -> { KevEntry.insert_all([ { cve_id: TRIAGE_CVE, date_added: Date.current } ]) }
+      tracker = Advisory.where("advisory_id LIKE 'BENCH-%'").order(:id).limit(TRACKER_CVES).pluck(:id)
+      tracker_chunks = ChunkMatch.where(advisory_id: tracker).distinct.pluck(:package_chunk_id)
+      verdicts = ChunkMatch.count
+      {
+        "triage: one KEV CVE, base of its verdicts (per chunk)" => [ chunks.size, -> { rolled_back { list.call && VulnerabilityTriage::Base.refresh!(chunks, advisory_ids: [ advisory ]) } } ],
+        "triage: one KEV CVE, its hosts' transitions (per affected host)" => [ hosts.size, lambda {
+          rolled_back { list.call && VulnerabilityTriage::Base.refresh!(chunks, advisory_ids: [ advisory ]) && VulnerabilityMatcher.retriage!(hosts, advisory_ids: [ advisory ]) }
+        } ],
+        "triage: #{TRACKER_CVES} changed tracker CVEs, base (per CVE)" => [ tracker.size, -> { rolled_back { VulnerabilityTriage::Base.refresh!(tracker_chunks, advisory_ids: tracker) } } ],
+        "triage: every verdict's base again (per verdict)" => [ verdicts, -> { rolled_back { VulnerabilityTriage::Base.refresh!(ChunkEvaluation.pluck(:package_chunk_id)) } } ],
+        "summary counts, host_compliance_counts (per package host)" => [ package_hosts.size, lambda {
+          # Every bucket column read, so no part of the function is planned away; uncached, so each run counts again.
+          sql = ApplicationRecord.sanitize_sql_array([ "SELECT sum(vuln_fix + vuln_attention + vuln_low_risk + vuln_ignorable + vuln_kev_open + vuln_fixable + cis_passed) " \
+                                                       "FROM host_compliance_counts(ARRAY[?]::bigint[])", package_hosts ])
+          ApplicationRecord.uncached { ApplicationRecord.connection.select_value(sql) }
+        } ]
       }
     end
 

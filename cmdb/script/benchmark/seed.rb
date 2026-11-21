@@ -92,7 +92,8 @@ module FleetBenchmark
       records = Array.new(FleetSimulator::Phase2::SOURCES) do |source|
         Array.new(n) do |i|
           events = [ { "introduced" => "0" }, ({ "fixed" => "3.0-1" } if i.zero? && (source % 4).zero?) ].compact
-          { "id" => format("BENCH-%03d-%02d", source, i), "modified" => "2026-11-01T00:00:00Z", "summary" => "Benchmark advisory #{i} for #{FleetSimulator::Phase2.source_name(source)}",
+          # Each names a CVE id no real record uses (CVE-2099-...), so the triage probes can list one in KEV (VT-BUCKETS #259).
+          { "id" => format("BENCH-%03d-%02d", source, i), "aliases" => [ format("CVE-2099-%07d", (source * 100) + i) ], "modified" => "2026-11-01T00:00:00Z", "summary" => "Benchmark advisory #{i} for #{FleetSimulator::Phase2.source_name(source)}",
             "database_specific" => { "severity" => %w[low medium high critical unknown][(source + i) % 5] },
             "affected" => [ { "package" => { "ecosystem" => "Debian:13", "name" => FleetSimulator::Phase2.source_name(source) },
                               "ranges" => [ { "type" => "ECOSYSTEM", "events" => events } ] } ] }
@@ -170,12 +171,15 @@ module FleetBenchmark
       SQL
       limit = "AND substr(h.name, 7)::int <= #{@o[:package_hosts]}"
       copy("vulnerability_findings", "host_id",
-           "advisory_id, package, architecture, state, resolution, first_seen_at, resolved_at, reopened_at, last_source, last_installed_version, last_fixed_version, created_at, updated_at",
-           columns: "advisory_id, package, architecture, state, resolution, first_seen_at, resolved_at, reopened_at, last_source, last_installed_version, last_fixed_version, created_at, updated_at",
+           "advisory_id, package, architecture, state, resolution, first_seen_at, resolved_at, reopened_at, last_source, last_installed_version, last_fixed_version, " \
+           "bucket, bucket_rule, kev, created_at, updated_at",
+           columns: "advisory_id, package, architecture, state, resolution, first_seen_at, resolved_at, reopened_at, last_source, last_installed_version, last_fixed_version, " \
+                    "bucket, bucket_rule, kev, created_at, updated_at",
            where: limit)
       # Some resolved findings too, as upgrades leave them: a fifth of the open ones, resolved 30 to 120 days ago.
       run_sql(<<~SQL)
-        UPDATE vulnerability_findings SET state = 'resolved', resolution = 'fixed', resolved_at = now() - (30 + (id % 90)) * interval '1 day'
+        UPDATE vulnerability_findings SET state = 'resolved', resolution = 'fixed', resolved_at = now() - (30 + (id % 90)) * interval '1 day',
+               bucket = NULL, bucket_rule = NULL, kev = NULL
         WHERE id % 5 = 0 AND host_id IN (SELECT id FROM hosts WHERE name LIKE 'bench-%' AND id <> #{@template})
       SQL
     end
