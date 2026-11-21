@@ -937,8 +937,8 @@ fn a_socket_systemd_holds_is_matched_by_protocol_port_and_address() {
     };
     let activated = units::parse_list_sockets(
         b"0.0.0.0:22 Stream ssh.socket ssh.service\n\
-          127.0.0.1:631 Stream cups.socket cups.service\n\
           [::]:631 Stream all.socket cups-all.service\n\
+          127.0.0.1:631 Stream cups.socket cups.service\n\
           0.0.0.0:631 Datagram browsed.socket cups-browsed.service\n\
           0.0.0.0:80 Stream w.socket a.service, b.service\n",
     )
@@ -1536,6 +1536,39 @@ fn code_loaded_on_demand_is_never_native() {
     assert!(
         native.contains(&"libidle".to_owned()),
         "the control is still native"
+    );
+}
+
+#[test]
+fn kernel_packages_are_never_native() {
+    // With #272 the signed image and its metapackages carry linux's findings; none of them ships an ELF
+    // executable or library (the image is a compressed kernel, modules are .ko), so L1 never applies to
+    // a kernel finding: I1, K1, and K2 decide those.
+    let mut host = scan_host()
+        .file(
+            "/var/lib/dpkg/info/linux-image-6.12.48+deb13-amd64.list",
+            "/boot/vmlinuz-6.12.48+deb13-amd64\n/usr/lib/modules/6.12.48+deb13-amd64/kernel/fs/ext4/ext4.ko.xz\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/linux-image-amd64.list",
+            "/usr/share/doc/linux-image-amd64/copyright\n",
+        )
+        .file("/boot/vmlinuz-6.12.48+deb13-amd64", "MZ......")
+        .file(
+            "/usr/lib/modules/6.12.48+deb13-amd64/kernel/fs/ext4/ext4.ko.xz",
+            "\u{fd}7zXZ",
+        );
+    add_lists(
+        &mut host,
+        &[
+            "linux-image-6.12.48+deb13-amd64.list",
+            "linux-image-amd64.list",
+        ],
+    );
+    let native = scan::scan(&host).unwrap().native;
+    assert!(
+        !native.iter().any(|p| p.starts_with("linux-image")),
+        "{native:?}"
     );
 }
 
