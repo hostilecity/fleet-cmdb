@@ -48,6 +48,7 @@ pub mod netlink;
 pub mod owners;
 pub mod scan;
 pub mod sockets;
+pub mod starters;
 pub mod units;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

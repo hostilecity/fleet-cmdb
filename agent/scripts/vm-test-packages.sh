@@ -12,7 +12,7 @@
 # service running it uses an old executable once it is upgraded (what needrestart looks for).
 #
 # For the in-use scenario (FR-2.6, VT-APPLICABILITY): fvt-listen-* ship /usr/libexec/NAME, which listens
-# on the TCP address and port it is given; fvt-lib and fvt-idlelib ship a shared library (a copy of
+# on the TCP address and port it is given; fvt-lib, fvt-idlelib, fvt-cronlib, and fvt-timerlib ship a shared library (a copy of
 # zlib's) under /usr/lib/fvt whose bytes differ per version; fvt-uselib and fvt-idle ship /usr/libexec/NAME, which maps the given
 # file into memory and waits, as a program maps a library.
 set -euo pipefail
@@ -39,7 +39,7 @@ case ${1:?} in
                     's.bind((sys.argv[1], int(sys.argv[2])))' 's.listen()' 'time.sleep(86400)' > "$d/usr/libexec/$name"
                 chmod 0755 "$d/usr/libexec/$name"
                 ;;
-            fvt-lib | fvt-idlelib)
+            fvt-lib | fvt-idlelib | fvt-cronlib | fvt-timerlib)
                 # A real shared library (a copy of zlib's), so the scan counts the package as native code.
                 mkdir -p "$d/usr/lib/fvt"
                 cp "$(readlink -f /usr/lib/x86_64-linux-gnu/libz.so.1)" "$d/usr/lib/fvt/lib$name.so.1"

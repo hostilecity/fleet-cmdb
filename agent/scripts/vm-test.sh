@@ -803,7 +803,8 @@ fresh_reports() {
 in_use_cleanup() {
     vm "systemctl stop fvt-lo fvt-lan fvt-uselib fvt-sock.socket fvt-sock.service 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
         rm -f /etc/systemd/system/fvt-sock.socket /etc/systemd/system/fvt-sock.service
-        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle > /dev/null 2>&1
+        rm -rf /etc/cron.daily/fvt-admin /etc/systemd/system/fvt-job.timer /etc/systemd/system/fvt-job.service /etc/systemd/system/fvt-job.service.d
+        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle fvt-cronlib fvt-timerlib > /dev/null 2>&1
         rm -rf $SCAN_DROPIN $STATE/library-scan.json /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
         sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml; sed -i -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' /etc/fleet-agent/config.toml
         systemctl reset-failed fleet-agent; systemctl restart fleet-agent" || true
@@ -829,9 +830,9 @@ in_use_reported() {
     local p='bash /tmp/vm-test-packages.sh' lan props
     put "$here/vm-test-packages.sh" /tmp/vm-test-packages.sh
     vm "$p build fvt-listen-lo 1.0 && $p build fvt-listen-lan 1.0 && $p build fvt-listen-sock 1.0 && $p build fvt-lib 1.0 && $p build fvt-lib 1.1
-        $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0
+        $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0 && $p build fvt-cronlib 1.0 && $p build fvt-timerlib 1.0
         dpkg -i /srv/fvt/debs/fvt-listen-lo_1.0_all.deb /srv/fvt/debs/fvt-listen-lan_1.0_all.deb /srv/fvt/debs/fvt-listen-sock_1.0_all.deb \
-            /srv/fvt/debs/fvt-lib_1.0_all.deb \
+            /srv/fvt/debs/fvt-lib_1.0_all.deb /srv/fvt/debs/fvt-cronlib_1.0_all.deb /srv/fvt/debs/fvt-timerlib_1.0_all.deb \
             /srv/fvt/debs/fvt-uselib_1.0_all.deb /srv/fvt/debs/fvt-idlelib_1.0_all.deb /srv/fvt/debs/fvt-idle_1.0_all.deb > /dev/null"
     lan=$(vm "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n 1")
     [ -n "$lan" ] || fail "the VM has no LAN address"
@@ -841,7 +842,13 @@ in_use_reported() {
         printf '%s\n' '[Socket]' 'ListenStream=127.0.0.1:18082' > /etc/systemd/system/fvt-sock.socket
         printf '%s\n' '[Service]' 'ExecStart=/usr/libexec/fvt-listen-sock 127.0.0.1 18083' > /etc/systemd/system/fvt-sock.service
         systemctl daemon-reload && systemctl start fvt-sock.socket
-        rm -f /run/reboot-required /run/reboot-required.pkgs"
+        rm -f /run/reboot-required /run/reboot-required.pkgs
+        printf '%s\n' '#!/bin/sh' 'test -r /usr/lib/fvt/libfvt-cronlib.so.1' > /etc/cron.daily/fvt-admin && chmod 0755 /etc/cron.daily/fvt-admin
+        printf '%s\n' '[Timer]' 'OnCalendar=yearly' > /etc/systemd/system/fvt-job.timer
+        printf '%s\n' '[Service]' 'Type=oneshot' 'ExecStart=/bin/true' > /etc/systemd/system/fvt-job.service
+        mkdir -p /etc/systemd/system/fvt-job.service.d
+        printf '%s\n' '[Service]' 'ExecStartPre = /usr/bin/test -r /usr/lib/fvt/libfvt-timerlib.so.1' > /etc/systemd/system/fvt-job.service.d/override.conf
+        systemctl daemon-reload"
     wait_until "the test services to listen" 30 vm_ok "ss -Hltn 'sport = :18080' | grep -q . && ss -Hltn 'sport = :18081' | grep -q . && ss -Hltn 'sport = :18082' | grep -q ."
 
     fresh_reports
@@ -903,6 +910,9 @@ in_use_reported() {
         || fail "fvt-idlelib, used only by a stopped service, is listed"
     in_use '.in_use.native' | jq -e 'index("fvt-idlelib") and index("fvt-lib") and (index("fvt-uselib") | not)' > /dev/null \
         || fail "native is wrong (fvt-lib and fvt-idlelib ship a shared library, fvt-uselib only a Python script): $(in_use .in_use.native | head -c 600)"
+    # What an admin's cron script and a timer's drop-in (with spaces around `=`) name is never native.
+    in_use '.in_use.native' | jq -e '(index("fvt-cronlib") | not) and (index("fvt-timerlib") | not)' > /dev/null \
+        || fail "a library an admin's /etc/cron.daily script or a timer service's drop-in names is native: $(in_use .in_use.native | head -c 600)"
     in_use '.in_use.scanned_at | type == "string"' | grep -qx true || fail "no scanned_at"
     echo "CPU: the agent since its start, the scan unit's run included in the elapsed time above: $(vm 'systemctl show -p CPUUsageNSec --value fleet-agent') ns"
 

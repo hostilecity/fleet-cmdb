@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Mutex;
 
+use super::starters;
 use super::*;
 use crate::collect::contract;
 use crate::facts::host::{RunError, SocketCgroup, Stat};
@@ -24,7 +25,7 @@ struct TestHost {
     executables: std::collections::HashSet<String>,
     /// Set-user-ID files.
     setid: std::collections::HashSet<String>,
-    /// Paths that are not regular files when read (a masked unit's link to /dev/null).
+    /// Paths whose reads fail with some other error.
     irregular: std::collections::HashSet<String>,
     /// Symlinks: path -> target (absolute).
     symlinks: HashMap<String, String>,
@@ -57,7 +58,15 @@ impl Host for TestHost {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         if self.irregular.contains(&path) {
-            return Err(io::Error::other("not a regular file"));
+            return Err(io::Error::other("an input/output error"));
+        }
+        if !self.files.contains_key(&path)
+            && self
+                .files
+                .keys()
+                .any(|f| f.starts_with(&format!("{path}/")))
+        {
+            return Err(io::ErrorKind::IsADirectory.into());
         }
         let bytes = self
             .files
@@ -72,6 +81,9 @@ impl Host for TestHost {
     fn list(&self, dir: &Path, max: usize) -> io::Result<Vec<String>> {
         let dir = dir.to_string_lossy().into_owned();
         self.log.lock().unwrap().push(format!("list {dir}"));
+        if self.denied.contains(&dir) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
         let names = self
             .dirs
             .get(&dir)
@@ -115,6 +127,14 @@ impl Host for TestHost {
         if self.symlinks.contains_key(&path) {
             return Ok(Inspect::Symlink);
         }
+        // A symlinked directory on the way (`/sbin` -> `/usr/sbin`).
+        if let Some((link, target)) = self
+            .symlinks
+            .iter()
+            .find(|(link, _)| path.starts_with(&format!("{link}/")))
+        {
+            return self.inspect(Path::new(&format!("{target}{}", &path[link.len()..])));
+        }
         if self.files.contains_key(&path) {
             let mode = if self.executables.contains(&path) {
                 0o755
@@ -154,7 +174,8 @@ impl Host for TestHost {
                 None => break,
             }
         }
-        if self.files.contains_key(&path)
+        if path == "/dev/null"
+            || self.files.contains_key(&path)
             || self
                 .files
                 .keys()
@@ -1418,6 +1439,9 @@ fn a_scan_out_of_time_fails_rather_than_judge_on_part_of_a_package() {
         fn inspect(&self, p: &Path) -> io::Result<crate::facts::host::Inspect> {
             self.0.inspect(p)
         }
+        fn resolve(&self, p: &Path) -> io::Result<std::path::PathBuf> {
+            self.0.resolve(p)
+        }
         fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
             if p == Path::new("/usr/bin/aaa-tool") {
                 std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -1823,14 +1847,23 @@ fn a_program_a_timer_starts_is_never_native() {
         );
     }
     assert!(native.contains(&"libidle".to_owned()), "the control");
-    // A masked timer (a link to /dev/null) starts nothing and is no error.
+    // A masked timer (a link to /dev/null) starts nothing and is no error; another error reading a
+    // timer fails the scan (focused review N4: masking is told by the link's target).
     host.dirs
         .get_mut("/etc/systemd/system")
         .unwrap()
         .push("masked.timer".into());
+    host.symlinks.insert(
+        "/etc/systemd/system/masked.timer".into(),
+        "/dev/null".into(),
+    );
+    assert!(scan::scan(&host).is_ok());
+    host.symlinks.remove("/etc/systemd/system/masked.timer");
+    host = host.file("/etc/systemd/system/masked.timer", "");
     host.irregular
         .insert("/etc/systemd/system/masked.timer".into());
-    assert!(scan::scan(&host).is_ok());
+    assert!(scan::scan(&host).unwrap_err().contains("masked.timer"));
+    host.irregular.clear();
     // A timer that cannot be read fails the scan rather than miss a start.
     host.denied
         .insert("/usr/lib/systemd/system/timerd.timer".into());
@@ -1870,6 +1903,549 @@ fn a_program_cron_starts_is_never_native() {
         "a crontab the scan cannot read"
     );
     assert!(native.contains(&"libidle".to_owned()), "the control");
+}
+
+/// Packages `names`, each shipping only an ELF program at `/usr/bin/<name>` (or the path given).
+fn with_programs(mut host: TestHost, programs: &[(&str, &str)]) -> TestHost {
+    for (name, program) in programs {
+        host = with_program(host, name, program);
+    }
+    host
+}
+
+fn assert_not_native(host: &TestHost, packages: &[&str]) {
+    let native = scan::scan(host).unwrap().native;
+    for package in packages {
+        assert!(
+            !native.contains(&(*package).to_owned()),
+            "{package}: {native:?}"
+        );
+    }
+    assert!(native.contains(&"libidle".to_owned()), "the control");
+}
+
+#[test]
+fn units_are_read_the_way_systemd_reads_them() {
+    // Focused review S1: drop-ins in every directory, spaces around `=`, continuation lines, bare
+    // names, every Exec*= key, and the type's drop-ins.
+    let mut host = with_programs(
+        scan_host(),
+        &[
+            ("spaced", "/usr/sbin/spaced"),
+            ("dropped", "/usr/bin/dropped"),
+            ("bare", "/usr/bin/bare-check"),
+            ("stopper", "/usr/bin/stopper"),
+            ("poststop", "/usr/bin/poststop"),
+            ("reloader", "/usr/bin/reloader"),
+            ("pre", "/usr/bin/pre"),
+            ("post", "/usr/bin/post"),
+            ("continued", "/usr/bin/continued"),
+            ("typewide", "/usr/bin/typewide"),
+            ("aliased", "/usr/sbin/aliased"),
+            ("oldbin", "/bin/oldbin"),
+            ("versioned", "/usr/lib/tool-1.2/bin/tool"),
+        ],
+    );
+    // Started through a directory symlink: counted by its real path.
+    host.symlinks
+        .insert("/usr/lib/current".into(), "/usr/lib/tool-1.2".into());
+    // /usr merge: started as /sbin/aliased, listed as /usr/sbin/aliased; started as /usr/bin/oldbin,
+    // listed as /bin/oldbin.
+    host.symlinks.insert("/sbin".into(), "/usr/sbin".into());
+    host = host.file("/usr/bin/oldbin", "\x7fELF....");
+    dir(
+        &mut host,
+        "/usr/lib/systemd/system",
+        &["job.service", "job.timer", "service.d"],
+    );
+    dir(
+        &mut host,
+        "/etc/systemd/system",
+        &["job.service.d", "service.d"],
+    );
+    dir(
+        &mut host,
+        "/etc/systemd/system/job.service.d",
+        &["local.conf", "notes.txt"],
+    );
+    dir(&mut host, "/run/systemd/system", &["job.service.d"]);
+    dir(
+        &mut host,
+        "/run/systemd/system/job.service.d",
+        &["runtime.conf"],
+    );
+    dir(
+        &mut host,
+        "/usr/lib/systemd/system/service.d",
+        &["all.conf"],
+    );
+    host = host
+        .file("/usr/lib/systemd/system/job.timer", "[Timer]\nOnCalendar=daily\n")
+        .file(
+            "/usr/lib/systemd/system/job.service",
+            "[Service]\nExecStart = /usr/sbin/spaced\nExecStartPre=/usr/bin/pre\nExecStartPost=/usr/bin/post\nExecStop=/sbin/aliased\nExecStop=/usr/bin/stopper\nExecReload=/usr/bin/oldbin\nExecStartPre=/usr/lib/current/bin/tool\nExecStart=/bin/sh -c \\\n  '/usr/bin/continued'\n",
+        )
+        .file(
+            "/etc/systemd/system/job.service.d/local.conf",
+            "[Service]\nExecStart=\nExecStart=/usr/bin/dropped\nExecCondition=bare-check --now\n",
+        )
+        .file(
+            "/etc/systemd/system/job.service.d/notes.txt",
+            "ExecStart=/usr/bin/not-a-dropin\n",
+        )
+        .file(
+            "/run/systemd/system/job.service.d/runtime.conf",
+            "[Service]\nExecStopPost=/usr/bin/poststop\nExecReload=/usr/bin/reloader\n",
+        )
+        .file(
+            "/usr/lib/systemd/system/service.d/all.conf",
+            "[Service]\nExecStartPre=-/usr/bin/typewide\n",
+        );
+    assert_not_native(
+        &host,
+        &[
+            "spaced",
+            "dropped",
+            "bare",
+            "stopper",
+            "poststop",
+            "reloader",
+            "pre",
+            "post",
+            "continued",
+            "typewide",
+            "aliased",
+            "oldbin",
+            "versioned",
+        ],
+    );
+    assert!(
+        !host.log().iter().any(|l| l.ends_with("notes.txt")),
+        "only .conf files are drop-ins"
+    );
+}
+
+#[test]
+fn template_timers_instances_transient_and_runtime_units_are_read() {
+    let mut host = with_programs(
+        scan_host(),
+        &[
+            ("backup", "/usr/bin/backup-tool"),
+            ("instance", "/usr/bin/instance-tool"),
+            ("templated", "/usr/bin/templated-dropin"),
+            ("transient", "/usr/bin/transient-job"),
+            ("runtime", "/usr/bin/runtime-job"),
+            ("early", "/usr/bin/early-job"),
+        ],
+    );
+    dir(
+        &mut host,
+        "/usr/lib/systemd/system",
+        &["backup@.service", "inst@.service", "other.timer"],
+    );
+    dir(
+        &mut host,
+        "/etc/systemd/system",
+        &["timers.target.wants", "backup@.service.d"],
+    );
+    dir(
+        &mut host,
+        "/etc/systemd/system/timers.target.wants",
+        &["backup@home.timer"],
+    );
+    dir(
+        &mut host,
+        "/etc/systemd/system/backup@.service.d",
+        &["x.conf"],
+    );
+    dir(
+        &mut host,
+        "/run/systemd/transient",
+        &["run-r1.timer", "run-r1.service"],
+    );
+    dir(
+        &mut host,
+        "/run/systemd/system",
+        &["rt.timer", "rt.service"],
+    );
+    dir(
+        &mut host,
+        "/run/systemd/generator.early",
+        &["gen.timer", "gen.service"],
+    );
+    host = host
+        .file(
+            "/usr/lib/systemd/system/backup@.timer",
+            "[Timer]\nOnCalendar=daily\n",
+        )
+        .file(
+            "/usr/lib/systemd/system/backup@.service",
+            "[Service]\nExecStart=/usr/bin/backup-tool %i\n",
+        )
+        .file(
+            "/etc/systemd/system/backup@.service.d/x.conf",
+            "[Service]\nExecStartPre=/usr/bin/templated-dropin\n",
+        )
+        .file(
+            "/usr/lib/systemd/system/other.timer",
+            "[Timer]\nUnit = inst@x.service\n",
+        )
+        .file(
+            "/usr/lib/systemd/system/inst@.service",
+            "[Service]\nExecStart=/usr/bin/instance-tool\n",
+        )
+        .file(
+            "/run/systemd/transient/run-r1.timer",
+            "[Timer]\nOnActiveSec=1h\n",
+        )
+        .file(
+            "/run/systemd/transient/run-r1.service",
+            "[Service]\nExecStart=/usr/bin/transient-job\n",
+        )
+        .file("/run/systemd/system/rt.timer", "[Timer]\nOnActiveSec=1h\n")
+        .file(
+            "/run/systemd/system/rt.service",
+            "[Service]\nExecStart=/usr/bin/runtime-job\n",
+        )
+        .file("/run/systemd/generator.early/gen.timer", "[Timer]\n")
+        .file(
+            "/run/systemd/generator.early/gen.service",
+            "[Service]\nExecStart=/usr/bin/early-job\n",
+        );
+    assert_not_native(
+        &host,
+        &[
+            "backup",
+            "instance",
+            "templated",
+            "transient",
+            "runtime",
+            "early",
+        ],
+    );
+    // The first directory with the file wins: masked in /etc, the shipped unit starts nothing.
+    host.dirs
+        .get_mut("/etc/systemd/system")
+        .unwrap()
+        .extend(["rt.service".into(), "inst@.service".into()]);
+    host.symlinks
+        .insert("/etc/systemd/system/rt.service".into(), "/dev/null".into());
+    host.symlinks.insert(
+        "/etc/systemd/system/inst@.service".into(),
+        "/dev/null".into(),
+    );
+    let native = scan::scan(&host).unwrap().native;
+    assert!(native.contains(&"runtime".to_owned()), "{native:?}");
+    assert!(native.contains(&"instance".to_owned()), "{native:?}");
+}
+
+#[test]
+fn user_timers_and_session_d_bus_services_are_read() {
+    // Focused review N1.
+    let mut host = with_programs(
+        scan_host(),
+        &[
+            ("usertimer", "/usr/bin/user-timer-job"),
+            ("homejob", "/usr/bin/home-job"),
+            ("sessiond", "/usr/libexec/sessiond"),
+            ("sessionunit", "/usr/bin/session-unit"),
+            ("localbus", "/usr/libexec/localbus"),
+            ("libbus", "/usr/libexec/libbus"),
+            ("ships-user-timer", "/usr/lib/libut.so.1"),
+            ("ships-session", "/usr/lib/libsess.so.1"),
+            ("ships-crontab", "/usr/lib/libcrontab.so.1"),
+            ("ships-anacrontab", "/usr/lib/libana.so.1"),
+        ],
+    );
+    for (package, file) in [
+        ("ships-user-timer", "/usr/lib/systemd/user/ut.timer"),
+        (
+            "ships-session",
+            "/usr/share/dbus-1/services/org.example.S.service",
+        ),
+        ("ships-crontab", "/etc/crontab"),
+        ("ships-anacrontab", "/etc/anacrontab"),
+    ] {
+        let list = format!("/var/lib/dpkg/info/{package}.list");
+        let mut text = host.files[&list].clone();
+        text.extend_from_slice(format!("{file}\n").as_bytes());
+        host.files.insert(list, text);
+    }
+    dir(
+        &mut host,
+        "/usr/lib/systemd/user",
+        &["ut.timer", "ut.service", "sess.service"],
+    );
+    dir(&mut host, "/home", &["alice", "bob"]);
+    dir(
+        &mut host,
+        "/home/alice/.config/systemd/user",
+        &["mine.timer", "mine.service"],
+    );
+    // Bob's home cannot be searched: skipped (under ProtectHome=yes every home is).
+    host.denied.insert("/home/bob/.config/systemd/user".into());
+    dir(
+        &mut host,
+        "/usr/share/dbus-1/services",
+        &["org.example.S.service", "org.example.T.service"],
+    );
+    dir(
+        &mut host,
+        "/usr/local/share/dbus-1/system-services",
+        &["org.example.L.service"],
+    );
+    dir(
+        &mut host,
+        "/lib/dbus-1/system-services",
+        &["org.example.B.service"],
+    );
+    dir(
+        &mut host,
+        "/usr/local/share/dbus-1/services",
+        &["org.example.LS.service"],
+    );
+    host = with_program(host, "localsession", "/usr/libexec/localsession").file(
+        "/usr/local/share/dbus-1/services/org.example.LS.service",
+        "[D-BUS Service]\nExec=/usr/libexec/localsession\n",
+    );
+    host = host
+        .file("/usr/lib/systemd/user/ut.timer", "[Timer]\n")
+        .file(
+            "/usr/lib/systemd/user/ut.service",
+            "[Service]\nExecStart=/usr/bin/user-timer-job\n",
+        )
+        .file("/home/alice/.config/systemd/user/mine.timer", "[Timer]\n")
+        .file(
+            "/home/alice/.config/systemd/user/mine.service",
+            "[Service]\nExecStart=/usr/bin/home-job\n",
+        )
+        .file(
+            "/usr/share/dbus-1/services/org.example.S.service",
+            "[D-BUS Service]\nExec=/usr/libexec/sessiond\n",
+        )
+        .file(
+            "/usr/share/dbus-1/services/org.example.T.service",
+            "[D-BUS Service]\nExec=/bin/false\nSystemdService=sess.service\n",
+        )
+        .file(
+            "/usr/lib/systemd/user/sess.service",
+            "[Service]\nExecStart=/usr/bin/session-unit\n",
+        )
+        .file(
+            "/usr/local/share/dbus-1/system-services/org.example.L.service",
+            "[D-BUS Service]\nExec=/usr/libexec/localbus\n",
+        )
+        .file(
+            "/lib/dbus-1/system-services/org.example.B.service",
+            "[D-BUS Service]\nExec=/usr/libexec/libbus\n",
+        );
+    assert_not_native(
+        &host,
+        &[
+            "usertimer",
+            "homejob",
+            "sessiond",
+            "sessionunit",
+            "localbus",
+            "libbus",
+            "ships-user-timer",
+            "ships-session",
+            "ships-crontab",
+            "ships-anacrontab",
+            "localsession",
+        ],
+    );
+}
+
+#[test]
+fn what_cannot_be_read_fails_the_scan() {
+    // Focused review S3: a D-Bus file, the unit it names, or the service a timer starts that cannot be
+    // read fails the scan rather than miss a start.
+    let base = || {
+        let mut host = scan_host();
+        dir(
+            &mut host,
+            "/usr/share/dbus-1/system-services",
+            &["org.example.D.service"],
+        );
+        dir(
+            &mut host,
+            "/usr/lib/systemd/system",
+            &["t.timer", "t.service", "d.service"],
+        );
+        host.file(
+            "/usr/share/dbus-1/system-services/org.example.D.service",
+            "[D-BUS Service]\nExec=/bin/false\nSystemdService=d.service\n",
+        )
+        .file("/usr/lib/systemd/system/t.timer", "[Timer]\n")
+        .file(
+            "/usr/lib/systemd/system/t.service",
+            "[Service]\nExecStart=/usr/bin/t\n",
+        )
+        .file(
+            "/usr/lib/systemd/system/d.service",
+            "[Service]\nExecStart=/usr/bin/d\n",
+        )
+    };
+    assert!(scan::scan(&base()).is_ok());
+    for path in [
+        "/usr/share/dbus-1/system-services/org.example.D.service",
+        "/usr/lib/systemd/system/d.service",
+        "/usr/lib/systemd/system/t.service",
+        "/usr/lib/systemd/system/t.timer",
+    ] {
+        let mut host = base();
+        host.denied.insert(path.into());
+        assert!(scan::scan(&host).unwrap_err().contains(path), "{path}");
+    }
+    // A drop-in, and the system crontab.
+    let mut host = base().file("/etc/systemd/system/t.service.d/x.conf", "");
+    dir(&mut host, "/etc/systemd/system", &["t.service.d"]);
+    dir(&mut host, "/etc/systemd/system/t.service.d", &["x.conf"]);
+    host.denied
+        .insert("/etc/systemd/system/t.service.d/x.conf".into());
+    assert!(scan::scan(&host).unwrap_err().contains("x.conf"));
+    let mut host = base().file("/etc/crontab", "");
+    host.denied.insert("/etc/crontab".into());
+    assert!(scan::scan(&host).unwrap_err().contains("/etc/crontab"));
+    let mut host = base();
+    host.denied.insert("/usr/lib/systemd/system".into());
+    assert!(
+        scan::scan(&host).is_err(),
+        "a unit directory that cannot be listed"
+    );
+    // A cron.d file the agent refuses as secret-looking fails the scan (focused review N2).
+    let mut host = base().file("/etc/cron.d/backup.key", "@daily root /usr/bin/x\n");
+    dir(&mut host, "/etc/cron.d", &["backup.key"]);
+    assert!(scan::scan(&host).unwrap_err().contains("backup.key"));
+    // So does an admin's cron script that cannot be read; only users' crontabs are skipped.
+    let mut host = base().file("/etc/cron.daily/local", "#!/bin/sh\n");
+    dir(&mut host, "/etc/cron.daily", &["local"]);
+    host.denied.insert("/etc/cron.daily/local".into());
+    assert!(
+        scan::scan(&host)
+            .unwrap_err()
+            .contains("/etc/cron.daily/local")
+    );
+}
+
+#[test]
+fn cron_scripts_anacron_bare_names_and_alternatives_mark_their_packages() {
+    // Focused review S2, N3.
+    let mut host = with_programs(
+        scan_host(),
+        &[
+            ("scripted", "/usr/bin/scripted"),
+            ("bare-in-script", "/usr/sbin/bare-in-script"),
+            ("anajob", "/usr/bin/anajob"),
+            ("pathjob", "/usr/lib/tools/bin/pathjob"),
+            ("vim", "/usr/bin/vim.basic"),
+            ("bin-only", "/bin/bin-only"),
+            ("dirlister", "/usr/lib/libdirs.so.1"),
+        ],
+    );
+    // A package that lists a directory a command names is not marked by it.
+    host.files.insert(
+        "/var/lib/dpkg/info/dirlister.list".into(),
+        b"/usr/lib/dirlister\n/usr/lib/libdirs.so.1\n".to_vec(),
+    );
+    host = host.file("/usr/lib/dirlister/data", "");
+    dir(&mut host, "/etc/cron.daily", &["admin-backup", "sub"]);
+    host = host
+        .file(
+            "/etc/cron.daily/admin-backup",
+            "#!/bin/sh\n/usr/bin/scripted --all\nbare-in-script | logger\nfind /usr/lib/dirlister -delete\n",
+        )
+        .file("/etc/cron.daily/sub/ignored", "/usr/bin/never\n")
+        .file(
+            "/etc/anacrontab",
+            "SHELL=/bin/sh\nPATH = /usr/lib/tools/bin:/usr/bin\n1 5 cron.daily run-parts --report /etc/cron.daily\n7 10 weekly anajob\n3 5 tools pathjob\n",
+        )
+        .file("/etc/crontab", "0 * * * * root editor /tmp/x; bin-only\n");
+    host.symlinks
+        .insert("/usr/bin/editor".into(), "/etc/alternatives/editor".into());
+    host.symlinks.insert(
+        "/etc/alternatives/editor".into(),
+        "/usr/bin/vim.basic".into(),
+    );
+    let native = scan::scan(&host).unwrap().native;
+    for package in [
+        "scripted",
+        "bare-in-script",
+        "anajob",
+        "pathjob",
+        "vim",
+        "bin-only",
+    ] {
+        assert!(
+            !native.contains(&package.to_owned()),
+            "{package}: {native:?}"
+        );
+    }
+    assert!(native.contains(&"dirlister".to_owned()), "{native:?}");
+    assert!(native.contains(&"libidle".to_owned()), "the control");
+    assert!(
+        !host
+            .log()
+            .iter()
+            .any(|l| l.contains("/etc/cron.daily/sub/ignored")),
+        "a directory in /etc/cron.daily is not read"
+    );
+}
+
+#[test]
+fn what_is_started_on_demand_is_bounded() {
+    // Focused review N4: past each limit the scan fails rather than guess.
+    let mut host = scan_host();
+    let half = starters::MAX_FILES / 2 + 1;
+    for dir in ["/etc/cron.d", "/etc/cron.hourly"] {
+        let names: Vec<String> = (0..half).map(|i| format!("job{i}")).collect();
+        for name in &names {
+            host.files
+                .insert(format!("{dir}/{name}"), b"@daily root true\n".to_vec());
+        }
+        host.dirs.insert(dir.into(), names);
+    }
+    assert!(scan::scan(&host).unwrap_err().contains("files"));
+
+    let mut host = scan_host();
+    let paths: String = (0..=starters::MAX_PATHS)
+        .map(|i| format!("/p{i} "))
+        .collect();
+    host = host.file("/etc/crontab", &paths);
+    assert!(scan::scan(&host).unwrap_err().contains("paths"));
+    // Bare words count once in each directory they are looked up in, `PATH=` ones included.
+    let words: String = (0..starters::MAX_PATHS / 10)
+        .map(|i| format!("w{i} "))
+        .collect();
+    let host = scan_host().file("/etc/crontab", &words);
+    assert!(scan::scan(&host).is_ok());
+    let host = scan_host().file("/etc/crontab", &format!("PATH=/a:/b:/c:/d:/e\n{words}"));
+    assert!(scan::scan(&host).unwrap_err().contains("paths"));
+
+    let mut host = scan_host();
+    host.dirs.insert(
+        starters::USER_CRONTABS.into(),
+        (0..=starters::MAX_CRONTABS)
+            .map(|i| format!("user{i}"))
+            .collect(),
+    );
+    assert!(scan::scan(&host).unwrap_err().contains("crontabs"));
+    // At the limit, users' crontabs do not count toward the file limit.
+    let mut host = scan_host();
+    for i in 0..starters::MAX_CRONTABS {
+        host.files.insert(
+            format!("{}/user{i}", starters::USER_CRONTABS),
+            b"# nothing\n".to_vec(),
+        );
+    }
+    host.dirs.insert(
+        starters::USER_CRONTABS.into(),
+        (0..starters::MAX_CRONTABS)
+            .map(|i| format!("user{i}"))
+            .collect(),
+    );
+    assert!(scan::scan(&host).is_ok());
 }
 
 #[test]
@@ -2290,6 +2866,16 @@ fn cpu_on_this_host() {
         cpu() - c,
         w.elapsed()
     );
+    let (c, w) = (cpu(), std::time::Instant::now());
+    match starters::started_on_demand(&ctx) {
+        Ok(started) => println!(
+            "started on demand: {} paths, cpu {:?}, wall {:?}",
+            started.len(),
+            cpu() - c,
+            w.elapsed()
+        ),
+        Err(e) => println!("started on demand failed: {e}"),
+    }
     // Without CAP_SYS_PTRACE (as here) only this process's maps are readable: list just it.
     struct OwnProcess(crate::facts::host::RealHost);
     impl Host for OwnProcess {
