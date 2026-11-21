@@ -1,0 +1,51 @@
+# Signed-template source packages (#270): matched as the source package Debian's advisories name.
+#
+# For UEFI Secure Boot, Debian builds some packages twice: the code is built by one source package (linux, shim), and
+# a second "signed template" source package (linux-signed-amd64, shim-signed) repackages the binaries with Debian's
+# or Microsoft's signature. dpkg reports the second one as the binaries' source, but Debian's advisories (OSV and the
+# security tracker) name only the first. Without this table the running kernel's signed image never matches an
+# advisory, and its findings appear only on headers and linux-libc-dev, which an upgrade of those alone resolves.
+#
+# Each row:
+# - signed: the source package name the agent reports (dpkg's ${source:Package}).
+# - source: the source package the advisories name. Findings record it as their source, so Debian's triage joins.
+# - version: how the version of that source is read from the binary's own version:
+#   - binary: the binary's version is that source's version. linux-signed-* builds every binary with
+#     "dpkg-gencontrol -v<linux version>" (GENCONTROL_ARGS := -v6.12.48-1 in linux-signed-amd64 6.12.48+1), so
+#     linux-image-6.12.48+deb13-amd64 and the linux-image-amd64 metapackage are both 6.12.48-1, built from linux 6.12.48-1.
+#   - after_signed_version: the binary's version is "<signed source version>+<source version>". shim-signed's
+#     debian/rules runs "dh_gencontrol -- -v$(VERSION)+$(SHIM_VERSION)", so shim-signed 1.47 built from shim 15.8-1 is
+#     1.47+15.8-1. The signed source is native (no "-") and Debian's upstream versions start with a digit, so the
+#     source version starts after the one "+" that is followed by a digit and leaves a "-" after it. When more than one
+#     "+" could be that one (shim 15+1533136590.3beb971-5 in shim-signed 1.32), the package is left not evaluated.
+# - binaries (optional): only these binaries are matched as source; the signed source's others keep their own
+#   source. shim-signed-common is shim-signed's helper scripts, not shim, and is not Built-Using shim.
+#
+# A mapping only adds: a binary is still matched under its reported source too, at its own version, so an advisory
+# that names the signed source itself keeps matching.
+#
+# Why shim-signed is mapped although shim's advisories already show: on amd64 and arm64 shim-signed depends on
+# shim-helpers-<arch>-signed, which depends on shim-unsigned (>= its shim version, source shim), so shim's findings
+# open on shim-unsigned. But shim-signed's shimx64.efi.signed is the binary that boots, and shim-unsigned can be newer
+# than the shim it was signed from (">="), so only shim-signed tells whether the booting shim is fixed.
+#
+# Checked against Debian 13 and left out (docs/operations/health-and-jobs.md, "Advisory data"):
+# - grub-efi-<arch>-signed: Depends: grub-common (= its grub2 version), built from grub2, so grub2's advisories
+#   already open and resolve on grub-common in step with it. Its own version (1+2.12+9+deb13u2 for grub2
+#   2.12-9+deb13u2) cannot be turned back into grub2's when grub2's upstream version has a "+" (2.02+dfsg1).
+# - shim-helpers-<arch>-signed (MokManager and the fallback loader, built from shim): its version
+#   (1+16.1+2~deb13u1 for shim 16.1-2~deb13u1) cannot be turned back into shim's, like grub's, and shim's findings
+#   already open on shim-unsigned and shim-signed.
+# - fwupd-<arch>-signed (fwupd-signed is a virtual name it provides): Built-Using fwupd-efi, which Debian's tracker
+#   lists no CVE for yet; fwupd's own advisories match the fwupd package as before. A future fwupd-efi advisory would
+#   need a row here (its version, 1:1.7+1, cannot be turned back either) or #271's Built-Using.
+#
+# Adding a row is a data change: another architecture (linux-signed-i386 on releases that have it), or a kernel
+# series with a source of its own (linux-signed-6.1-amd64, built from linux-6.1). Checked when the server starts.
+# Chunk verdicts are kept until an import changes their sources' advisories, so after adding or changing a row,
+# queue a re-match of its source: bin/rails vulnerabilities:rematch SOURCES=<source> (or a migration, as
+# RematchSignedSources did for these rows).
+Debian:
+  - { signed: linux-signed-amd64, source: linux, version: binary }
+  - { signed: linux-signed-arm64, source: linux, version: binary }
+  - { signed: shim-signed, source: shim, version: after_signed_version, binaries: [ shim-signed ] }

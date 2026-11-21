@@ -17,6 +17,16 @@ class EvaluationRun
   # A chunk matched against the data before the import (by a report in flight while it committed) is matched again
   # before any host uses it, by the transitions' check that every chunk is current with the newest import.
   class Advisories
+    # The scope of a re-match started because how packages of sources are matched changed, not their advisories
+    # (#270: a row added to config/signed_sources.yml), in every supported ecosystem: the same work as an import that
+    # changed them, labelled for its progress line. nil when no ecosystem is supported or no source is given.
+    def self.matching_scope(sources)
+      sources = Array(sources).compact_blank.uniq.sort
+      return nil if sources.empty? || Ecosystems.supported.empty?
+
+      { "packages" => Ecosystems.supported.index_with { sources }, "reason" => "matching" }
+    end
+
     def initialize(scope)
       @packages = scope["packages"].to_h.transform_values { |sources| Array(sources) }
     end
@@ -26,7 +36,7 @@ class EvaluationRun
     def prepare!
       stamp = AdvisoryImport.newest_succeeded_id # before any advisory data is read
       supported.each do |ecosystem, sources|
-        evaluated = ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(sources)).pluck(:package_chunk_id)
+        evaluated = ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(ecosystem, sources)).pluck(:package_chunk_id)
         VulnerabilityMatcher::Chunks.ensure!(evaluated, ecosystem, stamp:, force: true)
       end
       VulnerabilityMatcher::Chunks.restamp!(stamp)
@@ -53,7 +63,9 @@ class EvaluationRun
 
     def supported = packages.select { |ecosystem, sources| Ecosystems.supported?(ecosystem) && sources.any? }
 
-    def changed_chunks(sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", sources).select(:package_chunk_id)
+    # With the signed-template sources built from them (SignedSources): a change to linux's advisories is one to
+    # linux-signed-amd64's images.
+    def changed_chunks(ecosystem, sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", SignedSources.reported(sources, ecosystem)).select(:package_chunk_id)
 
     # host_package_sets rows on a set holding a chunk with a changed source (the source index, then the GIN index).
     def affected_hosts

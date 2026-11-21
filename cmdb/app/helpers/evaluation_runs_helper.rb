@@ -7,7 +7,14 @@ module EvaluationRunsHelper
   # A run that has not moved for this long is shown as stalled, and the line stops asking.
   STALLED_AFTER = 10.minutes
 
-  def evaluation_doing(run) = run.kind == "cis_rules" ? "Checking every host against the latest change" : "Re-matching the hosts the latest import affects"
+  # An advisories run comes from an import, unless an upgrade or an operator started it because how packages are
+  # matched changed (scope "reason" => "matching", #270: RematchSignedSources, bin/rails vulnerabilities:rematch).
+  def evaluation_doing(run)
+    return "Checking every host against the latest change" if run.kind == "cis_rules"
+    return "Re-matching the hosts a change to how packages are matched affects" if run.scope["reason"] == "matching"
+
+    "Re-matching the hosts the latest import affects"
+  end
 
   # "3,000 of 10,000 hosts done", or "starting" for a run not split yet.
   def evaluation_count_text(run)
