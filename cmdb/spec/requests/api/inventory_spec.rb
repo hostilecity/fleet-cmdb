@@ -208,4 +208,30 @@ RSpec.describe "POST /api/v1/reports/inventory", type: :request do
       expect(InventoryReportReceipt.count).to eq(0)
     end
   end
+
+  describe "the reboot flag and the kernel build (FR-2.6, #258)" do
+    it "stores them apart from the stable facts, without a snapshot, and writes them only when they change" do
+      send_report(report)
+      expect(host.applicability).to be_nil # nothing to say: no row
+      flagged = report(reboot_required: true, reboot_required_packages: %w[linux-image-6.12.57+deb13-amd64 libc6],
+                       kernel_build: "#1 SMP PREEMPT_DYNAMIC Debian 6.12.48-1 (2025-09-20)\u0007")
+      expect { send_report(flagged) }.not_to change(InventorySnapshot, :count)
+      expect(response).to have_http_status(:ok)
+      row = host.reload.applicability
+      expect(row).to have_attributes(reboot_required: true, reboot_packages: %w[libc6 linux-image-6.12.57+deb13-amd64],
+                                     kernel_build: "#1 SMP PREEMPT_DYNAMIC Debian 6.12.48-1 (2025-09-20)")
+      changed_at = row.reboot_changed_at
+      travel 1.hour do
+        send_report(flagged.merge("report_id" => SecureRandom.uuid))
+      end
+      expect(row.reload.reboot_changed_at).to eq(changed_at)
+      send_report(report(kernel_build: "#1 SMP PREEMPT_DYNAMIC Debian 6.12.48-1 (2025-09-20)"))
+      expect(row.reload).to have_attributes(reboot_required: nil, reboot_packages: [])
+    end
+
+    it "refuses a reboot flag of false: a missing flag is unknown, never no reboot" do
+      expect { send_report(report(reboot_required: false)) }.not_to change(HostApplicability, :count)
+      expect_error(:bad_request, "validation_failed")
+    end
+  end
 end

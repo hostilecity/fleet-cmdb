@@ -119,8 +119,210 @@
         }
       }
     },
+    "in_use": {
+      "description": "What running processes use (FR-2.6, VT-A01, VT-A02), for the triage rules L1 and N4: binary package names and classes only, never process ids, command lines, user names, addresses, or ports. Optional, and only with `manager: dpkg`. Absent or `null` means the agent did not report use (an older agent, or it could not read the sockets or services whole; a `warnings` entry with field `in_use` says why): the server then treats no package as idle. Every list here is positive evidence only: a package left out of `listening`, `services`, or `libraries` is never evidence that it is idle. Only a package in `native` and not in `libraries` may be called idle (owner decision 2026-11-20).",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "listening",
+        "services",
+        "unnamed_listeners",
+        "library_scan",
+        "libraries",
+        "native",
+        "scanned_at",
+        "complete"
+      ],
+      "properties": {
+        "listening": {
+          "description": "Each binary package owning the `ExecStart=` executable of a systemd service with a listening TCP socket or bound UDP socket, once, sorted by name: `network` when any of its sockets is on a non-loopback address (including the wildcard), `loopback` when all are on 127.0.0.0/8 or ::1. The package is the command's: a wrapper (`pg_ctlcluster` of `postgresql-common` for PostgreSQL, `sh -c`, `env`, an interpreter) is named, not the program it starts, which the agent cannot see without a new privilege. Positive evidence only.",
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "required": [
+              "package",
+              "class"
+            ],
+            "properties": {
+              "package": {
+                "description": "Binary package name.",
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+              },
+              "class": {
+                "description": "Where the package's services listen.",
+                "type": "string",
+                "enum": [
+                  "network",
+                  "loopback"
+                ]
+              }
+            }
+          }
+        },
+        "services": {
+          "description": "The binary packages owning the `ExecStart=` executables of running systemd services, each once, sorted. As in `listening`, a wrapper's package is named. Positive evidence only.",
+          "type": "array",
+          "maxItems": 1000,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+          }
+        },
+        "unnamed_listeners": {
+          "description": "Listening or bound sockets the agent counted but could not name a package for: not in a systemd service (a container, a user session, the kernel), or a service whose executable no package owns.",
+          "type": "object",
+          "required": [
+            "network",
+            "loopback"
+          ],
+          "properties": {
+            "network": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "loopback": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        },
+        "library_scan": {
+          "description": "The optional library-use scan (VT-A02), enabled per VM in the agent's local config: `off` (the default), `ran`, or `failed` (enabled but it gave no result; a `warnings` entry with field `in_use` says why).",
+          "type": "string",
+          "enum": [
+            "off",
+            "ran",
+            "failed"
+          ]
+        },
+        "libraries": {
+          "description": "With `library_scan: ran`, every binary package that lists a file mapped by a running process (each package that lists it, for a diverted or shared file), once, sorted by name; `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). Interpreted code (Python, Perl, Ruby, Node, Java) is read, not mapped, so it is listed only when something of it is mapped. `null` otherwise.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 20000,
+          "items": {
+            "type": "object",
+            "required": [
+              "package",
+              "stale"
+            ],
+            "properties": {
+              "package": {
+                "description": "Binary package name.",
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+              },
+              "stale": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "native": {
+          "description": "With `library_scan: ran`, the packages the scan can judge: the packages that ship at least one ELF executable or shared library under `/usr`, `/bin`, `/sbin`, or `/lib*`, no ELF file elsewhere (code under `/opt` is not judged), no file ending in `.py`, `.pyc`, `.pyo`, `.pyz`, `.pm`, `.pl`, `.rb`, `.js`, `.mjs`, `.cjs`, `.jar`, `.class`, `.war`, `.beam`, `.php`, `.lua`, `.tcl`, `.sh`, or `.bash` outside `/usr/share/doc`, and no `#!` script anywhere (a file with an execute bit, a file named like code, or the target of one of its symlinks), and all of whose files the scan could read. A scan that runs out of time fails rather than judge part of a package. Only a package listed here and absent from `libraries` may be called idle. Each once, sorted. `null` otherwise.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 20000,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+          }
+        },
+        "scanned_at": {
+          "description": "When the library scan whose result this is started (agent clock, RFC 3339 UTC). The agent runs it at most once an hour and reuses the last result, or the last failure, in reports made in between, so this can be up to an hour older than `collected_at`. `null` when `library_scan` is `off`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 35,
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
+        },
+        "complete": {
+          "description": "`true` exactly when the library scan ran: `libraries` then lists every package with native code mapped by running processes, and `native` the packages that claim covers. `false` when only services were looked at.",
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "library_scan": {
+                "const": "ran"
+              }
+            },
+            "required": [
+              "library_scan"
+            ]
+          },
+          "then": {
+            "properties": {
+              "libraries": {
+                "type": "array"
+              },
+              "complete": {
+                "const": true
+              },
+              "native": {
+                "type": "array"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "libraries": {
+                "type": "null"
+              },
+              "complete": {
+                "const": false
+              },
+              "native": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "library_scan": {
+                "const": "off"
+              }
+            },
+            "required": [
+              "library_scan"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scanned_at": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "scanned_at": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
     "warnings": {
-      "description": "Problems reading the package list, for the operator. The packages that were read are still sent.",
+      "description": "Problems reading the package list (field `packages`) or what is in use (field `in_use`), for the operator. What was read is still sent.",
       "type": "array",
       "maxItems": 64,
       "items": {
@@ -131,10 +333,11 @@
         ],
         "properties": {
           "field": {
-            "description": "What could not be read in full.",
+            "description": "What could not be read in full: the package list, or what is in use.",
             "type": "string",
             "enum": [
-              "packages"
+              "packages",
+              "in_use"
             ]
           },
           "message": {
@@ -172,6 +375,9 @@
           },
           "skipped": {
             "maxItems": 0
+          },
+          "in_use": {
+            "type": "null"
           }
         }
       },

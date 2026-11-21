@@ -62,6 +62,9 @@ fn sample() -> Inventory {
             primary: true,
             addresses: vec!["192.0.2.10/24".into()],
         }]),
+        reboot_required: None,
+        reboot_required_packages: None,
+        kernel_build: Some("#1 SMP PREEMPT_DYNAMIC Debian 6.12.38-1 (2025-07-16)".into()),
         warnings: vec![],
     }
 }

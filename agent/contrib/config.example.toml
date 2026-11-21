@@ -82,3 +82,12 @@ max_seconds = 300
 # refused even if listed (DEC-15). apply_package_updates has no settings: it always upgrades with
 # apt-get, keeps local configuration files, removes nothing, and never reboots (DEC-16).
 # allowed_services = []
+
+# What is in use (FR-2.6): with each package report the agent sends which packages' services listen
+# (on the network or on loopback only) and which run, read with no extra privilege. The library-use
+# scan adds every package whose files running processes map, and which still run replaced (stale)
+# code. It needs CAP_SYS_PTRACE, so it runs only in its own short-lived unit with no network
+# (fleet-agent-library-scan.service, at most 30 seconds per package report), never in the agent's
+# unit. Off unless enabled here. Changes apply when the agent restarts.
+[packages]
+# library_scan = false

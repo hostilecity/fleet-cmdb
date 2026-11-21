@@ -57,7 +57,7 @@ The owner asked for three categories; this has four, which the owner approved (d
 | 12 | I5 | Ignorable | The tracker's urgency for the release is `unimportant`, and KEV data has been imported at least once (rules N1 and N2, above, override it). | "Debian rates it unimportant: it does not affect the Debian binary packages, or is thought unexploitable in most situations." |
 | 13 | N3 | Needs attention | The tracker's urgency for the release is `end-of-life`, or the package is `<removed>` from the release but still installed: no security support. | "Debian no longer supports this package in trixie, so no fix will come." |
 | 14 | N4 | Needs attention | Severity medium or higher, and either the CVSS vector says network, no privileges, no user action, or there is no vector and the tracker's scope is remote; and the agent does not report the package idle. | "Reachable over the network with no login and no user action, and smbd is listening on a network address." |
-| 15 | L1 | Low risk | The agent's in-use report says no process uses the package and none of it listens. | "Installed but not used by any running process and not listening." |
+| 15 | L1 | Low risk | The agent's library scan ran, judged the package (native code only), and found no process using it, and none of it listens (owner decision 2026-11-20, [VT-APPLICABILITY](vt-applicability.md)). | "Installed but not used by any running process and not listening." |
 | 16 | L2 | Low risk | Attack vector local or physical, or no vector and the tracker's scope is local. | "Needs local access: an attacker must already run code on this host." |
 | 17 | L3 | Low risk | Network or adjacent vector that needs privileges or a user's action. | "Needs a logged-in attacker or a user to open something." |
 | 18 | L4 | Low risk | The tracker has a no-DSA note for the release (no reason, postponed, or ignored). | "Debian judged it a minor issue and plans no security update for trixie; a fix is expected in the next point release." (the last part only when the tracker says so) |
@@ -85,7 +85,7 @@ Missing data never makes a finding look safer, and stale data is still evidence:
 - **Turned off** (the URL setting emptied): the last data is kept and goes stale, as above. Turning a feed off never lowers a score.
 - **Never imported** (no stored data): N1 or N2 cannot fire and I5 does not apply (those findings fall to L4 or L5, more cautious than Ignorable). The tier and score are shown with "not checked against KEV" (or EPSS), never as a plain lower tier.
 - **A CVE with no EPSS score** (EPSS lags new CVEs): N2 does not fire; its reason says "no EPSS score yet". I5 does not depend on EPSS, so EPSS being off or missing a CVE never moves a finding into or out of Ignorable.
-- **No tracker entry** disables F2, I3, I4, I5, N3, and L4. **No in-use report** disables L1 and keeps N4. **No running kernel** disables I1, K1, and K2 (the image's findings are triaged by the other rules).
+- **No tracker entry** disables F2, I3, I4, I5, N3, and L4. **No in-use report**, or one without the library scan, disables L1 and keeps N4; so does a package of interpreted code (owner decision 2026-11-20). **No running kernel** disables I1, K1, and K2 (the image's findings are triaged by the other rules).
 
 ### Debian Security Tracker states and where they land
 

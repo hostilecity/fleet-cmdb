@@ -51,6 +51,14 @@
 # at startup, under the real unit on the real image, lists exactly the VM's own dpkg listing, with the
 # source package of each.
 #
+# Then what is in use (FR-2.6, VT-APPLICABILITY, scenario 309): test services listening on loopback and on
+# the VM's LAN address named by package and class, sshd on every address, the reboot flag null without
+# Debian's file and true with it, a socket-activated test service (systemd holds its socket) named, no
+# address or port in the report, the agent's unit unchanged; then the
+# library scan enabled in the local config, its transient unit carrying CAP_SYS_PTRACE alone with no
+# network, a library only a stopped service would use not listed, and one upgraded under a running
+# program stale.
+#
 # After them, the apply_package_updates task (P3-AGENT-UPDATES, AC-3.4, AC-3.5), delivered by the stub
 # acting as the task API, against a local repository of tiny packages built in the guest
 # (scripts/vm-test-packages.sh), with Debian's own sources set aside so the run is the same every time:
@@ -780,6 +788,164 @@ package_report_matches_dpkg() {
     printf '%s' "$count packages, equal to dpkg-query" > "$tmp/last-result"
 }
 
+# --- What is in use (FR-2.6, VT-APPLICABILITY) ------------------------------------------------------
+
+SCAN_DROPIN=/etc/systemd/system/fleet-agent-library-scan.service.d
+
+# fresh_reports: restarts the agent as on a first start (no inventory record, so no startup splay, #200),
+# and sets $since for the reports that follow.
+fresh_reports() {
+    since=$(date +%s.%N)
+    # reset-failed: these restarts would otherwise reach the unit's start limit (4 in 5 minutes).
+    vm "systemctl stop fleet-agent && rm -f $STATE/inventory.json && systemctl reset-failed fleet-agent && systemctl start fleet-agent"
+}
+# Puts the VM back as the other scenarios expect it (the configuration unchanged), however the scenario ends.
+in_use_cleanup() {
+    vm "systemctl stop fvt-lo fvt-lan fvt-uselib fvt-sock.socket fvt-sock.service 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
+        rm -f /etc/systemd/system/fvt-sock.socket /etc/systemd/system/fvt-sock.service
+        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle > /dev/null 2>&1
+        rm -rf $SCAN_DROPIN $STATE/library-scan.json /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
+        sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml; sed -i -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' /etc/fleet-agent/config.toml
+        systemctl reset-failed fleet-agent; systemctl restart fleet-agent" || true
+}
+packages_since() { event_exists "[.[] | select(.kind == \"packages\" and .status == 200 and .at > $since)] | length > 0"; }
+inventory_since_now() { event_exists "[.[] | select(.kind == \"inventory\" and .status == 200 and .at > $since)] | length > 0"; }
+in_use() { jq -c "${1:-.in_use}" "$stub/packages.json"; }
+no_ptrace_in_the_agent() {
+    local caps
+    caps=$(vm 'systemctl show -p CapabilityBoundingSet --value fleet-agent')
+    [ "$caps" = cap_dac_read_search ] || fail "fleet-agent.service has the capabilities '$caps', not cap_dac_read_search alone"
+}
+
+# VT-A01 and VT-A02 on the real image, under the real unit: services listening on loopback and on the
+# VM's LAN address, and sshd on every address, named by package and class; the reboot flag null when
+# Debian's file is missing and true when it is there; no process id, address, or port in the report;
+# the agent's unit unchanged, without CAP_SYS_PTRACE. Then the library scan, enabled in the local
+# config: only its transient unit carries CAP_SYS_PTRACE, with no network; a library that only a
+# stopped service would use is not listed, and one upgraded under a running program is stale.
+in_use_reported() {
+    reset
+    trap in_use_cleanup EXIT
+    local p='bash /tmp/vm-test-packages.sh' lan props
+    put "$here/vm-test-packages.sh" /tmp/vm-test-packages.sh
+    vm "$p build fvt-listen-lo 1.0 && $p build fvt-listen-lan 1.0 && $p build fvt-listen-sock 1.0 && $p build fvt-lib 1.0 && $p build fvt-lib 1.1
+        $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0
+        dpkg -i /srv/fvt/debs/fvt-listen-lo_1.0_all.deb /srv/fvt/debs/fvt-listen-lan_1.0_all.deb /srv/fvt/debs/fvt-listen-sock_1.0_all.deb \
+            /srv/fvt/debs/fvt-lib_1.0_all.deb \
+            /srv/fvt/debs/fvt-uselib_1.0_all.deb /srv/fvt/debs/fvt-idlelib_1.0_all.deb /srv/fvt/debs/fvt-idle_1.0_all.deb > /dev/null"
+    lan=$(vm "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n 1")
+    [ -n "$lan" ] || fail "the VM has no LAN address"
+    vm "systemd-run --quiet --unit=fvt-lo /usr/libexec/fvt-listen-lo 127.0.0.1 18080
+        systemd-run --quiet --unit=fvt-lan /usr/libexec/fvt-listen-lan $lan 18081
+        systemd-run --quiet --unit=fvt-uselib /usr/libexec/fvt-uselib /usr/lib/fvt/libfvt-lib.so.1
+        printf '%s\n' '[Socket]' 'ListenStream=127.0.0.1:18082' > /etc/systemd/system/fvt-sock.socket
+        printf '%s\n' '[Service]' 'ExecStart=/usr/libexec/fvt-listen-sock 127.0.0.1 18083' > /etc/systemd/system/fvt-sock.service
+        systemctl daemon-reload && systemctl start fvt-sock.socket
+        rm -f /run/reboot-required /run/reboot-required.pkgs"
+    wait_until "the test services to listen" 30 vm_ok "ss -Hltn 'sport = :18080' | grep -q . && ss -Hltn 'sport = :18081' | grep -q . && ss -Hltn 'sport = :18082' | grep -q ."
+
+    fresh_reports
+    wait_until "a package report" 120 packages_since
+    wait_until "an inventory report" 60 inventory_since_now
+    echo "in_use: $(in_use)"
+    in_use '.in_use.listening' | jq -e 'index({"package": "fvt-listen-lo", "class": "loopback"})' > /dev/null \
+        || fail "fvt-listen-lo (127.0.0.1 only) is not loopback: $(in_use .in_use.listening)"
+    in_use '.in_use.listening' | jq -e 'index({"package": "fvt-listen-lan", "class": "network"})' > /dev/null \
+        || fail "fvt-listen-lan (on $lan) is not network: $(in_use .in_use.listening)"
+    in_use '.in_use.listening' | jq -e 'index({"package": "fvt-listen-sock", "class": "loopback"})' > /dev/null \
+        || fail "the socket-activated fvt-sock.service (systemd holds 127.0.0.1:18082) is not named: $(in_use .in_use.listening); the socket: $(vm "ss -Hltn --cgroup 'sport = :18082'"); systemd: $(vm 'systemctl list-sockets --all --show-types --full --no-legend --no-pager | grep 18082')"
+    in_use '.in_use.listening' | jq -e 'index({"package": "openssh-server", "class": "network"})' > /dev/null \
+        || fail "openssh-server is not network: $(in_use .in_use.listening)"
+    in_use '.in_use.services' | jq -e 'index("fvt-uselib") and index("fvt-listen-lo")' > /dev/null \
+        || fail "the running services' packages are missing: $(in_use .in_use.services)"
+    in_use '.in_use | .library_scan == "off" and .complete == false and .libraries == null' | grep -qx true \
+        || fail "the library scan is not off: $(in_use)"
+    jq -e '[.warnings[] | select(.field == "in_use")] == []' "$stub/packages.json" > /dev/null \
+        || fail "in_use warnings: $(jq -c .warnings "$stub/packages.json")"
+    for leak in "$lan" 127.0.0.1 18080 18081 18082 '"pid' argv; do
+        ! in_use | grep -qF -- "$leak" || fail "the in_use report contains '$leak'"
+    done
+    jq -e 'has("reboot_required") and .reboot_required == null and .reboot_required_packages == null' "$stub/inventory.json" > /dev/null \
+        || fail "without /run/reboot-required the flag is not null: $(jq -c '{reboot_required, reboot_required_packages}' "$stub/inventory.json")"
+    jq -e '.kernel_build | type == "string"' "$stub/inventory.json" > /dev/null || fail "no kernel_build"
+    no_ptrace_in_the_agent
+    [ "$(vm 'sha256sum /etc/systemd/system/fleet-agent.service' | cut -d' ' -f1)" = "$(sha256sum "$here/../src/install/fleet-agent.service" | cut -d' ' -f1)" ] \
+        || fail "the installed fleet-agent.service is not the unit in the repository"
+    ! vm_ok "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -q ." || fail "the library scan ran while it is off"
+
+    vm 'printf "*** System restart required ***\n" > /run/reboot-required && printf "libc6\n" > /run/reboot-required.pkgs'
+    fresh_reports
+    wait_until "an inventory report with the reboot flag" 60 inventory_since_now
+    jq -e '.reboot_required == true and .reboot_required_packages == ["libc6"]' "$stub/inventory.json" > /dev/null \
+        || fail "with /run/reboot-required the flag is not true with libc6: $(jq -c '{reboot_required, reboot_required_packages}' "$stub/inventory.json")"
+    vm 'rm -f /run/reboot-required /run/reboot-required.pkgs'
+
+    # The scan, on. A drop-in holds it for a few seconds first, so its properties can be read while it runs.
+    vm "printf '%s\n' '' '[packages]' 'library_scan = true' >> /etc/fleet-agent/config.toml && $LIB/current/fleet-agent check-config > /dev/null
+        mkdir -p $SCAN_DROPIN && printf '%s\n' '[Service]' 'ExecStartPre=/bin/sleep 8' > $SCAN_DROPIN/hold.conf && systemctl daemon-reload"
+    fresh_reports
+    wait_until "the library scan unit to start" 120 vm_ok "systemctl is-active --quiet fleet-agent-library-scan || systemctl show -p ActiveState --value fleet-agent-library-scan | grep -q activating"
+    props=$(vm 'systemctl show -p CapabilityBoundingSet -p PrivateNetwork -p IPAddressDeny -p ProtectSystem -p ProtectHome -p ProcSubset -p NoNewPrivileges fleet-agent-library-scan')
+    echo "the scan unit while it runs: $(printf '%s' "$props" | tr '\n' ' ')"
+    printf '%s\n' "$props" | grep -qx 'CapabilityBoundingSet=cap_sys_ptrace' || fail "the scan unit's capabilities: $props"
+    printf '%s\n' "$props" | grep -qx 'ProtectHome=yes' || fail "the scan unit can read home directories: $props"
+    printf '%s\n' "$props" | grep -qx 'ProcSubset=pid' || fail "the scan unit sees all of /proc: $props"
+    printf '%s\n' "$props" | grep -qx 'PrivateNetwork=yes' || fail "the scan unit has a network: $props"
+    printf '%s\n' "$props" | grep -qx 'ProtectSystem=strict' || fail "the scan unit can write the system: $props"
+    no_ptrace_in_the_agent
+    wait_until "a package report after the scan" 120 packages_since
+    in_use '.in_use | .library_scan == "ran" and .complete == true' | grep -qx true \
+        || fail "the scan did not run: $(in_use) $(jq -c .warnings "$stub/packages.json")"
+    echo "timing and size: $(vm "journalctl -q --no-pager -o cat -u fleet-agent | grep 'read what is in use' | tail -n 2 | tr '\n' ' '"); packages $(jq '.packages | length' "$stub/packages.json")"
+    in_use '.in_use.libraries' | jq -e 'index({"package": "fvt-lib", "stale": false})' > /dev/null \
+        || fail "fvt-lib, mapped by a running program, is not listed: $(in_use .in_use.libraries)"
+    in_use '.in_use.libraries' | jq -e '[.[] | select(.package == "fvt-idlelib")] == []' > /dev/null \
+        || fail "fvt-idlelib, used only by a stopped service, is listed"
+    in_use '.in_use.native' | jq -e 'index("fvt-idlelib") and index("fvt-lib") and (index("fvt-uselib") | not)' > /dev/null \
+        || fail "native is wrong (fvt-lib and fvt-idlelib ship a shared library, fvt-uselib only a Python script): $(in_use .in_use.native | head -c 600)"
+    in_use '.in_use.scanned_at | type == "string"' | grep -qx true || fail "no scanned_at"
+    echo "CPU: the agent since its start, the scan unit's run included in the elapsed time above: $(vm 'systemctl show -p CPUUsageNSec --value fleet-agent') ns"
+
+    # Asked for again within the hour (the heartbeat's report_request): the last scan is reused, not run again.
+    local first_scan scans
+    first_scan=$(in_use '.in_use.scanned_at')
+    scans=$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c '^Started fleet-agent-library-scan' || true")
+    [ "$scans" -ge 1 ] || fail "the journal shows no run of the scan unit"
+    since=$(date +%s.%N)
+    set_plan '{"report_request": ["packages"]}'
+    wait_until "a package report on request" 120 packages_since
+    set_plan '{}'
+    [ "$(in_use '.in_use.scanned_at')" = "$first_scan" ] || fail "a report on request ran the scan again: $(in_use '.in_use.scanned_at'), first $first_scan"
+    [ "$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c '^Started fleet-agent-library-scan' || true")" = "$scans" ] \
+        || fail "the scan unit ran again within the hour"
+    vm_ok '! systemctl is-active --quiet fleet-agent-library-scan' || fail "the scan unit is still running"
+
+    # Kept in the state directory (owner decision 2026-11-20, S4): private to the agent, and reused after
+    # the agent restarts, without a new scan.
+    [ "$(vm "stat -c '%a %U' $STATE/library-scan.json")" = "600 root" ] \
+        || fail "the scan's record is not private to the agent: $(vm "stat -c '%a %U' $STATE/library-scan.json")"
+    fresh_reports
+    wait_until "a package report after the agent restarted" 120 packages_since
+    [ "$(in_use '.in_use.scanned_at')" = "$first_scan" ] || fail "a restart ran the scan again: $(in_use '.in_use.scanned_at'), first $first_scan"
+    [ "$(vm "journalctl -q --no-pager -o cat -u fleet-agent-library-scan | grep -c '^Started fleet-agent-library-scan' || true")" = "$scans" ] \
+        || fail "the scan unit ran again after the restart, within the hour"
+
+    # Upgraded under the running program, which still maps the old file: stale. The record is removed
+    # (test scaffolding) so the restarted agent scans again now rather than in an hour.
+    vm "rm -rf $SCAN_DROPIN $STATE/library-scan.json && systemctl daemon-reload && dpkg -i /srv/fvt/debs/fvt-lib_1.1_all.deb > /dev/null"
+    fresh_reports
+    wait_until "a package report after the upgrade" 120 packages_since
+    in_use '.in_use.libraries' | jq -e 'index({"package": "fvt-lib", "stale": true})' > /dev/null \
+        || fail "fvt-lib, upgraded under a running program, is not stale: $(in_use .in_use.libraries)"
+
+    in_use_cleanup
+    trap - EXIT
+    [ "$(vm 'sha256sum /etc/fleet-agent/config.toml')" = "$config_sum" ] || fail "the configuration was not put back"
+    echo "listening: loopback and network named by package, sshd network; reboot flag null then true; the scan unit alone had CAP_SYS_PTRACE and no network; idle and stale libraries"
+    agent_limits "in-use reports and the library scan"
+    printf '%s' "loopback, network, reboot null/true, scan unit only with ptrace, stale library" > "$tmp/last-result"
+}
+
 # --- apply_package_updates (P3-AGENT-UPDATES) ---------------------------------------------------------
 
 task_id=
@@ -1006,6 +1172,7 @@ record_header() {
 
 scenario 290 "First install refuses a tampered binary, another key, and an older release (#181)" install_refusals
 scenario 300 "Package report matches dpkg-query (AC-2.3)" package_report_matches_dpkg
+scenario 309 "What is in use: listening services, the reboot flag, the library scan (VT-APPLICABILITY)" in_use_reported
 scenario 301 "Supervisor killed before the switch" kill_before_switch
 scenario 302 "Supervisor killed after the switch" kill_after_switch
 scenario 303 "Hard reset after the switch, before confirmation" reset_after_switch

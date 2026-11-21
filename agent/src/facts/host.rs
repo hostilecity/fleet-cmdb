@@ -4,7 +4,11 @@
 //! - [`Host::read`]: a bounded read of a regular file;
 //! - [`Host::list`]: the names in a directory, bounded;
 //! - [`Host::run`]: one program from a fixed list of absolute paths, with fixed arguments, no shell,
-//!   a cleared environment, a time limit, and a bound on the output.
+//!   a cleared environment, a time limit, and a bound on the output;
+//! - [`Host::socket_cgroups`] and [`Host::directories`], for what is in use (FR-2.6, VT-A01): the
+//!   kernel's `sock_diag` dump of listening sockets with their cgroup ids, and the directories of a tree
+//!   with their inode numbers (a cgroup's id is its directory's inode). Both read only, need no
+//!   privilege, and are bounded; readers that predate them never call them.
 //!
 //! Every reader goes through this trait, so a test can give it a fake host that serves fixture files
 //! and canned command output and records what was asked. That is how the tests prove that the files
@@ -145,6 +149,91 @@ pub trait Host: Send + Sync {
     fn list(&self, dir: &Path, max_entries: usize) -> io::Result<Vec<String>>;
     /// Standard output of the command.
     fn run(&self, command: &Command) -> Result<Vec<u8>, RunError>;
+
+    /// The first `bytes` bytes of a regular file, without following a symlink at the last component
+    /// (the library scan's ELF check, VT-A02). The default reads the file through [`Host::read`].
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        let mut all = self.read(path, 64 * 1024 * 1024)?;
+        all.truncate(bytes);
+        Ok(all)
+    }
+
+    /// What is at `path`, without following a symlink there (`lstat(2)`): its kind and whether anyone
+    /// may execute it (the library scan's native-code check, VT-A02). The default says unsupported.
+    fn inspect(&self, path: &Path) -> io::Result<Inspect> {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot inspect files",
+        ))
+    }
+
+    /// Where `path` leads, every symlink followed (`realpath(3)`). The default says unsupported.
+    fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot resolve paths",
+        ))
+    }
+
+    /// The listening TCP and bound UDP sockets (IPv4 and IPv6) the kernel's `sock_diag` netlink
+    /// interface lists, with their cgroup ids. More than `max` is an error. Hosts that cannot answer
+    /// (the test fakes, unless a test gives them sockets) say so.
+    fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
+        let _ = max;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot list sockets",
+        ))
+    }
+
+    /// Every directory under `root`, `root` itself first as `""`, as `(inode, path relative to root)`,
+    /// breadth first and sorted by name within a directory; symlinks are not followed. More than `max`
+    /// is an error.
+    fn directories(&self, root: &Path, max: usize) -> io::Result<Vec<(u64, String)>> {
+        let _ = (root, max);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot walk directories",
+        ))
+    }
+}
+
+/// What [`Host::inspect`] found at a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inspect {
+    /// A regular file, with its permission bits (`st_mode & 0o7777`).
+    File(u32),
+    Symlink,
+    Directory,
+    Other,
+}
+
+impl Inspect {
+    /// `lstat(2)`'s answer for `path`, on this machine, with no time limit (the caller bounds it).
+    pub fn of(path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::symlink_metadata(path)?;
+        let kind = metadata.file_type();
+        Ok(if kind.is_symlink() {
+            Self::Symlink
+        } else if kind.is_dir() {
+            Self::Directory
+        } else if kind.is_file() {
+            Self::File(metadata.permissions().mode() & 0o7777)
+        } else {
+            Self::Other
+        })
+    }
+}
+
+/// One socket from [`Host::socket_cgroups`]: its inode, as `/proc/net` shows it, and the id of the
+/// cgroup of the process that created it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketCgroup {
+    pub inode: u64,
+    pub cgroup: u64,
 }
 
 /// Reads a file through `host`, refusing the paths that hold secrets ([`is_secret_path`]).
@@ -182,6 +271,11 @@ enum Op {
     Stat,
     Read,
     List,
+    Sockets,
+    Walk,
+    Head,
+    Inspect,
+    Resolve,
 }
 
 type Blocked = Arc<Mutex<HashSet<(Op, PathBuf)>>>;
@@ -295,6 +389,77 @@ impl Host for RealHost {
     fn run(&self, command: &Command) -> Result<Vec<u8>, RunError> {
         run(command)
     }
+
+    fn inspect(&self, path: &Path) -> io::Result<Inspect> {
+        self.bounded(Op::Inspect, path, Inspect::of)
+    }
+
+    fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
+        self.bounded(Op::Resolve, path, |path| fs::canonicalize(path))
+    }
+
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        if path.to_str().is_none_or(is_secret_path) {
+            return Err(refused());
+        }
+        self.bounded(Op::Head, path, move |path| fsx::read_head(path, bytes))
+    }
+
+    fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
+        self.bounded(Op::Sockets, Path::new("sock_diag"), move |_| {
+            crate::in_use::netlink::dump(max)
+        })
+    }
+
+    fn directories(&self, root: &Path, max: usize) -> io::Result<Vec<(u64, String)>> {
+        self.bounded(Op::Walk, root, move |root| walk_directories(root, max))
+    }
+}
+
+/// [`Host::directories`] on the real filesystem. `readdir` gives each entry's inode and type, so no
+/// directory is `stat`ed but the root.
+fn walk_directories(root: &Path, max: usize) -> io::Result<Vec<(u64, String)>> {
+    use std::os::unix::fs::DirEntryExt;
+    let mut found = vec![(fs::metadata(root)?.ino(), String::new())];
+    let mut next = 0;
+    while next < found.len() {
+        let relative = found[next].1.clone();
+        next += 1;
+        let dir = if relative.is_empty() {
+            root.to_owned()
+        } else {
+            root.join(&relative)
+        };
+        let mut children = Vec::new();
+        // A directory removed meanwhile (a service stopped) is skipped, not an error.
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let path = if relative.is_empty() {
+                name
+            } else {
+                format!("{relative}/{name}")
+            };
+            children.push((entry.ino(), path));
+        }
+        children.sort_by(|a, b| a.1.cmp(&b.1));
+        if found.len() + children.len() > max {
+            return Err(io::Error::other(format!(
+                "more than {max} directories under {}",
+                root.display()
+            )));
+        }
+        found.extend(children);
+    }
+    Ok(found)
 }
 
 /// How much of a program's standard error is kept, only to quote its first line.
