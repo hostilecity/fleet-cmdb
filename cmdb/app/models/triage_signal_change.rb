@@ -8,7 +8,8 @@
 #   reset included). Coalesced into the daily run.
 # - advisory: an advisory whose CVSS vector parts or severity changed at import, or whose CVE set changed in a way that
 #   touches rule N1 or N2 (it gained or lost a CVE that is in KEV or in the EPSS high band).
-# Debian tracker changes are not here: VT-S05 gives them their own path (vt-buckets.md, "Hand-off").
+# - tracker: a CVE whose Debian tracker entry for a stored release changed in a way the triage rules read (status,
+#   urgency, fixed version, no-DSA, or scope; DebianTriage::Import, VT-BUCKETS #259). Coalesced into the daily run.
 #
 # Recorded in the transaction that made the change, so a rolled-back import hands nothing over. Nothing here changes
 # a finding.
@@ -28,7 +29,7 @@
 # advisory rows after the kev rows: an advisory import that adds an alias reads KEV before a concurrent KEV import
 # commits that CVE, and the kev row then covers it.
 class TriageSignalChange < ApplicationRecord
-  KINDS = %w[kev kev_all epss advisory].freeze
+  KINDS = %w[kev kev_all epss advisory tracker].freeze
   NEXT_ID = "nextval(pg_get_serial_sequence('triage_signal_changes', 'id'))".freeze
   # What an upsert does with a change already pending: a new id (the claim protocol) and the new time.
   ON_CONFLICT_SET = "DO UPDATE SET id = #{NEXT_ID}, created_at = EXCLUDED.created_at".freeze
@@ -45,7 +46,7 @@ class TriageSignalChange < ApplicationRecord
 
   validates :kind, inclusion: { in: KINDS }
 
-  # Records the changes. kind: :kev or :epss with cve_ids, :advisory with advisory_ids, or :kev_all with neither. A
+  # Records the changes. kind: :kev, :epss, or :tracker with cve_ids, :advisory with advisory_ids, or :kev_all with neither. A
   # caller with the CVEs in a table writes the same upsert in SQL (Signals::EpssImport) with NEXT_ID, CVE_TARGET, and
   # ON_CONFLICT_SET.
   def self.record!(kind, cve_ids: [], advisory_ids: [])

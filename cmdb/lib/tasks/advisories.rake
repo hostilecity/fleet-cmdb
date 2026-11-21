@@ -167,6 +167,14 @@ namespace :vulnerabilities do
     puts "Queued re-match #{run.id} for #{sources.join(', ')} in #{scope['packages'].keys.join(', ')}: its progress is on the Data sources page."
   end
 
+  # VT-BUCKETS #259: the way to re-triage everything by hand, for example after a failed triage run's retry also failed,
+  # or after config/triage_applicability.yml changed. Its progress is on the Data sources page.
+  desc "Queue a background re-triage of every chunk verdict and every host's findings (normally done when a signal or Debian's triage changes)"
+  task triage: :environment do
+    run = EvaluationRun.start!("triage", { "reason" => "all" })
+    puts "Queued re-triage #{run.id} of every host: its progress is on the Data sources page."
+  end
+
   desc "Match every package chunk and host in the fleet against the advisory data again (normally done after each package report and import)"
   task match: :environment do
     outcome = VulnerabilityMatcher.match_again!

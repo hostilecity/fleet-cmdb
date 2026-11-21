@@ -72,4 +72,12 @@ RSpec.configure do |config|
     adapter.perform_enqueued_jobs, adapter.filter = saved if saved
   end
   config.after { @signal_dirs&.each { |dir| FileUtils.rm_rf(dir) } }
+  # A triage run (VT-BUCKETS #259) releases its claimed changes outside any transaction (the claim protocol), which an
+  # example inside the test's transaction cannot do; there the release deletes them directly. The protocol itself is
+  # checked with real commits (non-transactional specs) and by the examples tagged claim_protocol.
+  config.before do |example|
+    next if !self.class.use_transactional_tests || example.metadata[:claim_protocol]
+
+    allow(TriageSignalChange).to receive(:release!) { |ids| TriageSignalChange.where(id: ids).delete_all }
+  end
 end

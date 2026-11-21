@@ -1,7 +1,7 @@
 require "rails_helper"
 
 # The hand-off to the triage run (VT-S05): one pending row per kind and CVE or advisory, so changes coalesce.
-RSpec.describe TriageSignalChange do
+RSpec.describe TriageSignalChange, :claim_protocol do
   it "records each change once, whatever how often it is recorded" do
     described_class.record!(:kev, cve_ids: %w[CVE-2026-0001 CVE-2026-0001 CVE-2026-0002])
     described_class.record!(:kev, cve_ids: %w[CVE-2026-0002])

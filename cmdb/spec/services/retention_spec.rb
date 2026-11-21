@@ -109,7 +109,7 @@ RSpec.describe Retention do
 
       expect(counts).to eq("inventory_snapshots" => 2, "inventory_report_receipts" => 1, "package_snapshots" => 1,
                            "package_report_receipts" => 1, "config_snapshots" => 1, "config_report_receipts" => 1,
-                           "cis_result_changes" => 0, "host_status_events" => 1, "report_requests" => 1,
+                           "cis_result_changes" => 0, "host_status_events" => 1, "vulnerability_work_events" => 0, "report_requests" => 1,
                            "advisory_refresh_attempts" => 1, "vulnerability_findings" => 0)
       expect(old.map { |row| row.class.exists?(row.id) }).to all(be(false))
       expect(kept.map { |row| row.class.exists?(row.id) }).to all(be(true))
@@ -177,7 +177,7 @@ RSpec.describe Retention do
       vulnerable = debian_host(packages: [ [ "openssl", "3.5.0-1", "openssl" ] ])
       VulnerabilityMatcher.match!([ vulnerable.id ])
       finding = VulnerabilityFinding.sole
-      finding.update_columns(state: "resolved", resolution: "fixed", resolved_at: now - 100.days)
+      finding.update_columns(state: "resolved", resolution: "fixed", resolved_at: now - 100.days, bucket: nil, bucket_rule: nil, kev: nil)
       described_class.prune!(now:)
       expect(VulnerabilityFinding.count).to eq(0)
 
@@ -282,7 +282,7 @@ RSpec.describe Retention do
 
       described_class.prune!(now:)
 
-      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 package_snapshots=0 package_report_receipts=0 config_snapshots=0 config_report_receipts=0 cis_result_changes=0 host_status_events=0 report_requests=0 advisory_refresh_attempts=0 vulnerability_findings=0 older than 2026-08-03T12:00:00Z/)
+      expect(Rails.logger).to have_received(:info).with(/\A\[retention\] deleted inventory_snapshots=1 inventory_report_receipts=0 package_snapshots=0 package_report_receipts=0 config_snapshots=0 config_report_receipts=0 cis_result_changes=0 host_status_events=0 vulnerability_work_events=0 report_requests=0 advisory_refresh_attempts=0 vulnerability_findings=0 older than 2026-08-03T12:00:00Z/)
     end
   end
 

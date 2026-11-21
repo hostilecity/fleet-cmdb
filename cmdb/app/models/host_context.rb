@@ -11,7 +11,9 @@ class HostContext
     "no_advisory_data" => "No advisory data has been imported for %s."
   }.freeze
 
-  attr_reader :host_id, :ecosystem, :reason, :detail
+  # kernel_version: the running kernel release the inventory reports (`uname -r`), or nil; the triage's kernel rules
+  # read it (VT-BUCKETS #259, VulnerabilityTriage::HostFacts).
+  attr_reader :host_id, :ecosystem, :reason, :detail, :kernel_version
 
   # The ecosystems some successful import had data for.
   def self.ecosystems_with_data
@@ -20,13 +22,15 @@ class HostContext
 
   # One HostContext per id, in id order.
   def self.load(ids, with_data: ecosystems_with_data)
-    os = HostInventory.where(host_id: ids).pluck(:host_id, Arel.sql("stable -> 'os'")).to_h
+    inventories = HostInventory.where(host_id: ids).pluck(:host_id, Arel.sql("stable -> 'os'"), Arel.sql("stable ->> 'kernel_version'"))
+                               .to_h { |id, *rest| [ id, rest ] }
     sets = HostPackageSet.where(host_id: ids).pluck(:host_id, :manager, :unsupported_reason).to_h { |id, *rest| [ id, rest ] }
-    ids.map { |id| new(id, os.key?(id), os[id], sets[id], with_data) }
+    ids.map { |id| new(id, inventories.key?(id), *inventories.fetch(id, [ nil, nil ]), sets[id], with_data) }
   end
 
-  def initialize(host_id, inventoried, os, package_set, with_data)
+  def initialize(host_id, inventoried, os, kernel_version, package_set, with_data)
     @host_id = host_id
+    @kernel_version = kernel_version
     @ecosystem = Ecosystems.for_os(os)
     manager, unsupported_reason = package_set
     @reason, argument =

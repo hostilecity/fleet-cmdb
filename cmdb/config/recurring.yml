@@ -127,6 +127,10 @@ production:
   epss_refresh:
     class: EpssRefreshJob
     schedule: "30 14 * * * UTC"
+  # VT-S05 (#259, ADR 0032): EPSS band and Debian tracker changes re-triaged once a day, an hour after the EPSS refresh.
+  triage_daily:
+    class: TriageDailyJob
+    schedule: "37 15 * * * UTC"
   # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
   advisory_upload_pruning:
     class: AdvisoryUploadPruneJob

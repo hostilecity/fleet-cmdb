@@ -270,4 +270,16 @@ RSpec.describe "vulnerabilities rake tasks" do
       expect(EvaluationRun.count).to eq(0)
     end
   end
+
+  describe "vulnerabilities:triage (VT-BUCKETS #259)" do
+    include ActiveJob::TestHelper
+
+    it "queues a background re-triage of every host" do
+      Rake::Task["vulnerabilities:triage"].reenable
+      expect { Rake::Task["vulnerabilities:triage"].invoke }.to output(/\AQueued re-triage \d+ of every host: its progress is on the Data sources page\.\n\z/).to_stdout
+      run = EvaluationRun.sole
+      expect(run).to have_attributes(kind: "triage", scope: { "reason" => "all" })
+      expect(EvaluationRunJob).to have_been_enqueued.with(run.id)
+    end
+  end
 end

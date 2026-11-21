@@ -102,6 +102,7 @@ module Signals
       if signal == KEV
         deleted = KevEntry.delete_all
         TriageSignalChange.record!(:kev_all)
+        EvaluationRun::Triage.start_after_commit("kev")
       else
         TriageSignalChange.record!(:epss, cve_ids: EpssScore.where(band: "high").pluck(:cve_id))
         deleted = EpssScore.delete_all

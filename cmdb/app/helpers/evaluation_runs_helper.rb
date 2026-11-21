@@ -12,6 +12,8 @@ module EvaluationRunsHelper
   def evaluation_doing(run)
     return "Checking every host against the latest change" if run.kind == "cis_rules"
     return "Re-matching the hosts a change to how packages are matched affects" if run.scope["reason"] == "matching"
+    return "Re-triaging every host's findings" if run.kind == "triage" && run.work.full?
+    return "Re-triaging the hosts whose findings' exploitation signals or Debian triage changed" if run.kind == "triage"
 
     "Re-matching the hosts the latest import affects"
   end
