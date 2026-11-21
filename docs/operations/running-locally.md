@@ -11,7 +11,7 @@ How to run the tests, the server, a simulated fleet, and a real agent on your ow
 
 ## Before you start
 
-- **Server:** Ruby 3.4.10 through chruby and PostgreSQL, as in [`cmdb/README.md`](../../cmdb/README.md#development-environment-macos), then `bin/setup --skip-server` in `cmdb/`.
+- **Server:** Ruby 3.4.13 through chruby and PostgreSQL, as in [`cmdb/README.md`](../../cmdb/README.md#development-environment-macos), then `bin/setup --skip-server` in `cmdb/`.
 - **Local settings:** `cp .env.example .env` in `cmdb/`, then fill in `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (section 2). The app reads `cmdb/.env` whenever it starts (`bin/dev`, `bin/rails`, `bin/simulate-fleet`, and Puma in section 4), so settings in this guide go there rather than on the command line; a value set in the shell still wins. It is ignored by git; never commit it.
 - **Agent:** [rustup](https://rustup.rs); it installs the toolchain pinned in `agent/rust-toolchain.toml` on first use. The agent runs only on Linux; on macOS it runs in a Docker container (section 4).
 - **Certificates:** `openssl` (installed on macOS and most Linux systems).
