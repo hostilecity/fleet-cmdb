@@ -10,6 +10,9 @@ class EvaluationRun
   #   transaction. A run that fails before that releases nothing. kev rows are processed with the advisory rows in one
   #   pass that reads the data after both were claimed, so an alias an advisory import added before a KEV import
   #   committed its CVE is covered by the kev row.
+  # - Each host re-triages only the findings of the advisories concerned (VulnerabilityMatcher.retriage!): a signal or
+  #   tracker change moves nothing else, so a KEV listing costs a host its few findings of that advisory, not its
+  #   thousands. A full run, or one naming more than ADVISORY_LIMIT advisories, runs the hosts' whole transitions.
   # - Which changes: reason "kev" (a KEV import or a KEV clear; started at once) claims kev, kev_all, and advisory;
   #   "daily" (TriageDailyJob, after the daily EPSS import) claims every kind, so EPSS and tracker changes are coalesced
   #   into one run a day; "all" (the migration that adds the buckets, bin/rails vulnerabilities:triage) recomputes
@@ -24,6 +27,9 @@ class EvaluationRun
     REASONS = %w[kev daily all].freeze
     CLAIM = 1_000
     CHUNK_BATCH = 5_000
+    # Up to this many advisories, the run re-triages only their findings on each host (VulnerabilityMatcher.retriage!);
+    # above it (a first tracker import names most of them), each host's transitions run in full.
+    ADVISORY_LIMIT = 20_000
 
     # Starts a run once the current transaction commits.
     def self.start_after_commit(reason) = EvaluationRun.after_commit_start("triage", { "reason" => reason })
@@ -39,6 +45,8 @@ class EvaluationRun
     def full? = scope["full"] == true || reason == "all"
     def prepared? = scope["prepared"] == true
     def chunk_runs = Array(scope["chunk_runs"]).map(&:to_i)
+    # The advisories whose findings it re-triages, or nil for every finding of its hosts.
+    def advisory_ids = full? ? nil : scope["advisory_ids"]&.map(&:to_i)
 
     # Claims, recomputes, records, releases; returns the scope the run keeps (EvaluationRun#fan_out! stores it).
     def prepare!
@@ -52,7 +60,8 @@ class EvaluationRun
       record_chunks(changed) unless full
       TriageSignalChange.release!(claimed) if claimed.any?
       @scope = scope.merge("full" => full, "prepared" => true, "chunk_runs" => (chunk_runs + [ @run_id ]).uniq, "changes" => claimed.size,
-                           "advisories" => advisory_ids&.size, "chunks_changed" => changed.size)
+                           "advisories" => advisory_ids&.size, "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
+                           "chunks_changed" => changed.size)
     end
 
     def hosts
@@ -62,13 +71,19 @@ class EvaluationRun
       Host.in_fleet.where(id: HostPackageSet.where(package_set_id: sets.select(:id)).select(:host_id))
     end
 
-    # Re-classifies the range's hosts; returns those whose shown vulnerabilities changed.
-    def call(range) = VulnerabilityMatcher.match!(Host.in_fleet.where(id: range).merge(hosts).pluck(:id)).changed_host_ids
+    # Re-classifies the range's hosts: only the findings of its advisories, or (a full run, or too many advisories) every
+    # finding through the hosts' transitions. Returns the hosts whose shown vulnerabilities changed.
+    def call(range)
+      ids = Host.in_fleet.where(id: range).merge(hosts).pluck(:id)
+      advisory_ids ? VulnerabilityMatcher.retriage!(ids, advisory_ids:) : VulnerabilityMatcher.match!(ids).changed_host_ids
+    end
 
     def covers?(other)
       return false unless other.is_a?(Triage) && other.prepared?
+      return true if full?
+      return false if other.full? || !(other.chunk_runs - chunk_runs).empty?
 
-      full? || (!other.full? && (other.chunk_runs - chunk_runs).empty?)
+      advisory_ids.nil? || (!other.advisory_ids.nil? && (other.advisory_ids - advisory_ids).empty?)
     end
 
     def refresh_always? = false
