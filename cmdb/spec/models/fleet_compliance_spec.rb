@@ -143,6 +143,22 @@ RSpec.describe FleetCompliance do
     expect(names(status: "bogus", cis: "bogus", vuln: "bogus").size).to eq(6)
   end
 
+  it "counts and filters by open findings with a fix, of a severity when one is named, never on a host not evaluated (VT-FIXABLE #256)" do
+    findings!(web, "low", "low", fixed: "2.0-1")
+    findings!(media, "high", fixed: "2.0-1")
+    findings!(media, "high", state: "resolved", fixed: "2.0-1") # resolved: not counted
+    findings!(old, "critical", fixed: "2.0-1") # kept from an earlier evaluation: open, but never counted as fixable (Q6)
+    expect([ web, media, old, dns ].map { |host| row(host).then { |r| [ r.vulns_fixable, r.vulns_fix_packages ] } }).to eq([ [ 2, 2 ], [ 1, 1 ], [ 0, 0 ], [ 0, 0 ] ])
+    expect(names(fix: "available", sort: "name")).to eq([ "Media server", "Web A" ])
+    expect(names(fix: "available", vuln: "high")).to eq([ "Media server" ]) # a high finding with a fix (#252 question 8)
+    expect(names(fix: "available", vuln: "critical")).to eq([]) # Web A has a critical, but not one with a fix
+    expect(names(vuln: "critical", sort: "name")).to eq([ "Old findings", "Web A" ])
+    expect(names(fix: "bogus").size).to eq(6)
+    expect(described_class.totals).to have_attributes(hosts_fixable: 2, vulns_fixable: 3)
+    list = described_class.new(fix: "available", vuln: "high")
+    expect([ list.params_with, list.filtered? ]).to eq([ { vuln: "high", fix: "available" }, true ])
+  end
+
   it "filters by the distribution release an ecosystem covers, from the inventory, for the Data sources page's link" do
     record_inventory(media)
     record_inventory(web, os: { "id" => "alpine", "version_id" => "3.20", "pretty_name" => "Alpine Linux v3.20" })

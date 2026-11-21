@@ -76,6 +76,19 @@ module ComplianceHelper
     return tag.span(safe_join([ "Not evaluated", tag.span(": #{vuln_reason_line(row).downcase_first}", class: "visually-hidden") ]), class: "not-eval") unless row.vulns_shown?
     return tag.span("None open", class: "none-open") if row.vulns_open.zero?
 
-    safe_join([ link_to("#{row.vulns_open} open", vulnerabilities_host_path(host)), (tag.span(worst_severe(row.vulns), class: "rate-detail") if worst_severe(row.vulns)) ].compact)
+    safe_join([ link_to("#{row.vulns_open} open", vulnerabilities_host_path(host)), (tag.span(worst_severe(row.vulns), class: "rate-detail") if worst_severe(row.vulns)),
+                fix_detail(host, row, packages: true) ].compact)
+  end
+
+  # How many of an evaluated host's open findings have a fix (VT-FIXABLE #256), from its summary, as a line linking to
+  # its tab filtered to them: "12 with a fix" (with packages: true, "12 with a fix (3 packages)"), or "None with a fix".
+  # nil when nothing is open, or when the host is not evaluated now: its kept findings are never counted as fixable
+  # (#252 question 6).
+  def fix_detail(host, row, packages: false)
+    return nil unless row.vulns_evaluated? && row.vulns_open.positive?
+    return tag.span("None with a fix", class: "rate-detail fix-detail") if row.vulns_fixable.zero?
+
+    text = "#{row.vulns_fixable} with a fix#{" (#{pluralize(row.vulns_fix_packages, 'package')})" if packages}"
+    tag.span(link_to(text, vulnerabilities_host_path(host, fix: "available")), class: "rate-detail fix-detail")
   end
 end

@@ -200,6 +200,39 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage" with distribution Debian:13.))
     end
 
+    it "says how many open findings have a fix, and filters by it, alone or with a severity (VT-FIXABLE #256)" do
+      get "/compliance"
+      expect(words(page.at_css("#fleet_fixable"))).to eq("No evaluated host has an open finding with a fix available.")
+      expect(page.at_css("tr#compliance_host_#{web.id} th .fix-detail").text).to eq("None with a fix")
+      findings!(web, "low", "low", fixed: "2.0-1")
+      old = enrolled_host(name: "Old findings").first
+      vulns_evaluated!(old, state: "not_evaluated", reason: "unsupported_package_manager")
+      findings!(old, "high", fixed: "2.0-1") # kept from an earlier evaluation: never counted as having a fix
+      get "/compliance"
+      expect(words(page.at_css("#fleet_fixable"))).to eq("1 host has open findings with a fix available: 2 findings.")
+      expect(page.at_css("#fleet_fixable a")["href"]).to eq("/compliance?fix=available")
+      link = page.at_css("tr#compliance_host_#{web.id} th .fix-detail a")
+      expect([ link.text, link["href"] ]).to eq([ "2 with a fix", "/hosts/#{web.id}/vulnerabilities?fix=available" ])
+      expect(page.at_css("tr#compliance_host_#{old.id} th .fix-detail")).to be_nil
+      expect(page.css("#compliance_table th .fix-detail").size).to eq(1) # build and backup have nothing open
+      expect(page.css("select[name=fix] option").map { |o| [ o.text, o["value"] ] }).to eq([ [ "All hosts", "" ], [ "Has open findings with a fix", "available" ] ])
+
+      get "/compliance", params: { fix: "available" }
+      expect(row_names).to eq([ "Web A" ])
+      expect(words(page.at_css("#fix_filter"))).to eq("Showing evaluated hosts with an open finding that has a fix available. Show hosts with or without a fix")
+      expect(page.at_css("#fix_filter a")["href"]).to eq("/compliance")
+      expect(page.at_css("select[name=fix] option[selected]")["value"]).to eq("available")
+      get "/compliance", params: { fix: "available", vuln: "low" }
+      expect(row_names).to eq([ "Web A" ])
+      expect(words(page.at_css("#severity_filter span"))).to eq("Showing hosts with open low vulnerability findings with a fix.")
+      expect(page.at_css("#severity_filter a")["href"]).to eq("/compliance") # one sentence, one link that clears both (review of #267, N1)
+      expect(page.at_css("#fix_filter")).to be_nil
+      get "/compliance", params: { fix: "available", vuln: "critical" }
+      expect(words(page.at_css("#no_matches strong"))).to eq("No hosts match open critical vulnerability findings with a fix.")
+      get "/compliance", params: { fix: "available", tag: "storage" }
+      expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage" with open findings with a fix.))
+    end
+
     it "explains when nothing matches, with a way back" do
       get "/compliance", params: { tag: "storage", status: "not_evaluated", cis: "low" }
       expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage", status "Not evaluated", and open low CIS-aligned check failures.))

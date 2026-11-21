@@ -142,7 +142,8 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         cis_results!(web, rules.to_h { |r| [ r, r.key == "critical-0" ? "fail" : "pass" ] })
         cis_results!(backup, rules.to_h { |r| [ r, "pass" ] })
         [ media, web, backup ].each { |h| host_config!(h) && package_set!(h) && vulns_evaluated!(h) }
-        findings!(media, "high", "medium")
+        findings!(media, "high")
+        findings!(media, "medium", fixed: "2.0-1")
         findings!(web, "critical", "low", "low")
         findings!(dns, "high", state: "resolved")
       end
@@ -158,8 +159,9 @@ RSpec.describe "Hosts", :signed_in, type: :request do
 
       it "shows each host's pass rate and open findings, linked to its tabs; not evaluated and not tracked are words, never zero" do
         get "/"
-        expect(cells(media)[6..7]).to eq([ "62.5% 3 failing, 1 high", "2 open 1 high" ])
-        expect(cells(web)[6..7]).to eq([ "87.5% 1 failing, 1 critical", "3 open 1 critical" ])
+        expect(cells(media)[6..7]).to eq([ "62.5% 3 failing, 1 high", "2 open 1 high 1 with a fix (1 package)" ])
+        expect(cells(web)[6..7]).to eq([ "87.5% 1 failing, 1 critical", "3 open 1 critical None with a fix" ])
+        expect(page.at_css("tr#row_host_#{media.id} .fix-detail a")["href"]).to eq("/hosts/#{media.id}/vulnerabilities?fix=available") # #256
         expect(cells(backup)[6..7]).to eq([ "100% None failing", "None open" ])
         expect(cells(dns)[6..7]).to eq([ "Not evaluated: no config report yet", "Not evaluated: no inventory yet, so the distribution is not known" ])
         expect(cells(pending)[6..7]).to eq([ "Not tracked", "Not tracked" ])

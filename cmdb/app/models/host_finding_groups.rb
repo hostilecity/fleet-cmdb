@@ -8,9 +8,10 @@
 #   (bytewise, "C" collation). The resolved list (rank: :severity) keeps the tab's earlier order, worst severity then
 #   the earliest first seen, since a resolved finding is not something to act on (review of #253, S3). Counts are of
 #   the findings shown, so the severity, text, and triage filters rank what they keep.
-# - Fixable: the finding's fixed version is known, that is, the advisory's affected range for the host's release
-#   (its ecosystem, such as Debian:13) that the installed version is in has a "fixed" event. Nothing in the data says
-#   whether that version is already in the host's repositories, so it is not checked.
+# - Fixable: the finding's stored fix (VulnerabilityFinding#fixable, VT-FIXABLE #256): its fixed version is
+#   known, that is, the advisory's affected range for the host's release (its ecosystem, such as Debian:13) that the
+#   installed version is in has a "fixed" event. Nothing in the data says whether that version is already in the
+#   host's repositories, so it is not checked. The summaries count the same flag, so the fleet pages agree.
 # - Pages: keyset pages of PER_PAGE packages after (or before) a cursor that holds the whole sort key of a row (its
 #   counts, or its worst severity and first seen, then its package and architecture), so a page keeps its place when
 #   the counts change under a live refresh (review of #253, S1): it shows the packages that now sort after that key.
@@ -129,7 +130,7 @@ class HostFindingGroups
 
   def aggregates
     Advisory::SEVERITIES.map { |severity| Arel.sql(VulnerabilityFinding.sanitize_sql([ "count(*) FILTER (WHERE advisories.severity = ?) AS #{severity}", severity ])) } +
-      [ Arel.sql("count(*) FILTER (WHERE vulnerability_findings.fixed_version IS NOT NULL) AS fixable"),
+      [ Arel.sql("count(*) FILTER (WHERE #{VulnerabilityFinding::FIX_SQL}) AS fixable"),
         Arel.sql("min(array_position(ARRAY['critical', 'high', 'medium', 'low', 'unknown']::varchar[], advisories.severity)) AS worst_rank"),
         Arel.sql("min(vulnerability_findings.first_seen_at) AS first_seen_at"),
         Arel.sql("vulnerability_findings.package"), Arel.sql("vulnerability_findings.architecture") ]
@@ -148,7 +149,7 @@ class HostFindingGroups
     rows.filter_map do |row|
       list = findings[[ row["package"], row["architecture"] ]] or next
 
-      Group.new(package: row["package"], architecture: row["architecture"], fixable: list.count(&:fixed_version),
+      Group.new(package: row["package"], architecture: row["architecture"], fixable: list.count(&:fixable),
                 counts: Advisory::SEVERITIES.to_h { |severity| [ severity, list.count { |f| f.advisory.severity == severity } ] },
                 findings: list.sort_by { |f| [ Advisory::SEVERITIES.index(f.advisory.severity), f.first_seen_at, f.advisory.advisory_id ] })
     end

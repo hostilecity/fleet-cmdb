@@ -58,6 +58,29 @@ module HostVulnerabilitiesHelper
     end
   end
 
+  # Debian's versioned kernel image package names (linux-image-<release>, -unsigned, -dbg), which are never upgraded in
+  # place: the fix is a new package, and the old image keeps its findings until it is removed. Not the
+  # linux-image-<arch> metapackages (linux-image-amd64, linux-image-cloud-amd64): once they carry findings (#272),
+  # apt upgrade clears them, so "remove this old image" would be wrong advice (review of #272, item 3). A pattern here until VT-BUCKETS brings
+  # the per-distribution applicability table (cmdb/config/triage_applicability.yml) with the kernel rules K1 and K2,
+  # which replace this note with a work item. The signed images and the metapackages, built from linux-signed-<arch>,
+  # are matched as linux since #270, so the signed images get this note too.
+  KERNEL_IMAGE = /\Alinux-image-\d/
+
+  # Under a kernel image package with an open finding that has a fix (VT-FIXABLE #256, the spec's intro): until
+  # VT-BUCKETS, a running kernel's fix shows as "Fix available" on its package row, but in Debian each kernel update is
+  # a new binary package. apt-get upgrade and the update task (apply_package_updates, DEC-16: Upgrade-Allow-New=false)
+  # never install it; apt upgrade does, as a dependency of the linux-image-<arch> metapackage, and apt full-upgrade
+  # also may remove packages. It fixes nothing until the host boots it, and this versioned image keeps its findings
+  # until it is removed. nil for any other package, or with no fix.
+  def kernel_fix_note(package, fixable)
+    return nil unless fixable.positive? && KERNEL_IMAGE.match?(package)
+
+    tag.span(safe_join([ "A kernel fix comes in a new package, which ", tag.code("apt-get upgrade"), " and the update task don't install: install it with ",
+                         tag.code("apt upgrade"), " (or ", tag.code("apt full-upgrade"), " where that holds it back; it can also remove packages), reboot into it, ",
+                         "then remove this old image (", tag.code("apt autoremove"), "): it keeps its findings until then." ]), class: "state-note kernel-fix")
+  end
+
   # How a resolved package row's findings resolved, in the order RESOLUTIONS lists them: "2 fixed, 1 removed".
   def group_resolutions(group) = group.resolutions.sort_by { |resolution, _| RESOLUTIONS.keys.index(resolution) }.map { |resolution, count| "#{count} #{resolution.tr('_', ' ')}" }.join(", ")
 

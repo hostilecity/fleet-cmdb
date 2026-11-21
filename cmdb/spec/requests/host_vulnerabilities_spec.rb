@@ -182,6 +182,61 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(rows.map { |row| row.split.first }).to eq(%w[curl:amd64 zlib:amd64 xml:amd64])
     end
 
+    def chips = page.css("#fix_filters a").map { |a| [ words(a), a["aria-current"], Rack::Utils.parse_query(URI(a["href"]).query) ] }
+
+    it "filters by whether a fix is available, counting over the open list whatever the other filters, in the URL (VT-FIXABLE #256)" do
+      tab = "/hosts/#{host.id}/vulnerabilities"
+      # A reopened finding with a fix counts as one (review of #267, N3), and so does a reopened one without.
+      VulnerabilityFinding.where(host_id: host.id, package: "curl").limit(1).update_all(state: "reopened", reopened_at: Time.current)
+      VulnerabilityFinding.where(host_id: host.id, package: "xml").limit(1).update_all(state: "reopened", reopened_at: Time.current)
+      get tab
+      expect(chips).to eq([ [ "Fix available 5", nil, { "fix" => "available" } ], [ "No fix available 7", nil, { "fix" => "none" } ] ])
+      expect(chips.sum { |label, *| label.split.last.to_i }).to eq(page.at_css("#state_filters a[aria-current]").at_css(".n").text.to_i) # 12 open
+
+      get tab, params: { fix: "available" }
+      at = "2026-11-06 09:00 UTC"
+      expect(rows).to eq([ "kernel:amd64 installed 1.0-1 2 advisories High 2 high Fix for all 2 2 open #{at}", # counts only what the filter keeps
+                           "curl:amd64 installed 1.0-1 2 advisories Medium 2 medium Fix for all 2 1 open, 1 reopened #{at}",
+                           "zlib:amd64 installed 1.0-1 1 advisory Medium 1 medium Fix available 1 open #{at}" ])
+      expect(words(page.at_css("#open_heading"))).to eq("Open findings 5: 2 high, 3 medium")
+      expect(chips).to eq([ [ "Fix available 5", "true", {} ], [ "No fix available 7", nil, { "fix" => "none" } ] ]) # the current chip clears it
+      expect(page.at_css("#finding_filters input[name=fix]")["value"]).to eq("available")
+      expect(Rack::Utils.parse_query(URI(page.at_css("#triage_filter a")["href"]).query)).to eq("debian" => "no_dsa", "fix" => "available")
+      expect(page.css("#state_filters a").map { |a| Rack::Utils.parse_query(URI(a["href"]).query) }).to eq([ { "fix" => "available" }, { "state" => "resolved" }, { "state" => "all" } ])
+
+      get tab, params: { fix: "none", severity: "medium" } # combined, and counted whatever the severity filter
+      expect(rows.map { |row| row.split.first }).to eq(%w[xml:amd64 zlib:amd64])
+      expect(chips.map(&:first)).to eq([ "Fix available 5", "No fix available 7" ])
+      expect(chips.first.last).to eq("severity" => "medium", "fix" => "available")
+
+      get tab, params: { fix: "none", q: "curl" }
+      expect(page.at_css("#open_findings").text.squish).to include("No open findings match. Clear the filters")
+      get tab, params: { fix: "bogus" }
+      expect(rows.size).to eq(5)
+      get tab, params: { fix: "available", state: "resolved" } # offered on the open list only (#252 question 7)
+      expect(page.at_css("#fix_filters")).to be_nil
+      expect(page.at_css("#resolved_findings")).to be_present
+    end
+
+    it "reads the stored fixed version and flag, which the next matching run brings up to date (#256)" do
+      advisory = Advisory.find_by!(advisory_id: "DSA-9200-1")
+      ChunkMatch.where(advisory_id: advisory.id).update_all(fixed_version: "2.0-1") # a verdict moved, its host not yet matched
+      get "/hosts/#{host.id}/vulnerabilities", params: { q: "ssl" }
+      expect(rows.sole).to include("No fix available")
+      expect(groups("open_list").sole.last.sole[2]).to eq("No fix available") # the advisory row's "Fixed in" too (review of #267, S2)
+      expect(chips.map(&:first)).to eq([ "Fix available 5", "No fix available 7" ])
+      get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "ssl" }
+      expect(package_rows.sole[4]).to eq("No fix available")
+      expect(page.text).not_to include("fixed in 2.0-1")
+      match(host)
+      get "/hosts/#{host.id}/vulnerabilities", params: { q: "ssl" }
+      expect(rows.sole).to include("Fix available")
+      expect(groups("open_list").sole.last.sole[2]).to eq("Fixed in 2.0-1")
+      expect(chips.map(&:first)).to eq([ "Fix available 6", "No fix available 6" ])
+      get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "ssl" }
+      expect(package_rows.sole[4]).to eq("2.0-1")
+    end
+
     it "collapses each package's advisories in a labelled native disclosure, opened by a text search" do
       get "/hosts/#{host.id}/vulnerabilities"
       details = page.css("#open_list details.advisories")
@@ -291,14 +346,60 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
         sql.size
       end
       tab = "/hosts/#{host.id}/vulnerabilities"
-      before = [ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa") ]
+      before = [ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?fix=available") ]
       import_advisories(*Array.new(30) { |i| advisory("DSA-94#{format('%02d', i)}-1", %w[kernel curl xml][i % 3], fixed: nil) })
       match(host)
-      expect([ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa") ]).to eq(before)
+      expect([ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?fix=available") ]).to eq(before)
+      expect(before.last).to eq(before.first) # the fix filter and its counts add no statement (#256)
       get tab
       expect(words(page.at_css("#open_heading"))).to start_with("Open findings 42:")
       expect(page.css("#open_list > tbody > tr.pkg-group").size).to eq(2)
     end
+  end
+
+  it "says a kernel image's fix needs a new package and a reboot, and the old image's removal (VT-FIXABLE spec, review of #267, S1)" do
+    # As the agent reports a Debian amd64 host: the signed image and the metapackage come from linux-signed-amd64.
+    running = [ "linux-image-6.12.48+deb13-amd64-unsigned", "6.12.48-1", "linux" ]
+    old = [ "linux-image-6.12.30+deb13-amd64-unsigned", "6.12.30-1", "linux" ]
+    packages = [ running, [ "linux-image-6.12.48+deb13-amd64", "6.12.48-1", "linux-signed-amd64" ], [ "linux-image-amd64", "6.12.48-1", "linux-signed-amd64" ],
+                 [ "linux-libc-dev", "6.12.48-1", "linux" ], [ "linux-image-6.12.40+deb13-amd64-unsigned", "6.12.40-1", "linux-old" ] ]
+    host = debian_host(packages: packages + [ old ])
+    import_advisories(advisory("DEBIAN-CVE-2026-2000", "linux", fixed: "6.12.57-1"), advisory("DEBIAN-CVE-2026-2001", "linux-old", fixed: nil), full: true)
+    match(host)
+    report_packages(host, packages) # the old image removed: its finding resolves and keeps its stored fix
+    match(host)
+    get "/hosts/#{host.id}/vulnerabilities"
+    notes = page.css("#open_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix")&.text&.squish ] }
+    note = "A kernel fix comes in a new package, which apt-get upgrade and the update task don't install: install it with apt upgrade " \
+           "(or apt full-upgrade where that holds it back; it can also remove packages), reboot into it, then remove this old image " \
+           "(apt autoremove): it keeps its findings until then."
+    expect(notes).to eq("linux-image-6.12.48+deb13-amd64-unsigned:amd64" => note,
+                        "linux-image-6.12.48+deb13-amd64:amd64" => note, # the signed image, matched as linux since #270
+                        "linux-image-amd64:amd64" => nil, # the metapackage has the finding (#270) but no note: apt upgrade clears it
+                        "linux-libc-dev:amd64" => nil, # not a kernel image: its fix is an ordinary upgrade
+                        "linux-image-6.12.40+deb13-amd64-unsigned:amd64" => nil) # a kernel image with no fix
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: running.first }
+    expect(page.at_css(".kernel-fix").text.squish).to start_with("A kernel fix comes in a new package")
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-6.12.40+deb13-amd64-unsigned" }
+    expect(page.at_css(".kernel-fix")).to be_nil
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: old.first } # removed: only open findings count (review of #267, N2)
+    expect([ response.status, page.at_css(".kernel-fix") ]).to eq([ 200, nil ])
+    expect(VulnerabilityFinding.find_by!(host_id: host.id, package: old.first)).to have_attributes(state: "resolved", last_fixed_version: "6.12.57-1")
+    # Versioned kernel images only: not the metapackages, whose findings apt upgrade clears (review of #272, item 3).
+    helpers = ApplicationController.helpers
+    names = %w[linux-image-6.12.48+deb13-arm64 linux-image-6.12.48+deb13-amd64-unsigned linux-image-amd64 linux-image-cloud-amd64 linux-headers-amd64 linux-libc-dev]
+    expect(names.map { |name| helpers.kernel_fix_note(name, 1).present? }).to eq([ true, true, false, false, false, false ])
+  end
+
+  it "gives no kernel note to the linux-image-amd64 metapackage when it has a finding with a fix (as after #272)" do
+    host = debian_host(packages: [ [ "linux-image-amd64", "6.12.48-1", "linux" ], [ "linux-image-6.12.48+deb13-amd64-unsigned", "6.12.48-1", "linux" ] ])
+    import_advisories(advisory("DEBIAN-CVE-2026-2002", "linux", fixed: "6.12.57-1"), full: true)
+    match(host)
+    get "/hosts/#{host.id}/vulnerabilities"
+    notes = page.css("#open_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix").present? ] }
+    expect(notes).to eq("linux-image-amd64:amd64" => false, "linux-image-6.12.48+deb13-amd64-unsigned:amd64" => true)
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-amd64" }
+    expect(page.at_css(".kernel-fix")).to be_nil
   end
 
   it "says evaluated and nothing found only when the host was evaluated" do
