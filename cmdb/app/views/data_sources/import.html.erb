@@ -1,6 +1,6 @@
 <% content_for :title, "Import result" %>
 <% counts = @import.counts %>
-<p><%= link_to "← Advisory data sources", data_sources_path %></p>
+<p><%= link_to "← Data sources", data_sources_path %></p>
 <div class="page-head"><div><h1>Import result</h1>
   <p><%= import_how(@import) %> by <%= import_by(@import) %>, <%= utc(import_time(@import)) %>.</p></div></div>
 

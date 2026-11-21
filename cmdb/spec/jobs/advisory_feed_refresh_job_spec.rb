@@ -9,18 +9,22 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
   let(:token) { "TOKEN-SECRET-456" }
   let(:archive) { osv_zip("DSA-1-1.json" => osv_record(id: "DSA-1-1"), "DSA-2-1.json" => osv_record(id: "DSA-2-1", package: "curl")).binread }
 
-  # Debian's triage refresh after a manual refresh (P2-D08) is turned off here, except where a spec turns it on.
+  # Debian's triage refresh after a manual refresh (P2-D08), and the exploitation signals' (#257), are turned off here,
+  # except where a spec turns them on.
   around do |example|
     config = Advisories.config
     saved = config.to_h.slice(:feed_url, :feed_token)
     saved_tracker = DebianTriage.config.tracker_url
+    saved_signals = Signals.config.to_h.slice(:kev_url, :epss_url)
     config.feed_url = url
     config.feed_token = token
     DebianTriage.config.tracker_url = nil
+    Signals.config.kev_url = Signals.config.epss_url = nil
     example.run
   ensure
     config.feed_url, config.feed_token = saved.values_at(:feed_url, :feed_token)
     DebianTriage.config.tracker_url = saved_tracker
+    Signals.config.kev_url, Signals.config.epss_url = saved_signals.values_at(:kev_url, :epss_url)
   end
 
   def secrets = [ "QUERY-SECRET-123", "TOKEN-SECRET-456" ]
@@ -368,6 +372,47 @@ RSpec.describe AdvisoryFeedRefreshJob, type: :job do
         allow(DebianTriageRefreshJob).to receive(:perform_later).and_raise(ActiveJob::EnqueueError, "queue unavailable")
         expect(manual_refresh).to be_a(Advisories::ManualRefresh::Result) # nothing raised
         expect(AdvisoryImport.order(:id).last).to have_attributes(state: "succeeded", operator:)
+      end
+    end
+  end
+
+  # VT-D03 (#257): the same "Refresh now" refreshes KEV and EPSS after the advisory data, each on its own job, under the
+  # one cool-down and audit entry; a signal's failure never changes the advisory refresh's outcome.
+  describe "the exploitation signals after a manual refresh (VT-D03)" do
+    let(:operator) { create(:operator) }
+    let(:kev) { "https://kev.example.org/known_exploited_vulnerabilities.json" }
+    let(:epss) { "https://epss.example.org/epss_scores-current.csv.gz" }
+
+    def manual_refresh
+      perform_enqueued_jobs { Advisories::ManualRefresh.request!(actor: operator) }
+    rescue Minitest::UnexpectedError => e
+      e.error
+    end
+
+    it "refreshes KEV and EPSS after the advisory data, attributed to the operator, and names both in the one audit entry" do
+      Signals.config.kev_url = kev
+      Signals.config.epss_url = epss
+      stub_feed
+      stub_request(:get, kev).to_return(status: 200, body: SignalHelpers::SIGNAL_FIXTURES.join("known_exploited_vulnerabilities.json").read)
+      stub_request(:get, epss).to_return(status: 503)
+      expect(manual_refresh).to be_a(Advisories::ManualRefresh::Result)
+      expect(AdvisoryImport.sole).to have_attributes(state: "succeeded", operator:)
+      expect(SignalImport.kev.sole).to have_attributes(state: "succeeded", operator:)
+      expect(a_request(:get, epss)).to have_been_made.at_least_once
+      expect(AuditEntry.where(action: "advisory.refresh_requested").sole.changeset)
+        .to include("signal_sources" => "kev.example.org/known_exploited_vulnerabilities.json, epss.example.org/epss_scores-current.csv.gz")
+    end
+
+    it "refreshes only the signals that are on, and none after a scheduled run" do
+      Signals.config.epss_url = epss
+      stub_feed
+      allow(EpssRefreshJob).to receive(:perform_later)
+      manual_refresh
+      expect(EpssRefreshJob).to have_received(:perform_later).with(operator_id: operator.id).once
+      expect(SignalImport.count).to eq(0)
+      travel 10.minutes do
+        refresh
+        expect(EpssRefreshJob).to have_received(:perform_later).once
       end
     end
   end

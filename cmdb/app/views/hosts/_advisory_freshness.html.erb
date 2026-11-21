@@ -2,7 +2,9 @@
     ecosystem's data is older than FLEET_ADVISORY_MAX_AGE_HOURS or was never refreshed, since stale data would otherwise look like no
     vulnerabilities. With no feed configured, stale data is the expected state, and the notice says so instead. locals: statuses;
     here (on the data sources page, which needs no link to itself) and failed_refreshes (feed refreshes that failed since the last success);
-    triage: Debian's triage freshness to add to the line (P2-D08), on its own line when the advisory data has a notice. %>
+    triage: Debian's triage freshness to add to the line (P2-D08), on its own line when the advisory data has a notice.
+    The exploitation signals (VT-D03, #257) follow the same way: KEV's and EPSS's freshness, off, or not imported, always shown. %>
+<% signals = signal_freshness_line %>
 <% triage = local_assigns[:triage] %>
 <% stale = statuses.select(&:stale) %>
 <% here = local_assigns[:here] %>
@@ -28,9 +30,10 @@
     <% end %>
   </div>
 <% else %>
-  <p class="muted" id="advisory_freshness">Advisory data last updated: <%= safe_join(statuses.map { |status| safe_join([ tag.span(status.ecosystem, class: "mono"), " #{seen_ago(status.updated_at)}" ]) }, ", ") %>.<% if triage.present? %> <span id="triage_freshness"><%= triage %></span><% end %></p>
+  <p class="muted" id="advisory_freshness">Advisory data last updated: <%= safe_join(statuses.map { |status| safe_join([ tag.span(status.ecosystem, class: "mono"), " #{seen_ago(status.updated_at)}" ]) }, ", ") %>.<% if triage.present? %> <span id="triage_freshness"><%= triage %></span><% end %> <span id="signal_freshness"><%= signals %></span></p>
 <% end %>
 <% if triage.present? && stale.any? %><p class="muted" id="triage_freshness"><%= triage %></p><% end %>
+<% if stale.any? %><p class="muted" id="signal_freshness"><%= signals %></p><% end %>
 <%# A feed refresh the withdrawal guard held back (review of #129): not a failed job, but the data stays as it was and may be going stale. %>
 <% if Advisories.config.feed_url && (held = Advisories::Freshness.held_refresh) %>
   <% withdraw = held.counts["would_withdraw"] %>

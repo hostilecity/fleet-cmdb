@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -29,7 +29,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
     t.string "withdrawn_reason", limit: 16
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "cvss_av", limit: 1
+    t.string "cvss_pr", limit: 1
+    t.string "cvss_ui", limit: 1
     t.index ["advisory_id"], name: "index_advisories_on_advisory_id", unique: true
+    t.index ["aliases"], name: "index_advisories_on_aliases", using: :gin
+    t.check_constraint "(cvss_av::text = ANY (ARRAY['N'::character varying, 'A'::character varying, 'L'::character varying, 'P'::character varying]::text[])) AND (cvss_pr::text = ANY (ARRAY['N'::character varying, 'L'::character varying, 'H'::character varying]::text[])) AND (cvss_ui::text = ANY (ARRAY['N'::character varying, 'R'::character varying]::text[])) OR cvss_av IS NULL AND cvss_pr IS NULL AND cvss_ui IS NULL", name: "advisories_cvss_parts_valid"
     t.check_constraint "(withdrawn_at IS NULL) = (withdrawn_reason IS NULL) AND (withdrawn_reason::text = ANY (ARRAY['withdrawn'::character varying, 'absent'::character varying]::text[]))", name: "advisories_withdrawn_reason_valid"
     t.check_constraint "severity::text = ANY (ARRAY['critical'::character varying, 'high'::character varying, 'medium'::character varying, 'low'::character varying, 'unknown'::character varying]::text[])", name: "advisories_severity_valid"
   end
@@ -304,6 +309,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
     t.index ["token_digest"], name: "index_enrollment_tokens_on_token_digest", unique: true
   end
 
+  create_table "epss_scores", force: :cascade do |t|
+    t.string "cve_id", limit: 32, null: false
+    t.decimal "score", precision: 11, scale: 10, null: false
+    t.decimal "percentile", precision: 11, scale: 10, null: false
+    t.string "band", limit: 8, null: false
+    t.date "score_date", null: false
+    t.index ["cve_id"], name: "index_epss_scores_on_cve_id", unique: true
+    t.check_constraint "band::text = ANY (ARRAY['high'::character varying::text, 'normal'::character varying::text])", name: "epss_scores_band_valid"
+    t.check_constraint "cve_id::text ~ '^CVE-[0-9]{4}-[0-9]{4,19}$'::text", name: "epss_scores_cve_id_valid"
+    t.check_constraint "score >= 0::numeric AND score <= 1::numeric AND percentile >= 0::numeric AND percentile <= 1::numeric", name: "epss_scores_range_valid"
+  end
+
   create_table "evaluation_batches", force: :cascade do |t|
     t.bigint "evaluation_run_id", null: false
     t.integer "position", null: false
@@ -545,6 +562,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
     t.datetime "stored_at", default: -> { "now()" }, null: false
     t.index ["host_id", "received_at"], name: "index_inventory_snapshots_on_host_id_and_received_at"
     t.index ["received_at"], name: "index_inventory_snapshots_on_received_at"
+  end
+
+  create_table "kev_entries", force: :cascade do |t|
+    t.string "cve_id", limit: 32, null: false
+    t.date "date_added", null: false
+    t.date "due_date"
+    t.boolean "known_ransomware", default: false, null: false
+    t.string "vendor", limit: 128
+    t.string "product", limit: 128
+    t.index ["cve_id"], name: "index_kev_entries_on_cve_id", unique: true
+    t.check_constraint "cve_id::text ~ '^CVE-[0-9]{4}-[0-9]{4,19}$'::text", name: "kev_entries_cve_id_valid"
   end
 
   create_table "onboarding_requests", force: :cascade do |t|
@@ -793,6 +821,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "signal_imports", force: :cascade do |t|
+    t.string "signal", limit: 8, null: false
+    t.string "origin", limit: 8, null: false
+    t.string "source", limit: 256, null: false
+    t.string "state", limit: 16, null: false
+    t.jsonb "counts", default: {}, null: false
+    t.jsonb "problems", default: [], null: false
+    t.string "reason", limit: 512
+    t.string "version", limit: 64
+    t.date "score_date"
+    t.string "etag", limit: 256
+    t.string "last_modified", limit: 64
+    t.bigint "operator_id"
+    t.datetime "started_at", null: false
+    t.datetime "finished_at", null: false
+    t.index ["operator_id"], name: "index_signal_imports_on_operator_id"
+    t.index ["signal", "finished_at"], name: "index_signal_imports_on_signal_and_finished_at"
+    t.check_constraint "origin::text = ANY (ARRAY['feed'::character varying::text, 'file'::character varying::text, 'task'::character varying::text])", name: "signal_imports_origin_valid"
+    t.check_constraint "signal::text = ANY (ARRAY['kev'::character varying::text, 'epss'::character varying::text])", name: "signal_imports_signal_valid"
+    t.check_constraint "state::text = ANY (ARRAY['succeeded'::character varying::text, 'failed'::character varying::text, 'held_back'::character varying::text, 'cleared'::character varying::text])", name: "signal_imports_state_valid"
+  end
+
   create_table "task_allowed_services", force: :cascade do |t|
     t.string "service", limit: 64, null: false
     t.string "tag", limit: 32
@@ -933,6 +983,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
     t.check_constraint "state::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'held_back'::character varying]::text[])", name: "triage_imports_state_valid"
   end
 
+  create_table "triage_signal_changes", force: :cascade do |t|
+    t.string "kind", limit: 8, null: false
+    t.string "cve_id", limit: 32
+    t.bigint "advisory_id"
+    t.datetime "created_at", null: false
+    t.index ["kind", "advisory_id"], name: "index_triage_signal_changes_advisory", unique: true, where: "(advisory_id IS NOT NULL)"
+    t.index ["kind", "cve_id"], name: "index_triage_signal_changes_cve", unique: true, where: "(cve_id IS NOT NULL)"
+    t.index ["kind"], name: "index_triage_signal_changes_all", unique: true, where: "((kind)::text = 'kev_all'::text)"
+    t.check_constraint "(kind::text = ANY (ARRAY['kev'::character varying::text, 'epss'::character varying::text])) = (cve_id IS NOT NULL) AND (kind::text = 'advisory'::text) = (advisory_id IS NOT NULL)", name: "triage_signal_changes_target_valid"
+    t.check_constraint "kind::text = ANY (ARRAY['kev'::character varying::text, 'kev_all'::character varying::text, 'epss'::character varying::text, 'advisory'::character varying::text])", name: "triage_signal_changes_kind_valid"
+  end
+
   create_table "vulnerability_findings", force: :cascade do |t|
     t.bigint "host_id", null: false
     t.bigint "advisory_id", null: false
@@ -982,6 +1044,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_256002) do
   add_foreign_key "host_package_sets", "hosts"
   add_foreign_key "host_vulnerability_evaluations", "hosts"
   add_foreign_key "rule_import_previews", "operators", on_delete: :cascade
+  add_foreign_key "signal_imports", "operators"
   add_foreign_key "task_allowed_services", "operators", column: "added_by_id"
   add_foreign_key "task_batches", "operators"
   add_foreign_key "task_late_results", "tasks"

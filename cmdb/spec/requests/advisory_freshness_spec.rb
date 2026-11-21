@@ -44,7 +44,8 @@ RSpec.describe "Advisory data freshness", :signed_in, type: :request do
     refreshed(at: 3.hours.ago)
     get "/"
     expect(indicator["class"]).to eq("muted")
-    expect(indicator.text.squish).to eq("Advisory data last updated: Debian:13 about 3 hours ago.")
+    expect(indicator.text.squish).to eq("Advisory data last updated: Debian:13 about 3 hours ago. " \
+                                        "Known exploited (CISA KEV): not imported yet. Exploit prediction (FIRST EPSS): not imported yet.") # #257
   end
 
   it "uses the configured threshold" do

@@ -35,6 +35,7 @@ class DataSourcesController < ApplicationController
 
     @source = sources.feed.source
     @triage = !DebianTriage.config.tracker_url.nil?
+    @signals = [ Signals::KEV, Signals::EPSS ].any? { |signal| Signals.url_for(signal) }
   end
 
   # POST /data-sources/refresh. The server decides: a second refresh within the cool-down is refused here, with
@@ -44,7 +45,8 @@ class DataSourcesController < ApplicationController
     if result.accepted?
       redirect_to data_sources_path(anchor: "feed"),
                   notice: "Refresh started. The download and import can take several minutes; the result appears under Recent imports." \
-                          "#{" Debian's triage is refreshed right after it." if result.triage}"
+                          "#{" Debian's triage is refreshed right after it." if result.triage}" \
+                          "#{' The exploitation signals (CISA KEV, FIRST EPSS) are refreshed after it too.' if result.signals}"
     else
       redirect_to data_sources_path(anchor: "feed"),
                   alert: "Refresh refused: a refresh started less than #{helpers.cooldown_words} ago. " \
@@ -118,6 +120,7 @@ class DataSourcesController < ApplicationController
     @imports = @sources.imports
     @failed_refreshes = @sources.failed_refreshes
     @tracker = TriageDataSources.new
+    @signals = SignalDataSources.new # VT-D03 (#257): the KEV and EPSS panels
     @matching = EvaluationRun.shown_for_advisories # #197: progress of re-matching after an import
   end
 

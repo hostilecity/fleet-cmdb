@@ -213,16 +213,45 @@ module Advisories
 
       rows = records.map do |r|
         { advisory_id: r.advisory_id, source: @source, summary: r.summary, aliases: r.aliases, severity: r.severity, severity_raw: r.severity_raw,
+          cvss_av: r.cvss&.fetch(:av), cvss_pr: r.cvss&.fetch(:pr), cvss_ui: r.cvss&.fetch(:ui),
           reference_url: r.reference_url, published_at: r.published_at, modified_at: r.modified_at, withdrawn_at: r.withdrawn_at,
           withdrawn_reason: (r.withdrawn? ? "withdrawn" : nil), created_at: now, updated_at: now }
       end
       ids = Advisory.upsert_all(rows, unique_by: :advisory_id, returning: %i[id advisory_id], record_timestamps: false,
                                       update_only: rows.first.keys - %i[advisory_id created_at]).rows.to_h(&:reverse)
+      hand_to_triage(records, existing, ids)
       AdvisoryPackage.where(advisory_id: ids.values).delete_all
       packages = records.flat_map do |r|
         r.packages.map { |p| { advisory_id: ids.fetch(r.advisory_id), ecosystem: p.ecosystem, package: p.package, ranges: p.ranges, fixed_version: p.fixed_version } }
       end
       AdvisoryPackage.insert_all(packages) if packages.any?
+    end
+
+    # VT-SIGNALS (#257): a stored advisory is handed to the triage run (VT-S05), in this transaction, when its CVSS vector
+    # parts or severity changed, or when its CVE set gained or lost a CVE that is in KEV or in the EPSS high band (rules
+    # N1 and N2 key on an advisory's CVEs; review of #269). A new advisory needs no hand-off: its findings are triaged
+    # when they are matched.
+    def hand_to_triage(records, existing, ids)
+      cve_changes = {}
+      changed = records.filter_map do |r|
+        stored = existing[r.advisory_id] or next
+        cve_changes[r.advisory_id] = cves(stored.advisory_id, stored.aliases) ^ cves(r.advisory_id, r.aliases)
+        parts = r.cvss ? r.cvss.values_at(:av, :pr, :ui) : [ nil, nil, nil ]
+        r.advisory_id if [ stored.cvss_av, stored.cvss_pr, stored.cvss_ui, stored.severity ] != [ *parts, r.severity ]
+      end
+      signalled = signalled_cves(cve_changes.values.reduce(Set.new, :|))
+      changed |= cve_changes.filter_map { |advisory_id, diff| advisory_id if diff.intersect?(signalled) }
+      TriageSignalChange.record!(:advisory, advisory_ids: changed.map { |advisory_id| ids.fetch(advisory_id) })
+    end
+
+    # An advisory's CVE ids, as the triage looks them up (FindingTriage.cve_ids).
+    def cves(advisory_id, aliases) = [ advisory_id.delete_prefix("DEBIAN-"), *aliases ].grep(DebianTriage::Releases::CVE).to_set
+
+    # Those of the CVEs in KEV or in the EPSS high band.
+    def signalled_cves(cves)
+      return Set.new if cves.empty?
+
+      (KevEntry.where(cve_id: cves.to_a).pluck(:cve_id) + EpssScore.where(cve_id: cves.to_a, band: "high").pluck(:cve_id)).to_set
     end
 
     # Marks withdrawn, as absent, the current advisories of the imported ecosystems that this full import did

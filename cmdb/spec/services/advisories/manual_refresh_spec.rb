@@ -30,10 +30,12 @@ RSpec.describe Advisories::ManualRefresh do
       attempt = AdvisoryRefreshAttempt.sole
       expect(result).to have_attributes(accepted?: true, refused?: false, attempt:, next_allowed_at: now + 5.minutes)
       expect(attempt).to have_attributes(kind: "manual", operator:, started_at: now)
-      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id, triage: true)
+      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: attempt.id, triage: true, signals: true)
       entry = AuditEntry.sole
       expect(entry).to have_attributes(action: "advisory.refresh_requested", actor_type: "operator", actor_id: operator.id, target_type: nil)
       expect(entry.changeset).to eq("source" => "advisories.example.org/osv/Debian/all.zip", "triage_source" => "security-tracker.debian.org/tracker/data/json",
+                                    "signal_sources" => "raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json, " \
+                                                        "epss.empiricalsecurity.com/epss_scores-current.csv.gz",
                                     "next_allowed_at" => "2026-11-07T08:06:00Z")
     end
 
@@ -43,11 +45,22 @@ RSpec.describe Advisories::ManualRefresh do
       DebianTriage.config.tracker_url = nil
       later = request(at: now + 5.minutes)
       expect(later).to have_attributes(accepted?: true, triage: false)
-      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: later.attempt.id, triage: false)
+      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: later.attempt.id, triage: false, signals: true)
       expect(AuditEntry.where(action: "advisory.refresh_requested").order(:id).last.changeset).to include("triage_source" => nil)
       expect(request(at: now + 6.minutes)).to have_attributes(refused?: true, triage: false) # the one cool-down covers both
     ensure
       DebianTriage.config.tracker_url = saved
+    end
+
+    it "refreshes the exploitation signals after it too, unless both are turned off (VT-D03, #257)" do
+      saved = Signals.config.to_h.slice(:kev_url, :epss_url)
+      Signals.config.kev_url = Signals.config.epss_url = nil
+      result = request
+      expect(result).to have_attributes(accepted?: true, signals: false)
+      expect(AdvisoryFeedRefreshJob).to have_been_enqueued.once.with(attempt_id: result.attempt.id, triage: true, signals: false)
+      expect(AuditEntry.sole.changeset).to include("signal_sources" => nil)
+    ensure
+      Signals.config.kev_url, Signals.config.epss_url = saved.values_at(:kev_url, :epss_url)
     end
 
     it "refuses a second manual refresh within the cool-down with the time it is next allowed, audited, and starts nothing" do
