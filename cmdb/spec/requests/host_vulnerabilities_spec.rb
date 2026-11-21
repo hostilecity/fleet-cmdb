@@ -370,14 +370,14 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     match(host)
     get "/hosts/#{host.id}/vulnerabilities"
     notes = page.css("#open_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix")&.text&.squish ] }
-    expect(notes).to eq("linux-image-6.12.48+deb13-amd64-unsigned:amd64" =>
-                          "A kernel fix comes in a new package, which apt-get upgrade and the update task don't install: install it with apt upgrade " \
-                          "(or apt full-upgrade where that holds it back; it can also remove packages), reboot into it, then remove this old image " \
-                          "(apt autoremove): it keeps its findings until then.",
+    note = "A kernel fix comes in a new package, which apt-get upgrade and the update task don't install: install it with apt upgrade " \
+           "(or apt full-upgrade where that holds it back; it can also remove packages), reboot into it, then remove this old image " \
+           "(apt autoremove): it keeps its findings until then."
+    expect(notes).to eq("linux-image-6.12.48+deb13-amd64-unsigned:amd64" => note,
+                        "linux-image-6.12.48+deb13-amd64:amd64" => note, # the signed image, matched as linux since #270
+                        "linux-image-amd64:amd64" => nil, # the metapackage has the finding (#270) but no note: apt upgrade clears it
                         "linux-libc-dev:amd64" => nil, # not a kernel image: its fix is an ordinary upgrade
                         "linux-image-6.12.40+deb13-amd64-unsigned:amd64" => nil) # a kernel image with no fix
-    # The signed image and the metapackage have no finding at all, so no note: #270.
-    expect(VulnerabilityFinding.where(host_id: host.id, package: %w[linux-image-6.12.48+deb13-amd64 linux-image-amd64])).to be_empty
     get "/hosts/#{host.id}/vulnerabilities/package", params: { package: running.first }
     expect(page.at_css(".kernel-fix").text.squish).to start_with("A kernel fix comes in a new package")
     get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-6.12.40+deb13-amd64-unsigned" }

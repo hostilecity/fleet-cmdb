@@ -63,12 +63,8 @@ module HostVulnerabilitiesHelper
   # linux-image-<arch> metapackages (linux-image-amd64, linux-image-cloud-amd64): once they carry findings (#272),
   # apt upgrade clears them, so "remove this old image" would be wrong advice (review of #272, item 3). A pattern here until VT-BUCKETS brings
   # the per-distribution applicability table (cmdb/config/triage_applicability.yml) with the kernel rules K1 and K2,
-  # which replace this note with a work item.
-  #
-  # Limitation: only images built from the source package "linux" have findings, since matching joins advisories on
-  # the source: in practice the -unsigned and -dbg images. The signed images, the default on amd64 and arm64, and the
-  # linux-image-<arch> metapackage come from linux-signed-<arch>, which no advisory names, so they get no finding and
-  # no note (#270).
+  # which replace this note with a work item. The signed images and the metapackages, built from linux-signed-<arch>,
+  # are matched as linux since #270, so the signed images get this note too.
   KERNEL_IMAGE = /\Alinux-image-\d/
 
   # Under a kernel image package with an open finding that has a fix (VT-FIXABLE #256, the spec's intro): until
