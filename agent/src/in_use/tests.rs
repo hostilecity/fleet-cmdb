@@ -135,8 +135,17 @@ impl Host for TestHost {
     fn resolve(&self, path: &Path) -> io::Result<std::path::PathBuf> {
         let mut path = path.to_string_lossy().into_owned();
         for _ in 0..8 {
-            match self.symlinks.get(&path) {
-                Some(target) => path = target.clone(),
+            if let Some(target) = self.symlinks.get(&path) {
+                path = target.clone();
+                continue;
+            }
+            // A symlinked directory on the way.
+            match self
+                .symlinks
+                .iter()
+                .find(|(link, _)| path.starts_with(&format!("{link}/")))
+            {
+                Some((link, target)) => path = format!("{target}{}", &path[link.len()..]),
                 None => break,
             }
         }
@@ -576,6 +585,17 @@ fn without_systemds_socket_list_in_use_is_null() {
 fn a_socket_in_its_socket_units_cgroup_is_named_by_that_unit() {
     // systemd 257 creates a socket unit's sockets in the unit's own cgroup (VM scenario 309).
     let mut host = debian_host();
+    // Another unit's line for the same port and protocol, listed first: only cups.socket's own lines
+    // may name the socket (third review, N4).
+    host.commands.insert(
+        "list-sockets".into(),
+        Ok(
+            format!("127.0.0.1:631 Stream other.socket other-cups.service\n{LIST_SOCKETS}")
+                .into_bytes(),
+        ),
+    );
+    host.exec
+        .insert("other-cups.service".into(), "/usr/sbin/other-cups".into());
     host.cgroups
         .as_mut()
         .unwrap()
@@ -1540,6 +1560,170 @@ fn code_loaded_on_demand_is_never_native() {
 }
 
 #[test]
+fn every_architectures_list_counts_toward_a_package() {
+    // Third review, N1: libfoo:i386 (clean) used to replace libfoo:amd64 (with a hook).
+    let mut host = scan_host()
+        .file("/var/lib/dpkg/info/libfoo:amd64.list", "/usr/lib/x86_64-linux-gnu/libfoo.so.1\n/usr/lib/x86_64-linux-gnu/libfoo/hook\n")
+        .file("/var/lib/dpkg/info/libfoo:i386.list", "/usr/lib/i386-linux-gnu/libfoo.so.1\n")
+        .file("/var/lib/dpkg/info/libbar:amd64.list", "/usr/lib/x86_64-linux-gnu/security/pam_bar.so\n/usr/lib/x86_64-linux-gnu/libbar.so.1\n")
+        .file("/var/lib/dpkg/info/libbar:i386.list", "/usr/lib/i386-linux-gnu/libbar.so.1\n")
+        .file("/var/lib/dpkg/info/libok:amd64.list", "/usr/lib/x86_64-linux-gnu/libok.so.1\n")
+        .file("/var/lib/dpkg/info/libok:i386.list", "/usr/share/libok/data\n")
+        .file("/usr/lib/x86_64-linux-gnu/libfoo.so.1", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/libfoo/hook", "#!/bin/sh\n")
+        .file("/usr/lib/i386-linux-gnu/libfoo.so.1", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/libbar.so.1", "\x7fELF....")
+        .file("/usr/lib/i386-linux-gnu/libbar.so.1", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/libok.so.1", "\x7fELF....")
+        .file("/usr/share/libok/data", "data");
+    host.executables
+        .insert("/usr/lib/x86_64-linux-gnu/libfoo/hook".into());
+    add_lists(
+        &mut host,
+        &[
+            "libbar:amd64.list",
+            "libbar:i386.list",
+            "libfoo:amd64.list",
+            "libfoo:i386.list",
+            "libok:amd64.list",
+            "libok:i386.list",
+        ],
+    );
+    let native = scan::scan(&host).unwrap().native;
+    assert!(!native.contains(&"libfoo".to_owned()), "{native:?}");
+    assert!(!native.contains(&"libbar".to_owned()), "{native:?}");
+    assert!(native.contains(&"libok".to_owned()), "{native:?}");
+}
+
+#[test]
+fn a_file_reached_through_a_directory_symlink_cannot_be_judged() {
+    // Third review, N2: the maps show the real path, so the listed one would never be matched.
+    let mut host = scan_host()
+        .file(
+            "/var/lib/dpkg/info/relocated.list",
+            "/usr/lib/reloc/librel.so.1\n",
+        )
+        .file(
+            "/var/lib/dpkg/info/merged.list",
+            "/lib/x86_64-linux-gnu/libmerged.so.1\n",
+        )
+        .file("/usr/lib/reloc/librel.so.1", "\x7fELF....")
+        .file("/srv/reloc/librel.so.1", "\x7fELF....")
+        .file("/lib/x86_64-linux-gnu/libmerged.so.1", "\x7fELF....")
+        .file("/usr/lib/x86_64-linux-gnu/libmerged.so.1", "\x7fELF....");
+    host.symlinks
+        .insert("/usr/lib/reloc".into(), "/srv/reloc".into());
+    // The /usr merge is a directory symlink too, but its two spellings are both looked up.
+    host.symlinks.insert("/lib".into(), "/usr/lib".into());
+    add_lists(&mut host, &["merged.list", "relocated.list"]);
+    let native = scan::scan(&host).unwrap().native;
+    assert!(!native.contains(&"relocated".to_owned()), "{native:?}");
+    assert!(native.contains(&"merged".to_owned()), "{native:?}");
+}
+
+#[test]
+fn a_list_line_that_is_not_utf8_means_the_package_cannot_be_judged() {
+    // Third review, N5.
+    let mut host = scan_host();
+    let mut list = b"/usr/lib/libodd.so.1\n/usr/lib/odd/\xff\xfe-hook\n".to_vec();
+    list.push(b'\n');
+    host.files
+        .insert("/var/lib/dpkg/info/odd.list".into(), list);
+    host.files
+        .insert("/usr/lib/libodd.so.1".into(), b"\x7fELF....".to_vec());
+    add_lists(&mut host, &["odd.list"]);
+    let native = scan::scan(&host).unwrap().native;
+    assert!(!native.contains(&"odd".to_owned()), "{native:?}");
+}
+
+#[test]
+fn every_on_demand_directory_makes_a_package_not_native() {
+    // Third review, N4: one probe per directory, listed here rather than read from scan::ON_DEMAND, so
+    // dropping any entry there fails here.
+    for dir in [
+        "/security/",
+        "/sasl2/",
+        "/gconv/",
+        "/pkcs11/",
+        "/ossl-modules/",
+        "/engines-3/",
+        "/engines-1.1/",
+        "/krb5/plugins/",
+        "/gio/modules/",
+        "/gdk-pixbuf-2.0/",
+        "/gtk-3.0/modules/",
+        "/gtk-4.0/modules/",
+    ] {
+        let mut host = scan_host()
+            .file(
+                "/var/lib/dpkg/info/plugin.list",
+                &format!("/usr/lib/x86_64-linux-gnu{dir}plugin.so\n/usr/lib/libplugin-host.so.1\n"),
+            )
+            .file(
+                &format!("/usr/lib/x86_64-linux-gnu{dir}plugin.so"),
+                "\x7fELF....",
+            )
+            .file("/usr/lib/libplugin-host.so.1", "\x7fELF....");
+        add_lists(&mut host, &["plugin.list"]);
+        let native = scan::scan(&host).unwrap().native;
+        assert!(!native.contains(&"plugin".to_owned()), "{dir}: {native:?}");
+    }
+    let mut host = scan_host()
+        .file(
+            "/var/lib/dpkg/info/plugin.list",
+            "/usr/lib/x86_64-linux-gnu/libnss_plugin.so.2\n",
+        )
+        .file(
+            "/usr/lib/x86_64-linux-gnu/libnss_plugin.so.2",
+            "\x7fELF....",
+        );
+    add_lists(&mut host, &["plugin.list"]);
+    assert!(
+        !scan::scan(&host)
+            .unwrap()
+            .native
+            .contains(&"plugin".to_owned())
+    );
+}
+
+#[test]
+fn a_damaged_but_parseable_record_means_a_new_scan() {
+    // Third review, N3: a kept record gets the same checks as the scan's output.
+    let now = std::time::SystemTime::now();
+    let ran = now
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 60;
+    let many: Vec<String> = (0..30_000).map(|i| format!("pkg{i}")).collect();
+    for record in [
+        serde_json::json!({"ran_at": ran, "at": "yesterday", "output": {"libraries": [], "native": []}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "../x", "stale": false}], "native": []}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": ["NOT A NAME"]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": many}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": ["a", "a"]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": "x".repeat(600)}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": ""}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": []}, "error": "both"}),
+    ] {
+        let dir = crate::test_support::TempDir::new();
+        std::fs::write(dir.path(scan::RECORD), record.to_string()).unwrap();
+        let got = scan::Memo::in_dir(&dir.path("")).get(now, || scanned_as("2026-11-20T12:00:04Z"));
+        assert_eq!(got.at, "2026-11-20T12:00:04Z", "reused {record}");
+    }
+    // A sound record is reused.
+    let dir = crate::test_support::TempDir::new();
+    let sound = serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "libc6", "stale": false}], "native": ["libc6"]}, "error": null});
+    std::fs::write(dir.path(scan::RECORD), sound.to_string()).unwrap();
+    assert_eq!(
+        scan::Memo::in_dir(&dir.path(""))
+            .get(now, || scanned_as("2026-11-20T12:00:04Z"))
+            .at,
+        "2026-11-20T12:00:00Z"
+    );
+}
+
+#[test]
 fn kernel_packages_are_never_native() {
     // With #272 the signed image and its metapackages carry linux's findings; none of them ships an ELF
     // executable or library (the image is a compressed kernel, modules are .ko), so L1 never applies to
@@ -1775,7 +1959,7 @@ fn the_last_scan_is_kept_in_the_state_directory_across_restarts() {
     use std::os::unix::fs::PermissionsExt;
     let dir = crate::test_support::TempDir::new();
     let start = std::time::SystemTime::now();
-    let first = scan::Memo::in_dir(&dir.path("")).get(start, || scanned_as("first"));
+    let first = scan::Memo::in_dir(&dir.path("")).get(start, || scanned_as("2026-11-20T12:00:01Z"));
     let record = dir.path(scan::RECORD);
     assert_eq!(
         std::fs::metadata(&record).unwrap().permissions().mode() & 0o777,
@@ -1788,16 +1972,17 @@ fn the_last_scan_is_kept_in_the_state_directory_across_restarts() {
         });
     assert_eq!(again, first);
     // After a suspend, by the wall clock more than an hour on: a new scan.
-    let later = scan::Memo::in_dir(&dir.path("")).get(start + scan::EVERY, || scanned_as("later"));
-    assert_eq!(later.at, "later");
+    let later = scan::Memo::in_dir(&dir.path(""))
+        .get(start + scan::EVERY, || scanned_as("2026-11-20T12:00:02Z"));
+    assert_eq!(later.at, "2026-11-20T12:00:02Z");
     // A clock set back before the record: a new scan.
-    let back = scan::Memo::in_dir(&dir.path("")).get(start, || scanned_as("back"));
-    assert_eq!(back.at, "back");
+    let back = scan::Memo::in_dir(&dir.path("")).get(start, || scanned_as("2026-11-20T12:00:03Z"));
+    assert_eq!(back.at, "2026-11-20T12:00:03Z");
     // A failure is kept too.
     let dir2 = crate::test_support::TempDir::new();
     let failed = scan::Memo::in_dir(&dir2.path("")).get(start, || scan::Scanned {
         result: Err("no".into()),
-        at: "f".into(),
+        at: "2026-11-20T12:00:08Z".into(),
     });
     assert!(failed.result.is_err());
     let kept = scan::Memo::in_dir(&dir2.path("")).get(start, || panic!("retried"));
@@ -1811,9 +1996,9 @@ fn a_corrupt_or_unreadable_record_means_a_new_scan_never_a_crash() {
     std::fs::write(dir.path(scan::RECORD), b"{not json").unwrap();
     assert_eq!(
         scan::Memo::in_dir(&dir.path(""))
-            .get(now, || scanned_as("new"))
+            .get(now, || scanned_as("2026-11-20T12:00:04Z"))
             .at,
-        "new"
+        "2026-11-20T12:00:04Z"
     );
     std::fs::write(
         dir.path(scan::RECORD),
@@ -1822,23 +2007,29 @@ fn a_corrupt_or_unreadable_record_means_a_new_scan_never_a_crash() {
     .unwrap();
     assert_eq!(
         scan::Memo::in_dir(&dir.path(""))
-            .get(now, || scanned_as("again"))
+            .get(now, || scanned_as("2026-11-20T12:00:05Z"))
             .at,
-        "again"
+        "2026-11-20T12:00:05Z"
     );
     // A record that is a directory, and a state directory that cannot be written: scan, use the result.
     let odd = crate::test_support::TempDir::new();
     std::fs::create_dir(odd.path(scan::RECORD)).unwrap();
     assert_eq!(
         scan::Memo::in_dir(&odd.path(""))
-            .get(now, || scanned_as("dir"))
+            .get(now, || scanned_as("2026-11-20T12:00:06Z"))
             .at,
-        "dir"
+        "2026-11-20T12:00:06Z"
     );
     let missing = odd.path("no-such-directory");
     let mut memo = scan::Memo::in_dir(&missing);
-    assert_eq!(memo.get(now, || scanned_as("unwritable")).at, "unwritable");
-    assert_eq!(memo.get(now, || panic!("kept in memory")).at, "unwritable");
+    assert_eq!(
+        memo.get(now, || scanned_as("2026-11-20T12:00:07Z")).at,
+        "2026-11-20T12:00:07Z"
+    );
+    assert_eq!(
+        memo.get(now, || panic!("kept in memory")).at,
+        "2026-11-20T12:00:07Z"
+    );
 }
 
 #[test]
@@ -1989,5 +2180,94 @@ fn cpu_on_this_host() {
             w.elapsed()
         ),
         Err(e) => println!("scan failed: {e}"),
+    }
+}
+
+/// The scan's peak memory and time on a generated host (third review, S1): `FLEET_SCAN_BENCH_ROOT` holds
+/// `var/lib/dpkg/info/*.list` and the files they name (agent/scripts or any generator), and
+/// `FLEET_SCAN_BENCH_MAPPED` says how many mapped files to give the one fake process, half under `/usr`
+/// and half elsewhere. Run with `cargo test --release scan_peak_memory -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs a generated host; run by hand"]
+fn scan_peak_memory_on_a_generated_host() {
+    struct Prefixed {
+        root: String,
+        maps: Vec<u8>,
+    }
+    impl Prefixed {
+        fn real(&self, p: &Path) -> std::path::PathBuf {
+            std::path::PathBuf::from(format!("{}{}", self.root, p.display()))
+        }
+    }
+    impl Host for Prefixed {
+        fn stat(&self, p: &Path) -> io::Result<Stat> {
+            crate::facts::host::RealHost::new().stat(&self.real(p))
+        }
+        fn read(&self, p: &Path, m: u64) -> io::Result<Vec<u8>> {
+            if p == Path::new("/proc/1/maps") {
+                return Ok(self.maps.clone());
+            }
+            crate::fsx::read_regular(&self.real(p), m, crate::fsx::Symlinks::Follow)
+        }
+        fn list(&self, d: &Path, _: usize) -> io::Result<Vec<String>> {
+            if d == Path::new("/proc") {
+                return Ok(vec!["1".into()]);
+            }
+            let mut names: Vec<String> = std::fs::read_dir(self.real(d))?
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .collect();
+            names.sort();
+            Ok(names)
+        }
+        fn run(&self, _: &Command) -> Result<Vec<u8>, RunError> {
+            Err(RunError::NotInstalled("none".into()))
+        }
+        fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
+            crate::fsx::read_head(&self.real(p), n)
+        }
+        fn inspect(&self, p: &Path) -> io::Result<crate::facts::host::Inspect> {
+            crate::facts::host::Inspect::of(&self.real(p))
+        }
+        fn resolve(&self, p: &Path) -> io::Result<std::path::PathBuf> {
+            let real = std::fs::canonicalize(self.real(p))?;
+            Ok(real
+                .strip_prefix(&self.root)
+                .map(|rest| Path::new("/").join(rest))
+                .unwrap_or(real))
+        }
+    }
+    let root = std::env::var("FLEET_SCAN_BENCH_ROOT").expect("FLEET_SCAN_BENCH_ROOT");
+    let mapped: usize = std::env::var("FLEET_SCAN_BENCH_MAPPED")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    let mut maps = Vec::new();
+    for i in 0..mapped / 2 {
+        maps.extend(
+            format!("7f00-7f01 r--p 0 fe:01 1 /usr/lib/x86_64-linux-gnu/bench/{i}.so\n").bytes(),
+        );
+        maps.extend(format!("7f00-7f01 r--p 0 fe:01 1 /home/user/bench/{i}\n").bytes());
+    }
+    let host = Prefixed { root, maps };
+    let hwm = || {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("VmHWM:").map(|v| v.trim().to_owned()))
+            .unwrap()
+    };
+    let rss_before = hwm();
+    std::fs::write("/proc/self/clear_refs", "5").expect("reset VmHWM");
+    let start = std::time::Instant::now();
+    let result = scan::scan_within(&host, std::time::Duration::from_secs(600));
+    let elapsed = start.elapsed();
+    match result {
+        Ok(out) => println!(
+            "scan: {} native, {} libraries, {elapsed:?}; peak RSS {} (before the reset {rss_before})",
+            out.native.len(),
+            out.libraries.len(),
+            hwm()
+        ),
+        Err(e) => println!("scan failed after {elapsed:?}: {e}; peak RSS {}", hwm()),
     }
 }

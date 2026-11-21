@@ -156,6 +156,21 @@ struct Record {
 }
 
 impl Record {
+    /// The record as the scan's own output would be checked (third review, N3): its time an RFC 3339
+    /// timestamp, its output within the contract, and a failure reason a report can carry. Anything else
+    /// is a damaged record, and the scan runs again.
+    fn checked(mut self) -> Result<Self, String> {
+        if crate::report::parse_rfc3339(&self.at).is_none() {
+            return Err("its time is not an RFC 3339 timestamp".into());
+        }
+        match (self.output.take(), &self.error) {
+            (Some(output), None) => self.output = Some(check_output(output)?),
+            (None, Some(error)) if !error.is_empty() && error.chars().count() <= 512 => {}
+            _ => return Err("it holds neither a result nor a reason".into()),
+        }
+        Ok(self)
+    }
+
     fn scanned(&self) -> Scanned {
         Scanned {
             result: match (&self.output, &self.error) {
@@ -198,7 +213,7 @@ impl Memo {
         let scanned = run();
         let (output, error) = match &scanned.result {
             Ok(output) => (Some(output.clone()), None),
-            Err(error) => (None, Some(error.clone())),
+            Err(error) => (None, Some(crate::facts::clip_reason(error))),
         };
         let record = Record {
             ran_at: now_s,
@@ -214,7 +229,10 @@ impl Memo {
     fn load(&self) -> Option<Record> {
         let dir = self.dir.as_ref()?;
         match crate::state::read_record(dir, RECORD, MAX_RECORD_BYTES) {
-            Ok(Some(bytes)) => match serde_json::from_slice::<Record>(&bytes) {
+            Ok(Some(bytes)) => match serde_json::from_slice::<Record>(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(Record::checked)
+            {
                 Ok(record) => Some(record),
                 Err(e) => {
                     tracing::warn!(
@@ -288,8 +306,14 @@ fn run_unit(
 
 /// The scan's standard output, checked against the contract.
 pub fn parse_output(output: &[u8]) -> Result<Output, String> {
-    let mut parsed: Output = serde_json::from_slice(output)
+    let parsed: Output = serde_json::from_slice(output)
         .map_err(|_| "the library scan printed something that is not its result".to_owned())?;
+    check_output(parsed)
+}
+
+/// An [`Output`] as the contract allows it: valid package names, each once, at most
+/// [`MAX_LIBRARIES`] of each list, sorted. Used on the scan's output and on a kept record alike.
+pub fn check_output(mut parsed: Output) -> Result<Output, String> {
     let mut seen = HashSet::new();
     let mut seen_native = HashSet::new();
     if parsed.libraries.len() > MAX_LIBRARIES
@@ -480,17 +504,28 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
     }
 
     // One pass over dpkg's file lists: every package that lists a mapped file (a diverted or shared
-    // file marks each of them, review of #268, S7), and each package's files when it may be native.
+    // file marks each of them, review of #268, S7), and each package judged as soon as all its lists
+    // (one per architecture, read one after another) are read, so only one package's files are held at
+    // a time (third review, S1).
     let wanted: HashSet<String> = mapped.keys().cloned().collect();
     let lookup = super::owners::lookup(&wanted);
     let mut owners: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let mut files_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut native = BTreeSet::new();
+    let mut group = Group::default();
+    let mut failed: Option<String> = None;
     super::owners::each_list(&ctx, |package, lines| {
-        let mut files = Vec::new();
-        let mut interpreted_code = false;
-        let mut candidate = false;
+        if group.package != package {
+            if let Err(why) = group.finish(&ctx, budget, &mut native) {
+                failed = Some(why);
+                return false;
+            }
+            group = Group {
+                package: package.to_owned(),
+                ..Group::default()
+            };
+        }
         for line in lines {
-            if let Some(originals) = lookup.get(line) {
+            if let Some(originals) = lookup.get(line.as_ref()) {
                 for original in originals {
                     owners
                         .entry((*original).clone())
@@ -498,23 +533,14 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
                         .insert(package.to_owned());
                 }
             }
-            interpreted_code |= interpreted(line) || on_demand(line);
-            candidate |= code_candidate(line);
-            if !interpreted_code && line.starts_with('/') && line != "/." {
-                files.push(line.to_owned());
-            }
-        }
-        if candidate && !interpreted_code {
-            files_of.insert(package.to_owned(), files);
+            group.add(&line);
         }
         true
     })?;
-    let mut native = BTreeSet::new();
-    for (package, files) in files_of {
-        if classify(&ctx, &files, budget)? == Some(true) {
-            native.insert(package);
-        }
+    if let Some(why) = failed {
+        return Err(why);
     }
+    group.finish(&ctx, budget, &mut native)?;
 
     let mut packages: BTreeMap<String, bool> = BTreeMap::new();
     for (file, deleted) in mapped {
@@ -532,6 +558,51 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             .collect(),
         native: native.into_iter().collect(),
     })
+}
+
+/// One package's files, across the lists of its architectures, while they are read.
+#[derive(Default)]
+struct Group {
+    package: String,
+    files: Vec<String>,
+    /// Interpreted code, code run on demand, or a line that is not UTF-8: never native.
+    excluded: bool,
+    candidate: bool,
+}
+
+impl Group {
+    fn add(&mut self, line: &str) {
+        if self.excluded {
+            return;
+        }
+        if line.contains('\u{FFFD}') || interpreted(line) || on_demand(line) {
+            self.excluded = true;
+            self.files = Vec::new();
+            return;
+        }
+        self.candidate |= code_candidate(line);
+        if line.starts_with('/') && line != "/." {
+            self.files.push(line.to_owned());
+        }
+    }
+
+    /// Judges the package once all its lists are read.
+    fn finish(
+        &mut self,
+        ctx: &Ctx,
+        budget: Duration,
+        native: &mut BTreeSet<String>,
+    ) -> Result<(), String> {
+        let files = std::mem::take(&mut self.files);
+        if !self.package.is_empty()
+            && self.candidate
+            && !self.excluded
+            && classify(ctx, &files, budget)? == Some(true)
+        {
+            native.insert(std::mem::take(&mut self.package));
+        }
+        Ok(())
+    }
 }
 
 /// Whether a package's files are native code only (owner decision 2026-11-20, review of #268):
@@ -580,7 +651,17 @@ fn classify(ctx: &Ctx, files: &[String], limit: Duration) -> Result<Option<bool>
         match ctx.head(&target, 4) {
             Ok(head) if head.starts_with(b"#!") => return Ok(Some(false)),
             Ok(head) if head == b"\x7fELF" && !package_managed(&target) => return Ok(Some(false)),
-            Ok(head) if head == b"\x7fELF" && !followed => elf = true,
+            // Judged by the path its list gives, but the maps show where it really is: through a
+            // directory symlink outside the /usr merge they differ, and it would never be matched
+            // (third review, N2), so such a package cannot be judged.
+            Ok(head) if head == b"\x7fELF" && !followed => match ctx.resolve(file) {
+                Ok(real) if real == *file || super::owners::aliases(file).contains(&real) => {
+                    elf = true;
+                }
+                Ok(_) => return Ok(Some(false)),
+                Err(_) if ctx.out_of_time() => return Err(budget()),
+                Err(_) => return Ok(None),
+            },
             Ok(_) => {}
             Err(e) if gone(&e) => {}
             // A symlink to a directory, or to something that is not a regular file.

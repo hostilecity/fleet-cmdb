@@ -32,13 +32,18 @@ pub fn aliases(path: &str) -> Vec<String> {
 /// Calls `each` with every package's name and its file list's lines, in name order, until it returns
 /// `false`. An unreadable info directory or list is an error: a file whose package is not known would
 /// make a package look unused.
+///
+/// The lists are read in name order, so the lists of one package's architectures (`libfoo:amd64.list`,
+/// `libfoo:i386.list`) come one after another. A line that is not UTF-8 is passed with U+FFFD in place
+/// of the bytes it cannot read, so a caller can tell (review of #268, N5).
 pub fn each_list(
     ctx: &Ctx,
-    mut each: impl FnMut(&str, &mut dyn Iterator<Item = &str>) -> bool,
+    mut each: impl FnMut(&str, &mut dyn Iterator<Item = std::borrow::Cow<'_, str>>) -> bool,
 ) -> Result<(), String> {
-    let names = ctx
+    let mut names = ctx
         .list(DPKG_INFO, MAX_INFO_ENTRIES)
         .map_err(|e| crate::facts::io_reason(DPKG_INFO, &e))?;
+    names.sort();
     for name in names {
         let Some(package) = name.strip_suffix(".list") else {
             continue;
@@ -51,9 +56,7 @@ pub fn each_list(
         let bytes = ctx
             .read(&path, MAX_LIST_BYTES)
             .map_err(|e| crate::facts::io_reason(&path, &e))?;
-        let mut lines = bytes
-            .split(|b| *b == b'\n')
-            .filter_map(|line| std::str::from_utf8(line).ok());
+        let mut lines = bytes.split(|b| *b == b'\n').map(String::from_utf8_lossy);
         if !each(package, &mut lines) {
             break;
         }
@@ -71,7 +74,7 @@ pub fn owners(ctx: &Ctx, wanted: &HashSet<String>) -> Result<HashMap<String, Str
     }
     each_list(ctx, |package, lines| {
         for line in lines {
-            note(&lookup, line, package, &mut found);
+            note(&lookup, &line, package, &mut found);
         }
         found.len() < wanted.len()
     })?;
