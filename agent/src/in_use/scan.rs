@@ -589,9 +589,8 @@ fn classify(ctx: &Ctx, files: &[String], limit: Duration) -> Result<Option<bool>
             Err(_) => return Ok(None),
         }
     }
-    if ctx.out_of_time() {
-        return Err(budget());
-    }
+    // Every file was looked at: a budget that ran out after the last one is the next package's
+    // first call's error.
     Ok(Some(elf))
 }
 
