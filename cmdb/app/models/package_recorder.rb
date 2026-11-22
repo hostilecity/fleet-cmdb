@@ -45,7 +45,9 @@ module PackageRecorder
     set.update!(manager: report.manager, unsupported_reason: report.unsupported_reason, package_count: report.unreadable? ? set.package_count.to_i : report.packages.size,
                 content_hash: hash, skipped: report.skipped.map(&:to_h), warnings: report.warnings, report_id: report.report_id, schema_version: report.schema_version,
                 collected_at: report.collected_at, received_at: now)
-    HostApplicability.record_in_use!(host_id:, report:, now:) # what is in use (FR-2.6, #258), written only when it changes
+    # What is in use (FR-2.6, #258), written only when it changes. A new snapshot has queued the host's re-triage already,
+    # so a change of listener evidence in the same report queues no second one (final review of #268, S3).
+    HostApplicability.record_in_use!(host_id:, report:, now:, retriage: !snapshot)
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end
 end

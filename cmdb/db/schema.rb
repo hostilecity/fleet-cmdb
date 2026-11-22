@@ -373,7 +373,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_258001) do
     t.datetime "library_scanned_at"
     t.datetime "library_scan_received_at"
     t.datetime "in_use_changed_at"
-    t.index ["library_scan_received_at"], name: "index_host_applicability_on_library_scan_received_at"
+    t.index ["library_scan_received_at"], name: "index_host_applicability_listener_expiry", where: "(((library_scan)::text = 'ran'::text) AND (jsonb_array_length(loaded_by_listeners) > 0))"
     t.check_constraint "in_use_reported = (library_scan IS NOT NULL)", name: "host_applicability_in_use_reported"
     t.check_constraint "loaded_by_listeners IS NULL OR jsonb_typeof(loaded_by_listeners) = 'array'::text", name: "host_applicability_loaded_by_listeners_array"
     t.check_constraint "library_scan::text = ANY (ARRAY['off'::character varying, 'ran'::character varying, 'failed'::character varying]::text[])", name: "host_applicability_library_scan_valid"

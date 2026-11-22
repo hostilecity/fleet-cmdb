@@ -6,15 +6,16 @@ class HostApplicability
   module ListenerSource
     module_function
 
-    # { host id => { package => Listener } } of the hosts with current evidence. package_sets (each host's triaged
-    # package set) is not needed: the evidence names packages, and HostFacts looks each finding's package up.
-    def listeners(host_ids, package_sets:, now:)
-      _ = package_sets
+    # { host id => { package => Listener } } of the hosts with current evidence. HostFacts also passes package_sets:
+    # (each host's triaged package set), taken by ** and unused: the evidence names packages, and HostFacts looks each
+    # finding's package up.
+    def listeners(host_ids, now:, **)
       current(now).where(host_id: host_ids).to_h { |row| [ row.host_id, row.listener_evidence ] }
     end
 
     # The hosts with evidence whose scan the server received in (from, to], for TriageListenerExpiryJob: their N5
-    # findings fall back to the rules without it. Uses the index on library_scan_received_at.
+    # findings fall back to the rules without it. Uses the partial index on library_scan_received_at, whose condition
+    # is with_evidence's.
     def listener_hosts_expiring(from:, to:)
       with_evidence.where("library_scan_received_at > ? AND library_scan_received_at <= ?", from, to).pluck(:host_id)
     end

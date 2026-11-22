@@ -72,9 +72,13 @@ class HostApplicability < ApplicationRecord
   # From a package report (AgentApi::PackageReport#in_use). Every report replaces it, and one without an in-use report
   # clears it: an unreadable or unsupported one too, so old use data never looks current (review of #268, S1).
   # Returns whether anything changed.
-  # When the host's current listener evidence changes, appears, or goes (a new list, a failed or turned-off scan, a
-  # scan received again after it had expired), its findings are re-triaged (VulnerabilityTriage::HostFacts.changed!).
-  def self.record_in_use!(host_id:, report:, now:) = write!(host_id, report.in_use || IN_USE_DEFAULTS, :in_use_changed_at, now, evidence: true)
+  # When the host's listener evidence changes, appears, or goes (a new list, a failed or turned-off scan, a scan
+  # received again after it had expired), its findings are re-triaged (VulnerabilityTriage::HostFacts.changed!), unless
+  # retriage is false because the caller has already queued it (PackageRecorder after a new snapshot: one re-triage per
+  # report, final review of #268, S3).
+  def self.record_in_use!(host_id:, report:, now:, retriage: true)
+    write!(host_id, report.in_use || IN_USE_DEFAULTS, :in_use_changed_at, now, retriage:)
+  end
 
   # The package => Listener map rule N5 reads (ListenerSource): when several listeners load a package, a network one
   # wins over loopback-only ones, then the listener's and unit's names decide. scanned_at is the server's receipt of
@@ -91,17 +95,24 @@ class HostApplicability < ApplicationRecord
   # The evidence in force at now: the lists while the scan is current, else nil.
   def evidence_at(now) = (loaded_by_listeners if scan_current?(now:))
 
+  # The evidence the stored findings may still reflect, whatever the clock: after 24 hours they keep N5 until the
+  # expiry job's window reaches the host, so a report that withdraws or changes it in that gap must re-triage too
+  # (final review of #268, S1).
+  def evidence_held = (loaded_by_listeners if library_scan == "ran" && Array(loaded_by_listeners).any?)
+
   SCAN_TIMES = %w[library_scanned_at library_scan_received_at].freeze
 
-  def self.write!(host_id, attributes, stamp, now, evidence: false)
+  # retriage: nil for the inventory (it carries no evidence), else whether to queue the host's re-triage when its
+  # evidence changes.
+  def self.write!(host_id, attributes, stamp, now, retriage: nil)
     row = find_by(host_id:)
     attributes = received(row, attributes, now)
-    before = row&.evidence_at(now)
+    before = [ row&.evidence_at(now), row&.evidence_held ]
     if row.nil?
       return false if attributes.all? { |name, value| column_defaults[name] == value }
 
       row = create!(host_id:, **attributes, stamp => now)
-      VulnerabilityTriage::HostFacts.changed!(host_id) if evidence && row.evidence_at(now).present?
+      VulnerabilityTriage::HostFacts.changed!(host_id) if retriage && row.evidence_at(now).present?
       return true
     end
     row.assign_attributes(attributes)
@@ -112,7 +123,7 @@ class HostApplicability < ApplicationRecord
     changed = (row.changed - SCAN_TIMES).any?
     row[stamp] = now if changed
     row.save!
-    VulnerabilityTriage::HostFacts.changed!(host_id) if evidence && row.evidence_at(now) != before
+    VulnerabilityTriage::HostFacts.changed!(host_id) if retriage && [ row.evidence_at(now), row.evidence_held ] != before
     changed
   end
   private_class_method :write!
