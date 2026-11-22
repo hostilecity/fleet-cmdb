@@ -51,21 +51,6 @@ pub fn read_regular(path: &Path, max_bytes: u64, symlinks: Symlinks) -> io::Resu
     Ok(bytes)
 }
 
-/// The first `bytes` bytes of a regular file, opened without blocking and without following a symlink
-/// at the last component (a FIFO, device, or link is refused).
-pub fn read_head(path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other("not a regular file"));
-    }
-    let mut out = Vec::with_capacity(bytes);
-    file.take(bytes as u64).read_to_end(&mut out)?;
-    Ok(out)
-}
-
 /// A temporary name next to `path`, unique within this process and across processes.
 pub(crate) fn temp_path(path: &Path) -> PathBuf {
     static COUNTER: AtomicU32 = AtomicU32::new(0);

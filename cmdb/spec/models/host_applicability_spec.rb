@@ -7,6 +7,7 @@ RSpec.describe HostApplicability do
 
   def inventory(**fields) = Struct.new(:applicability).new({ "reboot_required" => nil, "reboot_packages" => [], "kernel_build" => nil }.merge(fields.transform_keys(&:to_s)))
   def package_report(in_use) = Struct.new(:in_use).new(in_use)
+  def use(package, listener, klass) = { "package" => package, "listener" => listener, "class" => klass }
 
   def in_use(**fields)
     HostApplicability::IN_USE_DEFAULTS.merge("in_use_reported" => true, "library_scan" => "off", "listening_network" => [ "samba" ],
@@ -45,89 +46,83 @@ RSpec.describe HostApplicability do
     expect(xmin).to eq(version)
 
     scanned = in_use(library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ],
-                     native_packages: %w[libc6 libidle libssl3t64 samba], library_scanned_at: now)
+                     loaded_by_listeners: [ use("libssl3t64", "samba", "network") ], library_scanned_at: now)
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 2.hours)).to be(true)
     expect(row.reload.packages_in_use).to eq(%w[cron libc6 libssl3t64 samba])
-    expect(row).to have_attributes(stale_libraries: [ "libssl3t64" ], library_scanned_at: now)
+    expect(row).to have_attributes(stale_libraries: [ "libssl3t64" ], library_scanned_at: now,
+                                   loaded_by_listeners: [ use("libssl3t64", "samba", "network") ])
+    version = xmin
+    expect(described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 3.hours)).to be(false)
+    expect(xmin).to eq(version)
+    moved = scanned.merge("loaded_by_listeners" => [ use("libssl3t64", "samba", "loopback") ])
+    expect(described_class.record_in_use!(host_id: host.id, report: package_report(moved), now: now + 4.hours)).to be(true)
+    expect(row.reload.in_use_changed_at).to eq(now + 4.hours)
   end
 
-  # Owner decision 2026-11-20 (review of #268, B1, B2): idle needs the scan and native code.
-  describe "#provably_idle?" do
-    let(:report) { Struct.new(:collected_at, :received_at).new(now - 30.minutes, now - 20.minutes) }
+  # Owner decision 2026-11-21 (after the fourth review of #268): positive evidence only; a package a listening process
+  # loads is escalated while the host's latest scan is at most 24 hours old.
+  describe "#in_use_by_listener?" do
     let(:row) do
-      described_class.new(host_id: host.id, **in_use(library_scan: "ran", libraries: [ "libc6" ], native_packages: %w[libc6 libidle samba],
-                                                     listening_loopback: [ "chrony" ], running_services: [ "chrony" ],
+      described_class.new(host_id: host.id, **in_use(library_scan: "ran", libraries: %w[libc6 libidle libssl3t64 zlib1g],
+                                                     loaded_by_listeners: [ use("libc6", nil, "loopback"), use("libc6", "openssh-server", "network"),
+                                                                            use("zlib1g", "chrony", "loopback") ],
                                                      library_scanned_at: now - 50.minutes))
     end
 
-    def idle?(package, at: now, package_set: report) = row.provably_idle?(package, package_set:, now: at)
-
-    it "calls a package idle only when the scan judged it native and found it unused" do
-      expect(idle?("libidle")).to be(true)
-      expect(idle?("libc6")).to be(false) # mapped
-      expect(idle?("samba")).to be(false) # listening on the network
-      expect(idle?("chrony")).to be(false) # not judged native, and a running service
-      expect(idle?("python3-urllib3")).to be(false) # interpreted code: never judged
-      row.assign_attributes(native_packages: [ "chrony" ], listening_network: [], listening_loopback: [ "chrony" ], running_services: [])
-      expect(idle?("chrony")).to be(false) # listening on loopback
+    it "is true only for a package a listening process loads, and says which listeners" do
+      expect(row.in_use_by_listener?("libc6", now:)).to be(true)
+      expect(row.in_use_by_listener?("libc6", now:, network: true)).to be(true)
+      expect(row.in_use_by_listener?("zlib1g", now:)).to be(true)
+      expect(row.in_use_by_listener?("zlib1g", now:, network: true)).to be(false) # loopback only
+      expect(row.in_use_by_listener?("libidle", now:)).to be(false) # mapped, but by no listening process
+      expect(row.in_use_by_listener?("python3-urllib3", now:)).to be(false) # not seen: simply not escalated
+      expect(row.listeners_loading("libc6", now:)).to eq([ { "listener" => "openssh-server", "class" => "network" },
+                                                           { "listener" => nil, "class" => "loopback" } ])
+      expect(row.listeners_loading("libidle", now:)).to eq([])
     end
 
-    it "needs the scan to have run, whatever else the row holds" do # review of #268, N3
-      row.library_scan = "failed"
-      expect(idle?("libidle")).to be(false)
-      row.library_scan = "off"
-      expect(idle?("libidle")).to be(false)
+    it "follows a new value of the column" do
+      expect(row.in_use_by_listener?("libidle", now:)).to be(false)
+      row.loaded_by_listeners = [ use("libidle", "nginx", "network") ]
+      expect(row.in_use_by_listener?("libidle", now:)).to be(true)
+      expect(row.in_use_by_listener?("libc6", now:)).to be(false)
     end
 
-    # Review of #268, S5: a stale scan proves nothing.
-    # Third review, S2: each bound, just inside and just outside.
-    it "holds each freshness bound to the second" do
-      collected = report.collected_at
-      at = ->(scanned:, received: report.received_at, now_at: now) do
-        row.library_scanned_at = scanned
-        idle?("libidle", at: now_at, package_set: Struct.new(:collected_at, :received_at).new(collected, received))
-      end
-      expect(at.call(scanned: collected - 2.hours + 1)).to be(true) # lag
-      expect(at.call(scanned: collected - 2.hours - 1)).to be(false)
-      expect(at.call(scanned: collected + 5.minutes - 1)).to be(true) # lead
-      expect(at.call(scanned: collected + 5.minutes + 1)).to be(false)
-      ok = collected - 10.minutes
-      expect(at.call(scanned: ok, now_at: report.received_at + 12.hours - 1)).to be(true) # report age
-      expect(at.call(scanned: ok, now_at: report.received_at + 12.hours + 1)).to be(false)
-      expect(at.call(scanned: ok, received: collected + 1.hour - 1, now_at: collected + 2.hours)).to be(true) # transit
-      expect(at.call(scanned: ok, received: collected + 1.hour + 1, now_at: collected + 2.hours)).to be(false)
-      expect(at.call(scanned: ok, received: collected - 1.hour + 1)).to be(true) # an agent clock ahead
-      expect(at.call(scanned: ok, received: collected - 1.hour - 1)).to be(false)
-    end
-
-    it "needs a fresh scan and a recent report" do
-      expect(idle?("libidle", at: now + 11.hours)).to be(true)
-      expect(idle?("libidle", at: now + 13.hours)).to be(false) # the report is more than 12 hours old
-      row.library_scanned_at = report.collected_at - 3.hours # a scan far older than its report (a suspend, a clock jump)
-      expect(idle?("libidle")).to be(false)
-      row.library_scanned_at = report.collected_at + 1.hour # a scan after its report
-      expect(idle?("libidle")).to be(false)
+    it "expires when the host's latest scan is more than 24 hours old" do
+      row.library_scanned_at = now - 24.hours
+      expect(row.in_use_by_listener?("libc6", now:)).to be(true)
+      expect(row.in_use_by_listener?("libc6", now: now + 1)).to be(false)
+      expect(row.listeners_loading("libc6", now: now + 1)).to eq([])
+      row.library_scanned_at = now + 2.hours # an agent clock ahead
+      expect(row.in_use_by_listener?("libc6", now:)).to be(true)
       row.library_scanned_at = nil
-      expect(idle?("libidle")).to be(false)
-      row.library_scanned_at = now - 50.minutes
-      expect(idle?("libidle", package_set: nil)).to be(false)
-      expect(idle?("libidle", package_set: Struct.new(:collected_at, :received_at).new(nil, now))).to be(false)
+      expect(row.in_use_by_listener?("libc6", now:)).to be(false)
+    end
+
+    it "needs the scan to have run, whatever else the row holds" do
+      row.library_scan = "failed"
+      expect(row.in_use_by_listener?("libc6", now:)).to be(false)
+      row.library_scan = "off"
+      expect(row.in_use_by_listener?("libc6", now:)).to be(false)
     end
   end
 
   it "does not count a new scan time alone as a change, but stores it" do # review of #268, N1
-    scanned = in_use(library_scan: "ran", native_packages: [ "libidle" ], library_scanned_at: now)
+    scanned = in_use(library_scan: "ran", loaded_by_listeners: [ use("libc6", "samba", "network") ], library_scanned_at: now)
     described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now:)
     later = scanned.merge("library_scanned_at" => now + 1.hour)
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(later), now: now + 1.hour)).to be(false)
     expect(host.reload.applicability).to have_attributes(library_scanned_at: now + 1.hour, in_use_changed_at: now)
   end
 
-  it "clears what is in use when a report has none, unreadable ones included, so nothing reads as idle" do
-    described_class.record_in_use!(host_id: host.id, report: package_report(in_use), now:)
+  it "clears what is in use when a report has none, unreadable ones included, so nothing stays escalated" do
+    scanned = in_use(library_scan: "ran", loaded_by_listeners: [ use("libc6", "samba", "network") ], library_scanned_at: now)
+    described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now:)
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(nil), now: now + 1.hour)).to be(true)
-    expect(host.reload.applicability).to have_attributes(in_use_reported: false, listening_network: [], running_services: [],
-                                                        library_scan: nil, in_use_changed_at: now + 1.hour)
+    row = host.reload.applicability
+    expect(row).to have_attributes(in_use_reported: false, listening_network: [], running_services: [],
+                                   library_scan: nil, loaded_by_listeners: [], in_use_changed_at: now + 1.hour)
+    expect(row.in_use_by_listener?("libc6", now: now + 1.hour)).to be(false)
   end
 
   it "refuses a reboot flag of false and an unknown scan state in the database too" do
@@ -135,5 +130,7 @@ RSpec.describe HostApplicability do
     expect(described_class.new(host_id: host.id, in_use_reported: true, library_scan: "maybe")).not_to be_valid
     expect { described_class.new(host_id: host.id, in_use_reported: true).save!(validate: false) }
       .to raise_error(ActiveRecord::StatementInvalid, /in_use_reported/)
+    expect { described_class.create!(host_id: host.id, loaded_by_listeners: { "libc6" => "samba" }) }
+      .to raise_error(ActiveRecord::StatementInvalid, /loaded_by_listeners_array/)
   end
 end

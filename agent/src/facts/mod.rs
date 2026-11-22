@@ -250,38 +250,14 @@ impl<'a> Ctx<'a> {
         self.host.list(std::path::Path::new(dir), max_entries)
     }
 
-    /// [`Host::head`], within the budget; refuses secret files.
-    pub fn head(&self, path: &str, bytes: usize) -> io::Result<Vec<u8>> {
-        self.in_time()?;
-        if host::is_secret_path(path) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "refused: a secret file",
-            ));
-        }
-        self.host.head(std::path::Path::new(path), bytes)
-    }
-
-    /// [`Host::inspect`], within the budget.
-    pub fn inspect(&self, path: &str) -> io::Result<host::Inspect> {
-        self.in_time()?;
-        self.host.inspect(std::path::Path::new(path))
-    }
-
-    /// [`Host::resolve`], within the budget, as a string; a path that is not UTF-8 is an error.
-    pub fn resolve(&self, path: &str) -> io::Result<String> {
+    /// [`Host::link`], within the budget, as a string; a target that is not UTF-8 is an error.
+    pub fn link(&self, path: &str) -> io::Result<String> {
         self.in_time()?;
         self.host
-            .resolve(std::path::Path::new(path))?
+            .link(std::path::Path::new(path))?
             .into_os_string()
             .into_string()
-            .map_err(|_| io::Error::other("the resolved path is not UTF-8"))
-    }
-
-    /// Whether the budget is used up (or the agent is stopping), so a caller that skips errors can tell
-    /// a partial answer from a whole one.
-    pub fn out_of_time(&self) -> bool {
-        self.in_time().is_err()
+            .map_err(|_| io::Error::other("the link's target is not UTF-8"))
     }
 
     /// [`Host::socket_cgroups`], within the budget.

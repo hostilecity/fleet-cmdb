@@ -435,6 +435,16 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
                                         library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ])
     end
 
+    it "stores what listening processes load, each pair once, network if either entry is, sorted" do
+      uses = scanned["in_use"]["loaded_by_listeners"]
+      shuffled = uses.reverse + [ uses.first.merge("class" => "network"), { "package" => "libc6", "listener" => nil, "class" => "loopback" } ]
+      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => shuffled)))
+      expect(response).to have_http_status(:ok)
+      expect(stored.loaded_by_listeners).to eq([ { "package" => "libc6", "listener" => nil, "class" => "loopback" },
+                                                 uses.first.merge("class" => "network"), *uses.drop(1) ])
+      expect(stored.in_use_by_listener?("libssl3t64", now: Time.iso8601("2026-01-01T12:00:00Z"), network: true)).to be(true)
+    end
+
     it "writes only when what is in use changes" do
       send_report(report(in_use: scanned["in_use"]))
       changed_at = stored.in_use_changed_at
@@ -449,7 +459,7 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
 
     it "clears it when a report has none: an unreadable one, or one that could not read it" do
       send_report(report(in_use: scanned["in_use"]))
-      expect(stored).to have_attributes(native_packages: %w[libc6 openssh-server samba], library_scanned_at: Time.iso8601("2026-01-01T11:30:00Z"))
+      expect(stored).to have_attributes(loaded_by_listeners: scanned["in_use"]["loaded_by_listeners"], library_scanned_at: Time.iso8601("2026-01-01T11:30:00Z"))
       send_report(ApiContract.example("packages.request", "unreadable-manager").merge("report_id" => SecureRandom.uuid))
       expect(stored.in_use_reported).to be(false) # review of #268, S1: old use data never looks current
       send_report(report(in_use: scanned["in_use"]))

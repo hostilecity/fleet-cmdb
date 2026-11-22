@@ -1,10 +1,10 @@
 # What the agent reports about applicability (FR-2.6, VT-APPLICABILITY, #258): the reboot flag and the kernel build
 # from the inventory, and what is in use from the package report (listening packages by class, running services'
-# packages, unnamed listener counts, and the optional library scan's packages and stale ones). The triage rules L1
-# and N4 (#259) read it.
+# packages, unnamed listener counts, and the optional library scan's packages, stale ones, and those listening
+# processes load). Triage (VT-BUCKETS, #277; VT-SCORES) reads it.
 #
-# Only a package the scan judged native (native_packages) and found unmapped may be called idle (owner decision
-# 2026-11-20); every other list is positive evidence only.
+# Every list is positive evidence only; nothing is called idle from it (owner decision 2026-11-21). loaded_by_listeners
+# holds [{ "package", "listener" (a package or null), "class" ("network" or "loopback") }], sorted.
 #
 # One narrow row per host, written only when what it holds changes (as hosts is after #220, ADR 0029): a steady fleet
 # writes nothing here. No row means nothing reported. reboot_required is true or NULL, never false (Debian bug
@@ -25,12 +25,13 @@ class CreateHostApplicability < ActiveRecord::Migration[8.1]
       t.string :library_scan, limit: 8
       t.string :libraries, array: true, null: false, default: []
       t.string :stale_libraries, array: true, null: false, default: []
-      t.string :native_packages, array: true, null: false, default: []
+      t.jsonb :loaded_by_listeners, null: false, default: []
       t.datetime :library_scanned_at
       t.datetime :in_use_changed_at
       t.check_constraint "reboot_required IS NULL OR reboot_required", name: "host_applicability_reboot_true_or_null"
       t.check_constraint "library_scan IN ('off', 'ran', 'failed')", name: "host_applicability_library_scan_valid"
       t.check_constraint "in_use_reported = (library_scan IS NOT NULL)", name: "host_applicability_in_use_reported"
+      t.check_constraint "jsonb_typeof(loaded_by_listeners) = 'array'", name: "host_applicability_loaded_by_listeners_array"
     end
     add_foreign_key :host_applicability, :hosts, column: :host_id
   end

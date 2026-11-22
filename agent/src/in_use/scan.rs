@@ -1,6 +1,6 @@
 //! The optional library-use scan (VT-A02, threat model F-13): which packages' files running processes
-//! map, which still map a deleted (replaced) version of one, and which packages the scan can judge at
-//! all.
+//! map, which still map a deleted (replaced) version of one, and which ones processes that hold a
+//! listening socket map.
 //!
 //! Reading another process's `/proc/<pid>/maps` needs `CAP_SYS_PTRACE` unless it runs as the same user
 //! with no more capabilities. That capability allows attaching to and reading the memory of every
@@ -19,15 +19,15 @@
 //! elsewhere, maps every one to each package that lists it ([`super::owners`]; a diverted file marks
 //! both), and prints the package names with a `stale` flag. Within its 25 s budget, or it fails.
 //!
-//! **What it can prove (owner decision 2026-11-20).** Python, Perl, Ruby, Node, and Java read their code
-//! with `read(2)` rather than mapping it, so a package of such code can be in use with nothing of it in
-//! any process's maps. The scan therefore also lists `native`: the packages it can judge, those that ship
-//! at least one ELF executable or shared library under the package-managed prefixes, no ELF file outside
-//! them (code under `/opt` is not judged), no file with an [`INTERPRETED`] extension, and no script
-//! (`#!`) anywhere: not as a file with an execute bit, not as a file named like code, and not as the
-//! target of one of its symlinks ([`classify`]). A package with a file the scan could not read or
-//! judge is left out. Only a package in `native` and not in `libraries` may be called idle. Nothing else leaves the scan: no paths,
-//! no process ids.
+//! **Positive evidence only (owner decision 2026-11-21, after the fourth review of #268).** "Not
+//! continuously running does not equal low risk", and a snapshot cannot see short-lived helpers, cron
+//! jobs, or `sftp-server` sessions, so nothing is ever called idle from the scan. What it reports is what
+//! it saw: `libraries`, the packages any process maps, and `loaded_by_listeners`, each package a process
+//! that holds a listening socket maps (any file of it, ELF or not), with that process's program's package
+//! and whether the socket is on the network or on loopback only. A process holds a socket when one of
+//! its descriptors (`/proc/<pid>/fd`, readable with `CAP_SYS_PTRACE`) is a listening socket of the host's
+//! network namespace (`/proc/1/net/{tcp,tcp6,udp,udp6}`, [`HOST_SOCKETS`]). What the scan misses is
+//! simply not reported. Nothing else leaves the scan: no paths, no process ids, no addresses or ports.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
@@ -111,12 +111,21 @@ pub struct Library {
     pub stale: bool,
 }
 
+/// One package a process that holds a listening socket maps a file of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListenerUse {
+    pub package: String,
+    /// The package of that process's program; `None` when no package owns it.
+    pub listener: Option<String>,
+    /// `network` when one of the sockets it holds is on a non-loopback address, else `loopback`.
+    pub class: String,
+}
+
 /// What one scan found.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Output {
     pub libraries: Vec<Library>,
-    /// The packages the scan can judge: native code only ([module documentation](self)).
-    pub native: Vec<String>,
+    pub loaded_by_listeners: Vec<ListenerUse>,
 }
 
 /// A scan's result and when it ran, kept for an hour (owner decision 2026-11-20).
@@ -311,31 +320,37 @@ pub fn parse_output(output: &[u8]) -> Result<Output, String> {
     check_output(parsed)
 }
 
-/// An [`Output`] as the contract allows it: valid package names, each once, at most
-/// [`MAX_LIBRARIES`] of each list, sorted. Used on the scan's output and on a kept record alike.
+/// An [`Output`] as the contract allows it: valid package names, a package once in `libraries` and a
+/// (package, listener) pair once in `loaded_by_listeners`, a known class, within the limits, sorted. Used
+/// on the scan's output and on a kept record alike.
 pub fn check_output(mut parsed: Output) -> Result<Output, String> {
     let mut seen = HashSet::new();
-    let mut seen_native = HashSet::new();
+    let mut seen_uses = HashSet::new();
+    let valid = crate::packages::valid_name;
     if parsed.libraries.len() > MAX_LIBRARIES
-        || parsed.native.len() > MAX_LIBRARIES
+        || parsed.loaded_by_listeners.len() > MAX_LISTENER_USES
         || parsed
             .libraries
             .iter()
-            .any(|l| !crate::packages::valid_name(&l.package) || !seen.insert(l.package.clone()))
-        || parsed
-            .native
-            .iter()
-            .any(|n| !crate::packages::valid_name(n) || !seen_native.insert(n.clone()))
+            .any(|l| !valid(&l.package) || !seen.insert(l.package.clone()))
+        || parsed.loaded_by_listeners.iter().any(|u| {
+            !valid(&u.package)
+                || u.listener.as_deref().is_some_and(|l| !valid(l))
+                || !matches!(u.class.as_str(), "network" | "loopback")
+                || !seen_uses.insert((u.package.clone(), u.listener.clone()))
+        })
     {
         return Err("the library scan's result does not fit the contract".into());
     }
     parsed.libraries.sort_by(|a, b| a.package.cmp(&b.package));
-    parsed.native.sort();
+    parsed
+        .loaded_by_listeners
+        .sort_by(|a, b| (&a.package, &a.listener).cmp(&(&b.package, &b.listener)));
     Ok(parsed)
 }
 
-/// The real host for the scan, reading file heads directly instead of on a thread per call: the scan
-/// reads thousands of them, and its unit's `RuntimeMaxSec=` already bounds a read that hangs.
+/// The real host for the scan, reading descriptor links directly instead of on a thread per call: the
+/// scan reads thousands of them, and its unit's `RuntimeMaxSec=` already bounds a call that hangs.
 pub struct ScanHost(pub RealHost);
 
 impl Host for ScanHost {
@@ -351,14 +366,8 @@ impl Host for ScanHost {
     fn run(&self, command: &Command) -> Result<Vec<u8>, crate::facts::host::RunError> {
         self.0.run(command)
     }
-    fn head(&self, path: &std::path::Path, bytes: usize) -> std::io::Result<Vec<u8>> {
-        crate::fsx::read_head(path, bytes)
-    }
-    fn inspect(&self, path: &std::path::Path) -> std::io::Result<crate::facts::host::Inspect> {
-        crate::facts::host::Inspect::of(path)
-    }
-    fn resolve(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
-        std::fs::canonicalize(path)
+    fn link(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+        std::fs::read_link(path)
     }
 }
 
@@ -384,74 +393,115 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// File name endings of interpreted code, which runs without being mapped.
-pub const INTERPRETED: &[&str] = &[
-    ".py", ".pyc", ".pyo", ".pyz", ".pm", ".pl", ".rb", ".js", ".mjs", ".cjs", ".jar", ".class",
-    ".war", ".beam", ".php", ".lua", ".tcl", ".sh", ".bash",
-];
-
 /// Most mapped files outside the package-managed prefixes (a user's home, `/tmp`, `/opt`, `/srv`): looked
 /// up too, so a package under `/opt` that a process maps is in `libraries` (review of #268, B1), but kept
 /// apart from [`MAX_PATHS`], so files a user maps cannot push the package-managed ones out. Over it the
 /// scan fails rather than guess.
 pub const MAX_OTHER_PATHS: usize = 50_000;
+/// Most open file descriptors looked at, across all processes, to find the ones that hold a listening
+/// socket.
+pub const MAX_DESCRIPTORS: usize = 500_000;
+/// Most entries in `loaded_by_listeners`, the contract's limit.
+pub const MAX_LISTENER_USES: usize = 20_000;
 
-/// Where dpkg-managed code normally lives: the scan judges native code only there.
+/// The host's listening sockets: those of pid 1's network namespace. The scan's own namespace is empty
+/// (`PrivateNetwork=yes`), and a process in another namespace (a container) holds sockets these files do
+/// not list, so it is not counted as listening: a stated limit.
+pub const HOST_SOCKETS: [(&str, bool); 4] = [
+    ("/proc/1/net/tcp", false),
+    ("/proc/1/net/tcp6", false),
+    ("/proc/1/net/udp", true),
+    ("/proc/1/net/udp6", true),
+];
+const MAX_PROC_NET_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Where dpkg-managed code normally lives.
 fn package_managed(path: &str) -> bool {
     ["/usr/", "/bin/", "/sbin/", "/lib"]
         .iter()
         .any(|prefix| path.starts_with(prefix))
 }
 
-/// A file a package ships that could be native code by its name: anything in a `bin`, `sbin`, or
-/// `libexec` directory, or a shared library (`*.so`, `*.so.*`). Files with an execute bit are looked at
-/// wherever they are ([`classify`]).
-fn code_candidate(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or("");
-    path.contains("/bin/")
-        || path.contains("/sbin/")
-        || path.contains("/libexec/")
-        || name.ends_with(".so")
-        || name.contains(".so.")
+/// The process ended while the scan read it.
+fn gone(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH)
 }
 
-/// Directories of code loaded or run on demand, never while nothing asks for it: PAM modules, NSS,
-/// SASL, gconv, PKCS #11, OpenSSL providers and engines, Kerberos, GIO, GDK pixbuf, and GTK modules, and
-/// `libnss_*` (owner decision 2026-11-20, re-review of #268, S3). A package with any file here is never
-/// native, so never idle. Set-user-ID and set-group-ID programs (`unix_chkpwd`) count too ([`classify`]).
-pub const ON_DEMAND: &[&str] = &[
-    "/security/",
-    "/sasl2/",
-    "/gconv/",
-    "/pkcs11/",
-    "/ossl-modules/",
-    "/engines-3/",
-    "/engines-1.1/",
-    "/krb5/plugins/",
-    "/gio/modules/",
-    "/gdk-pixbuf-2.0/",
-    "/gtk-3.0/modules/",
-    "/gtk-4.0/modules/",
-];
-
-fn on_demand(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or("");
-    name.starts_with("libnss_")
-        || ON_DEMAND.iter().any(|dir| path.contains(dir))
-        // A package that ships a D-Bus activation file, a systemd timer, or a cron entry (owner
-        // decision 2026-11-21, third review S3).
-        || path.contains("/dbus-1/system-services/")
-        || path.contains("/dbus-1/services/")
-        || ((path.contains("/systemd/system/") || path.contains("/systemd/user/"))
-            && name.ends_with(".timer"))
-        || path.starts_with("/etc/cron.")
-        || path == "/etc/crontab"
-        || path == "/etc/anacrontab"
+/// The host's listening TCP and bound UDP sockets: inode -> on a non-loopback address.
+fn listening_sockets(ctx: &Ctx) -> Result<HashMap<u64, bool>, String> {
+    let mut found = HashMap::new();
+    for (path, udp) in HOST_SOCKETS {
+        let bytes = match ctx.read(path, MAX_PROC_NET_BYTES) {
+            Ok(bytes) => bytes,
+            // IPv6 turned off: no tcp6 or udp6.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.ends_with('6') => continue,
+            Err(e) => return Err(crate::facts::io_reason(path, &e)),
+        };
+        for socket in super::sockets::parse(&bytes, udp).map_err(|e| format!("{path}: {e}"))? {
+            *found.entry(socket.inode).or_insert(false) |= !socket.loopback();
+        }
+        if found.len() > super::MAX_SOCKETS {
+            return Err(format!(
+                "more than {} listening sockets, more than the scan looks at",
+                super::MAX_SOCKETS
+            ));
+        }
+    }
+    Ok(found)
 }
 
-/// Interpreted code a package ships; its documentation's examples (`/usr/share/doc`) are not code.
-fn interpreted(path: &str) -> bool {
-    !path.starts_with("/usr/share/doc/") && INTERPRETED.iter().any(|end| path.ends_with(end))
+/// The inode of a `socket:[N]` descriptor link.
+fn socket_inode(link: &str) -> Option<u64> {
+    link.strip_prefix("socket:[")?
+        .strip_suffix(']')?
+        .parse()
+        .ok()
+}
+
+/// Whether process `pid` holds one of the `listening` sockets: `Some(true)` when one is on the network,
+/// `Some(false)` when all it holds are on loopback, `None` when it holds none (or ended meanwhile).
+/// `seen` counts the descriptors looked at, across processes.
+fn holds(
+    ctx: &Ctx,
+    pid: &str,
+    listening: &HashMap<u64, bool>,
+    seen: &mut usize,
+) -> Result<Option<bool>, String> {
+    let dir = format!("/proc/{pid}/fd");
+    let fds = match ctx.list(&dir, MAX_DESCRIPTORS) {
+        Ok(fds) => fds,
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(crate::facts::io_reason(&dir, &e)),
+    };
+    *seen += fds.len();
+    if *seen > MAX_DESCRIPTORS {
+        return Err(format!(
+            "processes hold more than {MAX_DESCRIPTORS} open files, more than the scan looks at"
+        ));
+    }
+    let mut found = None;
+    for fd in fds {
+        let path = format!("{dir}/{fd}");
+        match ctx.link(&path) {
+            Ok(target) => {
+                if let Some(network) = socket_inode(&target).and_then(|i| listening.get(&i)) {
+                    found = Some(found.unwrap_or(false) | network);
+                }
+            }
+            // Closed meanwhile, or the process ended.
+            Err(e) if gone(&e) => {}
+            Err(e) => return Err(crate::facts::io_reason(&path, &e)),
+        }
+    }
+    Ok(found)
+}
+
+/// A process that holds a listening socket: whether one is on the network, its program, and what it
+/// maps.
+struct Listener {
+    network: bool,
+    program: Option<String>,
+    files: Vec<String>,
 }
 
 /// The scan itself, on any host, within [`BUDGET`].
@@ -474,26 +524,24 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             pids.len()
         ));
     }
+    let sockets = listening_sockets(&ctx)?;
     // Path -> mapped deleted (stale) by any process, and how many of them are package-managed.
     let mut mapped: BTreeMap<String, bool> = BTreeMap::new();
     let (mut managed, mut other) = (0usize, 0usize);
+    let mut listeners: Vec<Listener> = Vec::new();
+    let mut descriptors = 0usize;
     for pid in &pids {
         let path = format!("/proc/{pid}/maps");
         let bytes = match ctx.read(&path, MAX_MAPS_BYTES) {
             Ok(bytes) => bytes,
-            // The process ended meanwhile.
-            Err(e)
-                if matches!(e.kind(), std::io::ErrorKind::NotFound)
-                    || e.raw_os_error() == Some(libc::ESRCH) =>
-            {
-                continue;
-            }
+            Err(e) if gone(&e) => continue,
             Err(e) => return Err(crate::facts::io_reason(&path, &e)),
         };
-        for (file, deleted) in parse_maps(&bytes) {
+        let files = parse_maps(&bytes);
+        for (file, deleted) in &files {
             let entry = mapped.entry(file.clone());
             if matches!(entry, std::collections::btree_map::Entry::Vacant(_)) {
-                if package_managed(&file) {
+                if package_managed(file) {
                     managed += 1;
                 } else {
                     other += 1;
@@ -511,35 +559,33 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
                 "processes map more than {MAX_OTHER_PATHS} files elsewhere, more than the scan reads"
             ));
         }
+        if sockets.is_empty() {
+            continue;
+        }
+        let Some(network) = holds(&ctx, pid, &sockets, &mut descriptors)? else {
+            continue;
+        };
+        let exe = format!("/proc/{pid}/exe");
+        let program = match ctx.link(&exe) {
+            Ok(target) => Some(target.trim_end_matches(" (deleted)").to_owned()),
+            // A kernel thread has no program; a process may end meanwhile.
+            Err(e) if gone(&e) => None,
+            Err(e) => return Err(crate::facts::io_reason(&exe, &e)),
+        };
+        listeners.push(Listener {
+            network,
+            program,
+            files: files.into_iter().map(|(file, _)| file).collect(),
+        });
     }
 
-    // One pass over dpkg's file lists: every package that lists a mapped file (a diverted or shared
-    // file marks each of them, review of #268, S7), and each package judged as soon as all its lists
-    // (one per architecture, read one after another) are read, so only one package's files are held at
-    // a time (third review, S1).
-    let wanted: HashSet<String> = mapped.keys().cloned().collect();
+    // One pass over dpkg's file lists: every package that lists a mapped file or a listener's program (a
+    // diverted or shared file marks each of them, review of #268, S7).
+    let mut wanted: HashSet<String> = mapped.keys().cloned().collect();
+    wanted.extend(listeners.iter().filter_map(|l| l.program.clone()));
     let lookup = super::owners::lookup(&wanted);
-    // Programs that cron, a systemd timer, or D-Bus activation starts, by each spelling (owner decision
-    // 2026-11-21, third review S3): their packages are never native.
-    let started: HashSet<String> = super::starters::started_on_demand(&ctx)?
-        .iter()
-        .flat_map(|path| super::owners::aliases(path))
-        .collect();
     let mut owners: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let mut native = BTreeSet::new();
-    let mut group = Group::default();
-    let mut failed: Option<String> = None;
     super::owners::each_list(&ctx, |package, lines| {
-        if group.package != package {
-            if let Err(why) = group.finish(&ctx, budget, &mut native) {
-                failed = Some(why);
-                return false;
-            }
-            group = Group {
-                package: package.to_owned(),
-                ..Group::default()
-            };
-        }
         for line in lines {
             if let Some(originals) = lookup.get(line.as_ref()) {
                 for original in originals {
@@ -549,150 +595,50 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
                         .insert(package.to_owned());
                 }
             }
-            group.add(&line, &started);
         }
         true
     })?;
-    if let Some(why) = failed {
-        return Err(why);
-    }
-    group.finish(&ctx, budget, &mut native)?;
-
     let mut packages: BTreeMap<String, bool> = BTreeMap::new();
-    for (file, deleted) in mapped {
-        for package in owners.get(&file).into_iter().flatten() {
+    for (file, deleted) in &mapped {
+        for package in owners.get(file).into_iter().flatten() {
             *packages.entry(package.clone()).or_insert(false) |= deleted;
         }
     }
-    if packages.len() > MAX_LIBRARIES || native.len() > MAX_LIBRARIES {
-        return Err(format!("more than {MAX_LIBRARIES} packages to name"));
+    // (package, the listener's package) -> on the network.
+    let mut uses: BTreeMap<(String, Option<String>), bool> = BTreeMap::new();
+    for listener in &listeners {
+        let named = listener
+            .program
+            .as_ref()
+            .and_then(|p| owners.get(p))
+            .and_then(|set| set.iter().next().cloned());
+        for file in &listener.files {
+            for package in owners.get(file).into_iter().flatten() {
+                *uses
+                    .entry((package.clone(), named.clone()))
+                    .or_insert(false) |= listener.network;
+            }
+        }
+    }
+    if packages.len() > MAX_LIBRARIES || uses.len() > MAX_LISTENER_USES {
+        return Err(format!(
+            "more than {MAX_LIBRARIES} packages to name, more than the contract allows"
+        ));
     }
     Ok(Output {
         libraries: packages
             .into_iter()
             .map(|(package, stale)| Library { package, stale })
             .collect(),
-        native: native.into_iter().collect(),
+        loaded_by_listeners: uses
+            .into_iter()
+            .map(|((package, listener), network)| ListenerUse {
+                package,
+                listener,
+                class: if network { "network" } else { "loopback" }.into(),
+            })
+            .collect(),
     })
-}
-
-/// One package's files, across the lists of its architectures, while they are read.
-#[derive(Default)]
-struct Group {
-    package: String,
-    files: Vec<String>,
-    /// Interpreted code, code run on demand, or a line that is not UTF-8: never native.
-    excluded: bool,
-    candidate: bool,
-}
-
-impl Group {
-    fn add(&mut self, line: &str, started: &HashSet<String>) {
-        if self.excluded {
-            return;
-        }
-        if line.contains('\u{FFFD}')
-            || interpreted(line)
-            || on_demand(line)
-            || started.contains(line)
-        {
-            self.excluded = true;
-            self.files = Vec::new();
-            return;
-        }
-        self.candidate |= code_candidate(line);
-        if line.starts_with('/') && line != "/." {
-            self.files.push(line.to_owned());
-        }
-    }
-
-    /// Judges the package once all its lists are read.
-    fn finish(
-        &mut self,
-        ctx: &Ctx,
-        budget: Duration,
-        native: &mut BTreeSet<String>,
-    ) -> Result<(), String> {
-        let files = std::mem::take(&mut self.files);
-        if !self.package.is_empty()
-            && self.candidate
-            && !self.excluded
-            && classify(ctx, &files, budget)? == Some(true)
-        {
-            native.insert(std::mem::take(&mut self.package));
-        }
-        Ok(())
-    }
-}
-
-/// Whether a package's files are native code only (owner decision 2026-11-20, review of #268):
-///
-/// - `Some(true)`: at least one ELF file under the package-managed prefixes, and no script;
-/// - `Some(false)`: a set-user-ID or set-group-ID file (run on demand, S3); a script (`#!`) anywhere, as a file with an execute bit, a file named like code, or
-///   the target of one of its symlinks; an ELF file outside those prefixes (`/opt`, B1); or no ELF file;
-/// - `None`: something could not be read or judged (permission denied, an I/O error): not provable.
-///
-/// Only a missing file, a directory, or a dangling symlink is skipped. `Err` when the scan's budget ran
-/// out: the scan then fails rather than report a partial judgement as complete (B2).
-fn classify(ctx: &Ctx, files: &[String], limit: Duration) -> Result<Option<bool>, String> {
-    use crate::facts::host::Inspect;
-    let budget = || {
-        format!(
-            "the scan ran out of its {} second budget while judging native code",
-            limit.as_secs()
-        )
-    };
-    let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
-    let mut elf = false;
-    for file in files {
-        let target = match ctx.inspect(file) {
-            // A set-user-ID or set-group-ID program (`unix_chkpwd`) runs on demand (S3).
-            Ok(Inspect::File(mode)) if mode & 0o6000 != 0 => return Ok(Some(false)),
-            Ok(Inspect::File(mode)) => {
-                let executable = mode & 0o111 != 0;
-                if !(executable && !file.starts_with("/usr/share/doc/")) && !code_candidate(file) {
-                    continue;
-                }
-                file.clone()
-            }
-            Ok(Inspect::Symlink) => match ctx.resolve(file) {
-                Ok(target) => target,
-                Err(e) if gone(&e) => continue,
-                Err(_) if ctx.out_of_time() => return Err(budget()),
-                Err(_) => return Ok(None),
-            },
-            Ok(Inspect::Directory) => continue,
-            Ok(Inspect::Other) => return Ok(None),
-            Err(e) if gone(&e) => continue,
-            Err(_) if ctx.out_of_time() => return Err(budget()),
-            Err(_) => return Ok(None),
-        };
-        let followed = target != *file;
-        match ctx.head(&target, 4) {
-            Ok(head) if head.starts_with(b"#!") => return Ok(Some(false)),
-            Ok(head) if head == b"\x7fELF" && !package_managed(&target) => return Ok(Some(false)),
-            // Judged by the path its list gives, but the maps show where it really is: through a
-            // directory symlink outside the /usr merge they differ, and it would never be matched
-            // (third review, N2), so such a package cannot be judged.
-            Ok(head) if head == b"\x7fELF" && !followed => match ctx.resolve(file) {
-                Ok(real) if real == *file || super::owners::aliases(file).contains(&real) => {
-                    elf = true;
-                }
-                Ok(_) => return Ok(Some(false)),
-                Err(_) if ctx.out_of_time() => return Err(budget()),
-                Err(_) => return Ok(None),
-            },
-            Ok(_) => {}
-            Err(e) if gone(&e) => {}
-            // A symlink to a directory, or to something that is not a regular file.
-            Err(e) if followed && e.kind() == std::io::ErrorKind::Other => {}
-            Err(_) if ctx.out_of_time() => return Err(budget()),
-            Err(_) => return Ok(None),
-        }
-    }
-    // Every file was looked at: a budget that ran out after the last one is the next package's
-    // first call's error.
-    Ok(Some(elf))
 }
 
 /// The files of one `/proc/<pid>/maps`: `address perms offset dev inode path`, the path from the sixth

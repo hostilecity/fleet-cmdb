@@ -85,9 +85,10 @@ max_seconds = 300
 
 # What is in use (FR-2.6): with each package report the agent sends which packages' services listen
 # (on the network or on loopback only) and which run, read with no extra privilege. The library-use
-# scan adds every package whose files running processes map, and which still run replaced (stale)
-# code. It needs CAP_SYS_PTRACE, so it runs only in its own short-lived unit with no network
-# (fleet-agent-library-scan.service, at most 30 seconds per package report), never in the agent's
+# scan adds every package whose files running processes map, which still run replaced (stale) code,
+# and which processes holding a listening socket load (the server escalates those). It needs
+# CAP_SYS_PTRACE, so it runs only in its own short-lived unit with no network
+# (fleet-agent-library-scan.service, at most once an hour, 30 seconds at most), never in the agent's
 # unit. Off unless enabled here. Changes apply when the agent restarts.
 [packages]
 # library_scan = false

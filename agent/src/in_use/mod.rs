@@ -1,5 +1,6 @@
-//! What running processes use, for the vulnerability triage rules L1 and N4 (FR-2.6, VT-APPLICABILITY,
-//! ADR 0032 point 9). Sent in the package report as `in_use`; the server decides what it means.
+//! What running processes use, for vulnerability triage (FR-2.6, VT-APPLICABILITY, ADR 0032 point 9):
+//! exposure (N4) and the escalation of packages that listening processes load. Sent in the package
+//! report as `in_use`; the server decides what it means.
 //!
 //! # Listening services and running services (VT-A01): no new privilege
 //!
@@ -25,30 +26,30 @@
 //! process id, command line, user name, address, or port.
 //!
 //! If the sockets, their cgroups, the services, or the file lists cannot be read whole, `in_use` is
-//! `null` with a warning: a partial answer could make a package look idle. Bounded: at most
+//! `null` with a warning, rather than a partial answer. Bounded: at most
 //! [`MAX_SOCKETS`] sockets and [`MAX_UNITS`] units, within [`BUDGET`].
 //!
 //! # Library use (VT-A02): optional, off by default
 //!
 //! With `[packages] library_scan = true` in the VM's local config, the scan unit ([`scan`]), at most once
-//! an hour, also lists every package whose files running processes map, which are stale, and which it
-//! can judge (`native`: native code only). That short-lived unit, with no network, is the only agent unit
-//! that reads other processes' maps, with `CAP_SYS_PTRACE` alone. `complete` says whether it ran.
+//! an hour, also lists every package whose files running processes map (`libraries`, with which are
+//! stale) and every package a process that holds a listening socket maps (`loaded_by_listeners`, with
+//! that process's program's package and the socket's class). That short-lived unit, with no network, is
+//! the only agent unit that reads other processes' maps and descriptors, with `CAP_SYS_PTRACE` alone.
+//! `complete` says whether it ran.
 //!
-//! # What the lists prove (owner decision 2026-11-20)
+//! # What the lists prove (owner decision 2026-11-21)
 //!
-//! Every list is positive evidence only. A service is named by its `ExecStart=` executable's package, so
-//! a wrapper hides the program it starts (`pg_ctlcluster` of `postgresql-common` for PostgreSQL, `sh -c`,
-//! `env`, an interpreter); naming the real program would need `/proc/<pid>/exe` of other users'
-//! processes, which needs ptrace access the agent's unit does not have. So a package missing from
-//! `services` and `listening` is never idle on that account: only one in the scan's `native` and absent
-//! from `libraries` is.
+//! Every list is positive evidence only, and nothing is ever called idle from it: a snapshot cannot see
+//! short-lived helpers, cron jobs, or sessions. A service is named by its `ExecStart=` executable's
+//! package, so a wrapper hides the program it starts (`pg_ctlcluster` of `postgresql-common` for
+//! PostgreSQL, `sh -c`, `env`, an interpreter); the scan, which reads `/proc/<pid>/exe`, names the real
+//! program's package as a listener.
 
 pub mod netlink;
 pub mod owners;
 pub mod scan;
 pub mod sockets;
-pub mod starters;
 pub mod units;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -60,7 +61,7 @@ use serde::Serialize;
 use crate::facts::Ctx;
 use crate::facts::host::{Command, Host};
 use crate::shutdown::Shutdown;
-use scan::Library;
+use scan::{Library, ListenerUse};
 use sockets::Socket;
 use units::Owner;
 
@@ -105,8 +106,8 @@ pub struct InUse {
     pub unnamed_listeners: Unnamed,
     pub library_scan: &'static str,
     pub libraries: Option<Vec<Library>>,
-    /// The packages the scan can judge (native code only); `None` unless it ran.
-    pub native: Option<Vec<String>>,
+    /// The packages processes that hold a listening socket map; `None` unless the scan ran.
+    pub loaded_by_listeners: Option<Vec<ListenerUse>>,
     /// When the scan whose result this is ran, or was last tried; `None` when it is off.
     pub scanned_at: Option<String>,
     pub complete: bool,
@@ -155,7 +156,7 @@ pub fn collect(
             Ok(output) => {
                 in_use.library_scan = "ran";
                 in_use.libraries = Some(output.libraries);
-                in_use.native = Some(output.native);
+                in_use.loaded_by_listeners = Some(output.loaded_by_listeners);
                 in_use.complete = true;
             }
             Err(why) => {
@@ -278,7 +279,7 @@ fn services(ctx: &Ctx) -> Result<InUse, String> {
         unnamed_listeners: unnamed,
         library_scan: "off",
         libraries: None,
-        native: None,
+        loaded_by_listeners: None,
         scanned_at: None,
         complete: false,
     })

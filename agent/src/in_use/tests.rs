@@ -3,7 +3,6 @@ use std::io;
 use std::path::Path;
 use std::sync::Mutex;
 
-use super::starters;
 use super::*;
 use crate::collect::contract;
 use crate::facts::host::{RunError, SocketCgroup, Stat};
@@ -21,14 +20,8 @@ struct TestHost {
     exec: HashMap<String, String>,
     /// Paths whose reads are refused (permission denied).
     denied: std::collections::HashSet<String>,
-    /// Files with an execute bit.
-    executables: std::collections::HashSet<String>,
-    /// Set-user-ID files.
-    setid: std::collections::HashSet<String>,
-    /// Paths whose reads fail with some other error.
-    irregular: std::collections::HashSet<String>,
-    /// Symlinks: path -> target (absolute).
-    symlinks: HashMap<String, String>,
+    /// Symlinks (`/proc/<pid>/fd/<n>`, `/proc/<pid>/exe`): path -> target.
+    links: HashMap<String, String>,
     log: Mutex<Vec<String>>,
 }
 
@@ -56,17 +49,6 @@ impl Host for TestHost {
         self.log.lock().unwrap().push(format!("read {path}"));
         if self.denied.contains(&path) {
             return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        if self.irregular.contains(&path) {
-            return Err(io::Error::other("an input/output error"));
-        }
-        if !self.files.contains_key(&path)
-            && self
-                .files
-                .keys()
-                .any(|f| f.starts_with(&format!("{path}/")))
-        {
-            return Err(io::ErrorKind::IsADirectory.into());
         }
         let bytes = self
             .files
@@ -118,73 +100,15 @@ impl Host for TestHost {
             .cloned()
             .unwrap_or(Err(RunError::NotInstalled(first)))
     }
-    fn inspect(&self, path: &Path) -> io::Result<crate::facts::host::Inspect> {
-        use crate::facts::host::Inspect;
+    fn link(&self, path: &Path) -> io::Result<std::path::PathBuf> {
         let path = path.to_string_lossy().into_owned();
         if self.denied.contains(&path) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        if self.symlinks.contains_key(&path) {
-            return Ok(Inspect::Symlink);
-        }
-        // A symlinked directory on the way (`/sbin` -> `/usr/sbin`).
-        if let Some((link, target)) = self
-            .symlinks
-            .iter()
-            .find(|(link, _)| path.starts_with(&format!("{link}/")))
-        {
-            return self.inspect(Path::new(&format!("{target}{}", &path[link.len()..])));
-        }
-        if self.files.contains_key(&path) {
-            let mode = if self.executables.contains(&path) {
-                0o755
-            } else {
-                0o644
-            };
-            let mode = if self.setid.contains(&path) {
-                mode | 0o4000
-            } else {
-                mode
-            };
-            return Ok(Inspect::File(mode));
-        }
-        if self
-            .files
-            .keys()
-            .any(|f| f.starts_with(&format!("{path}/")))
-        {
-            return Ok(Inspect::Directory);
-        }
-        Err(io::ErrorKind::NotFound.into())
-    }
-    fn resolve(&self, path: &Path) -> io::Result<std::path::PathBuf> {
-        let mut path = path.to_string_lossy().into_owned();
-        for _ in 0..8 {
-            if let Some(target) = self.symlinks.get(&path) {
-                path = target.clone();
-                continue;
-            }
-            // A symlinked directory on the way.
-            match self
-                .symlinks
-                .iter()
-                .find(|(link, _)| path.starts_with(&format!("{link}/")))
-            {
-                Some((link, target)) => path = format!("{target}{}", &path[link.len()..]),
-                None => break,
-            }
-        }
-        if path == "/dev/null"
-            || self.files.contains_key(&path)
-            || self
-                .files
-                .keys()
-                .any(|f| f.starts_with(&format!("{path}/")))
-        {
-            Ok(path.into())
-        } else {
-            Err(io::ErrorKind::NotFound.into())
-        }
+        self.links
+            .get(&path)
+            .map(Into::into)
+            .ok_or_else(|| io::ErrorKind::NotFound.into())
     }
     fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
         let sockets = self
@@ -1155,7 +1079,7 @@ fn a_report_too_large_with_in_use_keeps_the_listing_and_drops_in_use() {
             unnamed_listeners: Unnamed::default(),
             library_scan: "ran",
             libraries: Some(libraries),
-            native: Some(vec![]),
+            loaded_by_listeners: Some(vec![]),
             scanned_at: Some("2026-11-20T12:00:00Z".into()),
             complete: true,
         }),
@@ -1252,10 +1176,43 @@ fn scan_host() -> TestHost {
         .file("/var/lib/dpkg/info/libidle.list", "/usr/lib/libidle.so.1\n")
         .file("/usr/sbin/sshd", "\x7fELF....")
         .file("/lib/x86_64-linux-gnu/libc.so.6", "\x7fELF....")
-        .file("/usr/lib/libidle.so.1", "\x7fELF....");
+        .file("/usr/lib/libidle.so.1", "\x7fELF....")
+        // The host's sockets, as pid 1's network namespace shows them: sshd on 0.0.0.0:22 (1001), a
+        // loopback service on 127.0.0.1:8080 (1003), and others no process here holds.
+        .file("/proc/1/net/tcp", &tcp())
+        .file("/proc/1/net/udp", TCP_HEADER)
+        // Process 950 maps libidle and holds no listening socket.
+        .file(
+            "/proc/950/maps",
+            "7f00-7f01 r--p 0 fe:01 5555 /usr/lib/libidle.so.1\n",
+        );
+    // sshd (812) holds the network socket; 900, a program no package owns, the loopback one; 950 an
+    // established connection's socket and a file.
+    for (pid, fds) in [
+        ("812", vec![("0", "/dev/null"), ("3", "socket:[1001]")]),
+        ("900", vec![("4", "socket:[1003]"), ("5", "pipe:[77]")]),
+        ("950", vec![("3", "socket:[1006]"), ("4", "/var/log/x.log")]),
+    ] {
+        host.dirs.insert(
+            format!("/proc/{pid}/fd"),
+            fds.iter().map(|(fd, _)| (*fd).to_owned()).collect(),
+        );
+        for (fd, target) in fds {
+            host.links
+                .insert(format!("/proc/{pid}/fd/{fd}"), target.to_owned());
+        }
+    }
+    host.links
+        .insert("/proc/812/exe".into(), "/usr/sbin/sshd".into());
+    host.links.insert(
+        "/proc/900/exe".into(),
+        "/usr/local/bin/local-thing (deleted)".into(),
+    );
+    host.links
+        .insert("/proc/950/exe".into(), "/usr/bin/worker".into());
     host.dirs.insert(
         "/proc".into(),
-        ["1", "812", "900", "933", "self", "net", "sys"]
+        ["1", "812", "900", "933", "950", "self", "net", "sys"]
             .map(String::from)
             .to_vec(),
     );
@@ -1287,6 +1244,10 @@ fn the_scan_names_packages_in_use_and_stale_ones() {
                 stale: false
             },
             Library {
+                package: "libidle".into(),
+                stale: false
+            },
+            Library {
                 package: "libssl3t64".into(),
                 stale: true
             },
@@ -1296,63 +1257,120 @@ fn the_scan_names_packages_in_use_and_stale_ones() {
             },
         ]
     );
-    // A library only a stopped service would use is not in the list, and it is native: idle.
-    assert!(!libraries.iter().any(|l| l.package == "libidle"));
-    assert_eq!(output.native, ["libc6", "libidle", "openssh-server"]);
+    // Mapped by a process that holds no listening socket: in `libraries` only.
+    assert!(libraries.iter().any(|l| l.package == "libidle"));
+    let uses: Vec<(&str, Option<&str>, &str)> = output
+        .loaded_by_listeners
+        .iter()
+        .map(|u| (u.package.as_str(), u.listener.as_deref(), u.class.as_str()))
+        .collect();
+    assert_eq!(
+        uses,
+        [
+            // 900's program is owned by no package (and was replaced: " (deleted)").
+            ("libc6", None, "loopback"),
+            ("libc6", Some("openssh-server"), "network"),
+            ("libssl3t64", Some("openssh-server"), "network"),
+            ("openssh-server", Some("openssh-server"), "network"),
+        ]
+    );
 }
 
 #[test]
-fn only_native_code_packages_can_be_judged() {
-    // Owner decision 2026-11-20 (review of #268, B2): interpreted code is read, not mapped.
-    let mut host = scan_host()
-        .file(
-            "/var/lib/dpkg/info/python3-urllib3.list",
-            "/usr/lib/python3/dist-packages/urllib3/__init__.py\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/mixed.list",
-            "/usr/lib/mixed/libm.so.1\n/usr/share/mixed/tool.pl\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/scripted.list",
-            "/usr/bin/scripted\n/usr/lib/libscripted.so.1\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/docs-only.list",
-            "/usr/share/doc/docs-only/example.py\n/usr/lib/libdocs.so.1\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/data-only.list",
-            "/usr/share/data-only/table.bin\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/secret.list",
-            "/usr/lib/libsecret-ok.so.0\n/usr/lib/libsecret.so.0\n",
-        )
-        .file("/usr/lib/libsecret-ok.so.0", "\x7fELF....")
-        .file("/usr/lib/mixed/libm.so.1", "\x7fELF....")
-        .file("/usr/bin/scripted", "#!/bin/sh\nexit 0\n")
-        .file("/usr/lib/libscripted.so.1", "\x7fELF....")
-        .file("/usr/lib/libdocs.so.1", "\x7fELF....");
-    host.denied.insert("/usr/lib/libsecret.so.0".into());
-    let names = host.dirs.get_mut("/var/lib/dpkg/info").unwrap();
-    names.extend(
-        [
-            "data-only.list",
-            "docs-only.list",
-            "mixed.list",
-            "python3-urllib3.list",
-            "scripted.list",
-            "secret.list",
-        ]
-        .map(String::from),
+fn a_process_holding_network_and_loopback_sockets_is_network() {
+    let mut host = scan_host();
+    host.dirs.get_mut("/proc/900/fd").unwrap().push("6".into());
+    host.links
+        .insert("/proc/900/fd/6".into(), "socket:[2001]".into());
+    host = host.file("/proc/1/net/tcp6", &tcp6());
+    let output = scan::scan(&host).unwrap();
+    assert!(output.loaded_by_listeners.contains(&scan::ListenerUse {
+        package: "libc6".into(),
+        listener: None,
+        class: "network".into(),
+    }));
+    assert!(
+        !output
+            .loaded_by_listeners
+            .iter()
+            .any(|u| u.class == "loopback")
     );
-    names.sort();
-    let native = scan::scan(&host).unwrap().native;
-    assert_eq!(
-        native,
-        ["docs-only", "libc6", "libidle", "openssh-server"],
-        "a package with interpreted code, a script, no ELF file, or an unreadable code file cannot be judged"
+}
+
+#[test]
+fn without_listening_sockets_no_descriptor_is_read() {
+    let host = scan_host()
+        .file("/proc/1/net/tcp", TCP_HEADER)
+        .file("/proc/1/net/udp", TCP_HEADER);
+    let output = scan::scan(&host).unwrap();
+    assert!(output.loaded_by_listeners.is_empty());
+    assert!(!output.libraries.is_empty());
+    assert!(
+        !host.log().iter().any(|l| l.contains("/fd")),
+        "{:?}",
+        host.log()
+    );
+}
+
+#[test]
+fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
+    // A descriptor closed, or a process ended, meanwhile: skipped.
+    let mut host = scan_host();
+    host.links.remove("/proc/950/fd/4");
+    host.dirs.remove("/proc/900/fd");
+    host.links.remove("/proc/812/exe");
+    let output = scan::scan(&host).unwrap();
+    assert!(
+        output
+            .loaded_by_listeners
+            .iter()
+            .all(|u| u.listener.is_none())
+    );
+    assert!(
+        output
+            .loaded_by_listeners
+            .iter()
+            .any(|u| u.package == "openssh-server")
+    );
+    // Anything else that cannot be read fails it, rather than report part of the listeners.
+    for denied in [
+        "/proc/812/fd",
+        "/proc/812/fd/3",
+        "/proc/812/exe",
+        "/proc/1/net/tcp",
+    ] {
+        let mut host = scan_host();
+        host.denied.insert(denied.into());
+        assert!(scan::scan(&host).unwrap_err().contains(denied), "{denied}");
+    }
+    // The host's IPv4 tables must be there; IPv6 may be off.
+    let mut host = scan_host();
+    host.files.remove("/proc/1/net/udp");
+    assert!(scan::scan(&host).unwrap_err().contains("/proc/1/net/udp"));
+}
+
+#[test]
+fn descriptors_and_listener_uses_are_bounded() {
+    // Across processes.
+    let mut host = scan_host();
+    let half: Vec<String> = (0..scan::MAX_DESCRIPTORS / 2 + 1)
+        .map(|i| (i + 10).to_string())
+        .collect();
+    host.dirs.insert("/proc/812/fd".into(), half.clone());
+    host.dirs.insert("/proc/900/fd".into(), half);
+    assert!(scan::scan(&host).unwrap_err().contains("open files"));
+}
+
+#[test]
+fn a_socket_inode_comes_only_from_a_socket_link() {
+    let host = scan_host();
+    let output = scan::scan(&host).unwrap();
+    // 950 holds socket 1006, an established connection, which is not listening.
+    assert!(
+        !output
+            .loaded_by_listeners
+            .iter()
+            .any(|u| u.package == "libidle")
     );
 }
 
@@ -1385,337 +1403,6 @@ fn package_managed_files_and_other_files_have_limits_of_their_own() {
 }
 
 #[test]
-fn a_package_with_code_under_opt_is_never_native_and_is_named_when_mapped() {
-    // Review of #268, B1: a vendor agent under /opt ran while it looked idle.
-    let mut host = scan_host()
-        .file(
-            "/var/lib/dpkg/info/vendor-agent.list",
-            "/opt/vendor/bin/agentd\n/usr/lib/libvendor.so.1\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/vendor-idle.list",
-            "/opt/idle/lib/libidle.so\n/usr/lib/libvidle.so.1\n",
-        )
-        .file("/opt/vendor/bin/agentd", "\x7fELF....")
-        .file("/opt/idle/lib/libidle.so", "\x7fELF....")
-        .file("/usr/lib/libvendor.so.1", "\x7fELF....")
-        .file("/usr/lib/libvidle.so.1", "\x7fELF....")
-        .file(
-            "/proc/900/maps",
-            "7f00-7f01 r-xp 0 fe:01 9 /opt/vendor/bin/agentd\n",
-        );
-    host.executables.insert("/opt/vendor/bin/agentd".into());
-    add_lists(&mut host, &["vendor-agent.list", "vendor-idle.list"]);
-    let output = scan::scan(&host).unwrap();
-    assert!(
-        output.libraries.iter().any(|l| l.package == "vendor-agent"),
-        "{:?}",
-        output.libraries
-    );
-    assert!(!output.native.contains(&"vendor-agent".to_owned()));
-    assert!(
-        !output.native.contains(&"vendor-idle".to_owned()),
-        "ELF code outside the scanned prefixes"
-    );
-}
-
-#[test]
-fn a_scan_out_of_time_fails_rather_than_judge_on_part_of_a_package() {
-    // Review of #268, B2: the script read after the deadline would have left aaa-tool native.
-    struct Slow(TestHost);
-    impl Host for Slow {
-        fn stat(&self, p: &Path) -> io::Result<Stat> {
-            self.0.stat(p)
-        }
-        fn read(&self, p: &Path, m: u64) -> io::Result<Vec<u8>> {
-            self.0.read(p, m)
-        }
-        fn list(&self, d: &Path, m: usize) -> io::Result<Vec<String>> {
-            self.0.list(d, m)
-        }
-        fn run(&self, c: &Command) -> Result<Vec<u8>, RunError> {
-            self.0.run(c)
-        }
-        fn inspect(&self, p: &Path) -> io::Result<crate::facts::host::Inspect> {
-            self.0.inspect(p)
-        }
-        fn resolve(&self, p: &Path) -> io::Result<std::path::PathBuf> {
-            self.0.resolve(p)
-        }
-        fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
-            if p == Path::new("/usr/bin/aaa-tool") {
-                std::thread::sleep(std::time::Duration::from_millis(1200));
-            }
-            self.0.head(p, n)
-        }
-    }
-    let mut host = scan_host()
-        .file(
-            "/var/lib/dpkg/info/aaa-tool.list",
-            "/usr/bin/aaa-tool\n/usr/sbin/aaa-tool-wrapper\n",
-        )
-        .file("/usr/bin/aaa-tool", "\x7fELF....")
-        .file("/usr/sbin/aaa-tool-wrapper", "#!/bin/sh\n");
-    add_lists(&mut host, &["aaa-tool.list"]);
-    let message = scan::scan_within(&Slow(host), std::time::Duration::from_secs(1)).unwrap_err();
-    assert!(message.contains("budget"), "{message}");
-}
-
-#[test]
-fn a_script_anywhere_in_a_package_makes_it_not_native() {
-    // Review of #268, S2: executable files anywhere, symlinks followed, and .sh files.
-    let mut host = scan_host();
-    type Pairs<'a> = &'a [(&'a str, &'a str)];
-    let cases: [(&str, &str, Pairs, &[&str], Pairs); 5] = [
-        (
-            "hook-pkg",
-            "/usr/lib/hook-pkg/libh.so.1\n/usr/lib/hook-pkg/hook\n",
-            &[("/usr/lib/hook-pkg/hook", "#!/bin/sh\n")],
-            &["/usr/lib/hook-pkg/hook"],
-            &[],
-        ),
-        (
-            "cron-pkg",
-            "/usr/lib/libcron-pkg.so.1\n/etc/cron.daily/cron-pkg\n",
-            &[("/etc/cron.daily/cron-pkg", "#!/bin/sh\n")],
-            &["/etc/cron.daily/cron-pkg"],
-            &[],
-        ),
-        (
-            "job-pkg",
-            "/usr/lib/libjob.so.1\n/usr/share/job-pkg/job.sh\n",
-            &[("/usr/share/job-pkg/job.sh", "echo\n")],
-            &[],
-            &[],
-        ),
-        (
-            "link-pkg",
-            "/usr/lib/liblink.so.1\n/usr/bin/link-tool\n/usr/share/link-pkg/tool\n",
-            &[("/usr/share/link-pkg/tool", "#!/usr/bin/perl\n")],
-            &[],
-            &[("/usr/bin/link-tool", "/usr/share/link-pkg/tool")],
-        ),
-        (
-            "elf-pkg",
-            "/usr/lib/libelf-pkg.so.1\n/usr/bin/elf-tool\n/usr/lib/libelf-pkg.so\n/usr/share/elf-pkg/data\n",
-            &[("/usr/bin/elf-tool", "\x7fELF....")],
-            &["/usr/bin/elf-tool"],
-            &[("/usr/lib/libelf-pkg.so", "/usr/lib/libelf-pkg.so.1")],
-        ),
-    ];
-    let mut lists = Vec::new();
-    for (package, list, files, executables, links) in cases {
-        host.files.insert(
-            format!("/var/lib/dpkg/info/{package}.list"),
-            list.as_bytes().to_vec(),
-        );
-        lists.push(format!("{package}.list"));
-        let first = list.lines().next().unwrap();
-        host.files.insert(first.into(), b"\x7fELF....".to_vec());
-        for (path, text) in files {
-            host.files.insert((*path).into(), text.as_bytes().to_vec());
-        }
-        host.files
-            .insert("/usr/share/elf-pkg/data".into(), b"plain data".to_vec());
-        host.executables
-            .extend(executables.iter().map(|e| (*e).to_owned()));
-        host.symlinks.extend(
-            links
-                .iter()
-                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned())),
-        );
-    }
-    let names: Vec<&str> = lists.iter().map(String::as_str).collect();
-    add_lists(&mut host, &names);
-    let native = scan::scan(&host).unwrap().native;
-    for package in ["hook-pkg", "cron-pkg", "job-pkg", "link-pkg"] {
-        assert!(
-            !native.contains(&package.to_owned()),
-            "{package} is native: {native:?}"
-        );
-    }
-    assert!(
-        native.contains(&"elf-pkg".to_owned()),
-        "ELF only, a library symlink, and data: native"
-    );
-}
-
-#[test]
-fn code_loaded_on_demand_is_never_native() {
-    // Owner decision 2026-11-20 (re-review of #268, S3): PAM, NSS, SASL, gconv and the like are mapped
-    // only while a login or lookup runs, so unmapped at the scan proves nothing.
-    let mut host = scan_host()
-        .file("/var/lib/dpkg/info/libpam-modules.list", "/usr/lib/x86_64-linux-gnu/security/pam_unix.so\n/usr/lib/x86_64-linux-gnu/libpamx.so.1\n")
-        .file("/var/lib/dpkg/info/libnss-x.list", "/usr/lib/x86_64-linux-gnu/libnss_x.so.2\n")
-        .file("/var/lib/dpkg/info/libsasl2-modules.list", "/usr/lib/x86_64-linux-gnu/sasl2/libplain.so.2\n")
-        .file("/var/lib/dpkg/info/libc-bin-gconv.list", "/usr/lib/x86_64-linux-gnu/gconv/UTF-7.so\n")
-        .file("/var/lib/dpkg/info/libpam-runtime-helper.list", "/usr/sbin/unix_chkpwd\n/usr/lib/libhelper.so.1\n")
-        .file("/usr/lib/x86_64-linux-gnu/security/pam_unix.so", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/libpamx.so.1", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/libnss_x.so.2", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/sasl2/libplain.so.2", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/gconv/UTF-7.so", "\x7fELF....")
-        .file("/usr/sbin/unix_chkpwd", "\x7fELF....")
-        .file("/usr/lib/libhelper.so.1", "\x7fELF....");
-    host.executables.insert("/usr/sbin/unix_chkpwd".into());
-    host.setid.insert("/usr/sbin/unix_chkpwd".into());
-    add_lists(
-        &mut host,
-        &[
-            "libc-bin-gconv.list",
-            "libnss-x.list",
-            "libpam-modules.list",
-            "libpam-runtime-helper.list",
-            "libsasl2-modules.list",
-        ],
-    );
-    let native = scan::scan(&host).unwrap().native;
-    for package in [
-        "libpam-modules",
-        "libnss-x",
-        "libsasl2-modules",
-        "libc-bin-gconv",
-        "libpam-runtime-helper",
-    ] {
-        assert!(
-            !native.contains(&package.to_owned()),
-            "{package} is native: {native:?}"
-        );
-    }
-    assert!(
-        native.contains(&"libidle".to_owned()),
-        "the control is still native"
-    );
-}
-
-#[test]
-fn every_architectures_list_counts_toward_a_package() {
-    // Third review, N1: libfoo:i386 (clean) used to replace libfoo:amd64 (with a hook).
-    let mut host = scan_host()
-        .file("/var/lib/dpkg/info/libfoo:amd64.list", "/usr/lib/x86_64-linux-gnu/libfoo.so.1\n/usr/lib/x86_64-linux-gnu/libfoo/hook\n")
-        .file("/var/lib/dpkg/info/libfoo:i386.list", "/usr/lib/i386-linux-gnu/libfoo.so.1\n")
-        .file("/var/lib/dpkg/info/libbar:amd64.list", "/usr/lib/x86_64-linux-gnu/security/pam_bar.so\n/usr/lib/x86_64-linux-gnu/libbar.so.1\n")
-        .file("/var/lib/dpkg/info/libbar:i386.list", "/usr/lib/i386-linux-gnu/libbar.so.1\n")
-        .file("/var/lib/dpkg/info/libok:amd64.list", "/usr/lib/x86_64-linux-gnu/libok.so.1\n")
-        .file("/var/lib/dpkg/info/libok:i386.list", "/usr/share/libok/data\n")
-        .file("/usr/lib/x86_64-linux-gnu/libfoo.so.1", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/libfoo/hook", "#!/bin/sh\n")
-        .file("/usr/lib/i386-linux-gnu/libfoo.so.1", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/libbar.so.1", "\x7fELF....")
-        .file("/usr/lib/i386-linux-gnu/libbar.so.1", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/libok.so.1", "\x7fELF....")
-        .file("/usr/share/libok/data", "data");
-    host.executables
-        .insert("/usr/lib/x86_64-linux-gnu/libfoo/hook".into());
-    add_lists(
-        &mut host,
-        &[
-            "libbar:amd64.list",
-            "libbar:i386.list",
-            "libfoo:amd64.list",
-            "libfoo:i386.list",
-            "libok:amd64.list",
-            "libok:i386.list",
-        ],
-    );
-    let native = scan::scan(&host).unwrap().native;
-    assert!(!native.contains(&"libfoo".to_owned()), "{native:?}");
-    assert!(!native.contains(&"libbar".to_owned()), "{native:?}");
-    assert!(native.contains(&"libok".to_owned()), "{native:?}");
-}
-
-#[test]
-fn a_file_reached_through_a_directory_symlink_cannot_be_judged() {
-    // Third review, N2: the maps show the real path, so the listed one would never be matched.
-    let mut host = scan_host()
-        .file(
-            "/var/lib/dpkg/info/relocated.list",
-            "/usr/lib/reloc/librel.so.1\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/merged.list",
-            "/lib/x86_64-linux-gnu/libmerged.so.1\n",
-        )
-        .file("/usr/lib/reloc/librel.so.1", "\x7fELF....")
-        .file("/srv/reloc/librel.so.1", "\x7fELF....")
-        .file("/lib/x86_64-linux-gnu/libmerged.so.1", "\x7fELF....")
-        .file("/usr/lib/x86_64-linux-gnu/libmerged.so.1", "\x7fELF....");
-    host.symlinks
-        .insert("/usr/lib/reloc".into(), "/srv/reloc".into());
-    // The /usr merge is a directory symlink too, but its two spellings are both looked up.
-    host.symlinks.insert("/lib".into(), "/usr/lib".into());
-    add_lists(&mut host, &["merged.list", "relocated.list"]);
-    let native = scan::scan(&host).unwrap().native;
-    assert!(!native.contains(&"relocated".to_owned()), "{native:?}");
-    assert!(native.contains(&"merged".to_owned()), "{native:?}");
-}
-
-#[test]
-fn a_list_line_that_is_not_utf8_means_the_package_cannot_be_judged() {
-    // Third review, N5.
-    let mut host = scan_host();
-    let mut list = b"/usr/lib/libodd.so.1\n/usr/lib/odd/\xff\xfe-hook\n".to_vec();
-    list.push(b'\n');
-    host.files
-        .insert("/var/lib/dpkg/info/odd.list".into(), list);
-    host.files
-        .insert("/usr/lib/libodd.so.1".into(), b"\x7fELF....".to_vec());
-    add_lists(&mut host, &["odd.list"]);
-    let native = scan::scan(&host).unwrap().native;
-    assert!(!native.contains(&"odd".to_owned()), "{native:?}");
-}
-
-#[test]
-fn every_on_demand_directory_makes_a_package_not_native() {
-    // Third review, N4: one probe per directory, listed here rather than read from scan::ON_DEMAND, so
-    // dropping any entry there fails here.
-    for dir in [
-        "/security/",
-        "/sasl2/",
-        "/gconv/",
-        "/pkcs11/",
-        "/ossl-modules/",
-        "/engines-3/",
-        "/engines-1.1/",
-        "/krb5/plugins/",
-        "/gio/modules/",
-        "/gdk-pixbuf-2.0/",
-        "/gtk-3.0/modules/",
-        "/gtk-4.0/modules/",
-    ] {
-        let mut host = scan_host()
-            .file(
-                "/var/lib/dpkg/info/plugin.list",
-                &format!("/usr/lib/x86_64-linux-gnu{dir}plugin.so\n/usr/lib/libplugin-host.so.1\n"),
-            )
-            .file(
-                &format!("/usr/lib/x86_64-linux-gnu{dir}plugin.so"),
-                "\x7fELF....",
-            )
-            .file("/usr/lib/libplugin-host.so.1", "\x7fELF....");
-        add_lists(&mut host, &["plugin.list"]);
-        let native = scan::scan(&host).unwrap().native;
-        assert!(!native.contains(&"plugin".to_owned()), "{dir}: {native:?}");
-    }
-    let mut host = scan_host()
-        .file(
-            "/var/lib/dpkg/info/plugin.list",
-            "/usr/lib/x86_64-linux-gnu/libnss_plugin.so.2\n",
-        )
-        .file(
-            "/usr/lib/x86_64-linux-gnu/libnss_plugin.so.2",
-            "\x7fELF....",
-        );
-    add_lists(&mut host, &["plugin.list"]);
-    assert!(
-        !scan::scan(&host)
-            .unwrap()
-            .native
-            .contains(&"plugin".to_owned())
-    );
-}
-
-#[test]
 fn a_damaged_but_parseable_record_means_a_new_scan() {
     // Third review, N3: a kept record gets the same checks as the scan's output.
     let now = std::time::SystemTime::now();
@@ -1724,16 +1411,20 @@ fn a_damaged_but_parseable_record_means_a_new_scan() {
         .unwrap()
         .as_secs()
         - 60;
-    let many: Vec<String> = (0..30_000).map(|i| format!("pkg{i}")).collect();
+    let many: Vec<serde_json::Value> = (0..30_000)
+        .map(|i| serde_json::json!({"package": format!("pkg{i}"), "stale": false}))
+        .collect();
     for record in [
-        serde_json::json!({"ran_at": ran, "at": "yesterday", "output": {"libraries": [], "native": []}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "../x", "stale": false}], "native": []}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": ["NOT A NAME"]}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": many}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": ["a", "a"]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "yesterday", "output": {"libraries": [], "loaded_by_listeners": []}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "../x", "stale": false}], "loaded_by_listeners": []}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "NOT A NAME", "listener": null, "class": "network"}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": many, "loaded_by_listeners": []}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "network"}, {"package": "a", "listener": "b", "class": "loopback"}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "lan"}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": []}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": "x".repeat(600)}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": ""}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": []}, "error": "both"}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": []}, "error": "both"}),
     ] {
         let dir = crate::test_support::TempDir::new();
         std::fs::write(dir.path(scan::RECORD), record.to_string()).unwrap();
@@ -1742,742 +1433,13 @@ fn a_damaged_but_parseable_record_means_a_new_scan() {
     }
     // A sound record is reused.
     let dir = crate::test_support::TempDir::new();
-    let sound = serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "libc6", "stale": false}], "native": ["libc6"]}, "error": null});
+    let sound = serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "libc6", "stale": false}], "loaded_by_listeners": [{"package": "libc6", "listener": "openssh-server", "class": "network"}]}, "error": null});
     std::fs::write(dir.path(scan::RECORD), sound.to_string()).unwrap();
     assert_eq!(
         scan::Memo::in_dir(&dir.path(""))
             .get(now, || scanned_as("2026-11-20T12:00:04Z"))
             .at,
         "2026-11-20T12:00:00Z"
-    );
-}
-
-/// A scan host with one more package, `name`, that ships only an ELF program at `program`.
-fn with_program(mut host: TestHost, name: &str, program: &str) -> TestHost {
-    host.files.insert(
-        format!("/var/lib/dpkg/info/{name}.list"),
-        format!("{program}\n").into_bytes(),
-    );
-    host.files.insert(program.into(), b"\x7fELF....".to_vec());
-    host.executables.insert(program.into());
-    add_lists(&mut host, &[&format!("{name}.list")]);
-    host
-}
-
-fn dir(host: &mut TestHost, path: &str, names: &[&str]) {
-    host.dirs
-        .insert(path.into(), names.iter().map(|n| (*n).to_owned()).collect());
-}
-
-#[test]
-fn a_program_d_bus_starts_is_never_native() {
-    // Owner decision 2026-11-21 (third review, S3).
-    let mut host = with_program(scan_host(), "dbusd", "/usr/libexec/dbusd");
-    host = with_program(host, "foo-daemon", "/usr/sbin/foo-daemon");
-    host = with_program(host, "ships-activation", "/usr/lib/libships.so.1");
-    host.files.insert(
-        "/var/lib/dpkg/info/ships-activation.list".into(),
-        b"/usr/lib/libships.so.1\n/usr/share/dbus-1/system-services/org.example.Ships.service\n"
-            .to_vec(),
-    );
-    dir(
-        &mut host,
-        "/usr/share/dbus-1/system-services",
-        &["org.example.D.service", "org.example.Foo.service"],
-    );
-    host = host
-        .file("/usr/share/dbus-1/system-services/org.example.D.service", "[D-BUS Service]\nName=org.example.D\nExec=/usr/libexec/dbusd --system\nUser=root\n")
-        .file("/usr/share/dbus-1/system-services/org.example.Foo.service", "[D-BUS Service]\nName=org.example.Foo\nExec=/bin/false\nSystemdService=dbus-foo.service\n");
-    dir(&mut host, "/usr/lib/systemd/system", &["dbus-foo.service"]);
-    host = host.file(
-        "/usr/lib/systemd/system/dbus-foo.service",
-        "[Service]\nExecStart=-/usr/sbin/foo-daemon --flag\n",
-    );
-    let native = scan::scan(&host).unwrap().native;
-    for package in ["dbusd", "foo-daemon", "ships-activation"] {
-        assert!(
-            !native.contains(&package.to_owned()),
-            "{package}: {native:?}"
-        );
-    }
-    assert!(native.contains(&"libidle".to_owned()), "the control");
-}
-
-#[test]
-fn a_program_a_timer_starts_is_never_native() {
-    let mut host = with_program(scan_host(), "timerd", "/usr/sbin/timerd");
-    host = with_program(host, "other-job", "/usr/bin/other-job");
-    host = with_program(host, "ships-timer", "/usr/lib/libtimer.so.1");
-    host.files.insert(
-        "/var/lib/dpkg/info/ships-timer.list".into(),
-        b"/usr/lib/libtimer.so.1\n/usr/lib/systemd/system/ships.timer\n".to_vec(),
-    );
-    dir(
-        &mut host,
-        "/usr/lib/systemd/system",
-        &["timerd.service", "timerd.timer"],
-    );
-    dir(
-        &mut host,
-        "/etc/systemd/system",
-        &["local.timer", "renamed.service"],
-    );
-    host = host
-        .file(
-            "/usr/lib/systemd/system/timerd.timer",
-            "[Timer]\nOnCalendar=daily\n",
-        )
-        .file(
-            "/usr/lib/systemd/system/timerd.service",
-            "[Service]\nType=oneshot\nExecStart=/usr/sbin/timerd\n",
-        )
-        .file(
-            "/etc/systemd/system/local.timer",
-            "[Timer]\nOnCalendar=hourly\nUnit=renamed.service\n",
-        )
-        .file(
-            "/etc/systemd/system/renamed.service",
-            "[Service]\nExecStartPre=/bin/true\nExecStart=/usr/bin/other-job\n",
-        );
-    let native = scan::scan(&host).unwrap().native;
-    for package in ["timerd", "other-job", "ships-timer"] {
-        assert!(
-            !native.contains(&package.to_owned()),
-            "{package}: {native:?}"
-        );
-    }
-    assert!(native.contains(&"libidle".to_owned()), "the control");
-    // A masked timer (a link to /dev/null) starts nothing and is no error; another error reading a
-    // timer fails the scan (focused review N4: masking is told by the link's target).
-    host.dirs
-        .get_mut("/etc/systemd/system")
-        .unwrap()
-        .push("masked.timer".into());
-    host.symlinks.insert(
-        "/etc/systemd/system/masked.timer".into(),
-        "/dev/null".into(),
-    );
-    assert!(scan::scan(&host).is_ok());
-    host.symlinks.remove("/etc/systemd/system/masked.timer");
-    host = host.file("/etc/systemd/system/masked.timer", "");
-    host.irregular
-        .insert("/etc/systemd/system/masked.timer".into());
-    assert!(scan::scan(&host).unwrap_err().contains("masked.timer"));
-    host.irregular.clear();
-    // A timer that cannot be read fails the scan rather than miss a start.
-    host.denied
-        .insert("/usr/lib/systemd/system/timerd.timer".into());
-    assert!(scan::scan(&host).unwrap_err().contains("timerd.timer"));
-}
-
-#[test]
-fn a_program_cron_starts_is_never_native() {
-    let mut host = with_program(scan_host(), "cronjob", "/usr/sbin/cronjob");
-    host = with_program(host, "sysjob", "/usr/bin/sysjob");
-    host = with_program(host, "userjob", "/usr/bin/userjob");
-    host = with_program(host, "privatejob", "/usr/bin/privatejob");
-    host = with_program(host, "ships-cron", "/usr/lib/libcron.so.1");
-    host.files.insert(
-        "/var/lib/dpkg/info/ships-cron.list".into(),
-        b"/usr/lib/libcron.so.1\n/etc/cron.d/ships-cron\n".to_vec(),
-    );
-    dir(&mut host, "/etc/cron.d", &["crond-job", "ships-cron"]);
-    dir(&mut host, "/var/spool/cron/crontabs", &["alice", "bob"]);
-    host = host
-        .file("/etc/cron.d/crond-job", "# m h dom mon dow user command\n0 * * * * root test -x /usr/sbin/cronjob && /usr/sbin/cronjob --quiet\n")
-        .file("/etc/cron.d/ships-cron", "@daily root true\n")
-        .file("/etc/crontab", "17 * * * * root cd / && /usr/bin/sysjob\n")
-        .file("/var/spool/cron/crontabs/alice", "*/5 * * * * /usr/bin/userjob\n")
-        .file("/var/spool/cron/crontabs/bob", "* * * * * /usr/bin/privatejob\n");
-    // Bob's crontab is private to him: skipped, not an error (a limit the docs state).
-    host.denied.insert("/var/spool/cron/crontabs/bob".into());
-    let native = scan::scan(&host).unwrap().native;
-    for package in ["cronjob", "sysjob", "userjob", "ships-cron"] {
-        assert!(
-            !native.contains(&package.to_owned()),
-            "{package}: {native:?}"
-        );
-    }
-    assert!(
-        native.contains(&"privatejob".to_owned()),
-        "a crontab the scan cannot read"
-    );
-    assert!(native.contains(&"libidle".to_owned()), "the control");
-}
-
-/// Packages `names`, each shipping only an ELF program at `/usr/bin/<name>` (or the path given).
-fn with_programs(mut host: TestHost, programs: &[(&str, &str)]) -> TestHost {
-    for (name, program) in programs {
-        host = with_program(host, name, program);
-    }
-    host
-}
-
-fn assert_not_native(host: &TestHost, packages: &[&str]) {
-    let native = scan::scan(host).unwrap().native;
-    for package in packages {
-        assert!(
-            !native.contains(&(*package).to_owned()),
-            "{package}: {native:?}"
-        );
-    }
-    assert!(native.contains(&"libidle".to_owned()), "the control");
-}
-
-#[test]
-fn units_are_read_the_way_systemd_reads_them() {
-    // Focused review S1: drop-ins in every directory, spaces around `=`, continuation lines, bare
-    // names, every Exec*= key, and the type's drop-ins.
-    let mut host = with_programs(
-        scan_host(),
-        &[
-            ("spaced", "/usr/sbin/spaced"),
-            ("dropped", "/usr/bin/dropped"),
-            ("bare", "/usr/bin/bare-check"),
-            ("stopper", "/usr/bin/stopper"),
-            ("poststop", "/usr/bin/poststop"),
-            ("reloader", "/usr/bin/reloader"),
-            ("pre", "/usr/bin/pre"),
-            ("post", "/usr/bin/post"),
-            ("continued", "/usr/bin/continued"),
-            ("typewide", "/usr/bin/typewide"),
-            ("aliased", "/usr/sbin/aliased"),
-            ("oldbin", "/bin/oldbin"),
-            ("versioned", "/usr/lib/tool-1.2/bin/tool"),
-        ],
-    );
-    // Started through a directory symlink: counted by its real path.
-    host.symlinks
-        .insert("/usr/lib/current".into(), "/usr/lib/tool-1.2".into());
-    // /usr merge: started as /sbin/aliased, listed as /usr/sbin/aliased; started as /usr/bin/oldbin,
-    // listed as /bin/oldbin.
-    host.symlinks.insert("/sbin".into(), "/usr/sbin".into());
-    host = host.file("/usr/bin/oldbin", "\x7fELF....");
-    dir(
-        &mut host,
-        "/usr/lib/systemd/system",
-        &["job.service", "job.timer", "service.d"],
-    );
-    dir(
-        &mut host,
-        "/etc/systemd/system",
-        &["job.service.d", "service.d"],
-    );
-    dir(
-        &mut host,
-        "/etc/systemd/system/job.service.d",
-        &["local.conf", "notes.txt"],
-    );
-    dir(&mut host, "/run/systemd/system", &["job.service.d"]);
-    dir(
-        &mut host,
-        "/run/systemd/system/job.service.d",
-        &["runtime.conf"],
-    );
-    dir(
-        &mut host,
-        "/usr/lib/systemd/system/service.d",
-        &["all.conf"],
-    );
-    host = host
-        .file("/usr/lib/systemd/system/job.timer", "[Timer]\nOnCalendar=daily\n")
-        .file(
-            "/usr/lib/systemd/system/job.service",
-            "[Service]\nExecStart = /usr/sbin/spaced\nExecStartPre=/usr/bin/pre\nExecStartPost=/usr/bin/post\nExecStop=/sbin/aliased\nExecStop=/usr/bin/stopper\nExecReload=/usr/bin/oldbin\nExecStartPre=/usr/lib/current/bin/tool\nExecStart=/bin/sh -c \\\n  '/usr/bin/continued'\n",
-        )
-        .file(
-            "/etc/systemd/system/job.service.d/local.conf",
-            "[Service]\nExecStart=\nExecStart=/usr/bin/dropped\nExecCondition=bare-check --now\n",
-        )
-        .file(
-            "/etc/systemd/system/job.service.d/notes.txt",
-            "ExecStart=/usr/bin/not-a-dropin\n",
-        )
-        .file(
-            "/run/systemd/system/job.service.d/runtime.conf",
-            "[Service]\nExecStopPost=/usr/bin/poststop\nExecReload=/usr/bin/reloader\n",
-        )
-        .file(
-            "/usr/lib/systemd/system/service.d/all.conf",
-            "[Service]\nExecStartPre=-/usr/bin/typewide\n",
-        );
-    assert_not_native(
-        &host,
-        &[
-            "spaced",
-            "dropped",
-            "bare",
-            "stopper",
-            "poststop",
-            "reloader",
-            "pre",
-            "post",
-            "continued",
-            "typewide",
-            "aliased",
-            "oldbin",
-            "versioned",
-        ],
-    );
-    assert!(
-        !host.log().iter().any(|l| l.ends_with("notes.txt")),
-        "only .conf files are drop-ins"
-    );
-}
-
-#[test]
-fn template_timers_instances_transient_and_runtime_units_are_read() {
-    let mut host = with_programs(
-        scan_host(),
-        &[
-            ("backup", "/usr/bin/backup-tool"),
-            ("instance", "/usr/bin/instance-tool"),
-            ("templated", "/usr/bin/templated-dropin"),
-            ("transient", "/usr/bin/transient-job"),
-            ("runtime", "/usr/bin/runtime-job"),
-            ("early", "/usr/bin/early-job"),
-        ],
-    );
-    dir(
-        &mut host,
-        "/usr/lib/systemd/system",
-        &["backup@.service", "inst@.service", "other.timer"],
-    );
-    dir(
-        &mut host,
-        "/etc/systemd/system",
-        &["timers.target.wants", "backup@.service.d"],
-    );
-    dir(
-        &mut host,
-        "/etc/systemd/system/timers.target.wants",
-        &["backup@home.timer"],
-    );
-    dir(
-        &mut host,
-        "/etc/systemd/system/backup@.service.d",
-        &["x.conf"],
-    );
-    dir(
-        &mut host,
-        "/run/systemd/transient",
-        &["run-r1.timer", "run-r1.service"],
-    );
-    dir(
-        &mut host,
-        "/run/systemd/system",
-        &["rt.timer", "rt.service"],
-    );
-    dir(
-        &mut host,
-        "/run/systemd/generator.early",
-        &["gen.timer", "gen.service"],
-    );
-    host = host
-        .file(
-            "/usr/lib/systemd/system/backup@.timer",
-            "[Timer]\nOnCalendar=daily\n",
-        )
-        .file(
-            "/usr/lib/systemd/system/backup@.service",
-            "[Service]\nExecStart=/usr/bin/backup-tool %i\n",
-        )
-        .file(
-            "/etc/systemd/system/backup@.service.d/x.conf",
-            "[Service]\nExecStartPre=/usr/bin/templated-dropin\n",
-        )
-        .file(
-            "/usr/lib/systemd/system/other.timer",
-            "[Timer]\nUnit = inst@x.service\n",
-        )
-        .file(
-            "/usr/lib/systemd/system/inst@.service",
-            "[Service]\nExecStart=/usr/bin/instance-tool\n",
-        )
-        .file(
-            "/run/systemd/transient/run-r1.timer",
-            "[Timer]\nOnActiveSec=1h\n",
-        )
-        .file(
-            "/run/systemd/transient/run-r1.service",
-            "[Service]\nExecStart=/usr/bin/transient-job\n",
-        )
-        .file("/run/systemd/system/rt.timer", "[Timer]\nOnActiveSec=1h\n")
-        .file(
-            "/run/systemd/system/rt.service",
-            "[Service]\nExecStart=/usr/bin/runtime-job\n",
-        )
-        .file("/run/systemd/generator.early/gen.timer", "[Timer]\n")
-        .file(
-            "/run/systemd/generator.early/gen.service",
-            "[Service]\nExecStart=/usr/bin/early-job\n",
-        );
-    assert_not_native(
-        &host,
-        &[
-            "backup",
-            "instance",
-            "templated",
-            "transient",
-            "runtime",
-            "early",
-        ],
-    );
-    // The first directory with the file wins: masked in /etc, the shipped unit starts nothing.
-    host.dirs
-        .get_mut("/etc/systemd/system")
-        .unwrap()
-        .extend(["rt.service".into(), "inst@.service".into()]);
-    host.symlinks
-        .insert("/etc/systemd/system/rt.service".into(), "/dev/null".into());
-    host.symlinks.insert(
-        "/etc/systemd/system/inst@.service".into(),
-        "/dev/null".into(),
-    );
-    let native = scan::scan(&host).unwrap().native;
-    assert!(native.contains(&"runtime".to_owned()), "{native:?}");
-    assert!(native.contains(&"instance".to_owned()), "{native:?}");
-}
-
-#[test]
-fn user_timers_and_session_d_bus_services_are_read() {
-    // Focused review N1.
-    let mut host = with_programs(
-        scan_host(),
-        &[
-            ("usertimer", "/usr/bin/user-timer-job"),
-            ("homejob", "/usr/bin/home-job"),
-            ("sessiond", "/usr/libexec/sessiond"),
-            ("sessionunit", "/usr/bin/session-unit"),
-            ("localbus", "/usr/libexec/localbus"),
-            ("libbus", "/usr/libexec/libbus"),
-            ("ships-user-timer", "/usr/lib/libut.so.1"),
-            ("ships-session", "/usr/lib/libsess.so.1"),
-            ("ships-crontab", "/usr/lib/libcrontab.so.1"),
-            ("ships-anacrontab", "/usr/lib/libana.so.1"),
-        ],
-    );
-    for (package, file) in [
-        ("ships-user-timer", "/usr/lib/systemd/user/ut.timer"),
-        (
-            "ships-session",
-            "/usr/share/dbus-1/services/org.example.S.service",
-        ),
-        ("ships-crontab", "/etc/crontab"),
-        ("ships-anacrontab", "/etc/anacrontab"),
-    ] {
-        let list = format!("/var/lib/dpkg/info/{package}.list");
-        let mut text = host.files[&list].clone();
-        text.extend_from_slice(format!("{file}\n").as_bytes());
-        host.files.insert(list, text);
-    }
-    dir(
-        &mut host,
-        "/usr/lib/systemd/user",
-        &["ut.timer", "ut.service", "sess.service"],
-    );
-    dir(&mut host, "/home", &["alice", "bob"]);
-    dir(
-        &mut host,
-        "/home/alice/.config/systemd/user",
-        &["mine.timer", "mine.service"],
-    );
-    // Bob's home cannot be searched: skipped (under ProtectHome=yes every home is).
-    host.denied.insert("/home/bob/.config/systemd/user".into());
-    dir(
-        &mut host,
-        "/usr/share/dbus-1/services",
-        &["org.example.S.service", "org.example.T.service"],
-    );
-    dir(
-        &mut host,
-        "/usr/local/share/dbus-1/system-services",
-        &["org.example.L.service"],
-    );
-    dir(
-        &mut host,
-        "/lib/dbus-1/system-services",
-        &["org.example.B.service"],
-    );
-    dir(
-        &mut host,
-        "/usr/local/share/dbus-1/services",
-        &["org.example.LS.service"],
-    );
-    host = with_program(host, "localsession", "/usr/libexec/localsession").file(
-        "/usr/local/share/dbus-1/services/org.example.LS.service",
-        "[D-BUS Service]\nExec=/usr/libexec/localsession\n",
-    );
-    host = host
-        .file("/usr/lib/systemd/user/ut.timer", "[Timer]\n")
-        .file(
-            "/usr/lib/systemd/user/ut.service",
-            "[Service]\nExecStart=/usr/bin/user-timer-job\n",
-        )
-        .file("/home/alice/.config/systemd/user/mine.timer", "[Timer]\n")
-        .file(
-            "/home/alice/.config/systemd/user/mine.service",
-            "[Service]\nExecStart=/usr/bin/home-job\n",
-        )
-        .file(
-            "/usr/share/dbus-1/services/org.example.S.service",
-            "[D-BUS Service]\nExec=/usr/libexec/sessiond\n",
-        )
-        .file(
-            "/usr/share/dbus-1/services/org.example.T.service",
-            "[D-BUS Service]\nExec=/bin/false\nSystemdService=sess.service\n",
-        )
-        .file(
-            "/usr/lib/systemd/user/sess.service",
-            "[Service]\nExecStart=/usr/bin/session-unit\n",
-        )
-        .file(
-            "/usr/local/share/dbus-1/system-services/org.example.L.service",
-            "[D-BUS Service]\nExec=/usr/libexec/localbus\n",
-        )
-        .file(
-            "/lib/dbus-1/system-services/org.example.B.service",
-            "[D-BUS Service]\nExec=/usr/libexec/libbus\n",
-        );
-    assert_not_native(
-        &host,
-        &[
-            "usertimer",
-            "homejob",
-            "sessiond",
-            "sessionunit",
-            "localbus",
-            "libbus",
-            "ships-user-timer",
-            "ships-session",
-            "ships-crontab",
-            "ships-anacrontab",
-            "localsession",
-        ],
-    );
-}
-
-#[test]
-fn what_cannot_be_read_fails_the_scan() {
-    // Focused review S3: a D-Bus file, the unit it names, or the service a timer starts that cannot be
-    // read fails the scan rather than miss a start.
-    let base = || {
-        let mut host = scan_host();
-        dir(
-            &mut host,
-            "/usr/share/dbus-1/system-services",
-            &["org.example.D.service"],
-        );
-        dir(
-            &mut host,
-            "/usr/lib/systemd/system",
-            &["t.timer", "t.service", "d.service"],
-        );
-        host.file(
-            "/usr/share/dbus-1/system-services/org.example.D.service",
-            "[D-BUS Service]\nExec=/bin/false\nSystemdService=d.service\n",
-        )
-        .file("/usr/lib/systemd/system/t.timer", "[Timer]\n")
-        .file(
-            "/usr/lib/systemd/system/t.service",
-            "[Service]\nExecStart=/usr/bin/t\n",
-        )
-        .file(
-            "/usr/lib/systemd/system/d.service",
-            "[Service]\nExecStart=/usr/bin/d\n",
-        )
-    };
-    assert!(scan::scan(&base()).is_ok());
-    for path in [
-        "/usr/share/dbus-1/system-services/org.example.D.service",
-        "/usr/lib/systemd/system/d.service",
-        "/usr/lib/systemd/system/t.service",
-        "/usr/lib/systemd/system/t.timer",
-    ] {
-        let mut host = base();
-        host.denied.insert(path.into());
-        assert!(scan::scan(&host).unwrap_err().contains(path), "{path}");
-    }
-    // A drop-in, and the system crontab.
-    let mut host = base().file("/etc/systemd/system/t.service.d/x.conf", "");
-    dir(&mut host, "/etc/systemd/system", &["t.service.d"]);
-    dir(&mut host, "/etc/systemd/system/t.service.d", &["x.conf"]);
-    host.denied
-        .insert("/etc/systemd/system/t.service.d/x.conf".into());
-    assert!(scan::scan(&host).unwrap_err().contains("x.conf"));
-    let mut host = base().file("/etc/crontab", "");
-    host.denied.insert("/etc/crontab".into());
-    assert!(scan::scan(&host).unwrap_err().contains("/etc/crontab"));
-    let mut host = base();
-    host.denied.insert("/usr/lib/systemd/system".into());
-    assert!(
-        scan::scan(&host).is_err(),
-        "a unit directory that cannot be listed"
-    );
-    // A cron.d file the agent refuses as secret-looking fails the scan (focused review N2).
-    let mut host = base().file("/etc/cron.d/backup.key", "@daily root /usr/bin/x\n");
-    dir(&mut host, "/etc/cron.d", &["backup.key"]);
-    assert!(scan::scan(&host).unwrap_err().contains("backup.key"));
-    // So does an admin's cron script that cannot be read; only users' crontabs are skipped.
-    let mut host = base().file("/etc/cron.daily/local", "#!/bin/sh\n");
-    dir(&mut host, "/etc/cron.daily", &["local"]);
-    host.denied.insert("/etc/cron.daily/local".into());
-    assert!(
-        scan::scan(&host)
-            .unwrap_err()
-            .contains("/etc/cron.daily/local")
-    );
-}
-
-#[test]
-fn cron_scripts_anacron_bare_names_and_alternatives_mark_their_packages() {
-    // Focused review S2, N3.
-    let mut host = with_programs(
-        scan_host(),
-        &[
-            ("scripted", "/usr/bin/scripted"),
-            ("bare-in-script", "/usr/sbin/bare-in-script"),
-            ("anajob", "/usr/bin/anajob"),
-            ("pathjob", "/usr/lib/tools/bin/pathjob"),
-            ("vim", "/usr/bin/vim.basic"),
-            ("bin-only", "/bin/bin-only"),
-            ("dirlister", "/usr/lib/libdirs.so.1"),
-        ],
-    );
-    // A package that lists a directory a command names is not marked by it.
-    host.files.insert(
-        "/var/lib/dpkg/info/dirlister.list".into(),
-        b"/usr/lib/dirlister\n/usr/lib/libdirs.so.1\n".to_vec(),
-    );
-    host = host.file("/usr/lib/dirlister/data", "");
-    dir(&mut host, "/etc/cron.daily", &["admin-backup", "sub"]);
-    host = host
-        .file(
-            "/etc/cron.daily/admin-backup",
-            "#!/bin/sh\n/usr/bin/scripted --all\nbare-in-script | logger\nfind /usr/lib/dirlister -delete\n",
-        )
-        .file("/etc/cron.daily/sub/ignored", "/usr/bin/never\n")
-        .file(
-            "/etc/anacrontab",
-            "SHELL=/bin/sh\nPATH = /usr/lib/tools/bin:/usr/bin\n1 5 cron.daily run-parts --report /etc/cron.daily\n7 10 weekly anajob\n3 5 tools pathjob\n",
-        )
-        .file("/etc/crontab", "0 * * * * root editor /tmp/x; bin-only\n");
-    host.symlinks
-        .insert("/usr/bin/editor".into(), "/etc/alternatives/editor".into());
-    host.symlinks.insert(
-        "/etc/alternatives/editor".into(),
-        "/usr/bin/vim.basic".into(),
-    );
-    let native = scan::scan(&host).unwrap().native;
-    for package in [
-        "scripted",
-        "bare-in-script",
-        "anajob",
-        "pathjob",
-        "vim",
-        "bin-only",
-    ] {
-        assert!(
-            !native.contains(&package.to_owned()),
-            "{package}: {native:?}"
-        );
-    }
-    assert!(native.contains(&"dirlister".to_owned()), "{native:?}");
-    assert!(native.contains(&"libidle".to_owned()), "the control");
-    assert!(
-        !host
-            .log()
-            .iter()
-            .any(|l| l.contains("/etc/cron.daily/sub/ignored")),
-        "a directory in /etc/cron.daily is not read"
-    );
-}
-
-#[test]
-fn what_is_started_on_demand_is_bounded() {
-    // Focused review N4: past each limit the scan fails rather than guess.
-    let mut host = scan_host();
-    let half = starters::MAX_FILES / 2 + 1;
-    for dir in ["/etc/cron.d", "/etc/cron.hourly"] {
-        let names: Vec<String> = (0..half).map(|i| format!("job{i}")).collect();
-        for name in &names {
-            host.files
-                .insert(format!("{dir}/{name}"), b"@daily root true\n".to_vec());
-        }
-        host.dirs.insert(dir.into(), names);
-    }
-    assert!(scan::scan(&host).unwrap_err().contains("files"));
-
-    let mut host = scan_host();
-    let paths: String = (0..=starters::MAX_PATHS)
-        .map(|i| format!("/p{i} "))
-        .collect();
-    host = host.file("/etc/crontab", &paths);
-    assert!(scan::scan(&host).unwrap_err().contains("paths"));
-    // Bare words count once in each directory they are looked up in, `PATH=` ones included.
-    let words: String = (0..starters::MAX_PATHS / 10)
-        .map(|i| format!("w{i} "))
-        .collect();
-    let host = scan_host().file("/etc/crontab", &words);
-    assert!(scan::scan(&host).is_ok());
-    let host = scan_host().file("/etc/crontab", &format!("PATH=/a:/b:/c:/d:/e\n{words}"));
-    assert!(scan::scan(&host).unwrap_err().contains("paths"));
-
-    let mut host = scan_host();
-    host.dirs.insert(
-        starters::USER_CRONTABS.into(),
-        (0..=starters::MAX_CRONTABS)
-            .map(|i| format!("user{i}"))
-            .collect(),
-    );
-    assert!(scan::scan(&host).unwrap_err().contains("crontabs"));
-    // At the limit, users' crontabs do not count toward the file limit.
-    let mut host = scan_host();
-    for i in 0..starters::MAX_CRONTABS {
-        host.files.insert(
-            format!("{}/user{i}", starters::USER_CRONTABS),
-            b"# nothing\n".to_vec(),
-        );
-    }
-    host.dirs.insert(
-        starters::USER_CRONTABS.into(),
-        (0..starters::MAX_CRONTABS)
-            .map(|i| format!("user{i}"))
-            .collect(),
-    );
-    assert!(scan::scan(&host).is_ok());
-}
-
-#[test]
-fn kernel_packages_are_never_native() {
-    // With #272 the signed image and its metapackages carry linux's findings; none of them ships an ELF
-    // executable or library (the image is a compressed kernel, modules are .ko), so L1 never applies to
-    // a kernel finding: I1, K1, and K2 decide those.
-    let mut host = scan_host()
-        .file(
-            "/var/lib/dpkg/info/linux-image-6.12.48+deb13-amd64.list",
-            "/boot/vmlinuz-6.12.48+deb13-amd64\n/usr/lib/modules/6.12.48+deb13-amd64/kernel/fs/ext4/ext4.ko.xz\n",
-        )
-        .file(
-            "/var/lib/dpkg/info/linux-image-amd64.list",
-            "/usr/share/doc/linux-image-amd64/copyright\n",
-        )
-        .file("/boot/vmlinuz-6.12.48+deb13-amd64", "MZ......")
-        .file(
-            "/usr/lib/modules/6.12.48+deb13-amd64/kernel/fs/ext4/ext4.ko.xz",
-            "\u{fd}7zXZ",
-        );
-    add_lists(
-        &mut host,
-        &[
-            "linux-image-6.12.48+deb13-amd64.list",
-            "linux-image-amd64.list",
-        ],
-    );
-    let native = scan::scan(&host).unwrap().native;
-    assert!(
-        !native.iter().any(|p| p.starts_with("linux-image")),
-        "{native:?}"
     );
 }
 
@@ -2574,21 +1536,36 @@ fn the_scan_unit_alone_carries_the_capability_and_has_no_network() {
 #[test]
 fn the_scan_result_is_checked_against_the_contract() {
     let ok = scan::parse_output(
-        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}],"native":["openssl","libc6"]}"#,
+        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}],"loaded_by_listeners":[{"package":"openssl","listener":"nginx","class":"network"},{"package":"libc6","listener":null,"class":"loopback"},{"package":"libc6","listener":"nginx","class":"network"}]}"#,
     )
     .unwrap();
     assert_eq!(ok.libraries[0].package, "libc6");
-    assert_eq!(ok.native, ["libc6", "openssl"]);
+    let order: Vec<(&str, Option<&str>)> = ok
+        .loaded_by_listeners
+        .iter()
+        .map(|u| (u.package.as_str(), u.listener.as_deref()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("libc6", None),
+            ("libc6", Some("nginx")),
+            ("openssl", Some("nginx"))
+        ]
+    );
     for bad in [
         &br#"not json"#[..],
         br#"{"libraries":[]}"#,
-        br#"{"libraries":[{"package":"Bad","stale":false}],"native":[]}"#,
-        br#"{"libraries":[{"package":"a","stale":false},{"package":"a","stale":true}],"native":[]}"#,
-        br#"{"libraries":[{"package":"a"}],"native":[]}"#,
-        br#"{"libraries":[],"native":["a","a"]}"#,
-        br#"{"libraries":[],"native":["Bad"]}"#,
+        br#"{"libraries":[],"native":[]}"#,
+        br#"{"libraries":[{"package":"Bad","stale":false}],"loaded_by_listeners":[]}"#,
+        br#"{"libraries":[{"package":"a","stale":false},{"package":"a","stale":true}],"loaded_by_listeners":[]}"#,
+        br#"{"libraries":[{"package":"a"}],"loaded_by_listeners":[]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"b","class":"network"},{"package":"a","listener":"b","class":"network"}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"Bad","listener":null,"class":"network"}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"Bad","class":"network"}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"lan"}]}"#,
     ] {
-        assert!(scan::parse_output(bad).is_err());
+        assert!(scan::parse_output(bad).is_err(), "{}", String::from_utf8_lossy(bad));
     }
 }
 
@@ -2596,7 +1573,7 @@ fn the_scan_result_is_checked_against_the_contract() {
 fn with_the_scan_on_the_report_is_complete() {
     let host = debian_host().command(
         "--unit=fleet-agent-library-scan.service",
-        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}],"native":["libc6","libssl3t64","zlib1g"]}"#),
+        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}],"loaded_by_listeners":[{"package":"libc6","listener":"openssh-server","class":"network"},{"package":"libssl3t64","listener":"openssh-server","class":"network"},{"package":"libc6","listener":null,"class":"loopback"}]}"#),
     );
     let found = collect(
         &host,
@@ -2609,7 +1586,7 @@ fn with_the_scan_on_the_report_is_complete() {
     assert_eq!(in_use.library_scan, "ran");
     assert!(in_use.complete);
     assert_eq!(in_use.libraries.as_ref().unwrap().len(), 2);
-    assert_eq!(in_use.native.as_ref().unwrap().len(), 3);
+    assert_eq!(in_use.loaded_by_listeners.as_ref().unwrap().len(), 3);
     assert!(in_use.scanned_at.is_some());
     contract::assert_conforms("v1", "packages.request", &report_with(&found));
 }
@@ -2619,7 +1596,7 @@ fn the_scan_runs_at_most_once_an_hour_however_often_reports_are_asked_for() {
     // Owner decision 2026-11-20 (review of #268, S3).
     let host = debian_host().command(
         "--unit=fleet-agent-library-scan.service",
-        Ok(r#"{"libraries":[],"native":[]}"#),
+        Ok(r#"{"libraries":[],"loaded_by_listeners":[]}"#),
     );
     let scan = Scan::On(Ok("/usr/lib/fleet-agent/current/fleet-agent".into()));
     let mut memo = scan::Memo::default();
@@ -2640,7 +1617,7 @@ fn the_scan_runs_at_most_once_an_hour_however_often_reports_are_asked_for() {
     let scanned = |n| scan::Scanned {
         result: Ok(scan::Output {
             libraries: vec![],
-            native: vec![],
+            loaded_by_listeners: vec![],
         }),
         at: format!("{n}"),
     };
@@ -2672,7 +1649,7 @@ fn scanned_as(at: &str) -> scan::Scanned {
                 package: "libc6".into(),
                 stale: false,
             }],
-            native: vec!["libc6".into()],
+            loaded_by_listeners: vec![],
         }),
         at: at.into(),
     }
@@ -2866,16 +1843,6 @@ fn cpu_on_this_host() {
         cpu() - c,
         w.elapsed()
     );
-    let (c, w) = (cpu(), std::time::Instant::now());
-    match starters::started_on_demand(&ctx) {
-        Ok(started) => println!(
-            "started on demand: {} paths, cpu {:?}, wall {:?}",
-            started.len(),
-            cpu() - c,
-            w.elapsed()
-        ),
-        Err(e) => println!("started on demand failed: {e}"),
-    }
     // Without CAP_SYS_PTRACE (as here) only this process's maps are readable: list just it.
     struct OwnProcess(crate::facts::host::RealHost);
     impl Host for OwnProcess {
@@ -2894,23 +1861,17 @@ fn cpu_on_this_host() {
         fn run(&self, c: &Command) -> Result<Vec<u8>, RunError> {
             self.0.run(c)
         }
-        fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
-            scan::ScanHost(self.0.clone()).head(p, n)
-        }
-        fn inspect(&self, p: &Path) -> io::Result<crate::facts::host::Inspect> {
-            scan::ScanHost(self.0.clone()).inspect(p)
-        }
-        fn resolve(&self, p: &Path) -> io::Result<std::path::PathBuf> {
-            scan::ScanHost(self.0.clone()).resolve(p)
+        fn link(&self, p: &Path) -> io::Result<std::path::PathBuf> {
+            scan::ScanHost(self.0.clone()).link(p)
         }
     }
     let host = OwnProcess(host);
     let (c, w) = (cpu(), std::time::Instant::now());
     match scan::scan(&host) {
         Ok(out) => println!(
-            "scan: {} libraries, {} native, cpu {:?}, wall {:?}",
+            "scan: {} libraries, {} loaded by listeners, cpu {:?}, wall {:?}",
             out.libraries.len(),
-            out.native.len(),
+            out.loaded_by_listeners.len(),
             cpu() - c,
             w.elapsed()
         ),
@@ -2939,14 +1900,26 @@ fn scan_peak_memory_on_a_generated_host() {
             crate::facts::host::RealHost::new().stat(&self.real(p))
         }
         fn read(&self, p: &Path, m: u64) -> io::Result<Vec<u8>> {
-            if p == Path::new("/proc/1/maps") {
-                return Ok(self.maps.clone());
+            // The one fake process maps everything and holds the host's one listening socket.
+            match p.to_str() {
+                Some("/proc/1/maps") => return Ok(self.maps.clone()),
+                Some("/proc/1/net/tcp") => {
+                    return Ok(format!("{TCP_HEADER}   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 42 1 0 100 0 0 10 0\n").into_bytes());
+                }
+                Some("/proc/1/net/udp") => return Ok(TCP_HEADER.as_bytes().to_vec()),
+                Some("/proc/1/net/tcp6" | "/proc/1/net/udp6") => {
+                    return Err(io::ErrorKind::NotFound.into());
+                }
+                _ => {}
             }
             crate::fsx::read_regular(&self.real(p), m, crate::fsx::Symlinks::Follow)
         }
         fn list(&self, d: &Path, _: usize) -> io::Result<Vec<String>> {
             if d == Path::new("/proc") {
                 return Ok(vec!["1".into()]);
+            }
+            if d == Path::new("/proc/1/fd") {
+                return Ok(vec!["3".into()]);
             }
             let mut names: Vec<String> = std::fs::read_dir(self.real(d))?
                 .filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -2957,18 +1930,12 @@ fn scan_peak_memory_on_a_generated_host() {
         fn run(&self, _: &Command) -> Result<Vec<u8>, RunError> {
             Err(RunError::NotInstalled("none".into()))
         }
-        fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
-            crate::fsx::read_head(&self.real(p), n)
-        }
-        fn inspect(&self, p: &Path) -> io::Result<crate::facts::host::Inspect> {
-            crate::facts::host::Inspect::of(&self.real(p))
-        }
-        fn resolve(&self, p: &Path) -> io::Result<std::path::PathBuf> {
-            let real = std::fs::canonicalize(self.real(p))?;
-            Ok(real
-                .strip_prefix(&self.root)
-                .map(|rest| Path::new("/").join(rest))
-                .unwrap_or(real))
+        fn link(&self, p: &Path) -> io::Result<std::path::PathBuf> {
+            match p.to_str() {
+                Some("/proc/1/fd/3") => Ok("socket:[42]".into()),
+                Some("/proc/1/exe") => Ok("/usr/sbin/bench".into()),
+                _ => Err(io::ErrorKind::NotFound.into()),
+            }
         }
     }
     let root = std::env::var("FLEET_SCAN_BENCH_ROOT").expect("FLEET_SCAN_BENCH_ROOT");
@@ -2979,7 +1946,14 @@ fn scan_peak_memory_on_a_generated_host() {
     let mut maps = Vec::new();
     for i in 0..mapped / 2 {
         maps.extend(
-            format!("7f00-7f01 r--p 0 fe:01 1 /usr/lib/x86_64-linux-gnu/bench/{i}.so\n").bytes(),
+            // Files of the generated packages (agent/scripts or any generator naming them so), spread
+            // over every package, so each is in `libraries` and `loaded_by_listeners`.
+            format!(
+                "7f00-7f01 r--p 0 fe:01 1 /usr/share/pkg{:04}/data{:03}\n",
+                i % 3000,
+                (i / 3000) % 299
+            )
+            .bytes(),
         );
         maps.extend(format!("7f00-7f01 r--p 0 fe:01 1 /home/user/bench/{i}\n").bytes());
     }
@@ -2998,8 +1972,8 @@ fn scan_peak_memory_on_a_generated_host() {
     let elapsed = start.elapsed();
     match result {
         Ok(out) => println!(
-            "scan: {} native, {} libraries, {elapsed:?}; peak RSS {} (before the reset {rss_before})",
-            out.native.len(),
+            "scan: {} loaded by listeners, {} libraries, {elapsed:?}; peak RSS {} (before the reset {rss_before})",
+            out.loaded_by_listeners.len(),
             out.libraries.len(),
             hwm()
         ),

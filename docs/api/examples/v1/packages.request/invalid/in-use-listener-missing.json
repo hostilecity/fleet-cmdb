@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "agent_version": "0.2.0",
-  "report_id": "00000000-0000-4000-8000-000000000011",
+  "report_id": "00000000-0000-4000-8000-000000000071",
   "collected_at": "2026-01-01T12:00:00Z",
   "manager": "dpkg",
   "unsupported_reason": null,
@@ -75,13 +75,40 @@
       "network": 1,
       "loopback": 0
     },
-    "library_scan": "off",
-    "libraries": null,
-    "native": [
-      "libc6"
+    "library_scan": "ran",
+    "libraries": [
+      {
+        "package": "libc6",
+        "stale": false
+      },
+      {
+        "package": "libssl3t64",
+        "stale": true
+      }
     ],
-    "scanned_at": null,
-    "complete": false
+    "loaded_by_listeners": [
+      {
+        "package": "libc6",
+        "class": "loopback"
+      },
+      {
+        "package": "libc6",
+        "listener": "samba",
+        "class": "network"
+      },
+      {
+        "package": "libssl3t64",
+        "listener": "samba",
+        "class": "network"
+      },
+      {
+        "package": "samba",
+        "listener": "samba",
+        "class": "network"
+      }
+    ],
+    "scanned_at": "2026-01-01T11:30:00Z",
+    "complete": true
   },
   "warnings": []
 }

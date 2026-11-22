@@ -120,7 +120,7 @@
       }
     },
     "in_use": {
-      "description": "What running processes use (FR-2.6, VT-A01, VT-A02), for the triage rules L1 and N4: binary package names and classes only, never process ids, command lines, user names, addresses, or ports. Optional, and only with `manager: dpkg`. Absent or `null` means the agent did not report use (an older agent, or it could not read the sockets or services whole; a `warnings` entry with field `in_use` says why): the server then treats no package as idle. Every list here is positive evidence only: a package left out of `listening`, `services`, or `libraries` is never evidence that it is idle. Only a package in `native` and not in `libraries` may be called idle (owner decision 2026-11-20).",
+      "description": "What running processes use (FR-2.6, VT-A01, VT-A02), for vulnerability triage: exposure (N4) and the escalation of packages a listening process loads. Binary package names and classes only, never process ids, command lines, user names, addresses, or ports. Optional, and only with `manager: dpkg`. Absent or `null` means the agent did not report use (an older agent, or it could not read the sockets or services whole; a `warnings` entry with field `in_use` says why). Every list here is positive evidence only, and nothing is ever called idle from it (owner decision 2026-11-21): a package left out of a list is simply not known to be in use.",
       "type": [
         "object",
         "null"
@@ -131,7 +131,7 @@
         "unnamed_listeners",
         "library_scan",
         "libraries",
-        "native",
+        "loaded_by_listeners",
         "scanned_at",
         "complete"
       ],
@@ -203,7 +203,7 @@
           ]
         },
         "libraries": {
-          "description": "With `library_scan: ran`, every binary package that lists a file mapped by a running process (each package that lists it, for a diverted or shared file), once, sorted by name; `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). Interpreted code (Python, Perl, Ruby, Node, Java) is read, not mapped, so it is listed only when something of it is mapped. `null` otherwise.",
+          "description": "With `library_scan: ran`, every binary package that lists a file mapped by a running process (each package that lists it, for a diverted or shared file), once, sorted by name; `stale` when a process still maps a deleted version of one of its files (it runs old code until restarted). Interpreted code (Python, Perl, Ruby, Node, Java) is read, not mapped, so it is listed only when something of it is mapped. Positive evidence only. `null` otherwise.",
           "type": [
             "array",
             "null"
@@ -227,17 +227,43 @@
             }
           }
         },
-        "native": {
-          "description": "With `library_scan: ran`, the packages the scan can judge: the packages that ship at least one ELF executable or shared library under `/usr`, `/bin`, `/sbin`, or `/lib*`, no ELF file elsewhere (code under `/opt` is not judged), no file ending in `.py`, `.pyc`, `.pyo`, `.pyz`, `.pm`, `.pl`, `.rb`, `.js`, `.mjs`, `.cjs`, `.jar`, `.class`, `.war`, `.beam`, `.php`, `.lua`, `.tcl`, `.sh`, or `.bash` outside `/usr/share/doc`, and no `#!` script anywhere (a file with an execute bit, a file named like code, or the target of one of its symlinks), and all of whose files the scan could read. A scan that runs out of time fails rather than judge part of a package. Only a package listed here and absent from `libraries` may be called idle. Each once, sorted. `null` otherwise.",
+        "loaded_by_listeners": {
+          "description": "With `library_scan: ran`, each binary package that lists a file (ELF or not) mapped by a process holding a listening TCP socket or bound UDP socket of the host's network namespace, with that process's program's package (`listener`, `null` when no package owns the program) and `network` when one of the sockets it holds is on a non-loopback address (including the wildcard), else `loopback`. Each (package, listener) pair once, sorted by package, then listener (`null` first). Positive evidence only: what the scan misses is not listed. `null` otherwise.",
           "type": [
             "array",
             "null"
           ],
           "maxItems": 20000,
-          "uniqueItems": true,
           "items": {
-            "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+            "type": "object",
+            "required": [
+              "package",
+              "listener",
+              "class"
+            ],
+            "properties": {
+              "package": {
+                "description": "Binary package name.",
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+              },
+              "listener": {
+                "description": "The package of the listening process's program (`/proc/<pid>/exe`), or `null` when no package owns it.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+              },
+              "class": {
+                "description": "Where the process's listening sockets are.",
+                "type": "string",
+                "enum": [
+                  "network",
+                  "loopback"
+                ]
+              }
+            }
           }
         },
         "scanned_at": {
@@ -250,7 +276,7 @@
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?Z$"
         },
         "complete": {
-          "description": "`true` exactly when the library scan ran: `libraries` then lists every package with native code mapped by running processes, and `native` the packages that claim covers. `false` when only services were looked at.",
+          "description": "`true` exactly when the library scan ran: `libraries` and `loaded_by_listeners` are then the scan's whole result. `false` when only services were looked at.",
           "type": "boolean"
         }
       },
@@ -274,7 +300,7 @@
               "complete": {
                 "const": true
               },
-              "native": {
+              "loaded_by_listeners": {
                 "type": "array"
               }
             }
@@ -287,7 +313,7 @@
               "complete": {
                 "const": false
               },
-              "native": {
+              "loaded_by_listeners": {
                 "type": "null"
               }
             }

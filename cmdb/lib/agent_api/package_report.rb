@@ -55,8 +55,9 @@ module AgentApi
     private
 
     # FR-2.6 (#258): what is in use, as HostApplicability's columns, or nil when the report has none (absent or null;
-    # the schema allows it only with dpkg). The lists are positive evidence only (HostApplicability). A package listed twice is network if either entry is, so the classes never
-    # overlap. Not part of content_hash: a change of use is not a new package set.
+    # the schema allows it only with dpkg). The lists are positive evidence only (HostApplicability). A package listed
+    # twice is network if either entry is, so the classes never overlap. Not part of content_hash: a change of use is
+    # not a new package set.
     def build_in_use(in_use)
       return nil if in_use.nil?
 
@@ -73,9 +74,17 @@ module AgentApi
         "library_scan" => in_use["library_scan"],
         "libraries" => libraries.map { |l| l["package"] }.uniq.sort,
         "stale_libraries" => libraries.select { |l| l["stale"] }.map { |l| l["package"] }.uniq.sort,
-        "native_packages" => Array(in_use["native"]).uniq.sort,
+        "loaded_by_listeners" => loaded_by_listeners(in_use["loaded_by_listeners"]),
         "library_scanned_at" => in_use["scanned_at"] && Time.iso8601(in_use["scanned_at"])
       }
+    end
+
+    # Each (package, listener) once, network if any entry is, sorted (a nil listener first), so equal reports store
+    # equal values and write nothing.
+    def loaded_by_listeners(uses)
+      Array(uses).group_by { |use| [ use["package"], use["listener"] ] }.map do |(package, listener), same|
+        { "package" => package, "listener" => listener, "class" => same.any? { |use| use["class"] == "network" } ? "network" : "loopback" }
+      end.sort_by { |use| [ use["package"], use["listener"].nil? ? 0 : 1, use["listener"].to_s ] }
     end
 
     def duplicates(packages)

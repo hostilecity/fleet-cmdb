@@ -56,8 +56,8 @@
 # Debian's file and true with it, a socket-activated test service (systemd holds its socket) named, no
 # address or port in the report, the agent's unit unchanged; then the
 # library scan enabled in the local config, its transient unit carrying CAP_SYS_PTRACE alone with no
-# network, a library only a stopped service would use not listed, and one upgraded under a running
-# program stale.
+# network, the libraries listening test services map named with their class, a library no process
+# maps not listed, and one upgraded under a running program stale.
 #
 # After them, the apply_package_updates task (P3-AGENT-UPDATES, AC-3.4, AC-3.5), delivered by the stub
 # acting as the task API, against a local repository of tiny packages built in the guest
@@ -803,8 +803,7 @@ fresh_reports() {
 in_use_cleanup() {
     vm "systemctl stop fvt-lo fvt-lan fvt-uselib fvt-sock.socket fvt-sock.service 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
         rm -f /etc/systemd/system/fvt-sock.socket /etc/systemd/system/fvt-sock.service
-        rm -rf /etc/cron.daily/fvt-admin /etc/systemd/system/fvt-job.timer /etc/systemd/system/fvt-job.service /etc/systemd/system/fvt-job.service.d
-        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle fvt-cronlib fvt-timerlib > /dev/null 2>&1
+        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle fvt-netlib fvt-lolib > /dev/null 2>&1
         rm -rf $SCAN_DROPIN $STATE/library-scan.json /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
         sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml; sed -i -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' /etc/fleet-agent/config.toml
         systemctl reset-failed fleet-agent; systemctl restart fleet-agent" || true
@@ -822,33 +821,28 @@ no_ptrace_in_the_agent() {
 # VM's LAN address, and sshd on every address, named by package and class; the reboot flag null when
 # Debian's file is missing and true when it is there; no process id, address, or port in the report;
 # the agent's unit unchanged, without CAP_SYS_PTRACE. Then the library scan, enabled in the local
-# config: only its transient unit carries CAP_SYS_PTRACE, with no network; a library that only a
-# stopped service would use is not listed, and one upgraded under a running program is stale.
+# config: only its transient unit carries CAP_SYS_PTRACE, with no network; the libraries processes that
+# hold a listening socket map are named with the socket's class, one no process maps is not listed, and
+# one upgraded under a running program is stale.
 in_use_reported() {
     reset
     trap in_use_cleanup EXIT
     local p='bash /tmp/vm-test-packages.sh' lan props
     put "$here/vm-test-packages.sh" /tmp/vm-test-packages.sh
     vm "$p build fvt-listen-lo 1.0 && $p build fvt-listen-lan 1.0 && $p build fvt-listen-sock 1.0 && $p build fvt-lib 1.0 && $p build fvt-lib 1.1
-        $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0 && $p build fvt-cronlib 1.0 && $p build fvt-timerlib 1.0
+        $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0 && $p build fvt-netlib 1.0 && $p build fvt-lolib 1.0
         dpkg -i /srv/fvt/debs/fvt-listen-lo_1.0_all.deb /srv/fvt/debs/fvt-listen-lan_1.0_all.deb /srv/fvt/debs/fvt-listen-sock_1.0_all.deb \
-            /srv/fvt/debs/fvt-lib_1.0_all.deb /srv/fvt/debs/fvt-cronlib_1.0_all.deb /srv/fvt/debs/fvt-timerlib_1.0_all.deb \
+            /srv/fvt/debs/fvt-lib_1.0_all.deb /srv/fvt/debs/fvt-netlib_1.0_all.deb /srv/fvt/debs/fvt-lolib_1.0_all.deb \
             /srv/fvt/debs/fvt-uselib_1.0_all.deb /srv/fvt/debs/fvt-idlelib_1.0_all.deb /srv/fvt/debs/fvt-idle_1.0_all.deb > /dev/null"
     lan=$(vm "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n 1")
     [ -n "$lan" ] || fail "the VM has no LAN address"
-    vm "systemd-run --quiet --unit=fvt-lo /usr/libexec/fvt-listen-lo 127.0.0.1 18080
-        systemd-run --quiet --unit=fvt-lan /usr/libexec/fvt-listen-lan $lan 18081
+    vm "systemd-run --quiet --unit=fvt-lo /usr/libexec/fvt-listen-lo 127.0.0.1 18080 /usr/lib/fvt/libfvt-lolib.so.1
+        systemd-run --quiet --unit=fvt-lan /usr/libexec/fvt-listen-lan $lan 18081 /usr/lib/fvt/libfvt-netlib.so.1
         systemd-run --quiet --unit=fvt-uselib /usr/libexec/fvt-uselib /usr/lib/fvt/libfvt-lib.so.1
         printf '%s\n' '[Socket]' 'ListenStream=127.0.0.1:18082' > /etc/systemd/system/fvt-sock.socket
         printf '%s\n' '[Service]' 'ExecStart=/usr/libexec/fvt-listen-sock 127.0.0.1 18083' > /etc/systemd/system/fvt-sock.service
         systemctl daemon-reload && systemctl start fvt-sock.socket
-        rm -f /run/reboot-required /run/reboot-required.pkgs
-        printf '%s\n' '#!/bin/sh' 'test -r /usr/lib/fvt/libfvt-cronlib.so.1' > /etc/cron.daily/fvt-admin && chmod 0755 /etc/cron.daily/fvt-admin
-        printf '%s\n' '[Timer]' 'OnCalendar=yearly' > /etc/systemd/system/fvt-job.timer
-        printf '%s\n' '[Service]' 'Type=oneshot' 'ExecStart=/bin/true' > /etc/systemd/system/fvt-job.service
-        mkdir -p /etc/systemd/system/fvt-job.service.d
-        printf '%s\n' '[Service]' 'ExecStartPre = /usr/bin/test -r /usr/lib/fvt/libfvt-timerlib.so.1' > /etc/systemd/system/fvt-job.service.d/override.conf
-        systemctl daemon-reload"
+        rm -f /run/reboot-required /run/reboot-required.pkgs"
     wait_until "the test services to listen" 30 vm_ok "ss -Hltn 'sport = :18080' | grep -q . && ss -Hltn 'sport = :18081' | grep -q . && ss -Hltn 'sport = :18082' | grep -q ."
 
     fresh_reports
@@ -907,12 +901,14 @@ in_use_reported() {
     in_use '.in_use.libraries' | jq -e 'index({"package": "fvt-lib", "stale": false})' > /dev/null \
         || fail "fvt-lib, mapped by a running program, is not listed: $(in_use .in_use.libraries)"
     in_use '.in_use.libraries' | jq -e '[.[] | select(.package == "fvt-idlelib")] == []' > /dev/null \
-        || fail "fvt-idlelib, used only by a stopped service, is listed"
-    in_use '.in_use.native' | jq -e 'index("fvt-idlelib") and index("fvt-lib") and (index("fvt-uselib") | not)' > /dev/null \
-        || fail "native is wrong (fvt-lib and fvt-idlelib ship a shared library, fvt-uselib only a Python script): $(in_use .in_use.native | head -c 600)"
-    # What an admin's cron script and a timer's drop-in (with spaces around `=`) name is never native.
-    in_use '.in_use.native' | jq -e '(index("fvt-cronlib") | not) and (index("fvt-timerlib") | not)' > /dev/null \
-        || fail "a library an admin's /etc/cron.daily script or a timer service's drop-in names is native: $(in_use .in_use.native | head -c 600)"
+        || fail "fvt-idlelib, which no running process maps, is listed"
+    # Positive evidence only (owner decision 2026-11-21): what processes holding a listening socket map.
+    in_use '.in_use.loaded_by_listeners' | jq -e 'any(.[]; .package == "fvt-netlib" and .class == "network") and any(.[]; .package == "fvt-lolib" and .class == "loopback")' > /dev/null \
+        || fail "the libraries the listening test services map are not named with their class: $(in_use .in_use.loaded_by_listeners | head -c 600)"
+    in_use '.in_use.loaded_by_listeners' | jq -e 'index({"package": "openssh-server", "listener": "openssh-server", "class": "network"}) and index({"package": "libc6", "listener": "openssh-server", "class": "network"})' > /dev/null \
+        || fail "sshd and the libc it maps are not named as loaded by a network listener: $(in_use .in_use.loaded_by_listeners | head -c 600)"
+    in_use '.in_use.loaded_by_listeners' | jq -e '[.[] | select(.package == "fvt-lib" or .package == "fvt-idlelib")] == []' > /dev/null \
+        || fail "a library no listening process maps is named as loaded by a listener: $(in_use .in_use.loaded_by_listeners | head -c 600)"
     in_use '.in_use.scanned_at | type == "string"' | grep -qx true || fail "no scanned_at"
     echo "CPU: the agent since its start, the scan unit's run included in the elapsed time above: $(vm 'systemctl show -p CPUUsageNSec --value fleet-agent') ns"
 
@@ -951,9 +947,9 @@ in_use_reported() {
     in_use_cleanup
     trap - EXIT
     [ "$(vm 'sha256sum /etc/fleet-agent/config.toml')" = "$config_sum" ] || fail "the configuration was not put back"
-    echo "listening: loopback and network named by package, sshd network; reboot flag null then true; the scan unit alone had CAP_SYS_PTRACE and no network; idle and stale libraries"
+    echo "listening: loopback and network named by package, sshd network; reboot flag null then true; the scan unit alone had CAP_SYS_PTRACE and no network; libraries loaded by listeners, unmapped, and stale"
     agent_limits "in-use reports and the library scan"
-    printf '%s' "loopback, network, reboot null/true, scan unit only with ptrace, stale library" > "$tmp/last-result"
+    printf '%s' "loopback, network, reboot null/true, scan unit only with ptrace, loaded by listeners, stale library" > "$tmp/last-result"
 }
 
 # --- apply_package_updates (P3-AGENT-UPDATES) ---------------------------------------------------------

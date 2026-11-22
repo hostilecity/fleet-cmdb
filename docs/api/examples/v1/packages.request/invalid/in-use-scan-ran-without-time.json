@@ -86,10 +86,27 @@
         "stale": true
       }
     ],
-    "native": [
-      "libc6",
-      "openssh-server",
-      "samba"
+    "loaded_by_listeners": [
+      {
+        "package": "libc6",
+        "listener": "openssh-server",
+        "class": "loopback"
+      },
+      {
+        "package": "libc6",
+        "listener": "samba",
+        "class": "network"
+      },
+      {
+        "package": "libssl3t64",
+        "listener": "samba",
+        "class": "network"
+      },
+      {
+        "package": "samba",
+        "listener": "samba",
+        "class": "network"
+      }
     ],
     "scanned_at": null,
     "complete": true
