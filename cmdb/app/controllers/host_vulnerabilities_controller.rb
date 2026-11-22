@@ -10,10 +10,14 @@
 #   run), never an empty list; findings kept from an earlier evaluation say they may be out of date. Packages the
 #   matcher could not check are listed. Advisory data freshness (Advisories::Freshness, P2-S13) is shown.
 # - package: every finding for one package name on the host, with when it was first seen, resolved, and reopened.
-# - Fix availability (VT-FIXABLE #256, folding in #252): on the open and reopened list, "Fix available" and "No fix
-#   available" chips (fix=available or fix=none) filter by the finding's stored fix flag, combined with the other
-#   filters. They are counted over the whole open list whatever the severity, text, and triage filters, in the state
-#   counts' query, so they add up to the open count; package rows count only the findings the filter keeps.
+# - Triage (VT-HOST-TAB #260, FR-2.6; approved mockup vuln-triage/host-vulns.html): the open list is drawn by
+#   bucket (HostTriageSections): a strip of the four bucket counts, which always add up to the open count (counted in
+#   the state counts' one grouped query, so over the whole open list whatever the filters), work remaining and 30-day
+#   progress in work items (HostVulnerabilityWork), and one section per bucket. A signal filter (?signal= kev, epss,
+#   network) combines with the others; ?bucket= keeps one section and ?rule= opens one Low risk or Ignorable rule's
+#   package rows. Open findings with no bucket yet (a host the upgrade's background re-triage has not reached) are
+#   "not triaged yet", never 0 in every bucket. The bucket strip replaces VT-FIXABLE's fix chips (#256), whose
+#   "Fix available" meant a different thing than the bucket.
 # - Debian's triage (P2-D08, ADR 0022; owner decisions T1 to T8 on #134): FindingTriage for the page's findings, in
 #   a fixed number of queries. The tab shows it under the advisory on open and reopened rows, with the "Debian: no
 #   security update planned" chip (debian=no_dsa, open and reopened findings, counted within that state) and a

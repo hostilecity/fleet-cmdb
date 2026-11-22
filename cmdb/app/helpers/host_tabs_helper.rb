@@ -22,8 +22,9 @@ module HostTabsHelper
     end
   end
 
-  # The count beside a tab's name: packages installed ("Unsupported" when unknown), open findings ("Not evaluated"
-  # when the host is not, unless findings from an earlier evaluation are still open), and tasks running or waiting.
+  # The count beside a tab's name: packages installed ("Unsupported" when unknown), findings to act on (Fix available
+  # plus Needs attention; "Not evaluated" when the host is not, unless findings from an earlier evaluation are still
+  # open), and tasks running or waiting.
   def tab_count(summary, tab)
     case tab
     when :packages

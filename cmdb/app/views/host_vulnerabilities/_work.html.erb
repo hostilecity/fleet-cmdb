@@ -17,7 +17,7 @@
     <% else %>
       <ul id="work_items">
         <% if work.upgrades.any? %>
-          <li><strong><%= pluralize(work.upgrades.size, "package upgrade") %></strong> clear <%= pluralize(number_with_delimiter(work.upgrade_findings), "finding") %>:
+          <li><strong><%= pluralize(work.upgrades.size, "package upgrade") %></strong> <%= work.upgrades.size == 1 ? "clears" : "clear" %> <%= pluralize(number_with_delimiter(work.upgrade_findings), "finding") %>:
             <%= safe_join(work.upgrades.first(shown).map { |u| safe_join([ tag.span(u.source, class: "mono"), (safe_join([ " (", safe_join(u.packages.map { |p| tag.span(p, class: "mono") }, ", "), ")" ]) unless u.packages == [ u.source ]) ].compact) }, ", ") %><%= ", and #{work.upgrades.size - shown} more" if work.upgrades.size > shown %>.
             <code>apt upgrade</code> or the update task installs them.</li>
         <% end %>
