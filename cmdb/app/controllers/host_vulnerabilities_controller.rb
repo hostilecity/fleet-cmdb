@@ -46,12 +46,15 @@ class HostVulnerabilitiesController < ApplicationController
     # Counted on the findings alone, in one query: the details' joins add no rows (#254). Grouped by the triage bucket
     # too (VT-HOST-TAB #260), so the four buckets add up to the open count in the same snapshot; a NULL bucket on an
     # open finding is one the upgrade's background re-triage has not reached yet (#277 item 15).
-    by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state, :bucket).count
-    count = ->(states) { by_state.sum { |(state, _), n| states.include?(state) ? n : 0 } }
+    # And by the stored fix flag (VT-FIXABLE #256), for ?fix=available: the count the Compliance page and the fleet list
+    # link here with.
+    by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state, :bucket, Arel.sql(VulnerabilityFinding::FIX_SQL)).count
+    count = ->(states) { by_state.sum { |(state, _, _), n| states.include?(state) ? n : 0 } }
     @state_counts = { "open" => count.(%w[open reopened]), "resolved" => count.(%w[resolved]) }
     @state_counts["all"] = @state_counts.values.sum
     @bucket_counts = (VulnerabilityTriage::BUCKETS.keys + [ "untriaged" ]).index_with(0)
-    by_state.each { |(state, bucket), n| @bucket_counts[VulnerabilityTriage.bucket_for(bucket) || "untriaged"] += n unless state == "resolved" }
+    by_state.each { |(state, bucket, _), n| @bucket_counts[VulnerabilityTriage.bucket_for(bucket) || "untriaged"] += n unless state == "resolved" }
+    @fixable_count = by_state.sum { |(state, _, fixable), n| state != "resolved" && fixable ? n : 0 }
     @state = STATES.include?(params[:state]) ? params[:state] : "open"
     @severity = Advisory::SEVERITIES.include?(params[:severity]) ? params[:severity] : nil
     @query = params[:q].to_s.strip.first(QUERY_MAX)
@@ -60,6 +63,10 @@ class HostVulnerabilitiesController < ApplicationController
     @rule = HostTriageSections.rule_param(params[:rule]) if @state != "resolved"
     # The chip narrows the open and reopened list, the rows that show Debian's triage (T3, T5).
     @debian = params[:debian] == "no_dsa" && @state == "open" ? "no_dsa" : nil
+    # The Compliance page's and the fleet list's "N with a fix" land here (review of #281, S1): the open findings whose
+    # advisory data names a fix, the same stored flag they count, so the numbers agree. No chip: the bucket strip is
+    # the tab's own "Fix available".
+    @fix = params[:fix] == "available" && @state == "open" ? "available" : nil
     load_triage_context
     @signals = Signals::Freshness.statuses
     scope = filtered(findings)
@@ -69,6 +76,7 @@ class HostVulnerabilitiesController < ApplicationController
       @no_dsa_count = FindingTriage.no_dsa(findings.active.joins(:advisory), release: @triage_release, status: @triage_status).count if @state == "open"
       scope = FindingTriage.no_dsa(scope, release: @triage_release, status: @triage_status) if @debian
       scope = with_signal(scope) if @signal
+      scope = scope.with_fix if @fix
       cursors = HostTriageSections::CURSORS.to_h { |section| [ section, [ params[:"#{section}_after"], params[:"#{section}_before"] ] ] }
       # With no open finding triaged yet, only the not-triaged section is drawn: no bucket reads 0 for them (#277 item 15).
       untriaged_only = @bucket_counts["untriaged"].positive? && @bucket_counts["untriaged"] == @state_counts["open"]

@@ -19,6 +19,9 @@ class HostTriageSections
   PACKAGE_RULES = %w[F1 F2].freeze
   RULE_BUCKETS = %w[low_risk ignorable].freeze
   CURSORS = %w[kernel fix attention rule untriaged].freeze
+  # Findings shown under one package row; the rest are on its package page, so a package with thousands of findings
+  # (a running kernel's L2) neither renders nor explains them all (review of #281, N3). Worst severity first.
+  NESTED_MAX = 200
 
   attr_reader :bucket, :rule, :kernel, :packages, :attention, :rules, :rule_groups, :untriaged, :inputs, :kev_dates, :epss_scores
 
@@ -42,9 +45,12 @@ class HostTriageSections
 
   def shown?(name) = bucket.nil? || bucket == name
 
+  # The findings drawn under a package row.
+  def self.shown(group) = group.findings.first(NESTED_MAX)
+
   # Every finding on the page.
   def findings
-    [ kernel, packages, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map(&:findings) } +
+    [ kernel, packages, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map { |group| self.class.shown(group) } } +
       Array(attention&.groups).flat_map(&:findings)
   end
 

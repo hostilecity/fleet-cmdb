@@ -2,8 +2,8 @@
 # host-vulns.html): one row per advisory, its packages listed, since a decision (VT-OVERRIDES) is taken per advisory
 # and one advisory often names several binary packages of one source.
 #
-# - Order: known exploited first (the stored KEV flag of any of its findings), then the advisory's severity, worst
-#   first (epic decision 22, Q12: severity first inside each bucket), then its id (bytewise, "C" collation).
+# - Order: the advisory's severity, worst first (epic decision 22, Q12: severity first inside each bucket), then known
+#   exploited first (the stored KEV flag of any of its findings), then its id (bytewise, "C" collation).
 # - Pages: keyset pages of PER_PAGE advisories after (or before) a cursor holding the whole sort key, as
 #   HostFindingGroups does (review of #253, S1): a cursor that does not parse, or one with nothing past it any more,
 #   reads the first page and says so (notice). The advisories are aggregated in the database in one query whatever the
@@ -20,21 +20,21 @@ class HostAdvisoryGroups
     def packages = findings.map { |finding| "#{finding.package}:#{finding.architecture}" }.uniq
   end
 
-  KEY = '-g.kev_rank, g.severity_rank, g.advisory_key COLLATE "C"'.freeze
-  CURSOR_KEY = '(-(?::integer), ?::integer, ? COLLATE "C")'.freeze
+  KEY = 'g.severity_rank, -g.kev_rank, g.advisory_key COLLATE "C"'.freeze
+  CURSOR_KEY = '(?::integer, -(?::integer), ? COLLATE "C")'.freeze
 
   attr_reader :groups, :previous, :next, :advisory_count, :finding_count, :notice
 
-  # The cursor a parameter names: nil when none, :invalid when it does not parse, else [kev rank, severity rank, id].
+  # The cursor a parameter names: nil when none, :invalid when it does not parse, else [severity rank, kev rank, id].
   def self.cursor(value)
     value = value.to_s
     return nil if value.empty?
     return :invalid if value.length > CURSOR_MAX
 
-    kev, rank, id = value.split(",", 3)
-    return :invalid unless kev.to_s.match?(/\A[01]\z/) && rank.to_s.match?(/\A[1-5]\z/) && ID.match?(id.to_s)
+    rank, kev, id = value.split(",", 3)
+    return :invalid unless rank.to_s.match?(/\A[1-5]\z/) && kev.to_s.match?(/\A[01]\z/) && ID.match?(id.to_s)
 
-    [ kev.to_i, rank.to_i, id ]
+    [ rank.to_i, kev.to_i, id ]
   end
 
   # scope: the findings shown, a VulnerabilityFinding.with_details relation joined to advisories.
@@ -68,7 +68,7 @@ class HostAdvisoryGroups
     @next = backwards || rows.size > @per_page ? cursor_of(page.last) : nil
   end
 
-  def cursor_of(row) = [ row["kev_rank"], row["severity_rank"], row["advisory_key"] ].join(",")
+  def cursor_of(row) = [ row["severity_rank"], row["kev_rank"], row["advisory_key"] ].join(",")
 
   # The page's advisories (one more, to tell whether there is a next page) past the cursor, with the totals over every
   # advisory, in one query.

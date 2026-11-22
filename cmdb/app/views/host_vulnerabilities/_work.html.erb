@@ -46,6 +46,7 @@
       <p id="progress_none">Nothing to install, and nothing done in the last 30 days.<%= " #{pluralize(number_with_delimiter(attention), 'finding')} still #{attention == 1 ? 'needs' : 'need'} attention." if attention.positive? %></p>
     <% else %>
       <% total = work.done + work.remaining %>
+      <% if untriaged.positive? %><p class="state-note" id="progress_partial"><%= pluralize(number_with_delimiter(untriaged), "finding") %> not triaged yet <%= untriaged == 1 ? "is" : "are" %> not counted in what is left.</p><% end %>
       <div class="progress-line"><meter id="progress_meter" min="0" max="<%= total %>" value="<%= work.done %>" aria-describedby="progress_text"><%= work.done %> of <%= total %></meter> <span class="big"><%= work.done %> of <%= total %></span></div>
       <p id="progress_text"><%= work.done %> of <%= pluralize(total, "work item") %> done<%= " (#{work_done_words(work.done_by_kind)})" if work.done.positive? %>.<%= " They cleared #{pluralize(number_with_delimiter(work.cleared), 'finding')}." if work.done.positive? %> <%= work.remaining %> <%= work.remaining == 1 ? "is" : "are" %> left.</p>
     <% end %>

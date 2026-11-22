@@ -7,7 +7,7 @@
     <p>Tracker data for <span class="mono"><%= @triage_release %></span> was last imported <%= seen_ago(@triage_status.updated_at) %> (<%= utc(@triage_status.updated_at) %>). Findings, severity, and counts come from the advisory data and are not affected. <%= link_to "See the data sources", data_sources_path(anchor: "tracker") %>.</p></div>
 <% end %>
 <% evaluated = @evaluation && !@evaluation.not_evaluated? %>
-<% filtered = @severity || @query.present? || @debian || @signal %>
+<% filtered = @severity || @query.present? || @debian || @signal || @fix %>
 <% unless evaluated %>
   <%= render "host_vulnerabilities/not_evaluated", host: @host, evaluation: @evaluation, context: @context, open_count: @state_counts["open"] %>
 <% end %>
@@ -24,7 +24,7 @@
   <% if @evaluation.not_evaluated_count > @evaluation.not_evaluated.size %><p class="muted">Showing the first <%= @evaluation.not_evaluated.size %>.</p><% end %>
 <% end %>
 <% if evaluated || @state_counts["all"].positive? %>
-  <% link_params = { state: (@state unless @state == "open"), severity: @severity, signal: @signal, q: @query.presence, debian: @debian, bucket: @bucket, rule: @rule }.compact %>
+  <% link_params = { state: (@state unless @state == "open"), severity: @severity, signal: @signal, q: @query.presence, debian: @debian, fix: @fix, bucket: @bucket, rule: @rule }.compact %>
   <% if @sections && (@state_counts["open"].positive? || evaluated) %>
     <%= render "host_vulnerabilities/buckets", host: @host, counts: @bucket_counts, open: @state_counts["open"], work: @work, link_params:, bucket: @bucket %>
     <%= render "host_vulnerabilities/work", host: @host, work: @work, summary: @summary, attention: @bucket_counts["attention"], untriaged: @bucket_counts["untriaged"], open: @state_counts["open"] %>
@@ -45,12 +45,16 @@
     <% if @debian %><%= hidden_field_tag :debian, @debian, id: nil %><% end %>
     <% if @bucket %><%= hidden_field_tag :bucket, @bucket, id: nil %><% end %>
     <% if @rule %><%= hidden_field_tag :rule, @rule, id: nil %><% end %>
+    <% if @fix %><%= hidden_field_tag :fix, @fix, id: nil %><% end %>
     <label>Severity<%= select_tag :severity, options_for_select([ [ "All severities", "" ] ] + Advisory::SEVERITIES.map { |s| [ s.capitalize, s ] }, @severity) %></label>
     <% if @state != "resolved" %>
-      <label>Signal<%= select_tag :signal, options_for_select([ [ "Any", "" ], [ "Known exploited (KEV)", "kev" ], [ "EPSS at or above 10%", "epss" ], [ "Network, no login, no user action", "network" ] ], @signal) %></label>
+      <label>Signal<%= select_tag :signal, options_for_select([ [ "Any", "" ], [ "Known exploited (KEV)", "kev" ], [ "EPSS high (10% or more, kept until below 7%)", "epss" ], [ "Network, no login, no user action", "network" ] ], @signal) %></label>
     <% end %>
     <label>Package or advisory<%= search_field_tag :q, @query, placeholder: "openssl or DSA-1234-1", maxlength: HostVulnerabilitiesController::QUERY_MAX %></label>
     <button class="btn quiet" type="submit">Apply</button>
+  <% end %>
+  <% if @fix %>
+    <p class="notice info" role="status" id="fix_filter">Showing the <%= pluralize(number_with_delimiter(@fixable_count), "open finding") %> whose advisory data names a fix for this release, as the Compliance page and the fleet list count them. The Fix available bucket (<%= number_with_delimiter(@bucket_counts["fix"]) %>) can differ: it also counts fixes Debian's tracker knows before the advisory data (F2) and kernel steps, and leaves out kernel images that are not running. <%= link_to "Show every finding", vulnerabilities_host_path(@host, link_params.except(:fix)) %></p>
   <% end %>
   <% if @bucket %>
     <p class="muted" id="bucket_filter">Showing <%= @bucket == "untriaged" ? "the findings not triaged yet" : bucket_name(@bucket) %> only. <%= link_to "Show every bucket", vulnerabilities_host_path(@host, link_params.except(:bucket, :rule)) %></p>

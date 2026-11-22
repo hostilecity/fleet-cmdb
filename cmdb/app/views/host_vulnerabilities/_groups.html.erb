@@ -2,7 +2,8 @@
     native disclosure that works without JavaScript (owner request). The open list's rows say how many findings have a
     fix; the resolved list's say how they resolved (review of #253, S3). locals: host, groups (HostFindingGroups),
     caption, id, open (groups expanded: a text search), link_params, pager_label, cursor_prefix; and triage (FindingTriage, or nil),
-    triage_status, triage_os: Debian's triage under the advisory of open and reopened rows (P2-D08, T1, T5).
+    triage_status, triage_os: Debian's triage under the advisory of open and reopened rows (P2-D08, T1, T5); limit: the
+    most findings drawn under a row, the rest on the package page (the tab's not-triaged section, VT-HOST-TAB).
     keep-open stops a live refresh (a Turbo morph) from closing a disclosure the operator opened. %>
 <% triage = local_assigns[:triage] %>
 <% resolved = groups.rank == :severity %>
@@ -22,11 +23,15 @@
           <summary><span class="when-closed">Show the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="when-open">Hide the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="visually-hidden"> for <%= group.key %></span></summary>
           <table class="nested-findings"><caption class="visually-hidden">Advisories for <%= group.key %></caption>
             <thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col">First seen &rarr; resolved</th></tr></thead><tbody>
-            <% group.findings.each do |finding| %>
+            <% limit = local_assigns[:limit] %>
+            <% (limit ? group.findings.first(limit) : group.findings).each do |finding| %>
               <tr class="nested finding <%= finding.state %>"><td><%= advisory_cell(finding.advisory) %><% if triage && finding.state != "resolved" %><%= triage_lines(finding, triage[finding], page: :tab, status: local_assigns[:triage_status], os: local_assigns[:triage_os]) %><% end %></td><td><%= severity_tag(finding.advisory.severity) %></td>
                 <td><%= fixed_in(finding) %></td>
                 <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>
                 <td><%= finding_dates(finding) %></td></tr>
+            <% end %>
+            <% if limit && group.total > limit %>
+              <tr class="nested more"><td colspan="5"><%= link_to "#{number_with_delimiter(group.total - limit)} more on the package page", package_vulnerabilities_host_path(host, package: group.package) %>: the first <%= limit %> are shown here, worst severity first.</td></tr>
             <% end %>
           </tbody></table>
         </details></td></tr>

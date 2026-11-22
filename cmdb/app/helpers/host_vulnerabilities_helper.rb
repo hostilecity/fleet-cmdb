@@ -136,27 +136,43 @@ module HostVulnerabilitiesHelper
   # The bucket's word with its shape (never colour alone).
   def bucket_tag(bucket) = tag.span(bucket_name(bucket), class: [ "bk", BUCKET_CLASSES.fetch(bucket) ])
 
-  # The sentence for a finding's rule, with the rule id: built from its inputs when they can be read now
-  # (Explain), else the rule's summary.
+  # The sentence for a finding's rule, with the rule id. It is built from the finding's inputs as they read now
+  # (Explain) only while they still give the stored rule. When they no longer do (an input changed and the host's
+  # re-triage has not run yet: for N5, listener evidence that expired before TriageListenerExpiryJob reached the
+  # host), the stored rule's summary says "re-triage pending", so a reason never describes data it was not decided on
+  # (review of #281, B1). On a host that is not evaluated now, whose inputs cannot be read, the summary alone. The KEV
+  # and EPSS qualifiers are added either way (VT-M1).
   def triage_reason(finding, sections, signals)
     rule = VulnerabilityTriage.rule_for(finding.bucket_rule)
     return tag.span("Not triaged yet.", class: "reason") unless rule
 
     inputs = sections.inputs[finding.id]
-    kev, epss = %w[kev epss].map { |name| signals.find { |status| status.signal == name } }
-    # "No EPSS score yet" only once EPSS data exists; before, the "none has been imported" qualifier says it.
-    details = { kev_dates: sections.kev_dates, epss_scores: (sections.epss_scores unless epss.nil? || epss.never?) }.compact
-    text = if inputs
+    kev, epss = signal_statuses(signals)
+    text = if inputs && VulnerabilityTriage.classify(inputs).rule == rule
+      # "No EPSS score yet" only once EPSS data exists; before, the "none has been imported" qualifier says it.
+      details = { kev_dates: sections.kev_dates, epss_scores: (sections.epss_scores unless epss.nil? || epss.never?) }.compact
       VulnerabilityTriage::Reasons.sentence(rule, inputs, kev:, epss:, details:)
     else
-      VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule)
+      pending = "Re-triage pending: the data changed since this finding was triaged." if inputs
+      [ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), pending, *rule_qualifiers(rule, signals) ].compact.join(" ")
     end
     tag.span(safe_join([ text, tag.span(rule, class: "rule-id") ]), class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
   end
 
-  # A rule's row in the Low risk and Ignorable tables.
-  def rule_summary(rule) = tag.span(safe_join([ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), tag.span(rule, class: "rule-id") ]),
-                                    class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
+  # A rule's row in the Low risk and Ignorable tables: its summary and the KEV and EPSS qualifiers that rule takes
+  # (they depend on the rule alone; review of #281, S2).
+  def rule_summary(rule, signals)
+    text = [ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), *rule_qualifiers(rule, signals) ].join(" ")
+    tag.span(safe_join([ text, tag.span(rule, class: "rule-id") ]), class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
+  end
+
+  # "Not checked against CISA's KEV list: none has been imported." and the like, for a rule KEV or EPSS could change.
+  def rule_qualifiers(rule, signals)
+    kev, epss = signal_statuses(signals)
+    VulnerabilityTriage::Reasons.qualifiers(rule, nil, kev, epss, {})
+  end
+
+  def signal_statuses(signals) = %w[kev epss].map { |name| signals.find { |status| status.signal == name } }
 
   # The signals beside a Needs attention advisory: known exploited, its EPSS score, its attack vector in words, and,
   # when VT-APPLICABILITY reports one, the listener that loads the package (N5's evidence).
@@ -196,14 +212,15 @@ module HostVulnerabilitiesHelper
     safe_join(parts, tag.br)
   end
 
-  # The newest installed image of the running image's flavour that is not running, or nil.
+  # The image K1 reboots into: the newest installed image of the running image's flavour, or nil.
   def kernel_target(inputs)
     kernel = inputs.kernel
     flavour = inputs.image&.flavour
     return nil unless kernel && flavour
 
-    others = kernel.images.select { |image| image.flavour == flavour && image.release != kernel.running }
-    others.max { |a, b| VulnerabilityTriage.compare(a.version, b.version, inputs.scheme) || 0 }&.release
+    # The newest image of the flavour: under K1 an image at or above the fix is installed, so it is never the running
+    # one (which has the finding).
+    kernel.images.select { |image| image.flavour == flavour }.max { |a, b| VulnerabilityTriage.compare(a.version, b.version, inputs.scheme) || 0 }&.release
   end
 
   # The proportion bar: an SVG whose geometry is in attributes (no inline style, the app's CSP), with its text

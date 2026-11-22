@@ -18,11 +18,14 @@
           <summary><span class="when-closed">Show the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="when-open">Hide the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="visually-hidden"> for <%= group.key %></span></summary>
           <table class="nested-findings"><caption class="visually-hidden">Advisories for <%= group.key %></caption>
             <thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">Why this bucket</th></tr></thead><tbody>
-            <% group.findings.each do |finding| %>
+            <% HostTriageSections.shown(group).each do |finding| %>
               <tr class="nested finding <%= finding.state %>"><td><%= advisory_cell(finding.advisory) %><% if finding.state == "reopened" %><span class="state-note">Reopened <%= utc(finding.reopened_at) %></span><% end %><% if triage %><%= triage_lines(finding, triage[finding], page: :tab, status: triage_status, os: triage_os) %><% end %></td>
                 <td><%= severity_tag(finding.advisory.severity) %></td>
                 <td><%= fixed_in(finding) %></td>
                 <td><%= triage_reason(finding, sections, signals) %></td></tr>
+            <% end %>
+            <% if group.total > HostTriageSections::NESTED_MAX %>
+              <tr class="nested more"><td colspan="4"><%= link_to "#{number_with_delimiter(group.total - HostTriageSections::NESTED_MAX)} more on the package page", package_vulnerabilities_host_path(host, package: group.package) %>: the first <%= HostTriageSections::NESTED_MAX %> are shown here, worst severity first.</td></tr>
             <% end %>
           </tbody></table>
         </details></td></tr>

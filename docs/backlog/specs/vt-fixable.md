@@ -29,7 +29,7 @@ Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19). This slice **
 
 ### Acceptance criteria
 
-- [x] On the host tab, "Fix available" and "No fix available" add up to the open list's count, and the filter is kept in the URL (`spec/requests/host_vulnerabilities_spec.rb`)
+- [x] ~~On the host tab, "Fix available" and "No fix available" add up to the open list's count, and the filter is kept in the URL~~ Replaced by VT-HOST-TAB (#260): the tab's four buckets add up to the open count, and `?fix=available` (the Compliance page's and the fleet list's "N with a fix" link) shows the same findings they count, with a line saying how the bucket differs (`spec/requests/host_vulnerability_triage_spec.rb`)
 - [x] The Compliance page's "with a fix" numbers equal the host tabs' and are read from the summaries in a fixed number of statements (`spec/models/fleet_compliance_spec.rb`, `spec/requests/compliance_spec.rb`; the page's statement count spec is unchanged)
 
 ## As built (#256)
