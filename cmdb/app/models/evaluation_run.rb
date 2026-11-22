@@ -145,6 +145,7 @@ class EvaluationRun < ApplicationRecord
   end
 
   def finish!
+    Triage.drop_sets([ id ]) if kind == "triage"
     self.state = "finished"
     self.finished_at = Time.current
     FleetBroadcast.refresh if shown_changed || work.refresh_always?
@@ -171,6 +172,7 @@ class EvaluationRun < ApplicationRecord
     superseded = self.class.where(id: older)
     self.shown_changed ||= superseded.where(shown_changed: true, state: UNFINISHED).exists? # a failed run refreshed when it failed
     EvaluationBatch.where(evaluation_run_id: older).delete_all
+    Triage.drop_sets(older) if kind == "triage"
     superseded.update_all(state: "superseded", superseded_by_id: id, finished_at: Time.current, updated_at: Time.current)
     save!
   end

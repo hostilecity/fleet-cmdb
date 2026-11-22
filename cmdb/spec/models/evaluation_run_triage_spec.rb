@@ -33,7 +33,7 @@ RSpec.describe EvaluationRun::Triage do
     expect(TriageSignalChange.count).to eq(0)
   end
 
-  it "releases nothing when its work fails, and returns a prepared scope unchanged" do
+  it "releases nothing when its work fails, and returns a prepared scope with its own sets recorded" do
     TriageSignalChange.record!(:kev_all)
     record = run("kev")
     allow(VulnerabilityTriage::Base).to receive(:refresh!).and_raise(ActiveRecord::Deadlocked)
@@ -42,7 +42,11 @@ RSpec.describe EvaluationRun::Triage do
     expect(TriageSignalChange.pluck(:kind)).to eq([ "kev_all" ])
 
     prepared = { "reason" => "kev", "prepared" => true, "chunk_runs" => [ 7 ] }
-    expect(described_class.new(prepared, record.id).prepare!).to eq(prepared)
+    own = prepared.merge("sets_run" => record.id) # a retry from a prepared scope records the sets under its own id
+    expect(described_class.new(prepared, record.id).prepare!).to eq(own)
+    expect(described_class.new(own, record.id).prepare!).to eq(own) # once
+    full = prepared.merge("full" => true)
+    expect(described_class.new(full, record.id).prepare!).to eq(full) # a full run has none
   end
 
   # Review of #277, B3: a match that read the signals before a KEV import committed must have committed before the run

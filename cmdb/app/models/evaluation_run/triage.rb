@@ -27,8 +27,9 @@ class EvaluationRun
     AT_ONCE = %w[kev kev_all advisory].freeze
     REASONS = %w[kev daily all].freeze
     # How many times in a row TriageRunWatchJob resumes a run whose job died with no progress since the last resume,
-    # before it fails the run. A resume after progress starts the count again, so a long full run survives any number
-    # of deploys.
+    # before it fails the run. A resume after progress (a batch counted) starts the count again, so a long full run
+    # survives any number of deploys once it is split; its preparation is not progress (no cursor: a resume prepares
+    # again), so 4 deploys during one preparation fail it.
     RESUMES = 3
     CLAIM = 1_000
     CHUNK_BATCH = 5_000
@@ -38,20 +39,37 @@ class EvaluationRun
     # advisory ids are kept in the run's scope, so the limit also bounds that row.
     ADVISORY_LIMIT = 20_000
 
-    # Starts a failed run again (Data sources' "Re-triage again"), with a fresh resume count (fourth review of #277):
-    # a prepared run with batches left is reopened and carries on from them, as a resume does, so a failed full run
-    # does not start from scratch; any other is started again as a new run from its scope, which covers it.
+    # Starts a failed run again (Data sources' "Re-triage again"), with a fresh resume count (fourth review of #277),
+    # all under the run's row lock (fifth review: so a second press, even one that read the run as failed before the
+    # first committed, finds it no longer failed and changes nothing). A prepared run with batches left is reopened and
+    # carries on from them, as a resume does, so a failed full run does not start from scratch. Any other (one never
+    # split has no batches, and reopening it would finish it with no host re-triaged) is superseded at once by a new
+    # run from its scope. Returns the run that now carries the work.
     def self.retry!(run)
-      reopened = EvaluationRun.transaction do
+      EvaluationRun.transaction do
         locked = EvaluationRun.lock.find(run.id)
-        next false unless locked.failed? && locked.work.prepared? && locked.batches.exists?
+        next locked unless locked.failed?
 
-        locked.update!(state: "running", finished_at: nil, scope: locked.scope.except(*RESUME_KEYS))
-        ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(run.id) }
-        true
+        scope = locked.scope.except(*RESUME_KEYS)
+        if locked.work.prepared? && locked.batches.exists?
+          locked.update!(state: "running", finished_at: nil, scope:)
+          ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(locked.id) }
+          next locked
+        end
+
+        retried = EvaluationRun.create!(kind: "triage", scope:)
+        locked.batches.delete_all
+        locked.update!(state: "superseded", superseded_by: retried, finished_at: Time.current)
+        drop_sets([ locked.id ])
+        ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(retried.id) }
+        retried
       end
-      reopened ? run.reload : EvaluationRun.start!("triage", run.scope.except(*RESUME_KEYS))
     end
+
+    # Deletes runs' triage_run_sets rows once the current transaction commits (fifth review of #277: up to about
+    # 900,000 rows a run at a million hosts, which nothing reads once the run has finished or been superseded, since
+    # every run reads only the sets it recorded itself).
+    def self.drop_sets(run_ids) = ActiveRecord.after_all_transactions_commit { TriageRunSet.where(evaluation_run_id: run_ids).delete_all }
 
     # What TriageRunWatchJob keeps in a run's scope: how many resumes in a row made no progress, and the progress
     # (batches done) at the last one.
@@ -84,7 +102,7 @@ class EvaluationRun
     # batches are queued again, at most RESUMES times. A full run resumes rather than restarts: its base pass writes only
     # the verdicts that change, and its batches carry on from those left.
     def prepare!
-      return scope if prepared?
+      return own_sets! if prepared?
 
       store!(scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).compact.uniq))
       claimed, kinds, cves, advisories = claim_all
@@ -96,7 +114,7 @@ class EvaluationRun
       record = full ? nil : ->(ids) { record_chunks(ids) }
       changed = chunk_ids.each_slice(CHUNK_BATCH).flat_map { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:) }
       record_sets! unless full
-      store!(scope.merge("full" => full, "prepared" => true, "changes" => claimed.size, "advisories" => advisory_ids&.size,
+      store!(scope.merge("full" => full, "prepared" => true, "sets_run" => (@run_id unless full), "changes" => claimed.size, "advisories" => advisory_ids&.size,
                          "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
                          "chunks_changed" => changed.size, "verdicts_changed" => stats[:verdicts]))
       TriageSignalChange.release!(claimed) if claimed.any?
@@ -117,7 +135,7 @@ class EvaluationRun
       return base if full?
 
       current, moved_from = [ HostPackageSet, HostVulnerabilityEvaluation ].map do |model|
-        on_run_set = TriageRunSet.where(evaluation_run_id: recorded_runs).where(TriageRunSet.arel_table[:package_set_id].eq(model.arel_table[:package_set_id]))
+        on_run_set = TriageRunSet.where(evaluation_run_id: scope["sets_run"].to_i).where(TriageRunSet.arel_table[:package_set_id].eq(model.arel_table[:package_set_id]))
         rows = model.where(on_run_set.arel.exists)
         range ? rows.where(host_id: range) : rows
       end
@@ -191,6 +209,16 @@ class EvaluationRun
       WHERE chunk_ids && ARRAY(SELECT package_chunk_id FROM triage_run_chunks WHERE evaluation_run_id IN (:runs))::bigint[]
       ON CONFLICT DO NOTHING
     SQL
+
+    # A run started from a prepared run's scope (a retry of one that was never split) records the sets under its own
+    # id, so it reads only its own and the older run's can go when it is superseded.
+    def own_sets!
+      return scope if full? || scope["sets_run"] == @run_id
+
+      record_sets!
+      store!(scope.merge("sets_run" => @run_id))
+      scope
+    end
 
     # Finds the sets holding the recorded chunks once, through the sets' GIN index, before the prepared scope is
     # stored (so a fan-out run again records them again, idempotently), and analyses the table, so the batches' plans

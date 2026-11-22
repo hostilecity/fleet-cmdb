@@ -136,7 +136,7 @@ production:
   triage_listener_expiry:
     class: TriageListenerExpiryJob
     schedule: every hour at minute 19
-  # Reviews of #277: triage runs whose job died with its worker are resumed (failed after 3 resumes).
+  # Reviews of #277: triage runs whose job died with its worker are resumed (failed after 3 in a row with no progress).
   triage_run_watch:
     class: TriageRunWatchJob
     schedule: every 10 minutes

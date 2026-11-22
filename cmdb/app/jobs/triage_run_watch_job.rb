@@ -12,7 +12,8 @@
 # EvaluationRun::Triage#prepare!); for a running run it queues the remaining batches again (each is counted once) and
 # finishes a run split into none. A running run with no batches left (each was counted, but the worker died before
 # the run was) is finished, not resumed. Only resumes with no progress since the last one count (scope "resumes", with the
-# batches done at the last one in "resume_progress"); after EvaluationRun::Triage::RESUMES of them in a row the run is
+# state and batches done at the last one in "resume_progress"; preparation is not progress, since a resume prepares
+# again from the start); after EvaluationRun::Triage::RESUMES of them in a row the run is
 # failed (EvaluationRun#fail_locked!), which shows it on Data sources with "Re-triage again", whose retry carries on
 # from its batches (EvaluationRun::Triage.retry!). A run that failed by raising every retry is never resumed, so one
 # bad advisory or host cannot stop later runs. Advisory re-matching runs share the gap (#278).
