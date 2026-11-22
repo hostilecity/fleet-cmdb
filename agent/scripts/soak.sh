@@ -157,8 +157,11 @@ sample() {
         # report being collected or a connection being tried come and go (they failed the descriptor check
         # three times in #268's CI without any growth).
         fds=
+        # A process that ends between the counts (a crash-looping version during the rollback) stops them:
+        # find fails then, and under pipefail it must not end the soak.
         for _ in 1 2 3; do
-            n=$(find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2> /dev/null | wc -l)
+            [ -d "/proc/$pid/fd" ] || break
+            n=$(find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2> /dev/null | wc -l) || break
             if [ -z "$fds" ] || [ "$n" -lt "$fds" ]; then fds=$n; fi
             sleep 0.5
         done
