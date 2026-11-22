@@ -127,6 +127,19 @@ production:
   epss_refresh:
     class: EpssRefreshJob
     schedule: "30 14 * * * UTC"
+  # VT-S05 (#259, ADR 0032): EPSS band and Debian tracker changes re-triaged once a day, an hour after the EPSS refresh.
+  triage_daily:
+    class: TriageDailyJob
+    schedule: "37 15 * * * UTC"
+  # VT-S05 (#259, owner decision 2026-11-21): hosts whose listener evidence (rule N5) turned 24 hours old are
+  # re-triaged. Does nothing until VT-APPLICABILITY (#258) supplies the evidence.
+  triage_listener_expiry:
+    class: TriageListenerExpiryJob
+    schedule: every hour at minute 19
+  # Reviews of #277: triage runs whose job died with its worker are resumed (failed after 3 in a row with no progress).
+  triage_run_watch:
+    class: TriageRunWatchJob
+    schedule: every 10 minutes
   # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
   advisory_upload_pruning:
     class: AdvisoryUploadPruneJob

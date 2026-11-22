@@ -18,7 +18,11 @@ module DebianTriage
   # - A release no active host reports any more, or one taken out of the release table, has its stored data
   #   deleted, without the truncation guard (dropping a release the fleet does not use is expected), and the audit
   #   entry says so. A release a host starts reporting is imported at the next refresh.
-  # - It never touches findings, advisories, or matching: triage is an annotation (ADR 0022, item 3).
+  # - It never touches findings, advisories, or matching itself (ADR 0022, item 3). Since VT-BUCKETS (#259) Debian's
+  #   triage decides findings' triage buckets (ADR 0032), never their state or severity: each replaced release records
+  #   how many entries the document added and how many changed what the rules read (counts, the churn VT-M6's daily
+  #   re-triage estimate needs), and hands the CVEs added, changed, or dropped to the daily triage run
+  #   (TriageSignalChange kind tracker), in the import's transaction.
   class Import
     LOCK_KEY = "debian_triage.import".freeze
     BATCH = 1_000
@@ -209,11 +213,39 @@ module DebianTriage
         end
 
         quoted = connection.quote(release)
+        counts.merge!(hand_over_changes(release))
         TriageEntry.where(tracker: TRACKER, release:).delete_all
         connection.execute("INSERT INTO triage_entries (tracker, #{COLUMNS.join(', ')}) SELECT DISTINCT ON (package, cve_id) #{tracker}, #{COLUMNS.join(', ')} " \
                            "FROM #{STAGING} WHERE release = #{quoted} ORDER BY package, cve_id, seq")
         [ release, counts.merge("outcome" => "replaced") ]
       end
+    end
+
+    # The entries of a release the document adds, changes in what the triage rules read (status, urgency, fixed
+    # version, no-DSA, scope; VT-BUCKETS #259), or drops, as SQL with :tracker and :release.
+    TRIAGE_DIFF = <<~SQL.squish.freeze
+      WITH s AS (SELECT DISTINCT ON (package, cve_id) package, cve_id, status, urgency, fixed_version, no_dsa, no_dsa_reason, scope
+                 FROM triage_staging WHERE release = :release ORDER BY package, cve_id, seq),
+      e AS (SELECT package, cve_id, status, urgency, fixed_version, no_dsa, no_dsa_reason, scope FROM triage_entries WHERE tracker = :tracker AND release = :release),
+      d AS (SELECT COALESCE(s.cve_id, e.cve_id) AS cve_id, e.package IS NULL AS added, s.package IS NULL AS dropped
+            FROM s FULL JOIN e ON e.package = s.package AND e.cve_id = s.cve_id
+            WHERE s.package IS NULL OR e.package IS NULL
+               OR (s.status, s.urgency, s.fixed_version, s.no_dsa, s.no_dsa_reason, s.scope) IS DISTINCT FROM
+                  (e.status, e.urgency, e.fixed_version, e.no_dsa, e.no_dsa_reason, e.scope))
+    SQL
+    CHURN = "#{TRIAGE_DIFF} SELECT count(*) FILTER (WHERE added), count(*) FILTER (WHERE NOT added AND NOT dropped) FROM d".freeze
+    HAND_OVER = "#{TRIAGE_DIFF} INSERT INTO triage_signal_changes (id, kind, cve_id, created_at) " \
+                "SELECT #{TriageSignalChange::NEXT_ID}, 'tracker', cve_id, now() FROM (SELECT DISTINCT cve_id FROM d) changed " \
+                "ON CONFLICT #{TriageSignalChange::CVE_TARGET} #{TriageSignalChange::ON_CONFLICT_SET}".freeze
+
+    # Before a release's entries are replaced: counts the entries the document adds, and those whose triage changed
+    # (the churn VT-M6's daily estimate is made from; "dropped" is counted already), and hands every CVE added, changed,
+    # or dropped to the triage run (TriageSignalChange kind tracker), in this transaction. { "added" =>, "changed" => }
+    def hand_over_changes(release)
+      binds = { tracker: TRACKER, release: }
+      added, changed = connection.select_rows(TriageEntry.sanitize_sql_array([ CHURN, binds ])).first
+      connection.execute(TriageEntry.sanitize_sql_array([ HAND_OVER, binds ]))
+      { "added" => added.to_i, "changed" => changed.to_i }
     end
 
     def too_many_dropped?(release, counts)

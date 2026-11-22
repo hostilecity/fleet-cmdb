@@ -18,10 +18,10 @@ RSpec.describe DebianTriage::Import do
     expect(import).to have_attributes(tracker: "debian", origin: "file", source: "sample.json", state: "succeeded", releases: %w[bookworm forky sid trixie])
     expect(import.counts).to include("packages" => 3, "entries" => 5, "other_ids" => 1, "other_releases" => 1, "malformed" => 3, "repeated" => 0,
                                      "removed_releases" => {})
-    expect(import.counts["releases"]).to eq("bookworm" => { "stored" => 0, "in_file" => 1, "dropped" => 0, "outcome" => "replaced" },
-                                            "forky" => { "stored" => 0, "in_file" => 1, "dropped" => 0, "outcome" => "replaced" },
-                                            "sid" => { "stored" => 0, "in_file" => 1, "dropped" => 0, "outcome" => "replaced" },
-                                            "trixie" => { "stored" => 0, "in_file" => 3, "dropped" => 0, "outcome" => "replaced" })
+    expect(import.counts["releases"]).to eq("bookworm" => { "stored" => 0, "in_file" => 1, "dropped" => 0, "added" => 1, "changed" => 0, "outcome" => "replaced" },
+                                            "forky" => { "stored" => 0, "in_file" => 1, "dropped" => 0, "added" => 1, "changed" => 0, "outcome" => "replaced" },
+                                            "sid" => { "stored" => 0, "in_file" => 1, "dropped" => 0, "added" => 1, "changed" => 0, "outcome" => "replaced" },
+                                            "trixie" => { "stored" => 0, "in_file" => 3, "dropped" => 0, "added" => 3, "changed" => 0, "outcome" => "replaced" })
     expect(import.problems).to contain_exactly(
       { "package" => "openssl", "id" => "CVE-2026-90011", "problem" => "bookworm: has no status of open, resolved, or undetermined" },
       { "package" => "openssl", "id" => "CVE-2026-90012", "problem" => "is not an object with a releases object" },
@@ -77,7 +77,7 @@ RSpec.describe DebianTriage::Import do
     stub_const("#{described_class}::BATCH", 3)
     import_triage(document(10, releases: %w[trixie bookworm]))
     import = import_triage(document(10, releases: %w[trixie bookworm], from: 2))
-    expect(import.counts["releases"]["trixie"]).to eq("stored" => 10, "in_file" => 10, "dropped" => 1, "outcome" => "replaced")
+    expect(import.counts["releases"]["trixie"]).to eq("stored" => 10, "in_file" => 10, "dropped" => 1, "added" => 1, "changed" => 0, "outcome" => "replaced")
     expect(TriageEntry.where(release: "trixie").pluck(:cve_id)).to match_array((2..11).map { |i| "CVE-2026-#{10_000 + i}" })
     expect(TriageEntry.count).to eq(20)
   end

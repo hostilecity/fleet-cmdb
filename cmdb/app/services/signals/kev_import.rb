@@ -7,7 +7,8 @@ module Signals
   #   FLEET_ADVISORY_WITHDRAW_SHARE (10%) of the stored entries stores nothing and is held back with its counts.
   #   allowed_drops (ALLOW_DROPS=<count>, an operator's confirmation from the rake tasks) is a ceiling, not a bypass.
   # - The CVEs added or removed are handed to the triage run (TriageSignalChange kind kev), and KEV data appearing for
-  #   the first time hands over every finding (kev_all), since rule I5 then applies. Nothing here touches a finding.
+  #   the first time hands over every finding (kev_all), since rule I5 then applies, and a triage run starts once the
+  #   import commits (EvaluationRun::Triage, reason kev). Nothing here touches a finding.
   class KevImport
     COLUMNS = %w[cve_id date_added due_date known_ransomware vendor product].freeze
 
@@ -36,6 +37,8 @@ module Signals
           replace(catalog.entries)
           TriageSignalChange.record!(:kev, cve_ids: added + removed)
           TriageSignalChange.record!(:kev_all) if stored.empty?
+          # KEV changes are re-triaged at once (VT-S05), by a run started once this commits.
+          EvaluationRun::Triage.start_after_commit("kev") if added.any? || removed.any? || stored.empty?
         end
         import = SignalImport.create!(signal: KEV, origin: @origin, source: @source, operator: @operator, state: held ? "held_back" : "succeeded",
                                       version: catalog.version, counts:, problems: catalog.problems, reason: (held_reason(counts) if held),

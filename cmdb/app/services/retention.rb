@@ -201,6 +201,8 @@ module Retention
   register ConfigReportReceipt, time_column: :received_at, max_age: REPORT_ID_WINDOW, partitioned: true
   register CisResultChange, time_column: :occurred_at, partitioned: true
   register HostStatusEvent, time_column: :occurred_at, keep_newest_per_host: true, partitioned: true
+  # VT-BUCKETS #259: remediation work events, read for a host's 30-day progress, kept 90 days (or the window, if shorter).
+  register VulnerabilityWorkEvent, time_column: :occurred_at, max_age: VulnerabilityWorkEvent::KEPT, partitioned: true
   # On-demand report requests (P2-S03), by when they were made: a request ends within an hour, and the audit
   # log keeps who asked.
   register ReportRequest, time_column: :requested_at

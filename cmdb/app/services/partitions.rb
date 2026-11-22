@@ -49,6 +49,7 @@ module Partitions
     Table.new(name: "package_snapshots", key: "stored_at", width: :week, default: true, append_only: false),
     Table.new(name: "host_status_events", key: "stored_at", width: :week, default: true, append_only: false),
     Table.new(name: "cis_result_changes", key: "occurred_at", width: :week, default: true, append_only: false),
+    Table.new(name: "vulnerability_work_events", key: "occurred_at", width: :week, default: true, append_only: false),
     Table.new(name: AUDIT, key: "occurred_at", width: :month, default: false, append_only: true)
   ].index_by(&:name).freeze
 
@@ -72,7 +73,8 @@ module Partitions
     "config_snapshots" => { "host_id" => "hosts" },
     "package_snapshots" => { "host_id" => "hosts" },
     "host_status_events" => { "host_id" => "hosts" },
-    "cis_result_changes" => { "host_id" => "hosts", "cis_rule_id" => "cis_rules", "cis_rule_version_id" => "cis_rule_versions" }
+    "cis_result_changes" => { "host_id" => "hosts", "cis_rule_id" => "cis_rules", "cis_rule_version_id" => "cis_rule_versions" },
+    "vulnerability_work_events" => { "host_id" => "hosts" }
   }.freeze
 
   # The session advisory lock one maintenance run holds (maintain! and ensure!), so two never overlap: a boot-time
@@ -81,7 +83,7 @@ module Partitions
   RETIRED = "_retired".freeze
   MOVING = "_default_moving".freeze
   # The column that says how new a row is, indexed in every partition, for moving set-aside rows back newest first.
-  NEWEST_BY = { "host_status_events" => "occurred_at", "cis_result_changes" => "occurred_at" }.freeze
+  NEWEST_BY = { "host_status_events" => "occurred_at", "cis_result_changes" => "occurred_at", "vulnerability_work_events" => "occurred_at" }.freeze
   # Rows the default partition holds are moved back through the parent this many at a time, each its own transaction.
   MOVE_BATCH = 1_000
   ORPHANS_KEY = "partitions/orphans".freeze
@@ -99,7 +101,8 @@ module Partitions
     "inventory_report_receipts" => "Inventory report ids", "config_report_receipts" => "Config report ids",
     "package_report_receipts" => "Package report ids", "inventory_snapshots" => "Inventory history",
     "config_snapshots" => "Config history", "package_snapshots" => "Package history", "host_status_events" => "Status history",
-    "cis_result_changes" => "CIS result history", "audit_entries" => "The audit log"
+    "cis_result_changes" => "CIS result history",
+    "vulnerability_work_events" => "Remediation work history", "audit_entries" => "The audit log"
   }.freeze
 
   # Seconds between tries of a DDL statement (specs set 0).

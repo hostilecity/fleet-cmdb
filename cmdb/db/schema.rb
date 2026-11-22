@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_21_259003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -206,8 +206,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
     t.string "source", limit: 128, null: false
     t.string "installed_version", limit: 256, null: false
     t.string "fixed_version", limit: 256
+    t.integer "base_bucket", limit: 2
+    t.integer "base_rule", limit: 2
+    t.boolean "kev"
+    t.string "triage_fixed_version", limit: 256
     t.index ["advisory_id"], name: "index_chunk_matches_on_advisory_id"
   end
+  add_check_constraint "chunk_matches", "(base_rule IS NULL) = (base_bucket IS NULL) AND (base_rule IS NULL) = (kev IS NULL) AND (base_rule IS NULL OR base_bucket =\nCASE\n    WHEN base_rule = ANY (ARRAY[3, 4, 5, 6]) THEN 1\n    WHEN base_rule = ANY (ARRAY[10, 11, 13, 14, 15]) THEN 2\n    WHEN base_rule = ANY (ARRAY[9, 16, 17, 18, 19]) THEN 3\n    WHEN base_rule = ANY (ARRAY[1, 2, 7, 8, 12]) THEN 4\n    ELSE NULL::integer\nEND)", name: "chunk_matches_base_valid"
 
   create_table "cis_result_changes", primary_key: ["id", "occurred_at"], options: "PARTITION BY RANGE (occurred_at)", force: :cascade do |t|
     t.bigserial "id", null: false
@@ -346,7 +351,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
     t.datetime "updated_at", null: false
     t.index ["finished_at"], name: "index_evaluation_runs_on_finished_at"
     t.index ["kind", "state"], name: "index_evaluation_runs_unfinished", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
-    t.check_constraint "kind::text = ANY (ARRAY['cis_rules'::character varying, 'advisories'::character varying]::text[])", name: "evaluation_runs_kind_valid"
+    t.check_constraint "kind::text = ANY (ARRAY['cis_rules'::character varying, 'advisories'::character varying, 'triage'::character varying]::text[])", name: "evaluation_runs_kind_valid"
     t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'finished'::character varying, 'superseded'::character varying, 'failed'::character varying]::text[])", name: "evaluation_runs_state_valid"
   end
 
@@ -393,6 +398,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
     t.integer "vuln_fixable", default: 0, null: false
     t.integer "vuln_fix_packages", default: 0, null: false
     t.integer "vuln_fix_severities", limit: 2, default: 0, null: false
+    t.integer "vuln_fix", default: 0, null: false
+    t.integer "vuln_attention", default: 0, null: false
+    t.integer "vuln_low_risk", default: 0, null: false
+    t.integer "vuln_ignorable", default: 0, null: false
+    t.integer "vuln_kev_open", default: 0, null: false
     t.index "lower(os_name) DESC NULLS LAST, name_key, host_id", name: "host_compliance_summaries_os_desc", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index "lower(os_name), name_key, host_id", name: "host_compliance_summaries_os", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index "nothing_evaluated, ((- (cis_critical + vuln_critical))), ((- (cis_high + vuln_high))), ((- (cis_medium + vuln_medium))), ((- (cis_low + vuln_low))), ((- vuln_unknown)), COALESCE(pass_rate, (2)::numeric), name_key, host_id", name: "host_compliance_summaries_worst", where: "((enrollment_state)::text = 'active'::text)"
@@ -942,6 +952,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
     t.check_constraint "timeout_seconds >= 1 AND timeout_seconds <= 86400", name: "tasks_timeout"
   end
 
+  create_table "triage_checkpoints", primary_key: "name", id: { type: :string, limit: 64 }, force: :cascade do |t|
+    t.datetime "at", null: false
+  end
+
   create_table "triage_entries", force: :cascade do |t|
     t.string "tracker", limit: 16, null: false
     t.string "release", limit: 32, null: false
@@ -983,6 +997,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
     t.check_constraint "state::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'held_back'::character varying]::text[])", name: "triage_imports_state_valid"
   end
 
+  create_table "triage_run_chunks", primary_key: ["evaluation_run_id", "package_chunk_id"], force: :cascade do |t|
+    t.bigint "evaluation_run_id", null: false
+    t.bigint "package_chunk_id", null: false
+  end
+
+  create_table "triage_run_sets", primary_key: ["evaluation_run_id", "package_set_id"], force: :cascade do |t|
+    t.bigint "evaluation_run_id", null: false
+    t.bigint "package_set_id", null: false
+  end
+
   create_table "triage_signal_changes", force: :cascade do |t|
     t.string "kind", limit: 8, null: false
     t.string "cve_id", limit: 32
@@ -991,8 +1015,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
     t.index ["kind", "advisory_id"], name: "index_triage_signal_changes_advisory", unique: true, where: "(advisory_id IS NOT NULL)"
     t.index ["kind", "cve_id"], name: "index_triage_signal_changes_cve", unique: true, where: "(cve_id IS NOT NULL)"
     t.index ["kind"], name: "index_triage_signal_changes_all", unique: true, where: "((kind)::text = 'kev_all'::text)"
-    t.check_constraint "(kind::text = ANY (ARRAY['kev'::character varying::text, 'epss'::character varying::text])) = (cve_id IS NOT NULL) AND (kind::text = 'advisory'::text) = (advisory_id IS NOT NULL)", name: "triage_signal_changes_target_valid"
-    t.check_constraint "kind::text = ANY (ARRAY['kev'::character varying::text, 'kev_all'::character varying::text, 'epss'::character varying::text, 'advisory'::character varying::text])", name: "triage_signal_changes_kind_valid"
+    t.check_constraint "(kind::text = ANY (ARRAY['kev'::character varying, 'epss'::character varying, 'tracker'::character varying]::text[])) = (cve_id IS NOT NULL) AND (kind::text = 'advisory'::text) = (advisory_id IS NOT NULL)", name: "triage_signal_changes_target_valid"
+    t.check_constraint "kind::text = ANY (ARRAY['kev'::character varying, 'kev_all'::character varying, 'epss'::character varying, 'advisory'::character varying, 'tracker'::character varying]::text[])", name: "triage_signal_changes_kind_valid"
   end
 
   create_table "vulnerability_findings", force: :cascade do |t|
@@ -1011,11 +1035,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
     t.string "last_installed_version", limit: 256
     t.string "last_fixed_version", limit: 256
     t.string "last_ecosystem", limit: 64
+    t.integer "bucket", limit: 2
+    t.integer "bucket_rule", limit: 2
+    t.boolean "kev"
     t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
     t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
     t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
     t.check_constraint "(state::text = 'resolved'::text) = (resolution IS NOT NULL) AND (resolution::text = ANY (ARRAY['fixed'::character varying, 'removed'::character varying, 'withdrawn'::character varying, 'not_affected'::character varying]::text[]))", name: "vulnerability_findings_resolution_valid"
     t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'reopened'::character varying]::text[])", name: "vulnerability_findings_state_valid"
+  end
+  add_check_constraint "vulnerability_findings", "(bucket_rule IS NULL) = (bucket IS NULL) AND (bucket_rule IS NULL) = (kev IS NULL) AND (bucket_rule IS NULL OR state::text <> 'resolved'::text AND bucket =\nCASE\n    WHEN bucket_rule = ANY (ARRAY[3, 4, 5, 6]) THEN 1\n    WHEN bucket_rule = ANY (ARRAY[10, 11, 13, 14, 15]) THEN 2\n    WHEN bucket_rule = ANY (ARRAY[9, 16, 17, 18, 19]) THEN 3\n    WHEN bucket_rule = ANY (ARRAY[1, 2, 7, 8, 12]) THEN 4\n    ELSE NULL::integer\nEND)", name: "vulnerability_findings_bucket_valid"
+
+  create_table "vulnerability_work_events", primary_key: ["id", "occurred_at"], options: "PARTITION BY RANGE (occurred_at)", force: :cascade do |t|
+    t.bigserial "id", null: false
+    t.bigint "host_id", null: false
+    t.string "kind", limit: 16, null: false
+    t.string "subject", limit: 256, null: false
+    t.integer "findings_cleared", null: false
+    t.datetime "occurred_at", null: false
+    t.index ["host_id", "occurred_at"], name: "index_vulnerability_work_events_on_host_id_and_occurred_at"
+    t.index ["occurred_at"], name: "index_vulnerability_work_events_on_occurred_at"
+    t.check_constraint "findings_cleared > 0", name: "vulnerability_work_events_cleared_positive"
+    t.check_constraint "kind::text = ANY (ARRAY['upgrade'::character varying, 'kernel_installed'::character varying, 'reboot'::character varying]::text[])", name: "vulnerability_work_events_kind_valid"
   end
 
   add_foreign_key "advisory_imports", "operators"
@@ -1052,6 +1093,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
   add_foreign_key "tasks", "operators", column: "cancel_requested_by_id"
   add_foreign_key "tasks", "task_batches"
   add_foreign_key "triage_imports", "operators"
+  add_foreign_key "triage_run_chunks", "evaluation_runs", on_delete: :cascade
+  add_foreign_key "triage_run_sets", "evaluation_runs", on_delete: :cascade
   add_foreign_key "vulnerability_findings", "advisories"
   add_foreign_key "vulnerability_findings", "hosts"
   add_foreign_key "onboarding_requests", "hosts"
@@ -1282,7 +1325,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
 
   create_function :host_compliance_counts, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.host_compliance_counts(host_ids bigint[])
-       RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean, vuln_fixable integer, vuln_fix_packages integer, vuln_fix_severities smallint)
+       RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean, vuln_fixable integer, vuln_fix_packages integer, vuln_fix_severities smallint, vuln_fix integer, vuln_attention integer, vuln_low_risk integer, vuln_ignorable integer, vuln_kev_open integer)
        LANGUAGE sql
        STABLE
       AS $function$
@@ -1295,13 +1338,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
         -- critical 1, high 2, medium 4, low 8, unknown 16, for the Compliance page's "of this severity, with a fix"). A
         -- host its last matching run did not evaluate counts none of them (#252 question 6), though its kept findings are
         -- still open.
+        --
+        -- v03 (VT-BUCKETS, #259): the open and reopened findings per triage bucket (1 Fix available, 2 Needs attention,
+        -- 3 Low risk, 4 Ignorable), and those with the KEV flag. Counted for every host, evaluated or not, so the four
+        -- always add up to the open count: a host that is not evaluated keeps its findings and their buckets as they were.
         SELECT h.id,
                cis.passed, cis.failed, cis.not_readable, cis.critical, cis.high, cis.medium, cis.low,
                vulns.critical, vulns.high, vulns.medium, vulns.low, vulns.unknown,
                COALESCE(hve.state = 'evaluated', false),
                CASE WHEN hve.state = 'evaluated' THEN vulns.fixable ELSE 0 END,
                CASE WHEN hve.state = 'evaluated' THEN vulns.fix_packages ELSE 0 END,
-               CASE WHEN hve.state = 'evaluated' THEN vulns.fix_severities ELSE 0::smallint END
+               CASE WHEN hve.state = 'evaluated' THEN vulns.fix_severities ELSE 0::smallint END,
+               vulns.bucket_fix, vulns.bucket_attention, vulns.bucket_low_risk, vulns.bucket_ignorable, vulns.kev_open
           FROM (SELECT DISTINCT unnest(host_ids) AS id) h
           LEFT JOIN LATERAL (
             SELECT count(*) FILTER (WHERE r.result = 'pass')::integer AS passed,
@@ -1326,7 +1374,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
                    count(*) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fixable,
                    count(DISTINCT (f.package, f.architecture)) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fix_packages,
                    COALESCE(bit_or(CASE a.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 4 WHEN 'low' THEN 8 ELSE 16 END)
-                                   FILTER (WHERE f.last_fixed_version IS NOT NULL), 0)::smallint AS fix_severities
+                                   FILTER (WHERE f.last_fixed_version IS NOT NULL), 0)::smallint AS fix_severities,
+                   count(*) FILTER (WHERE f.bucket = 1)::integer AS bucket_fix,
+                   count(*) FILTER (WHERE f.bucket = 2)::integer AS bucket_attention,
+                   count(*) FILTER (WHERE f.bucket = 3)::integer AS bucket_low_risk,
+                   count(*) FILTER (WHERE f.bucket = 4)::integer AS bucket_ignorable,
+                   count(*) FILTER (WHERE f.kev)::integer AS kev_open
               FROM vulnerability_findings f
               JOIN advisories a ON a.id = f.advisory_id
              WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')
@@ -1343,7 +1396,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
       BEGIN
         -- Recomputes the hosts' compliance counts (#193). Called from host_compliance_summaries_flush at commit, which has
         -- already locked these rows in one sorted statement, and by the rebuild and the recount queue. v02 (VT-FIXABLE,
-        -- #256): also the open findings with a fix, their packages, and their severities.
+        -- #256): also the open findings with a fix, their packages, and their severities. v03 (VT-BUCKETS, #259): also the
+        -- open findings per triage bucket and those with the KEV flag.
         IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
           RETURN;
         END IF;
@@ -1358,16 +1412,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
                cis_critical = c.cis_critical, cis_high = c.cis_high, cis_medium = c.cis_medium, cis_low = c.cis_low,
                vuln_critical = c.vuln_critical, vuln_high = c.vuln_high, vuln_medium = c.vuln_medium, vuln_low = c.vuln_low,
                vuln_unknown = c.vuln_unknown, vuln_evaluated = c.vuln_evaluated,
-               vuln_fixable = c.vuln_fixable, vuln_fix_packages = c.vuln_fix_packages, vuln_fix_severities = c.vuln_fix_severities
+               vuln_fixable = c.vuln_fixable, vuln_fix_packages = c.vuln_fix_packages, vuln_fix_severities = c.vuln_fix_severities,
+               vuln_fix = c.vuln_fix, vuln_attention = c.vuln_attention, vuln_low_risk = c.vuln_low_risk, vuln_ignorable = c.vuln_ignorable,
+               vuln_kev_open = c.vuln_kev_open
           FROM host_compliance_counts(host_ids) c
          WHERE s.host_id = c.host_id
            AND (s.cis_passed, s.cis_failed, s.cis_not_readable, s.cis_critical, s.cis_high, s.cis_medium, s.cis_low,
                 s.vuln_critical, s.vuln_high, s.vuln_medium, s.vuln_low, s.vuln_unknown, s.vuln_evaluated,
-                s.vuln_fixable, s.vuln_fix_packages, s.vuln_fix_severities)
+                s.vuln_fixable, s.vuln_fix_packages, s.vuln_fix_severities,
+                s.vuln_fix, s.vuln_attention, s.vuln_low_risk, s.vuln_ignorable, s.vuln_kev_open)
                IS DISTINCT FROM
                (c.cis_passed, c.cis_failed, c.cis_not_readable, c.cis_critical, c.cis_high, c.cis_medium, c.cis_low,
                 c.vuln_critical, c.vuln_high, c.vuln_medium, c.vuln_low, c.vuln_unknown, c.vuln_evaluated,
-                c.vuln_fixable, c.vuln_fix_packages, c.vuln_fix_severities);
+                c.vuln_fixable, c.vuln_fix_packages, c.vuln_fix_severities,
+                c.vuln_fix, c.vuln_attention, c.vuln_low_risk, c.vuln_ignorable, c.vuln_kev_open);
       END;
       $function$
   SQL
@@ -1584,6 +1642,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
         -- vulnerability_findings (statement): a finding opened, reopened, or resolved, an open one moved, or an open one's
         -- fix appeared or disappeared (v04, VT-FIXABLE #256: an advisory import that adds or takes back a fixed version
         -- writes last_fixed_version with no change of state; a fix moving from one version to another changes no count).
+        -- v05 (VT-BUCKETS, #259): or an open one's triage bucket or KEV flag changed (a re-triage, or a host fact).
         ELSIF TG_TABLE_NAME = 'vulnerability_findings' THEN
           IF TG_OP = 'INSERT' THEN
             EXECUTE 'SELECT ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY ($1))' INTO host_ids USING open_states;
@@ -1596,7 +1655,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_257004) do
                   FROM old_rows o JOIN new_rows n ON n.id = o.id, LATERAL (VALUES (o.host_id), (n.host_id)) v(host_id)
                  WHERE (o.state = ANY ($1) OR n.state = ANY ($1))
                    AND ((o.state = ANY ($1)) <> (n.state = ANY ($1)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id
-                        OR (o.last_fixed_version IS NULL) <> (n.last_fixed_version IS NULL)))
+                        OR (o.last_fixed_version IS NULL) <> (n.last_fixed_version IS NULL)
+                        OR o.bucket IS DISTINCT FROM n.bucket OR o.kev IS DISTINCT FROM n.kev))
             $q$ INTO host_ids USING open_states;
           END IF;
         END IF;

@@ -1,0 +1,39 @@
+# Which packages of a distribution can hold the code a finding is about (VT-BUCKETS #259, VT-S05, ADR 0032 point 3),
+# for the triage rules I1, I2, K1, and K2. Keyed by ecosystem family (the part of the OSV ecosystem before ":"), so
+# another distribution (#163) is a change to this file, not to code. Checked when the server starts
+# (VulnerabilityTriage::Applicability.load): a mistake stops it rather than triaging kernels wrongly.
+#
+# kernel:
+#   source: the source package the kernel's advisories name (findings on the signed images carry it too, #270).
+#   image: a pattern for a versioned kernel image package, with the named groups release (what `uname -r` reports
+#     when that image runs) and flavour (images of the same flavour replace each other). Debian: linux-image-<release>
+#     and its -unsigned twin; the release is <version>+deb<N>-<flavour> since trixie and <version>-<ABI>-<flavour>
+#     before (bookworm), so a flavour such as 686-pae is read whole in both. Known limit (#163): bullseye-backports
+#     names (linux-image-6.1.0-0.deb11.17-amd64) do not match, so such a host's kernel reads as unknown and no kernel
+#     rule applies (safe: its images' findings are triaged like any package's). The flavour metapackages
+#     (linux-image-amd64, linux-image-cloud-amd64) have no release in
+#     their name and do not match; nor do the -dbg packages (debug symbols).
+#   compare: how two images' versions are ordered: the package manager's version order (dpkg).
+# no_runtime_code: per source package, patterns for the binary packages that hold none of its code that runs on the
+#   host (rule I2), so their findings are Ignorable.
+#
+# Proposal from #270, built here for the owner to accept or change (vt-buckets.md, "Needs the owner's OK"): the flavour
+# metapackages (linux-image-<flavour>, linux-headers-<flavour>) only depend on the current image, so they are listed
+# among the packages with no runtime code. The running image's findings carry the kernel's work (K1, K2); without this,
+# each metapackage would add a second copy of every kernel finding to Fix available.
+Debian:
+  kernel:
+    source: linux
+    image: '\Alinux-image-(?!.*-dbg\z)(?<release>(?:[0-9][^-+]*-[0-9]+|[0-9][^-]*\+[^-]*)-(?<flavour>[a-z0-9]+(?:-[a-z0-9]+)*?))(?:-unsigned)?\z'
+    compare: dpkg
+  no_runtime_code:
+    linux:
+      - '\Alinux-libc-dev\z'          # the kernel's userspace headers
+      - '\Alinux-headers-'            # headers for building modules, the flavour metapackages included
+      - '\Alinux-kbuild-'
+      - '\Alinux-compiler-'
+      - '\Alinux-doc'
+      - '\Alinux-source'
+      - '\Alinux-support-'
+      - '\Alinux-image-[a-z0-9-]*\z'  # the flavour metapackages (#270 proposal, above): no version in the name
+      - '\Alinux-image-.*-dbg\z'      # debug symbols

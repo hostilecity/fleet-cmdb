@@ -7,7 +7,7 @@
 # the two lists match.
 ActiveSupport.on_load(:active_record) do
   tables = %w[inventory_report_receipts config_report_receipts package_report_receipts inventory_snapshots config_snapshots
-              package_snapshots host_status_events cis_result_changes audit_entries]
+              package_snapshots host_status_events cis_result_changes vulnerability_work_events audit_entries]
   ActiveRecord::SchemaDumper.ignore_tables |= [ /\A(?:#{tables.join('|')})_(?:p\d{8}|default|legacy|new)\z/ ]
 end
 

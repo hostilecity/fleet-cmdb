@@ -24,6 +24,7 @@ module InventoryRecorder
     inventory = HostInventory.find_or_initialize_by(host_id:)
     first = inventory.new_record?
     os_before = inventory.stable&.dig("os")
+    kernel_before = inventory.stable&.dig("kernel_version")
     hash = report.stable_hash
     snapshot = inventory.stable_hash != hash
     if snapshot
@@ -42,6 +43,9 @@ module InventoryRecorder
     # A rule's applies_to depends on the operating system, so a host whose os changes (or is first known) is
     # evaluated again (P2-S06).
     CisEvaluationJob.after_snapshot(host_id) if os_before != report.stable["os"]
+    # The kernel triage rules (I1, K1, K2) read the running kernel, so a new one re-classifies the host (a first inventory
+    # comes before the first package report, which matches the host anyway; VT-BUCKETS #259).
+    VulnerabilityTriage::HostFacts.changed!(host_id) if !first && kernel_before != report.stable["kernel_version"]
     FleetBroadcast.hosts_changed([ host_id ]) if first # the fleet row gains its operating system
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end

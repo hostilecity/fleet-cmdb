@@ -75,6 +75,25 @@ RSpec.describe "Evaluation runs", :signed_in, type: :request do
     expect(flash[:notice]).to eq("Re-matching the affected hosts again.")
   end
 
+  it "shows a re-triage on Data sources, and starts a failed one again there (VT-BUCKETS #259)" do
+    partial = EvaluationRun.create!(kind: "triage", scope: { "reason" => "kev", "prepared" => true, "chunk_runs" => [ 1 ] }, state: "running")
+    get "/evaluation-runs/#{partial.id}/progress"
+    expect(page.at_css("#evaluation_progress_text").text).to start_with("Re-triaging the hosts whose findings' exploitation signals or Debian triage changed")
+    partial.update!(state: "finished", finished_at: Time.current)
+    triage = EvaluationRun.create!(kind: "triage", scope: { "reason" => "all" }, state: "failed")
+    get "/data-sources"
+    node = page.at_css("#evaluation_progress_text")
+    expect(node.text).to start_with("Stopped")
+    expect(node.at_css("button, input[type=submit]").then { |b| b.text.presence || b["value"] }).to eq("Re-triage again")
+    triage.update!(state: "running")
+    get "/evaluation-runs/#{triage.id}/progress"
+    expect(page.at_css("#evaluation_progress_text").text).to start_with("Re-triaging every host's findings")
+    triage.update!(state: "failed")
+    post "/evaluation-runs/#{triage.id}/retry"
+    expect(response).to redirect_to("/data-sources")
+    expect(flash[:notice]).to eq("Re-triaging the affected hosts again.")
+  end
+
   it "starts a failed run of several rules again from the first rule's page, or the rules list when it is gone" do
     several = EvaluationRun.create!(kind: "cis_rules", scope: { "rule_ids" => [ 0 ] }, state: "failed")
     post "/evaluation-runs/#{several.id}/retry"

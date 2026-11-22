@@ -1,5 +1,6 @@
-# One fleet-wide evaluation (#197, P2-S06, P2-S11): a rule change re-evaluating rules on the fleet (cis_rules), or an
-# advisory import re-matching the hosts it affects (advisories). The trigger starts a run once it commits; the run is
+# One fleet-wide evaluation (#197, P2-S06, P2-S11): a rule change re-evaluating rules on the fleet (cis_rules), an
+# advisory import re-matching the hosts it affects (advisories), or a change of exploitation signals or Debian's
+# triage re-triaging the hosts it affects (triage, VT-BUCKETS #259, EvaluationRun::Triage). The trigger starts a run once it commits; the run is
 # split into batches of at most BATCH_SIZE hosts, keyset ranges of host ids, each a job on the evaluation queue
 # (EvaluationRunJob fans out, EvaluationBatchJob runs a batch), so several workers share the work and a failed batch
 # is retried alone.
@@ -14,14 +15,15 @@
 #   same sources), whose remaining batches then do nothing. Results are read under the host lock, so an older run's
 #   batch still working writes the newer rule's results anyway.
 # - Failed: when the fan-out or a batch fails every retry (after_discard on their jobs), the run stops: its remaining
-#   batches are deleted and it is failed, which ends its progress line. The page says so, with a button that starts
-#   the same run again (EvaluationRunsController#retry), and a later run that covers it supersedes it.
+#   batches are deleted (a triage run keeps them) and it is failed, which ends its progress line. The page says so, with
+#   a button that starts the same run again (EvaluationRunsController#retry; a triage run with batches left carries on
+#   from them, EvaluationRun::Triage.retry!), and a later run that covers it supersedes it.
 # - Progress: batches_done of batch_count and hosts_done of host_count, shown where the run was triggered (the rule page,
 #   the Advisory data sources page). The dashboard refreshes once when the run finishes, if what it shows changed.
 # - Runs finished or superseded more than KEPT ago are deleted when a run starts; a failed run is kept until a later
 #   run supersedes it, so a fleet left part-checked stays visible.
 class EvaluationRun < ApplicationRecord
-  KINDS = %w[cis_rules advisories].freeze
+  KINDS = %w[cis_rules advisories triage].freeze
   STATES = %w[queued running finished superseded failed].freeze
   UNFINISHED = %w[queued running].freeze
   # A later run that covers one of these supersedes it.
@@ -30,6 +32,8 @@ class EvaluationRun < ApplicationRecord
   KEPT = 30.days
 
   has_many :batches, class_name: "EvaluationBatch", inverse_of: :evaluation_run, dependent: :delete_all
+  # A triage run's changed chunks (deleted with the run by the foreign key).
+  has_many :triage_chunks, class_name: "TriageRunChunk", inverse_of: :evaluation_run
   belongs_to :superseded_by, class_name: "EvaluationRun", optional: true
 
   validates :kind, inclusion: { in: KINDS }
@@ -53,10 +57,10 @@ class EvaluationRun < ApplicationRecord
     run if run&.shown?
   end
 
-  # The run to show on the Advisory data sources page: the newest unfinished re-matching run, or else the newest
-  # failed one (a later run covering it would have superseded it).
+  # The run to show on the Advisory data sources page: the newest unfinished re-matching or re-triage run, or else the
+  # newest failed one (a later run covering it would have superseded it).
   def self.shown_for_advisories
-    runs = where(kind: "advisories").order(id: :desc)
+    runs = where(kind: %w[advisories triage]).order(id: :desc)
     runs.unfinished.first || runs.find_by(state: "failed")
   end
 
@@ -67,15 +71,28 @@ class EvaluationRun < ApplicationRecord
       run = lock.find_by(id: run_id)
       next unless run&.unfinished?
 
-      run.batches.delete_all
-      run.state = "failed"
-      run.finished_at = Time.current
-      FleetBroadcast.refresh if run.shown_changed
-      run.save!
+      run.fail_locked!
     end
   end
 
-  def work = (kind == "cis_rules" ? CisRules : Advisories).new(scope)
+  # Fails this run, whose row the caller has locked: its remaining batches are deleted, so their jobs do nothing (a
+  # triage run keeps them, so its retry carries on from them: EvaluationRun::Triage.retry!; their jobs check the state
+  # and do nothing meanwhile); what its finished batches changed is refreshed.
+  def fail_locked!
+    batches.delete_all unless kind == "triage"
+    self.state = "failed"
+    self.finished_at = Time.current
+    FleetBroadcast.refresh if shown_changed
+    save!
+  end
+
+  def work
+    case kind
+    when "cis_rules" then CisRules.new(scope)
+    when "triage" then Triage.new(scope, id)
+    else Advisories.new(scope)
+    end
+  end
 
   def unfinished? = UNFINISHED.include?(state)
 
@@ -88,7 +105,10 @@ class EvaluationRun < ApplicationRecord
   def fan_out!
     # The work's own preparation, before the hosts are found (an import matches its changed chunks, ADR 0028); outside
     # the run's lock, since it can take a while. Idempotent, so a retried fan-out may run it again.
-    work.prepare! if state == "queued"
+    if state == "queued"
+      prepared = work.prepare!
+      update!(scope: prepared) if kind == "triage" # the chunks it recorded, so its batches and a retry find its hosts
+    end
     batch_ids = transaction do
       candidates = self.class.where(kind:, state: SUPERSEDABLE).where(id: ...id).select { |run| work.covers?(run.work) }.map(&:id)
       # Every run row this takes, in id order, so two fan-outs never deadlock (this run has the highest id). The states
@@ -125,6 +145,7 @@ class EvaluationRun < ApplicationRecord
   end
 
   def finish!
+    Triage.drop_sets([ id ]) if kind == "triage"
     self.state = "finished"
     self.finished_at = Time.current
     FleetBroadcast.refresh if shown_changed || work.refresh_always?
@@ -151,6 +172,7 @@ class EvaluationRun < ApplicationRecord
     superseded = self.class.where(id: older)
     self.shown_changed ||= superseded.where(shown_changed: true, state: UNFINISHED).exists? # a failed run refreshed when it failed
     EvaluationBatch.where(evaluation_run_id: older).delete_all
+    Triage.drop_sets(older) if kind == "triage"
     superseded.update_all(state: "superseded", superseded_by_id: id, finished_at: Time.current, updated_at: Time.current)
     save!
   end

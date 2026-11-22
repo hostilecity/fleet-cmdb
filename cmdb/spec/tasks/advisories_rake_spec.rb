@@ -270,4 +270,22 @@ RSpec.describe "vulnerabilities rake tasks" do
       expect(EvaluationRun.count).to eq(0)
     end
   end
+
+  it "vulnerabilities:validate_triage_checks says what it validated (VT-BUCKETS #259)" do
+    Rake::Task["vulnerabilities:validate_triage_checks"].reenable
+    expect { Rake::Task["vulnerabilities:validate_triage_checks"].invoke }
+      .to output("chunk_matches_base_valid: already validated\nvulnerability_findings_bucket_valid: already validated\n").to_stdout
+  end
+
+  describe "vulnerabilities:triage (VT-BUCKETS #259)" do
+    include ActiveJob::TestHelper
+
+    it "queues a background re-triage of every host" do
+      Rake::Task["vulnerabilities:triage"].reenable
+      expect { Rake::Task["vulnerabilities:triage"].invoke }.to output(/\AQueued re-triage \d+ of every host: its progress is on the Data sources page\.\n\z/).to_stdout
+      run = EvaluationRun.sole
+      expect(run).to have_attributes(kind: "triage", scope: { "reason" => "all" })
+      expect(EvaluationRunJob).to have_been_enqueued.with(run.id)
+    end
+  end
 end

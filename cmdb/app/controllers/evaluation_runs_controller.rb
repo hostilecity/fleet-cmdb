@@ -19,8 +19,9 @@ class EvaluationRunsController < ApplicationController
     run = EvaluationRun.find(params[:id])
     return redirect_to(page_for(run), alert: "That run did not fail, so there is nothing to start again.") unless run.failed?
 
-    EvaluationRun.start!(run.kind, run.scope)
-    redirect_to page_for(run), notice: run.kind == "cis_rules" ? "Checking every host again." : "Re-matching the affected hosts again."
+    run.kind == "triage" ? EvaluationRun::Triage.retry!(run) : EvaluationRun.start!(run.kind, run.scope)
+    notice = { "cis_rules" => "Checking every host again.", "triage" => "Re-triaging the affected hosts again." }.fetch(run.kind, "Re-matching the affected hosts again.")
+    redirect_to page_for(run), notice:
   end
 
   private
@@ -29,7 +30,7 @@ class EvaluationRunsController < ApplicationController
 
   # The page the run's progress is shown on: its rule's (the first, for a rules file import), or Data sources.
   def page_for(run)
-    return data_sources_path if run.kind == "advisories"
+    return data_sources_path if %w[advisories triage].include?(run.kind)
 
     rule = CisRule.find_by(id: Array(run.scope["rule_ids"]).first)
     rule ? rule_path(rule) : rules_path
