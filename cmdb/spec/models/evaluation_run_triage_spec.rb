@@ -78,13 +78,13 @@ RSpec.describe EvaluationRun::Triage do
   end
 
   # Re-check of #277, S2: a run still preparing may refresh after a covering run read the bases, so only a run that
-  # carries its id (it adopted the run, or is a retry from its scope) covers it.
-  it "covers a run that is not prepared only when it carries its id, never just for being full" do
+  # carries its id (a retry from its scope) covers it.
+  it "covers a run that is not prepared only when it carries its id, never just for being full" do # M10
     preparing = run("kev").tap { |r| r.update!(scope: r.scope.merge("chunk_runs" => [ r.id ])) }
     full = described_class.new({ "reason" => "all", "prepared" => true, "chunk_runs" => [ 0 ] }, 0)
     expect(full.covers?(preparing.work)).to be(false)
-    adopting = described_class.new({ "reason" => "repair", "prepared" => true, "chunk_runs" => [ preparing.id ] }, 0)
-    expect(adopting.covers?(preparing.work)).to be(true)
+    retrying = described_class.new({ "reason" => "kev", "prepared" => true, "chunk_runs" => [ preparing.id ] }, 0) # a retry from its scope
+    expect(retrying.covers?(preparing.work)).to be(true)
     expect(full.covers?(described_class.new({ "reason" => "kev", "prepared" => true, "chunk_runs" => [ 5 ], "advisory_ids" => [ 1 ] }, 5))).to be(true)
   end
 end

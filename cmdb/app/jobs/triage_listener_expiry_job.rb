@@ -1,17 +1,21 @@
 # Re-triages the hosts whose listener evidence (VT-APPLICABILITY, rule N5; owner decision 2026-11-21) turned 24 hours
-# old since the last run (VulnerabilityTriage::LISTENER_FRESH), so a finding escalated by a listener that has not been
-# seen again falls back to the rules without it. Hourly (config/recurring.yml); each run covers the hour before it and
-# overlaps the last by EXPIRY_OVERLAP, so a late run misses nothing (a host re-triaged twice changes nothing the second
-# time). Does nothing until #258 sets VulnerabilityTriage::HostFacts.listener_source.
+# old (VulnerabilityTriage::LISTENER_FRESH), so a finding escalated by a scan that has not been repeated falls back to
+# the rules without it. Hourly (config/recurring.yml). Each run covers from where the last one stopped (a checkpoint in
+# the cache; an hour back without one) to now - 24 hours, so a late or skipped run leaves no gap: evidence escalates
+# for 24 hours to about 25. The hosts are queued in jobs of BATCH, so a mass expiry after an outage is many short jobs,
+# each retried alone. Does nothing until #258 sets VulnerabilityTriage::HostFacts.listener_source.
 class TriageListenerExpiryJob < ApplicationJob
   queue_as :default
 
-  EXPIRY_OVERLAP = 10.minutes
+  CHECKPOINT = "triage/listener_expiry/to".freeze
+  BATCH = 1_000
 
   def perform(now: Time.current)
-    ids = VulnerabilityTriage::HostFacts.listener_hosts_expiring(from: now - VulnerabilityTriage::LISTENER_FRESH - 1.hour - EXPIRY_OVERLAP,
-                                                                 to: now - VulnerabilityTriage::LISTENER_FRESH)
-    VulnerabilityMatchJob.perform_later(host_ids: ids.uniq.sort) if ids.any?
+    to = now - VulnerabilityTriage::LISTENER_FRESH
+    from = Rails.cache.read(CHECKPOINT) || to - 1.hour
+    ids = VulnerabilityTriage::HostFacts.listener_hosts_expiring(from:, to:).uniq.sort
+    ids.each_slice(BATCH) { |slice| VulnerabilityMatchJob.perform_later(host_ids: slice) }
+    Rails.cache.write(CHECKPOINT, to)
     ids
   end
 end
