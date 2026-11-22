@@ -903,11 +903,11 @@ in_use_reported() {
     in_use '.in_use.libraries' | jq -e '[.[] | select(.package == "fvt-idlelib")] == []' > /dev/null \
         || fail "fvt-idlelib, which no running process maps, is listed"
     # Positive evidence only (owner decision 2026-11-21): what processes holding a listening socket map.
-    in_use '.in_use.loaded_by_listeners' | jq -e --arg lan "$lan:18081/tcp" 'any(.[]; .package == "fvt-netlib" and .class == "network" and .service == "fvt-lan.service" and .sockets == [$lan]) and any(.[]; .package == "fvt-lolib" and .class == "loopback" and .service == "fvt-lo.service" and .sockets == ["127.0.0.1:18080/tcp"])' > /dev/null \
+    in_use '.in_use.loaded_by_listeners' | jq -e --arg lan "$lan:18081/tcp" 'any(.[]; (.packages | index("fvt-netlib")) and .class == "network" and .service == "fvt-lan.service" and .sockets == [$lan]) and any(.[]; (.packages | index("fvt-lolib")) and .class == "loopback" and .service == "fvt-lo.service" and .sockets == ["127.0.0.1:18080/tcp"])' > /dev/null \
         || fail "the libraries the listening test services map are not named with their class, unit, and socket: $(in_use .in_use.loaded_by_listeners | head -c 600)"
-    in_use '.in_use.loaded_by_listeners' | jq -e '[.[] | select(.listener == "openssh-server" and .class == "network" and (.service | test("^ssh")) and any(.sockets[]; endswith(":22/tcp")))] | any(.package == "openssh-server") and any(.package == "libc6")' > /dev/null \
+    in_use '.in_use.loaded_by_listeners' | jq -e 'any(.[]; .listener == "openssh-server" and .class == "network" and (.service | test("^ssh")) and any(.sockets[]; endswith(":22/tcp")) and (.packages | index("openssh-server")) and (.packages | index("libc6")))' > /dev/null \
         || fail "sshd and the libc it maps are not named as loaded by a network listener on port 22: $(in_use .in_use.loaded_by_listeners | head -c 600)"
-    in_use '.in_use.loaded_by_listeners' | jq -e '[.[] | select(.package == "fvt-lib" or .package == "fvt-idlelib")] == []' > /dev/null \
+    in_use '.in_use.loaded_by_listeners' | jq -e 'all(.[]; (.packages | index("fvt-lib") | not) and (.packages | index("fvt-idlelib") | not))' > /dev/null \
         || fail "a library no listening process maps is named as loaded by a listener: $(in_use .in_use.loaded_by_listeners | head -c 600)"
     in_use '.in_use.scanned_at | type == "string"' | grep -qx true || fail "no scanned_at"
     echo "CPU: the agent since its start, the scan unit's run included in the elapsed time above: $(vm 'systemctl show -p CPUUsageNSec --value fleet-agent') ns"

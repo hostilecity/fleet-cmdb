@@ -371,6 +371,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_258001) do
     t.string "stale_libraries", default: [], null: false, array: true
     t.jsonb "loaded_by_listeners", default: [], null: false
     t.datetime "library_scanned_at"
+    t.datetime "library_scan_received_at"
     t.datetime "in_use_changed_at"
     t.check_constraint "in_use_reported = (library_scan IS NOT NULL)", name: "host_applicability_in_use_reported"
     t.check_constraint "jsonb_typeof(loaded_by_listeners) = 'array'::text", name: "host_applicability_loaded_by_listeners_array"

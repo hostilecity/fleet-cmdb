@@ -113,27 +113,35 @@ pub struct Library {
     pub stale: bool,
 }
 
-/// One package a process that holds a listening socket maps a file of.
+/// The processes of one program and unit that hold a listening socket, and the packages they map (owner
+/// decision 2026-11-21; stored this way, one entry per listener, since the fifth review of #268, N6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListenerUse {
-    pub package: String,
-    /// The package of that process's program; `None` when no package owns it.
+    /// The package of those processes' program; `None` when no package owns it.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub listener: Option<String>,
-    /// That process's systemd unit (`ssh.service`, a socket unit, `init.scope`), from
-    /// `/proc/<pid>/cgroup`; `None` outside `system.slice` and `init.scope`.
+    /// Their systemd unit (`ssh.service`, a socket unit, `init.scope`), from `/proc/<pid>/cgroup`;
+    /// `None` outside `system.slice` and `init.scope`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub service: Option<String>,
-    /// `network` when one of the sockets it holds is on a non-loopback address, else `loopback`.
+    /// `network` when one of the sockets they hold is on a non-loopback address, else `loopback`.
     pub class: String,
-    /// The listening sockets those processes hold, `address:port/protocol`, sorted, at most
-    /// [`MAX_SOCKETS_PER_USE`] (network ones first, so a truncated list still shows them).
+    /// The listening sockets they hold, `address:port/protocol`, network ones first, then by text, at
+    /// most [`MAX_SOCKETS_PER_USE`]; a UDP socket on an ephemeral port (a client's, [`EPHEMERAL`]) is
+    /// left out, so the list stays stable (fifth review, N3), and the list may then be empty.
     pub sockets: Vec<String>,
+    /// Every package that lists a file they map, sorted.
+    pub packages: Vec<String>,
 }
 
 /// What one scan found.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Output {
     pub libraries: Vec<Library>,
-    pub loaded_by_listeners: Vec<ListenerUse>,
+    /// `None` when this kernel cannot tell which processes hold a socket (its `fdinfo` has no `ino:`,
+    /// before Linux 5.14): nothing is then escalated (fifth review, S4). The key is required.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub loaded_by_listeners: Option<Vec<ListenerUse>>,
 }
 
 /// A scan's result and when it ran, kept for an hour (owner decision 2026-11-20).
@@ -328,37 +336,47 @@ pub fn parse_output(output: &[u8]) -> Result<Output, String> {
     check_output(parsed)
 }
 
-/// An [`Output`] as the contract allows it: valid package names, a package once in `libraries` and a
-/// (package, listener) pair once in `loaded_by_listeners`, a known class, within the limits, sorted. Used
-/// on the scan's output and on a kept record alike.
+/// An [`Output`] as the contract allows it: valid package names, a package once in `libraries`, a
+/// (listener, service) once in `loaded_by_listeners` with known class, valid sockets, and its packages
+/// each once, within the limits, sorted. Used on the scan's output and on a kept record alike.
 pub fn check_output(mut parsed: Output) -> Result<Output, String> {
     let mut seen = HashSet::new();
-    let mut seen_uses = HashSet::new();
     let valid = crate::packages::valid_name;
+    let bad = || Err("the library scan's result does not fit the contract".to_owned());
     if parsed.libraries.len() > MAX_LIBRARIES
-        || parsed.loaded_by_listeners.len() > MAX_LISTENER_USES
         || parsed
             .libraries
             .iter()
             .any(|l| !valid(&l.package) || !seen.insert(l.package.clone()))
-        || parsed.loaded_by_listeners.iter().any(|u| {
-            !valid(&u.package)
-                || u.listener.as_deref().is_some_and(|l| !valid(l))
-                || u.service.as_deref().is_some_and(|s| !unit_name(s))
-                || !matches!(u.class.as_str(), "network" | "loopback")
-                || u.sockets.is_empty()
-                || u.sockets.len() > MAX_SOCKETS_PER_USE
-                || u.sockets.iter().any(|s| !socket_text(s))
-                || u.sockets.iter().collect::<HashSet<_>>().len() != u.sockets.len()
-                || !seen_uses.insert((u.package.clone(), u.listener.clone(), u.service.clone()))
-        })
     {
-        return Err("the library scan's result does not fit the contract".into());
+        return bad();
     }
     parsed.libraries.sort_by(|a, b| a.package.cmp(&b.package));
-    parsed.loaded_by_listeners.sort_by(|a, b| {
-        (&a.package, &a.listener, &a.service).cmp(&(&b.package, &b.listener, &b.service))
-    });
+    if let Some(uses) = &mut parsed.loaded_by_listeners {
+        let mut seen = HashSet::new();
+        let total: usize = uses.iter().map(|u| u.packages.len()).sum();
+        if uses.len() > MAX_LISTENERS
+            || total > MAX_LISTENER_USES
+            || uses.iter().any(|u| {
+                u.listener.as_deref().is_some_and(|l| !valid(l))
+                    || u.service.as_deref().is_some_and(|s| !unit_name(s))
+                    || !matches!(u.class.as_str(), "network" | "loopback")
+                    || u.sockets.len() > MAX_SOCKETS_PER_USE
+                    || u.sockets.iter().any(|s| !socket_text(s))
+                    || u.sockets.iter().collect::<HashSet<_>>().len() != u.sockets.len()
+                    || u.packages.is_empty()
+                    || u.packages.iter().any(|p| !valid(p))
+                    || u.packages.iter().collect::<HashSet<_>>().len() != u.packages.len()
+                    || !seen.insert((u.listener.clone(), u.service.clone()))
+            })
+        {
+            return bad();
+        }
+        for u in uses.iter_mut() {
+            u.packages.sort();
+        }
+        uses.sort_by(|a, b| (&a.listener, &a.service).cmp(&(&b.listener, &b.service)));
+    }
     Ok(parsed)
 }
 
@@ -407,8 +425,14 @@ impl Host for ScanHost {
     fn link(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
         std::fs::read_link(path)
     }
-    fn socket_mount(&self) -> std::io::Result<u64> {
-        crate::facts::host::socket_mount()
+    fn own_socket_fdinfo(&self) -> std::io::Result<String> {
+        crate::facts::host::own_socket_fdinfo()
+    }
+    fn head(&self, path: &std::path::Path, bytes: usize) -> std::io::Result<Vec<u8>> {
+        crate::fsx::read_prefix(path, bytes)
+    }
+    fn identity(&self, path: &std::path::Path) -> std::io::Result<(u64, u64)> {
+        crate::facts::host::identity(path)
     }
 }
 
@@ -442,10 +466,21 @@ pub const MAX_OTHER_PATHS: usize = 50_000;
 /// Most open file descriptors looked at, across all processes, to find the ones that hold a listening
 /// socket.
 pub const MAX_DESCRIPTORS: usize = 500_000;
-/// Most entries in `loaded_by_listeners`, the contract's limit.
-pub const MAX_LISTENER_USES: usize = 20_000;
+/// Most entries in `loaded_by_listeners` (one per listening program and unit), and most packages named
+/// across them: the contract's limits.
+pub const MAX_LISTENERS: usize = 1_000;
+pub const MAX_LISTENER_USES: usize = 50_000;
 /// Most sockets named per entry.
 pub const MAX_SOCKETS_PER_USE: usize = 4;
+/// How much of a descriptor's `fdinfo` is read: `pos`, `flags`, `mnt_id`, and `ino` are its first four
+/// lines, and an epoll or inotify descriptor's can be far longer (fifth review, B1).
+const FDINFO_HEAD: usize = 256;
+/// UDP ports a client socket is bound to when it does not choose one: Linux's default
+/// `ip_local_port_range` (the scan cannot read `/proc/sys`). Left out of `sockets`, not out of
+/// detection (fifth review, N3).
+pub const EPHEMERAL: std::ops::RangeInclusive<u16> = 32768..=60999;
+/// The most a listener's mapped files are held before they are deduplicated.
+const DEDUP_AT: usize = 65_536;
 
 /// The host's listening sockets: those of pid 1's network namespace. The scan's own namespace is empty
 /// (`PrivateNetwork=yes`), and a process in another namespace (a container) holds sockets these files do
@@ -502,17 +537,18 @@ fn socket_name(socket: &super::sockets::Socket) -> String {
     )
 }
 
-/// The `listening` sockets process `pid` holds: empty when none (or it ended meanwhile). A descriptor is
-/// a socket when its `fdinfo` shows the socket filesystem's mount (`socket_mount`) and the socket's inode;
-/// `/proc/<pid>/fd` itself needs `CAP_DAC_READ_SEARCH` for another user's process, `fdinfo` only ptrace
-/// access. `seen` counts the descriptors looked at, across processes.
-fn holds<'a>(
+/// The `listening` sockets process `pid` holds, by inode: empty when none (or it ended meanwhile). A
+/// descriptor is a socket when its `fdinfo` shows the socket filesystem's mount (`socket_mount`) and the
+/// socket's inode; `/proc/<pid>/fd` itself needs `CAP_DAC_READ_SEARCH` for another user's process,
+/// `fdinfo` only ptrace access. Only its head is read ([`FDINFO_HEAD`]). `seen` counts the descriptors
+/// looked at, across processes.
+pub fn holds(
     ctx: &Ctx,
     pid: &str,
-    listening: &'a HashMap<u64, super::sockets::Socket>,
+    listening: &HashMap<u64, super::sockets::Socket>,
     socket_mount: u64,
     seen: &mut usize,
-) -> Result<Vec<&'a super::sockets::Socket>, String> {
+) -> Result<Vec<u64>, String> {
     let dir = format!("/proc/{pid}/fdinfo");
     let fds = match ctx.list(&dir, MAX_DESCRIPTORS) {
         Ok(fds) => fds,
@@ -528,24 +564,38 @@ fn holds<'a>(
     let mut found = Vec::new();
     for fd in fds {
         let path = format!("{dir}/{fd}");
-        let bytes = match ctx.read(&path, 64 * 1024) {
+        let bytes = match ctx.head(&path, FDINFO_HEAD) {
             Ok(bytes) => bytes,
             // Closed meanwhile, or the process ended.
             Err(e) if gone(&e) => continue,
             Err(e) => return Err(crate::facts::io_reason(&path, &e)),
         };
-        let text = String::from_utf8_lossy(&bytes);
-        let field = crate::facts::host::fdinfo_field;
-        let (Some(mount), Some(inode)) = (field(&text, "mnt_id"), field(&text, "ino")) else {
-            return Err(format!("{path} has no mnt_id or ino"));
-        };
-        if mount == socket_mount
-            && let Some(socket) = listening.get(&inode)
-        {
-            found.push(socket);
+        let (mount, inode) =
+            fdinfo_ids(&bytes).ok_or_else(|| format!("{path} has no mnt_id or ino"))?;
+        if mount == socket_mount && listening.contains_key(&inode) {
+            found.push(inode);
         }
     }
+    found.sort_unstable();
+    found.dedup();
     Ok(found)
+}
+
+/// `mnt_id` and `ino` from the head of an `fdinfo` file.
+fn fdinfo_ids(head: &[u8]) -> Option<(u64, u64)> {
+    let text = String::from_utf8_lossy(head);
+    let field = crate::facts::host::fdinfo_field;
+    Some((field(&text, "mnt_id")?, field(&text, "ino")?))
+}
+
+/// The socket filesystem's mount, from the scan's own socket's `fdinfo`; `None` when this kernel's
+/// `fdinfo` has no `ino:` line (before Linux 5.14, Debian 11's 5.10 for one), so no descriptor can be
+/// matched to a socket (fifth review, S4).
+fn socket_mount(ctx: &Ctx) -> Result<Option<u64>, String> {
+    let head = ctx
+        .own_socket_fdinfo()
+        .map_err(|e| format!("the socket filesystem cannot be named: {e}"))?;
+    Ok(fdinfo_ids(head.as_bytes()).map(|(mount, _)| mount))
 }
 
 /// The systemd unit of process `pid`, from its cgroup v2 path (`0::/system.slice/ssh.service`):
@@ -569,15 +619,85 @@ fn unit_of_process(ctx: &Ctx, pid: &str) -> Result<Option<String>, String> {
     })
 }
 
-/// A process that holds a listening socket: whether one is on the network, the sockets, its program,
-/// its unit, and what it maps.
+/// The processes of one program and unit holding the same listening sockets (a prefork server's
+/// children, fifth review S1), and the files they map, as indices into the scan's paths.
 struct Listener {
-    network: bool,
-    /// (on loopback, `address:port/protocol`).
-    sockets: Vec<(bool, String)>,
-    program: Option<String>,
-    service: Option<String>,
-    files: Vec<String>,
+    sockets: Vec<u64>,
+    files: Vec<u32>,
+}
+
+impl Listener {
+    fn add(&mut self, files: &[u32]) {
+        self.files.extend_from_slice(files);
+        if self.files.len() > DEDUP_AT {
+            self.files.sort_unstable();
+            self.files.dedup();
+        }
+    }
+}
+
+/// Each path once, with an index, whether a process maps a deleted version of it, and how many are
+/// package-managed (fifth review, S1: no process holds a copy of a path).
+#[derive(Default)]
+struct Paths {
+    index: HashMap<String, u32>,
+    stale: Vec<bool>,
+    managed: usize,
+    other: usize,
+}
+
+impl Paths {
+    fn intern(&mut self, path: String, deleted: bool) -> u32 {
+        if let Some(&i) = self.index.get(&path) {
+            self.stale[i as usize] |= deleted;
+            return i;
+        }
+        if package_managed(&path) {
+            self.managed += 1;
+        } else {
+            self.other += 1;
+        }
+        let i = self.stale.len() as u32;
+        self.index.insert(path, i);
+        self.stale.push(deleted);
+        i
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.managed > MAX_PATHS {
+            return Err(format!(
+                "processes map more than {MAX_PATHS} files under /usr, /bin, /sbin, and /lib, more than the scan reads"
+            ));
+        }
+        if self.other > MAX_OTHER_PATHS {
+            return Err(format!(
+                "processes map more than {MAX_OTHER_PATHS} files elsewhere, more than the scan reads"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The paths in index order.
+    fn into_vec(self) -> (Vec<String>, Vec<bool>) {
+        let mut paths = vec![String::new(); self.stale.len()];
+        for (path, i) in self.index {
+            paths[i as usize] = path;
+        }
+        (paths, self.stale)
+    }
+}
+
+/// Whether process `pid` sees the host's filesystem: its root is pid 1's. A container (Docker or
+/// Podman with host networking) maps its own files under the same paths, which the host's dpkg lists
+/// would wrongly name, so its processes are skipped (fifth review, S3). A sandboxed service has its own
+/// mount namespace but the host's root, so it counts.
+fn host_root(ctx: &Ctx, pid: &str, host: (u64, u64)) -> Result<Option<bool>, String> {
+    let path = format!("/proc/{pid}/root");
+    match ctx.identity(&path) {
+        Ok(id) => Ok(Some(id == host)),
+        Err(e) if gone(&e) => Ok(None),
+        Err(e) => Err(crate::facts::io_reason(&path, &e)),
+    }
 }
 
 /// The scan itself, on any host, within [`BUDGET`].
@@ -602,15 +722,20 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
     }
     let sockets = listening_sockets(&ctx)?;
     let socket_mount = if sockets.is_empty() {
-        0
+        Some(0)
     } else {
-        ctx.socket_mount()
-            .map_err(|e| format!("the socket filesystem cannot be named: {e}"))?
+        socket_mount(&ctx)?
     };
-    // Path -> mapped deleted (stale) by any process, and how many of them are package-managed.
-    let mut mapped: BTreeMap<String, bool> = BTreeMap::new();
-    let (mut managed, mut other) = (0usize, 0usize);
-    let mut listeners: Vec<Listener> = Vec::new();
+    let host = if sockets.is_empty() {
+        (0, 0)
+    } else {
+        ctx.identity("/proc/1/root")
+            .map_err(|e| crate::facts::io_reason("/proc/1/root", &e))?
+    };
+    let mut paths = Paths::default();
+    // (program, unit, sockets held) -> the processes' files.
+    type Key = (Option<String>, Option<String>, Vec<u64>);
+    let mut listeners: HashMap<Key, Listener> = HashMap::new();
     let mut descriptors = 0usize;
     for pid in &pids {
         let path = format!("/proc/{pid}/maps");
@@ -619,36 +744,22 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             Err(e) if gone(&e) => continue,
             Err(e) => return Err(crate::facts::io_reason(&path, &e)),
         };
-        let files = parse_maps(&bytes);
-        for (file, deleted) in &files {
-            let entry = mapped.entry(file.clone());
-            if matches!(entry, std::collections::btree_map::Entry::Vacant(_)) {
-                if package_managed(file) {
-                    managed += 1;
-                } else {
-                    other += 1;
-                }
-            }
-            *entry.or_insert(false) |= deleted;
-        }
-        if managed > MAX_PATHS {
-            return Err(format!(
-                "processes map more than {MAX_PATHS} files under /usr, /bin, /sbin, and /lib, more than the scan reads"
-            ));
-        }
-        if other > MAX_OTHER_PATHS {
-            return Err(format!(
-                "processes map more than {MAX_OTHER_PATHS} files elsewhere, more than the scan reads"
-            ));
-        }
+        let files: Vec<u32> = parse_maps(&bytes)
+            .into_iter()
+            .map(|(file, deleted)| paths.intern(file, deleted))
+            .collect();
+        drop(bytes);
+        paths.check()?;
+        let Some(socket_mount) = socket_mount else {
+            continue;
+        };
         if sockets.is_empty() {
             continue;
         }
         let held = holds(&ctx, pid, &sockets, socket_mount, &mut descriptors)?;
-        if held.is_empty() {
+        if held.is_empty() || host_root(&ctx, pid, host)? != Some(true) {
             continue;
         }
-        let network = held.iter().any(|s| !s.loopback());
         let exe = format!("/proc/{pid}/exe");
         let program = match ctx.link(&exe) {
             Ok(target) => Some(target.trim_end_matches(" (deleted)").to_owned()),
@@ -657,66 +768,94 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             Err(e) => return Err(crate::facts::io_reason(&exe, &e)),
         };
         let service = unit_of_process(&ctx, pid)?;
-        listeners.push(Listener {
-            network,
-            sockets: held
-                .iter()
-                .map(|s| (s.loopback(), socket_name(s)))
-                .collect(),
-            program,
-            service,
-            files: files.into_iter().map(|(file, _)| file).collect(),
-        });
+        listeners
+            .entry((program, service, held.clone()))
+            .or_insert_with(|| Listener {
+                sockets: held,
+                files: Vec::new(),
+            })
+            .add(&files);
     }
+    let (paths, stale) = paths.into_vec();
 
     // One pass over dpkg's file lists: every package that lists a mapped file or a listener's program (a
-    // diverted or shared file marks each of them, review of #268, S7).
-    let mut wanted: HashSet<String> = mapped.keys().cloned().collect();
-    wanted.extend(listeners.iter().filter_map(|l| l.program.clone()));
-    let lookup = super::owners::lookup(&wanted);
-    let mut owners: HashMap<String, BTreeSet<String>> = HashMap::new();
+    // diverted or shared file marks each of them, review of #268, S7). Packages are numbered.
+    let mut programs: Vec<String> = listeners.keys().filter_map(|k| k.0.clone()).collect();
+    programs.sort();
+    programs.dedup();
+    let mut lookup: HashMap<std::borrow::Cow<str>, Vec<u32>> = HashMap::new();
+    let all = paths.len() as u32;
+    for (i, path) in paths.iter().chain(programs.iter()).enumerate() {
+        for alias in super::owners::aliases(path) {
+            let key = if alias == *path {
+                std::borrow::Cow::Borrowed(path.as_str())
+            } else {
+                std::borrow::Cow::Owned(alias)
+            };
+            lookup.entry(key).or_default().push(i as u32);
+        }
+    }
+    let mut names: Vec<String> = Vec::new();
+    let mut owners: Vec<Vec<u32>> = vec![Vec::new(); paths.len() + programs.len()];
     super::owners::each_list(&ctx, |package, lines| {
+        let mut number = None;
         for line in lines {
-            if let Some(originals) = lookup.get(line.as_ref()) {
-                for original in originals {
-                    owners
-                        .entry((*original).clone())
-                        .or_default()
-                        .insert(package.to_owned());
+            if let Some(found) = lookup.get(line.as_ref()) {
+                let n = *number.get_or_insert_with(|| {
+                    names.push(package.to_owned());
+                    (names.len() - 1) as u32
+                });
+                for &i in found {
+                    let owned = &mut owners[i as usize];
+                    if !owned.contains(&n) {
+                        owned.push(n);
+                    }
                 }
             }
         }
         true
     })?;
+    drop(lookup);
+    // A package's lists for several architectures are numbered once each; their names are the same.
+    let name = |n: &u32| names[*n as usize].clone();
     let mut packages: BTreeMap<String, bool> = BTreeMap::new();
-    for (file, deleted) in &mapped {
-        for package in owners.get(file).into_iter().flatten() {
-            *packages.entry(package.clone()).or_insert(false) |= deleted;
+    for (i, deleted) in stale.iter().enumerate() {
+        for n in &owners[i] {
+            *packages.entry(name(n)).or_insert(false) |= deleted;
         }
     }
-    // (package, the listener's package, its unit) -> on the network, and the sockets (network ones
-    // first, then by name).
-    type Key = (String, Option<String>, Option<String>);
-    let mut uses: BTreeMap<Key, (bool, BTreeSet<(bool, String)>)> = BTreeMap::new();
-    for listener in &listeners {
-        let named = listener
-            .program
-            .as_ref()
-            .and_then(|p| owners.get(p))
-            .and_then(|set| set.iter().next().cloned());
-        for file in &listener.files {
-            for package in owners.get(file).into_iter().flatten() {
-                let entry = uses
-                    .entry((package.clone(), named.clone(), listener.service.clone()))
-                    .or_default();
-                entry.0 |= listener.network;
-                entry.1.extend(listener.sockets.iter().cloned());
+    if packages.len() > MAX_LIBRARIES {
+        return Err(format!(
+            "processes map files of more than {MAX_LIBRARIES} packages, more than the contract allows"
+        ));
+    }
+    let program_owner = |program: &Option<String>| {
+        let i = programs.binary_search(program.as_ref()?).ok()?;
+        owners[all as usize + i].iter().map(name).min()
+    };
+    // (the listener's package, unit) -> network, sockets (on loopback, name), packages.
+    type Use = (bool, BTreeSet<(bool, String)>, BTreeSet<String>);
+    let mut uses: BTreeMap<(Option<String>, Option<String>), Use> = BTreeMap::new();
+    for ((program, service, _), mut listener) in listeners {
+        listener.files.sort_unstable();
+        listener.files.dedup();
+        let entry = uses.entry((program_owner(&program), service)).or_default();
+        for inode in &listener.sockets {
+            let socket = &sockets[inode];
+            entry.0 |= !socket.loopback();
+            if !(socket.udp && EPHEMERAL.contains(&socket.port)) {
+                entry.1.insert((socket.loopback(), socket_name(socket)));
             }
         }
+        for file in &listener.files {
+            entry.2.extend(owners[*file as usize].iter().map(name));
+        }
     }
-    if packages.len() > MAX_LIBRARIES || uses.len() > MAX_LISTENER_USES {
+    uses.retain(|_, (_, _, packages)| !packages.is_empty());
+    let total: usize = uses.values().map(|u| u.2.len()).sum();
+    if uses.len() > MAX_LISTENERS || total > MAX_LISTENER_USES {
         return Err(format!(
-            "more than {MAX_LIBRARIES} packages to name, more than the contract allows"
+            "listening processes map more than {MAX_LISTENER_USES} packages, or there are more than {MAX_LISTENERS} listening programs, more than the contract allows"
         ));
     }
     Ok(Output {
@@ -724,22 +863,23 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             .into_iter()
             .map(|(package, stale)| Library { package, stale })
             .collect(),
-        loaded_by_listeners: uses
-            .into_iter()
-            .map(
-                |((package, listener, service), (network, sockets))| ListenerUse {
-                    package,
-                    listener,
-                    service,
-                    class: if network { "network" } else { "loopback" }.into(),
-                    sockets: sockets
-                        .into_iter()
-                        .take(MAX_SOCKETS_PER_USE)
-                        .map(|(_, name)| name)
-                        .collect(),
-                },
-            )
-            .collect(),
+        loaded_by_listeners: socket_mount.map(|_| {
+            uses.into_iter()
+                .map(
+                    |((listener, service), (network, sockets, packages))| ListenerUse {
+                        listener,
+                        service,
+                        class: if network { "network" } else { "loopback" }.into(),
+                        sockets: sockets
+                            .into_iter()
+                            .take(MAX_SOCKETS_PER_USE)
+                            .map(|(_, name)| name)
+                            .collect(),
+                        packages: packages.into_iter().collect(),
+                    },
+                )
+                .collect()
+        }),
     })
 }
 

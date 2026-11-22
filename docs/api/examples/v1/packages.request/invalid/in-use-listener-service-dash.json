@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "agent_version": "0.2.0",
-  "report_id": "00000000-0000-4000-8000-000000000012",
+  "report_id": "00000000-0000-4000-8000-000000000079",
   "collected_at": "2026-01-01T12:00:00Z",
   "manager": "dpkg",
   "unsupported_reason": null,
@@ -86,7 +86,32 @@
         "stale": true
       }
     ],
-    "loaded_by_listeners": null,
+    "loaded_by_listeners": [
+      {
+        "listener": "openssh-server",
+        "service": "ssh.service",
+        "class": "loopback",
+        "sockets": [
+          "127.0.0.1:22/tcp"
+        ],
+        "packages": [
+          "libc6"
+        ]
+      },
+      {
+        "listener": "samba",
+        "service": "-x.service",
+        "class": "network",
+        "sockets": [
+          "0.0.0.0:445/tcp"
+        ],
+        "packages": [
+          "libc6",
+          "libssl3t64",
+          "samba"
+        ]
+      }
+    ],
     "scanned_at": "2026-01-01T11:30:00Z",
     "complete": true
   },

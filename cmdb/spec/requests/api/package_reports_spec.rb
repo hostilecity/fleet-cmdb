@@ -435,19 +435,26 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
                                         library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ])
     end
 
-    it "stores what listening processes load, each (package, listener, service) once, network if either entry is, sorted" do
+    it "stores what listening processes load, one entry per listener and unit, merged and sorted" do # fifth review, N2, N6
       uses = scanned["in_use"]["loaded_by_listeners"]
-      first = uses.first
-      shuffled = uses.reverse + [ first.merge("class" => "network", "sockets" => [ "0.0.0.0:22/tcp" ]),
-                                  { "package" => "libc6", "listener" => nil, "service" => nil, "class" => "loopback", "sockets" => [ "127.0.0.1:631/tcp" ] } ]
-      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => shuffled)))
+      samba = uses.last
+      duplicate = samba.merge("class" => "loopback", "sockets" => [ "127.0.0.1:139/tcp", "192.0.2.10:139/tcp" ], "packages" => [ "zlib1g" ])
+      unnamed = { "listener" => nil, "service" => nil, "class" => "loopback", "sockets" => [ "127.0.0.1:631/tcp" ], "packages" => [ "libc6" ] }
+      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => [ duplicate, *uses.reverse, unnamed ])))
       expect(response).to have_http_status(:ok)
-      expect(stored.loaded_by_listeners).to eq([ { "package" => "libc6", "listener" => nil, "service" => nil, "class" => "loopback", "sockets" => [ "127.0.0.1:631/tcp" ] },
-                                                 first.merge("class" => "network", "sockets" => first["sockets"] + [ "0.0.0.0:22/tcp" ]), *uses.drop(1) ])
-      now = Time.iso8601("2026-01-01T12:00:00Z")
+      expect(stored.loaded_by_listeners).to eq([ unnamed, uses.first,
+                                                 samba.merge("sockets" => [ "0.0.0.0:445/tcp", "192.0.2.10:139/tcp", "127.0.0.1:139/tcp" ],
+                                                             "packages" => (samba["packages"] + [ "zlib1g" ]).sort) ])
+      now = Time.current
       expect(stored.in_use_by_listener?("libssl3t64", now:, network: true)).to be(true)
-      expect(stored.listener_details("libssl3t64", now:)).to eq([ { "listener" => "samba", "service" => "smbd.service", "class" => "network",
-                                                                    "sockets" => [ "0.0.0.0:445/tcp" ] } ])
+      expect(stored.listener_details("libssl3t64", now:).first).to include("listener" => "samba", "service" => "smbd.service", "class" => "network")
+    end
+
+    it "refuses a socket whose address cannot be read, and writes nothing" do # fifth review, N4
+      bad = scanned["in_use"]["loaded_by_listeners"].map { |use| use.merge("sockets" => [ "[1:2:3:4:5:6:7:8:9]:22/tcp" ]) }
+      expect { send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => bad))) }.not_to change(HostApplicability, :count)
+      expect_error(:bad_request, "validation_failed")
+      expect(response.body).to include("/in_use/loaded_by_listeners/0/sockets/0")
     end
 
     it "writes only when what is in use changes" do

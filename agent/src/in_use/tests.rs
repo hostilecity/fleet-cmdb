@@ -22,6 +22,10 @@ struct TestHost {
     denied: std::collections::HashSet<String>,
     /// Symlinks (`/proc/<pid>/exe`): path -> target.
     links: HashMap<String, String>,
+    /// `identity` answers: path -> (device, inode); any other path is (1, 2), pid 1's root.
+    roots: HashMap<String, (u64, u64)>,
+    /// A kernel before 5.14, whose fdinfo has no `ino:`.
+    old_kernel: bool,
     log: Mutex<Vec<String>>,
 }
 
@@ -101,8 +105,45 @@ impl Host for TestHost {
             .unwrap_or(Err(RunError::NotInstalled(first)))
     }
     /// The socket filesystem is mount 8 here; other files are on mount 25.
-    fn socket_mount(&self) -> io::Result<u64> {
-        Ok(8)
+    fn own_socket_fdinfo(&self) -> io::Result<String> {
+        Ok(if self.old_kernel {
+            "pos:	0
+flags:	02
+mnt_id:	8
+"
+            .into()
+        } else {
+            "pos:	0
+flags:	02
+mnt_id:	8
+ino:	99
+"
+            .into()
+        })
+    }
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        let shown = path.to_string_lossy().into_owned();
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("head {shown} {bytes}"));
+        if self.denied.contains(&shown) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        let mut all = self
+            .files
+            .get(&shown)
+            .cloned()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        all.truncate(bytes);
+        Ok(all)
+    }
+    fn identity(&self, path: &Path) -> io::Result<(u64, u64)> {
+        let path = path.to_string_lossy().into_owned();
+        if self.denied.contains(&path) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(self.roots.get(&path).copied().unwrap_or((1, 2)))
     }
     fn link(&self, path: &Path) -> io::Result<std::path::PathBuf> {
         let path = path.to_string_lossy().into_owned();
@@ -1249,7 +1290,7 @@ fn the_scan_names_packages_in_use_and_stale_ones() {
     // Process 933 ended between the listing and its read: skipped.
     let host = scan_host();
     let output = scan::scan(&host).unwrap();
-    let libraries = output.libraries;
+    let libraries = output.libraries.clone();
     assert_eq!(
         libraries,
         [
@@ -1273,43 +1314,54 @@ fn the_scan_names_packages_in_use_and_stale_ones() {
     );
     // Mapped by a process that holds no listening socket: in `libraries` only.
     assert!(libraries.iter().any(|l| l.package == "libidle"));
-    type Use<'a> = (
-        &'a str,
-        Option<&'a str>,
-        Option<&'a str>,
-        &'a str,
-        Vec<&'a str>,
+    assert_eq!(
+        uses(&output),
+        [
+            // 900's program is owned by no package (and was replaced: " (deleted)"), and it has no
+            // cgroup file (it ended, or a kernel without cgroup v2).
+            (
+                None,
+                None,
+                "loopback",
+                vec!["127.0.0.1:8080/tcp"],
+                vec!["libc6"]
+            ),
+            (
+                Some("openssh-server"),
+                Some("ssh.service"),
+                "network",
+                vec!["0.0.0.0:22/tcp"],
+                vec!["libc6", "libssl3t64", "openssh-server"]
+            ),
+        ]
     );
-    let uses: Vec<Use> = output
+}
+
+type Use<'a> = (
+    Option<&'a str>,
+    Option<&'a str>,
+    &'a str,
+    Vec<&'a str>,
+    Vec<&'a str>,
+);
+
+/// `loaded_by_listeners` as (listener, service, class, sockets, packages).
+fn uses(output: &scan::Output) -> Vec<Use<'_>> {
+    output
         .loaded_by_listeners
+        .as_ref()
+        .expect("listeners")
         .iter()
         .map(|u| {
             (
-                u.package.as_str(),
                 u.listener.as_deref(),
                 u.service.as_deref(),
                 u.class.as_str(),
                 u.sockets.iter().map(String::as_str).collect(),
+                u.packages.iter().map(String::as_str).collect(),
             )
         })
-        .collect();
-    let sshd = (
-        Some("openssh-server"),
-        Some("ssh.service"),
-        "network",
-        vec!["0.0.0.0:22/tcp"],
-    );
-    assert_eq!(
-        uses,
-        [
-            // 900's program is owned by no package (and was replaced: " (deleted)"), and it has no
-            // cgroup file (it ended, or a kernel without cgroup v2).
-            ("libc6", None, None, "loopback", vec!["127.0.0.1:8080/tcp"]),
-            ("libc6", sshd.0, sshd.1, sshd.2, sshd.3.clone()),
-            ("libssl3t64", sshd.0, sshd.1, sshd.2, sshd.3.clone()),
-            ("openssh-server", sshd.0, sshd.1, sshd.2, sshd.3),
-        ]
-    );
+        .collect()
 }
 
 #[test]
@@ -1319,18 +1371,15 @@ fn a_process_holding_network_and_loopback_sockets_is_network() {
     host = host.file("/proc/1/net/tcp6", &tcp6());
     let output = scan::scan(&host).unwrap();
     // The network socket is named first.
-    assert!(output.loaded_by_listeners.contains(&scan::ListenerUse {
-        package: "libc6".into(),
-        listener: None,
-        service: None,
-        class: "network".into(),
-        sockets: vec!["[::]:22/tcp".into(), "127.0.0.1:8080/tcp".into()],
-    }));
-    assert!(
-        !output
-            .loaded_by_listeners
-            .iter()
-            .any(|u| u.class == "loopback")
+    assert_eq!(
+        uses(&output)[0],
+        (
+            None,
+            None,
+            "network",
+            vec!["[::]:22/tcp", "127.0.0.1:8080/tcp"],
+            vec!["libc6"]
+        )
     );
 }
 
@@ -1340,7 +1389,7 @@ fn without_listening_sockets_no_descriptor_is_read() {
         .file("/proc/1/net/tcp", TCP_HEADER)
         .file("/proc/1/net/udp", TCP_HEADER);
     let output = scan::scan(&host).unwrap();
-    assert!(output.loaded_by_listeners.is_empty());
+    assert_eq!(output.loaded_by_listeners, Some(vec![]));
     assert!(!output.libraries.is_empty());
     assert!(
         !host.log().iter().any(|l| l.contains("/fdinfo")),
@@ -1357,17 +1406,15 @@ fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
     host.dirs.remove("/proc/900/fdinfo");
     host.links.remove("/proc/812/exe");
     let output = scan::scan(&host).unwrap();
-    assert!(
-        output
-            .loaded_by_listeners
-            .iter()
-            .all(|u| u.listener.is_none())
-    );
-    assert!(
-        output
-            .loaded_by_listeners
-            .iter()
-            .any(|u| u.package == "openssh-server")
+    assert_eq!(
+        uses(&output),
+        [(
+            None,
+            Some("ssh.service"),
+            "network",
+            vec!["0.0.0.0:22/tcp"],
+            vec!["libc6", "libssl3t64", "openssh-server"]
+        )]
     );
     // Anything else that cannot be read fails it, rather than report part of the listeners.
     for denied in [
@@ -1375,13 +1422,14 @@ fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
         "/proc/812/fdinfo/3",
         "/proc/812/exe",
         "/proc/812/cgroup",
+        "/proc/812/root",
         "/proc/1/net/tcp",
     ] {
         let mut host = scan_host();
         host.denied.insert(denied.into());
         assert!(scan::scan(&host).unwrap_err().contains(denied), "{denied}");
     }
-    // An fdinfo without its mount or inode (an older kernel) fails it too.
+    // An fdinfo without its mount or inode fails it too (this kernel's own socket had them).
     let mut host = scan_host();
     host.files.insert(
         "/proc/812/fdinfo/3".into(),
@@ -1392,6 +1440,137 @@ fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
     let mut host = scan_host();
     host.files.remove("/proc/1/net/udp");
     assert!(scan::scan(&host).unwrap_err().contains("/proc/1/net/udp"));
+}
+
+#[test]
+fn only_the_head_of_a_long_fdinfo_is_read() {
+    // Fifth review, B1: an epoll descriptor's fdinfo has a line per registered descriptor.
+    let mut host = scan_host();
+    let mut long = String::from("pos:\t0\nflags:\t02\nmnt_id:\t8\nino:\t1001\n");
+    for i in 0..5_000 {
+        long.push_str(&format!(
+            "tfd: {i:8} events:       19 data: {i:16x}  pos:0 ino:{i:x} sdev:8\n"
+        ));
+    }
+    assert!(long.len() > 300_000);
+    host.files
+        .insert("/proc/812/fdinfo/3".into(), long.into_bytes());
+    assert_eq!(uses(&scan::scan(&host).unwrap()).len(), 2);
+    assert!(
+        host.log()
+            .iter()
+            .any(|l| l == "head /proc/812/fdinfo/3 256"),
+        "{:?}",
+        host.log()
+    );
+}
+
+#[test]
+fn a_kernel_whose_fdinfo_has_no_inode_escalates_nothing() {
+    // Fifth review, S4: before Linux 5.14 (Debian 11's 5.10).
+    let mut host = scan_host();
+    host.old_kernel = true;
+    let output = scan::scan(&host).unwrap();
+    assert_eq!(output.loaded_by_listeners, None);
+    assert!(!output.libraries.is_empty(), "libraries are still listed");
+    assert!(
+        !host.log().iter().any(|l| l.contains("/fdinfo/")),
+        "no descriptor is read"
+    );
+}
+
+#[test]
+fn a_process_with_another_root_is_not_a_listener() {
+    // Fifth review, S3: a container with host networking holds the host's sockets, but its files are
+    // not the host's packages.
+    let mut host = scan_host();
+    host.roots.insert("/proc/812/root".into(), (66, 2));
+    let output = scan::scan(&host).unwrap();
+    assert_eq!(
+        uses(&output),
+        [(
+            None,
+            None,
+            "loopback",
+            vec!["127.0.0.1:8080/tcp"],
+            vec!["libc6"]
+        )]
+    );
+    assert!(
+        output
+            .libraries
+            .iter()
+            .any(|l| l.package == "openssh-server")
+    );
+}
+
+#[test]
+fn processes_of_one_program_and_unit_are_one_listener() {
+    // Fifth review, S1 and N6: prefork children (same program, unit, and sockets) are merged as they
+    // are read, and entries are per (listener, unit).
+    let mut host = scan_host();
+    for pid in ["813", "814"] {
+        host.dirs.get_mut("/proc").unwrap().push(pid.into());
+        host = host
+            .file(
+                &format!("/proc/{pid}/maps"),
+                "7f00-7f01 r--p 0 fe:01 5555 /usr/lib/libidle.so.1\n",
+            )
+            .file(
+                &format!("/proc/{pid}/cgroup"),
+                "0::/system.slice/ssh.service\n",
+            );
+        host.links
+            .insert(format!("/proc/{pid}/exe"), "/usr/sbin/sshd".into());
+        fdinfo(&mut host, pid, &[("3", 8, 1001)]);
+    }
+    // 814 is in another unit: its own entry.
+    host = host.file("/proc/814/cgroup", "0::/system.slice/ssh-alt.service\n");
+    let output = scan::scan(&host).unwrap();
+    assert_eq!(
+        uses(&output)[1..],
+        [
+            (
+                Some("openssh-server"),
+                Some("ssh-alt.service"),
+                "network",
+                vec!["0.0.0.0:22/tcp"],
+                vec!["libidle"]
+            ),
+            (
+                Some("openssh-server"),
+                Some("ssh.service"),
+                "network",
+                vec!["0.0.0.0:22/tcp"],
+                vec!["libc6", "libidle", "libssl3t64", "openssh-server"]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_udp_socket_on_an_ephemeral_port_is_detected_but_not_named() {
+    // Fifth review, N3: a client's autobound port changes whenever it re-creates the socket.
+    let mut host = scan_host().file(
+        "/proc/1/net/udp",
+        &format!(
+            "{TCP_HEADER}   1: 00000000:9C40 00000000:0000 07 00000000:00000000 00:00000000 00000000   0        0 4001 2 0 0\n"
+        ),
+    );
+    fdinfo(&mut host, "950", &[("5", 8, 4001)]);
+    let output = scan::scan(&host).unwrap();
+    // 950 (no package's program, no unit) joins 900's entry: network now, though its socket on an
+    // ephemeral UDP port is not named.
+    assert_eq!(
+        uses(&output)[0],
+        (
+            None,
+            None,
+            "network",
+            vec!["127.0.0.1:8080/tcp"],
+            vec!["libc6", "libidle"]
+        )
+    );
 }
 
 #[test]
@@ -1410,13 +1589,8 @@ fn at_most_four_sockets_are_named_network_ones_first() {
     ];
     fdinfo(&mut host, "812", &more);
     let output = scan::scan(&host).unwrap();
-    let sshd = output
-        .loaded_by_listeners
-        .iter()
-        .find(|u| u.package == "openssh-server")
-        .unwrap();
     assert_eq!(
-        sshd.sockets,
+        uses(&output)[1].3,
         [
             "0.0.0.0:22/tcp",
             "0.0.0.0:5432/tcp",
@@ -1439,16 +1613,12 @@ fn descriptors_and_listener_uses_are_bounded() {
 }
 
 #[test]
-fn a_socket_inode_comes_only_from_a_socket_link() {
+fn only_a_descriptor_on_the_socket_filesystem_is_a_socket() {
     let host = scan_host();
     let output = scan::scan(&host).unwrap();
-    // 950 holds socket 1006, an established connection, which is not listening.
-    assert!(
-        !output
-            .loaded_by_listeners
-            .iter()
-            .any(|u| u.package == "libidle")
-    );
+    // 950 holds socket 1006, an established connection, which is not listening, and a file whose
+    // inode number is 1001 on another mount.
+    assert!(!uses(&output).iter().any(|u| u.4.contains(&"libidle")));
 }
 
 #[test]
@@ -1494,10 +1664,10 @@ fn a_damaged_but_parseable_record_means_a_new_scan() {
     for record in [
         serde_json::json!({"ran_at": ran, "at": "yesterday", "output": {"libraries": [], "loaded_by_listeners": []}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "../x", "stale": false}], "loaded_by_listeners": []}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "NOT A NAME", "listener": null, "class": "network", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"listener": null, "service": null, "class": "network", "sockets": ["0.0.0.0:22/tcp"], "packages": ["NOT A NAME"]}]}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": many, "loaded_by_listeners": []}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "network", "service": null, "sockets": ["0.0.0.0:22/tcp"]}, {"package": "a", "listener": "b", "class": "loopback", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "lan", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"listener": "b", "service": null, "class": "network", "sockets": ["0.0.0.0:22/tcp"], "packages": ["a"]}, {"listener": "b", "service": null, "class": "network", "sockets": ["0.0.0.0:22/tcp"], "packages": ["a"]}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"listener": "b", "service": null, "class": "lan", "sockets": ["0.0.0.0:22/tcp"], "packages": ["a"]}]}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": []}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": "x".repeat(600)}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": ""}),
@@ -1510,7 +1680,7 @@ fn a_damaged_but_parseable_record_means_a_new_scan() {
     }
     // A sound record is reused.
     let dir = crate::test_support::TempDir::new();
-    let sound = serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "libc6", "stale": false}], "loaded_by_listeners": [{"package": "libc6", "listener": "openssh-server", "class": "network", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null});
+    let sound = serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "libc6", "stale": false}], "loaded_by_listeners": [{"listener": "openssh-server", "service": "ssh.service", "class": "network", "sockets": ["0.0.0.0:22/tcp"], "packages": ["libc6"]}]}, "error": null});
     std::fs::write(dir.path(scan::RECORD), sound.to_string()).unwrap();
     assert_eq!(
         scan::Memo::in_dir(&dir.path(""))
@@ -1613,22 +1783,34 @@ fn the_scan_unit_alone_carries_the_capability_and_has_no_network() {
 #[test]
 fn the_scan_result_is_checked_against_the_contract() {
     let ok = scan::parse_output(
-        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}],"loaded_by_listeners":[{"package":"openssl","listener":"nginx","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libc6","listener":null,"class":"loopback","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libc6","listener":"nginx","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}],"loaded_by_listeners":[{"listener":"nginx","service":"nginx.service","class":"network","sockets":["0.0.0.0:443/tcp"],"packages":["openssl","libc6"]},{"listener":null,"service":null,"class":"loopback","sockets":[],"packages":["libc6"]}]}"#,
     )
     .unwrap();
     assert_eq!(ok.libraries[0].package, "libc6");
-    let order: Vec<(&str, Option<&str>)> = ok
+    let order: Vec<(Option<&str>, Vec<&str>)> = ok
         .loaded_by_listeners
+        .as_ref()
+        .unwrap()
         .iter()
-        .map(|u| (u.package.as_str(), u.listener.as_deref()))
+        .map(|u| {
+            (
+                u.listener.as_deref(),
+                u.packages.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
     assert_eq!(
         order,
         [
-            ("libc6", None),
-            ("libc6", Some("nginx")),
-            ("openssl", Some("nginx"))
+            (None, vec!["libc6"]),
+            (Some("nginx"), vec!["libc6", "openssl"])
         ]
+    );
+    assert_eq!(
+        scan::parse_output(br#"{"libraries":[],"loaded_by_listeners":null}"#)
+            .unwrap()
+            .loaded_by_listeners,
+        None
     );
     for bad in [
         &br#"not json"#[..],
@@ -1637,18 +1819,22 @@ fn the_scan_result_is_checked_against_the_contract() {
         br#"{"libraries":[{"package":"Bad","stale":false}],"loaded_by_listeners":[]}"#,
         br#"{"libraries":[{"package":"a","stale":false},{"package":"a","stale":true}],"loaded_by_listeners":[]}"#,
         br#"{"libraries":[{"package":"a"}],"loaded_by_listeners":[]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"b","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"a","listener":"b","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"Bad","listener":null,"class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"Bad","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"lan","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":[]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["1.2.3.4:1/tcp","1.2.3.4:2/tcp","1.2.3.4:3/tcp","1.2.3.4:4/tcp","1.2.3.4:5/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["0.0.0.0:22/sctp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["host:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["0.0.0.0:22/tcp","0.0.0.0:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":"../x","sockets":["0.0.0.0:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":"x.timer","sockets":["0.0.0.0:22/tcp"]}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]},{"listener":"b","service":null,"class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["Bad"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"Bad","service":null,"class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"lan","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["1.2.3.4:1/tcp","1.2.3.4:2/tcp","1.2.3.4:3/tcp","1.2.3.4:4/tcp","1.2.3.4:5/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["0.0.0.0:22/sctp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["host:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["0.0.0.0:22/tcp","0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":"../x","class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":"x.timer","class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":"-x.service","class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"service":null,"class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["0.0.0.0:22/tcp"],"packages":[]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"listener":"b","service":null,"class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["a","a"]}]}"#,
     ] {
         assert!(scan::parse_output(bad).is_err(), "{}", String::from_utf8_lossy(bad));
     }
@@ -1658,7 +1844,7 @@ fn the_scan_result_is_checked_against_the_contract() {
 fn with_the_scan_on_the_report_is_complete() {
     let host = debian_host().command(
         "--unit=fleet-agent-library-scan.service",
-        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}],"loaded_by_listeners":[{"package":"libc6","listener":"openssh-server","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libssl3t64","listener":"openssh-server","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libc6","listener":null,"class":"loopback","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#),
+        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}],"loaded_by_listeners":[{"listener":"openssh-server","service":"ssh.service","class":"network","sockets":["0.0.0.0:22/tcp"],"packages":["libc6","libssl3t64"]},{"listener":null,"service":null,"class":"loopback","sockets":["127.0.0.1:631/tcp"],"packages":["libc6"]}]}"#),
     );
     let found = collect(
         &host,
@@ -1671,8 +1857,28 @@ fn with_the_scan_on_the_report_is_complete() {
     assert_eq!(in_use.library_scan, "ran");
     assert!(in_use.complete);
     assert_eq!(in_use.libraries.as_ref().unwrap().len(), 2);
-    assert_eq!(in_use.loaded_by_listeners.as_ref().unwrap().len(), 3);
+    assert_eq!(in_use.loaded_by_listeners.as_ref().unwrap().len(), 2);
     assert!(in_use.scanned_at.is_some());
+    contract::assert_conforms("v1", "packages.request", &report_with(&found));
+}
+
+#[test]
+fn on_a_kernel_that_cannot_tell_listeners_the_report_says_so_and_escalates_nothing() {
+    // Fifth review, S4.
+    let host = debian_host().command(
+        "--unit=fleet-agent-library-scan.service",
+        Ok(r#"{"libraries":[{"package":"libc6","stale":false}],"loaded_by_listeners":null}"#),
+    );
+    let found = collect(
+        &host,
+        &Scan::On(Ok("/usr/lib/fleet-agent/current/fleet-agent".into())),
+        &mut scan::Memo::default(),
+        None,
+    );
+    let in_use = found.in_use.as_ref().unwrap();
+    assert_eq!((in_use.library_scan, in_use.complete), ("ran", true));
+    assert_eq!(in_use.loaded_by_listeners, None);
+    assert_eq!(found.warnings, [super::UNSUPPORTED_KERNEL]);
     contract::assert_conforms("v1", "packages.request", &report_with(&found));
 }
 
@@ -1702,7 +1908,7 @@ fn the_scan_runs_at_most_once_an_hour_however_often_reports_are_asked_for() {
     let scanned = |n| scan::Scanned {
         result: Ok(scan::Output {
             libraries: vec![],
-            loaded_by_listeners: vec![],
+            loaded_by_listeners: Some(vec![]),
         }),
         at: format!("{n}"),
     };
@@ -1734,7 +1940,7 @@ fn scanned_as(at: &str) -> scan::Scanned {
                 package: "libc6".into(),
                 stale: false,
             }],
-            loaded_by_listeners: vec![],
+            loaded_by_listeners: Some(vec![]),
         }),
         at: at.into(),
     }
@@ -1949,8 +2155,14 @@ fn cpu_on_this_host() {
         fn link(&self, p: &Path) -> io::Result<std::path::PathBuf> {
             scan::ScanHost(self.0.clone()).link(p)
         }
-        fn socket_mount(&self) -> io::Result<u64> {
-            crate::facts::host::socket_mount()
+        fn own_socket_fdinfo(&self) -> io::Result<String> {
+            crate::facts::host::own_socket_fdinfo()
+        }
+        fn head(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
+            scan::ScanHost(self.0.clone()).head(p, n)
+        }
+        fn identity(&self, p: &Path) -> io::Result<(u64, u64)> {
+            scan::ScanHost(self.0.clone()).identity(p)
         }
     }
     let host = OwnProcess(host);
@@ -1959,7 +2171,7 @@ fn cpu_on_this_host() {
         Ok(out) => println!(
             "scan: {} libraries, {} loaded by listeners, cpu {:?}, wall {:?}",
             out.libraries.len(),
-            out.loaded_by_listeners.len(),
+            out.loaded_by_listeners.as_ref().map_or(0, Vec::len),
             cpu() - c,
             w.elapsed()
         ),
@@ -1977,10 +2189,42 @@ fn scan_peak_memory_on_a_generated_host() {
     struct Prefixed {
         root: String,
         maps: Vec<u8>,
+        listeners: usize,
+        per: usize,
+        distinct: bool,
     }
     impl Prefixed {
         fn real(&self, p: &Path) -> std::path::PathBuf {
             std::path::PathBuf::from(format!("{}{}", self.root, p.display()))
+        }
+    }
+    impl Prefixed {
+        /// Listening process `pid`'s maps: process 1 maps `maps`, the others `per` files each of the
+        /// first 50,000 generated package files.
+        fn maps_of(&self, pid: usize) -> Vec<u8> {
+            if pid == 1 && !self.maps.is_empty() {
+                return self.maps.clone();
+            }
+            let mut out = Vec::new();
+            for j in 0..self.per {
+                let i = (pid * 7919 + j) % 50_000;
+                out.extend(
+                    format!(
+                        "7f00-7f01 r--p 0 fe:01 1 /usr/share/pkg{:04}/data{:03}\n",
+                        i % 3000,
+                        (i / 3000) % 299
+                    )
+                    .bytes(),
+                );
+            }
+            out
+        }
+        fn pid(p: &Path, suffix: &str) -> Option<usize> {
+            p.to_str()?
+                .strip_prefix("/proc/")?
+                .strip_suffix(suffix)?
+                .parse()
+                .ok()
         }
     }
     impl Host for Prefixed {
@@ -1988,14 +2232,21 @@ fn scan_peak_memory_on_a_generated_host() {
             crate::facts::host::RealHost::new().stat(&self.real(p))
         }
         fn read(&self, p: &Path, m: u64) -> io::Result<Vec<u8>> {
-            // The one fake process maps everything and holds the host's one listening socket.
+            // Every fake process holds the host's one listening socket.
+            if let Some(pid) = Self::pid(p, "/maps") {
+                return Ok(self.maps_of(pid));
+            }
+            if Self::pid(p, "/fdinfo/3").is_some() {
+                return Ok(b"mnt_id:\t8\nino:\t42\n".to_vec());
+            }
+            if Self::pid(p, "/cgroup").is_some() {
+                return Ok(b"0::/system.slice/bench.service\n".to_vec());
+            }
             match p.to_str() {
-                Some("/proc/1/maps") => return Ok(self.maps.clone()),
                 Some("/proc/1/net/tcp") => {
                     return Ok(format!("{TCP_HEADER}   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 42 1 0 100 0 0 10 0\n").into_bytes());
                 }
                 Some("/proc/1/net/udp") => return Ok(TCP_HEADER.as_bytes().to_vec()),
-                Some("/proc/1/fdinfo/3") => return Ok(b"mnt_id:\t8\nino:\t42\n".to_vec()),
                 Some("/proc/1/net/tcp6" | "/proc/1/net/udp6") => {
                     return Err(io::ErrorKind::NotFound.into());
                 }
@@ -2005,9 +2256,9 @@ fn scan_peak_memory_on_a_generated_host() {
         }
         fn list(&self, d: &Path, _: usize) -> io::Result<Vec<String>> {
             if d == Path::new("/proc") {
-                return Ok(vec!["1".into()]);
+                return Ok((1..=self.listeners).map(|p| p.to_string()).collect());
             }
-            if d == Path::new("/proc/1/fdinfo") {
+            if Self::pid(d, "/fdinfo").is_some() {
                 return Ok(vec!["3".into()]);
             }
             let mut names: Vec<String> = std::fs::read_dir(self.real(d))?
@@ -2019,21 +2270,28 @@ fn scan_peak_memory_on_a_generated_host() {
         fn run(&self, _: &Command) -> Result<Vec<u8>, RunError> {
             Err(RunError::NotInstalled("none".into()))
         }
-        fn socket_mount(&self) -> io::Result<u64> {
-            Ok(8)
+        fn own_socket_fdinfo(&self) -> io::Result<String> {
+            Ok("mnt_id:\t8\nino:\t1\n".into())
+        }
+        fn identity(&self, _: &Path) -> io::Result<(u64, u64)> {
+            Ok((1, 2))
         }
         fn link(&self, p: &Path) -> io::Result<std::path::PathBuf> {
-            match p.to_str() {
-                Some("/proc/1/exe") => Ok("/usr/sbin/bench".into()),
-                _ => Err(io::ErrorKind::NotFound.into()),
+            match Self::pid(p, "/exe") {
+                Some(pid) if self.distinct => Ok(format!("/usr/sbin/bench{pid}").into()),
+                Some(_) => Ok("/usr/sbin/bench".into()),
+                None => Err(io::ErrorKind::NotFound.into()),
             }
         }
     }
     let root = std::env::var("FLEET_SCAN_BENCH_ROOT").expect("FLEET_SCAN_BENCH_ROOT");
-    let mapped: usize = std::env::var("FLEET_SCAN_BENCH_MAPPED")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0);
+    let number = |name: &str, default: usize| -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(default)
+    };
+    let mapped = number("FLEET_SCAN_BENCH_MAPPED", 0);
     let mut maps = Vec::new();
     for i in 0..mapped / 2 {
         maps.extend(
@@ -2048,7 +2306,15 @@ fn scan_peak_memory_on_a_generated_host() {
         );
         maps.extend(format!("7f00-7f01 r--p 0 fe:01 1 /home/user/bench/{i}\n").bytes());
     }
-    let host = Prefixed { root, maps };
+    // FLEET_SCAN_BENCH_LISTENERS processes hold the socket, each mapping FLEET_SCAN_BENCH_PER files;
+    // FLEET_SCAN_BENCH_DISTINCT=1 gives each its own program, so none are merged (the worst case).
+    let host = Prefixed {
+        root,
+        maps,
+        listeners: number("FLEET_SCAN_BENCH_LISTENERS", 1),
+        per: number("FLEET_SCAN_BENCH_PER", 0),
+        distinct: number("FLEET_SCAN_BENCH_DISTINCT", 0) == 1,
+    };
     let hwm = || {
         std::fs::read_to_string("/proc/self/status")
             .unwrap()
@@ -2064,7 +2330,7 @@ fn scan_peak_memory_on_a_generated_host() {
     match result {
         Ok(out) => println!(
             "scan: {} loaded by listeners, {} libraries, {elapsed:?}; peak RSS {} (before the reset {rss_before})",
-            out.loaded_by_listeners.len(),
+            out.loaded_by_listeners.as_ref().map_or(0, Vec::len),
             out.libraries.len(),
             hwm()
         ),
@@ -2073,29 +2339,79 @@ fn scan_peak_memory_on_a_generated_host() {
 }
 
 #[test]
-fn the_real_fdinfo_names_a_socket_by_the_socket_filesystem_and_its_inode() {
+fn the_real_fdinfo_finds_a_listener_behind_a_large_epoll_set_and_an_inotify_watch() {
+    // Fifth review, B1: this process's own descriptors, read as the scan reads another's.
     use std::os::fd::AsRawFd;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let fd = listener.as_raw_fd();
-    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).unwrap();
-    let link = std::fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
-    let field = crate::facts::host::fdinfo_field;
-    assert_eq!(
-        field(&text, "mnt_id"),
-        Some(crate::facts::host::socket_mount().unwrap())
-    );
-    assert_eq!(
-        format!("socket:[{}]", field(&text, "ino").unwrap()),
-        link.to_string_lossy()
-    );
-    // A regular file is on another mount.
-    let file = std::fs::File::open("/proc/self/status").unwrap();
-    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).unwrap();
-    assert_ne!(
-        field(&text, "mnt_id"),
-        field(
-            &format!("mnt_id:\t{}", crate::facts::host::socket_mount().unwrap()),
-            "mnt_id"
-        )
-    );
+    let inode: u64 = std::fs::read_link(format!("/proc/self/fd/{}", listener.as_raw_fd()))
+        .unwrap()
+        .to_string_lossy()
+        .trim_start_matches("socket:[")
+        .trim_end_matches(']')
+        .parse()
+        .unwrap();
+    // An epoll set of 1,200 sockets: its fdinfo is far over 64 KiB.
+    // SAFETY: plain system calls on descriptors this test owns.
+    let epoll = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+    assert!(epoll >= 0);
+    let sockets: Vec<std::net::UdpSocket> = (0..1_200)
+        .map(|_| std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
+        .collect();
+    for socket in &sockets {
+        let mut event = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: 0,
+        };
+        let fd = socket.as_raw_fd();
+        assert_eq!(
+            unsafe { libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut event) },
+            0
+        );
+    }
+    let size = std::fs::read(format!("/proc/self/fdinfo/{epoll}"))
+        .unwrap()
+        .len();
+    assert!(size > 64 * 1024, "{size}");
+    // An inotify descriptor with watches.
+    let dir = crate::test_support::TempDir::new();
+    let inotify = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+    assert!(inotify >= 0);
+    for i in 0..50 {
+        let path = dir.path(&format!("d{i}"));
+        std::fs::create_dir(&path).unwrap();
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert!(unsafe { libc::inotify_add_watch(inotify, c.as_ptr(), libc::IN_CREATE) } >= 0);
+    }
+    let host = scan::ScanHost(crate::facts::host::RealHost::new());
+    let ctx = crate::facts::Ctx::new(&host, std::time::Duration::from_secs(30));
+    let listening: HashMap<u64, sockets::Socket> = [(
+        inode,
+        sockets::Socket {
+            inode,
+            address: "127.0.0.1".parse().unwrap(),
+            port: listener.local_addr().unwrap().port(),
+            udp: false,
+        },
+    )]
+    .into();
+    let mount = crate::facts::host::fdinfo_field(
+        &crate::facts::host::own_socket_fdinfo().unwrap(),
+        "mnt_id",
+    )
+    .unwrap();
+    let mut seen = 0;
+    let held = scan::holds(
+        &ctx,
+        &std::process::id().to_string(),
+        &listening,
+        mount,
+        &mut seen,
+    )
+    .unwrap();
+    assert_eq!(held, [inode]);
+    assert!(seen > 1_200);
+    unsafe {
+        libc::close(epoll);
+        libc::close(inotify);
+    }
 }

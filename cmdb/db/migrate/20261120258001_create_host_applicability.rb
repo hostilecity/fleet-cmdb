@@ -4,8 +4,9 @@
 # processes load). Triage (VT-BUCKETS, #277; VT-SCORES) reads it.
 #
 # Every list is positive evidence only; nothing is called idle from it (owner decision 2026-11-21). loaded_by_listeners
-# holds [{ "package", "listener" (a package or null), "service" (a unit or null), "class" ("network" or "loopback"),
-# "sockets" (at most 4, "address:port/protocol") }], sorted.
+# holds [{ "listener" (a package or null), "service" (a unit or null), "class" ("network" or "loopback"), "sockets" (at
+# most 4, "address:port/protocol"), "packages" }], one per listener and unit, sorted. library_scan_received_at is when
+# the server first received a report carrying that scan (server clock): escalations expire 24 hours after it.
 #
 # One narrow row per host, written only when what it holds changes (as hosts is after #220, ADR 0029): a steady fleet
 # writes nothing here. No row means nothing reported. reboot_required is true or NULL, never false (Debian bug
@@ -28,6 +29,7 @@ class CreateHostApplicability < ActiveRecord::Migration[8.1]
       t.string :stale_libraries, array: true, null: false, default: []
       t.jsonb :loaded_by_listeners, null: false, default: []
       t.datetime :library_scanned_at
+      t.datetime :library_scan_received_at
       t.datetime :in_use_changed_at
       t.check_constraint "reboot_required IS NULL OR reboot_required", name: "host_applicability_reboot_true_or_null"
       t.check_constraint "library_scan IN ('off', 'ran', 'failed')", name: "host_applicability_library_scan_valid"

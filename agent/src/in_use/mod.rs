@@ -65,6 +65,10 @@ use scan::{Library, ListenerUse};
 use sockets::Socket;
 use units::Owner;
 
+/// The warning when the scan ran but this kernel cannot tell which processes hold a socket (fifth
+/// review of #268, S4).
+pub const UNSUPPORTED_KERNEL: &str = "the library scan cannot tell which processes listen on this kernel: its fdinfo has no inode (Linux 5.14 or later is needed, so Debian 11's 5.10 is not enough); no package is escalated";
+
 /// The whole collection's budget, the scan apart.
 pub const BUDGET: Duration = Duration::from_secs(10);
 pub const MAX_SOCKETS: usize = 10_000;
@@ -106,7 +110,8 @@ pub struct InUse {
     pub unnamed_listeners: Unnamed,
     pub library_scan: &'static str,
     pub libraries: Option<Vec<Library>>,
-    /// The packages processes that hold a listening socket map; `None` unless the scan ran.
+    /// The packages processes that hold a listening socket map, by listener; `None` unless the scan ran
+    /// on a kernel that can tell (5.14 or later).
     pub loaded_by_listeners: Option<Vec<ListenerUse>>,
     /// When the scan whose result this is ran, or was last tried; `None` when it is off.
     pub scanned_at: Option<String>,
@@ -156,7 +161,10 @@ pub fn collect(
             Ok(output) => {
                 in_use.library_scan = "ran";
                 in_use.libraries = Some(output.libraries);
-                in_use.loaded_by_listeners = Some(output.loaded_by_listeners);
+                if output.loaded_by_listeners.is_none() {
+                    warnings.push(UNSUPPORTED_KERNEL.into());
+                }
+                in_use.loaded_by_listeners = output.loaded_by_listeners;
                 in_use.complete = true;
             }
             Err(why) => {

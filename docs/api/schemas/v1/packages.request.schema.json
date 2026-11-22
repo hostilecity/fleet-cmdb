@@ -228,27 +228,22 @@
           }
         },
         "loaded_by_listeners": {
-          "description": "With `library_scan: ran`, each binary package that lists a file (ELF or not) mapped by a process holding a listening TCP socket or bound UDP socket of the host's network namespace, with that process's program's package (`listener`, `null` when no package owns the program) and `network` when one of the sockets it holds is on a non-loopback address (including the wildcard), else `loopback`. With the listening process's systemd unit (`service`) and the listening sockets it holds (`sockets`, so a triage reason can name them). Each (package, listener, service) once, sorted by package, then listener, then service (`null` first). Positive evidence only: what the scan misses is not listed. `null` otherwise.",
+          "description": "With `library_scan: ran`, one entry per program and systemd unit whose processes hold a listening TCP socket or bound UDP socket of the host's network namespace: `listener`, the package of the program (`/proc/<pid>/exe`, `null` when no package owns it); `service`, the unit (`null` outside `system.slice` and `init.scope`); `class`, `network` when one of the sockets is on a non-loopback address (including the wildcard), else `loopback`; `sockets`, up to 4 of those listening sockets as `address:port/protocol`, network ones first (a UDP socket on an ephemeral port, 32768 to 60999, is left out, so the list may be empty); and `packages`, every binary package that lists a file (ELF or not) those processes map. Each (listener, service) once, sorted (`null` first). Processes whose root is not the host's (a container with host networking) are left out. Positive evidence only: what the scan misses is not listed. `null` otherwise, and also with `ran` on a kernel whose `fdinfo` has no inode (before Linux 5.14), with a `warnings` entry: nothing is then escalated.",
           "type": [
             "array",
             "null"
           ],
-          "maxItems": 20000,
+          "maxItems": 1000,
           "items": {
             "type": "object",
             "required": [
-              "package",
               "listener",
               "service",
               "class",
-              "sockets"
+              "sockets",
+              "packages"
             ],
             "properties": {
-              "package": {
-                "description": "Binary package name.",
-                "type": "string",
-                "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
-              },
               "listener": {
                 "description": "The package of the listening process's program (`/proc/<pid>/exe`), or `null` when no package owns it.",
                 "type": [
@@ -264,10 +259,10 @@
                   "null"
                 ],
                 "maxLength": 256,
-                "pattern": "^(init\\.scope|[A-Za-z0-9:_@+\\\\-][A-Za-z0-9:_.@+\\\\-]*\\.(service|socket))$"
+                "pattern": "^(init\\.scope|[A-Za-z0-9:_@+\\\\][A-Za-z0-9:_.@+\\\\-]*\\.(service|socket))$"
               },
               "class": {
-                "description": "Where the process's listening sockets are.",
+                "description": "Where the processes' listening sockets are.",
                 "type": "string",
                 "enum": [
                   "network",
@@ -275,15 +270,25 @@
                 ]
               },
               "sockets": {
-                "description": "The listening sockets those processes hold, `address:port/protocol` (`0.0.0.0:22/tcp`, `[::1]:53/udp`): network ones first, then by text, at most 4. This is the only place the report carries addresses and ports (owner decision 2026-11-21, for the triage reason).",
+                "description": "Up to 4 of the listening sockets the processes hold, `address:port/protocol` (`0.0.0.0:22/tcp`, `[::1]:53/udp`), network ones first, then by text. With the listeners' units, the only addresses and ports in the report (owner decision 2026-11-21, for the triage reason).",
                 "type": "array",
-                "minItems": 1,
                 "maxItems": 4,
                 "uniqueItems": true,
                 "items": {
                   "type": "string",
                   "maxLength": 64,
-                  "pattern": "^([0-9.]+|\\[[0-9a-fA-F:.]+\\]):[0-9]{1,5}/(tcp|udp)$"
+                  "pattern": "^(((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|\\[[0-9a-f:.]{2,45}\\]):([0-9]|[1-9][0-9]{1,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])/(tcp|udp)$"
+                }
+              },
+              "packages": {
+                "description": "Binary packages that list a file the processes map, each once, sorted.",
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20000,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
                 }
               }
             }
@@ -322,9 +327,6 @@
               },
               "complete": {
                 "const": true
-              },
-              "loaded_by_listeners": {
-                "type": "array"
               }
             }
           },

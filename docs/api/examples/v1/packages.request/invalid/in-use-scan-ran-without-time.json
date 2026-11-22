@@ -88,39 +88,27 @@
     ],
     "loaded_by_listeners": [
       {
-        "package": "libc6",
         "listener": "openssh-server",
         "service": "ssh.service",
         "class": "loopback",
         "sockets": [
           "127.0.0.1:22/tcp"
+        ],
+        "packages": [
+          "libc6"
         ]
       },
       {
-        "package": "libc6",
         "listener": "samba",
         "service": "smbd.service",
         "class": "network",
         "sockets": [
           "0.0.0.0:445/tcp"
-        ]
-      },
-      {
-        "package": "libssl3t64",
-        "listener": "samba",
-        "service": "smbd.service",
-        "class": "network",
-        "sockets": [
-          "0.0.0.0:445/tcp"
-        ]
-      },
-      {
-        "package": "samba",
-        "listener": "samba",
-        "service": "smbd.service",
-        "class": "network",
-        "sockets": [
-          "0.0.0.0:445/tcp"
+        ],
+        "packages": [
+          "libc6",
+          "libssl3t64",
+          "samba"
         ]
       }
     ],

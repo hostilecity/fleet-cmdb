@@ -160,13 +160,31 @@ pub trait Host: Send + Sync {
         ))
     }
 
-    /// The mount id of the kernel's socket filesystem (`sockfs`), as `/proc/<pid>/fdinfo` shows it, so a
-    /// descriptor's inode is known to be a socket's (the library scan, VT-A02): read from a socket this
-    /// process opens for the purpose. The default says unsupported.
-    fn socket_mount(&self) -> io::Result<u64> {
+    /// The `fdinfo` of a socket this process opens for the purpose, so the scan knows the socket
+    /// filesystem's mount id and whether this kernel's `fdinfo` has `ino:` (the library scan, VT-A02).
+    /// The default says unsupported.
+    fn own_socket_fdinfo(&self) -> io::Result<String> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "this host cannot name the socket filesystem",
+        ))
+    }
+
+    /// The first `bytes` bytes of a file, however long it is (a process's `fdinfo`, the library scan).
+    /// The default reads it through [`Host::read`].
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        let mut all = self.read(path, 64 * 1024 * 1024)?;
+        all.truncate(bytes);
+        Ok(all)
+    }
+
+    /// The device and inode of what `path` leads to (`stat(2)`): a process's root, the library scan.
+    /// The default says unsupported.
+    fn identity(&self, path: &Path) -> io::Result<(u64, u64)> {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot identify files",
         ))
     }
 
@@ -357,8 +375,16 @@ impl Host for RealHost {
         self.bounded(Op::Link, path, |path| fs::read_link(path))
     }
 
-    fn socket_mount(&self) -> io::Result<u64> {
-        socket_mount()
+    fn own_socket_fdinfo(&self) -> io::Result<String> {
+        own_socket_fdinfo()
+    }
+
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        self.bounded(Op::Read, path, move |path| fsx::read_prefix(path, bytes))
+    }
+
+    fn identity(&self, path: &Path) -> io::Result<(u64, u64)> {
+        self.bounded(Op::Stat, path, identity)
     }
 
     fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
@@ -372,12 +398,18 @@ impl Host for RealHost {
     }
 }
 
-/// [`Host::socket_mount`] on this machine: an unbound `AF_UNIX` socket's `mnt_id`.
-pub fn socket_mount() -> io::Result<u64> {
+/// [`Host::own_socket_fdinfo`] on this machine: an unbound `AF_UNIX` socket's.
+pub fn own_socket_fdinfo() -> io::Result<String> {
     use std::os::fd::AsRawFd;
     let socket = std::os::unix::net::UnixDatagram::unbound()?;
-    let text = fs::read_to_string(format!("/proc/self/fdinfo/{}", socket.as_raw_fd()))?;
-    fdinfo_field(&text, "mnt_id").ok_or_else(|| io::Error::other("fdinfo has no mnt_id"))
+    fs::read_to_string(format!("/proc/self/fdinfo/{}", socket.as_raw_fd()))
+}
+
+/// [`Host::identity`] on this machine.
+pub fn identity(path: &Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::metadata(path)?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 /// A number field of a `/proc/<pid>/fdinfo/<fd>` file (`mnt_id:\t8`).

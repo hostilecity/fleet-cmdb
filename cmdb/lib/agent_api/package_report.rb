@@ -1,3 +1,5 @@
+require "ipaddr"
+
 module AgentApi
   # Turns a schema-valid package report (docs/api packages.request) into the set to store, and applies the
   # check the schema cannot express (P2-S08, FR-2.3): a package name and architecture appear at most once
@@ -23,7 +25,7 @@ module AgentApi
     attr_reader :report_id, :schema_version, :collected_at, :manager, :unsupported_reason, :packages, :skipped, :warnings, :in_use
 
     def initialize(payload)
-      problems = duplicates(payload["packages"])
+      problems = duplicates(payload["packages"]) + bad_sockets(payload["in_use"])
       raise ValidationFailed.new(details: problems) if problems.any?
 
       @report_id = payload["report_id"]
@@ -79,14 +81,33 @@ module AgentApi
       }
     end
 
-    # Each (package, listener, service) once, network if any entry is, its sockets merged (at most 4, the agent's
-    # order first), sorted (nil first), so equal reports store equal values and write nothing.
+    # One entry per (listener, service), stored as the agent sends it (fifth review of #268, N6): a duplicate (a
+    # hand-made report; the agent sends none) merges as network if either is, with its packages joined and its sockets
+    # joined network first, then by text, at most 4 (N2). Sorted (nil first), so equal reports store equal values and
+    # write nothing.
     def loaded_by_listeners(uses)
-      Array(uses).group_by { |use| use.values_at("package", "listener", "service") }.map do |(package, listener, service), same|
-        { "package" => package, "listener" => listener, "service" => service,
+      Array(uses).group_by { |use| use.values_at("listener", "service") }.map do |(listener, service), same|
+        { "listener" => listener, "service" => service,
           "class" => same.any? { |use| use["class"] == "network" } ? "network" : "loopback",
-          "sockets" => same.flat_map { |use| use["sockets"] }.uniq.first(4) }
-      end.sort_by { |use| [ use["package"], *use.values_at("listener", "service").flat_map { |v| [ v.nil? ? 0 : 1, v.to_s ] } ] }
+          "sockets" => same.flat_map { |use| use["sockets"] }.uniq.sort_by { |socket| [ loopback?(socket) ? 1 : 0, socket ] }.first(4),
+          "packages" => same.flat_map { |use| use["packages"] }.uniq.sort }
+      end.sort_by { |use| use.values_at("listener", "service").flat_map { |v| [ v.nil? ? 0 : 1, v.to_s ] } }
+    end
+
+    def loopback?(socket) = IPAddr.new(socket_address(socket)).then { |ip| ip.loopback? || (ip.ipv4_mapped? && ip.native.loopback?) }
+
+    def socket_address(socket) = socket.rpartition(":").first.delete_prefix("[").delete_suffix("]")
+
+    # The schema bounds each socket's text; an address IPAddr cannot read is refused too (fifth review, N4).
+    def bad_sockets(in_use)
+      Array(in_use && in_use["loaded_by_listeners"]).each_with_index.flat_map do |use, i|
+        use["sockets"].each_with_index.filter_map do |socket, j|
+          IPAddr.new(socket_address(socket))
+          nil
+        rescue IPAddr::InvalidAddressError
+          { "pointer" => "/in_use/loaded_by_listeners/#{i}/sockets/#{j}", "problem" => "is not an address and port" }
+        end
+      end
     end
 
     def duplicates(packages)

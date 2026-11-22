@@ -260,10 +260,28 @@ impl<'a> Ctx<'a> {
             .map_err(|_| io::Error::other("the link's target is not UTF-8"))
     }
 
-    /// [`Host::socket_mount`], within the budget.
-    pub fn socket_mount(&self) -> io::Result<u64> {
+    /// [`Host::own_socket_fdinfo`], within the budget.
+    pub fn own_socket_fdinfo(&self) -> io::Result<String> {
         self.in_time()?;
-        self.host.socket_mount()
+        self.host.own_socket_fdinfo()
+    }
+
+    /// [`Host::head`], within the budget; refuses secret files.
+    pub fn head(&self, path: &str, bytes: usize) -> io::Result<Vec<u8>> {
+        self.in_time()?;
+        if host::is_secret_path(path) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refused: a secret file",
+            ));
+        }
+        self.host.head(std::path::Path::new(path), bytes)
+    }
+
+    /// [`Host::identity`], within the budget.
+    pub fn identity(&self, path: &str) -> io::Result<(u64, u64)> {
+        self.in_time()?;
+        self.host.identity(std::path::Path::new(path))
     }
 
     /// [`Host::socket_cgroups`], within the budget.

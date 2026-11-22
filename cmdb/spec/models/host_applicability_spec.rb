@@ -7,8 +7,8 @@ RSpec.describe HostApplicability do
 
   def inventory(**fields) = Struct.new(:applicability).new({ "reboot_required" => nil, "reboot_packages" => [], "kernel_build" => nil }.merge(fields.transform_keys(&:to_s)))
   def package_report(in_use) = Struct.new(:in_use).new(in_use)
-  def use(package, listener, klass, service: nil, sockets: [ klass == "network" ? "0.0.0.0:22/tcp" : "127.0.0.1:22/tcp" ])
-    { "package" => package, "listener" => listener, "service" => service, "class" => klass, "sockets" => sockets }
+  def use(packages, listener, klass, service: nil, sockets: [ klass == "network" ? "0.0.0.0:22/tcp" : "127.0.0.1:22/tcp" ])
+    { "listener" => listener, "service" => service, "class" => klass, "sockets" => sockets, "packages" => Array(packages) }
   end
 
   def in_use(**fields)
@@ -51,7 +51,7 @@ RSpec.describe HostApplicability do
                      loaded_by_listeners: [ use("libssl3t64", "samba", "network") ], library_scanned_at: now)
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 2.hours)).to be(true)
     expect(row.reload.packages_in_use).to eq(%w[cron libc6 libssl3t64 samba])
-    expect(row).to have_attributes(stale_libraries: [ "libssl3t64" ], library_scanned_at: now,
+    expect(row).to have_attributes(stale_libraries: [ "libssl3t64" ], library_scanned_at: now, library_scan_received_at: now + 2.hours,
                                    loaded_by_listeners: [ use("libssl3t64", "samba", "network") ])
     version = xmin
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 3.hours)).to be(false)
@@ -65,18 +65,20 @@ RSpec.describe HostApplicability do
   end
 
   # Owner decision 2026-11-21 (after the fourth review of #268): positive evidence only; a package a listening process
-  # loads is escalated while the host's latest scan is at most 24 hours old.
+  # loads is escalated until 24 hours after the server received the report that carried the scan (fifth review, S5).
   describe "#in_use_by_listener?" do
     let(:row) do
       described_class.new(host_id: host.id, **in_use(library_scan: "ran", libraries: %w[libc6 libidle libssl3t64 zlib1g],
-                                                     loaded_by_listeners: [ use("libc6", nil, "loopback"), use("libc6", "openssh-server", "network", service: "ssh.service"),
+                                                     loaded_by_listeners: [ use("libc6", nil, "loopback"),
+                                                                            use(%w[libc6 libssl3t64], "openssh-server", "network", service: "ssh.service"),
                                                                             use("zlib1g", "chrony", "loopback") ],
-                                                     library_scanned_at: now - 50.minutes))
+                                                     library_scanned_at: now - 50.minutes, library_scan_received_at: now - 40.minutes))
     end
 
     it "is true only for a package a listening process loads, and says which listeners" do
       expect(row.in_use_by_listener?("libc6", now:)).to be(true)
       expect(row.in_use_by_listener?("libc6", now:, network: true)).to be(true)
+      expect(row.in_use_by_listener?("libssl3t64", now:, network: true)).to be(true)
       expect(row.in_use_by_listener?("zlib1g", now:)).to be(true)
       expect(row.in_use_by_listener?("zlib1g", now:, network: true)).to be(false) # loopback only
       expect(row.in_use_by_listener?("libidle", now:)).to be(false) # mapped, but by no listening process
@@ -94,14 +96,17 @@ RSpec.describe HostApplicability do
       expect(row.in_use_by_listener?("libc6", now:)).to be(false)
     end
 
-    it "expires when the host's latest scan is more than 24 hours old" do
-      row.library_scanned_at = now - 24.hours
+    it "expires 24 hours after the server received the scan, whatever the agent's clock says" do
+      row.library_scan_received_at = now - 24.hours
       expect(row.in_use_by_listener?("libc6", now:)).to be(true)
       expect(row.in_use_by_listener?("libc6", now: now + 1)).to be(false)
       expect(row.listener_details("libc6", now: now + 1)).to eq([])
-      row.library_scanned_at = now + 2.hours # an agent clock ahead
+      row.library_scan_received_at = now - 1.hour
+      row.library_scanned_at = now - 3.days # an agent clock behind
       expect(row.in_use_by_listener?("libc6", now:)).to be(true)
-      row.library_scanned_at = nil
+      row.library_scanned_at = now + 3.days # and ahead
+      expect(row.in_use_by_listener?("libc6", now: now + 25.hours)).to be(false)
+      row.library_scan_received_at = nil
       expect(row.in_use_by_listener?("libc6", now:)).to be(false)
     end
 
@@ -111,6 +116,25 @@ RSpec.describe HostApplicability do
       row.library_scan = "off"
       expect(row.in_use_by_listener?("libc6", now:)).to be(false)
     end
+  end
+
+  it "starts the expiry when the server first receives a scan, not again for a report that reuses it" do # fifth review, S5
+    skewed = now - 2.days # the agent's clock, two days behind
+    scanned = in_use(library_scan: "ran", loaded_by_listeners: [ use("libc6", "samba", "network") ], library_scanned_at: skewed)
+    described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now:)
+    expect(described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 30.minutes)).to be(false)
+    row = host.reload.applicability
+    expect(row.library_scan_received_at).to eq(now)
+    expect(row.in_use_by_listener?("libc6", now: now + 23.hours)).to be(true)
+    expect(row.in_use_by_listener?("libc6", now: now + 24.hours + 1)).to be(false)
+    described_class.record_in_use!(host_id: host.id, report: package_report(scanned.merge("library_scanned_at" => skewed + 1.hour)), now: now + 1.hour)
+    expect(row.reload.library_scan_received_at).to eq(now + 1.hour)
+    # A failed scan, or the scan turned off, drops the evidence at that report (fifth review, S2).
+    described_class.record_in_use!(host_id: host.id, report: package_report(in_use(library_scan: "failed", library_scanned_at: now + 2.hours)), now: now + 2.hours)
+    expect(row.reload.in_use_by_listener?("libc6", now: now + 2.hours)).to be(false)
+    described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 3.hours)
+    described_class.record_in_use!(host_id: host.id, report: package_report(in_use), now: now + 4.hours)
+    expect(row.reload).to have_attributes(library_scan: "off", loaded_by_listeners: [], library_scan_received_at: nil)
   end
 
   it "does not count a new scan time alone as a change, but stores it" do # review of #268, N1
