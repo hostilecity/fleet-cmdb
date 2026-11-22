@@ -19,13 +19,16 @@ class EvaluationRun
   #   every verdict and every host. A kev_all change (KEV data appeared or was cleared, so rule I5 turns on or off
   #   everywhere) makes the run "all" too.
   # - Staleness starts nothing and rewrites nothing (B1): only stored data changing does.
-  # - A failed run can be started again (the Data sources page): its scope names the chunks it recorded, so the new run
-  #   re-runs the same hosts without claiming again, and supersedes it. A later run covers an earlier one only when it
+  # - A failed run can be started again (the Data sources page, Triage.retry!): a prepared run with batches left carries
+  #   on from them; any other is started again as a new run whose scope names the chunks it recorded, so it re-runs the
+  #   same hosts without claiming again, and supersedes it. A later run covers an earlier one only when it
   #   re-runs every host the earlier one would (its chunks, or all), so latest-wins never drops a host.
   class Triage
     AT_ONCE = %w[kev kev_all advisory].freeze
     REASONS = %w[kev daily all].freeze
-    # How many times TriageRunWatchJob resumes a run whose job died, before it fails the run.
+    # How many times in a row TriageRunWatchJob resumes a run whose job died with no progress since the last resume,
+    # before it fails the run. A resume after progress starts the count again, so a long full run survives any number
+    # of deploys.
     RESUMES = 3
     CLAIM = 1_000
     CHUNK_BATCH = 5_000
@@ -34,6 +37,25 @@ class EvaluationRun
     # about 80 ms a host at 4,450 findings: 21 thread-hours at a million hosts, as the migration's full run costs. The
     # advisory ids are kept in the run's scope, so the limit also bounds that row.
     ADVISORY_LIMIT = 20_000
+
+    # Starts a failed run again (Data sources' "Re-triage again"), with a fresh resume count (fourth review of #277):
+    # a prepared run with batches left is reopened and carries on from them, as a resume does, so a failed full run
+    # does not start from scratch; any other is started again as a new run from its scope, which covers it.
+    def self.retry!(run)
+      reopened = EvaluationRun.transaction do
+        locked = EvaluationRun.lock.find(run.id)
+        next false unless locked.failed? && locked.work.prepared? && locked.batches.exists?
+
+        locked.update!(state: "running", finished_at: nil, scope: locked.scope.except(*RESUME_KEYS))
+        ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(run.id) }
+        true
+      end
+      reopened ? run.reload : EvaluationRun.start!("triage", run.scope.except(*RESUME_KEYS))
+    end
+
+    # What TriageRunWatchJob keeps in a run's scope: how many resumes in a row made no progress, and the progress
+    # (batches done) at the last one.
+    RESUME_KEYS = %w[resumes resume_progress].freeze
 
     # Starts a run once the current transaction commits.
     def self.start_after_commit(reason) = EvaluationRun.after_commit_start("triage", { "reason" => reason })
@@ -73,6 +95,7 @@ class EvaluationRun
       stats = Hash.new(0)
       record = full ? nil : ->(ids) { record_chunks(ids) }
       changed = chunk_ids.each_slice(CHUNK_BATCH).flat_map { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:) }
+      record_sets! unless full
       store!(scope.merge("full" => full, "prepared" => true, "changes" => claimed.size, "advisories" => advisory_ids&.size,
                          "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
                          "chunks_changed" => changed.size, "verdicts_changed" => stats[:verdicts]))
@@ -80,30 +103,35 @@ class EvaluationRun
       scope
     end
 
-    # The hosts on sets holding a chunk the run recorded: by their current set, and by the set their findings were last
-    # moved from, so a host whose current set is gone or unsupported has its kept findings re-triaged too (review of
-    # #277, S3b). range: a batch's host ids, put inside both subqueries, so each batch reads only its own hosts (third
-    # review of #277: merging the range with this relation replaced the range condition, so every batch ran every
-    # affected host).
+    # The hosts on sets holding a chunk the run recorded (triage_run_sets, found once by record_sets!): by their current
+    # set, and by the set their findings were last moved from, so a host whose current set is gone or unsupported has
+    # its kept findings re-triaged too (review of #277, S3b). range: a batch's host ids, on the hosts and inside both
+    # subqueries, so each batch reads only its own range (third review of #277: merging the range with this relation
+    # replaced the range condition). Each of a batch's rows probes the run's sets by key, so a batch costs its own range,
+    # not a scan of every set holding the chunks (fourth review of #277: that was about 250 ms a batch at 20,000 sets,
+    # and grows with the sets, up to 900,000 at a million hosts: ADR 0028). Sets are immutable, so the ones found as the
+    # run is prepared are all that hold its chunks; a set made later comes with a report, whose own transitions read
+    # the refreshed bases.
     def hosts(range = nil)
-      if full?
-        return range ? Host.in_fleet.where(id: range) : Host.in_fleet
-      end
+      base = range ? Host.in_fleet.where(id: range) : Host.in_fleet
+      return base if full?
 
-      sets = PackageSet.where("chunk_ids && ARRAY(SELECT package_chunk_id FROM triage_run_chunks WHERE evaluation_run_id IN (?))::bigint[]", chunk_runs.presence || [ 0 ])
-      current = HostPackageSet.where(package_set_id: sets.select(:id))
-      moved_from = HostVulnerabilityEvaluation.where(package_set_id: sets.select(:id))
-      if range
-        current = current.where(host_id: range)
-        moved_from = moved_from.where(host_id: range)
+      current, moved_from = [ HostPackageSet, HostVulnerabilityEvaluation ].map do |model|
+        on_run_set = TriageRunSet.where(evaluation_run_id: recorded_runs).where(TriageRunSet.arel_table[:package_set_id].eq(model.arel_table[:package_set_id]))
+        rows = model.where(on_run_set.arel.exists)
+        range ? rows.where(host_id: range) : rows
       end
-      Host.in_fleet.where(id: current.select(:host_id)).or(Host.in_fleet.where(id: moved_from.select(:host_id)))
+      # One IN over a UNION, not two INs joined by OR: the planner can make it a semi-join, where an OR of two subqueries
+      # too large to hash (a run reaching most of a million hosts) is read again for every host.
+      base.where(Host.arel_table[:id].in(Arel::Nodes::Union.new(current.select(:host_id).arel, moved_from.select(:host_id).arel)))
     end
 
     # Re-classifies the range's hosts: only the findings of its advisories, or (a full run, or too many advisories) every
     # finding through the hosts' transitions. Returns the hosts whose shown vulnerabilities changed.
     def call(range)
-      ids = hosts(range).pluck(:id)
+      # Not as a prepared statement: a worker's connection runs it for batch after batch, and PostgreSQL's generic plan
+      # (from the sixth run on) cannot see how narrow the range is: a sparse run's batch went from 5 ms to 450 ms.
+      ids = Host.connection.unprepared_statement { hosts(range).pluck(:id) }
       advisory_ids ? VulnerabilityMatcher.retriage!(ids, advisory_ids:) : VulnerabilityMatcher.match!(ids).changed_host_ids
     end
 
@@ -153,6 +181,24 @@ class EvaluationRun
     # Inside a refresh slice's transaction; a retried slice records its chunks again, which changes nothing.
     def record_chunks(ids)
       ids.each_slice(5_000) { |slice| TriageRunChunk.insert_all(slice.map { |id| { evaluation_run_id: @run_id, package_chunk_id: id } }) }
+    end
+
+    def recorded_runs = chunk_runs.presence || [ 0 ]
+
+    SETS_SQL = <<~SQL.squish.freeze
+      INSERT INTO triage_run_sets (evaluation_run_id, package_set_id)
+      SELECT :run, id FROM package_sets
+      WHERE chunk_ids && ARRAY(SELECT package_chunk_id FROM triage_run_chunks WHERE evaluation_run_id IN (:runs))::bigint[]
+      ON CONFLICT DO NOTHING
+    SQL
+
+    # Finds the sets holding the recorded chunks once, through the sets' GIN index, before the prepared scope is
+    # stored (so a fan-out run again records them again, idempotently), and analyses the table, so the batches' plans
+    # see how many there are.
+    def record_sets!
+      connection = TriageRunSet.connection
+      connection.exec_update(TriageRunSet.sanitize_sql_array([ SETS_SQL, { run: @run_id, runs: recorded_runs } ]))
+      connection.execute("ANALYZE triage_run_sets")
     end
 
     def store!(scope)

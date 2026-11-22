@@ -15,8 +15,9 @@
 #   same sources), whose remaining batches then do nothing. Results are read under the host lock, so an older run's
 #   batch still working writes the newer rule's results anyway.
 # - Failed: when the fan-out or a batch fails every retry (after_discard on their jobs), the run stops: its remaining
-#   batches are deleted and it is failed, which ends its progress line. The page says so, with a button that starts
-#   the same run again (EvaluationRunsController#retry), and a later run that covers it supersedes it.
+#   batches are deleted (a triage run keeps them) and it is failed, which ends its progress line. The page says so, with
+#   a button that starts the same run again (EvaluationRunsController#retry; a triage run with batches left carries on
+#   from them, EvaluationRun::Triage.retry!), and a later run that covers it supersedes it.
 # - Progress: batches_done of batch_count and hosts_done of host_count, shown where the run was triggered (the rule page,
 #   the Advisory data sources page). The dashboard refreshes once when the run finishes, if what it shows changed.
 # - Runs finished or superseded more than KEPT ago are deleted when a run starts; a failed run is kept until a later
@@ -70,12 +71,19 @@ class EvaluationRun < ApplicationRecord
       run = lock.find_by(id: run_id)
       next unless run&.unfinished?
 
-      run.batches.delete_all
-      run.state = "failed"
-      run.finished_at = Time.current
-      FleetBroadcast.refresh if run.shown_changed
-      run.save!
+      run.fail_locked!
     end
+  end
+
+  # Fails this run, whose row the caller has locked: its remaining batches are deleted, so their jobs do nothing (a
+  # triage run keeps them, so its retry carries on from them: EvaluationRun::Triage.retry!; their jobs check the state
+  # and do nothing meanwhile); what its finished batches changed is refreshed.
+  def fail_locked!
+    batches.delete_all unless kind == "triage"
+    self.state = "failed"
+    self.finished_at = Time.current
+    FleetBroadcast.refresh if shown_changed
+    save!
   end
 
   def work

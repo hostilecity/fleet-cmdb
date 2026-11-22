@@ -11,7 +11,8 @@
 #   version 5 of host_compliance_summaries_changed also notes a finding whose bucket or KEV flag changed.
 # - vulnerability_work_events (time-partitioned weekly on occurred_at, ADR 0027; kept 90 days) records the work a
 #   host's reports show done.
-# - evaluation_runs may be of kind triage (EvaluationRun::Triage); triage_run_chunks holds a run's changed chunks.
+# - evaluation_runs may be of kind triage (EvaluationRun::Triage); triage_run_chunks holds a run's changed chunks,
+#   triage_run_sets the package sets holding them.
 # - triage_signal_changes may hold tracker changes (one row per CVE, kind tracker).
 #
 # Every finding and summary reads "no bucket" (0 in the counts) until the run 20261121259002 queues has triaged them.
@@ -47,6 +48,20 @@ class AddTriageBuckets < ActiveRecord::Migration[8.1]
     end
     add_foreign_key :triage_run_chunks, :evaluation_runs, on_delete: :cascade
 
+    # The package sets holding a run's changed chunks, found once as it is prepared (fourth review of #277), so a batch
+    # finds its hosts by probing this table, not by scanning the sets' GIN index again.
+    create_table :triage_run_sets, primary_key: %i[evaluation_run_id package_set_id] do |t|
+      t.bigint :evaluation_run_id, null: false
+      t.bigint :package_set_id, null: false
+    end
+    add_foreign_key :triage_run_sets, :evaluation_runs, on_delete: :cascade
+
+    # Where TriageListenerExpiryJob stopped: one row per checkpoint name (fourth review of #277: durable, not the cache).
+    create_table :triage_checkpoints, id: false, primary_key: :name do |t|
+      t.string :name, limit: 64, null: false, primary_key: true
+      t.datetime :at, null: false
+    end
+
     create_table :vulnerability_work_events, primary_key: %i[id occurred_at], options: "PARTITION BY RANGE (occurred_at)" do |t|
       t.bigserial :id, null: false
       t.bigint :host_id, null: false
@@ -63,6 +78,8 @@ class AddTriageBuckets < ActiveRecord::Migration[8.1]
 
   def down
     drop_table :vulnerability_work_events
+    drop_table :triage_checkpoints
+    drop_table :triage_run_sets
     drop_table :triage_run_chunks
     replace_check :triage_signal_changes, "triage_signal_changes_target_valid",
                   "(kind IN ('kev', 'epss')) = (cve_id IS NOT NULL) AND (kind = 'advisory') = (advisory_id IS NOT NULL)"

@@ -952,6 +952,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_21_259003) do
     t.check_constraint "timeout_seconds >= 1 AND timeout_seconds <= 86400", name: "tasks_timeout"
   end
 
+  create_table "triage_checkpoints", primary_key: "name", id: { type: :string, limit: 64 }, force: :cascade do |t|
+    t.datetime "at", null: false
+  end
+
   create_table "triage_entries", force: :cascade do |t|
     t.string "tracker", limit: 16, null: false
     t.string "release", limit: 32, null: false
@@ -996,6 +1000,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_21_259003) do
   create_table "triage_run_chunks", primary_key: ["evaluation_run_id", "package_chunk_id"], force: :cascade do |t|
     t.bigint "evaluation_run_id", null: false
     t.bigint "package_chunk_id", null: false
+  end
+
+  create_table "triage_run_sets", primary_key: ["evaluation_run_id", "package_set_id"], force: :cascade do |t|
+    t.bigint "evaluation_run_id", null: false
+    t.bigint "package_set_id", null: false
   end
 
   create_table "triage_signal_changes", force: :cascade do |t|
@@ -1085,6 +1094,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_21_259003) do
   add_foreign_key "tasks", "task_batches"
   add_foreign_key "triage_imports", "operators"
   add_foreign_key "triage_run_chunks", "evaluation_runs", on_delete: :cascade
+  add_foreign_key "triage_run_sets", "evaluation_runs", on_delete: :cascade
   add_foreign_key "vulnerability_findings", "advisories"
   add_foreign_key "vulnerability_findings", "hosts"
   add_foreign_key "onboarding_requests", "hosts"
