@@ -79,12 +79,14 @@ module AgentApi
       }
     end
 
-    # Each (package, listener) once, network if any entry is, sorted (a nil listener first), so equal reports store
-    # equal values and write nothing.
+    # Each (package, listener, service) once, network if any entry is, its sockets merged (at most 4, the agent's
+    # order first), sorted (nil first), so equal reports store equal values and write nothing.
     def loaded_by_listeners(uses)
-      Array(uses).group_by { |use| [ use["package"], use["listener"] ] }.map do |(package, listener), same|
-        { "package" => package, "listener" => listener, "class" => same.any? { |use| use["class"] == "network" } ? "network" : "loopback" }
-      end.sort_by { |use| [ use["package"], use["listener"].nil? ? 0 : 1, use["listener"].to_s ] }
+      Array(uses).group_by { |use| use.values_at("package", "listener", "service") }.map do |(package, listener, service), same|
+        { "package" => package, "listener" => listener, "service" => service,
+          "class" => same.any? { |use| use["class"] == "network" } ? "network" : "loopback",
+          "sockets" => same.flat_map { |use| use["sockets"] }.uniq.first(4) }
+      end.sort_by { |use| [ use["package"], *use.values_at("listener", "service").flat_map { |v| [ v.nil? ? 0 : 1, v.to_s ] } ] }
     end
 
     def duplicates(packages)

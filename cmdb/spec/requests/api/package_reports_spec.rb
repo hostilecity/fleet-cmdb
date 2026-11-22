@@ -435,14 +435,19 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
                                         library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ])
     end
 
-    it "stores what listening processes load, each pair once, network if either entry is, sorted" do
+    it "stores what listening processes load, each (package, listener, service) once, network if either entry is, sorted" do
       uses = scanned["in_use"]["loaded_by_listeners"]
-      shuffled = uses.reverse + [ uses.first.merge("class" => "network"), { "package" => "libc6", "listener" => nil, "class" => "loopback" } ]
+      first = uses.first
+      shuffled = uses.reverse + [ first.merge("class" => "network", "sockets" => [ "0.0.0.0:22/tcp" ]),
+                                  { "package" => "libc6", "listener" => nil, "service" => nil, "class" => "loopback", "sockets" => [ "127.0.0.1:631/tcp" ] } ]
       send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => shuffled)))
       expect(response).to have_http_status(:ok)
-      expect(stored.loaded_by_listeners).to eq([ { "package" => "libc6", "listener" => nil, "class" => "loopback" },
-                                                 uses.first.merge("class" => "network"), *uses.drop(1) ])
-      expect(stored.in_use_by_listener?("libssl3t64", now: Time.iso8601("2026-01-01T12:00:00Z"), network: true)).to be(true)
+      expect(stored.loaded_by_listeners).to eq([ { "package" => "libc6", "listener" => nil, "service" => nil, "class" => "loopback", "sockets" => [ "127.0.0.1:631/tcp" ] },
+                                                 first.merge("class" => "network", "sockets" => first["sockets"] + [ "0.0.0.0:22/tcp" ]), *uses.drop(1) ])
+      now = Time.iso8601("2026-01-01T12:00:00Z")
+      expect(stored.in_use_by_listener?("libssl3t64", now:, network: true)).to be(true)
+      expect(stored.listener_details("libssl3t64", now:)).to eq([ { "listener" => "samba", "service" => "smbd.service", "class" => "network",
+                                                                    "sockets" => [ "0.0.0.0:445/tcp" ] } ])
     end
 
     it "writes only when what is in use changes" do

@@ -24,10 +24,12 @@
 //! jobs, or `sftp-server` sessions, so nothing is ever called idle from the scan. What it reports is what
 //! it saw: `libraries`, the packages any process maps, and `loaded_by_listeners`, each package a process
 //! that holds a listening socket maps (any file of it, ELF or not), with that process's program's package
-//! and whether the socket is on the network or on loopback only. A process holds a socket when one of
+//! whether the socket is on the network or on loopback only, that process's systemd unit, and the
+//! listening sockets it holds (`address:port/protocol`, at most [`MAX_SOCKETS_PER_USE`]), so a reason can
+//! name them (#277). A process holds a socket when one of
 //! its descriptors (`/proc/<pid>/fd`, readable with `CAP_SYS_PTRACE`) is a listening socket of the host's
 //! network namespace (`/proc/1/net/{tcp,tcp6,udp,udp6}`, [`HOST_SOCKETS`]). What the scan misses is
-//! simply not reported. Nothing else leaves the scan: no paths, no process ids, no addresses or ports.
+//! simply not reported. Nothing else leaves the scan: no paths, no process ids, no other addresses.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
@@ -117,8 +119,14 @@ pub struct ListenerUse {
     pub package: String,
     /// The package of that process's program; `None` when no package owns it.
     pub listener: Option<String>,
+    /// That process's systemd unit (`ssh.service`, a socket unit, `init.scope`), from
+    /// `/proc/<pid>/cgroup`; `None` outside `system.slice` and `init.scope`.
+    pub service: Option<String>,
     /// `network` when one of the sockets it holds is on a non-loopback address, else `loopback`.
     pub class: String,
+    /// The listening sockets those processes hold, `address:port/protocol`, sorted, at most
+    /// [`MAX_SOCKETS_PER_USE`] (network ones first, so a truncated list still shows them).
+    pub sockets: Vec<String>,
 }
 
 /// What one scan found.
@@ -336,17 +344,42 @@ pub fn check_output(mut parsed: Output) -> Result<Output, String> {
         || parsed.loaded_by_listeners.iter().any(|u| {
             !valid(&u.package)
                 || u.listener.as_deref().is_some_and(|l| !valid(l))
+                || u.service.as_deref().is_some_and(|s| !unit_name(s))
                 || !matches!(u.class.as_str(), "network" | "loopback")
-                || !seen_uses.insert((u.package.clone(), u.listener.clone()))
+                || u.sockets.is_empty()
+                || u.sockets.len() > MAX_SOCKETS_PER_USE
+                || u.sockets.iter().any(|s| !socket_text(s))
+                || u.sockets.iter().collect::<HashSet<_>>().len() != u.sockets.len()
+                || !seen_uses.insert((u.package.clone(), u.listener.clone(), u.service.clone()))
         })
     {
         return Err("the library scan's result does not fit the contract".into());
     }
     parsed.libraries.sort_by(|a, b| a.package.cmp(&b.package));
-    parsed
-        .loaded_by_listeners
-        .sort_by(|a, b| (&a.package, &a.listener).cmp(&(&b.package, &b.listener)));
+    parsed.loaded_by_listeners.sort_by(|a, b| {
+        (&a.package, &a.listener, &a.service).cmp(&(&b.package, &b.listener, &b.service))
+    });
     Ok(parsed)
+}
+
+/// A unit name as the contract allows it: a service or socket unit, or `init.scope`.
+fn unit_name(name: &str) -> bool {
+    name == "init.scope"
+        || ((name.ends_with(".service") || name.ends_with(".socket"))
+            && name.len() <= 256
+            && !name.starts_with(['-', '.'])
+            && name.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(b, b'.' | b'_' | b'@' | b'+' | b'-' | b'\\' | b':')
+            }))
+}
+
+/// `address:port/protocol`, as [`socket_name`] writes it.
+fn socket_text(text: &str) -> bool {
+    let Some((address, protocol)) = text.rsplit_once('/') else {
+        return false;
+    };
+    matches!(protocol, "tcp" | "udp") && address.parse::<std::net::SocketAddr>().is_ok()
 }
 
 /// The real host for the scan, reading descriptor links directly instead of on a thread per call: the
@@ -403,6 +436,8 @@ pub const MAX_OTHER_PATHS: usize = 50_000;
 pub const MAX_DESCRIPTORS: usize = 500_000;
 /// Most entries in `loaded_by_listeners`, the contract's limit.
 pub const MAX_LISTENER_USES: usize = 20_000;
+/// Most sockets named per entry.
+pub const MAX_SOCKETS_PER_USE: usize = 4;
 
 /// The host's listening sockets: those of pid 1's network namespace. The scan's own namespace is empty
 /// (`PrivateNetwork=yes`), and a process in another namespace (a container) holds sockets these files do
@@ -427,8 +462,8 @@ fn gone(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH)
 }
 
-/// The host's listening TCP and bound UDP sockets: inode -> on a non-loopback address.
-fn listening_sockets(ctx: &Ctx) -> Result<HashMap<u64, bool>, String> {
+/// The host's listening TCP and bound UDP sockets, by inode.
+fn listening_sockets(ctx: &Ctx) -> Result<HashMap<u64, super::sockets::Socket>, String> {
     let mut found = HashMap::new();
     for (path, udp) in HOST_SOCKETS {
         let bytes = match ctx.read(path, MAX_PROC_NET_BYTES) {
@@ -438,7 +473,7 @@ fn listening_sockets(ctx: &Ctx) -> Result<HashMap<u64, bool>, String> {
             Err(e) => return Err(crate::facts::io_reason(path, &e)),
         };
         for socket in super::sockets::parse(&bytes, udp).map_err(|e| format!("{path}: {e}"))? {
-            *found.entry(socket.inode).or_insert(false) |= !socket.loopback();
+            found.insert(socket.inode, socket);
         }
         if found.len() > super::MAX_SOCKETS {
             return Err(format!(
@@ -458,19 +493,27 @@ fn socket_inode(link: &str) -> Option<u64> {
         .ok()
 }
 
-/// Whether process `pid` holds one of the `listening` sockets: `Some(true)` when one is on the network,
-/// `Some(false)` when all it holds are on loopback, `None` when it holds none (or ended meanwhile).
-/// `seen` counts the descriptors looked at, across processes.
-fn holds(
+/// `address:port/protocol`, IPv6 in brackets.
+fn socket_name(socket: &super::sockets::Socket) -> String {
+    let protocol = if socket.udp { "udp" } else { "tcp" };
+    format!(
+        "{}/{protocol}",
+        std::net::SocketAddr::new(socket.address, socket.port)
+    )
+}
+
+/// The `listening` sockets process `pid` holds: empty when none (or it ended meanwhile). `seen` counts
+/// the descriptors looked at, across processes.
+fn holds<'a>(
     ctx: &Ctx,
     pid: &str,
-    listening: &HashMap<u64, bool>,
+    listening: &'a HashMap<u64, super::sockets::Socket>,
     seen: &mut usize,
-) -> Result<Option<bool>, String> {
+) -> Result<Vec<&'a super::sockets::Socket>, String> {
     let dir = format!("/proc/{pid}/fd");
     let fds = match ctx.list(&dir, MAX_DESCRIPTORS) {
         Ok(fds) => fds,
-        Err(e) if gone(&e) => return Ok(None),
+        Err(e) if gone(&e) => return Ok(Vec::new()),
         Err(e) => return Err(crate::facts::io_reason(&dir, &e)),
     };
     *seen += fds.len();
@@ -479,13 +522,13 @@ fn holds(
             "processes hold more than {MAX_DESCRIPTORS} open files, more than the scan looks at"
         ));
     }
-    let mut found = None;
+    let mut found = Vec::new();
     for fd in fds {
         let path = format!("{dir}/{fd}");
         match ctx.link(&path) {
             Ok(target) => {
-                if let Some(network) = socket_inode(&target).and_then(|i| listening.get(&i)) {
-                    found = Some(found.unwrap_or(false) | network);
+                if let Some(socket) = socket_inode(&target).and_then(|i| listening.get(&i)) {
+                    found.push(socket);
                 }
             }
             // Closed meanwhile, or the process ended.
@@ -496,11 +539,35 @@ fn holds(
     Ok(found)
 }
 
-/// A process that holds a listening socket: whether one is on the network, its program, and what it
-/// maps.
+/// The systemd unit of process `pid`, from its cgroup v2 path (`0::/system.slice/ssh.service`):
+/// a service or socket unit in `system.slice`, or `init.scope`; `None` elsewhere or when it ended.
+fn unit_of_process(ctx: &Ctx, pid: &str) -> Result<Option<String>, String> {
+    let path = format!("/proc/{pid}/cgroup");
+    let bytes = match ctx.read(&path, 64 * 1024) {
+        Ok(bytes) => bytes,
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(crate::facts::io_reason(&path, &e)),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let Some(cgroup) = text.lines().find_map(|l| l.strip_prefix("0::/")) else {
+        return Ok(None);
+    };
+    Ok(match super::units::unit_of(cgroup.trim_end()) {
+        super::units::Owner::Service(unit) => Some(unit),
+        super::units::Owner::Systemd(Some(unit)) => Some(unit),
+        super::units::Owner::Systemd(None) => Some("init.scope".into()),
+        super::units::Owner::Other => None,
+    })
+}
+
+/// A process that holds a listening socket: whether one is on the network, the sockets, its program,
+/// its unit, and what it maps.
 struct Listener {
     network: bool,
+    /// (on loopback, `address:port/protocol`).
+    sockets: Vec<(bool, String)>,
     program: Option<String>,
+    service: Option<String>,
     files: Vec<String>,
 }
 
@@ -562,9 +629,11 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
         if sockets.is_empty() {
             continue;
         }
-        let Some(network) = holds(&ctx, pid, &sockets, &mut descriptors)? else {
+        let held = holds(&ctx, pid, &sockets, &mut descriptors)?;
+        if held.is_empty() {
             continue;
-        };
+        }
+        let network = held.iter().any(|s| !s.loopback());
         let exe = format!("/proc/{pid}/exe");
         let program = match ctx.link(&exe) {
             Ok(target) => Some(target.trim_end_matches(" (deleted)").to_owned()),
@@ -572,9 +641,15 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             Err(e) if gone(&e) => None,
             Err(e) => return Err(crate::facts::io_reason(&exe, &e)),
         };
+        let service = unit_of_process(&ctx, pid)?;
         listeners.push(Listener {
             network,
+            sockets: held
+                .iter()
+                .map(|s| (s.loopback(), socket_name(s)))
+                .collect(),
             program,
+            service,
             files: files.into_iter().map(|(file, _)| file).collect(),
         });
     }
@@ -604,8 +679,10 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             *packages.entry(package.clone()).or_insert(false) |= deleted;
         }
     }
-    // (package, the listener's package) -> on the network.
-    let mut uses: BTreeMap<(String, Option<String>), bool> = BTreeMap::new();
+    // (package, the listener's package, its unit) -> on the network, and the sockets (network ones
+    // first, then by name).
+    type Key = (String, Option<String>, Option<String>);
+    let mut uses: BTreeMap<Key, (bool, BTreeSet<(bool, String)>)> = BTreeMap::new();
     for listener in &listeners {
         let named = listener
             .program
@@ -614,9 +691,11 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             .and_then(|set| set.iter().next().cloned());
         for file in &listener.files {
             for package in owners.get(file).into_iter().flatten() {
-                *uses
-                    .entry((package.clone(), named.clone()))
-                    .or_insert(false) |= listener.network;
+                let entry = uses
+                    .entry((package.clone(), named.clone(), listener.service.clone()))
+                    .or_default();
+                entry.0 |= listener.network;
+                entry.1.extend(listener.sockets.iter().cloned());
             }
         }
     }
@@ -632,11 +711,19 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             .collect(),
         loaded_by_listeners: uses
             .into_iter()
-            .map(|((package, listener), network)| ListenerUse {
-                package,
-                listener,
-                class: if network { "network" } else { "loopback" }.into(),
-            })
+            .map(
+                |((package, listener, service), (network, sockets))| ListenerUse {
+                    package,
+                    listener,
+                    service,
+                    class: if network { "network" } else { "loopback" }.into(),
+                    sockets: sockets
+                        .into_iter()
+                        .take(MAX_SOCKETS_PER_USE)
+                        .map(|(_, name)| name)
+                        .collect(),
+                },
+            )
             .collect(),
     })
 }

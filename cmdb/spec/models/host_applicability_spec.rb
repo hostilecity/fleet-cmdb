@@ -7,7 +7,9 @@ RSpec.describe HostApplicability do
 
   def inventory(**fields) = Struct.new(:applicability).new({ "reboot_required" => nil, "reboot_packages" => [], "kernel_build" => nil }.merge(fields.transform_keys(&:to_s)))
   def package_report(in_use) = Struct.new(:in_use).new(in_use)
-  def use(package, listener, klass) = { "package" => package, "listener" => listener, "class" => klass }
+  def use(package, listener, klass, service: nil, sockets: [ klass == "network" ? "0.0.0.0:22/tcp" : "127.0.0.1:22/tcp" ])
+    { "package" => package, "listener" => listener, "service" => service, "class" => klass, "sockets" => sockets }
+  end
 
   def in_use(**fields)
     HostApplicability::IN_USE_DEFAULTS.merge("in_use_reported" => true, "library_scan" => "off", "listening_network" => [ "samba" ],
@@ -57,6 +59,9 @@ RSpec.describe HostApplicability do
     moved = scanned.merge("loaded_by_listeners" => [ use("libssl3t64", "samba", "loopback") ])
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(moved), now: now + 4.hours)).to be(true)
     expect(row.reload.in_use_changed_at).to eq(now + 4.hours)
+    rebound = scanned.merge("loaded_by_listeners" => [ use("libssl3t64", "samba", "loopback", sockets: [ "127.0.0.1:445/tcp" ]) ])
+    expect(described_class.record_in_use!(host_id: host.id, report: package_report(rebound), now: now + 5.hours)).to be(true) # a socket changed
+    expect(row.reload.in_use_changed_at).to eq(now + 5.hours)
   end
 
   # Owner decision 2026-11-21 (after the fourth review of #268): positive evidence only; a package a listening process
@@ -64,7 +69,7 @@ RSpec.describe HostApplicability do
   describe "#in_use_by_listener?" do
     let(:row) do
       described_class.new(host_id: host.id, **in_use(library_scan: "ran", libraries: %w[libc6 libidle libssl3t64 zlib1g],
-                                                     loaded_by_listeners: [ use("libc6", nil, "loopback"), use("libc6", "openssh-server", "network"),
+                                                     loaded_by_listeners: [ use("libc6", nil, "loopback"), use("libc6", "openssh-server", "network", service: "ssh.service"),
                                                                             use("zlib1g", "chrony", "loopback") ],
                                                      library_scanned_at: now - 50.minutes))
     end
@@ -76,9 +81,10 @@ RSpec.describe HostApplicability do
       expect(row.in_use_by_listener?("zlib1g", now:, network: true)).to be(false) # loopback only
       expect(row.in_use_by_listener?("libidle", now:)).to be(false) # mapped, but by no listening process
       expect(row.in_use_by_listener?("python3-urllib3", now:)).to be(false) # not seen: simply not escalated
-      expect(row.listeners_loading("libc6", now:)).to eq([ { "listener" => "openssh-server", "class" => "network" },
-                                                           { "listener" => nil, "class" => "loopback" } ])
-      expect(row.listeners_loading("libidle", now:)).to eq([])
+      expect(row.listener_details("libc6", now:)).to eq([ { "listener" => "openssh-server", "service" => "ssh.service", "class" => "network",
+                                                            "sockets" => [ "0.0.0.0:22/tcp" ] },
+                                                          { "listener" => nil, "service" => nil, "class" => "loopback", "sockets" => [ "127.0.0.1:22/tcp" ] } ])
+      expect(row.listener_details("libidle", now:)).to eq([])
     end
 
     it "follows a new value of the column" do
@@ -92,7 +98,7 @@ RSpec.describe HostApplicability do
       row.library_scanned_at = now - 24.hours
       expect(row.in_use_by_listener?("libc6", now:)).to be(true)
       expect(row.in_use_by_listener?("libc6", now: now + 1)).to be(false)
-      expect(row.listeners_loading("libc6", now: now + 1)).to eq([])
+      expect(row.listener_details("libc6", now: now + 1)).to eq([])
       row.library_scanned_at = now + 2.hours # an agent clock ahead
       expect(row.in_use_by_listener?("libc6", now:)).to be(true)
       row.library_scanned_at = nil

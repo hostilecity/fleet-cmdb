@@ -120,7 +120,7 @@
       }
     },
     "in_use": {
-      "description": "What running processes use (FR-2.6, VT-A01, VT-A02), for vulnerability triage: exposure (N4) and the escalation of packages a listening process loads. Binary package names and classes only, never process ids, command lines, user names, addresses, or ports. Optional, and only with `manager: dpkg`. Absent or `null` means the agent did not report use (an older agent, or it could not read the sockets or services whole; a `warnings` entry with field `in_use` says why). Every list here is positive evidence only, and nothing is ever called idle from it (owner decision 2026-11-21): a package left out of a list is simply not known to be in use.",
+      "description": "What running processes use (FR-2.6, VT-A01, VT-A02), for vulnerability triage: exposure (N4) and the escalation of packages a listening process loads. Binary package names and classes, never process ids, command lines, or user names; addresses and ports only as the listening sockets in `loaded_by_listeners`. Optional, and only with `manager: dpkg`. Absent or `null` means the agent did not report use (an older agent, or it could not read the sockets or services whole; a `warnings` entry with field `in_use` says why). Every list here is positive evidence only, and nothing is ever called idle from it (owner decision 2026-11-21): a package left out of a list is simply not known to be in use.",
       "type": [
         "object",
         "null"
@@ -228,7 +228,7 @@
           }
         },
         "loaded_by_listeners": {
-          "description": "With `library_scan: ran`, each binary package that lists a file (ELF or not) mapped by a process holding a listening TCP socket or bound UDP socket of the host's network namespace, with that process's program's package (`listener`, `null` when no package owns the program) and `network` when one of the sockets it holds is on a non-loopback address (including the wildcard), else `loopback`. Each (package, listener) pair once, sorted by package, then listener (`null` first). Positive evidence only: what the scan misses is not listed. `null` otherwise.",
+          "description": "With `library_scan: ran`, each binary package that lists a file (ELF or not) mapped by a process holding a listening TCP socket or bound UDP socket of the host's network namespace, with that process's program's package (`listener`, `null` when no package owns the program) and `network` when one of the sockets it holds is on a non-loopback address (including the wildcard), else `loopback`. With the listening process's systemd unit (`service`) and the listening sockets it holds (`sockets`, so a triage reason can name them). Each (package, listener, service) once, sorted by package, then listener, then service (`null` first). Positive evidence only: what the scan misses is not listed. `null` otherwise.",
           "type": [
             "array",
             "null"
@@ -239,7 +239,9 @@
             "required": [
               "package",
               "listener",
-              "class"
+              "service",
+              "class",
+              "sockets"
             ],
             "properties": {
               "package": {
@@ -255,6 +257,15 @@
                 ],
                 "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
               },
+              "service": {
+                "description": "The listening process's systemd unit, from its cgroup: a service or socket unit in `system.slice`, or `init.scope` (systemd itself, for socket activation); `null` elsewhere (a container, a user session).",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 256,
+                "pattern": "^(init\\.scope|[A-Za-z0-9:_@+\\\\-][A-Za-z0-9:_.@+\\\\-]*\\.(service|socket))$"
+              },
               "class": {
                 "description": "Where the process's listening sockets are.",
                 "type": "string",
@@ -262,6 +273,18 @@
                   "network",
                   "loopback"
                 ]
+              },
+              "sockets": {
+                "description": "The listening sockets those processes hold, `address:port/protocol` (`0.0.0.0:22/tcp`, `[::1]:53/udp`): network ones first, then by text, at most 4. This is the only place the report carries addresses and ports (owner decision 2026-11-21, for the triage reason).",
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^([0-9.]+|\\[[0-9a-fA-F:.]+\\]):[0-9]{1,5}/(tcp|udp)$"
+                }
               }
             }
           }

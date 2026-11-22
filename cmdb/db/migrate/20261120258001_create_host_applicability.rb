@@ -4,7 +4,8 @@
 # processes load). Triage (VT-BUCKETS, #277; VT-SCORES) reads it.
 #
 # Every list is positive evidence only; nothing is called idle from it (owner decision 2026-11-21). loaded_by_listeners
-# holds [{ "package", "listener" (a package or null), "class" ("network" or "loopback") }], sorted.
+# holds [{ "package", "listener" (a package or null), "service" (a unit or null), "class" ("network" or "loopback"),
+# "sockets" (at most 4, "address:port/protocol") }], sorted.
 #
 # One narrow row per host, written only when what it holds changes (as hosts is after #220, ADR 0029): a steady fleet
 # writes nothing here. No row means nothing reported. reboot_required is true or NULL, never false (Debian bug

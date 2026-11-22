@@ -1204,6 +1204,7 @@ fn scan_host() -> TestHost {
     }
     host.links
         .insert("/proc/812/exe".into(), "/usr/sbin/sshd".into());
+    host = host.file("/proc/812/cgroup", "0::/system.slice/ssh.service\n");
     host.links.insert(
         "/proc/900/exe".into(),
         "/usr/local/bin/local-thing (deleted)".into(),
@@ -1259,19 +1260,41 @@ fn the_scan_names_packages_in_use_and_stale_ones() {
     );
     // Mapped by a process that holds no listening socket: in `libraries` only.
     assert!(libraries.iter().any(|l| l.package == "libidle"));
-    let uses: Vec<(&str, Option<&str>, &str)> = output
+    type Use<'a> = (
+        &'a str,
+        Option<&'a str>,
+        Option<&'a str>,
+        &'a str,
+        Vec<&'a str>,
+    );
+    let uses: Vec<Use> = output
         .loaded_by_listeners
         .iter()
-        .map(|u| (u.package.as_str(), u.listener.as_deref(), u.class.as_str()))
+        .map(|u| {
+            (
+                u.package.as_str(),
+                u.listener.as_deref(),
+                u.service.as_deref(),
+                u.class.as_str(),
+                u.sockets.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
+    let sshd = (
+        Some("openssh-server"),
+        Some("ssh.service"),
+        "network",
+        vec!["0.0.0.0:22/tcp"],
+    );
     assert_eq!(
         uses,
         [
-            // 900's program is owned by no package (and was replaced: " (deleted)").
-            ("libc6", None, "loopback"),
-            ("libc6", Some("openssh-server"), "network"),
-            ("libssl3t64", Some("openssh-server"), "network"),
-            ("openssh-server", Some("openssh-server"), "network"),
+            // 900's program is owned by no package (and was replaced: " (deleted)"), and it has no
+            // cgroup file (it ended, or a kernel without cgroup v2).
+            ("libc6", None, None, "loopback", vec!["127.0.0.1:8080/tcp"]),
+            ("libc6", sshd.0, sshd.1, sshd.2, sshd.3.clone()),
+            ("libssl3t64", sshd.0, sshd.1, sshd.2, sshd.3.clone()),
+            ("openssh-server", sshd.0, sshd.1, sshd.2, sshd.3),
         ]
     );
 }
@@ -1284,10 +1307,13 @@ fn a_process_holding_network_and_loopback_sockets_is_network() {
         .insert("/proc/900/fd/6".into(), "socket:[2001]".into());
     host = host.file("/proc/1/net/tcp6", &tcp6());
     let output = scan::scan(&host).unwrap();
+    // The network socket is named first.
     assert!(output.loaded_by_listeners.contains(&scan::ListenerUse {
         package: "libc6".into(),
         listener: None,
+        service: None,
         class: "network".into(),
+        sockets: vec!["[::]:22/tcp".into(), "127.0.0.1:8080/tcp".into()],
     }));
     assert!(
         !output
@@ -1337,6 +1363,7 @@ fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
         "/proc/812/fd",
         "/proc/812/fd/3",
         "/proc/812/exe",
+        "/proc/812/cgroup",
         "/proc/1/net/tcp",
     ] {
         let mut host = scan_host();
@@ -1347,6 +1374,42 @@ fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
     let mut host = scan_host();
     host.files.remove("/proc/1/net/udp");
     assert!(scan::scan(&host).unwrap_err().contains("/proc/1/net/udp"));
+}
+
+#[test]
+fn at_most_four_sockets_are_named_network_ones_first() {
+    let mut host = scan_host();
+    // sshd also holds every other listening socket of the fixture: 1002 (192.0.2.10:445), 1003, 1004
+    // (0.0.0.0:5432), 1005, 1007 (loopback), and 2001 ([::]:22).
+    host = host.file("/proc/1/net/tcp6", &tcp6());
+    let fds = host.dirs.get_mut("/proc/812/fd").unwrap();
+    for (fd, inode) in [
+        ("4", 1002),
+        ("5", 1003),
+        ("6", 1004),
+        ("7", 1005),
+        ("8", 1007),
+        ("9", 2001),
+    ] {
+        fds.push(fd.into());
+        host.links
+            .insert(format!("/proc/812/fd/{fd}"), format!("socket:[{inode}]"));
+    }
+    let output = scan::scan(&host).unwrap();
+    let sshd = output
+        .loaded_by_listeners
+        .iter()
+        .find(|u| u.package == "openssh-server")
+        .unwrap();
+    assert_eq!(
+        sshd.sockets,
+        [
+            "0.0.0.0:22/tcp",
+            "0.0.0.0:5432/tcp",
+            "192.0.2.10:445/tcp",
+            "[::]:22/tcp"
+        ]
+    );
 }
 
 #[test]
@@ -1417,10 +1480,10 @@ fn a_damaged_but_parseable_record_means_a_new_scan() {
     for record in [
         serde_json::json!({"ran_at": ran, "at": "yesterday", "output": {"libraries": [], "loaded_by_listeners": []}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "../x", "stale": false}], "loaded_by_listeners": []}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "NOT A NAME", "listener": null, "class": "network"}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "NOT A NAME", "listener": null, "class": "network", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": many, "loaded_by_listeners": []}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "network"}, {"package": "a", "listener": "b", "class": "loopback"}]}, "error": null}),
-        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "lan"}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "network", "service": null, "sockets": ["0.0.0.0:22/tcp"]}, {"package": "a", "listener": "b", "class": "loopback", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null}),
+        serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "loaded_by_listeners": [{"package": "a", "listener": "b", "class": "lan", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [], "native": []}, "error": null}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": "x".repeat(600)}),
         serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": null, "error": ""}),
@@ -1433,7 +1496,7 @@ fn a_damaged_but_parseable_record_means_a_new_scan() {
     }
     // A sound record is reused.
     let dir = crate::test_support::TempDir::new();
-    let sound = serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "libc6", "stale": false}], "loaded_by_listeners": [{"package": "libc6", "listener": "openssh-server", "class": "network"}]}, "error": null});
+    let sound = serde_json::json!({"ran_at": ran, "at": "2026-11-20T12:00:00Z", "output": {"libraries": [{"package": "libc6", "stale": false}], "loaded_by_listeners": [{"package": "libc6", "listener": "openssh-server", "class": "network", "service": null, "sockets": ["0.0.0.0:22/tcp"]}]}, "error": null});
     std::fs::write(dir.path(scan::RECORD), sound.to_string()).unwrap();
     assert_eq!(
         scan::Memo::in_dir(&dir.path(""))
@@ -1536,7 +1599,7 @@ fn the_scan_unit_alone_carries_the_capability_and_has_no_network() {
 #[test]
 fn the_scan_result_is_checked_against_the_contract() {
     let ok = scan::parse_output(
-        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}],"loaded_by_listeners":[{"package":"openssl","listener":"nginx","class":"network"},{"package":"libc6","listener":null,"class":"loopback"},{"package":"libc6","listener":"nginx","class":"network"}]}"#,
+        br#"{"libraries":[{"package":"openssl","stale":false},{"package":"libc6","stale":true}],"loaded_by_listeners":[{"package":"openssl","listener":"nginx","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libc6","listener":null,"class":"loopback","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libc6","listener":"nginx","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
     )
     .unwrap();
     assert_eq!(ok.libraries[0].package, "libc6");
@@ -1560,10 +1623,18 @@ fn the_scan_result_is_checked_against_the_contract() {
         br#"{"libraries":[{"package":"Bad","stale":false}],"loaded_by_listeners":[]}"#,
         br#"{"libraries":[{"package":"a","stale":false},{"package":"a","stale":true}],"loaded_by_listeners":[]}"#,
         br#"{"libraries":[{"package":"a"}],"loaded_by_listeners":[]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"b","class":"network"},{"package":"a","listener":"b","class":"network"}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"Bad","listener":null,"class":"network"}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"Bad","class":"network"}]}"#,
-        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"lan"}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"b","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"a","listener":"b","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"Bad","listener":null,"class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":"Bad","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"lan","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":[]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["1.2.3.4:1/tcp","1.2.3.4:2/tcp","1.2.3.4:3/tcp","1.2.3.4:4/tcp","1.2.3.4:5/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["0.0.0.0:22/sctp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["host:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null,"sockets":["0.0.0.0:22/tcp","0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":"../x","sockets":["0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":"x.timer","sockets":["0.0.0.0:22/tcp"]}]}"#,
+        br#"{"libraries":[],"loaded_by_listeners":[{"package":"a","listener":null,"class":"network","service":null}]}"#,
     ] {
         assert!(scan::parse_output(bad).is_err(), "{}", String::from_utf8_lossy(bad));
     }
@@ -1573,7 +1644,7 @@ fn the_scan_result_is_checked_against_the_contract() {
 fn with_the_scan_on_the_report_is_complete() {
     let host = debian_host().command(
         "--unit=fleet-agent-library-scan.service",
-        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}],"loaded_by_listeners":[{"package":"libc6","listener":"openssh-server","class":"network"},{"package":"libssl3t64","listener":"openssh-server","class":"network"},{"package":"libc6","listener":null,"class":"loopback"}]}"#),
+        Ok(r#"{"libraries":[{"package":"libc6","stale":false},{"package":"libssl3t64","stale":true}],"loaded_by_listeners":[{"package":"libc6","listener":"openssh-server","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libssl3t64","listener":"openssh-server","class":"network","service":null,"sockets":["0.0.0.0:22/tcp"]},{"package":"libc6","listener":null,"class":"loopback","service":null,"sockets":["0.0.0.0:22/tcp"]}]}"#),
     );
     let found = collect(
         &host,

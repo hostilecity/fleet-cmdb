@@ -37,7 +37,8 @@ case ${1:?} in
                     's = socket.socket(socket.AF_INET, socket.SOCK_STREAM)' \
                     's.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)' \
                     's.bind((sys.argv[1], int(sys.argv[2])))' 's.listen()' \
-                    'maps = [mmap.mmap(open(p, "rb").fileno(), 0, prot=mmap.PROT_READ) for p in sys.argv[3:]]' \
+                    'files = [open(p, "rb") for p in sys.argv[3:]]' \
+                    'maps = [mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ) for f in files]' \
                     'time.sleep(86400)' > "$d/usr/libexec/$name"
                 chmod 0755 "$d/usr/libexec/$name"
                 ;;

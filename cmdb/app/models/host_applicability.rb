@@ -9,7 +9,8 @@
 #   of #268). Then the lists are empty. With a report: the packages listening on the network and on loopback only, the
 #   running services' packages, the sockets counted but not named, and the library scan's state (off, ran, failed)
 #   with, when it ran, every package with mapped files, the stale ones, the packages processes holding a listening
-#   socket load (loaded_by_listeners: package, the listener's package or nil, and network or loopback), and when it ran
+#   socket load (loaded_by_listeners: package, the listener's package or nil, its unit or nil, network or loopback, and at
+#   most 4 listening sockets as address:port/protocol), and when it ran
 #   (library_scanned_at, the agent's clock; the agent reuses a scan for up to an hour).
 #
 # Positive evidence only (owner decision 2026-11-21, replacing L1): nothing is ever demoted or called idle from these
@@ -42,19 +43,20 @@ class HostApplicability < ApplicationRecord
   def scan_current?(now:) = library_scan == "ran" && !library_scanned_at.nil? && now - library_scanned_at <= ESCALATION_MAX_AGE
 
   # The listening processes that load package, by the latest current scan: [{ "listener" => package or nil,
-  # "class" => "network" or "loopback" }], network ones first; [] when none, or when the scan is not current.
-  def listeners_loading(package, now:)
+  # "service" => unit or nil, "class" => "network" or "loopback", "sockets" => ["0.0.0.0:22/tcp", ...] (at most 4) }],
+  # network ones first; [] when none, or when the scan is not current. For a reason that names them (#277).
+  def listener_details(package, now:)
     return [] unless scan_current?(now:)
 
-    (loaded_by_package[package] || []).map { |use| use.slice("listener", "class") }
-                                      .sort_by { |use| [ use["class"] == "network" ? 0 : 1, use["listener"].to_s ] }
+    (loaded_by_package[package] || []).map { |use| use.slice("listener", "service", "class", "sockets") }
+                                      .sort_by { |use| [ use["class"] == "network" ? 0 : 1, use["listener"].to_s, use["service"].to_s ] }
   end
 
   # Whether a process holding a listening socket loads package (VT-BUCKETS' escalation, #277): it then cannot be
   # demoted by L2 to L5, counts toward Needs attention, and adds exposure points (VT-SCORES). network: true asks for a
   # socket on the network.
   def in_use_by_listener?(package, now:, network: false)
-    listeners_loading(package, now:).any? { |use| !network || use["class"] == "network" }
+    listener_details(package, now:).any? { |use| !network || use["class"] == "network" }
   end
 
   # From an inventory report (AgentApi::InventoryReport#applicability). Returns whether anything changed.
