@@ -123,9 +123,6 @@ module HostVulnerabilitiesHelper
   # and cuts them too).
   # Said where a stored rule no longer matches the data as it reads now (review of #281, B1).
   RETRIAGE_PENDING = "Re-triage pending: the data changed since this finding was triaged.".freeze
-  # The agent version that reports which packages listening processes load (VT-APPLICABILITY, #258; the approved
-  # states.html#no-in-use). #268 confirms it.
-  LISTENER_AGENT_VERSION = "0.4.0".freeze
   # Source packages named in Work remaining; the rest are counted.
   UPGRADES_LISTED = 8
   BUCKET_CLASSES = { "fix" => "fix", "attention" => "attn", "low_risk" => "low", "ignorable" => "ign" }.freeze
