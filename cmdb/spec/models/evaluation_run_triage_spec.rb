@@ -70,4 +70,21 @@ RSpec.describe EvaluationRun::Triage do
   ensure
     session&.disconnect!
   end
+
+  it "refuses the signals barrier inside an open transaction, where its lock would outlast the barrier" do
+    ApplicationRecord.transaction do
+      expect { VulnerabilityMatcher::Chunks.signals_barrier! }.to raise_error(ArgumentError, /outside a transaction/)
+    end
+  end
+
+  # Re-check of #277, S2: a run still preparing may refresh after a covering run read the bases, so only a run that
+  # carries its id (it adopted the run, or is a retry from its scope) covers it.
+  it "covers a run that is not prepared only when it carries its id, never just for being full" do
+    preparing = run("kev").tap { |r| r.update!(scope: r.scope.merge("chunk_runs" => [ r.id ])) }
+    full = described_class.new({ "reason" => "all", "prepared" => true, "chunk_runs" => [ 0 ] }, 0)
+    expect(full.covers?(preparing.work)).to be(false)
+    adopting = described_class.new({ "reason" => "repair", "prepared" => true, "chunk_runs" => [ preparing.id ] }, 0)
+    expect(adopting.covers?(preparing.work)).to be(true)
+    expect(full.covers?(described_class.new({ "reason" => "kev", "prepared" => true, "chunk_runs" => [ 5 ], "advisory_ids" => [ 1 ] }, 5))).to be(true)
+  end
 end

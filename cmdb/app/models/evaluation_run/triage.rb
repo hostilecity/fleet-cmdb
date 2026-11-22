@@ -24,7 +24,7 @@ class EvaluationRun
   #   re-runs every host the earlier one would (its chunks, or all), so latest-wins never drops a host.
   class Triage
     AT_ONCE = %w[kev kev_all advisory].freeze
-    REASONS = %w[kev daily all].freeze
+    REASONS = %w[kev daily all repair].freeze
     CLAIM = 1_000
     CHUNK_BATCH = 5_000
     # Up to this many advisories, the run re-triages only their findings on each host (VulnerabilityMatcher.retriage!,
@@ -41,44 +41,61 @@ class EvaluationRun
       @run_id = run_id
     end
 
-    attr_reader :scope
+    attr_reader :scope, :run_id
 
     def reason = scope["reason"]
     def full? = scope["full"] == true || reason == "all"
     def prepared? = scope["prepared"] == true
     def chunk_runs = Array(scope["chunk_runs"]).map(&:to_i)
-    # The advisories whose findings it re-triages, or nil for every finding of its hosts.
-    def advisory_ids = full? ? nil : scope["advisory_ids"]&.map(&:to_i)
+    # The advisories whose findings it re-triages, or nil for every finding of its hosts (a full run, more than
+    # ADVISORY_LIMIT advisories, or a dead run adopted that had more).
+    def advisory_ids = full? || scope["all_findings"] ? nil : scope["advisory_ids"]&.map(&:to_i)
 
     # Claims, recomputes, records, releases; returns the scope the run keeps (EvaluationRun#fan_out! stores it too).
-    # Crash-safe (review of #277, B2): the run's id is in its stored scope before anything is recorded under it, each
-    # slice's changed chunks are recorded in the transaction that changes them, and the prepared scope is stored before
-    # the claims are released. So a fan-out retried after a failure, or a retry started from the failed run's scope,
-    # reaches every host a committed slice changed, and claims still pending are claimed again.
+    # Crash-safe (review of #277, B2, and its re-check): the run's id is in its stored scope before anything is recorded
+    # under it, each slice's changed chunks are recorded in the transaction that changes them, and the prepared scope is
+    # stored before the claims are released. A run that died with its job (a killed worker: Solid Queue fails the job
+    # without a retry) is failed by TriageRunWatchJob, and the next triage run adopts every failed one: their recorded
+    # chunks and advisories become its own, so it re-runs their hosts, and it supersedes them. Claims a dead run had
+    # not released are pending still, and claimed again.
     def prepare!
       return scope if prepared?
 
-      store!(scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).uniq))
+      adopted = adoptable
+      store!(scope.merge("chunk_runs" => (chunk_runs + adopted.flat_map(&:chunk_runs) + adopted.map(&:run_id) + [ @run_id ]).compact.uniq))
       claimed, kinds, cves, advisories = claim_all
-      full = full? || kinds.include?("kev_all")
-      advisory_ids = full ? nil : advisories_for(cves, advisories)
+      full = full? || kinds.include?("kev_all") || adopted.any?(&:full?)
+      advisory_ids = full ? nil : (advisories_for(cves, advisories) + adopted.select(&:prepared?).flat_map { |run| run.advisory_ids || [] }).uniq
+      all_findings = !full && adopted.any? { |run| run.prepared? && run.advisory_ids.nil? }
       VulnerabilityMatcher::Chunks.signals_barrier! # every match that read the signals before they changed has committed
       chunk_ids = full ? ChunkEvaluation.distinct.pluck(:package_chunk_id) : ChunkMatch.where(advisory_id: advisory_ids).distinct.pluck(:package_chunk_id)
       stats = Hash.new(0)
       record = full ? nil : ->(ids) { record_chunks(ids) }
       changed = chunk_ids.each_slice(CHUNK_BATCH).flat_map { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:) }
       store!(scope.merge("full" => full, "prepared" => true, "changes" => claimed.size, "advisories" => advisory_ids&.size,
-                         "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
-                         "chunks_changed" => changed.size, "verdicts_changed" => stats[:verdicts]))
+                         "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT), "all_findings" => all_findings,
+                         "adopted" => adopted.map(&:run_id), "chunks_changed" => changed.size, "verdicts_changed" => stats[:verdicts]))
       TriageSignalChange.release!(claimed) if claimed.any?
       scope
     end
 
+    # The older triage runs that failed (their job raised every retry, or died with its worker) and that no run has
+    # superseded yet.
+    def adoptable
+      return [] unless @run_id
+
+      EvaluationRun.where(kind: "triage", state: "failed").where(id: ...@run_id).order(:id).map { |run| Triage.new(run.scope, run.id) }
+    end
+
+    # The hosts on sets holding a chunk the run (or a run it adopted) recorded: by their current set, and by the set
+    # their findings were last moved from, so a host whose current set is gone or unsupported has its kept findings
+    # re-triaged too (review of #277, S3b).
     def hosts
       return Host.in_fleet if full?
 
       sets = PackageSet.where("chunk_ids && ARRAY(SELECT package_chunk_id FROM triage_run_chunks WHERE evaluation_run_id IN (?))::bigint[]", chunk_runs.presence || [ 0 ])
       Host.in_fleet.where(id: HostPackageSet.where(package_set_id: sets.select(:id)).select(:host_id))
+          .or(Host.in_fleet.where(id: HostVulnerabilityEvaluation.where(package_set_id: sets.select(:id)).select(:host_id)))
     end
 
     # Re-classifies the range's hosts: only the findings of its advisories, or (a full run, or too many advisories) every
@@ -88,13 +105,15 @@ class EvaluationRun
       advisory_ids ? VulnerabilityMatcher.retriage!(ids, advisory_ids:) : VulnerabilityMatcher.match!(ids).changed_host_ids
     end
 
-    # A run started from a failed run's scope covers it, prepared or not: it re-runs the hosts of the chunks that run
-    # recorded, and claims again whatever that run had claimed but not released.
+    # A run that is not prepared is covered only by a run that carries its id (one that adopted it, or a retry from its
+    # scope), never just because the covering run is full: a run still preparing may refresh after this one has read
+    # the bases, and its hosts would then never be re-triaged (review of #277, re-check S2). A prepared run is covered by
+    # a full run, or by one that re-runs its chunks for at least its advisories.
     def covers?(other)
-      return false unless other.is_a?(Triage) && (other.prepared? || other.chunk_runs.any?)
+      return false unless other.is_a?(Triage)
+      return !other.run_id.nil? && chunk_runs.include?(other.run_id) unless other.prepared?
       return true if full?
       return false if other.full? || !(other.chunk_runs - chunk_runs).empty?
-      return true unless other.prepared?
 
       advisory_ids.nil? || (!other.advisory_ids.nil? && (other.advisory_ids - advisory_ids).empty?)
     end

@@ -136,6 +136,10 @@ production:
   triage_listener_expiry:
     class: TriageListenerExpiryJob
     schedule: every hour at minute 19
+  # Review of #277: triage runs whose job died with its worker are failed, and a repair run adopts them.
+  triage_run_watch:
+    class: TriageRunWatchJob
+    schedule: every 10 minutes
   # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
   advisory_upload_pruning:
     class: AdvisoryUploadPruneJob

@@ -8,7 +8,10 @@
 #   image: a pattern for a versioned kernel image package, with the named groups release (what `uname -r` reports
 #     when that image runs) and flavour (images of the same flavour replace each other). Debian: linux-image-<release>
 #     and its -unsigned twin; the release is <version>+deb<N>-<flavour> since trixie and <version>-<ABI>-<flavour>
-#     before (bookworm), so a flavour such as 686-pae is read whole in both. The flavour metapackages (linux-image-amd64, linux-image-cloud-amd64) have no release in
+#     before (bookworm), so a flavour such as 686-pae is read whole in both. Known limit (#163): bullseye-backports
+#     names (linux-image-6.1.0-0.deb11.17-amd64) do not match, so such a host's kernel reads as unknown and no kernel
+#     rule applies (safe: its images' findings are triaged like any package's). The flavour metapackages
+#     (linux-image-amd64, linux-image-cloud-amd64) have no release in
 #     their name and do not match; nor do the -dbg packages (debug symbols).
 #   compare: how two images' versions are ordered: the package manager's version order (dpkg).
 # no_runtime_code: per source package, patterns for the binary packages that hold none of its code that runs on the

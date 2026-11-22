@@ -18,25 +18,19 @@
 class AddTriageBuckets < ActiveRecord::Migration[8.1]
   SUMMARY = %i[vuln_fix vuln_attention vuln_low_risk vuln_ignorable vuln_kev_open].freeze
   FUNCTIONS = { host_compliance_counts: [ 3, 2 ], host_compliance_summaries_refresh: [ 3, 2 ], host_compliance_summaries_changed: [ 5, 4 ] }.freeze
-  # A rule's bucket (VulnerabilityTriage::RULES): Fix available 1, Needs attention 2, Low risk 3, Ignorable 4.
-  RULE_BUCKET = "CASE WHEN %<rule>s IN (3, 4, 5, 6) THEN 1 WHEN %<rule>s IN (10, 11, 13, 14, 15) THEN 2 " \
-                "WHEN %<rule>s IN (9, 16, 17, 18, 19) THEN 3 WHEN %<rule>s IN (1, 2, 7, 8, 12) THEN 4 END"
+  # The checks' text is VulnerabilityTriage::Checks::CONSTRAINTS, written once (re-check of #277).
 
   def up
     add_column :chunk_matches, :base_bucket, :smallint
     add_column :chunk_matches, :base_rule, :smallint
     add_column :chunk_matches, :kev, :boolean
     add_column :chunk_matches, :triage_fixed_version, :string, limit: 256
-    add_check_constraint :chunk_matches, "(base_rule IS NULL) = (base_bucket IS NULL) AND (base_rule IS NULL) = (kev IS NULL) AND " \
-                                         "(base_rule IS NULL OR base_bucket = #{format(RULE_BUCKET, rule: 'base_rule')})",
-                         name: "chunk_matches_base_valid", validate: false
+    add_triage_check :chunk_matches
 
     add_column :vulnerability_findings, :bucket, :smallint
     add_column :vulnerability_findings, :bucket_rule, :smallint
     add_column :vulnerability_findings, :kev, :boolean
-    add_check_constraint :vulnerability_findings, "(bucket_rule IS NULL) = (bucket IS NULL) AND (bucket_rule IS NULL) = (kev IS NULL) AND " \
-                                                  "(bucket_rule IS NULL OR (state <> 'resolved' AND bucket = #{format(RULE_BUCKET, rule: 'bucket_rule')}))",
-                         name: "vulnerability_findings_bucket_valid", validate: false
+    add_triage_check :vulnerability_findings
 
     SUMMARY.each { |name| add_column :host_compliance_summaries, name, :integer, default: 0, null: false }
     execute "DROP FUNCTION host_compliance_counts(bigint[])" # its result columns change
@@ -84,6 +78,11 @@ class AddTriageBuckets < ActiveRecord::Migration[8.1]
   end
 
   private
+
+  def add_triage_check(table)
+    name, expression = VulnerabilityTriage::Checks::CONSTRAINTS.fetch(table.to_s)
+    add_check_constraint table, expression, name:, validate: false
+  end
 
   def replace_check(table, name, expression)
     remove_check_constraint table, name: name

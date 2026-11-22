@@ -79,5 +79,9 @@ RSpec.configure do |config|
     next if !self.class.use_transactional_tests || example.metadata[:claim_protocol]
 
     allow(TriageSignalChange).to receive(:release!) { |ids| TriageSignalChange.where(id: ids).delete_all }
+    # Likewise the signals barrier, which refuses inside a transaction (its lock would last until the test ends).
+    allow(VulnerabilityMatcher::Chunks).to receive(:signals_barrier!) do
+      ChunkEvaluation.connection.execute("SELECT pg_advisory_xact_lock(#{VulnerabilityMatcher::Chunks::SIGNALS_LOCK.join(', ')})")
+    end
   end
 end
