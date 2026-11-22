@@ -273,3 +273,9 @@ The owner approved the proposal on 2026-11-19 (PR #265) and answered all 26 open
 29. **Escalation needs Linux 5.14 or later** (#268): the scan tells which processes hold a listening socket from `fdinfo`'s `ino:` line, and on an older kernel it escalates nothing, with a warning.
 30. **Processes with a root filesystem of their own are skipped as listeners** (#268): a container's files are its image's, which the host's package lists would wrongly name. A chroot'd process (haproxy's workers, postfix's `smtpd`) counts.
 31. **The agent soak samples open descriptors as the fewest of three counts half a second apart** (#268), so a report in progress is not counted as growth (`agent/scripts/soak.sh`, `docs/operations/agent-soak.md`).
+
+Decided on VT-HOST-TAB's PR (#281):
+
+32. **The host tab drops VT-FIXABLE's fix chips.** The bucket strip is the tab's only "Fix available". `?fix=available`, which the Compliance page and the fleet list link to, still shows exactly the findings they count, with a line saying how the bucket differs.
+33. **The revised mockups are accepted.** This covers `host-vulns.html` (an N5 row, N4's example naming the listener, the new counts, and the Low risk wording true of every L rule), `states.html#no-in-use`, and `index.html`'s N5 row.
+34. **Needs attention is ordered by worst severity first, with ties broken by KEV status** (known exploited first), then by advisory id. This is decision 22 Q12's "severity first inside each bucket".
