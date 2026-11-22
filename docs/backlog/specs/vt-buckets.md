@@ -59,7 +59,7 @@ Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19); decided in [A
   | One KEV CVE: base of its verdicts | 12 to 17 ms for 1 verdict | 14 ms for 24 verdicts (0.58 ms a verdict, mostly a fixed cost) | |
   | Its hosts' re-triage, per affected host | 0.18 (1,500 in the run) to 0.9 ms (200) | 0.28 (1,500) to 0.79 ms (200) | 5 to 13 min |
   | The same as full transitions (the first version) | 80 to 87 ms | | 22 to 24 h |
-  | Tracker or EPSS changes: base, per chunk verdict of their advisories | 0.06 ms | 0.045 ms | |
+  | Tracker or EPSS changes: base of 100 changed CVEs | 0.24 ms a CVE (not counted per verdict) | 0.045 ms a verdict (2,400 verdicts) | |
   | Every verdict's base again (full runs), per verdict | 0.045 to 0.057 ms | 0.033 ms | |
   | `host_compliance_counts` v03, per host (200 in one call) | 6.6 to 6.9 ms (v02 7.5 to 8.1) | 4.2 ms | |
 
