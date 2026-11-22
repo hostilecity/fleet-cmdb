@@ -31,7 +31,7 @@
                 <td><%= finding_dates(finding) %></td></tr>
             <% end %>
             <% if limit && group.total > limit %>
-              <tr class="nested more"><td colspan="5"><%= link_to "#{number_with_delimiter(group.total - limit)} more on the package page", package_vulnerabilities_host_path(host, package: group.package) %>: the first <%= limit %> are shown here, worst severity first.</td></tr>
+              <tr class="nested more"><td colspan="5"><%= link_to "Open the package page", package_vulnerabilities_host_path(host, package: group.package) %>: <%= number_with_delimiter(group.total - limit) %> more findings here match. The first <%= limit %> are shown, worst severity first; the package page lists every finding of this package, in every state.</td></tr>
             <% end %>
           </tbody></table>
         </details></td></tr>

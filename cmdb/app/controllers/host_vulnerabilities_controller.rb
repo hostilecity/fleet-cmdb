@@ -76,7 +76,11 @@ class HostVulnerabilitiesController < ApplicationController
       @no_dsa_count = FindingTriage.no_dsa(findings.active.joins(:advisory), release: @triage_release, status: @triage_status).count if @state == "open"
       scope = FindingTriage.no_dsa(scope, release: @triage_release, status: @triage_status) if @debian
       scope = with_signal(scope) if @signal
-      scope = scope.with_fix if @fix
+      if @fix
+        scope = scope.with_fix
+        # What the line says is shown: the other filters narrow it too (one count, with ?fix= only; re-check of #281, N1).
+        @fix_shown = filtered_besides_fix? ? scope.where(state: %w[open reopened]).count : @fixable_count
+      end
       cursors = HostTriageSections::CURSORS.to_h { |section| [ section, [ params[:"#{section}_after"], params[:"#{section}_before"] ] ] }
       # With no open finding triaged yet, only the not-triaged section is drawn: no bucket reads 0 for them (#277 item 15).
       untriaged_only = @bucket_counts["untriaged"].positive? && @bucket_counts["untriaged"] == @state_counts["open"]
@@ -127,6 +131,8 @@ class HostVulnerabilitiesController < ApplicationController
     @freshness = Advisories::Freshness.statuses
     @package_set = HostPackageSet.find_by(host_id: @host.id)
   end
+
+  def filtered_besides_fix? = @severity || @query.present? || @debian || @signal
 
   def with_signal(scope)
     case @signal

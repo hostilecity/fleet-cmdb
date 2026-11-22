@@ -48,9 +48,12 @@ class HostTriageSections
   # The findings drawn under a package row.
   def self.shown(group) = group.findings.first(NESTED_MAX)
 
-  # Every finding on the page.
+  # Every finding on the page, and every finding of a Fix available package row: its "Upgrade to" is the highest fix
+  # of all of them, which F2's needs their inputs for (re-check of #281, N3). Fix available rows are upgrades, so
+  # rarely long.
   def findings
-    [ kernel, packages, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map { |group| self.class.shown(group) } } +
+    Array(packages&.groups).flat_map(&:findings) +
+      [ kernel, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map { |group| self.class.shown(group) } } +
       Array(attention&.groups).flat_map(&:findings)
   end
 

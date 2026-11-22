@@ -25,7 +25,7 @@
                 <td><%= triage_reason(finding, sections, signals) %></td></tr>
             <% end %>
             <% if group.total > HostTriageSections::NESTED_MAX %>
-              <tr class="nested more"><td colspan="4"><%= link_to "#{number_with_delimiter(group.total - HostTriageSections::NESTED_MAX)} more on the package page", package_vulnerabilities_host_path(host, package: group.package) %>: the first <%= HostTriageSections::NESTED_MAX %> are shown here, worst severity first.</td></tr>
+              <tr class="nested more"><td colspan="4"><%= link_to "Open the package page", package_vulnerabilities_host_path(host, package: group.package) %>: <%= number_with_delimiter(group.total - HostTriageSections::NESTED_MAX) %> more findings here match. The first <%= HostTriageSections::NESTED_MAX %> are shown, worst severity first; the package page lists every finding of this package, in every state and without buckets.</td></tr>
             <% end %>
           </tbody></table>
         </details></td></tr>

@@ -7,7 +7,8 @@
     <p>Tracker data for <span class="mono"><%= @triage_release %></span> was last imported <%= seen_ago(@triage_status.updated_at) %> (<%= utc(@triage_status.updated_at) %>). Findings, severity, and counts come from the advisory data and are not affected. <%= link_to "See the data sources", data_sources_path(anchor: "tracker") %>.</p></div>
 <% end %>
 <% evaluated = @evaluation && !@evaluation.not_evaluated? %>
-<% filtered = @severity || @query.present? || @debian || @signal || @fix %>
+<% filtered_besides_fix = @severity || @query.present? || @debian || @signal %>
+<% filtered = filtered_besides_fix || @fix %>
 <% unless evaluated %>
   <%= render "host_vulnerabilities/not_evaluated", host: @host, evaluation: @evaluation, context: @context, open_count: @state_counts["open"] %>
 <% end %>
@@ -54,7 +55,7 @@
     <button class="btn quiet" type="submit">Apply</button>
   <% end %>
   <% if @fix %>
-    <p class="notice info" role="status" id="fix_filter">Showing the <%= pluralize(number_with_delimiter(@fixable_count), "open finding") %> whose advisory data names a fix for this release, as the Compliance page and the fleet list count them. The Fix available bucket (<%= number_with_delimiter(@bucket_counts["fix"]) %>) can differ: it also counts fixes Debian's tracker knows before the advisory data (F2) and kernel steps, and leaves out kernel images that are not running. <%= link_to "Show every finding", vulnerabilities_host_path(@host, link_params.except(:fix)) %></p>
+    <p class="notice info" role="status" id="fix_filter">Showing the <%= pluralize(number_with_delimiter(@fix_shown), "open finding") %> whose advisory data names a fix for this release<%= @fix_shown == @fixable_count && !filtered_besides_fix ? ", as the Compliance page and the fleet list count them" : " that match the other filters, of the #{number_with_delimiter(@fixable_count)} the Compliance page and the fleet list count" %>. The Fix available bucket (<%= number_with_delimiter(@bucket_counts["fix"]) %>) can differ: it also counts fixes Debian's tracker knows before the advisory data (F2) and kernel steps, and leaves out kernel images that are not running. <%= link_to "Show every finding", vulnerabilities_host_path(@host, link_params.except(:fix)) %></p>
   <% end %>
   <% if @bucket %>
     <p class="muted" id="bucket_filter">Showing <%= @bucket == "untriaged" ? "the findings not triaged yet" : bucket_name(@bucket) %> only. <%= link_to "Show every bucket", vulnerabilities_host_path(@host, link_params.except(:bucket, :rule)) %></p>

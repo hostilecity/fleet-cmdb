@@ -121,6 +121,11 @@ module HostVulnerabilitiesHelper
   # Triage on the tab (VT-HOST-TAB #260, approved mockup host-vulns.html). Every reason, unit name, and address is
   # plain text that Rails escapes: the listener's unit and sockets are agent data (VulnerabilityTriage::Reasons cleans
   # and cuts them too).
+  # Said where a stored rule no longer matches the data as it reads now (review of #281, B1).
+  RETRIAGE_PENDING = "Re-triage pending: the data changed since this finding was triaged.".freeze
+  # The agent version that reports which packages listening processes load (VT-APPLICABILITY, #258; the approved
+  # states.html#no-in-use). #268 confirms it.
+  LISTENER_AGENT_VERSION = "0.4.0".freeze
   # Source packages named in Work remaining; the rest are counted.
   UPGRADES_LISTED = 8
   BUCKET_CLASSES = { "fix" => "fix", "attention" => "attn", "low_risk" => "low", "ignorable" => "ign" }.freeze
@@ -139,9 +144,9 @@ module HostVulnerabilitiesHelper
   # The sentence for a finding's rule, with the rule id. It is built from the finding's inputs as they read now
   # (Explain) only while they still give the stored rule. When they no longer do (an input changed and the host's
   # re-triage has not run yet: for N5, listener evidence that expired before TriageListenerExpiryJob reached the
-  # host), the stored rule's summary says "re-triage pending", so a reason never describes data it was not decided on
-  # (review of #281, B1). On a host that is not evaluated now, whose inputs cannot be read, the summary alone. The KEV
-  # and EPSS qualifiers are added either way (VT-M1).
+  # host), it reads "When triaged: <the rule's summary> Re-triage pending: ...", in the past, so it never states the
+  # old rule's evidence as today's fact (reviews of #281, B1 and N5). On a host that is not evaluated now, whose inputs
+  # cannot be read, the rule's summary with its KEV and EPSS qualifiers (VT-M1).
   def triage_reason(finding, sections, signals)
     rule = VulnerabilityTriage.rule_for(finding.bucket_rule)
     return tag.span("Not triaged yet.", class: "reason") unless rule
@@ -152,9 +157,10 @@ module HostVulnerabilitiesHelper
       # "No EPSS score yet" only once EPSS data exists; before, the "none has been imported" qualifier says it.
       details = { kev_dates: sections.kev_dates, epss_scores: (sections.epss_scores unless epss.nil? || epss.never?) }.compact
       VulnerabilityTriage::Reasons.sentence(rule, inputs, kev:, epss:, details:)
+    elsif inputs
+      "When triaged: #{VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule)} #{RETRIAGE_PENDING}"
     else
-      pending = "Re-triage pending: the data changed since this finding was triaged." if inputs
-      [ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), pending, *rule_qualifiers(rule, signals) ].compact.join(" ")
+      [ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), *rule_qualifiers(rule, signals) ].join(" ")
     end
     tag.span(safe_join([ text, tag.span(rule, class: "rule-id") ]), class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
   end
@@ -194,6 +200,7 @@ module HostVulnerabilitiesHelper
   # A Fix available package row's action: the highest fix among its findings (F1's version, or F2's from Debian's
   # tracker when its inputs can be read).
   def upgrade_action(group, sections)
+    # Every finding of the row, not only those drawn: the Fix available rows' inputs are all loaded (HostTriageSections).
     versions = group.findings.filter_map { |f| (inputs = sections.inputs[f.id]) ? VulnerabilityTriage.fix_for(inputs) : f.fixed_version }.uniq
     scheme = group.findings.filter_map { |f| sections.inputs[f.id]&.scheme }.first
     best = scheme ? versions.max { |a, b| VulnerabilityTriage.compare(a, b, scheme) || 0 } : versions.max
@@ -201,14 +208,19 @@ module HostVulnerabilitiesHelper
   end
 
   # A kernel row's action: reboot into the installed newer image (K1), or install the new kernel package, then reboot
-  # (K2). The update task does neither (DEC-16).
+  # (K2). The update task does neither (DEC-16). The image to reboot into is named only while today's data still gives
+  # K1; once it no longer does (the host rebooted, or the newer image was purged, and its re-triage has not run), the
+  # row says "the newer kernel" with the pending note, never a kernel that is running or gone (re-check of #281, S1).
   def kernel_action(group, sections)
-    rules = group.findings.map { |f| VulnerabilityTriage.rule_for(f.bucket_rule) }
-    inputs = group.findings.filter_map { |f| sections.inputs[f.id] }.first
-    target = inputs && kernel_target(inputs)
-    reboot = safe_join([ tag.strong("Reboot"), " into ", (target ? tag.span(target, class: "mono") : "the newer kernel"), " (installed)" ])
+    shown = HostTriageSections.shown(group)
+    rules = shown.map { |f| VulnerabilityTriage.rule_for(f.bucket_rule) }
+    stale = shown.any? { |f| (inputs = sections.inputs[f.id]) && VulnerabilityTriage.classify(inputs).rule != VulnerabilityTriage.rule_for(f.bucket_rule) }
+    inputs = shown.filter_map { |f| sections.inputs[f.id] }.first
+    target = kernel_target(inputs) if !stale && inputs && VulnerabilityTriage.classify(inputs).rule == "K1"
+    reboot = target ? safe_join([ tag.strong("Reboot"), " into ", tag.span(target, class: "mono"), " (installed)" ]) : safe_join([ tag.strong("Reboot"), " into the newer kernel" ])
     install = safe_join([ tag.strong("Install the new kernel package"), " (", tag.code("apt full-upgrade"), "), then reboot" ])
     parts = [ (reboot if rules.include?("K1")), (install if rules.include?("K2")) ].compact
+    parts << tag.span(RETRIAGE_PENDING, class: "state-note") if stale
     safe_join(parts, tag.br)
   end
 

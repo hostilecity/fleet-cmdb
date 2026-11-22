@@ -71,7 +71,7 @@
       <% when :unread %>
         <p class="state-note" id="listeners_note">Listening services are not read yet, so rule N5 (a package a listening process loads stays here) applies to no finding. Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay here by rule N4.</p>
       <% when :unknown %>
-        <p class="state-note" id="listeners_note">This host does not report which packages its listening processes load, so rule N5 cannot apply here. Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay here by rule N4.</p>
+        <p class="state-note" id="listeners_note">This host does not report which packages its listening processes load, so rule N5 cannot apply here. Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay here by rule N4. Update the agent to <%= HostVulnerabilitiesHelper::LISTENER_AGENT_VERSION %> or later.</p>
       <% end %>
     </div>
   </details>
