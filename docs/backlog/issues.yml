@@ -656,3 +656,37 @@
     - "The owner has approved the mockups, ADR 0032, FR-2.6, and the 26 decisions (done 2026-11-19, PR #265)."
     - "Every slice issue is closed, and the bucket counts add up to the open count on every page that shows them."
   blocked_by: [VT-RISK-PAGE, VT-HOST-TAB, VT-APPLICABILITY]
+
+# Operator API (ADR 0033, FR-S.6), proposed 2026-11-22 for hostilecity/op-works#15. Create these issues only after the owner accepts ADR 0033.
+- key: OP-CREDS
+  title: "FR-S.6: service credentials and the /api/operator/v1 boundary"
+  milestone: 5
+  labels: ["area:server", "area:dashboard", "area:api", "security"]
+  covers: [FR-S.6, NFR-1]
+  goal: "Operators create, list and revoke scoped, expiring service credentials, and /api/operator/v1 authenticates them on the private agent hostname only."
+  done:
+    - "A credential is shown once, stored only as a hash, refused after expiry or revocation, and refused for any endpoint outside its scopes (request specs)."
+    - "/api/operator/v1 on the dashboard hostname returns 404, and creating or revoking a credential needs the TOTP step-up and writes an audit entry."
+  blocked_by: []
+
+- key: OP-HOSTS
+  title: "FR-S.6: pre-register, read and retire hosts through the operator API"
+  milestone: 5
+  labels: ["area:server", "area:api", "security"]
+  covers: [FR-S.6, FR-S.1, FR-S.3]
+  goal: "A service credential with the right scopes can pre-register a host and receive its one-time token, issue a new token for a pending host, read host state, and retire a host."
+  done:
+    - "A host pre-registered through the API is indistinguishable from one pre-registered in the dashboard, except that the audit actor is the service credential."
+    - "The API never returns an agent credential, and a retired host's credential stops working at once (request specs)."
+  blocked_by: [OP-CREDS]
+
+- key: OP-COMPLIANCE
+  title: "FR-S.6: read a host's CIS-aligned summary and vulnerability buckets"
+  milestone: 5
+  labels: ["area:server", "area:api"]
+  covers: [FR-S.6, FR-2.2, FR-2.6]
+  goal: "A credential with compliance:read gets a host's CIS-aligned score, counts, failing rule ids and evaluation time, and its vulnerability bucket counts."
+  done:
+    - "The numbers match the host's Configuration and Vulnerabilities tabs for the same evaluation (spec over fixtures)."
+    - "A host never evaluated returns an explicit not-evaluated state, not zeros."
+  blocked_by: [OP-CREDS]

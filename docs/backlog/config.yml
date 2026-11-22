@@ -20,6 +20,9 @@ milestones:
   - title: "Vulnerability triage"
     description: "Approved by the owner 2026-11-19: triage buckets, exploitation signals, operator decisions, exposure tiers and scores, and the fleet risk page (VT-EPIC #264, ADR 0032). Built after Phase 2 acceptance (gate P2-ACCEPT); does not gate Phase 3."
     gate: P2-ACCEPT
+  - title: "Operator API"
+    description: "Proposed 2026-11-22, awaiting the owner: service credentials and /api/operator/v1 for provisioning tools to pre-register, read and retire hosts (ADR 0033, FR-S.6). Built after Phase 2 acceptance (gate P2-ACCEPT); does not gate Phase 3."
+    gate: P2-ACCEPT
 
 labels:
   - { name: "area:server",    color: "D93F0B", description: "Rails server (cmdb/)" }
