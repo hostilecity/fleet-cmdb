@@ -19,8 +19,8 @@ class AddTriageBuckets < ActiveRecord::Migration[8.1]
   SUMMARY = %i[vuln_fix vuln_attention vuln_low_risk vuln_ignorable vuln_kev_open].freeze
   FUNCTIONS = { host_compliance_counts: [ 3, 2 ], host_compliance_summaries_refresh: [ 3, 2 ], host_compliance_summaries_changed: [ 5, 4 ] }.freeze
   # A rule's bucket (VulnerabilityTriage::RULES): Fix available 1, Needs attention 2, Low risk 3, Ignorable 4.
-  RULE_BUCKET = "CASE WHEN %<rule>s IN (3, 4, 5, 6) THEN 1 WHEN %<rule>s IN (10, 11, 13, 14) THEN 2 " \
-                "WHEN %<rule>s IN (9, 15, 16, 17, 18, 19) THEN 3 WHEN %<rule>s IN (1, 2, 7, 8, 12) THEN 4 END"
+  RULE_BUCKET = "CASE WHEN %<rule>s IN (3, 4, 5, 6) THEN 1 WHEN %<rule>s IN (10, 11, 13, 14, 15) THEN 2 " \
+                "WHEN %<rule>s IN (9, 16, 17, 18, 19) THEN 3 WHEN %<rule>s IN (1, 2, 7, 8, 12) THEN 4 END"
 
   def up
     add_column :chunk_matches, :base_bucket, :smallint

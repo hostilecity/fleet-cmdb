@@ -131,6 +131,11 @@ production:
   triage_daily:
     class: TriageDailyJob
     schedule: "37 15 * * * UTC"
+  # VT-S05 (#259, owner decision 2026-11-21): hosts whose listener evidence (rule N5) turned 24 hours old are
+  # re-triaged. Does nothing until VT-APPLICABILITY (#258) supplies the evidence.
+  triage_listener_expiry:
+    class: TriageListenerExpiryJob
+    schedule: every hour at minute 19
   # P2-D06: uploaded advisory files never imported (a job interrupted or never run) are deleted after an hour.
   advisory_upload_pruning:
     class: AdvisoryUploadPruneJob

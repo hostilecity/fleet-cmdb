@@ -20,7 +20,7 @@ unsupported:
     Debian no longer fixes this package in this release. Plan to remove or replace it; meanwhile keep it off untrusted
     networks and away from untrusted input.
 network_service:
-  rules: [N4]
+  rules: [N4, N5]
   vector: network
   text: >-
     Reachable over the network without a login. Bind the service to localhost or a private interface, allow only the
