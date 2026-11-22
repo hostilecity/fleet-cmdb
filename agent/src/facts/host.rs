@@ -160,6 +160,16 @@ pub trait Host: Send + Sync {
         ))
     }
 
+    /// The mount id of the kernel's socket filesystem (`sockfs`), as `/proc/<pid>/fdinfo` shows it, so a
+    /// descriptor's inode is known to be a socket's (the library scan, VT-A02): read from a socket this
+    /// process opens for the purpose. The default says unsupported.
+    fn socket_mount(&self) -> io::Result<u64> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot name the socket filesystem",
+        ))
+    }
+
     /// The listening TCP and bound UDP sockets (IPv4 and IPv6) the kernel's `sock_diag` netlink
     /// interface lists, with their cgroup ids. More than `max` is an error. Hosts that cannot answer
     /// (the test fakes, unless a test gives them sockets) say so.
@@ -347,6 +357,10 @@ impl Host for RealHost {
         self.bounded(Op::Link, path, |path| fs::read_link(path))
     }
 
+    fn socket_mount(&self) -> io::Result<u64> {
+        socket_mount()
+    }
+
     fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
         self.bounded(Op::Sockets, Path::new("sock_diag"), move |_| {
             crate::in_use::netlink::dump(max)
@@ -356,6 +370,22 @@ impl Host for RealHost {
     fn directories(&self, root: &Path, max: usize) -> io::Result<Vec<(u64, String)>> {
         self.bounded(Op::Walk, root, move |root| walk_directories(root, max))
     }
+}
+
+/// [`Host::socket_mount`] on this machine: an unbound `AF_UNIX` socket's `mnt_id`.
+pub fn socket_mount() -> io::Result<u64> {
+    use std::os::fd::AsRawFd;
+    let socket = std::os::unix::net::UnixDatagram::unbound()?;
+    let text = fs::read_to_string(format!("/proc/self/fdinfo/{}", socket.as_raw_fd()))?;
+    fdinfo_field(&text, "mnt_id").ok_or_else(|| io::Error::other("fdinfo has no mnt_id"))
+}
+
+/// A number field of a `/proc/<pid>/fdinfo/<fd>` file (`mnt_id:\t8`).
+pub fn fdinfo_field(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        (name == key).then(|| value.trim().parse().ok())?
+    })
 }
 
 /// [`Host::directories`] on the real filesystem. `readdir` gives each entry's inode and type, so no

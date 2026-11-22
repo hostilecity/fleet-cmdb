@@ -260,6 +260,12 @@ impl<'a> Ctx<'a> {
             .map_err(|_| io::Error::other("the link's target is not UTF-8"))
     }
 
+    /// [`Host::socket_mount`], within the budget.
+    pub fn socket_mount(&self) -> io::Result<u64> {
+        self.in_time()?;
+        self.host.socket_mount()
+    }
+
     /// [`Host::socket_cgroups`], within the budget.
     pub fn socket_cgroups(&self, max: usize) -> io::Result<Vec<host::SocketCgroup>> {
         self.in_time()?;

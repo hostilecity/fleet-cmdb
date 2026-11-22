@@ -20,7 +20,7 @@ struct TestHost {
     exec: HashMap<String, String>,
     /// Paths whose reads are refused (permission denied).
     denied: std::collections::HashSet<String>,
-    /// Symlinks (`/proc/<pid>/fd/<n>`, `/proc/<pid>/exe`): path -> target.
+    /// Symlinks (`/proc/<pid>/exe`): path -> target.
     links: HashMap<String, String>,
     log: Mutex<Vec<String>>,
 }
@@ -99,6 +99,10 @@ impl Host for TestHost {
             .get(&first)
             .cloned()
             .unwrap_or(Err(RunError::NotInstalled(first)))
+    }
+    /// The socket filesystem is mount 8 here; other files are on mount 25.
+    fn socket_mount(&self) -> io::Result<u64> {
+        Ok(8)
     }
     fn link(&self, path: &Path) -> io::Result<std::path::PathBuf> {
         let path = path.to_string_lossy().into_owned();
@@ -1156,6 +1160,21 @@ fn maps_lines_give_files_and_deleted_ones() {
     );
 }
 
+/// `/proc/<pid>/fdinfo`: (descriptor, mount, inode).
+fn fdinfo(host: &mut TestHost, pid: &str, fds: &[(&str, u64, u64)]) {
+    let dir = format!("/proc/{pid}/fdinfo");
+    let names = host.dirs.entry(dir.clone()).or_default();
+    for (fd, _, _) in fds {
+        names.push((*fd).to_owned());
+    }
+    for (fd, mount, inode) in fds {
+        host.files.insert(
+            format!("{dir}/{fd}"),
+            format!("pos:\t0\nflags:\t02\nmnt_id:\t{mount}\nino:\t{inode}\n").into_bytes(),
+        );
+    }
+}
+
 fn scan_host() -> TestHost {
     let mut host = TestHost::default()
         .file("/proc/1/maps", "")
@@ -1187,20 +1206,14 @@ fn scan_host() -> TestHost {
             "7f00-7f01 r--p 0 fe:01 5555 /usr/lib/libidle.so.1\n",
         );
     // sshd (812) holds the network socket; 900, a program no package owns, the loopback one; 950 an
-    // established connection's socket and a file.
+    // established connection's socket (1006) and a file whose inode number is a listening socket's
+    // (1001, on another mount).
     for (pid, fds) in [
-        ("812", vec![("0", "/dev/null"), ("3", "socket:[1001]")]),
-        ("900", vec![("4", "socket:[1003]"), ("5", "pipe:[77]")]),
-        ("950", vec![("3", "socket:[1006]"), ("4", "/var/log/x.log")]),
+        ("812", vec![("0", 25, 7), ("3", 8, 1001)]),
+        ("900", vec![("4", 8, 1003), ("5", 13, 77)]),
+        ("950", vec![("3", 8, 1006), ("4", 25, 1001)]),
     ] {
-        host.dirs.insert(
-            format!("/proc/{pid}/fd"),
-            fds.iter().map(|(fd, _)| (*fd).to_owned()).collect(),
-        );
-        for (fd, target) in fds {
-            host.links
-                .insert(format!("/proc/{pid}/fd/{fd}"), target.to_owned());
-        }
+        fdinfo(&mut host, pid, &fds);
     }
     host.links
         .insert("/proc/812/exe".into(), "/usr/sbin/sshd".into());
@@ -1302,9 +1315,7 @@ fn the_scan_names_packages_in_use_and_stale_ones() {
 #[test]
 fn a_process_holding_network_and_loopback_sockets_is_network() {
     let mut host = scan_host();
-    host.dirs.get_mut("/proc/900/fd").unwrap().push("6".into());
-    host.links
-        .insert("/proc/900/fd/6".into(), "socket:[2001]".into());
+    fdinfo(&mut host, "900", &[("6", 8, 2001)]);
     host = host.file("/proc/1/net/tcp6", &tcp6());
     let output = scan::scan(&host).unwrap();
     // The network socket is named first.
@@ -1332,7 +1343,7 @@ fn without_listening_sockets_no_descriptor_is_read() {
     assert!(output.loaded_by_listeners.is_empty());
     assert!(!output.libraries.is_empty());
     assert!(
-        !host.log().iter().any(|l| l.contains("/fd")),
+        !host.log().iter().any(|l| l.contains("/fdinfo")),
         "{:?}",
         host.log()
     );
@@ -1342,8 +1353,8 @@ fn without_listening_sockets_no_descriptor_is_read() {
 fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
     // A descriptor closed, or a process ended, meanwhile: skipped.
     let mut host = scan_host();
-    host.links.remove("/proc/950/fd/4");
-    host.dirs.remove("/proc/900/fd");
+    host.files.remove("/proc/950/fdinfo/4");
+    host.dirs.remove("/proc/900/fdinfo");
     host.links.remove("/proc/812/exe");
     let output = scan::scan(&host).unwrap();
     assert!(
@@ -1360,8 +1371,8 @@ fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
     );
     // Anything else that cannot be read fails it, rather than report part of the listeners.
     for denied in [
-        "/proc/812/fd",
-        "/proc/812/fd/3",
+        "/proc/812/fdinfo",
+        "/proc/812/fdinfo/3",
         "/proc/812/exe",
         "/proc/812/cgroup",
         "/proc/1/net/tcp",
@@ -1370,6 +1381,13 @@ fn descriptors_that_cannot_be_read_fail_the_scan_and_closed_ones_are_skipped() {
         host.denied.insert(denied.into());
         assert!(scan::scan(&host).unwrap_err().contains(denied), "{denied}");
     }
+    // An fdinfo without its mount or inode (an older kernel) fails it too.
+    let mut host = scan_host();
+    host.files.insert(
+        "/proc/812/fdinfo/3".into(),
+        b"pos:\t0\nflags:\t02\n".to_vec(),
+    );
+    assert!(scan::scan(&host).unwrap_err().contains("no mnt_id or ino"));
     // The host's IPv4 tables must be there; IPv6 may be off.
     let mut host = scan_host();
     host.files.remove("/proc/1/net/udp");
@@ -1382,19 +1400,15 @@ fn at_most_four_sockets_are_named_network_ones_first() {
     // sshd also holds every other listening socket of the fixture: 1002 (192.0.2.10:445), 1003, 1004
     // (0.0.0.0:5432), 1005, 1007 (loopback), and 2001 ([::]:22).
     host = host.file("/proc/1/net/tcp6", &tcp6());
-    let fds = host.dirs.get_mut("/proc/812/fd").unwrap();
-    for (fd, inode) in [
-        ("4", 1002),
-        ("5", 1003),
-        ("6", 1004),
-        ("7", 1005),
-        ("8", 1007),
-        ("9", 2001),
-    ] {
-        fds.push(fd.into());
-        host.links
-            .insert(format!("/proc/812/fd/{fd}"), format!("socket:[{inode}]"));
-    }
+    let more = [
+        ("4", 8, 1002),
+        ("5", 8, 1003),
+        ("6", 8, 1004),
+        ("7", 8, 1005),
+        ("8", 8, 1007),
+        ("9", 8, 2001),
+    ];
+    fdinfo(&mut host, "812", &more);
     let output = scan::scan(&host).unwrap();
     let sshd = output
         .loaded_by_listeners
@@ -1419,8 +1433,8 @@ fn descriptors_and_listener_uses_are_bounded() {
     let half: Vec<String> = (0..scan::MAX_DESCRIPTORS / 2 + 1)
         .map(|i| (i + 10).to_string())
         .collect();
-    host.dirs.insert("/proc/812/fd".into(), half.clone());
-    host.dirs.insert("/proc/900/fd".into(), half);
+    host.dirs.insert("/proc/812/fdinfo".into(), half.clone());
+    host.dirs.insert("/proc/900/fdinfo".into(), half);
     assert!(scan::scan(&host).unwrap_err().contains("open files"));
 }
 
@@ -1935,6 +1949,9 @@ fn cpu_on_this_host() {
         fn link(&self, p: &Path) -> io::Result<std::path::PathBuf> {
             scan::ScanHost(self.0.clone()).link(p)
         }
+        fn socket_mount(&self) -> io::Result<u64> {
+            crate::facts::host::socket_mount()
+        }
     }
     let host = OwnProcess(host);
     let (c, w) = (cpu(), std::time::Instant::now());
@@ -1978,6 +1995,7 @@ fn scan_peak_memory_on_a_generated_host() {
                     return Ok(format!("{TCP_HEADER}   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 42 1 0 100 0 0 10 0\n").into_bytes());
                 }
                 Some("/proc/1/net/udp") => return Ok(TCP_HEADER.as_bytes().to_vec()),
+                Some("/proc/1/fdinfo/3") => return Ok(b"mnt_id:\t8\nino:\t42\n".to_vec()),
                 Some("/proc/1/net/tcp6" | "/proc/1/net/udp6") => {
                     return Err(io::ErrorKind::NotFound.into());
                 }
@@ -1989,7 +2007,7 @@ fn scan_peak_memory_on_a_generated_host() {
             if d == Path::new("/proc") {
                 return Ok(vec!["1".into()]);
             }
-            if d == Path::new("/proc/1/fd") {
+            if d == Path::new("/proc/1/fdinfo") {
                 return Ok(vec!["3".into()]);
             }
             let mut names: Vec<String> = std::fs::read_dir(self.real(d))?
@@ -2001,9 +2019,11 @@ fn scan_peak_memory_on_a_generated_host() {
         fn run(&self, _: &Command) -> Result<Vec<u8>, RunError> {
             Err(RunError::NotInstalled("none".into()))
         }
+        fn socket_mount(&self) -> io::Result<u64> {
+            Ok(8)
+        }
         fn link(&self, p: &Path) -> io::Result<std::path::PathBuf> {
             match p.to_str() {
-                Some("/proc/1/fd/3") => Ok("socket:[42]".into()),
                 Some("/proc/1/exe") => Ok("/usr/sbin/bench".into()),
                 _ => Err(io::ErrorKind::NotFound.into()),
             }
@@ -2050,4 +2070,32 @@ fn scan_peak_memory_on_a_generated_host() {
         ),
         Err(e) => println!("scan failed after {elapsed:?}: {e}; peak RSS {}", hwm()),
     }
+}
+
+#[test]
+fn the_real_fdinfo_names_a_socket_by_the_socket_filesystem_and_its_inode() {
+    use std::os::fd::AsRawFd;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let fd = listener.as_raw_fd();
+    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).unwrap();
+    let link = std::fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
+    let field = crate::facts::host::fdinfo_field;
+    assert_eq!(
+        field(&text, "mnt_id"),
+        Some(crate::facts::host::socket_mount().unwrap())
+    );
+    assert_eq!(
+        format!("socket:[{}]", field(&text, "ino").unwrap()),
+        link.to_string_lossy()
+    );
+    // A regular file is on another mount.
+    let file = std::fs::File::open("/proc/self/status").unwrap();
+    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).unwrap();
+    assert_ne!(
+        field(&text, "mnt_id"),
+        field(
+            &format!("mnt_id:\t{}", crate::facts::host::socket_mount().unwrap()),
+            "mnt_id"
+        )
+    );
 }

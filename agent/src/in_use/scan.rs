@@ -27,8 +27,8 @@
 //! whether the socket is on the network or on loopback only, that process's systemd unit, and the
 //! listening sockets it holds (`address:port/protocol`, at most [`MAX_SOCKETS_PER_USE`]), so a reason can
 //! name them (#277). A process holds a socket when one of
-//! its descriptors (`/proc/<pid>/fd`, readable with `CAP_SYS_PTRACE`) is a listening socket of the host's
-//! network namespace (`/proc/1/net/{tcp,tcp6,udp,udp6}`, [`HOST_SOCKETS`]). What the scan misses is
+//! its descriptors (`/proc/<pid>/fdinfo`, readable with `CAP_SYS_PTRACE`: its mount is the socket
+//! filesystem's and its inode a socket's) is a listening socket of the host's network namespace (`/proc/1/net/{tcp,tcp6,udp,udp6}`, [`HOST_SOCKETS`]). What the scan misses is
 //! simply not reported. Nothing else leaves the scan: no paths, no process ids, no other addresses.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -391,6 +391,11 @@ impl Host for ScanHost {
         self.0.stat(path)
     }
     fn read(&self, path: &std::path::Path, max: u64) -> std::io::Result<Vec<u8>> {
+        // A process's own files in /proc (maps, fdinfo, cgroup), thousands of them, are read here
+        // directly; anything else through the agent's bounded, secret-refusing reader.
+        if path.starts_with("/proc") {
+            return crate::fsx::read_regular(path, max, crate::fsx::Symlinks::Refuse);
+        }
         self.0.read(path, max)
     }
     fn list(&self, dir: &std::path::Path, max: usize) -> std::io::Result<Vec<String>> {
@@ -401,6 +406,9 @@ impl Host for ScanHost {
     }
     fn link(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
         std::fs::read_link(path)
+    }
+    fn socket_mount(&self) -> std::io::Result<u64> {
+        crate::facts::host::socket_mount()
     }
 }
 
@@ -485,14 +493,6 @@ fn listening_sockets(ctx: &Ctx) -> Result<HashMap<u64, super::sockets::Socket>, 
     Ok(found)
 }
 
-/// The inode of a `socket:[N]` descriptor link.
-fn socket_inode(link: &str) -> Option<u64> {
-    link.strip_prefix("socket:[")?
-        .strip_suffix(']')?
-        .parse()
-        .ok()
-}
-
 /// `address:port/protocol`, IPv6 in brackets.
 fn socket_name(socket: &super::sockets::Socket) -> String {
     let protocol = if socket.udp { "udp" } else { "tcp" };
@@ -502,15 +502,18 @@ fn socket_name(socket: &super::sockets::Socket) -> String {
     )
 }
 
-/// The `listening` sockets process `pid` holds: empty when none (or it ended meanwhile). `seen` counts
-/// the descriptors looked at, across processes.
+/// The `listening` sockets process `pid` holds: empty when none (or it ended meanwhile). A descriptor is
+/// a socket when its `fdinfo` shows the socket filesystem's mount (`socket_mount`) and the socket's inode;
+/// `/proc/<pid>/fd` itself needs `CAP_DAC_READ_SEARCH` for another user's process, `fdinfo` only ptrace
+/// access. `seen` counts the descriptors looked at, across processes.
 fn holds<'a>(
     ctx: &Ctx,
     pid: &str,
     listening: &'a HashMap<u64, super::sockets::Socket>,
+    socket_mount: u64,
     seen: &mut usize,
 ) -> Result<Vec<&'a super::sockets::Socket>, String> {
-    let dir = format!("/proc/{pid}/fd");
+    let dir = format!("/proc/{pid}/fdinfo");
     let fds = match ctx.list(&dir, MAX_DESCRIPTORS) {
         Ok(fds) => fds,
         Err(e) if gone(&e) => return Ok(Vec::new()),
@@ -525,15 +528,21 @@ fn holds<'a>(
     let mut found = Vec::new();
     for fd in fds {
         let path = format!("{dir}/{fd}");
-        match ctx.link(&path) {
-            Ok(target) => {
-                if let Some(socket) = socket_inode(&target).and_then(|i| listening.get(&i)) {
-                    found.push(socket);
-                }
-            }
+        let bytes = match ctx.read(&path, 64 * 1024) {
+            Ok(bytes) => bytes,
             // Closed meanwhile, or the process ended.
-            Err(e) if gone(&e) => {}
+            Err(e) if gone(&e) => continue,
             Err(e) => return Err(crate::facts::io_reason(&path, &e)),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let field = crate::facts::host::fdinfo_field;
+        let (Some(mount), Some(inode)) = (field(&text, "mnt_id"), field(&text, "ino")) else {
+            return Err(format!("{path} has no mnt_id or ino"));
+        };
+        if mount == socket_mount
+            && let Some(socket) = listening.get(&inode)
+        {
+            found.push(socket);
         }
     }
     Ok(found)
@@ -592,6 +601,12 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
         ));
     }
     let sockets = listening_sockets(&ctx)?;
+    let socket_mount = if sockets.is_empty() {
+        0
+    } else {
+        ctx.socket_mount()
+            .map_err(|e| format!("the socket filesystem cannot be named: {e}"))?
+    };
     // Path -> mapped deleted (stale) by any process, and how many of them are package-managed.
     let mut mapped: BTreeMap<String, bool> = BTreeMap::new();
     let (mut managed, mut other) = (0usize, 0usize);
@@ -629,7 +644,7 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
         if sockets.is_empty() {
             continue;
         }
-        let held = holds(&ctx, pid, &sockets, &mut descriptors)?;
+        let held = holds(&ctx, pid, &sockets, socket_mount, &mut descriptors)?;
         if held.is_empty() {
             continue;
         }
