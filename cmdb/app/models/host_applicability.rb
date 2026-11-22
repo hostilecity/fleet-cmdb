@@ -55,6 +55,10 @@ class HostApplicability < ApplicationRecord
                                       .sort_by { |use| [ use["class"] == "network" ? 0 : 1, use["listener"].to_s, use["service"].to_s ] }
   end
 
+  # Whether the scan could tell which processes listen: false when it ran on a kernel before 5.14 (loaded_by_listeners
+  # NULL), for the host tab (#260) to say why nothing is escalated.
+  def listeners_known? = !loaded_by_listeners.nil?
+
   # Whether a process holding a listening socket loads package (VT-BUCKETS' escalation, #277): it then cannot be
   # demoted by L2 to L5, counts toward Needs attention, and adds exposure points (VT-SCORES). network: true asks for a
   # socket on the network.
@@ -73,8 +77,8 @@ class HostApplicability < ApplicationRecord
   SCAN_TIMES = %w[library_scanned_at library_scan_received_at].freeze
 
   def self.write!(host_id, attributes, stamp, now)
-    attributes = received(host_id, attributes, now)
     row = find_by(host_id:)
+    attributes = received(row, attributes, now)
     if row.nil?
       return false if attributes.all? { |name, value| column_defaults[name] == value }
 
@@ -94,22 +98,27 @@ class HostApplicability < ApplicationRecord
   private_class_method :write!
 
   # library_scan_received_at: now when a report carries a scan the row does not have yet, else kept; nil without one.
-  def self.received(host_id, attributes, now)
+  # Read from the row write! already loaded (re-review, N5).
+  def self.received(row, attributes, now)
     return attributes unless attributes.key?("library_scanned_at")
     return attributes.merge("library_scan_received_at" => nil) if attributes["library_scanned_at"].nil?
 
-    known = where(host_id:, library_scanned_at: attributes["library_scanned_at"]).pick(:library_scan_received_at)
+    known = row.library_scan_received_at if row && same_time?(row.library_scanned_at, attributes["library_scanned_at"])
     attributes.merge("library_scan_received_at" => known || now)
   end
   private_class_method :received
+
+  # Equal to the microsecond the column keeps, so a scan time sent with nanoseconds still matches its stored self.
+  def self.same_time?(stored, sent) = !stored.nil? && stored.to_i == sent.to_i && stored.usec == sent.usec
+  private_class_method :same_time?
 
   private
 
   # Indexed once per value of the column (a reload or an assignment gives a new one).
   def loaded_by_package
-    uses = loaded_by_listeners
-    @loaded_by_package = nil unless @loaded_by_source.equal?(uses)
-    @loaded_by_source = uses
+    uses = loaded_by_listeners || []
+    @loaded_by_package = nil unless @loaded_by_source.equal?(loaded_by_listeners)
+    @loaded_by_source = loaded_by_listeners
     @loaded_by_package ||= uses.each_with_object(Hash.new { |h, k| h[k] = [] }) do |use, index|
       use["packages"].each { |package| index[package] << use }
     end

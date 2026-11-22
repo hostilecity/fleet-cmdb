@@ -450,11 +450,25 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
       expect(stored.listener_details("libssl3t64", now:).first).to include("listener" => "samba", "service" => "smbd.service", "class" => "network")
     end
 
+    it "derives the class from the sockets, accepts an entry with none, and keeps an unknowing kernel apart" do # re-review, N2 to N4
+      uses = [ { "listener" => "samba", "service" => "smbd.service", "class" => "loopback", "sockets" => [ "0.0.0.0:445/tcp" ], "packages" => [ "samba" ] },
+               { "listener" => "tailscale", "service" => "tailscaled.service", "class" => "network", "sockets" => [], "packages" => [ "tailscale" ] } ]
+      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => uses)))
+      expect(response).to have_http_status(:ok)
+      expect(stored.loaded_by_listeners.map { |use| use.values_at("listener", "class", "sockets") })
+        .to eq([ [ "samba", "network", [ "0.0.0.0:445/tcp" ] ], [ "tailscale", "network", [] ] ])
+      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => nil)))
+      expect(response).to have_http_status(:ok)
+      expect(stored.loaded_by_listeners).to be_nil
+    end
+
     it "refuses a socket whose address cannot be read, and writes nothing" do # fifth review, N4
-      bad = scanned["in_use"]["loaded_by_listeners"].map { |use| use.merge("sockets" => [ "[1:2:3:4:5:6:7:8:9]:22/tcp" ]) }
-      expect { send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => bad))) }.not_to change(HostApplicability, :count)
-      expect_error(:bad_request, "validation_failed")
-      expect(response.body).to include("/in_use/loaded_by_listeners/0/sockets/0")
+      [ "[1:2:3:4:5:6:7:8:9]:22/tcp", "[192.0.2.1]:22/tcp" ].each do |socket| # re-review, N6: IPv4 is never bracketed
+        bad = scanned["in_use"]["loaded_by_listeners"].map { |use| use.merge("sockets" => [ socket ]) }
+        expect { send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => bad))) }.not_to change(HostApplicability, :count)
+        expect_error(:bad_request, "validation_failed")
+        expect(response.body).to include("/in_use/loaded_by_listeners/0/sockets/0")
+      end
     end
 
     it "writes only when what is in use changes" do

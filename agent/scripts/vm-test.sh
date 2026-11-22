@@ -801,9 +801,10 @@ fresh_reports() {
 }
 # Puts the VM back as the other scenarios expect it (the configuration unchanged), however the scenario ends.
 in_use_cleanup() {
-    vm "systemctl stop fvt-lo fvt-lan fvt-uselib fvt-sock.socket fvt-sock.service 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib 2>/dev/null
+    vm "systemctl stop fvt-lo fvt-lan fvt-uselib fvt-chroot fvt-ct fvt-sock.socket fvt-sock.service 2>/dev/null; systemctl reset-failed fvt-lo fvt-lan fvt-uselib fvt-chroot fvt-ct 2>/dev/null
         rm -f /etc/systemd/system/fvt-sock.socket /etc/systemd/system/fvt-sock.service
-        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle fvt-netlib fvt-lolib > /dev/null 2>&1
+        dpkg --purge fvt-listen-lo fvt-listen-lan fvt-listen-sock fvt-lib fvt-uselib fvt-idlelib fvt-idle fvt-netlib fvt-lolib fvt-chrootlib fvt-ctlib > /dev/null 2>&1
+        rm -rf /var/lib/fvt-chroot /srv/fvt-ct
         rm -rf $SCAN_DROPIN $STATE/library-scan.json /run/reboot-required /run/reboot-required.pkgs; systemctl daemon-reload
         sed -i '/^\[packages\]$/,\$d' /etc/fleet-agent/config.toml; sed -i -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' /etc/fleet-agent/config.toml
         systemctl reset-failed fleet-agent; systemctl restart fleet-agent" || true
@@ -830,20 +831,24 @@ in_use_reported() {
     local p='bash /tmp/vm-test-packages.sh' lan props
     put "$here/vm-test-packages.sh" /tmp/vm-test-packages.sh
     vm "$p build fvt-listen-lo 1.0 && $p build fvt-listen-lan 1.0 && $p build fvt-listen-sock 1.0 && $p build fvt-lib 1.0 && $p build fvt-lib 1.1
-        $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0 && $p build fvt-netlib 1.0 && $p build fvt-lolib 1.0
+        $p build fvt-uselib 1.0 && $p build fvt-idlelib 1.0 && $p build fvt-idle 1.0 && $p build fvt-netlib 1.0 && $p build fvt-lolib 1.0 && $p build fvt-chrootlib 1.0 && $p build fvt-ctlib 1.0
         dpkg -i /srv/fvt/debs/fvt-listen-lo_1.0_all.deb /srv/fvt/debs/fvt-listen-lan_1.0_all.deb /srv/fvt/debs/fvt-listen-sock_1.0_all.deb \
             /srv/fvt/debs/fvt-lib_1.0_all.deb /srv/fvt/debs/fvt-netlib_1.0_all.deb /srv/fvt/debs/fvt-lolib_1.0_all.deb \
+            /srv/fvt/debs/fvt-chrootlib_1.0_all.deb /srv/fvt/debs/fvt-ctlib_1.0_all.deb \
             /srv/fvt/debs/fvt-uselib_1.0_all.deb /srv/fvt/debs/fvt-idlelib_1.0_all.deb /srv/fvt/debs/fvt-idle_1.0_all.deb > /dev/null"
     lan=$(vm "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n 1")
     [ -n "$lan" ] || fail "the VM has no LAN address"
     vm "systemd-run --quiet --unit=fvt-lo /usr/libexec/fvt-listen-lo 127.0.0.1 18080 /usr/lib/fvt/libfvt-lolib.so.1
         systemd-run --quiet --unit=fvt-lan /usr/libexec/fvt-listen-lan $lan 18081 /usr/lib/fvt/libfvt-netlib.so.1
+        mkdir -p /var/lib/fvt-chroot /srv/fvt-ct
+        systemd-run --quiet --unit=fvt-chroot --setenv=FVT_CHROOT=/var/lib/fvt-chroot /usr/libexec/fvt-listen-lo 127.0.0.1 18084 /usr/lib/fvt/libfvt-chrootlib.so.1
+        systemd-run --quiet --unit=fvt-ct unshare --mount --propagation private /bin/sh -c 'mount -t tmpfs fvt-ct /srv/fvt-ct && mkdir /srv/fvt-ct/usr /srv/fvt-ct/etc /srv/fvt-ct/old && mount --rbind /usr /srv/fvt-ct/usr && mount --rbind /etc /srv/fvt-ct/etc && for d in bin sbin lib lib64; do ln -s usr/\$d /srv/fvt-ct/\$d; done && cd /srv/fvt-ct && pivot_root . old && exec /usr/bin/python3 /usr/libexec/fvt-listen-lo 127.0.0.1 18085 /usr/lib/fvt/libfvt-ctlib.so.1'
         systemd-run --quiet --unit=fvt-uselib /usr/libexec/fvt-uselib /usr/lib/fvt/libfvt-lib.so.1
         printf '%s\n' '[Socket]' 'ListenStream=127.0.0.1:18082' > /etc/systemd/system/fvt-sock.socket
         printf '%s\n' '[Service]' 'ExecStart=/usr/libexec/fvt-listen-sock 127.0.0.1 18083' > /etc/systemd/system/fvt-sock.service
         systemctl daemon-reload && systemctl start fvt-sock.socket
         rm -f /run/reboot-required /run/reboot-required.pkgs"
-    wait_until "the test services to listen" 30 vm_ok "ss -Hltn 'sport = :18080' | grep -q . && ss -Hltn 'sport = :18081' | grep -q . && ss -Hltn 'sport = :18082' | grep -q ."
+    wait_until "the test services to listen" 30 vm_ok "ss -Hltn 'sport = :18080' | grep -q . && ss -Hltn 'sport = :18081' | grep -q . && ss -Hltn 'sport = :18082' | grep -q . && ss -Hltn 'sport = :18084' | grep -q . && ss -Hltn 'sport = :18085' | grep -q ."
 
     fresh_reports
     wait_until "a package report" 120 packages_since
@@ -907,6 +912,12 @@ in_use_reported() {
         || fail "the libraries the listening test services map are not named with their class, unit, and socket: $(in_use .in_use.loaded_by_listeners | head -c 600)"
     in_use '.in_use.loaded_by_listeners' | jq -e 'any(.[]; .listener == "openssh-server" and .class == "network" and (.service | test("^ssh")) and any(.sockets[]; endswith(":22/tcp")) and (.packages | index("openssh-server")) and (.packages | index("libc6")))' > /dev/null \
         || fail "sshd and the libc it maps are not named as loaded by a network listener on port 22: $(in_use .in_use.loaded_by_listeners | head -c 600)"
+    # A chroot'd listener (as haproxy's workers and postfix's smtpd are) maps host files and counts; a
+    # container's listener (its own root filesystem, here a pivot_root'd tmpfs) is skipped.
+    in_use '.in_use.loaded_by_listeners' | jq -e 'any(.[]; (.packages | index("fvt-chrootlib")) and .service == "fvt-chroot.service" and .sockets == ["127.0.0.1:18084/tcp"])' > /dev/null \
+        || fail "the chroot'd listener's library is not named: $(in_use .in_use.loaded_by_listeners | head -c 600); its root: $(vm "readlink /proc/\$(systemctl show -p MainPID --value fvt-chroot)/root")"
+    in_use '.in_use.loaded_by_listeners' | jq -e 'all(.[]; (.packages | index("fvt-ctlib") | not) and .service != "fvt-ct.service")' > /dev/null \
+        || fail "the container's listener is named: $(in_use .in_use.loaded_by_listeners | head -c 600)"
     in_use '.in_use.loaded_by_listeners' | jq -e 'all(.[]; (.packages | index("fvt-lib") | not) and (.packages | index("fvt-idlelib") | not))' > /dev/null \
         || fail "a library no listening process maps is named as loaded by a listener: $(in_use .in_use.loaded_by_listeners | head -c 600)"
     in_use '.in_use.scanned_at | type == "string"' | grep -qx true || fail "no scanned_at"

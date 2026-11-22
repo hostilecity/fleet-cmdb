@@ -76,19 +76,21 @@ module AgentApi
         "library_scan" => in_use["library_scan"],
         "libraries" => libraries.map { |l| l["package"] }.uniq.sort,
         "stale_libraries" => libraries.select { |l| l["stale"] }.map { |l| l["package"] }.uniq.sort,
-        "loaded_by_listeners" => loaded_by_listeners(in_use["loaded_by_listeners"]),
+        # nil: the scan ran on a kernel that cannot tell (re-review of #268, N3), kept apart from [].
+        "loaded_by_listeners" => in_use["library_scan"] == "ran" && in_use["loaded_by_listeners"].nil? ? nil : loaded_by_listeners(in_use["loaded_by_listeners"]),
         "library_scanned_at" => in_use["scanned_at"] && Time.iso8601(in_use["scanned_at"])
       }
     end
 
     # One entry per (listener, service), stored as the agent sends it (fifth review of #268, N6): a duplicate (a
-    # hand-made report; the agent sends none) merges as network if either is, with its packages joined and its sockets
-    # joined network first, then by text, at most 4 (N2). Sorted (nil first), so equal reports store equal values and
-    # write nothing.
+    # hand-made report; the agent sends none) merges, with its packages joined and its sockets joined network first,
+    # then by text, at most 4 (N2). It is network if any entry says so or any of its sockets is not on loopback, so a
+    # hand-made "loopback" holding 0.0.0.0 cannot understate exposure (re-review, N2). Sorted (nil first), so equal
+    # reports store equal values and write nothing.
     def loaded_by_listeners(uses)
       Array(uses).group_by { |use| use.values_at("listener", "service") }.map do |(listener, service), same|
         { "listener" => listener, "service" => service,
-          "class" => same.any? { |use| use["class"] == "network" } ? "network" : "loopback",
+          "class" => same.any? { |use| use["class"] == "network" || use["sockets"].any? { |socket| !loopback?(socket) } } ? "network" : "loopback",
           "sockets" => same.flat_map { |use| use["sockets"] }.uniq.sort_by { |socket| [ loopback?(socket) ? 1 : 0, socket ] }.first(4),
           "packages" => same.flat_map { |use| use["packages"] }.uniq.sort }
       end.sort_by { |use| use.values_at("listener", "service").flat_map { |v| [ v.nil? ? 0 : 1, v.to_s ] } }
@@ -98,12 +100,14 @@ module AgentApi
 
     def socket_address(socket) = socket.rpartition(":").first.delete_prefix("[").delete_suffix("]")
 
-    # The schema bounds each socket's text; an address IPAddr cannot read is refused too (fifth review, N4).
+    # The schema bounds each socket's text; an address IPAddr cannot read is refused too (fifth review, N4), and so is
+    # an IPv6 address without brackets or an IPv4 one in them, as the agent writes neither (re-review, N6).
     def bad_sockets(in_use)
       Array(in_use && in_use["loaded_by_listeners"]).each_with_index.flat_map do |use, i|
         use["sockets"].each_with_index.filter_map do |socket, j|
-          IPAddr.new(socket_address(socket))
-          nil
+          next if IPAddr.new(socket_address(socket)).ipv6? == socket.start_with?("[")
+
+          { "pointer" => "/in_use/loaded_by_listeners/#{i}/sockets/#{j}", "problem" => "is not an address and port" }
         rescue IPAddr::InvalidAddressError
           { "pointer" => "/in_use/loaded_by_listeners/#{i}/sockets/#{j}", "problem" => "is not an address and port" }
         end

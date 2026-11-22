@@ -1485,6 +1485,8 @@ fn a_process_with_another_root_is_not_a_listener() {
     // not the host's packages.
     let mut host = scan_host();
     host.roots.insert("/proc/812/root".into(), (66, 2));
+    // Its root, as the host's tree names it, is "/": not that root.
+    host.links.insert("/proc/812/root".into(), "/".into());
     let output = scan::scan(&host).unwrap();
     assert_eq!(
         uses(&output),
@@ -1501,6 +1503,31 @@ fn a_process_with_another_root_is_not_a_listener() {
             .libraries
             .iter()
             .any(|l| l.package == "openssh-server")
+    );
+}
+
+#[test]
+fn a_chrooted_listener_counts_with_the_host_files_it_maps() {
+    // Re-review of #268, S1: haproxy's workers and postfix's smtpd chroot by default, and their maps
+    // name host paths.
+    let mut host = scan_host();
+    host.roots.insert("/proc/812/root".into(), (1, 77));
+    host.links
+        .insert("/proc/812/root".into(), "/var/lib/haproxy".into());
+    host.roots.insert("/var/lib/haproxy".into(), (1, 77));
+    let output = scan::scan(&host).unwrap();
+    assert!(
+        uses(&output)
+            .iter()
+            .any(|u| u.0 == Some("openssh-server") && u.4.contains(&"libssl3t64"))
+    );
+    // A directory the link names that is not that root (a container's own tree, seen from the host):
+    // skipped.
+    host.roots.insert("/var/lib/haproxy".into(), (1, 78));
+    assert!(
+        !uses(&scan::scan(&host).unwrap())
+            .iter()
+            .any(|u| u.0 == Some("openssh-server"))
     );
 }
 
@@ -2200,7 +2227,7 @@ fn scan_peak_memory_on_a_generated_host() {
     }
     impl Prefixed {
         /// Listening process `pid`'s maps: process 1 maps `maps`, the others `per` files each of the
-        /// first 50,000 generated package files.
+        /// first 50,000 generated package files, four lines per file.
         fn maps_of(&self, pid: usize) -> Vec<u8> {
             if pid == 1 && !self.maps.is_empty() {
                 return self.maps.clone();
@@ -2208,14 +2235,17 @@ fn scan_peak_memory_on_a_generated_host() {
             let mut out = Vec::new();
             for j in 0..self.per {
                 let i = (pid * 7919 + j) % 50_000;
-                out.extend(
-                    format!(
-                        "7f00-7f01 r--p 0 fe:01 1 /usr/share/pkg{:04}/data{:03}\n",
-                        i % 3000,
-                        (i / 3000) % 299
-                    )
-                    .bytes(),
-                );
+                // Four lines per file, as a shared library's segments are (re-review, N1).
+                for perms in ["r--p", "r-xp", "r--p", "rw-p"] {
+                    out.extend(
+                        format!(
+                            "7f00-7f01 {perms} 0 fe:01 1 /usr/share/pkg{:04}/data{:03}\n",
+                            i % 3000,
+                            (i / 3000) % 299
+                        )
+                        .bytes(),
+                    );
+                }
             }
             out
         }

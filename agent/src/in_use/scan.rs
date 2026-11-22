@@ -687,17 +687,33 @@ impl Paths {
     }
 }
 
-/// Whether process `pid` sees the host's filesystem: its root is pid 1's. A container (Docker or
-/// Podman with host networking) maps its own files under the same paths, which the host's dpkg lists
-/// would wrongly name, so its processes are skipped (fifth review, S3). A sandboxed service has its own
-/// mount namespace but the host's root, so it counts.
+/// Whether process `pid` sees the host's files: its root is pid 1's, or a directory of the host's tree
+/// (a `chroot`, as haproxy's workers and postfix's `smtpd` do by default; re-review of #268, S1), whose
+/// maps the kernel shows as host paths. A container (Docker or Podman with host networking) has a root
+/// filesystem of its own, which the host's tree cannot reach, and maps its own files under the same
+/// paths, which the host's dpkg lists would wrongly name, so its processes are skipped (fifth review, S3).
+/// A sandboxed service has its own mount namespace but the host's root, so it counts.
 fn host_root(ctx: &Ctx, pid: &str, host: (u64, u64)) -> Result<Option<bool>, String> {
     let path = format!("/proc/{pid}/root");
-    match ctx.identity(&path) {
-        Ok(id) => Ok(Some(id == host)),
-        Err(e) if gone(&e) => Ok(None),
-        Err(e) => Err(crate::facts::io_reason(&path, &e)),
+    let id = match ctx.identity(&path) {
+        Ok(id) => id,
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(crate::facts::io_reason(&path, &e)),
+    };
+    if id == host {
+        return Ok(Some(true));
     }
+    // A chroot: the link names the directory as the host sees it, and that directory is the root.
+    let target = match ctx.link(&path) {
+        Ok(target) => target,
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(crate::facts::io_reason(&path, &e)),
+    };
+    Ok(Some(
+        target.starts_with('/')
+            && target != "/"
+            && ctx.identity(&target).is_ok_and(|seen| seen == id),
+    ))
 }
 
 /// The scan itself, on any host, within [`BUDGET`].
@@ -744,10 +760,13 @@ pub fn scan_within(host: &dyn Host, budget: Duration) -> Result<Output, String> 
             Err(e) if gone(&e) => continue,
             Err(e) => return Err(crate::facts::io_reason(&path, &e)),
         };
-        let files: Vec<u32> = parse_maps(&bytes)
+        // A library has several maps lines (one per segment): each file once (re-review, N1).
+        let mut files: Vec<u32> = parse_maps(&bytes)
             .into_iter()
             .map(|(file, deleted)| paths.intern(file, deleted))
             .collect();
+        files.sort_unstable();
+        files.dedup();
         drop(bytes);
         paths.check()?;
         let Some(socket_mount) = socket_mount else {

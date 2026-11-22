@@ -119,7 +119,7 @@ RSpec.describe HostApplicability do
   end
 
   it "starts the expiry when the server first receives a scan, not again for a report that reuses it" do # fifth review, S5
-    skewed = now - 2.days # the agent's clock, two days behind
+    skewed = now - 2.days + Rational(123_456_789, 1_000_000_000) # the agent's clock, two days behind, to the nanosecond
     scanned = in_use(library_scan: "ran", loaded_by_listeners: [ use("libc6", "samba", "network") ], library_scanned_at: skewed)
     described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now:)
     expect(described_class.record_in_use!(host_id: host.id, report: package_report(scanned), now: now + 30.minutes)).to be(false)
@@ -162,5 +162,17 @@ RSpec.describe HostApplicability do
       .to raise_error(ActiveRecord::StatementInvalid, /in_use_reported/)
     expect { described_class.create!(host_id: host.id, loaded_by_listeners: { "libc6" => "samba" }) }
       .to raise_error(ActiveRecord::StatementInvalid, /loaded_by_listeners_array/)
+  end
+
+  it "keeps a kernel that cannot tell which processes listen apart from no listener" do # re-review of #268, N3
+    unknown = in_use(library_scan: "ran", loaded_by_listeners: nil, library_scanned_at: now)
+    described_class.record_in_use!(host_id: host.id, report: package_report(unknown), now:)
+    row = host.reload.applicability
+    expect(row.loaded_by_listeners).to be_nil
+    expect(row.listeners_known?).to be(false)
+    expect(row.in_use_by_listener?("libc6", now:)).to be(false)
+    expect(row.listener_details("libc6", now:)).to eq([])
+    expect(described_class.record_in_use!(host_id: host.id, report: package_report(unknown.merge("loaded_by_listeners" => [])), now:)).to be(true)
+    expect(row.reload.listeners_known?).to be(true)
   end
 end

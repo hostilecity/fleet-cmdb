@@ -12,7 +12,8 @@
 # service running it uses an old executable once it is upgraded (what needrestart looks for).
 #
 # For the in-use scenario (FR-2.6, VT-APPLICABILITY): fvt-listen-* ship /usr/libexec/NAME, which listens
-# on the TCP address and port it is given and maps the file given third, if any; fvt-lib, fvt-idlelib, fvt-netlib, and fvt-lolib ship a shared library (a copy of
+# on the TCP address and port it is given, maps the files given after them, and then chroots into
+# $FVT_CHROOT if it is set; fvt-lib, fvt-idlelib, fvt-netlib, fvt-lolib, fvt-chrootlib, and fvt-ctlib ship a shared library (a copy of
 # zlib's) under /usr/lib/fvt whose bytes differ per version; fvt-uselib and fvt-idle ship /usr/libexec/NAME, which maps the given
 # file into memory and waits, as a program maps a library.
 set -euo pipefail
@@ -33,16 +34,17 @@ case ${1:?} in
         case $name in
             fvt-listen-*)
                 mkdir -p "$d/usr/libexec"
-                printf '%s\n' '#!/usr/bin/python3' 'import mmap, socket, sys, time' \
+                printf '%s\n' '#!/usr/bin/python3' 'import mmap, os, socket, sys, time' \
                     's = socket.socket(socket.AF_INET, socket.SOCK_STREAM)' \
                     's.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)' \
                     's.bind((sys.argv[1], int(sys.argv[2])))' 's.listen()' \
                     'files = [open(p, "rb") for p in sys.argv[3:]]' \
                     'maps = [mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ) for f in files]' \
+                    'os.environ.get("FVT_CHROOT") and os.chroot(os.environ["FVT_CHROOT"])' \
                     'time.sleep(86400)' > "$d/usr/libexec/$name"
                 chmod 0755 "$d/usr/libexec/$name"
                 ;;
-            fvt-lib | fvt-idlelib | fvt-netlib | fvt-lolib)
+            fvt-lib | fvt-idlelib | fvt-netlib | fvt-lolib | fvt-chrootlib | fvt-ctlib)
                 # A real shared library (a copy of zlib's).
                 mkdir -p "$d/usr/lib/fvt"
                 cp "$(readlink -f /usr/lib/x86_64-linux-gnu/libz.so.1)" "$d/usr/lib/fvt/lib$name.so.1"
