@@ -31,7 +31,12 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     travel_to(start)
   end
 
-  def match(*hosts) = VulnerabilityMatcher.match!(hosts.map(&:id))
+  # The triage lines under #253's package rows, as the tab draws them for findings not triaged yet: each match leaves
+  # the hosts' findings without a bucket. The bucket sections draw the same lines (spec/requests/host_vulnerability_triage_spec.rb).
+  def match(*hosts)
+    VulnerabilityMatcher.match!(hosts.map(&:id))
+    VulnerabilityFinding.where(host_id: hosts.map(&:id)).update_all(bucket: nil, bucket_rule: nil, kev: nil)
+  end
 
   def facts(scope) = scope.css("dt").map { |dt| dt.text.squish }.zip(scope.css("dd").map { |dd| dd.text.squish }).to_h
 
@@ -39,7 +44,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
   def line(node) = [ node.dup.tap { |n| n.css(".why").each(&:remove) }.text.squish, node.at_css(".why")&.text&.squish ]
 
   # The triage lines under each open advisory on the tab: { "package advisory" => [[text, why], ...] }.
-  def tab_lines(table = "#open_list")
+  def tab_lines(table = "#untriaged_list")
     page.css("#{table} > tbody").each_with_object({}) do |body, lines|
       package = body.at_css("tr.pkg-group a").text.split(":").first
       body.css("tr.nested").each { |row| lines["#{package} #{row.css('td')[0].at_css('a, span.mono').text}"] = row.css(".triage").map { |node| line(node) } }
@@ -97,11 +102,11 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       get "/hosts/#{host.id}/vulnerabilities"
       expect(response).to have_http_status(:ok)
       expect(tab_lines).to eq("libc6 DEBIAN-CVE-2026-19499" => [ [ "Debian: no security update planned (Minor issue); fix planned for the next point release", nil ] ])
-      row = page.at_css("#open_list tr.nested")
+      row = page.at_css("#untriaged_list tr.nested")
       expect(row.css("td").drop(1).map { |td| td.text.squish }).to eq([ "High", "No fix available", "Open", "2026-11-07 09:00 UTC → —" ])
       expect(row.at_css(".triage q").text).to eq("Minor issue")
       expect(row.at_css(".triage .lamp, .triage .sev")).to be_nil # no lamp and no severity colour (T1)
-      expect(page.at_css("#open_heading").text.squish).to eq("Open findings 1: 1 high")
+      expect(page.at_css("#untriaged_counts").text.squish).to eq("1 finding: 1 high")
       expect(page.at_css("#advisory_freshness").text.squish).to eq("Advisory data last updated: Debian:13 less than 5 seconds ago. Debian's triage for trixie: less than 5 seconds ago. Data sources " \
                                                                    "Known exploited (CISA KEV): not imported yet. Exploit prediction (FIRST EPSS): not imported yet.")
       expect(page.at_css("#triage_freshness a")["href"]).to eq("/data-sources#tracker")
@@ -110,7 +115,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
         "and never change its severity, its state, or any count: a finding stays open until the installed version is outside the affected range."
       )
       expect(page.text).not_to include("Scope:", "1100001") # the scope is on the package page only, and the bug number nowhere (T6)
-      expect(page.css("#open_list a[href*='security-tracker']")).to be_empty
+      expect(page.css("#untriaged_list a[href*='security-tracker']")).to be_empty
     end
 
     it "shows every state of a tracker entry in our words, with Debian's note quoted (T7)" do
@@ -134,10 +139,10 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
         "bin-named DSA-9113-1" => [ [ "Debian: urgency medium", "For CVE-2026-99113." ], [ "Debian triage not available", "CVE-2026-99114: the tracker has no entry for it in trixie." ] ]
       )
       # Wording never says a finding is fixed or not affected because of Debian's triage (P2-D07), and every open row stays open.
-      texts = page.css("#open_list .triage").map { |node| node.text.squish }
+      texts = page.css("#untriaged_list .triage").map { |node| node.text.squish }
       expect(texts).to all(start_with("Debian"))
       expect(texts.grep(/not affected|unaffected|no longer|is fixed|safe/i)).to eq([])
-      expect(page.css("#open_list tr.nested td:nth-child(4)").map { |td| td.text.squish }.uniq).to eq([ "Open" ])
+      expect(page.css("#untriaged_list tr.nested td:nth-child(4)").map { |td| td.text.squish }.uniq).to eq([ "Open" ])
       # The product says CIS-aligned, never CIS compliant (DEC-10).
       expect(page.at_css("#glance_cis, .glance").text).to include("CIS-aligned checks")
       expect(page.text.match?(/\bCIS[- ]complian(t|ce)\b|\bcomplian(t|ce) (with|to) (the )?CIS\b/i)).to be(false)
@@ -149,11 +154,11 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       document["src-nodsa"]["CVE-2026-99101"]["releases"]["trixie"]["nodsa"] = long
       import_triage(document)
       get "/hosts/#{host.id}/vulnerabilities"
-      expect(page.at_css("#open_list tbody:has(a[href$='package=bin-nodsa']) q").text).to eq("#{long[0, 200]}…")
+      expect(page.at_css("#untriaged_list tbody:has(a[href$='package=bin-nodsa']) q").text).to eq("#{long[0, 200]}…")
       document["src-nodsa"]["CVE-2026-99101"]["releases"]["trixie"]["nodsa"] = "Exactly as Debian says it: \"quoted\", <b>tags</b> & all"
       import_triage(document)
       get "/hosts/#{host.id}/vulnerabilities"
-      note = page.at_css("#open_list tbody:has(a[href$='package=bin-nodsa']) q")
+      note = page.at_css("#untriaged_list tbody:has(a[href$='package=bin-nodsa']) q")
       expect([ note.text, note.children.map(&:name) ]).to eq([ "Exactly as Debian says it: \"quoted\", <b>tags</b> & all", [ "text" ] ])
     end
 
@@ -179,7 +184,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       document["src-nodsa"]["CVE-2026-99101"]["releases"]["trixie"]["nodsa"] = "See  section A\nthen B"
       import_triage(document)
       get "/hosts/#{host.id}/vulnerabilities"
-      expect(page.at_css("#open_list tbody:has(a[href$='package=bin-nodsa']) q").text).to eq("See  section A\nthen B")
+      expect(page.at_css("#untriaged_list tbody:has(a[href$='package=bin-nodsa']) q").text).to eq("See  section A\nthen B")
     end
 
     it "filters by 'Debian: no security update planned' on every no-DSA reason, keeping the other filters, counted within the state (T3)" do
@@ -213,12 +218,12 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       expect(tab_lines.keys).to eq([ "bin-postponed DEBIAN-CVE-2026-99102" ])
       expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 5")
       get "/hosts/#{host.id}/vulnerabilities", params: { debian: "no_dsa", severity: "high" }
-      expect(page.at_css("#open_findings").text.squish).to include("No open findings match. Clear the filters")
+      expect(page.at_css("#no_match").text.squish).to eq("No open findings match. Clear the filters")
 
       # Only on the open and reopened list, the rows that show the triage (T5).
       get "/hosts/#{host.id}/vulnerabilities", params: { debian: "no_dsa", state: "all" }
       expect(page.at_css("#triage_filter")).to be_nil
-      expect(page.css("#open_list > tbody").size).to eq(14)
+      expect(page.css("#untriaged_list > tbody").size).to eq(14)
     end
 
     it "shows the triage on open and reopened rows only; the package page shows it on every row, as today's note (T5)" do
@@ -229,7 +234,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       get "/hosts/#{host.id}/vulnerabilities", params: { state: "all" }
       expect(page.css("#resolved_list tr.nested").size).to eq(1)
       expect(page.css("#resolved_list .triage")).to be_empty
-      expect(page.css("#open_list .triage").size).to eq(14)
+      expect(page.css("#untriaged_list .triage").size).to eq(14)
 
       get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "bin-resolved" }
       cell = page.at_css("#package_findings tbody tr td:nth-child(7)")
@@ -283,7 +288,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       expect(notice.text.squish).to eq("Debian's triage is out of date, so it is not shown. Tracker data for trixie was last imported 2 days ago (2026-11-07 09:00 UTC). " \
                                        "Findings, severity, and counts come from the advisory data and are not affected. See the data sources.")
       expect(page.at_css("#triage_stale a")["href"]).to eq("/data-sources#tracker")
-      expect(page.at_css("#open_list tr.nested td:nth-child(2)").text.squish).to eq("High")
+      expect(page.at_css("#untriaged_list tr.nested td:nth-child(2)").text.squish).to eq("High")
       expect(page.at_css("#state_filters a").text.squish).to eq("Open and reopened 1")
 
       get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "libc6" }
@@ -499,10 +504,10 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
         get "/"
         fleet = page.at_css("main").text.squish
         get "/hosts/#{host.id}/vulnerabilities", params: { state: "all" }
-        tab = [ page.css("#state_filters a").map { |a| a.text.squish }, page.at_css("#open_heading").text.squish, page.at_css("#glance_vulns").text.squish,
-                page.css("nav.tabs a").map { |a| a.text.squish }, page.css("#open_list tr").map { |tr| tr.css("td").drop(2).map { |td| td.text.squish } } ]
+        tab = [ page.css("#state_filters a").map { |a| a.text.squish }, page.at_css("#untriaged_counts").text.squish, page.at_css("#glance_vulns").text.squish,
+                page.css("nav.tabs a").map { |a| a.text.squish }, page.css("#untriaged_list tr").map { |tr| tr.css("td").drop(2).map { |td| td.text.squish } } ]
         get "/hosts/#{host.id}/vulnerabilities", params: { severity: "medium" }
-        filtered = page.css("#open_list tr.nested").size
+        filtered = page.css("#untriaged_list tr.nested").size
         [ compliance, fleet, tab, filtered ]
       end
       get "/" # past the sign-in notice
@@ -511,7 +516,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       with = snapshot.call
       expect(with).to eq(without)
       expect(with[2].first).to eq([ "Open and reopened 14", "Resolved 0", "All 14" ])
-      expect(page.css("#open_list .triage")).not_to be_empty # the triage is there, and changed nothing
+      expect(page.css("#untriaged_list .triage")).not_to be_empty # the triage is there, and changed nothing
     end
   end
 
@@ -535,15 +540,17 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
 
     tab = ->(host, **params) { count_queries { get "/hosts/#{host.id}/vulnerabilities", params: } }
     tab.call(large) # warm up
-    expect(page.css("#open_list .triage").size).to eq(250) # the first page: 50 of the 100 packages, 5 advisories each
+    expect(page.css("#untriaged_list .triage").size).to eq(250) # the first page: 50 of the 100 packages, 5 advisories each
     expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 200")
     queries = tab.call(large)
     expect(queries).to eq(tab.call(small))
     # +1: the host's liveness, in its own table since #192; +1: the advisories preloaded beside the details (#196); +2: the
     # package groups (HostFindingGroups) and the chip's count, in place of loading every open finding (#253); +1: the
     # operator's inventory interval, for the reports tile's on-schedule headline (#255); +1: KEV's and EPSS's freshness in
-    # the freshness line (#257).
-    expect(queries).to be <= 24 + 10
+    # the freshness line (#257); +16: the bucket sections (VT-HOST-TAB #260): each section's groups and their advisories,
+    # the rule rows, the page's triage inputs (VulnerabilityTriage::Explain, about 10), its KEV dates and EPSS scores, and
+    # work remaining and progress. None grows with the findings.
+    expect(queries).to be <= 24 + 10 + 16
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
     expect(filtered).to eq(queries) # the chip's filter is a condition in the same statements

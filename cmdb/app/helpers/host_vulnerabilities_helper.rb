@@ -117,4 +117,135 @@ module HostVulnerabilitiesHelper
     else NEXT_STEPS.fetch(reason, "")
     end
   end
+
+  # Triage on the tab (VT-HOST-TAB #260, approved mockup host-vulns.html). Every reason, unit name, and address is
+  # plain text that Rails escapes: the listener's unit and sockets are agent data (VulnerabilityTriage::Reasons cleans
+  # and cuts them too).
+  # Source packages named in Work remaining; the rest are counted.
+  UPGRADES_LISTED = 8
+  BUCKET_CLASSES = { "fix" => "fix", "attention" => "attn", "low_risk" => "low", "ignorable" => "ign" }.freeze
+  BUCKET_IDS = { "fix" => "fix", "attention" => "attn", "low_risk" => "low", "ignorable" => "ign", "untriaged" => "untriaged" }.freeze
+  # What the Ignorable rules leave to do (mockup: "What you can do").
+  IGNORABLE_NEXT = {
+    "I1" => "Reboot into a newer image (see Work remaining). Removing an older one is a tidy-up: it changes no exposure.",
+    "I5" => "Nothing. It moves out of here if CISA lists it or EPSS rises."
+  }.freeze
+
+  def bucket_name(bucket) = VulnerabilityTriage::BUCKET_NAMES.fetch(bucket)
+
+  # The bucket's word with its shape (never colour alone).
+  def bucket_tag(bucket) = tag.span(bucket_name(bucket), class: [ "bk", BUCKET_CLASSES.fetch(bucket) ])
+
+  # The sentence for a finding's rule, with the rule id: built from its inputs when they can be read now
+  # (Explain), else the rule's summary.
+  def triage_reason(finding, sections, signals)
+    rule = VulnerabilityTriage.rule_for(finding.bucket_rule)
+    return tag.span("Not triaged yet.", class: "reason") unless rule
+
+    inputs = sections.inputs[finding.id]
+    kev, epss = %w[kev epss].map { |name| signals.find { |status| status.signal == name } }
+    # "No EPSS score yet" only once EPSS data exists; before, the "none has been imported" qualifier says it.
+    details = { kev_dates: sections.kev_dates, epss_scores: (sections.epss_scores unless epss.nil? || epss.never?) }.compact
+    text = if inputs
+      VulnerabilityTriage::Reasons.sentence(rule, inputs, kev:, epss:, details:)
+    else
+      VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule)
+    end
+    tag.span(safe_join([ text, tag.span(rule, class: "rule-id") ]), class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
+  end
+
+  # A rule's row in the Low risk and Ignorable tables.
+  def rule_summary(rule) = tag.span(safe_join([ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), tag.span(rule, class: "rule-id") ]),
+                                    class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
+
+  # The signals beside a Needs attention advisory: known exploited, its EPSS score, its attack vector in words, and,
+  # when VT-APPLICABILITY reports one, the listener that loads the package (N5's evidence).
+  def advisory_signals(group, sections)
+    advisory = group.advisory
+    inputs = group.findings.filter_map { |finding| sections.inputs[finding.id] }
+    cves = inputs.flat_map(&:cve_ids).uniq
+    epss = sections.epss_scores.values_at(*cves).compact.max
+    words = VulnerabilityTriage::Reasons.vector_words(advisory.cvss_av, advisory.cvss_pr, advisory.cvss_ui)
+    listener = inputs.filter_map(&:listener).max_by { |l| l.network ? 1 : 0 }
+    safe_join([
+      (tag.span("Known exploited", class: "sig kev") if group.kev?),
+      (tag.span("EPSS #{(epss.to_d * 100).round}%", class: "sig epss") if epss),
+      (tag.span(safe_join([ words.upcase_first, tag.span(VulnerabilityTriage::Reasons.vector_text(advisory.cvss_av, advisory.cvss_pr, advisory.cvss_ui), class: "vecraw") ]), class: "sig vec") if words),
+      (tag.span(listener.network ? "Listening: network" : "Listening: loopback only", class: "sig use") if listener)
+    ].compact)
+  end
+
+  # A Fix available package row's action: the highest fix among its findings (F1's version, or F2's from Debian's
+  # tracker when its inputs can be read).
+  def upgrade_action(group, sections)
+    versions = group.findings.filter_map { |f| (inputs = sections.inputs[f.id]) ? VulnerabilityTriage.fix_for(inputs) : f.fixed_version }.uniq
+    scheme = group.findings.filter_map { |f| sections.inputs[f.id]&.scheme }.first
+    best = scheme ? versions.max { |a, b| VulnerabilityTriage.compare(a, b, scheme) || 0 } : versions.max
+    best ? safe_join([ "Upgrade to ", tag.span(best, class: "mono") ]) : "Upgrade"
+  end
+
+  # A kernel row's action: reboot into the installed newer image (K1), or install the new kernel package, then reboot
+  # (K2). The update task does neither (DEC-16).
+  def kernel_action(group, sections)
+    rules = group.findings.map { |f| VulnerabilityTriage.rule_for(f.bucket_rule) }
+    inputs = group.findings.filter_map { |f| sections.inputs[f.id] }.first
+    target = inputs && kernel_target(inputs)
+    reboot = safe_join([ tag.strong("Reboot"), " into ", (target ? tag.span(target, class: "mono") : "the newer kernel"), " (installed)" ])
+    install = safe_join([ tag.strong("Install the new kernel package"), " (", tag.code("apt full-upgrade"), "), then reboot" ])
+    parts = [ (reboot if rules.include?("K1")), (install if rules.include?("K2")) ].compact
+    safe_join(parts, tag.br)
+  end
+
+  # The newest installed image of the running image's flavour that is not running, or nil.
+  def kernel_target(inputs)
+    kernel = inputs.kernel
+    flavour = inputs.image&.flavour
+    return nil unless kernel && flavour
+
+    others = kernel.images.select { |image| image.flavour == flavour && image.release != kernel.running }
+    others.max { |a, b| VulnerabilityTriage.compare(a.version, b.version, inputs.scheme) || 0 }&.release
+  end
+
+  # The proportion bar: an SVG whose geometry is in attributes (no inline style, the app's CSP), with its text
+  # equivalent as its label. counts: { bucket => findings }, open: their sum.
+  def bucket_bar(counts, open)
+    x = 0
+    rects = VulnerabilityTriage::BUCKETS.keys.filter_map do |bucket|
+      width = open.zero? ? 0 : (counts[bucket] * 1000.0 / open).round
+      next if width.zero?
+
+      tag.rect(class: "f-#{BUCKET_CLASSES.fetch(bucket)}", x:, y: 0, width:, height: 12).tap { x += width }
+    end
+    tag.svg(safe_join(rects), class: "propbar", viewBox: "0 0 1000 12", preserveAspectRatio: "none", role: "img", "aria-label": "Share of the #{number_with_delimiter(open)} open findings: #{bucket_shares(counts, open)}")
+  end
+
+  # "fix available 2% · needs attention under 1% · low risk 33% · ignorable 65%".
+  def bucket_shares(counts, open)
+    VulnerabilityTriage::BUCKETS.keys.map do |bucket|
+      n = counts[bucket]
+      share = if n.zero? then "none"
+      elsif n * 100 < open then "under 1%"
+      else "#{(n * 100.0 / open).round}%"
+      end
+      "#{bucket_name(bucket).downcase} #{share}"
+    end.join(" · ")
+  end
+
+  # Why progress is not shown (VT-M5 rule 2: no meter on a host that is not evaluated, or whose package report is older
+  # than PROGRESS_REPORT_MAX_AGE), or nil.
+  PROGRESS_REPORT_MAX_AGE = 3.days
+  def progress_withheld(summary, now: Time.current)
+    return "this host is not evaluated now, so its work cannot be counted." unless summary.vulnerabilities_evaluated?
+
+    received = summary.received["packages"]
+    return nil if received && received >= now - PROGRESS_REPORT_MAX_AGE
+
+    "its last package report is older than #{human_duration(PROGRESS_REPORT_MAX_AGE)}, so work done since may not show yet."
+  end
+
+  # "7 upgrades, a new kernel installed, a reboot".
+  def work_done_words(by_kind)
+    words = { "upgrade" => [ "an upgrade", "upgrades" ], "kernel_installed" => [ "a new kernel installed", "new kernels installed" ], "reboot" => [ "a reboot", "reboots" ] }
+    words.filter_map { |kind, (one, many)| (n = by_kind[kind].to_i).positive? && (n == 1 ? one : "#{n} #{many}") }.to_sentence
+  end
 end

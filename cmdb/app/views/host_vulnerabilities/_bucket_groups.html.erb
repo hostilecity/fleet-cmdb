@@ -1,0 +1,38 @@
+<%# A bucket's package rows (#253's rows and order, HostFindingGroups), each finding under its row with its reason and
+    rule id (VT-HOST-TAB #260, mockup host-vulns.html). locals: host, groups, id, caption, action (:kernel, :upgrade,
+    or :none: the last column), sections (HostTriageSections), signals, triage, triage_status, triage_os, link_params,
+    cursor (the section's cursor parameters' prefix), pager_label, open (disclosures open: a text search), anchor.
+    keep-open stops a live refresh from closing a disclosure the operator opened. %>
+<% heading = { kernel: "Action", upgrade: "Action", none: "Fixes" }.fetch(action) %>
+<div class="table-wrap"><table id="<%= id %>" class="findings" data-controller="keep-open" data-action="turbo:before-morph-attribute->keep-open#protect"><caption class="visually-hidden"><%= caption %></caption>
+  <thead><tr><th scope="col">Package</th><th scope="col">Advisories</th><th scope="col">Severity</th><th scope="col"><%= heading %></th></tr></thead>
+  <% groups.groups.each do |group| %>
+    <tbody>
+      <tr class="pkg-group"><th scope="row"><%= link_to group.key, package_vulnerabilities_host_path(host, package: group.package), class: "mono" %>
+        <span class="state-note"><% if action == :kernel %><span class="muted">the running kernel,</span> <% end %><% if group.findings.first.source && group.findings.first.source != group.package %><span class="muted">source</span> <span class="mono"><%= group.findings.first.source %></span>, <% end %><span class="muted">installed</span> <span class="mono"><%= group.installed_version %></span></span></th>
+        <td><%= pluralize(group.total, "advisory", plural: "advisories") %></td>
+        <td><%= severity_tag(group.worst) %> <span class="state-note"><%= finding_severity_breakdown(group) %></span></td>
+        <td><%= case action when :kernel then kernel_action(group, sections) when :upgrade then upgrade_action(group, sections) else fixable_count(group) end %></td></tr>
+      <tr class="advisories"><td colspan="4">
+        <details class="advisories" id="<%= "#{id}_#{Digest::SHA256.hexdigest(group.key).first(16)}" %>"<%= " open" if local_assigns[:open] %>>
+          <summary><span class="when-closed">Show the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="when-open">Hide the <%= pluralize(group.total, "advisory", plural: "advisories") %></span><span class="visually-hidden"> for <%= group.key %></span></summary>
+          <table class="nested-findings"><caption class="visually-hidden">Advisories for <%= group.key %></caption>
+            <thead><tr><th scope="col">Advisory</th><th scope="col">Severity</th><th scope="col">Fixed in</th><th scope="col">Why this bucket</th></tr></thead><tbody>
+            <% group.findings.each do |finding| %>
+              <tr class="nested finding <%= finding.state %>"><td><%= advisory_cell(finding.advisory) %><% if finding.state == "reopened" %><span class="state-note">Reopened <%= utc(finding.reopened_at) %></span><% end %><% if triage %><%= triage_lines(finding, triage[finding], page: :tab, status: triage_status, os: triage_os) %><% end %></td>
+                <td><%= severity_tag(finding.advisory.severity) %></td>
+                <td><%= fixed_in(finding) %></td>
+                <td><%= triage_reason(finding, sections, signals) %></td></tr>
+            <% end %>
+          </tbody></table>
+        </details></td></tr>
+    </tbody>
+  <% end %>
+</table></div>
+<% if groups.paged? %>
+  <nav class="pager" aria-label="<%= pager_label %>" id="<%= id %>_pager">
+    <% if groups.previous %><%= link_to "Previous", vulnerabilities_host_path(host, link_params.merge(:"#{cursor}_before" => groups.previous, anchor: local_assigns[:anchor]).compact), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+    <span class="muted"><%= pluralize(number_with_delimiter(groups.groups.size), "package") %> shown of <%= number_with_delimiter(groups.package_count) %>. Worst first.</span>
+    <% if groups.next %><%= link_to "Next", vulnerabilities_host_path(host, link_params.merge(:"#{cursor}_after" => groups.next, anchor: local_assigns[:anchor]).compact), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+  </nav>
+<% end %>

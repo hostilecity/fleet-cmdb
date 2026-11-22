@@ -1,13 +1,13 @@
 <%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :vulnerabilities %>
 <% triage_line = triage_freshness_text(@triage_release, @triage_status) %>
-<%= render "hosts/advisory_freshness", statuses: @freshness, triage: (safe_join([ triage_line, " ", link_to("Data sources", data_sources_path(anchor: "tracker")) ]) if triage_line) %>
+<%= render "hosts/advisory_freshness", statuses: @freshness, signal_statuses: @signals, triage: (safe_join([ triage_line, " ", link_to("Data sources", data_sources_path(anchor: "tracker")) ]) if triage_line) %>
 <%# Debian's triage is out of date (T8): a status, not an alert, since no finding, severity, or count depends on it. %>
 <% if triage_stale?(@triage_status) %>
   <div class="notice info" role="status" id="triage_stale"><strong>Debian's triage is out of date, so it is not shown.</strong>
     <p>Tracker data for <span class="mono"><%= @triage_release %></span> was last imported <%= seen_ago(@triage_status.updated_at) %> (<%= utc(@triage_status.updated_at) %>). Findings, severity, and counts come from the advisory data and are not affected. <%= link_to "See the data sources", data_sources_path(anchor: "tracker") %>.</p></div>
 <% end %>
 <% evaluated = @evaluation && !@evaluation.not_evaluated? %>
-<% filtered = @severity || @query.present? || @debian || @fix %>
+<% filtered = @severity || @query.present? || @debian || @signal %>
 <% unless evaluated %>
   <%= render "host_vulnerabilities/not_evaluated", host: @host, evaluation: @evaluation, context: @context, open_count: @state_counts["open"] %>
 <% end %>
@@ -24,52 +24,50 @@
   <% if @evaluation.not_evaluated_count > @evaluation.not_evaluated.size %><p class="muted">Showing the first <%= @evaluation.not_evaluated.size %>.</p><% end %>
 <% end %>
 <% if evaluated || @state_counts["all"].positive? %>
+  <% link_params = { state: (@state unless @state == "open"), severity: @severity, signal: @signal, q: @query.presence, debian: @debian, bucket: @bucket, rule: @rule }.compact %>
+  <% if @sections && (@state_counts["open"].positive? || evaluated) %>
+    <%= render "host_vulnerabilities/buckets", host: @host, counts: @bucket_counts, open: @state_counts["open"], work: @work, link_params:, bucket: @bucket %>
+    <%= render "host_vulnerabilities/work", host: @host, work: @work, summary: @summary, attention: @bucket_counts["attention"], untriaged: @bucket_counts["untriaged"], open: @state_counts["open"] %>
+  <% end %>
   <ul class="chips" aria-label="Filter findings by state" id="state_filters">
     <% { "open" => "Open and reopened", "resolved" => "Resolved", "all" => "All" }.each do |state, label| %>
-      <li><%= link_to vulnerabilities_host_path(@host, { state: (state unless state == "open"), severity: @severity, q: @query.presence, fix: (@fix if state == "open") }.compact), "aria-current": (@state == state ? "true" : nil) do %><%= label %> <span class="n"><%= @state_counts[state] %></span><% end %></li>
+      <li><%= link_to vulnerabilities_host_path(@host, { state: (state unless state == "open"), severity: @severity, q: @query.presence, signal: (@signal unless state == "resolved") }.compact), "aria-current": (@state == state ? "true" : nil) do %><%= label %> <span class="n"><%= @state_counts[state] %></span><% end %></li>
     <% end %>
   </ul>
   <% if @state == "open" %>
-    <%# Whether the advisory data names a fix for the host's release: the finding's stored flag (VT-FIXABLE #256). Counted
-        over the whole open list whatever the other filters, so the two add up to the open count. %>
-    <ul class="chips fix-filter" aria-label="Filter open findings by whether a fix is available" id="fix_filters">
-      <% { "available" => "Fix available", "none" => "No fix available" }.each do |fix, label| %>
-        <li><%= link_to vulnerabilities_host_path(@host, { severity: @severity, q: @query.presence, debian: @debian, fix: (fix unless @fix == fix) }.compact), "aria-current": (@fix == fix ? "true" : nil) do %><%= label %> <span class="n"><%= @fix_counts[fix] %></span><% end %></li>
-      <% end %>
-    </ul>
     <%# Findings whose tracker entry has a no-DSA note of any reason: none, postponed, or ignored (T3). Counted within the state filter. %>
     <ul class="chips triage-filter" aria-label="Filter findings by Debian's triage: no-DSA, postponed, or ignored" id="triage_filter">
-      <li><%= link_to vulnerabilities_host_path(@host, { severity: @severity, q: @query.presence, debian: ("no_dsa" unless @debian), fix: @fix }.compact), "aria-current": (@debian ? "true" : nil) do %>Debian: no security update planned <span class="n"><%= @no_dsa_count %></span><% end %></li>
+      <li><%= link_to vulnerabilities_host_path(@host, link_params.merge(debian: ("no_dsa" unless @debian)).compact), "aria-current": (@debian ? "true" : nil) do %>Debian: no security update planned <span class="n"><%= @no_dsa_count %></span><% end %></li>
     </ul>
   <% end %>
   <%= form_with url: vulnerabilities_host_path(@host), method: :get, class: "filters", role: "search", id: "finding_filters", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
     <% if @state != "open" %><%= hidden_field_tag :state, @state, id: nil %><% end %>
     <% if @debian %><%= hidden_field_tag :debian, @debian, id: nil %><% end %>
-    <% if @fix %><%= hidden_field_tag :fix, @fix, id: nil %><% end %>
+    <% if @bucket %><%= hidden_field_tag :bucket, @bucket, id: nil %><% end %>
+    <% if @rule %><%= hidden_field_tag :rule, @rule, id: nil %><% end %>
     <label>Severity<%= select_tag :severity, options_for_select([ [ "All severities", "" ] ] + Advisory::SEVERITIES.map { |s| [ s.capitalize, s ] }, @severity) %></label>
+    <% if @state != "resolved" %>
+      <label>Signal<%= select_tag :signal, options_for_select([ [ "Any", "" ], [ "Known exploited (KEV)", "kev" ], [ "EPSS at or above 10%", "epss" ], [ "Network, no login, no user action", "network" ] ], @signal) %></label>
+    <% end %>
     <label>Package or advisory<%= search_field_tag :q, @query, placeholder: "openssl or DSA-1234-1", maxlength: HostVulnerabilitiesController::QUERY_MAX %></label>
     <button class="btn quiet" type="submit">Apply</button>
+  <% end %>
+  <% if @bucket %>
+    <p class="muted" id="bucket_filter">Showing <%= @bucket == "untriaged" ? "the findings not triaged yet" : bucket_name(@bucket) %> only. <%= link_to "Show every bucket", vulnerabilities_host_path(@host, link_params.except(:bucket, :rule)) %></p>
   <% end %>
   <% if evaluated && @state != "resolved" && @state_counts["open"].zero? && !filtered %>
     <div class="sheet" id="no_open_findings"><p><span class="none-open"><strong>No open vulnerability findings.</strong></span></p>
       <p class="muted">Evaluated <%= utc(@evaluation.evaluated_at) %>: <%= pluralize(number_with_delimiter(@package_set&.package_count.to_i), "package") %> matched against <%= pluralize(number_with_delimiter(@advisory_count), "#{@evaluation.ecosystem} advisory", plural: "#{@evaluation.ecosystem} advisories") %>. <%= pluralize(@state_counts["resolved"], "resolved finding") %>.</p></div>
   <% end %>
-  <% link_params = { state: (@state unless @state == "open"), severity: @severity, q: @query.presence, debian: @debian, fix: @fix }.compact %>
-  <% if @state != "resolved" && (@open_groups.package_count.positive? || @state_counts["open"].positive? || filtered) %>
-    <% if @triage && @triage_release && @open_groups.package_count.positive? %>
+  <% if @sections && (@state_counts["open"].positive? || filtered) %>
+    <% if @triage && @triage_release && @sections.findings.any? %>
       <p class="triage-legend" id="triage_legend"><span class="triage"><span class="who">Debian:</span> &hellip;</span> lines are the Debian security team's own note for this host's release (<span class="mono"><%= @triage_release %></span>), from the Debian Security Tracker. They are shown beside the finding and never change its severity, its state, or any count: a finding stays open until the installed version is outside the affected range.</p>
     <% end %>
-    <section aria-labelledby="open_heading" id="open_findings">
-      <h2 id="open_heading">Open findings <span class="muted"><%= @open_groups.finding_count %><%= ": #{severity_counts(@open_groups.severity_counts)}" if @open_groups.finding_count.positive? %></span></h2>
-      <%= render "host_vulnerabilities/page_notice", groups: @open_groups, id: "open_page_notice", first_page: vulnerabilities_host_path(@host, link_params) %>
-      <% if @open_groups.package_count.zero? %>
-        <p class="muted">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
-      <% else %>
-        <%= render "host_vulnerabilities/groups", host: @host, groups: @open_groups, caption: "Open and reopened vulnerability findings by package", id: "open_list",
-                                                  open: @query.present?, link_params:, pager_label: "Open finding pages",
-                                                  triage: @triage, triage_status: @triage_status, triage_os: @triage_os %>
-      <% end %>
-    </section>
+    <% if filtered && @sections.findings.empty? && @sections.rules&.rows.blank? %>
+      <p class="muted" id="no_match">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
+    <% end %>
+    <%= render "host_vulnerabilities/sections", host: @host, sections: @sections, counts: @bucket_counts, link_params:, open: @query.present?, filtered:,
+                                                signals: @signals, triage: @triage, triage_status: @triage_status, triage_os: @triage_os, listeners: @listeners %>
   <% end %>
   <% if @state != "open" %>
     <section aria-labelledby="resolved_heading" id="resolved_findings">

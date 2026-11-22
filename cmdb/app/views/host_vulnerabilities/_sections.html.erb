@@ -1,0 +1,126 @@
+<%# One native <details> per bucket, in epic decision 16's order: Fix available and Needs attention open by default, Low
+    risk and Ignorable closed (VT-HOST-TAB #260, mockup host-vulns.html). Counts in the summaries are the bucket's whole
+    count; a filter says how many of them it keeps. keep-open stops a live refresh from closing one the operator
+    opened. locals: host, sections, counts, link_params, open, filtered, signals, triage, triage_status, triage_os,
+    listeners (VulnerabilityTriage::HostFacts.listener_coverage). %>
+<% common = { host:, sections:, signals:, triage:, triage_status:, triage_os:, link_params:, open: } %>
+<% kept = ->(n, total) { filtered && n != total ? " (#{number_with_delimiter(n)} match the filters)" : "" } %>
+<div data-controller="keep-open" data-action="turbo:before-morph-attribute->keep-open#protect" id="bucket_sections">
+<% if sections.shown?("fix") %>
+  <% fix = sections.kernel.finding_count + sections.packages.finding_count %>
+  <details class="bucket" id="fix" open>
+    <summary><h2><%= bucket_tag("fix") %></h2><span class="muted"><%= pluralize(number_with_delimiter(counts["fix"]), "finding") %><%= kept.(fix, counts["fix"]) %> · a fix for this release: an upgrade, a new kernel package, or a reboot</span></summary>
+    <div class="inner">
+      <%= render "host_vulnerabilities/page_notice", groups: sections.kernel, id: "kernel_page_notice", first_page: vulnerabilities_host_path(host, link_params) %>
+      <%= render "host_vulnerabilities/page_notice", groups: sections.packages, id: "fix_page_notice", first_page: vulnerabilities_host_path(host, link_params) %>
+      <% if fix.zero? %>
+        <p class="muted" id="fix_none"><%= filtered ? "No findings in Fix available match." : "Nothing here: no package upgrade or kernel step would clear a finding." %></p>
+      <% else %>
+        <% if sections.kernel.package_count.positive? %>
+          <%= render "host_vulnerabilities/bucket_groups", **common, groups: sections.kernel, id: "kernel_list", caption: "Fix available: the running kernel", action: :kernel, cursor: "kernel", pager_label: "Kernel pages", anchor: "fix" %>
+        <% end %>
+        <% if sections.packages.package_count.positive? %>
+          <%= render "host_vulnerabilities/bucket_groups", **common, groups: sections.packages, id: "fix_list", caption: "Fix available, by package", action: :upgrade, cursor: "fix", pager_label: "Fix available pages", anchor: "fix" %>
+        <% end %>
+        <p class="state-note">The kernel comes first because its action differs: a kernel update is a new package, which the update task does not install, and it fixes nothing until the host boots it. A row's fix comes from the advisory data (F1), or from Debian's tracker when the advisory data has not caught up (F2). Whether the host's mirror has the fix yet is not known.</p>
+      <% end %>
+    </div>
+  </details>
+<% end %>
+<% if sections.shown?("attention") %>
+  <% attention = sections.attention %>
+  <details class="bucket" id="attn" open>
+    <summary><h2><%= bucket_tag("attention") %></h2><span class="muted"><%= pluralize(number_with_delimiter(counts["attention"]), "finding") %><%= kept.(attention.finding_count, counts["attention"]) %> · no fix for this release, and evidence it can be exploited here</span></summary>
+    <div class="inner">
+      <%= render "host_vulnerabilities/page_notice", groups: attention, id: "attention_page_notice", first_page: vulnerabilities_host_path(host, link_params) %>
+      <% if attention.groups.empty? %>
+        <p class="muted" id="attention_none"><%= filtered ? "No findings in Needs attention match." : "Nothing here." %></p>
+      <% else %>
+        <div class="table-wrap"><table id="attention_list"><caption class="visually-hidden">Needs attention, by advisory</caption>
+          <thead><tr><th scope="col">Advisory and packages</th><th scope="col">Severity</th><th scope="col">Signals</th><th scope="col">Why this bucket</th></tr></thead><tbody>
+          <% attention.groups.each do |group| %>
+            <% first = group.findings.first %>
+            <tr><td><%= advisory_cell(group.advisory) %>
+                <span class="state-note"><%= group.packages.size == 1 ? "" : "#{group.packages.size} packages: " %><%= safe_join(group.findings.map { |f| f.package }.uniq.map { |p| link_to(p, package_vulnerabilities_host_path(host, package: p), class: "mono") }, ", ") %></span>
+                <% if triage %><%= triage_lines(first, triage[first], page: :tab, status: triage_status, os: triage_os) %><% end %></td>
+              <td><%= severity_tag(group.advisory.severity) %></td>
+              <td><%= advisory_signals(group, sections) %></td>
+              <td><%= safe_join(group.findings.map { |f| triage_reason(f, sections, signals) }.uniq(&:to_s)) %></td></tr>
+          <% end %>
+          </tbody></table></div>
+        <% if attention.paged? %>
+          <nav class="pager" aria-label="Needs attention pages" id="attention_list_pager">
+            <% if attention.previous %><%= link_to "Previous", vulnerabilities_host_path(host, link_params.merge(attention_before: attention.previous, anchor: "attn")), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+            <span class="muted"><%= pluralize(attention.groups.size, "advisory", plural: "advisories") %> shown of <%= number_with_delimiter(attention.advisory_count) %>. Known exploited first, then by severity.</span>
+            <% if attention.next %><%= link_to "Next", vulnerabilities_host_path(host, link_params.merge(attention_after: attention.next, anchor: "attn")), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+          </nav>
+        <% end %>
+        <% rules = attention.groups.flat_map(&:findings).map { |f| VulnerabilityTriage.rule_for(f.bucket_rule) }.uniq %>
+        <% controls = VulnerabilityTriage::Controls.for_rules(rules) %>
+        <% if controls.any? %>
+          <div class="controls" aria-labelledby="controls_heading" id="controls">
+            <h3 id="controls_heading">Suggested compensating controls</h3>
+            <ul><% controls.each do |control| %><li><%= control.text %> <span class="rule-id mono">(<%= (control.rules & rules).join(", ") %>)</span></li><% end %></ul>
+            <p class="src">Suggestions come from a short table in this server's code, never from a third party. They are advice: nothing is changed on the host.</p>
+          </div>
+        <% end %>
+      <% end %>
+      <%# N5 (owner decision 2026-11-21): a package that a process holding a listening socket loads stays in Needs attention. Said
+          honestly when this server cannot read that evidence, so its absence is never read as "nothing listens". %>
+      <% case listeners %>
+      <% when :unread %>
+        <p class="state-note" id="listeners_note">Listening services are not read yet, so rule N5 (a package a listening process loads stays here) applies to no finding. Nothing is made less urgent for lack of it: findings reachable over the network without a login stay here by rule N4.</p>
+      <% when :unknown %>
+        <p class="state-note" id="listeners_note">This host does not report which packages its listening processes load, so rule N5 cannot apply here. Nothing is made less urgent for lack of it: findings reachable over the network without a login stay here by rule N4.</p>
+      <% end %>
+    </div>
+  </details>
+<% end %>
+<% %w[low_risk ignorable].each do |name| %>
+  <% next unless sections.shown?(name) %>
+  <% rows = sections.rules.for(name) %>
+  <% chosen = sections.rule && VulnerabilityTriage::RULES[sections.rule] == name %>
+  <% anchor = HostVulnerabilitiesHelper::BUCKET_IDS.fetch(name) %>
+  <details class="bucket" id="<%= anchor %>"<%= " open" if chosen || sections.bucket == name %>>
+    <summary><h2><%= bucket_tag(name) %></h2><span class="muted"><%= pluralize(number_with_delimiter(counts[name]), "finding") %><%= kept.(rows.sum(&:count), counts[name]) %> · <%= name == "low_risk" ? "no fix for this release, and no sign it can be exploited from outside this host" : "Debian or this host's own state says it does not apply here" %></span></summary>
+    <div class="inner">
+      <% if rows.empty? %>
+        <p class="muted" id="<%= anchor %>_none"><%= filtered ? "No findings in #{bucket_name(name)} match." : "Nothing here." %></p>
+      <% else %>
+        <div class="table-wrap"><table id="<%= anchor %>_rules"><caption class="visually-hidden"><%= bucket_name(name) %>, by reason</caption>
+          <thead><tr><th scope="col">Reason</th><th scope="col" class="num">Findings</th><th scope="col">Largest package</th><% if name == "ignorable" %><th scope="col">What you can do</th><% end %></tr></thead><tbody>
+          <% rows.each do |row| %>
+            <tr<%= ' aria-current="true"'.html_safe if sections.rule == row.rule %>><td><%= link_to rule_summary(row.rule), vulnerabilities_host_path(host, link_params.except(:rule).merge(rule: (row.rule unless sections.rule == row.rule)).compact.merge(anchor:)) %></td>
+              <td class="num"><%= number_with_delimiter(row.count) %></td><td class="mono"><%= row.package %> (<%= number_with_delimiter(row.package_count) %>)</td>
+              <% if name == "ignorable" %><td><%= HostVulnerabilitiesHelper::IGNORABLE_NEXT.fetch(row.rule, "Nothing.") %></td><% end %></tr>
+          <% end %>
+          </tbody></table></div>
+        <% if chosen %>
+          <h3 id="rule_heading">Rule <span class="mono"><%= sections.rule %></span>: <%= pluralize(number_with_delimiter(sections.rule_groups.finding_count), "finding") %> by package</h3>
+          <%= render "host_vulnerabilities/page_notice", groups: sections.rule_groups, id: "rule_page_notice", first_page: vulnerabilities_host_path(host, link_params) %>
+          <% if sections.rule_groups.package_count.positive? %>
+            <%= render "host_vulnerabilities/bucket_groups", **common, groups: sections.rule_groups, id: "rule_list", caption: "Rule #{sections.rule}, by package", action: :none, cursor: "rule", pager_label: "Rule #{sections.rule} pages", anchor: %>
+          <% end %>
+        <% else %>
+          <p class="state-note">Each reason opens its package rows.<%= " Low risk is not \"safe\": a finding moves to Needs attention by itself if a signal appears (a KEV listing, EPSS at 10% or more#{', or a listening process loading the package' unless listeners == :unread})." if name == "low_risk" %></p>
+        <% end %>
+      <% end %>
+    </div>
+  </details>
+<% end %>
+<% if sections.untriaged %>
+  <details class="bucket" id="untriaged" open>
+    <summary><h2><span class="bk none">Not triaged yet</span></h2><span class="muted"><%= pluralize(number_with_delimiter(counts["untriaged"]), "finding") %><%= kept.(sections.untriaged.finding_count, counts["untriaged"]) %> · the background re-triage after an upgrade has not reached them</span></summary>
+    <div class="inner">
+      <%= render "host_vulnerabilities/page_notice", groups: sections.untriaged, id: "untriaged_page_notice", first_page: vulnerabilities_host_path(host, link_params) %>
+      <% if sections.untriaged.package_count.zero? %>
+        <p class="muted">No findings match.</p>
+      <% else %>
+        <p class="muted" id="untriaged_counts"><%= pluralize(number_with_delimiter(sections.untriaged.finding_count), "finding") %>: <%= severity_counts(sections.untriaged.severity_counts) %></p>
+        <%= render "host_vulnerabilities/groups", host:, groups: sections.untriaged, caption: "Open findings not triaged yet, by package", id: "untriaged_list", open:, link_params:,
+                                                  pager_label: "Findings not triaged yet pages", cursor_prefix: "untriaged_", triage:, triage_status:, triage_os: %>
+      <% end %>
+    </div>
+  </details>
+<% end %>
+</div>

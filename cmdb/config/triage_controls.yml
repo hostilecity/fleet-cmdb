@@ -20,11 +20,18 @@ unsupported:
     Debian no longer fixes this package in this release. Plan to remove or replace it; meanwhile keep it off untrusted
     networks and away from untrusted input.
 network_service:
-  rules: [N4, N5]
+  rules: [N4]
   vector: network
   text: >-
     Reachable over the network without a login. Bind the service to localhost or a private interface, allow only the
     hosts that need it in the firewall, or put an authenticating proxy in front of it.
+# N5 (owner decision 2026-11-21): a listening process loads the package, which says nothing of how the flaw is
+# reached, so this text does not claim it is reachable without a login (VT-HOST-TAB #260).
+listening_service:
+  rules: [N5]
+  text: >-
+    A running service that accepts connections loads this package. Stop the service if nothing needs it, bind it to
+    localhost or a private interface, and allow only the hosts that need it in the firewall.
 crafted_file:
   rules: [L3]
   vector: user_action
