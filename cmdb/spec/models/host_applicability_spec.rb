@@ -97,9 +97,9 @@ RSpec.describe HostApplicability do
     end
 
     it "expires 24 hours after the server received the scan, whatever the agent's clock says" do
-      row.library_scan_received_at = now - 24.hours
+      row.library_scan_received_at = now - 24.hours + 1
       expect(row.in_use_by_listener?("libc6", now:)).to be(true)
-      expect(row.in_use_by_listener?("libc6", now: now + 1)).to be(false)
+      expect(row.in_use_by_listener?("libc6", now: now + 1)).to be(false) # at 24 hours, as VT-BUCKETS' LISTENER_FRESH
       expect(row.listener_details("libc6", now: now + 1)).to eq([])
       row.library_scan_received_at = now - 1.hour
       row.library_scanned_at = now - 3.days # an agent clock behind
@@ -126,7 +126,7 @@ RSpec.describe HostApplicability do
     row = host.reload.applicability
     expect(row.library_scan_received_at).to eq(now)
     expect(row.in_use_by_listener?("libc6", now: now + 23.hours)).to be(true)
-    expect(row.in_use_by_listener?("libc6", now: now + 24.hours + 1)).to be(false)
+    expect(row.in_use_by_listener?("libc6", now: now + 24.hours)).to be(false)
     described_class.record_in_use!(host_id: host.id, report: package_report(scanned.merge("library_scanned_at" => skewed + 1.hour)), now: now + 1.hour)
     expect(row.reload.library_scan_received_at).to eq(now + 1.hour)
     # A failed scan, or the scan turned off, drops the evidence at that report (fifth review, S2).

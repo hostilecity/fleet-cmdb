@@ -31,8 +31,8 @@ class HostApplicability < ApplicationRecord
                       "stale_libraries" => [], "loaded_by_listeners" => [], "library_scanned_at" => nil,
                       "library_scan_received_at" => nil }.freeze
   # An escalation expires this long after the server received the report that carried the host's latest scan (owner
-  # decision 2026-11-21).
-  ESCALATION_MAX_AGE = 24.hours
+  # decision 2026-11-21): VT-BUCKETS' LISTENER_FRESH, one constant.
+  ESCALATION_MAX_AGE = VulnerabilityTriage::LISTENER_FRESH
 
   belongs_to :host
 
@@ -43,7 +43,7 @@ class HostApplicability < ApplicationRecord
 
   # Whether the latest scan ran and the report that carried it arrived at most ESCALATION_MAX_AGE before now, by the
   # server's clock.
-  def scan_current?(now:) = library_scan == "ran" && !library_scan_received_at.nil? && now - library_scan_received_at <= ESCALATION_MAX_AGE
+  def scan_current?(now:) = library_scan == "ran" && !library_scan_received_at.nil? && now - library_scan_received_at < ESCALATION_MAX_AGE
 
   # The listening processes that load package, by the latest current scan: [{ "listener" => package or nil,
   # "service" => unit or nil, "class" => "network" or "loopback", "sockets" => ["0.0.0.0:22/tcp", ...] (at most 4) }],
@@ -72,17 +72,36 @@ class HostApplicability < ApplicationRecord
   # From a package report (AgentApi::PackageReport#in_use). Every report replaces it, and one without an in-use report
   # clears it: an unreadable or unsupported one too, so old use data never looks current (review of #268, S1).
   # Returns whether anything changed.
-  def self.record_in_use!(host_id:, report:, now:) = write!(host_id, report.in_use || IN_USE_DEFAULTS, :in_use_changed_at, now)
+  # When the host's current listener evidence changes, appears, or goes (a new list, a failed or turned-off scan, a
+  # scan received again after it had expired), its findings are re-triaged (VulnerabilityTriage::HostFacts.changed!).
+  def self.record_in_use!(host_id:, report:, now:) = write!(host_id, report.in_use || IN_USE_DEFAULTS, :in_use_changed_at, now, evidence: true)
+
+  # The package => Listener map rule N5 reads (ListenerSource): when several listeners load a package, a network one
+  # wins over loopback-only ones, then the listener's and unit's names decide. scanned_at is the server's receipt of
+  # the scan, so HostFacts' 24-hour freshness runs on the server's clock.
+  def listener_evidence
+    ordered = Array(loaded_by_listeners).sort_by { |use| [ use["class"] == "network" ? 0 : 1, use["listener"].to_s, use["service"].to_s ] }
+    ordered.each_with_object({}) do |use, by_package|
+      listener = VulnerabilityTriage::Listener.new(package: use["listener"], network: use["class"] == "network", unit: use["service"],
+                                                   addresses: use["sockets"], scanned_at: library_scan_received_at)
+      use["packages"].each { |package| by_package[package] ||= listener }
+    end
+  end
+
+  # The evidence in force at now: the lists while the scan is current, else nil.
+  def evidence_at(now) = (loaded_by_listeners if scan_current?(now:))
 
   SCAN_TIMES = %w[library_scanned_at library_scan_received_at].freeze
 
-  def self.write!(host_id, attributes, stamp, now)
+  def self.write!(host_id, attributes, stamp, now, evidence: false)
     row = find_by(host_id:)
     attributes = received(row, attributes, now)
+    before = row&.evidence_at(now)
     if row.nil?
       return false if attributes.all? { |name, value| column_defaults[name] == value }
 
-      create!(host_id:, **attributes, stamp => now)
+      row = create!(host_id:, **attributes, stamp => now)
+      VulnerabilityTriage::HostFacts.changed!(host_id) if evidence && row.evidence_at(now).present?
       return true
     end
     row.assign_attributes(attributes)
@@ -93,6 +112,7 @@ class HostApplicability < ApplicationRecord
     changed = (row.changed - SCAN_TIMES).any?
     row[stamp] = now if changed
     row.save!
+    VulnerabilityTriage::HostFacts.changed!(host_id) if evidence && row.evidence_at(now) != before
     changed
   end
   private_class_method :write!

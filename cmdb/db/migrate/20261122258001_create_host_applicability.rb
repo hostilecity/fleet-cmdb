@@ -33,6 +33,8 @@ class CreateHostApplicability < ActiveRecord::Migration[8.1]
       t.datetime :library_scanned_at
       t.datetime :library_scan_received_at
       t.datetime :in_use_changed_at
+      # TriageListenerExpiryJob asks for the hosts whose scan the server received in an hour's window.
+      t.index :library_scan_received_at
       t.check_constraint "reboot_required IS NULL OR reboot_required", name: "host_applicability_reboot_true_or_null"
       t.check_constraint "library_scan IN ('off', 'ran', 'failed')", name: "host_applicability_library_scan_valid"
       t.check_constraint "in_use_reported = (library_scan IS NOT NULL)", name: "host_applicability_in_use_reported"

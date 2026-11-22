@@ -10,8 +10,8 @@
 # jump still uses its window early: while the clock is ahead every match reads that evidence as expired anyway, and
 # the hosts whose window was used then are not re-triaged at their real expiry, so their findings stay N5 until their
 # evidence or package set next changes (record_in_use! signals a change of evidence, not a newer scan time alone).
-# The hosts are queued in jobs of BATCH, so a mass expiry after an outage is many short jobs, each retried alone. Does
-# nothing until #258 sets VulnerabilityTriage::HostFacts.listener_source.
+# The hosts are queued in jobs of BATCH, so a mass expiry after an outage is many short jobs, each retried alone. The
+# evidence's age is the server's receipt of the scan (HostApplicability::ListenerSource, library_scan_received_at).
 class TriageListenerExpiryJob < ApplicationJob
   queue_as :default
 
