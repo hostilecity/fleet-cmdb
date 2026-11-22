@@ -19,7 +19,8 @@
 #             SOAK_OUTAGE_SECONDS (600), flaps up and down every 30 s for SOAK_FLAP_SECONDS (600), and is
 #             up for the rest of the cycle
 # Every SOAK_SAMPLE_SECONDS (60), and as an update or rollback starts and ends, a sample records the agent's main PID, version, systemd restart count, resident
-# memory, open descriptors, threads, state-directory size and entries, and installed versions.
+# memory, open descriptors (the fewest of three counts half a second apart, so a report in progress is not
+# counted as growth), threads, state-directory size and entries, and installed versions.
 set -euo pipefail
 
 dir=${1:?usage: sudo SOAK_DISPOSABLE=yes scripts/soak.sh DIR OUT}
@@ -152,7 +153,15 @@ sample() {
     if [ "$pid" != 0 ] && [ -r "/proc/$pid/status" ]; then
         rss=$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status")
         threads=$(awk '/^Threads:/ { print $2 }' "/proc/$pid/status")
-        fds=$(find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2> /dev/null | wc -l)
+        # The fewest of three counts half a second apart: a leak stays, while the pipes and sockets of a
+        # report being collected or a connection being tried come and go (they failed the descriptor check
+        # three times in #268's CI without any growth).
+        fds=
+        for _ in 1 2 3; do
+            n=$(find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2> /dev/null | wc -l)
+            if [ -z "$fds" ] || [ "$n" -lt "$fds" ]; then fds=$n; fi
+            sleep 0.5
+        done
     fi
     state_bytes=$(du -sb "$STATE" | cut -f 1)
     state_entries=$(find "$STATE" -mindepth 1 | wc -l)
