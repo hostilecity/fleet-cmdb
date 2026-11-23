@@ -504,7 +504,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
         get "/"
         fleet = page.at_css("main").text.squish
         get "/hosts/#{host.id}/vulnerabilities", params: { state: "all" }
-        tab = [ page.css("#state_filters a").map { |a| a.text.squish }, page.at_css("#untriaged_counts").text.squish, page.at_css("#glance_vulns").text.squish,
+        tab = [ page.css("#state_filters a").map { |a| a.text.squish }, page.at_css("#untriaged_counts").text.squish, page.at_css("#glance_exposure").text.squish,
                 page.css("nav.tabs a").map { |a| a.text.squish }, page.css("#untriaged_list tr").map { |tr| tr.css("td").drop(2).map { |td| td.text.squish } } ]
         get "/hosts/#{host.id}/vulnerabilities", params: { severity: "medium" }
         filtered = page.css("#untriaged_list tr.nested").size
@@ -553,8 +553,11 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     # read with the page's triage inputs, and why N5 can or cannot apply, for the Needs attention note), each one
     # statement by host; +1: the host's backports (#274, HostBackports), one statement by host with no backport.
     # +2: the host's finding decisions (VT-OVERRIDES #261: HostDecisions, and the controls in force read with the
-    # page's triage inputs). None grows with the findings.
-    expect(queries).to be <= 24 + 10 + 16 + 2 + 1 + 2
+    # page's triage inputs). +3 (VT-SCORES #262): the host's summary row, its work events of the last 30 days, and the
+    # badge settings for the exposure and work tiles (the Packages tile's last change is no longer read), and the
+    # agent's reboot flag for work remaining (these findings are not triaged yet, so the score breakdown, the sources'
+    # freshness for the tier, and the tracker's for the run, are not read). None grows with the findings.
+    expect(queries).to be <= 24 + 10 + 16 + 2 + 1 + 2 + 3
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
     expect(filtered).to eq(queries) # the chip's filter is a condition in the same statements
@@ -568,9 +571,10 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     # (#283): the package's counts by state and architecture (the page's count too, with no filter), and the page's triage
     # inputs (VulnerabilityTriage::Explain, about 13) with its KEV dates and EPSS scores, for each finding's bucket and
     # reason; a filter adds the filtered count. +2: the host's finding decisions (VT-OVERRIDES #261: HostDecisions, for
-    # the tab's decision tags, and the controls in force read with the page's triage inputs, as on the tab). None grows
-    # with the findings.
-    expect(package.call(large)).to be <= 24 + 9 + 16 + 2
+    # the tab's decision tags, and the controls in force read with the page's triage inputs, as on the tab). +2: the
+    # tiles' summary row, work events, and badge settings, less the Packages tile's last change (VT-SCORES #262). None
+    # grows with the findings.
+    expect(package.call(large)).to be <= 24 + 9 + 16 + 2 + 2
     puts format("\n  500 findings: tab %d queries, %.0f ms (best of 3); package page %d queries", queries, timings.min * 1000, package.call(large)) if ENV["SHOW_TIMINGS"]
   end
 end

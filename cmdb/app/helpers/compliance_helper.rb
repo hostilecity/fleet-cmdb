@@ -70,25 +70,29 @@ module ComplianceHelper
     safe_join([ link_to(pass_percent(row.pass_rate), config_host_path(host, anchor: "results")), tag.span(detail, class: "rate-detail") ])
   end
 
-  # The fleet list's open vulnerabilities cell: a link to the host's Vulnerabilities tab.
-  def fleet_vulns_cell(host, row)
-    return tag.span("Not tracked", class: "muted") unless row
-    return tag.span(safe_join([ "Not evaluated", tag.span(": #{vuln_reason_line(row).downcase_first}", class: "visually-hidden") ]), class: "not-eval") unless row.vulns_shown?
-    return tag.span("None open", class: "none-open") if row.vulns_open.zero?
-
-    safe_join([ link_to("#{row.vulns_open} open", vulnerabilities_host_path(host)), (tag.span(worst_severe(row.vulns), class: "rate-detail") if worst_severe(row.vulns)),
-                fix_detail(host, row, packages: true) ].compact)
+  # The fleet compliance line of bucket totals (VT-SCORES #262, VT-D06; mockup tiles.html, "On the Compliance page"):
+  # "412 fix available (61 work items) · 47 need attention · 11,280 low risk · 23,173 ignorable", each count a link
+  # (link: bucket => path), the current filter marked. Findings, so they add up to the open count.
+  BUCKET_WORDS = { "fix" => "fix available", "attention" => "need attention", "low_risk" => "low risk", "ignorable" => "ignorable" }.freeze
+  def bucket_totals_line(totals, link, current: nil)
+    parts = FleetCompliance::BUCKETS.keys.map do |bucket|
+      words = "#{number_with_delimiter(totals.buckets[bucket])} #{BUCKET_WORDS.fetch(bucket)}"
+      words = "#{totals.buckets[bucket] == 1 ? '1 needs' : "#{number_with_delimiter(totals.buckets[bucket])} need"} attention" if bucket == "attention"
+      item = link_to(words, link.call(bucket), "aria-current": (current == bucket ? "true" : nil))
+      bucket == "fix" ? safe_join([ item, " (#{pluralize(number_with_delimiter(totals.work_items), 'work item')})" ]) : item
+    end
+    safe_join([ safe_join(parts, " · "), " on #{totals.vulns_evaluated} of #{pluralize(totals.hosts, 'host')} evaluated." ])
   end
 
-  # How many of an evaluated host's open findings have a fix (VT-FIXABLE #256), from its summary, as a line linking to
-  # its tab filtered to them: "12 with a fix" (with packages: true, "12 with a fix (3 packages)"), or "None with a fix".
-  # nil when nothing is open, or when the host is not evaluated now: its kept findings are never counted as fixable
-  # (#252 question 6).
-  def fix_detail(host, row, packages: false)
+  # A host's open findings in Fix available and Needs attention on the Compliance page, linking to its tab's sections:
+  # "12 fix available · 3 need attention". nil when nothing is open, or when the host is not evaluated now (its kept
+  # findings are counted in the severity columns, not here).
+  def bucket_detail(host, row)
     return nil unless row.vulns_evaluated? && row.vulns_open.positive?
-    return tag.span("None with a fix", class: "rate-detail fix-detail") if row.vulns_fixable.zero?
 
-    text = "#{row.vulns_fixable} with a fix#{" (#{pluralize(row.vulns_fix_packages, 'package')})" if packages}"
-    tag.span(link_to(text, vulnerabilities_host_path(host, fix: "available")), class: "rate-detail fix-detail")
+    parts = { "fix" => "#{row.buckets['fix']} fix available", "attention" => attention_words(row.buckets["attention"]) }.map do |bucket, words|
+      row.buckets[bucket].positive? ? link_to(words, vulnerabilities_host_path(host, bucket:, anchor: bucket == "fix" ? "fix" : "attn")) : words
+    end
+    tag.span(safe_join(parts, " · "), class: "rate-detail fix-detail")
   end
 end

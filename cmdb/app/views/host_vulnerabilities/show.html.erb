@@ -43,7 +43,9 @@
   <% link_params = { state: (@state unless @state == "open"), severity: @severity, signal: @signal, q: @query.presence, debian: @debian, fix: @fix, bucket: @bucket, rule: @rule }.compact %>
   <% if @sections && (@state_counts["open"].positive? || evaluated) %>
     <%= render "host_vulnerabilities/buckets", host: @host, counts: @bucket_counts, open: @state_counts["open"], work: @work, link_params:, bucket: @bucket %>
-    <%= render "host_vulnerabilities/work", host: @host, work: @work, summary: @summary, attention: @bucket_counts["attention"], untriaged: @bucket_counts["untriaged"], open: @state_counts["open"] %>
+    <%= render "host_vulnerabilities/work", host: @host, work: @work, summary: @summary, attention: @bucket_counts["attention"], untriaged: @bucket_counts["untriaged"], open: @state_counts["open"],
+                                             advisories_stale: @advisories_stale %>
+    <%= render "host_vulnerabilities/score", summary: @summary, exposure: @exposure if @exposure %>
   <% end %>
   <ul class="chips" aria-label="Filter findings by state" id="state_filters">
     <% { "open" => "Open and reopened", "resolved" => "Resolved", "all" => "All" }.each do |state, label| %>

@@ -28,8 +28,14 @@ class Setting < ApplicationRecord
     # within one heartbeat, so the poll only bounds how late a task starts when that directive is missed.
     "tasks.poll_seconds" => { default: 300, range: 10..300 },
     # { task type => hours } for the types whose expiry was changed; the others keep the catalog's (24 hours).
-    "tasks.expiry_hours" => { default: {}.freeze, range: 1..168 }
+    "tasks.expiry_hours" => { default: {}.freeze, range: 1..168 },
+    # Vulnerability badges and runs (VT-SCORES #262, owner decision 7): withheld on a host whose last package report is
+    # older than this, and a run kept through a new fixable critical for this long. The database reads the grace too
+    # (host_compliance_summaries_refresh), when a fixable critical goes.
+    "vulnerabilities.badge_report_max_age_days" => { default: 3, range: 1..30 },
+    "vulnerabilities.run_grace_days" => { default: 7, range: 1..30 }
   }.freeze
+  VULNERABILITY_BADGE_KEYS = { report_max_age: "vulnerabilities.badge_report_max_age_days", run_grace: "vulnerabilities.run_grace_days" }.freeze
 
   AGENT_INTERVAL_KEYS = { heartbeat_seconds: "agent.heartbeat_seconds", inventory_seconds: "agent.inventory_seconds" }.freeze
 
@@ -81,6 +87,34 @@ class Setting < ApplicationRecord
 
       setting.update!(value:)
       Audit.record(actor:, action: Audit::Actions::SETTING_CHANGED, target: setting, changes: { "retention.days" => [ before, value ] })
+    end
+  end
+
+  # The badge settings in one SELECT: { report_max_age: 3.days, run_grace: 7.days }.
+  def self.vulnerability_badges
+    stored = where(key: VULNERABILITY_BADGE_KEYS.values).pluck(:key, :value).to_h
+    VULNERABILITY_BADGE_KEYS.transform_values { |key| stored.fetch(key) { DEFINITIONS.fetch(key)[:default] }.days }
+  end
+
+  # Sets the badge settings in days, audited; a name that is not passed is left alone.
+  def self.update_vulnerability_badges!(actor:, **days)
+    unknown = days.keys - VULNERABILITY_BADGE_KEYS.keys
+    raise ArgumentError, "unknown badge setting #{unknown.first}" if unknown.any?
+
+    transaction(requires_new: true) do
+      days.each do |name, value|
+        key = VULNERABILITY_BADGE_KEYS.fetch(name)
+        number = whole_number(value)
+        range = DEFINITIONS.fetch(key)[:range]
+        raise Invalid.new("Enter a whole number of days from #{range.min} to #{range.max}.", field: name) unless number && range.cover?(number)
+
+        setting = lock.find_or_initialize_by(key:)
+        before = setting.persisted? ? setting.value : DEFINITIONS.fetch(key)[:default]
+        next if before == number
+
+        setting.update!(value: number)
+        Audit.record(actor:, action: Audit::Actions::SETTING_CHANGED, target: setting, changes: { key => [ before, number ] })
+      end
     end
   end
 

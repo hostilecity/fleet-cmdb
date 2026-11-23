@@ -2,14 +2,14 @@
 # rate, its open CIS-aligned check failures by severity, and its open vulnerability findings by severity, and the same
 # counts for the whole fleet. Built from query parameters so every view is linkable, as FleetList is: q (name or hostname),
 # tag, ecosystem (a distribution release such as Debian:13), status, cis and vuln (a severity, from the fleet-wide counts),
-# fix (available: hosts with an open finding that has a fix; with vuln, one of that severity), sort, and a keyset cursor,
-# after or before (#193).
+# bucket (a triage bucket: hosts with open findings in it; VT-SCORES #262, replacing VT-FIXABLE's fix filter), sort, and
+# a keyset cursor, after or before (#193).
 #
 # The counts are each host's HostComplianceSummary, which the database keeps from the rows the host pages show: CIS
 # results with the severity of the rule version that produced them (the current version when a result names none), as
 # the Configuration tab does, and open or reopened findings with their advisory's severity, as the Vulnerabilities tab
-# does, and how many of those have a fix and on how many packages (the findings' stored flag, VT-FIXABLE #256), as the
-# tab's "Fix available" chip counts them. The pass rate is the host page's, passed / (passed + failed + not readable) (CisCompliance, owner decision Q3).
+# does, with their triage buckets (VT-BUCKETS #259) and the exposure tier, points, and work items (VT-SCORES #262). The
+# pass rate is the host page's, passed / (passed + failed + not readable) (CisCompliance, owner decision Q3).
 # A page reads its 100 rows in index order for each sort, after the cursor host (KeysetPage), so it costs the same
 # whatever the fleet size and however deep the page; the fleet-wide counts are one sum over the summaries. A page is a
 # fixed number of queries: the rows, their reports and evaluations, the count of a filtered list, the totals, the
@@ -31,7 +31,9 @@ class FleetCompliance
     "not_evaluated" => "Not evaluated"
   }.freeze
 
-  FIXES = { "available" => "Has open findings with a fix" }.freeze
+  # The bucket line under the severity strip and its filter (VT-SCORES #262, VT-D06): the summary's finding count per
+  # triage bucket, the four adding up to the open count.
+  BUCKETS = { "fix" => "vuln_fix", "attention" => "vuln_attention", "low_risk" => "vuln_low_risk", "ignorable" => "vuln_ignorable" }.freeze
 
   SORTS = { "worst" => "Worst first", "pass_rate" => "Lowest CIS pass rate", "vulns" => "Most open vulnerabilities", "name" => "Name" }.freeze
 
@@ -41,7 +43,9 @@ class FleetCompliance
   # Each host's summary row, named summaries in every query that reads it.
   SUMMARIES = "JOIN host_compliance_summaries summaries ON summaries.host_id = hosts.id".freeze
   COUNTS = %w[cis_passed cis_failed cis_not_readable cis_critical cis_high cis_medium cis_low
-              vuln_critical vuln_high vuln_medium vuln_low vuln_unknown vuln_evaluated vuln_fixable vuln_fix_packages].freeze
+              vuln_critical vuln_high vuln_medium vuln_low vuln_unknown vuln_evaluated vuln_low_risk vuln_ignorable
+              exposure_tier exposure_points vuln_kev_advisories vuln_fix_critical vuln_attention_undecided vuln_attention vuln_fix
+              work_upgrades work_kernel_install work_reboot work_items fixable_critical_since no_fixable_critical_since].uniq.freeze
   COLUMNS = COUNTS.map { |column| "summaries.#{column}" }.freeze
   # Both, so the planner can use the fleet list's indexes (partial on hosts in the fleet) for the shared sorts.
   ACTIVE = "summaries.enrollment_state = 'active' AND summaries.enrollment_state <> 'retired'".freeze
@@ -56,11 +60,8 @@ class FleetCompliance
   }.freeze
   CIS_FILTERS = CIS_SEVERITIES.to_h { |s| [ s, "summaries.cis_#{s} > 0" ] }.freeze
   VULN_FILTERS = VULN_SEVERITIES.to_h { |s| [ s, "summaries.vuln_#{s} > 0" ] }.freeze
-  # fix=available: an open finding with a fix; with vuln=<severity>, an open finding of that severity with a fix (#252
-  # question 8), from the summary's bit per severity (host_compliance_counts v02: critical 1, high 2, medium 4, low 8,
-  # unknown 16). Both are zero on a host that is not evaluated.
-  FIX_FILTER = "summaries.vuln_fixable > 0".freeze
-  FIX_SEVERITY_FILTERS = VULN_SEVERITIES.each_with_index.to_h { |s, i| [ s, "summaries.vuln_fix_severities & #{1 << i} <> 0" ] }.freeze
+  # bucket=<bucket>: an open finding in that bucket (with vuln, both: a finding of that severity and one in that bucket).
+  BUCKET_FILTERS = BUCKETS.transform_values { |column| "summaries.#{column} > 0" }.freeze
 
   NAME = KeysetPage::Key.new(sql: "summaries.name_key")
   ID = KeysetPage::Key.new(sql: "summaries.host_id")
@@ -77,10 +78,10 @@ class FleetCompliance
     "name" => []
   }.transform_values { |keys| (keys + [ NAME, ID ]).freeze }.freeze
 
-  # One host's compliance, as the page and the fleet list show it. cis and vulns are { severity => open count }.
-  # vulns_fixable and vulns_fix_packages: open findings with a fix, and the packages they are on (zero when not evaluated).
+  # One host's compliance, as the page and the fleet list show it. cis and vulns are { severity => open count }; buckets
+  # { bucket => open count }; scores its VulnerabilityExposure::Scores.
   Row = Data.define(:host, :cis_passed, :cis_counted, :cis, :vulns, :vulns_evaluated, :vuln_reason, :vuln_ecosystem,
-                    :config_received_at, :packages_received_at, :vulns_fixable, :vulns_fix_packages) do
+                    :config_received_at, :packages_received_at, :buckets, :scores) do
     def cis_evaluated? = cis_counted.positive?
     def pass_rate = cis_evaluated? ? cis_passed.fdiv(cis_counted) : nil
     def cis_failed = cis.values.sum
@@ -93,15 +94,15 @@ class FleetCompliance
   end
 
   # Fleet-wide open counts over every active host, whatever the filters, so they equal the sum of the unfiltered table.
-  # hosts_fixable and vulns_fixable: evaluated hosts with an open finding that has a fix, and those findings.
-  Totals = Data.define(:hosts, :cis_evaluated, :cis_passed, :cis_counted, :cis, :vulns_evaluated, :vulns, :hosts_fixable, :vulns_fixable) do
+  # buckets: open findings per bucket; work_items: the scored hosts' work items.
+  Totals = Data.define(:hosts, :cis_evaluated, :cis_passed, :cis_counted, :cis, :vulns_evaluated, :vulns, :buckets, :work_items) do
     def cis_failed = cis.values.sum
     def vulns_open = vulns.values.sum
     def pass_rate = cis_counted.positive? ? cis_passed.fdiv(cis_counted) : nil
     def vulns_not_evaluated = hosts - vulns_evaluated
   end
 
-  attr_reader :q, :tag, :ecosystem, :status, :cis, :vuln, :fix, :sort
+  attr_reader :q, :tag, :ecosystem, :status, :cis, :vuln, :bucket, :sort
 
   def initialize(params = {})
     @q = params[:q].to_s.strip.first(QUERY_MAX).presence
@@ -109,7 +110,7 @@ class FleetCompliance
     @status = STATUSES.key?(params[:status]) ? params[:status] : nil
     @cis = CIS_FILTERS.key?(params[:cis]) ? params[:cis] : nil
     @vuln = VULN_FILTERS.key?(params[:vuln]) ? params[:vuln] : nil
-    @fix = FIXES.key?(params[:fix]) ? params[:fix] : nil
+    @bucket = BUCKETS.key?(params[:bucket]) ? params[:bucket] : nil
     @ecosystem = Ecosystems.supported?(params[:ecosystem]) ? params[:ecosystem] : nil
     @sort = SORTS.key?(params[:sort]) ? params[:sort] : "worst"
     @cursor = KeysetPage.cursor(params)
@@ -147,21 +148,22 @@ class FleetCompliance
     Row.new(host:, cis_passed: host.cis_passed, cis_counted: host.cis_passed + host.cis_failed + host.cis_not_readable, cis:, vulns:,
             vulns_evaluated: host.vuln_evaluated, vuln_reason: vuln_state ? vuln_reason : context&.reason,
             vuln_ecosystem: vuln_ecosystem || context&.ecosystem, config_received_at:, packages_received_at:,
-            vulns_fixable: host.vuln_fixable, vulns_fix_packages: host.vuln_fix_packages)
+            buckets: BUCKETS.transform_values { |column| host.public_send(column) },
+            scores: VulnerabilityExposure::Scores.from(host, packages_received_at:))
   end
 
   # One sum over the active hosts' summaries.
   def self.totals
     sums = [ "count(*)", "count(*) FILTER (WHERE cis_counted > 0)", "sum(cis_passed)", "sum(cis_counted)",
              *CIS_SEVERITIES.map { |s| "sum(cis_#{s})" }, "count(*) FILTER (WHERE vuln_evaluated)",
-             *VULN_SEVERITIES.map { |s| "sum(vuln_#{s})" }, "count(*) FILTER (WHERE vuln_fixable > 0)", "sum(vuln_fixable)" ]
+             *VULN_SEVERITIES.map { |s| "sum(vuln_#{s})" }, *BUCKETS.values.map { |column| "sum(#{column})" }, "sum(work_items)" ]
     values = HostComplianceSummary.where(enrollment_state: "active").pick(*sums.map { |sql| Arel.sql("COALESCE(#{sql}, 0)") }).map(&:to_i)
     hosts, cis_evaluated, cis_passed, cis_counted = values.shift(4)
     cis = CIS_SEVERITIES.zip(values.shift(CIS_SEVERITIES.size)).to_h
     vulns_evaluated = values.shift
     vulns = VULN_SEVERITIES.zip(values.shift(VULN_SEVERITIES.size)).to_h
-    hosts_fixable, vulns_fixable = values
-    Totals.new(hosts:, cis_evaluated:, cis_passed:, cis_counted:, cis:, vulns_evaluated:, vulns:, hosts_fixable:, vulns_fixable:)
+    buckets = BUCKETS.keys.zip(values.shift(BUCKETS.size)).to_h
+    Totals.new(hosts:, cis_evaluated:, cis_passed:, cis_counted:, cis:, vulns_evaluated:, vulns:, buckets:, work_items: values.first)
   end
 
   # The ids of hosts whose inventory reports a distribution release in the ecosystem (Ecosystems::TABLE, DEC-01), as a
@@ -183,7 +185,7 @@ class FleetCompliance
     relation = relation.where(STATUS_FILTERS.fetch(status)) if status
     relation = relation.where(CIS_FILTERS.fetch(cis)) if cis
     relation = relation.where(VULN_FILTERS.fetch(vuln)) if vuln
-    relation = relation.where(vuln ? FIX_SEVERITY_FILTERS.fetch(vuln) : FIX_FILTER) if fix
+    relation = relation.where(BUCKET_FILTERS.fetch(bucket)) if bucket
     relation
   end
 
@@ -196,7 +198,7 @@ class FleetCompliance
 
   def rows = @rows ||= self.class.rows_for(page.rows).values
 
-  def filtered? = [ q, tag, ecosystem, status, cis, vuln, fix ].any?
+  def filtered? = [ q, tag, ecosystem, status, cis, vuln, bucket ].any?
 
   # Whether the page was asked for by a cursor (Previous or Next), so an empty page may only mean its hosts moved on.
   def cursor? = @cursor.any?
@@ -204,7 +206,7 @@ class FleetCompliance
   # Query parameters for a link, keeping the filters and the sort unless changed (nil removes one). Defaults are left out,
   # and so is the cursor: a changed filter or sort starts at the first page.
   def params_with(**changes)
-    { q:, tag:, ecosystem:, status:, cis:, vuln:, fix:, sort: (sort unless sort == "worst") }.merge(changes).compact
+    { q:, tag:, ecosystem:, status:, cis:, vuln:, bucket:, sort: (sort unless sort == "worst") }.merge(changes).compact
   end
 
   def aria_sort(column) = sort == column ? "ascending" : "none"

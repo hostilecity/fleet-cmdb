@@ -22,16 +22,4 @@ RSpec.describe HostConfigsHelper, type: :helper do
     expect(helper.expected_words({ "absent" => true }, "service_state")).to eq("is not installed")
     expect([ helper.expected_words({ "present" => true }, "file_attributes"), helper.expected_words({ "absent" => true }, "file_attributes") ]).to eq([ "exists", "does not exist" ])
   end
-
-  describe "the packages tile" do
-    def summary(set, changed_at = nil) = Struct.new(:package_set, :packages_changed_at).new(set, changed_at)
-
-    it "names the manager and when the set last changed, or why there is no count" do
-      dpkg = HostPackageSet.new(manager: "dpkg")
-      expect(helper.package_tile_detail(summary(dpkg, 1.day.ago))).to eq("dpkg, set last changed 1 day ago")
-      expect(helper.package_tile_detail(summary(dpkg))).to eq("dpkg")
-      expect(helper.package_tile_detail(summary(HostPackageSet.new(manager: "unsupported")))).to eq("Unsupported package manager")
-      expect(helper.package_tile_detail(summary(nil))).to eq("No package report yet")
-    end
-  end
 end

@@ -368,15 +368,14 @@ module HostVulnerabilitiesHelper
   end
 
   # Why progress is not shown (VT-M5 rule 2: no meter on a host that is not evaluated, or whose package report is older
-  # than PROGRESS_REPORT_MAX_AGE), or nil.
-  PROGRESS_REPORT_MAX_AGE = 3.days
-  def progress_withheld(summary, now: Time.current)
+  # than max_age, the vulnerabilities.badge_report_max_age_days setting since VT-SCORES #262), or nil.
+  def progress_withheld(summary, max_age:, now: Time.current)
     return "this host is not evaluated now, so its work cannot be counted." unless summary.vulnerabilities_evaluated?
 
     received = summary.received["packages"]
-    return nil if received && received >= now - PROGRESS_REPORT_MAX_AGE
+    return nil if received && received >= now - max_age
 
-    "its last package report is older than #{human_duration(PROGRESS_REPORT_MAX_AGE)}, so work done since may not show yet."
+    "its last package report is older than #{human_duration(max_age)}, so work done since may not show yet."
   end
 
   # "7 upgrades, a new kernel installed, a reboot".

@@ -40,15 +40,15 @@
           <%= link_to compliance_path(vuln: severity), "aria-current": (@compliance.vuln == severity ? "true" : nil) do %><span class="count"><%= totals.vulns[severity] %></span><span class="sev <%= severity %>"><%= severity.capitalize %></span><% end %>
         <% end %>
       </div>
-      <%# VT-FIXABLE (#256): from the summaries' stored fix counts; hosts not evaluated now are not counted. %>
-      <p class="muted" id="fleet_fixable"><% if totals.hosts_fixable.zero? %>No evaluated host has an open finding with a fix available.<% else %><%= link_to pluralize(totals.hosts_fixable, "host"), compliance_path(fix: "available") %> <%= totals.hosts_fixable == 1 ? "has" : "have" %> open findings with a fix available: <%= pluralize(totals.vulns_fixable, "finding") %>.<% end %></p>
+      <%# VT-SCORES (#262, VT-D06): the same findings by triage bucket, each a filter; they add up to the open count once every host is triaged. %>
+      <p class="muted bucket-line" id="fleet_buckets"><%= bucket_totals_line(totals, ->(bucket) { compliance_path(@compliance.params_with(bucket:)) }, current: @compliance.bucket) %></p>
     <% end %>
   </section>
   <%= form_with url: compliance_path, method: :get, class: "filters", role: "search", data: { turbo_action: "replace", controller: "keep-edits", action: "turbo:before-morph-element->keep-edits#protect turbo:submit-start->keep-edits#submitted" } do %>
     <label>Search name or hostname<%= search_field_tag :q, @compliance.q, placeholder: "vm-01 or Media server", maxlength: FleetCompliance::QUERY_MAX %></label>
     <label>Tag<%= select_tag :tag, options_for_select(@tags, @compliance.tag), include_blank: "All tags" %></label>
     <label>Status<%= select_tag :status, options_for_select(FleetCompliance::STATUSES.invert, @compliance.status), include_blank: "All hosts" %></label>
-    <label>Fixes<%= select_tag :fix, options_for_select(FleetCompliance::FIXES.invert, @compliance.fix), include_blank: "All hosts" %></label>
+    <label>Triage<%= select_tag :bucket, options_for_select(FleetCompliance::BUCKETS.keys.map { |b| [ "Has #{bucket_name(b).downcase} findings", b ] }, @compliance.bucket), include_blank: "All hosts" %></label>
     <label>Sort<%= select_tag :sort, options_for_select(FleetCompliance::SORTS.invert, @compliance.sort) %></label>
     <%= hidden_field_tag :ecosystem, @compliance.ecosystem if @compliance.ecosystem %>
     <%= hidden_field_tag :cis, @compliance.cis if @compliance.cis %>
@@ -63,15 +63,14 @@
   <% end %>
   <% if @compliance.cis || @compliance.vuln %>
     <p class="applied" id="severity_filter">
-      <span>Showing hosts with <%= [ ("open #{@compliance.cis} CIS-aligned check failures" if @compliance.cis), ("open #{@compliance.vuln} vulnerability findings#{' with a fix' if @compliance.fix}" if @compliance.vuln) ].compact.join(" and ") %>.</span>
-      <%= link_to "Show every host", compliance_path(@compliance.params_with(cis: nil, vuln: nil, fix: nil)) %>
+      <span>Showing hosts with <%= [ ("open #{@compliance.cis} CIS-aligned check failures" if @compliance.cis), ("open #{@compliance.vuln} vulnerability findings" if @compliance.vuln) ].compact.join(" and ") %>.</span>
+      <%= link_to "Show every host", compliance_path(@compliance.params_with(cis: nil, vuln: nil)) %>
     </p>
   <% end %>
-  <%# With vuln, the sentence above already says "with a fix" (review of #267, N1). %>
-  <% if @compliance.fix && !@compliance.vuln %>
-    <p class="applied" id="fix_filter">
-      <span>Showing evaluated hosts with an open finding that has a fix available.</span>
-      <%= link_to "Show hosts with or without a fix", compliance_path(@compliance.params_with(fix: nil)) %>
+  <% if @compliance.bucket %>
+    <p class="applied" id="bucket_filter">
+      <span>Showing hosts with open findings in <%= bucket_name(@compliance.bucket) %><%= " (and open #{@compliance.vuln} findings, not necessarily the same ones)" if @compliance.vuln %>.</span>
+      <%= link_to "Show hosts in every bucket", compliance_path(@compliance.params_with(bucket: nil)) %>
     </p>
   <% end %>
   <% if @rows.empty? && @compliance.cursor? && @total.positive? %>
@@ -85,8 +84,8 @@
                                        (@compliance.ecosystem && "distribution #{@compliance.ecosystem}"),
                                        (@compliance.status && %(status "#{FleetCompliance::STATUSES[@compliance.status]}")),
                                        (@compliance.cis && %(open #{@compliance.cis} CIS-aligned check failures)),
-                                       (@compliance.vuln && %(open #{@compliance.vuln} vulnerability findings#{' with a fix' if @compliance.fix})),
-                                       (@compliance.fix && !@compliance.vuln ? "open findings with a fix" : nil) ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>
+                                       (@compliance.vuln && %(open #{@compliance.vuln} vulnerability findings)),
+                                       (@compliance.bucket && "open findings in #{bucket_name(@compliance.bucket)}") ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>
       <p><%= link_to "Clear the search and filters", compliance_path %></p>
     </div>
   <% else %>

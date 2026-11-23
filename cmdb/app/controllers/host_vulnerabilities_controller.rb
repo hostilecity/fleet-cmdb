@@ -92,6 +92,9 @@ class HostVulnerabilitiesController < ApplicationController
                                                                                 untriaged: @bucket_counts["untriaged"], decisions: @decisions)
       @work = HostVulnerabilityWork.new(@host.id, decisions: @decisions)
       @listeners = VulnerabilityTriage::HostFacts.listener_coverage(@host.id)
+      # Why the host has its points (VT-SCORES #262), for a scored host only: a host not evaluated, or not triaged
+      # yet, has no points to explain.
+      @exposure = HostExposure.new(@host.id) if @summary.scores&.scored?
     end
     @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")
     # Debian's triage for the open and reopened rows on the page (T5); none on the resolved list.
@@ -157,6 +160,8 @@ class HostVulnerabilitiesController < ApplicationController
     @evaluation = HostVulnerabilityEvaluation.find_by(host_id: @host.id)
     @context = HostContext.load([ @host.id ]).first unless @evaluation
     @freshness = Advisories::Freshness.statuses
+    # The run badge is withheld while the advisory data for the host's release is stale (VT-M5 rule 2).
+    @advisories_stale = @freshness.find { |status| status.ecosystem == (@evaluation&.ecosystem || @context&.ecosystem) }&.stale != false
     @package_set = HostPackageSet.find_by(host_id: @host.id)
   end
 

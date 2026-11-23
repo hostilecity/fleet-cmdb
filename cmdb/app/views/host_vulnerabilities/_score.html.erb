@@ -1,0 +1,40 @@
+<%# Why the host has its exposure points (VT-SCORES #262, VT-D04's score breakdown; mockup tiles.html#score): its open
+    advisories by the worst bucket of their findings, each counted once, with their points from the published table,
+    then the total. Points count advisories; the buckets above count findings. locals: summary (HostSummary, scored),
+    exposure (HostExposure). %>
+<% scores = summary.scores %>
+<% kev = VulnerabilityExposure.kev_qualifier(summary.kev_status) %>
+<details class="sheet score" id="score">
+  <summary><h2 id="score_heading">Why <%= pluralize(number_with_delimiter(scores.exposure_points), "point") %>: <%= tier_label(scores.exposure_tier) %></h2></summary>
+  <p id="score_tier">The tier is <strong><%= VulnerabilityExposure.tier_name(scores.exposure_tier) %></strong>: <%= VulnerabilityExposure::TIER_RULES.fetch(scores.exposure_tier) %>.<%= " The tier and points are #{kev}: KEV listings are not shown as a lower tier." if kev %> Hosts sort by tier first, then by points.</p>
+  <% if exposure.total != scores.exposure_points %>
+    <p class="state-note" id="score_pending">The findings changed since the summary was counted; it catches up when the change commits. The rows below are the findings as they are now.</p>
+  <% end %>
+  <div class="table-wrap"><table id="score_table">
+    <caption class="visually-hidden">Exposure points by bucket</caption>
+    <thead><tr><th scope="col">From</th><th scope="col" class="num">Advisories</th><th scope="col" class="num">Points</th></tr></thead>
+    <tbody>
+      <% exposure.rows.each do |row| %>
+        <tr id="score_<%= row.key %>"><th scope="row"><%= row.label %><span class="state-note"><%= HostExposure.severity_words(row.severities) %></span></th>
+          <td class="num"><%= number_with_delimiter(row.advisories) %></td><td class="num"><%= number_with_delimiter(row.points) %></td></tr>
+      <% end %>
+    </tbody>
+    <tfoot><tr><th scope="row">Total</th><td></td><td class="num"><%= number_with_delimiter(exposure.total) %></td></tr></tfoot>
+  </table></div>
+  <details class="score-table" id="score_rules">
+    <summary>Points per open advisory on a host</summary>
+    <div class="table-wrap"><table>
+      <caption class="visually-hidden">Points by worst bucket and severity</caption>
+      <thead><tr><th scope="col">Worst bucket of its findings</th><% %w[Critical High Medium].each do |s| %><th scope="col" class="num"><%= s %></th><% end %><th scope="col" class="num">Low or unknown</th></tr></thead>
+      <tbody>
+        <% VulnerabilityExposure::POINTS.each do |worst, points| %>
+          <tr><th scope="row"><%= HostExposure::WORST_LABELS.fetch(worst) %></th><% points.each do |p| %><td class="num"><%= p %></td><% end %></tr>
+        <% end %>
+        <% VulnerabilityExposure::LISTENER_POINTS.each do |listener, points| %>
+          <tr><th scope="row">Added when a process <%= VulnerabilityExposure::LISTENER_NAMES.fetch(listener) %> loads its package</th><% points.each do |p| %><td class="num">+<%= p %></td><% end %></tr>
+        <% end %>
+      </tbody>
+    </table></div>
+    <p class="state-note">An advisory counts once per host, in the worst bucket of its findings, however many packages it matches. A known exploited (KEV) advisory scores double, except in Ignorable. The listener's points are added once per advisory, not doubled, and not in Ignorable. Severity is the advisory's, never Debian's urgency. The values are a published constant.</p>
+  </details>
+</details>

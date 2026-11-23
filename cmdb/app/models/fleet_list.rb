@@ -1,5 +1,6 @@
 # The fleet list and its counts (FR-1.5, P1-D02). Built from query parameters so every view is linkable:
-# q (name or hostname), tag, status, recovery (#232), sort, dir, and a keyset cursor, after or before (#193). Retired hosts are never
+# q (name or hostname), tag, status, recovery (#232), vulns (VT-SCORES #262), sort, dir, and a keyset cursor, after or
+# before (#193). Retired hosts are never
 # listed or counted. A page is 100 rows read in index order after the cursor host (KeysetPage), from each host's
 # HostComplianceSummary, which carries the sort keys, the operating system name, and FleetCompliance's counts, so the
 # list costs the same whatever the fleet size; the counts are one more query over the summaries.
@@ -42,6 +43,25 @@ class FleetList
     "cis" => [ "summaries.fleet_cis_key", true ],
     "vulns" => [ "summaries.fleet_vulns_key", true ]
   }.freeze
+  # Exposure and Work (VT-SCORES #262, VT-D06, owner decision 19), highest first only: by tier, then points (so one
+  # known exploited host always ranks above any number of medium findings, S6), or by work items; then name. Hosts not
+  # active or not scored (not evaluated, or not triaged yet) are NULL and sort last. Each is one index on the summaries
+  # (host_compliance_summaries_exposure and _work), read in order.
+  ACTIVE_KEY = "CASE WHEN summaries.enrollment_state::text = 'active'::text THEN %s END".freeze
+  RANKED = {
+    "exposure" => [ format(ACTIVE_KEY, "summaries.exposure_tier"), format(ACTIVE_KEY, "summaries.exposure_points") ],
+    "work" => [ format(ACTIVE_KEY, "summaries.work_items") ]
+  }.freeze
+
+  # The vulnerabilities filter (VT-D06): active hosts that are scored, by their summary, or not evaluated now.
+  SCORED = "summaries.enrollment_state = 'active' AND summaries.exposure_tier IS NOT NULL".freeze
+  VULN_FILTERS = {
+    "known_exploited" => [ "Known exploited (not ignorable)", "#{SCORED} AND summaries.exposure_tier = 4" ],
+    "attention" => [ "Has findings that need attention", "#{SCORED} AND summaries.vuln_attention > 0" ],
+    "fix" => [ "Has a fix available", "#{SCORED} AND summaries.vuln_fix > 0" ],
+    "nothing_to_install" => [ "Nothing to install", "#{SCORED} AND summaries.work_items = 0" ],
+    "not_evaluated" => [ "Not evaluated", "summaries.enrollment_state = 'active' AND NOT summaries.vuln_evaluated" ]
+  }.freeze
 
   COLUMNS = [ "hosts.*", "summaries.os_name", *FleetCompliance::COLUMNS ].freeze
 
@@ -51,15 +71,16 @@ class FleetList
   RECOVERY_FILTERS = { "missing" => "Not set up" }.freeze
   WITHOUT_RECOVERY_MODE = "hosts.enrollment_state = 'active' AND hosts.first_seen_at IS NOT NULL AND hosts.agent_recovery_coverage IS DISTINCT FROM 'set_up'".freeze
 
-  attr_reader :q, :tag, :status, :recovery, :sort, :direction
+  attr_reader :q, :tag, :status, :recovery, :vulns, :sort, :direction
 
   def initialize(params = {})
     @q = params[:q].to_s.strip.first(100).presence
     @tag = params[:tag].present? ? Host.normalize_tag(params[:tag]) : nil
     @status = STATUSES.key?(params[:status]) ? params[:status] : nil
     @recovery = RECOVERY_FILTERS.key?(params[:recovery]) ? params[:recovery] : nil
-    @sort = SORTS.key?(params[:sort]) ? params[:sort] : "name"
-    @direction = params[:dir] == "desc" ? "desc" : "asc"
+    @vulns = VULN_FILTERS.key?(params[:vulns]) ? params[:vulns] : nil
+    @sort = SORTS.key?(params[:sort]) || RANKED.key?(params[:sort]) ? params[:sort] : "name"
+    @direction = RANKED.key?(@sort) || params[:dir] == "desc" ? "desc" : "asc"
     @cursor = KeysetPage.cursor(params)
   end
 
@@ -72,10 +93,15 @@ class FleetList
     scope = scope.tagged(tag) if tag
     scope = scope.where(summaries: { status_rank: STATUS_RANKS.fetch(status) }) if status
     scope = scope.where(WITHOUT_RECOVERY_MODE) if recovery
+    scope = scope.where(VULN_FILTERS.fetch(vulns).last) if vulns
     scope
   end
 
   def keys
+    if RANKED.key?(sort)
+      return [ *RANKED.fetch(sort).map { |sql| KeysetPage::Key.new(sql:, descending: true, nullable: true) }, FleetCompliance::NAME, FleetCompliance::ID ]
+    end
+
     sql, nullable = SORTS.fetch(sort)
     key = KeysetPage::Key.new(sql:, descending: direction == "desc", nullable:)
     sort == "name" ? [ key, FleetCompliance::ID ] : [ key, FleetCompliance::NAME, FleetCompliance::ID ]
@@ -113,23 +139,25 @@ class FleetList
     end
   end
 
-  def filtered? = q.present? || tag.present? || status.present? || recovery.present?
+  def filtered? = q.present? || tag.present? || status.present? || recovery.present? || vulns.present?
 
   # Only the recovery-mode filter is set: an empty list then means every active host is covered (#232).
-  def only_recovery_filter? = recovery.present? && q.blank? && tag.blank? && status.blank?
+  def only_recovery_filter? = recovery.present? && q.blank? && tag.blank? && status.blank? && vulns.blank?
 
   # Whether the page was asked for by a cursor (Previous or Next), so an empty page may only mean its hosts moved on.
   def cursor? = @cursor.any?
 
-  # Query parameters for a link that sorts by column, toggling direction when it is already the sort. A new sort
-  # starts at the first page.
+  # Query parameters for a link that sorts by column, toggling direction when it is already the sort (Exposure and
+  # Work sort highest first only). A new sort starts at the first page.
   def sort_params(column)
-    dir = sort == column && direction == "asc" ? "desc" : "asc"
-    { q:, tag:, status:, recovery:, sort: column, dir: }.compact
+    dir = RANKED.key?(column) || (sort == column && direction == "asc") ? "desc" : "asc"
+    { q:, tag:, status:, recovery:, vulns:, sort: column, dir: (dir unless RANKED.key?(column)) }.compact
   end
 
   # The filters and sort, defaults left out, for the pager's links (which add a cursor) and the first page.
-  def list_params = { q:, tag:, status:, recovery:, sort: (sort unless sort == "name"), dir: (direction unless direction == "asc") }.compact
+  def list_params
+    { q:, tag:, status:, recovery:, vulns:, sort: (sort unless sort == "name"), dir: (direction unless direction == "asc" || RANKED.key?(sort)) }.compact
+  end
 
   def aria_sort(column)
     return "none" unless sort == column

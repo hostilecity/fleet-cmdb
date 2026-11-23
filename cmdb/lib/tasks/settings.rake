@@ -26,4 +26,17 @@ namespace :settings do
   rescue Setting::Invalid => e
     abort "Not changed: #{e.message}"
   end
+
+  desc "Set the vulnerability badge settings in days: REPORT_DAYS=3 (package report age) GRACE_DAYS=7 (a run's grace); either may be left out"
+  task vulnerability_badges: :environment do
+    days = { report_max_age: ENV["REPORT_DAYS"], run_grace: ENV["GRACE_DAYS"] }.compact
+    abort "Usage: bin/rails settings:vulnerability_badges REPORT_DAYS=3 GRACE_DAYS=7" if days.empty?
+
+    Setting.update_vulnerability_badges!(actor: Audit::SYSTEM, **days)
+    badges = Setting.vulnerability_badges
+    puts "Badges and runs are withheld when the last package report is older than #{badges[:report_max_age].in_days.to_i} days; " \
+         "a run is kept through a new fixable critical for #{badges[:run_grace].in_days.to_i} days."
+  rescue Setting::Invalid => e
+    abort "Not changed: #{e.message}"
+  end
 end

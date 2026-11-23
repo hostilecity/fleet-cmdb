@@ -5,7 +5,7 @@ RSpec.describe "Hosts", :signed_in, type: :request do
   # Page notices, without the hidden live-update banner and the flash.
   def notice = page.at_css(".notice:not(.flash):not([data-live-status-target])")
 
-  def row_names = page.css("tbody tr td:first-child a").map(&:text)
+  def row_names = page.css("tbody tr td:first-child > a:first-child").map(&:text)
 
   def words(node) = node.text.squish
 
@@ -34,10 +34,13 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         # turn "less than 5 seconds ago" into "less than 10 seconds ago" (#69).
         travel_to(media.reload.last_seen_at) { get "/" }
         row = page.at_css("tr#row_host_#{media.id}")
+        # The hostname and tags are under the name (VT-SCORES #262, VT-D06), and Exposure and Work replace Open vulnerabilities.
         expect(row.css("td").map { |td| td.text.squish }).to eq(
-          [ "Media server", "Online", "less than 5 seconds ago", media.hostname, "media", "Debian GNU/Linux 13 (trixie)",
-            "Not evaluated: no rules are defined", "Not evaluated: no package report yet", "0.1.0" ]
+          [ "Media server#{media.hostname}media", "Online", "less than 5 seconds ago", "Debian GNU/Linux 13 (trixie)",
+            "Not evaluated: no rules are defined", "Not evaluated: no package report yet", "Not known", "0.1.0" ]
         )
+        expect(row.at_css("td:first-child .host-line").text).to eq(media.hostname)
+        expect(page.css("thead th").map { |th| th.text.squish }).to eq([ "Name", "Status", "Last seen", "Operating system", "CIS pass rate", "Exposure", "Work", "Agent" ])
         expect(row_names).to eq([ "Lab sandbox", "Media server" ])
         expect(response.body).not_to include("Retired box")
         expect(page.css("#fleet_counts .count").map(&:text)).to eq(%w[1 0 0 0 1 0])
@@ -142,9 +145,10 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         cis_results!(web, rules.to_h { |r| [ r, r.key == "critical-0" ? "fail" : "pass" ] })
         cis_results!(backup, rules.to_h { |r| [ r, "pass" ] })
         [ media, web, backup ].each { |h| host_config!(h) && package_set!(h) && vulns_evaluated!(h) }
-        findings!(media, "high")
-        findings!(media, "medium", fixed: "2.0-1")
-        findings!(web, "critical", "low", "low")
+        findings!(media, "high", rule: "N4")
+        findings!(media, "medium", fixed: "2.0-1", rule: "F1")
+        findings!(web, "critical", rule: "L2")
+        findings!(web, "low", "low", rule: "I2")
         findings!(dns, "high", state: "resolved")
       end
 
@@ -155,20 +159,24 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(panel.at_css("p").text.squish).to eq(
           "4 open CIS-aligned check failures (1 critical, 1 high) on 3 of 4 hosts evaluated. 5 open vulnerability findings (1 critical, 1 high) on 3 of 4 hosts evaluated."
         )
+        # VT-SCORES (#262, VT-D06): the same findings by bucket, with the work items, each linking to the Compliance page.
+        expect(words(panel.at_css("#fleet_buckets"))).to eq("1 fix available (1 work item) · 1 needs attention · 1 low risk · 2 ignorable on 3 of 4 hosts evaluated.")
+        expect(panel.css("#fleet_buckets a").map { |a| a["href"] }).to eq(%w[fix attention low_risk ignorable].map { |b| "/compliance?bucket=#{b}" })
       end
 
-      it "shows each host's pass rate and open findings, linked to its tabs; not evaluated and not tracked are words, never zero" do
+      it "shows each host's pass rate, exposure, and work, linked to its tabs; not evaluated and not tracked are words, never zero" do
         get "/"
-        expect(cells(media)[6..7]).to eq([ "62.5% 3 failing, 1 high", "2 open 1 high 1 with a fix (1 package)" ])
-        expect(cells(web)[6..7]).to eq([ "87.5% 1 failing, 1 critical", "3 open 1 critical None with a fix" ])
-        expect(page.at_css("tr#row_host_#{media.id} .fix-detail a")["href"]).to eq("/hosts/#{media.id}/vulnerabilities?fix=available") # #256
-        expect(cells(backup)[6..7]).to eq([ "100% None failing", "None open" ])
-        expect(cells(dns)[6..7]).to eq([ "Not evaluated: no config report yet", "Not evaluated: no inventory yet, so the distribution is not known" ])
-        expect(cells(pending)[6..7]).to eq([ "Not tracked", "Not tracked" ])
-        expect(page.at_css("tr#row_host_#{media.id} td:nth-child(7) a")["href"]).to eq("/hosts/#{media.id}/config#results")
-        expect(page.at_css("tr#row_host_#{media.id} td:nth-child(8) a")["href"]).to eq("/hosts/#{media.id}/vulnerabilities")
-        expect(page.css("tr#row_host_#{dns.id} .not-eval").size).to eq(2)
-        expect(page.css("tr#row_host_#{backup.id} .none-open").size).to eq(2)
+        # VT-SCORES (#262): the tier, the points, and how many findings need attention; the work items and what they are.
+        expect(cells(media)[4..6]).to eq([ "62.5% 3 failing, 1 high", "Exposed, no fix 24 points · 1 finding needs attention · not checked against KEV", "1 work item 1 upgrade" ])
+        expect(cells(web)[4..6]).to eq([ "87.5% 1 failing, 1 critical", "Low 2 points · 0 need attention · not checked against KEV", "Nothing to install" ])
+        expect(page.at_css("tr#row_host_#{media.id} .tier.t3")).not_to be_nil
+        expect(cells(backup)[4..6]).to eq([ "100% None failing", "Minimal 0 points · 0 need attention · not checked against KEV", "Nothing to install" ])
+        expect(cells(dns)[4..6]).to eq([ "Not evaluated: no config report yet", "Not evaluated: no inventory yet, so the distribution is not known", "Not known" ])
+        expect(cells(pending)[4..6]).to eq([ "Not tracked", "Not tracked", "Not tracked" ])
+        expect(page.at_css("tr#row_host_#{media.id} td:nth-child(5) a")["href"]).to eq("/hosts/#{media.id}/config#results")
+        expect(page.at_css("tr#row_host_#{media.id} td:nth-child(6) a")["href"]).to eq("/hosts/#{media.id}/vulnerabilities#score")
+        expect(page.at_css("tr#row_host_#{media.id} td:nth-child(7) a")["href"]).to eq("/hosts/#{media.id}/vulnerabilities#work")
+        expect(page.css("tr#row_host_#{dns.id} .not-eval").size).to eq(3)
       end
 
       it "sorts by pass rate and by open vulnerabilities, with hosts that are not evaluated or not tracked last" do
@@ -181,6 +189,31 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         get "/", params: { sort: "vulns", dir: "desc" }
         expect(row_names).to eq([ "Web A", "Media server", "Backup target", "DNS resolver", "Lab sandbox" ])
         expect(page.at_css("caption").text).to eq("Hosts, open vulnerabilities descending")
+      end
+
+      it "sorts by exposure (tier, then points) and by work, highest first only, with hosts not scored or not tracked last (VT-SCORES #262)" do
+        get "/", params: { sort: "exposure", dir: "asc" } # one direction only
+        expect(row_names).to eq([ "Media server", "Web A", "Backup target", "DNS resolver", "Lab sandbox" ])
+        expect(page.at_css("th[aria-sort=descending]").text).to eq("Exposure")
+        expect(page.at_css("caption").text).to eq("Hosts, highest exposure first: by tier, then points")
+        expect(query(page.at_css("th a[href*='sort=exposure']"))).to eq("sort" => "exposure")
+        get "/", params: { sort: "work" }
+        expect(row_names).to eq([ "Media server", "Backup target", "Web A", "DNS resolver", "Lab sandbox" ])
+        expect(page.at_css("caption").text).to eq("Hosts, most work first")
+      end
+
+      it "filters by vulnerabilities: known exploited, needs attention, a fix, nothing to install, not evaluated (VT-SCORES #262)" do
+        findings!(web, "low", rule: "F1", kev: true)
+        get "/"
+        expect(page.at_css("label select[name=vulns]").css("option").map { |o| o["value"] }).to eq([ "", *FleetList::VULN_FILTERS.keys ])
+        { "known_exploited" => [ "Web A" ], "attention" => [ "Media server" ], "fix" => [ "Media server", "Web A" ],
+          "nothing_to_install" => [ "Backup target" ], "not_evaluated" => [ "DNS resolver" ] }.each do |filter, names|
+          get "/", params: { vulns: filter }
+          expect(row_names).to eq(names), filter
+        end
+        expect(query(page.at_css("th a[href*='sort=name']"))).to include("vulns" => "not_evaluated")
+        get "/", params: { vulns: "known_exploited", q: "backup" }
+        expect(page.at_css(".empty strong").text).to eq(%(No hosts match "backup" with vulnerabilities "Known exploited (not ignorable)".))
       end
 
       it "says when nothing is evaluated yet instead of counting zero" do

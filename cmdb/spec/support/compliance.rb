@@ -35,14 +35,23 @@ module ComplianceHelpers
   end
 
   # Findings for one host: severities is a list such as %w[critical low low]; state open, reopened, or resolved.
-  # fixed: the fixed version each finding stores (nil: no fix), which sets its fix flag (VT-FIXABLE).
-  def findings!(host, *severities, state: "open", fixed: nil)
-    severities.each do |severity|
+  # fixed: the fixed version each finding stores (nil: no fix), which sets its fix flag (VT-FIXABLE). rule: the triage
+  # rule each open one is in (VT-BUCKETS: "F1", "N4", ...; nil: not triaged yet), with kev and listener (VT-SCORES);
+  # source: its source package (each finding its own advisory and binary package).
+  def findings!(host, *severities, state: "open", fixed: nil, rule: nil, kev: false, listener: nil, source: "acme")
+    severities.map do |severity|
       advisory = Advisory.create!(advisory_id: "DSA-#{SecureRandom.hex(4)}-1", source: "test", severity:, modified_at: Time.current)
-      VulnerabilityFinding.create!(host:, advisory:, package: "acme-#{SecureRandom.hex(3)}", architecture: "amd64", last_source: "acme",
+      triage = rule && state != "resolved" ? { bucket: VulnerabilityTriage::BUCKETS.fetch(VulnerabilityTriage::RULES.fetch(rule)), bucket_rule: VulnerabilityTriage::RULE_IDS.fetch(rule), kev:, listener: } : {}
+      VulnerabilityFinding.create!(host:, advisory:, package: "acme-#{SecureRandom.hex(3)}", architecture: "amd64", last_source: source,
                                    last_installed_version: "1.0-1", last_fixed_version: fixed, state:, first_seen_at: 1.day.ago,
-                                   resolution: (state == "resolved" ? "fixed" : nil), resolved_at: (state == "resolved" ? 1.hour.ago : nil))
+                                   resolution: (state == "resolved" ? "fixed" : nil), resolved_at: (state == "resolved" ? 1.hour.ago : nil), **triage)
     end
+  end
+
+  # Puts every open finding of the hosts that has no bucket yet in rule's (VT-BUCKETS), as the re-triage would.
+  def triage_all!(*hosts, rule: "L5")
+    VulnerabilityFinding.where(host: hosts, state: %w[open reopened], bucket: nil)
+                        .update_all(bucket: VulnerabilityTriage::BUCKETS.fetch(VulnerabilityTriage::RULES.fetch(rule)), bucket_rule: VulnerabilityTriage::RULE_IDS.fetch(rule), kev: false)
   end
 
   # Open CIS failures by severity, counted again from the rows with Ruby, as the Configuration tab picks the severity:

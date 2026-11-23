@@ -36,4 +36,14 @@ RSpec.describe "settings rake tasks (P1-S09)" do
     expect { expect { run("settings:retention", "DAYS" => nil) }.to output(/Usage/).to_stderr }.to raise_error(SystemExit)
     expect(Setting.retention_window).to eq(45.days)
   end
+
+  it "changes the vulnerability badge settings, one or both, and explains invalid or missing values (VT-SCORES #262)" do
+    expect(run("settings:show")).to include("vulnerabilities.badge_report_max_age_days = 3", "vulnerabilities.run_grace_days = 7")
+    expect(run("settings:vulnerability_badges", "GRACE_DAYS" => "10")).to include("older than 3 days; a run is kept through a new fixable critical for 10 days.")
+    expect(run("settings:vulnerability_badges", "REPORT_DAYS" => "5", "GRACE_DAYS" => "10")).to include("older than 5 days")
+    expect(Setting.vulnerability_badges).to eq(report_max_age: 5.days, run_grace: 10.days)
+    expect(AuditEntry.where(action: Audit::Actions::SETTING_CHANGED).count).to eq(2) # the unchanged grace is not audited again
+    expect { expect { run("settings:vulnerability_badges", "REPORT_DAYS" => "31") }.to output(/Not changed: Enter a whole number of days from 1 to 30/).to_stderr }.to raise_error(SystemExit)
+    expect { expect { run("settings:vulnerability_badges") }.to output(/Usage/).to_stderr }.to raise_error(SystemExit)
+  end
 end

@@ -66,8 +66,10 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       expect(page.at_css("#untriaged_list tr.pkg-group a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities/package?package=acme-daemon")
       expect(page.at_css("#resolved_findings")).to be_nil
       expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 5 open")
-      expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities 5 2 high, 1 medium, 2 low")
-      expect(page.at_css("#glance_vulns")["href"]).to eq("/hosts/#{host.id}/vulnerabilities")
+      # VT-SCORES (#262): no tier or work for findings with no bucket yet.
+      expect(words(page.at_css("#glance_exposure"))).to eq("Vulnerability exposure Not triaged yet The re-triage after an upgrade has not reached this host yet")
+      expect(words(page.at_css("#glance_work"))).to eq("Work remaining Not counted yet Counted once its findings are triaged")
+      expect(page.at_css("#glance_exposure")["href"]).to eq("/hosts/#{host.id}/vulnerabilities")
       expect(page.at_css("#advisory_freshness").text.squish).to start_with("Advisory data last updated: Debian:13")
     end
 
@@ -377,7 +379,8 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     expect(words(page.at_css("#no_open_findings"))).to eq("No open vulnerability findings. Evaluated 2026-11-06 09:00 UTC: 1 package matched against 1 Debian:13 advisory. 0 resolved findings.")
     expect(page.at_css("#not_evaluated")).to be_nil
     expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 0 to act on")
-    expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities None open Evaluated less than 5 seconds ago")
+    expect(words(page.at_css("#glance_exposure"))).to eq("Vulnerability exposure Minimal 0 points · 0 need attention · not checked against KEV")
+    expect(words(page.at_css("#glance_work"))).to eq("Work remaining 0 work items Nothing to install")
   end
 
   describe "a host that cannot be evaluated says so and why, never an empty list" do
@@ -407,7 +410,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       match(apk)
       expect(notice(apk)).to include("The host's package manager is not supported: apk is not supported by this agent version", "Reason unsupported_package_manager .")
       expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities Not evaluated")
-      expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities Not evaluated The host's package manager is not supported: apk is not supported by this agent version")
+      expect(words(page.at_css("#glance_exposure"))).to eq("Vulnerability exposure Not evaluated The host's package manager is not supported: apk is not supported by this agent version")
     end
 
     it "for a host whose package database could not be read, keeping its findings (P2-S08)" do

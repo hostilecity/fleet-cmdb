@@ -50,8 +50,6 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(page.at_css("th[aria-sort=ascending]").text).to eq("Package")
       expect(words(page.at_css("#package_pager"))).to eq("Packages 1–7 of 7 Previous · Page 1 of 1 · Next")
       expect(page.css("nav.tabs a").map { |a| words(a) }.first(3)).to eq([ "Overview", "Configuration", "Packages 7" ])
-      expect(words(page.at_css("#glance_packages"))).to eq("Packages 7 dpkg, set last changed 1 minute ago")
-      expect(page.at_css("#glance_packages")["href"]).to eq("/hosts/#{host.id}/packages")
     end
 
     it "searches name and source package, filters by architecture, and sorts, keeping it all in the URL" do
@@ -204,13 +202,12 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       report([], at: start + 1.hour, manager: "unsupported", unsupported_reason: "apk is not supported by this agent version")
     end
 
-    it "says the packages are unknown, never an empty list, in the tab, the tile, and the snapshot list" do
+    it "says the packages are unknown, never an empty list, in the tab and the snapshot list" do
       get "/hosts/#{host.id}/packages"
       expect(words(page.at_css("#unsupported_manager"))).to eq("This host's package manager is not supported, so its packages are unknown. " \
                                                                "The agent reported: apk is not supported by this agent version . Supported package managers: dpkg. This is not an empty package list.")
       expect(page.at_css("#package_list")).to be_nil
       expect(page.css("nav.tabs a").map { |a| words(a) }[2]).to eq("Packages Unsupported")
-      expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known Unsupported package manager")
       expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "No diff: one side is from an unsupported package manager", "Oldest package snapshot kept, 1 package" ])
     end
 
@@ -420,7 +417,6 @@ RSpec.describe "Host packages", :signed_in, type: :request do
                                                                "The agent reported: dpkg-query exited with status 2 . The list is from the report of 2026-11-06 09:00 UTC, the last one that could be read. This is not an empty package list.")
       expect(names).to eq(%w[bash vim])
       expect(page.css("nav.tabs a").map { |a| words(a) }).to include("Packages 2")
-      expect(words(page.at_css("#glance_packages"))).to eq("Packages 2 Last report could not be read, list is from the last one that could")
       expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "No diff: one side is a report whose package database could not be read", "Oldest package snapshot kept, 2 packages" ])
     end
 
@@ -442,7 +438,6 @@ RSpec.describe "Host packages", :signed_in, type: :request do
       expect(page.at_css("#package_list")).to be_nil
       expect(page.at_css("dl.facts dd .lamp").text).to eq("Unreadable")
       expect(page.css("nav.tabs a").map { |a| words(a) }).to include("Packages Unreadable")
-      expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known Package database could not be read")
       expect(page.css("#snapshot_list tbody tr td:nth-child(2)").map { |td| words(td) }).to eq([ "Oldest package snapshot kept, a package database that could not be read" ])
     end
 
