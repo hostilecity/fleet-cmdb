@@ -13,7 +13,13 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
 
   def words(node) = node.xpath(".//text()").map(&:text).join(" ").squish
 
-  def match(host, at: Time.current) = VulnerabilityMatcher.match!([ host.id ], now: at)
+  # #253's package rows, which the tab draws for open findings not triaged yet (a host the upgrade's background
+  # re-triage has not reached, #277 item 15): each match here leaves the host's findings without a bucket, so this file
+  # covers those rows. The bucket sections are spec/requests/host_vulnerability_triage_spec.rb's (VT-HOST-TAB #260).
+  def match(host, at: Time.current)
+    VulnerabilityMatcher.match!([ host.id ], now: at)
+    VulnerabilityFinding.where(host_id: host.id).update_all(bucket: nil, bucket_rule: nil, kev: nil)
+  end
 
   def advisory(id, package, severity: "high", fixed: "2.0-1", url: "https://security.example.lan/advisories/#{id}", **extra)
     osv_record(id:, package:, fixed:, summary: "Example: a flaw in #{package}.", database_specific: { "severity" => severity },
@@ -44,8 +50,8 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     it "groups findings by package, one row each with its count, severity, fixes, and states, its advisories collapsed (Q16)" do
       get "/hosts/#{host.id}/vulnerabilities"
       expect(response).to have_http_status(:ok)
-      expect(words(page.at_css("#open_heading"))).to eq("Open findings 5: 2 high, 1 medium, 2 low")
-      expect(groups("open_list")).to eq([
+      expect(words(page.at_css("#untriaged_counts"))).to eq("5 findings: 2 high, 1 medium, 2 low")
+      expect(groups("untriaged_list")).to eq([
         [ "acme-daemon:amd64 installed 1.0-1 2 advisories High 1 high, 1 low Fix for 1 of 2 2 open 2026-11-06 09:00 UTC", [
           [ "DSA-9100-1 Example: a flaw in acme.", "High", "Fixed in 2.0-1", "Open", "2026-11-06 09:00 UTC → —" ],
           [ "DSA-9101-1 Example: a flaw in acme.", "Low", "No fix available", "Open", "2026-11-06 09:00 UTC → —" ] ] ],
@@ -55,9 +61,9 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
         [ "acme-docs:all installed 1.0-1 1 advisory Medium 1 medium Fix available 1 open 2026-11-06 09:00 UTC", [
           [ "DSA-9102-1 No link recorded Example: a flaw in acme-docs.", "Medium", "Fixed in 2.0-1", "Open", "2026-11-06 09:00 UTC → —" ] ] ]
       ])
-      link = page.at_css("#open_list a[href^='https://']")
+      link = page.at_css("#untriaged_list a[href^='https://']")
       expect([ link.text, link["href"], link["rel"], link["target"] ]).to eq([ "DSA-9100-1", "https://security.example.lan/advisories/DSA-9100-1", "noopener noreferrer", "_blank" ])
-      expect(page.at_css("#open_list tr.pkg-group a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities/package?package=acme-daemon")
+      expect(page.at_css("#untriaged_list tr.pkg-group a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities/package?package=acme-daemon")
       expect(page.at_css("#resolved_findings")).to be_nil
       expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 5 open")
       expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities 5 2 high, 1 medium, 2 low")
@@ -67,14 +73,14 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
 
     it "filters by severity on single advisories, and by state and text, keeping the filters in the URL" do
       get "/hosts/#{host.id}/vulnerabilities", params: { severity: "low" }
-      expect(groups("open_list").map(&:first)).to eq([ "acme-daemon:amd64 installed 1.0-1 1 advisory Low 1 low No fix available 1 open 2026-11-06 09:00 UTC", "libacme1:amd64 installed 1.0-1 1 advisory Low 1 low No fix available 1 open 2026-11-06 09:00 UTC" ])
+      expect(groups("untriaged_list").map(&:first)).to eq([ "acme-daemon:amd64 installed 1.0-1 1 advisory Low 1 low No fix available 1 open 2026-11-06 09:00 UTC", "libacme1:amd64 installed 1.0-1 1 advisory Low 1 low No fix available 1 open 2026-11-06 09:00 UTC" ])
       expect(page.at_css("#finding_filters select[name=severity] option[selected]")["value"]).to eq("low")
       get "/hosts/#{host.id}/vulnerabilities", params: { q: "dsa-9102" }
-      expect(groups("open_list").map(&:first)).to eq([ "acme-docs:all installed 1.0-1 1 advisory Medium 1 medium Fix available 1 open 2026-11-06 09:00 UTC" ])
+      expect(groups("untriaged_list").map(&:first)).to eq([ "acme-docs:all installed 1.0-1 1 advisory Medium 1 medium Fix available 1 open 2026-11-06 09:00 UTC" ])
       get "/hosts/#{host.id}/vulnerabilities", params: { q: "libacme", severity: "critical" }
-      expect(page.at_css("#open_findings").text.squish).to include("No open findings match. Clear the filters")
+      expect(words(page.at_css("#no_match"))).to eq("No open findings match. Clear the filters")
       get "/hosts/#{host.id}/vulnerabilities", params: { state: "resolved", severity: "high" }
-      expect(page.at_css("#open_findings")).to be_nil
+      expect(page.at_css("#bucket_sections")).to be_nil
       expect(page.at_css("#resolved_findings").text.squish).to include("Resolved findings 0 No resolved findings match.")
       expect(page.css("#state_filters a").map { |a| [ words(a), a["aria-current"] ] }).to eq([ [ "Open and reopened 5", nil ], [ "Resolved 0", "true" ], [ "All 5", nil ] ])
       expect(Rack::Utils.parse_query(URI(page.at_css("#state_filters a")["href"]).query)).to eq("severity" => "high")
@@ -98,7 +104,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
         [ "libacme1:amd64 installed 1.0-1 1 advisory Low 1 low 1 withdrawn 1 resolved 2026-11-06 09:00 UTC", [
           [ "DSA-9101-1 Example: a flaw in acme.", "Low", "No fix available", "Resolved Withdrawn: the advisory was withdrawn by its source", "2026-11-06 09:00 UTC → 2026-11-06 11:00 UTC" ] ] ]
       ])
-      reopened = groups("open_list").first
+      reopened = groups("untriaged_list").first
       expect(reopened.first).to eq("acme-daemon:amd64 installed 1.0-1 1 advisory High 1 high Fix available 1 reopened 2026-11-06 09:00 UTC")
       expect(reopened.last.first.drop(3)).to eq([ "Reopened", "2026-11-06 09:00 UTC → Resolved 2026-11-06 10:00 UTC, reopened 2026-11-06 12:00 UTC" ])
       expect(words(page.at_css("#resolved_list_pager"))).to eq("3 packages. Sorted by worst severity, then first seen.")
@@ -162,7 +168,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       match(host)
     end
 
-    def rows = page.css("#open_list > tbody > tr.pkg-group").map { |row| words(row) }
+    def rows = page.css("#untriaged_list > tbody > tr.pkg-group").map { |row| words(row) }
 
     it "ranks by the severity counts, critical first, then by how many have a fix, then by name, and says how many have a fix" do
       get "/hosts/#{host.id}/vulnerabilities"
@@ -174,48 +180,12 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
         "zlib:amd64 installed 1.0-1 2 advisories Medium 2 medium Fix for 1 of 2 2 open #{at}",
         "xml:amd64 installed 1.0-1 2 advisories Medium 2 medium No fix for any of 2 2 open #{at}"
       ])
-      expect(page.at_css("#open_list tbody td .unavailable").text).to eq("No fix available")
-      expect(words(page.at_css("#open_heading"))).to eq("Open findings 12: 1 critical, 5 high, 6 medium")
-      expect(words(page.at_css("#open_list_pager"))).to eq("5 packages. Worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix.")
-      expect(page.css("#open_list > thead th").map(&:text)).to eq([ "Package", "Advisories", "Severity", "Fixes", "State", "First seen" ])
+      expect(page.at_css("#untriaged_list tbody td .unavailable").text).to eq("No fix available")
+      expect(words(page.at_css("#untriaged_counts"))).to eq("12 findings: 1 critical, 5 high, 6 medium")
+      expect(words(page.at_css("#untriaged_list_pager"))).to eq("5 packages. Worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix.")
+      expect(page.css("#untriaged_list > thead th").map(&:text)).to eq([ "Package", "Advisories", "Severity", "Fixes", "State", "First seen" ])
       get "/hosts/#{host.id}/vulnerabilities", params: { severity: "medium" } # ranks the findings the filters keep
       expect(rows.map { |row| row.split.first }).to eq(%w[curl:amd64 zlib:amd64 xml:amd64])
-    end
-
-    def chips = page.css("#fix_filters a").map { |a| [ words(a), a["aria-current"], Rack::Utils.parse_query(URI(a["href"]).query) ] }
-
-    it "filters by whether a fix is available, counting over the open list whatever the other filters, in the URL (VT-FIXABLE #256)" do
-      tab = "/hosts/#{host.id}/vulnerabilities"
-      # A reopened finding with a fix counts as one (review of #267, N3), and so does a reopened one without.
-      VulnerabilityFinding.where(host_id: host.id, package: "curl").limit(1).update_all(state: "reopened", reopened_at: Time.current)
-      VulnerabilityFinding.where(host_id: host.id, package: "xml").limit(1).update_all(state: "reopened", reopened_at: Time.current)
-      get tab
-      expect(chips).to eq([ [ "Fix available 5", nil, { "fix" => "available" } ], [ "No fix available 7", nil, { "fix" => "none" } ] ])
-      expect(chips.sum { |label, *| label.split.last.to_i }).to eq(page.at_css("#state_filters a[aria-current]").at_css(".n").text.to_i) # 12 open
-
-      get tab, params: { fix: "available" }
-      at = "2026-11-06 09:00 UTC"
-      expect(rows).to eq([ "kernel:amd64 installed 1.0-1 2 advisories High 2 high Fix for all 2 2 open #{at}", # counts only what the filter keeps
-                           "curl:amd64 installed 1.0-1 2 advisories Medium 2 medium Fix for all 2 1 open, 1 reopened #{at}",
-                           "zlib:amd64 installed 1.0-1 1 advisory Medium 1 medium Fix available 1 open #{at}" ])
-      expect(words(page.at_css("#open_heading"))).to eq("Open findings 5: 2 high, 3 medium")
-      expect(chips).to eq([ [ "Fix available 5", "true", {} ], [ "No fix available 7", nil, { "fix" => "none" } ] ]) # the current chip clears it
-      expect(page.at_css("#finding_filters input[name=fix]")["value"]).to eq("available")
-      expect(Rack::Utils.parse_query(URI(page.at_css("#triage_filter a")["href"]).query)).to eq("debian" => "no_dsa", "fix" => "available")
-      expect(page.css("#state_filters a").map { |a| Rack::Utils.parse_query(URI(a["href"]).query) }).to eq([ { "fix" => "available" }, { "state" => "resolved" }, { "state" => "all" } ])
-
-      get tab, params: { fix: "none", severity: "medium" } # combined, and counted whatever the severity filter
-      expect(rows.map { |row| row.split.first }).to eq(%w[xml:amd64 zlib:amd64])
-      expect(chips.map(&:first)).to eq([ "Fix available 5", "No fix available 7" ])
-      expect(chips.first.last).to eq("severity" => "medium", "fix" => "available")
-
-      get tab, params: { fix: "none", q: "curl" }
-      expect(page.at_css("#open_findings").text.squish).to include("No open findings match. Clear the filters")
-      get tab, params: { fix: "bogus" }
-      expect(rows.size).to eq(5)
-      get tab, params: { fix: "available", state: "resolved" } # offered on the open list only (#252 question 7)
-      expect(page.at_css("#fix_filters")).to be_nil
-      expect(page.at_css("#resolved_findings")).to be_present
     end
 
     it "reads the stored fixed version and flag, which the next matching run brings up to date (#256)" do
@@ -223,51 +193,49 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       ChunkMatch.where(advisory_id: advisory.id).update_all(fixed_version: "2.0-1") # a verdict moved, its host not yet matched
       get "/hosts/#{host.id}/vulnerabilities", params: { q: "ssl" }
       expect(rows.sole).to include("No fix available")
-      expect(groups("open_list").sole.last.sole[2]).to eq("No fix available") # the advisory row's "Fixed in" too (review of #267, S2)
-      expect(chips.map(&:first)).to eq([ "Fix available 5", "No fix available 7" ])
+      expect(groups("untriaged_list").sole.last.sole[2]).to eq("No fix available") # the advisory row's "Fixed in" too (review of #267, S2)
       get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "ssl" }
       expect(package_rows.sole[4]).to eq("No fix available")
       expect(page.text).not_to include("fixed in 2.0-1")
       match(host)
       get "/hosts/#{host.id}/vulnerabilities", params: { q: "ssl" }
       expect(rows.sole).to include("Fix available")
-      expect(groups("open_list").sole.last.sole[2]).to eq("Fixed in 2.0-1")
-      expect(chips.map(&:first)).to eq([ "Fix available 6", "No fix available 6" ])
+      expect(groups("untriaged_list").sole.last.sole[2]).to eq("Fixed in 2.0-1")
       get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "ssl" }
       expect(package_rows.sole[4]).to eq("2.0-1")
     end
 
     it "collapses each package's advisories in a labelled native disclosure, opened by a text search" do
       get "/hosts/#{host.id}/vulnerabilities"
-      details = page.css("#open_list details.advisories")
+      details = page.css("#untriaged_list details.advisories")
       expect(details.size).to eq(5)
       expect(details.map { |d| d.key?("open") }.uniq).to eq([ false ])
-      kernel = page.at_css("#open_list > tbody:has(a[href$='package=kernel'])")
+      kernel = page.at_css("#untriaged_list > tbody:has(a[href$='package=kernel'])")
       summary = kernel.at_css("details summary")
       expect([ summary.at_css(".when-closed").text, summary.at_css(".when-open").text, summary.at_css(".visually-hidden").text ])
         .to eq([ "Show the 5 advisories", "Hide the 5 advisories", " for kernel:amd64" ])
       expect(kernel.at_css("details table caption").text).to eq("Advisories for kernel:amd64")
       expect(kernel.css("details table tbody tr").size).to eq(5)
-      expect(kernel.at_css("details")["id"]).to eq("open_list_#{Digest::SHA256.hexdigest('kernel:amd64').first(16)}") # stable, so a morph pairs it
-      expect(page.at_css("#open_list")["data-action"]).to eq("turbo:before-morph-attribute->keep-open#protect")
+      expect(kernel.at_css("details")["id"]).to eq("untriaged_list_#{Digest::SHA256.hexdigest('kernel:amd64').first(16)}") # stable, so a morph pairs it
+      expect(page.at_css("#untriaged_list")["data-action"]).to eq("turbo:before-morph-attribute->keep-open#protect")
       expect(details.map { |d| d["id"] }.uniq.size).to eq(5)
       get "/hosts/#{host.id}/vulnerabilities", params: { q: "DSA-9201" }
-      expect(page.css("#open_list details.advisories").map { |d| d.key?("open") }).to eq([ true ])
+      expect(page.css("#untriaged_list details.advisories").map { |d| d.key?("open") }).to eq([ true ])
     end
 
     def names = rows.map { |row| row.split.first }
-    def next_link(list = "open_list") = page.at_css("##{list}_pager a[rel=next]")&.[]("href")
-    def prev_link(list = "open_list") = page.at_css("##{list}_pager a[rel=prev]")&.[]("href")
+    def next_link(list = "untriaged_list") = page.at_css("##{list}_pager a[rel=next]")&.[]("href")
+    def prev_link(list = "untriaged_list") = page.at_css("##{list}_pager a[rel=prev]")&.[]("href")
 
     it "pages packages by keyset on the whole sort key, with a cursor of its own for each section" do
       stub_const("HostFindingGroups::PER_PAGE", 2)
       get "/hosts/#{host.id}/vulnerabilities"
       expect(names).to eq(%w[ssl:amd64 kernel:amd64])
-      pager = page.at_css("nav#open_list_pager")
+      pager = page.at_css("nav#untriaged_list_pager")
       expect([ pager["aria-label"], words(pager.at_css(".muted")), pager.at_css(".off").text ])
-        .to eq([ "Open finding pages", "2 packages shown of 5. Worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix.", "Previous" ])
+        .to eq([ "Findings not triaged yet pages", "2 packages shown of 5. Worst first: the most critical findings, then high, medium, low, and unknown, then the most with a fix.", "Previous" ])
       # The cursor is the row's whole key: critical, high, medium, low, unknown, fixable, package, architecture.
-      expect(Rack::Utils.parse_query(URI(next_link).query)).to eq("after" => "0,5,0,0,0,2,kernel,amd64")
+      expect(Rack::Utils.parse_query(URI(next_link).query)).to eq("untriaged_after" => "0,5,0,0,0,2,kernel,amd64")
       get next_link
       expect(names).to eq(%w[curl:amd64 zlib:amd64])
       get next_link
@@ -278,11 +246,11 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       get prev_link # back to the first page, full
       expect(names).to eq(%w[ssl:amd64 kernel:amd64])
       expect(prev_link).to be_nil
-      expect(page.at_css("#open_page_notice")).to be_nil
+      expect(page.at_css("#untriaged_page_notice")).to be_nil
 
       report_packages(host, [ [ "bash", "5.2.37-1", "bash" ] ])
       match(host)
-      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", after: "0,5,0,0,0,2,kernel,amd64" } # the open section's cursor leaves the resolved one
+      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", untriaged_after: "0,5,0,0,0,2,kernel,amd64" } # the open section's cursor leaves the resolved one
       expect(page.css("#resolved_list > tbody > tr.pkg-group").map { |row| words(row).split.first }).to eq(%w[ssl:amd64 kernel:amd64]) # worst severity, then first seen
       expect(Rack::Utils.parse_query(URI(next_link("resolved_list")).query)).to eq("state" => "all", "resolved_after" => "2,2026-11-06T09:00:00.000000Z,kernel,amd64")
       get next_link("resolved_list")
@@ -302,22 +270,22 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       match(host)
       get third
       expect(names).to eq(%w[xml:amd64])
-      expect(page.at_css("#open_page_notice")).to be_nil
+      expect(page.at_css("#untriaged_page_notice")).to be_nil
       get "/hosts/#{host.id}/vulnerabilities"
       expect(names).to eq(%w[zlib:amd64 ssl:amd64])
     end
 
     it "says why it shows the first page when nothing is left past the link, or the link is not one it wrote" do
       stub_const("HostFindingGroups::PER_PAGE", 2)
-      get "/hosts/#{host.id}/vulnerabilities", params: { after: "0,0,2,0,0,0,xml,amd64", severity: "medium" } # nothing sorts after xml
+      get "/hosts/#{host.id}/vulnerabilities", params: { untriaged_after: "0,0,2,0,0,0,xml,amd64", severity: "medium" } # nothing sorts after xml
       expect(names).to eq(%w[curl:amd64 zlib:amd64])
-      notice = page.at_css("#open_page_notice")
+      notice = page.at_css("#untriaged_page_notice")
       expect(words(notice)).to eq("The findings changed since this page was opened, and no packages are left past it, so the first page is shown. Go to the first page")
       expect(notice.at_css("a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities?severity=medium")
       [ "kernel:amd64", "0,5,0,0,0,2,kernel", "a,5,0,0,0,2,kernel,amd64", "0,5,0,0,0,2,ker nel,amd64", "x" * 400 ].each do |cursor|
-        get "/hosts/#{host.id}/vulnerabilities", params: { after: cursor }
+        get "/hosts/#{host.id}/vulnerabilities", params: { untriaged_after: cursor }
         expect(names).to eq(%w[ssl:amd64 kernel:amd64]), cursor
-        expect(words(page.at_css("#open_page_notice"))).to start_with("The page link is not one this list wrote"), cursor
+        expect(words(page.at_css("#untriaged_page_notice"))).to start_with("The page link is not one this list wrote"), cursor
       end
       [ "9,2026-11-06T09:00:00Z,kernel,amd64", "2,yesterday,kernel,amd64", "2,2026-11-06T09:00:00Z" ].each do |cursor|
         get "/hosts/#{host.id}/vulnerabilities", params: { state: "resolved", resolved_before: cursor }
@@ -346,14 +314,13 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
         sql.size
       end
       tab = "/hosts/#{host.id}/vulnerabilities"
-      before = [ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?fix=available") ]
+      before = [ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?signal=network") ]
       import_advisories(*Array.new(30) { |i| advisory("DSA-94#{format('%02d', i)}-1", %w[kernel curl xml][i % 3], fixed: nil) })
       match(host)
-      expect([ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?fix=available") ]).to eq(before)
-      expect(before.last).to eq(before.first) # the fix filter and its counts add no statement (#256)
+      expect([ statements.call(tab), statements.call("#{tab}?state=all"), statements.call("#{tab}?debian=no_dsa"), statements.call("#{tab}?signal=network") ]).to eq(before)
       get tab
-      expect(words(page.at_css("#open_heading"))).to start_with("Open findings 42:")
-      expect(page.css("#open_list > tbody > tr.pkg-group").size).to eq(2)
+      expect(words(page.at_css("#untriaged_counts"))).to start_with("42 findings:")
+      expect(page.css("#untriaged_list > tbody > tr.pkg-group").size).to eq(2)
     end
   end
 
@@ -369,7 +336,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     report_packages(host, packages) # the old image removed: its finding resolves and keeps its stored fix
     match(host)
     get "/hosts/#{host.id}/vulnerabilities"
-    notes = page.css("#open_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix")&.text&.squish ] }
+    notes = page.css("#untriaged_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix")&.text&.squish ] }
     note = "A kernel fix comes in a new package, which apt-get upgrade and the update task don't install: install it with apt upgrade " \
            "(or apt full-upgrade where that holds it back; it can also remove packages), reboot into it, then remove this old image " \
            "(apt autoremove): it keeps its findings until then."
@@ -396,7 +363,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     import_advisories(advisory("DEBIAN-CVE-2026-2002", "linux", fixed: "6.12.57-1"), full: true)
     match(host)
     get "/hosts/#{host.id}/vulnerabilities"
-    notes = page.css("#open_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix").present? ] }
+    notes = page.css("#untriaged_list tr.pkg-group").to_h { |row| [ row.at_css("th a").text, row.at_css(".kernel-fix").present? ] }
     expect(notes).to eq("linux-image-amd64:amd64" => false, "linux-image-6.12.48+deb13-amd64-unsigned:amd64" => true)
     get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "linux-image-amd64" }
     expect(page.at_css(".kernel-fix")).to be_nil
@@ -409,14 +376,14 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     get "/hosts/#{host.id}/vulnerabilities"
     expect(words(page.at_css("#no_open_findings"))).to eq("No open vulnerability findings. Evaluated 2026-11-06 09:00 UTC: 1 package matched against 1 Debian:13 advisory. 0 resolved findings.")
     expect(page.at_css("#not_evaluated")).to be_nil
-    expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 0 open")
+    expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 0 to act on")
     expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities None open Evaluated less than 5 seconds ago")
   end
 
   describe "a host that cannot be evaluated says so and why, never an empty list" do
     def notice(host)
       get "/hosts/#{host.id}/vulnerabilities"
-      expect(page.at_css("#open_list")).to be_nil
+      expect(page.at_css("#untriaged_list")).to be_nil
       expect(page.at_css("#no_open_findings")).to be_nil
       words(page.at_css("#not_evaluated"))
     end
@@ -451,7 +418,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       get "/hosts/#{host.id}/vulnerabilities"
       expect(words(page.at_css("#not_evaluated"))).to include("The host's package database could not be read, so its packages are not matched: dpkg-query exited with status 2",
                                                               "Reason unreadable_packages . Its findings are matched again after the next package report that can be read")
-      expect(groups("open_list").map(&:first)).to eq([ "acme:amd64 installed 1.0-1 1 advisory High 1 high Fix available 1 open 2026-11-06 09:00 UTC" ])
+      expect(groups("untriaged_list").map(&:first)).to eq([ "acme:amd64 installed 1.0-1 1 advisory High 1 high Fix available 1 open 2026-11-06 09:00 UTC" ])
       expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 1 open")
     end
 
@@ -475,7 +442,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       get "/hosts/#{host.id}/vulnerabilities"
       expect(words(page.at_css("#not_evaluated"))).to start_with("Not evaluated now. The open findings below are from an earlier evaluation.")
       expect(page.at_css("#not_evaluated").text).to include("They may be out of date")
-      expect(groups("open_list").map(&:first)).to eq([ "acme:amd64 installed 1.0-1 1 advisory High 1 high Fix available 1 open 2026-11-06 09:00 UTC" ])
+      expect(groups("untriaged_list").map(&:first)).to eq([ "acme:amd64 installed 1.0-1 1 advisory High 1 high Fix available 1 open 2026-11-06 09:00 UTC" ])
       expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 1 open")
     end
   end
@@ -486,8 +453,8 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     match(host)
     Advisory.update_all(summary: HOSTILE, reference_url: "javascript:alert(1)")
     get "/hosts/#{host.id}/vulnerabilities"
-    expect(page.css("#open_list a").map { |a| a["href"] }).to eq([ "/hosts/#{host.id}/vulnerabilities/package?package=acme" ])
-    expect(page.at_css("#open_list tr.nested").text).to include("No link recorded", HOSTILE)
+    expect(page.css("#untriaged_list a").map { |a| a["href"] }).to eq([ "/hosts/#{host.id}/vulnerabilities/package?package=acme" ])
+    expect(page.at_css("#untriaged_list tr.nested").text).to include("No link recorded", HOSTILE)
     expect(page.css("img[onerror]")).to be_empty
     %w[ftp://security.example.lan/x https:///no-host http://security.example.lan/a\ b].each do |url|
       Advisory.update_all(reference_url: url)

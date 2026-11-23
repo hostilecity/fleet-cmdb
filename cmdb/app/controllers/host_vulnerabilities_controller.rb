@@ -10,10 +10,14 @@
 #   run), never an empty list; findings kept from an earlier evaluation say they may be out of date. Packages the
 #   matcher could not check are listed. Advisory data freshness (Advisories::Freshness, P2-S13) is shown.
 # - package: every finding for one package name on the host, with when it was first seen, resolved, and reopened.
-# - Fix availability (VT-FIXABLE #256, folding in #252): on the open and reopened list, "Fix available" and "No fix
-#   available" chips (fix=available or fix=none) filter by the finding's stored fix flag, combined with the other
-#   filters. They are counted over the whole open list whatever the severity, text, and triage filters, in the state
-#   counts' query, so they add up to the open count; package rows count only the findings the filter keeps.
+# - Triage (VT-HOST-TAB #260, FR-2.6; approved mockup vuln-triage/host-vulns.html): the open list is drawn by
+#   bucket (HostTriageSections): a strip of the four bucket counts, which always add up to the open count (counted in
+#   the state counts' one grouped query, so over the whole open list whatever the filters), work remaining and 30-day
+#   progress in work items (HostVulnerabilityWork), and one section per bucket. A signal filter (?signal= kev, epss,
+#   network) combines with the others; ?bucket= keeps one section and ?rule= opens one Low risk or Ignorable rule's
+#   package rows. Open findings with no bucket yet (a host the upgrade's background re-triage has not reached) are
+#   "not triaged yet", never 0 in every bucket. The bucket strip replaces VT-FIXABLE's fix chips (#256), whose
+#   "Fix available" meant a different thing than the bucket.
 # - Debian's triage (P2-D08, ADR 0022; owner decisions T1 to T8 on #134): FindingTriage for the page's findings, in
 #   a fixed number of queries. The tab shows it under the advisory on open and reopened rows, with the "Debian: no
 #   security update planned" chip (debian=no_dsa, open and reopened findings, counted within that state) and a
@@ -23,7 +27,14 @@ class HostVulnerabilitiesController < ApplicationController
   include HostTab
 
   STATES = %w[open resolved all].freeze
-  FIXES = %w[available none].freeze
+  # The signal filter (VT-HOST-TAB #260): known exploited (the finding's stored KEV flag), EPSS in the high band (any
+  # CVE of the advisory), and network with no login and no user action (the advisory's CVSS vector).
+  SIGNALS = %w[kev epss network].freeze
+  # The advisory's CVE ids, as VulnerabilityTriage::Base reads them: its id without "DEBIAN-", and its aliases.
+  EPSS_HIGH_SQL = <<~SQL.squish.freeze
+    EXISTS (SELECT 1 FROM epss_scores e WHERE e.band = 'high'
+            AND e.cve_id = ANY (array_append(advisories.aliases, regexp_replace(advisories.advisory_id, '^DEBIAN-', '')::varchar)))
+  SQL
   QUERY_MAX = 100
 
   reads_from_replica only: %i[show package] # a caught-up replica when one is configured (#198)
@@ -32,33 +43,55 @@ class HostVulnerabilitiesController < ApplicationController
   def show
     load_evaluation
     findings = VulnerabilityFinding.with_details.where(host_id: @host.id)
-    # Counted on the findings alone, in one query: the details' joins add no rows (#254). Grouped by whether the stored
-    # fixed version is known too, which on an open or reopened finding is its fix (#256), for the fix chips.
-    by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL)).count
-    count = ->(states, fixable = :any) { by_state.sum { |(state, flag), n| states.include?(state) && (fixable == :any || flag == fixable) ? n : 0 } }
+    # Counted on the findings alone, in one query: the details' joins add no rows (#254). Grouped by the triage bucket
+    # too (VT-HOST-TAB #260), so the four buckets add up to the open count in the same snapshot; a NULL bucket on an
+    # open finding is one the upgrade's background re-triage has not reached yet (#277 item 15).
+    # And by the stored fix flag (VT-FIXABLE #256), for ?fix=available: the count the Compliance page and the fleet list
+    # link here with.
+    by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state, :bucket, Arel.sql(VulnerabilityFinding::FIX_SQL)).count
+    count = ->(states) { by_state.sum { |(state, _, _), n| states.include?(state) ? n : 0 } }
     @state_counts = { "open" => count.(%w[open reopened]), "resolved" => count.(%w[resolved]) }
     @state_counts["all"] = @state_counts.values.sum
-    @fix_counts = { "available" => count.(%w[open reopened], true), "none" => count.(%w[open reopened], false) }
+    @bucket_counts = (VulnerabilityTriage::BUCKETS.keys + [ "untriaged" ]).index_with(0)
+    by_state.each { |(state, bucket, _), n| @bucket_counts[VulnerabilityTriage.bucket_for(bucket) || "untriaged"] += n unless state == "resolved" }
+    @fixable_count = by_state.sum { |(state, _, fixable), n| state != "resolved" && fixable ? n : 0 }
     @state = STATES.include?(params[:state]) ? params[:state] : "open"
     @severity = Advisory::SEVERITIES.include?(params[:severity]) ? params[:severity] : nil
     @query = params[:q].to_s.strip.first(QUERY_MAX)
+    @signal = SIGNALS.include?(params[:signal]) && @state != "resolved" ? params[:signal] : nil
+    @bucket = HostTriageSections::BUCKETS.include?(params[:bucket]) && @state != "resolved" ? params[:bucket] : nil
+    @rule = HostTriageSections.rule_param(params[:rule]) if @state != "resolved"
     # The chip narrows the open and reopened list, the rows that show Debian's triage (T3, T5).
     @debian = params[:debian] == "no_dsa" && @state == "open" ? "no_dsa" : nil
-    # The fix filter is offered on the open and reopened list only (#252 question 7).
-    @fix = FIXES.include?(params[:fix]) && @state == "open" ? params[:fix] : nil
+    # The Compliance page's and the fleet list's "N with a fix" land here (review of #281, S1): the open findings whose
+    # advisory data names a fix, the same stored flag they count, so the numbers agree. No chip: the bucket strip is
+    # the tab's own "Fix available".
+    @fix = params[:fix] == "available" && @state == "open" ? "available" : nil
     load_triage_context
+    @signals = Signals::Freshness.statuses
     scope = filtered(findings)
-    if @state == "open"
+    unless @state == "resolved"
       # The chip counts every open and reopened finding Debian plans no security update for, whatever the severity and
       # text filters (T3), in one SQL count (review of #253, S6).
-      @no_dsa_count = FindingTriage.no_dsa(findings.active.joins(:advisory), release: @triage_release, status: @triage_status).count
+      @no_dsa_count = FindingTriage.no_dsa(findings.active.joins(:advisory), release: @triage_release, status: @triage_status).count if @state == "open"
       scope = FindingTriage.no_dsa(scope, release: @triage_release, status: @triage_status) if @debian
-      scope = @fix == "available" ? scope.with_fix : scope.without_fix if @fix
+      scope = with_signal(scope) if @signal
+      if @fix
+        scope = scope.with_fix
+        # What the line says is shown: the other filters narrow it too (one count, with ?fix= only; re-check of #281, N1).
+        @fix_shown = filtered_besides_fix? ? scope.where(state: %w[open reopened]).count : @fixable_count
+      end
+      cursors = HostTriageSections::CURSORS.to_h { |section| [ section, [ params[:"#{section}_after"], params[:"#{section}_before"] ] ] }
+      # With no open finding triaged yet, only the not-triaged section is drawn: no bucket reads 0 for them (#277 item 15).
+      untriaged_only = @bucket_counts["untriaged"].positive? && @bucket_counts["untriaged"] == @state_counts["open"]
+      @sections = HostTriageSections.new(scope.where(state: %w[open reopened]), bucket: untriaged_only ? "untriaged" : @bucket, rule: @rule, cursors:,
+                                                                                untriaged: @bucket_counts["untriaged"])
+      @work = HostVulnerabilityWork.new(@host.id)
+      @listeners = VulnerabilityTriage::HostFacts.listener_coverage(@host.id)
     end
-    @open_groups = (groups(scope.where(state: %w[open reopened]), :open) unless @state == "resolved")
     @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")
     # Debian's triage for the open and reopened rows on the page (T5); none on the resolved list.
-    @triage = @open_groups && FindingTriage.load(@open_groups.groups.flat_map(&:findings))
+    @triage = @sections && FindingTriage.load(@sections.findings)
     @advisory_count = AdvisoryPackage.where(ecosystem: @evaluation.ecosystem).distinct.count(:advisory_id) if @evaluation && !@evaluation.not_evaluated?
   end
 
@@ -97,6 +130,16 @@ class HostVulnerabilitiesController < ApplicationController
     @context = HostContext.load([ @host.id ]).first unless @evaluation
     @freshness = Advisories::Freshness.statuses
     @package_set = HostPackageSet.find_by(host_id: @host.id)
+  end
+
+  def filtered_besides_fix? = @severity || @query.present? || @debian || @signal
+
+  def with_signal(scope)
+    case @signal
+    when "kev" then scope.where(kev: true)
+    when "epss" then scope.where(EPSS_HIGH_SQL)
+    else scope.where(advisories: { cvss_av: "N", cvss_pr: "N", cvss_ui: "N" })
+    end
   end
 
   def filtered(findings)

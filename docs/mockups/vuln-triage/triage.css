@@ -80,7 +80,6 @@ table.points td.num, table.points th.num { text-align: right; font-variant-numer
 .sig.epss { background: #fdf3e1; border-color: #b7791f; color: #6a4a10; }
 .sig.vec { font-family: var(--mono); font-weight: 400; }
 .sig.use { background: #e6f0f2; border-color: var(--petrol); color: var(--petrol-dark); }
-.sig.idle { border-style: dashed; color: var(--ink-soft); font-weight: 400; }
 
 /* The reason a finding is in its bucket: one plain sentence, always shown */
 .reason { display: block; font-size: 0.875rem; margin-top: 0.25rem; padding-left: 0.625rem; border-left: 3px solid var(--rule); max-width: 62ch; }

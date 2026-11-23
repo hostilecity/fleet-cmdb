@@ -22,14 +22,14 @@ Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19). This slice **
 
 ### Scope
 
-- Host Vulnerabilities tab: two chips beside the state chips, "Fix available N" and "No fix available N" (`?fix=available|none`), counted over the open list whatever the severity and text filters, as #252 section 4 proposes. Package rows count only the findings the filter keeps.
+- Host Vulnerabilities tab (replaced by VT-HOST-TAB, #260: the bucket strip and its `?bucket=` filter take their place, so the tab shows one "Fix available", the bucket): two chips beside the state chips, "Fix available N" and "No fix available N" (`?fix=available|none`), counted over the open list whatever the severity and text filters, as #252 section 4 proposes. Package rows count only the findings the filter keeps.
 - Compliance page: the detail line "N with a fix" under each host's vulnerability counts, and a status filter "Has open findings with a fix" (`?fix=available`), combinable with `vuln=` to mean a finding of that severity with a fix (#252 question 8).
 - Fleet list: the detail line "N with a fix (M packages)" under the open count. VT-SCORES later replaces the column.
 - No change to any existing count, sort, or severity; not evaluated hosts are never counted as having a fix (#252 question 6).
 
 ### Acceptance criteria
 
-- [x] On the host tab, "Fix available" and "No fix available" add up to the open list's count, and the filter is kept in the URL (`spec/requests/host_vulnerabilities_spec.rb`)
+- [x] ~~On the host tab, "Fix available" and "No fix available" add up to the open list's count, and the filter is kept in the URL~~ Replaced by VT-HOST-TAB (#260): the tab's four buckets add up to the open count, and `?fix=available` (the Compliance page's and the fleet list's "N with a fix" link) shows the same findings they count, with a line saying how the bucket differs (`spec/requests/host_vulnerability_triage_spec.rb`)
 - [x] The Compliance page's "with a fix" numbers equal the host tabs' and are read from the summaries in a fixed number of statements (`spec/models/fleet_compliance_spec.rb`, `spec/requests/compliance_spec.rb`; the page's statement count spec is unchanged)
 
 ## As built (#256)

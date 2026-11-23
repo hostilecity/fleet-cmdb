@@ -693,3 +693,92 @@ pre.output { margin: 0; font-family: var(--mono); font-size: 0.8125rem; line-hei
   :is(#task_list, #batch_tasks, #host_task_history) td:is([data-label="Host"], [data-label="Batch"]) { white-space: nowrap; }
 }
 .cols-2 > #now { margin-top: 0; }
+
+/* Vulnerability triage on the host tab (VT-HOST-TAB #260), from the approved mockups' triage.css (VT-D01). Words plus
+   shapes, never colour alone; geometry in SVG attributes, colours here (the CSP allows no inline styles). */
+/* Four buckets. Each has a word, a shape, and a colour, never colour alone. The shapes are drawn as text glyphs hidden from
+   screen readers (the word carries the meaning). */
+.bk { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 700; white-space: nowrap; }
+.bk::before { font-weight: 700; width: 1.25rem; height: 1.25rem; display: inline-grid; place-items: center; border-radius: 3px; font-size: 0.8125rem; line-height: 1; flex: none; }
+.bk.fix::before { content: "\2191"; content: "\2191" / ""; background: #dcebf0; color: var(--petrol-dark); box-shadow: inset 0 0 0 1px var(--petrol); }
+.bk.attn::before { content: "!"; content: "!" / ""; background: #fbe3e0; color: #8c1d13; box-shadow: inset 0 0 0 1px #b42318; clip-path: polygon(50% 0, 100% 100%, 0 100%); padding-top: 0.25rem; border-radius: 0; }
+.bk.low::before { content: "\2022"; content: "\2022" / ""; background: #ece8dc; color: #5c4a14; box-shadow: inset 0 0 0 1px #9a8540; border-radius: 50%; }
+.bk.ign::before { content: "\2013"; content: "\2013" / ""; background: var(--panel); color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--lamp-off); }
+.bk.fix { color: var(--petrol-dark); }
+.bk.attn { color: #8c1d13; }
+.bk.low { color: #5c4a14; }
+.bk.ign { color: var(--ink-soft); }
+
+/* The bucket strip: the one bold element on the host tab and the risk page */
+.bucket-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; margin: 0 0 0.5rem; }
+.bucket-strip a { display: block; padding: 0.875rem 1rem 0.75rem; color: inherit; text-decoration: none; border-right: 1px solid var(--rule); border-top: 4px solid transparent; }
+.bucket-strip a:last-child { border-right: 0; }
+.bucket-strip a:hover { background: #f1f4f1; }
+.bucket-strip a[aria-current="true"] { background: #eef3f4; }
+.bucket-strip a.fix { border-top-color: var(--petrol); }
+.bucket-strip a.attn { border-top-color: #b42318; }
+.bucket-strip a.low { border-top-color: #9a8540; }
+.bucket-strip a.ign { border-top-color: var(--lamp-off); }
+.bucket-strip .count { display: block; font-size: 2rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; margin-top: 0.25rem; }
+.bucket-strip .what { display: block; font-size: 0.875rem; color: var(--ink-soft); }
+.bucket-strip .act { display: block; font-size: 0.875rem; margin-top: 0.25rem; }
+
+/* Proportion bar: an SVG with a text equivalent beside it */
+.propbar { display: block; width: 100%; height: 0.75rem; margin: 0.25rem 0 0.375rem; }
+.propbar rect { shape-rendering: crispEdges; }
+.f-fix { fill: var(--petrol); }
+.f-attn { fill: #b42318; }
+.f-low { fill: #c2ad5c; }
+.f-ign { fill: #c7d0cb; }
+.f-done { fill: #2e8540; }
+.f-track { fill: #dfe5e1; }
+.propbar-legend { font-size: 0.8125rem; color: var(--ink-soft); margin: 0 0 1rem; }
+
+/* Progress: native <meter> with a sentence beside it */
+.progress-line { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; margin: 0.25rem 0 0; }
+meter { width: 12rem; height: 0.875rem; }
+meter.small { width: 6rem; height: 0.625rem; vertical-align: middle; }
+meter::-webkit-meter-bar { background: #dfe5e1; border: 1px solid #aab5b0; border-radius: 2px; }
+meter::-webkit-meter-optimum-value { background: var(--petrol); }
+meter::-moz-meter-bar { background: var(--petrol); }
+.progress-line .big { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Work and progress panel on the host tab */
+.work { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1rem; margin: 0 0 1.25rem; }
+.work .sheet h2 { margin: 0 0 0.25rem; font-size: 1rem; }
+.work .sheet p { margin: 0.25rem 0 0; }
+.work ul { margin: 0.375rem 0 0; padding-left: 1.125rem; }
+
+/* Exploitation and exposure signals beside an advisory: labelled, quoted from their source */
+.sig { display: inline-block; font-size: 0.75rem; font-weight: 700; padding: 0 0.375rem; border-radius: 3px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); white-space: nowrap; margin: 0 0.25rem 0.25rem 0; }
+.sig.kev { background: #fbe3e0; border-color: #b42318; color: #8c1d13; }
+.sig.epss { background: #fdf3e1; border-color: #b7791f; color: #6a4a10; }
+.sig.vec { font-family: var(--mono); font-weight: 400; }
+.sig.use { background: #e6f0f2; border-color: var(--petrol); color: var(--petrol-dark); }
+
+/* The reason a finding is in its bucket: one plain sentence, always shown */
+.reason { display: block; font-size: 0.875rem; margin-top: 0.25rem; padding-left: 0.625rem; border-left: 3px solid var(--rule); max-width: 62ch; }
+.reason.fix { border-left-color: var(--petrol); }
+.reason.attn { border-left-color: #b42318; }
+.reason.low { border-left-color: #9a8540; }
+.reason.ign { border-left-color: var(--lamp-off); color: var(--ink-soft); }
+.reason .rule-id { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-soft); margin-left: 0.25rem; }
+
+/* Bucket sections on the host tab */
+details.bucket { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; margin: 0 0 0.875rem; }
+details.bucket > summary { cursor: pointer; padding: 0.75rem 1rem; display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: baseline; list-style-position: inside; }
+details.bucket > summary h2 { display: inline; font-size: 1.0625rem; margin: 0; }
+details.bucket > summary .muted { font-size: 0.875rem; }
+details.bucket > .inner { padding: 0 1rem 1rem; }
+details.bucket .table-wrap { border-radius: 4px; }
+.controls { margin: 0.5rem 0 0.75rem; padding: 0.625rem 0.875rem; background: #fbf4f3; border: 1px solid #e7c4bf; border-radius: 4px; }
+.controls h3 { margin: 0 0 0.25rem; font-size: 0.9375rem; }
+.controls ul { margin: 0.25rem 0 0; padding-left: 1.125rem; font-size: 0.9375rem; }
+.controls .src { font-size: 0.8125rem; color: var(--ink-soft); margin: 0.375rem 0 0; }
+
+.bk.none::before { content: "?"; content: "?" / ""; background: var(--panel); color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--lamp-off); border-radius: 3px; }
+.bk.none { color: var(--ink-soft); }
+.bucket-strip.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.bucket-strip a.untriaged { border-top-color: var(--lamp-off); border-top-style: dashed; }
+.sig .vecraw { display: block; font-size: 0.6875rem; color: var(--ink-soft); }
+@media (max-width: 60rem) { .bucket-strip, .bucket-strip.five, .work { grid-template-columns: minmax(0, 1fr); } .bucket-strip a { border-right: 0; border-bottom: 1px solid var(--rule); } }

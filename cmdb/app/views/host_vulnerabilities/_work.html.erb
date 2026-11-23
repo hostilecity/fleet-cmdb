@@ -1,0 +1,55 @@
+<%# Work remaining and progress, last 30 days, both in work items (VT-HOST-TAB #260, the epic's VT-M4; mockup
+    host-vulns.html). Done items are the host's work events, which only its own reports write, so an advisory
+    correction counts nothing; Low risk and Ignorable findings never count. locals: host, work (HostVulnerabilityWork),
+    summary (HostSummary), attention (Needs attention findings), untriaged and open (findings not triaged yet, and all open
+    ones): with none triaged yet, no work is counted, so "Nothing to install" never stands for findings with no bucket. %>
+<% shown = HostVulnerabilitiesHelper::UPGRADES_LISTED %>
+<div class="work" id="work">
+  <section class="sheet" aria-labelledby="work_heading">
+    <% if untriaged.positive? && untriaged == open %>
+    <h2 id="work_heading">Work remaining: not counted yet</h2>
+      <p id="work_not_triaged">No open finding on this host is triaged yet, so its work cannot be counted. The re-triage that runs in the background after an upgrade reaches it soon.</p>
+    <% else %>
+    <h2 id="work_heading">Work remaining: <%= pluralize(work.remaining, "work item") %></h2>
+    <% if untriaged.positive? %><p class="state-note" id="work_partial"><%= pluralize(number_with_delimiter(untriaged), "finding") %> not triaged yet <%= untriaged == 1 ? "is" : "are" %> not counted here.</p><% end %>
+    <% if work.remaining.zero? %>
+      <p id="work_none">Nothing to install<%= "; #{pluralize(number_with_delimiter(attention), 'finding')} still #{attention == 1 ? 'needs' : 'need'} attention (below)" if attention.positive? %>.</p>
+    <% else %>
+      <ul id="work_items">
+        <% if work.upgrades.any? %>
+          <li><strong><%= pluralize(work.upgrades.size, "package upgrade") %></strong> <%= work.upgrades.size == 1 ? "clears" : "clear" %> <%= pluralize(number_with_delimiter(work.upgrade_findings), "finding") %>:
+            <%= safe_join(work.upgrades.first(shown).map { |u| safe_join([ tag.span(u.source, class: "mono"), (safe_join([ " (", safe_join(u.packages.map { |p| tag.span(p, class: "mono") }, ", "), ")" ]) unless u.packages == [ u.source ]) ].compact) }, ", ") %><%= ", and #{work.upgrades.size - shown} more" if work.upgrades.size > shown %>.
+            <code>apt upgrade</code> or the update task installs them.</li>
+        <% end %>
+        <% if work.kernel_install %>
+          <li><strong>Install the new kernel package</strong> (<code>apt full-upgrade</code>), then reboot. It clears <%= pluralize(work.kernel_install.advisories, "kernel advisory", plural: "kernel advisories") %> on the running kernel. The update task installs no new packages, so this step is manual.</li>
+        <% end %>
+        <% if work.reboot %>
+          <li><strong>Reboot</strong> into the newer kernel, which is installed but not running. It clears <%= pluralize(work.reboot.advisories, "kernel advisory", plural: "kernel advisories") %> on the running kernel: an installed kernel does nothing until it is booted.</li>
+        <% end %>
+      </ul>
+    <% end %>
+    <% if work.decisions_due.positive? %>
+      <p id="decisions_due"><strong><%= pluralize(work.decisions_due, "advisory", plural: "advisories") %> in Needs attention <%= work.decisions_due == 1 ? "has" : "have" %> no decision.</strong> A decision is not work: there may be nothing to do.</p>
+    <% end %>
+    <% if work.upgrades.any? && host.enrollment_state == "active" %>
+      <p class="actions"><%= link_to "Apply package updates on this host…", new_task_parameters_path(type: "apply_package_updates", target: { host_ids: [ host.id ] }), class: "btn quiet", id: "apply_updates" %></p>
+      <p class="state-note">Opens the task flow with this host filled in. It covers the package upgrades only: it installs every pending upgrade, no new packages (so not a new kernel), and never reboots. Second factor and confirmation as for any task.</p>
+    <% end %>
+    <% end %>
+  </section>
+  <section class="sheet" aria-labelledby="progress_heading" id="progress">
+    <h2 id="progress_heading">Progress, last 30 days</h2>
+    <% if (why = progress_withheld(summary) || ("no open finding is triaged yet, so work remaining is not known." if untriaged.positive? && untriaged == open)) %>
+      <p id="progress_withheld">Withheld: <%= why %></p>
+    <% elsif work.nothing? %>
+      <p id="progress_none">Nothing to install, and nothing done in the last 30 days.<%= " #{pluralize(number_with_delimiter(attention), 'finding')} still #{attention == 1 ? 'needs' : 'need'} attention." if attention.positive? %></p>
+    <% else %>
+      <% total = work.done + work.remaining %>
+      <% if untriaged.positive? %><p class="state-note" id="progress_partial"><%= pluralize(number_with_delimiter(untriaged), "finding") %> not triaged yet <%= untriaged == 1 ? "is" : "are" %> not counted in what is left.</p><% end %>
+      <div class="progress-line"><meter id="progress_meter" min="0" max="<%= total %>" value="<%= work.done %>" aria-describedby="progress_text"><%= work.done %> of <%= total %></meter> <span class="big"><%= work.done %> of <%= total %></span></div>
+      <p id="progress_text"><%= work.done %> of <%= pluralize(total, "work item") %> done<%= " (#{work_done_words(work.done_by_kind)})" if work.done.positive? %>.<%= " They cleared #{pluralize(number_with_delimiter(work.cleared), 'finding')}." if work.done.positive? %> <%= work.remaining %> <%= work.remaining == 1 ? "is" : "are" %> left.</p>
+    <% end %>
+    <p class="state-note">Done means the host's own reports show it: an installed version changed, a new kernel appeared, or the running kernel changed. A finding resolved because the advisory data changed counts nothing. Low risk and Ignorable findings never count.</p>
+  </section>
+</div>

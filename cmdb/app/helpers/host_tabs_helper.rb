@@ -22,8 +22,9 @@ module HostTabsHelper
     end
   end
 
-  # The count beside a tab's name: packages installed ("Unsupported" when unknown), open findings ("Not evaluated"
-  # when the host is not, unless findings from an earlier evaluation are still open), and tasks running or waiting.
+  # The count beside a tab's name: packages installed ("Unsupported" when unknown), findings to act on (Fix available
+  # plus Needs attention; "Not evaluated" when the host is not, unless findings from an earlier evaluation are still
+  # open), and tasks running or waiting.
   def tab_count(summary, tab)
     case tab
     when :packages
@@ -34,7 +35,12 @@ module HostTabsHelper
 
       number_with_delimiter(set.package_count)
     when :vulnerabilities
-      summary.vulnerabilities_evaluated? || summary.open_findings.positive? ? "#{number_with_delimiter(summary.open_findings)} open" : "Not evaluated"
+      # "N to act on": Fix available plus Needs attention (epic decision 17, VT-HOST-TAB); "N open" while any open
+      # finding is not triaged yet, so no zero stands for findings with no bucket (#277 item 15).
+      return "Not evaluated" unless summary.vulnerabilities_evaluated? || summary.open_findings.positive?
+
+      act = summary.to_act_on
+      act ? "#{number_with_delimiter(act)} to act on" : "#{number_with_delimiter(summary.open_findings)} open"
     when :tasks
       running = summary.open_tasks["running"].to_i
       waiting = summary.open_tasks.values_at("queued", "claimed").sum(&:to_i)

@@ -1,0 +1,30 @@
+<%# The heading and the bucket strip (VT-HOST-TAB #260, VT-D04; mockup host-vulns.html): the four bucket counts (findings,
+    over the whole open list whatever the filters) as links to their sections, and a proportion bar with its text
+    equivalent. A finding with no bucket yet (the upgrade's background re-triage has not reached the host, #277 item 15)
+    is counted as "Not triaged yet", never as 0 in every bucket. locals: host, counts, open, work, link_params, bucket. %>
+<% untriaged = counts["untriaged"] %>
+<% names = VulnerabilityTriage::BUCKETS.keys %>
+<% to = ->(name) { vulnerabilities_host_path(host, link_params.except(:bucket, :rule).merge(bucket: (name unless bucket == name)).compact.merge(anchor: HostVulnerabilitiesHelper::BUCKET_IDS.fetch(name))) } %>
+<h2 id="buckets_heading"><%= number_with_delimiter(open) %> open <%= open == 1 ? "finding" : "findings" %>, by what you can do about them</h2>
+<% if untriaged.positive? && untriaged == open %>
+  <div class="notice info" role="status" id="not_triaged"><strong>Not triaged yet.</strong>
+    <p>This host's <%= pluralize(number_with_delimiter(open), "open finding") %> have no bucket yet: the re-triage that runs in the background after an upgrade has not reached this host. They are listed below by package, as before; nothing is counted as fixable, needing attention, low risk, or ignorable until then.</p></div>
+<% else %>
+  <div class="bucket-strip<%= ' five' if untriaged.positive? %>" role="group" aria-labelledby="buckets_heading" id="bucket_strip">
+    <% upgrades = work.upgrades.size %>
+    <% kernel = [ ("a new kernel package" if work.kernel_install), ("a kernel reboot" if work.reboot) ].compact %>
+    <% what = { "fix" => ([ (pluralize(upgrades, "package upgrade") if upgrades.positive?), *kernel ].to_sentence.presence || "nothing to upgrade"),
+                "attention" => "#{pluralize(work.decisions_due, 'advisory', plural: 'advisories')}, no fix yet",
+                "low_risk" => "no fix; local only, needs a login or a user's action, low severity or minor, or nothing known", "ignorable" => "does not apply here" } %>
+    <% act = { "fix" => (kernel.any? && upgrades.positive? ? "Upgrade, then reboot" : kernel.any? ? "Reboot" : "Upgrade"),
+               "attention" => "#{pluralize(work.decisions_due, 'needs', plural: 'need')} a decision", "low_risk" => "Watch", "ignorable" => "Nothing to do" } %>
+    <% names.each do |name| %>
+      <%= link_to to.(name), class: HostVulnerabilitiesHelper::BUCKET_CLASSES.fetch(name), "aria-current": (bucket == name ? "true" : nil) do %><%= bucket_tag(name) %><span class="count"><%= number_with_delimiter(counts[name]) %></span><span class="what"><%= what.fetch(name) %></span><span class="act"><%= act.fetch(name) %></span><% if bucket == name %><span class="visually-hidden"> (shown alone; select to show every bucket)</span><% end %><% end %>
+    <% end %>
+    <% if untriaged.positive? %>
+      <%= link_to to.("untriaged"), class: "untriaged", "aria-current": (bucket == "untriaged" ? "true" : nil) do %><span class="bk none">Not triaged yet</span><span class="count"><%= number_with_delimiter(untriaged) %></span><span class="what">the background re-triage has not reached them</span><span class="act">Wait</span><% if bucket == "untriaged" %><span class="visually-hidden"> (shown alone; select to show every bucket)</span><% end %><% end %>
+    <% end %>
+  </div>
+  <%= bucket_bar(counts, open - untriaged) %>
+  <p class="propbar-legend" id="bucket_legend">Findings: <%= bucket_shares(counts, open - untriaged) %><%= " of the #{number_with_delimiter(open - untriaged)} triaged" if untriaged.positive? %>. Every open finding is counted once, in one bucket<%= " or as not triaged yet" if untriaged.positive? %>; they add up to <%= number_with_delimiter(open) %>. The bucket never changes a finding's severity or state.</p>
+<% end %>

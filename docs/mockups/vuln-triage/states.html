@@ -33,7 +33,8 @@
 <p class="state-note">A CVE with no EPSS score (new CVEs are scored late) is the same on a small scale: its reason says "no EPSS score yet", and nothing else changes. Debian's "unimportant" does not depend on EPSS, so EPSS being off or late never moves a finding into or out of Ignorable.</p>
 
 <h2 id="no-in-use">The agent does not report listening services</h2>
-<div class="notice info" role="status"><strong>This host's agent (0.3.2) does not report which services are listening.</strong><p>"Listening" and "belongs to a service that is not running" (rule L1) cannot be judged here, so findings reachable over the network stay in Needs attention (rule N4) rather than Low risk. Update the agent to 0.4.0 or later.</p></div>
+<div class="notice info" role="status"><strong>This host's kernel can't tell which processes listen: Linux 5.14 or later is needed.</strong><p>So rule N5 (a package a listening process loads stays in Needs attention) cannot apply here. Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay in Needs attention by rule N4. Revised 2026-11-22 (VT-EPIC decision 27): this data only ever escalates a finding.</p></div>
+<p class="state-note">The Needs attention section says the same in one line, and names the other cases the same way: the agent doesn't report listening data yet (it predates that report), the library scan is off on this VM (its default) or failed, the last scan is more than 24 hours old, or, on a server that does not read listening services at all, that they are not read yet. With current evidence there is no note.</p>
 
 <h2 id="not-evaluated">Host not evaluated</h2>
 <div class="glance" role="group" aria-label="Summary for a host that is not evaluated">
