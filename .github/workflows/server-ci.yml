@@ -69,7 +69,6 @@ jobs:
       PGHOST: localhost
       PGUSER: postgres
       PGPASSWORD: postgres
-      PARALLEL_TEST_PROCESSORS: 6 # EXPERIMENT #288: more processes than vCPUs; reverted if no faster
     steps:
       - uses: actions/checkout@v7
         with:
