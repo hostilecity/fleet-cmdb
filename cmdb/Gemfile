@@ -14,7 +14,7 @@ gem "json_schemer"
 gem "rubyzip", "~> 3.2", require: "zip"
 
 # Operator sign-in with Google OAuth, POST-only request phase with CSRF protection (P1-ACCESS, DEC-06)
-gem "omniauth", "~> 2.1"
+gem "omniauth", "~> 2.4"
 gem "omniauth-google-oauth2", "~> 1.2"
 gem "omniauth-rails_csrf_protection", "~> 2.0"
 
