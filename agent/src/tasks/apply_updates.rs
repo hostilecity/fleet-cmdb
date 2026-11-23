@@ -177,9 +177,15 @@ pub struct ApplyUpdates {
 }
 
 impl ApplyUpdates {
-    /// apt on the real host.
+    /// apt on the real host, waiting [`LOCK_WAIT`] for the locks. Only the VM test's fault build
+    /// (`--cfg fleet_vm_fault`, never a release) can wait less, so its lock scenario need not wait
+    /// out five minutes (`lock_wait` in src/vm_fault.rs, #288).
     pub fn production(reports: Arc<dyn PackageReport>) -> Self {
-        Self::new(Arc::new(apt::Apt), Arc::new(RealSystem), reports, LOCK_WAIT)
+        #[cfg(fleet_vm_fault)]
+        let lock_wait = crate::vm_fault::lock_wait(LOCK_WAIT);
+        #[cfg(not(fleet_vm_fault))]
+        let lock_wait = LOCK_WAIT;
+        Self::new(Arc::new(apt::Apt), Arc::new(RealSystem), reports, lock_wait)
     }
 
     pub fn new(

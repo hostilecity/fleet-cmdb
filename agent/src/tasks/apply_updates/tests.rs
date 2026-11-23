@@ -507,6 +507,14 @@ fn a_lock_held_past_the_wait_fails_lock_timeout_with_nothing_run() {
 }
 
 #[test]
+fn the_production_task_waits_five_minutes_for_the_locks() {
+    // Every build but the VM test's fault build (#288) waits the full five minutes (D3).
+    assert_eq!(LOCK_WAIT, Duration::from_secs(300));
+    let task = ApplyUpdates::production(Arc::new(Reports::default()));
+    assert_eq!(task.lock_wait, LOCK_WAIT);
+}
+
+#[test]
 fn a_lock_released_during_the_wait_lets_the_task_run() {
     let host = FakeHost::debian();
     host.held_for.store(1, Ordering::SeqCst);
