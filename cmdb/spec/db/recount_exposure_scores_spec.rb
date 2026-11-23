@@ -50,11 +50,13 @@ RSpec.describe RecountExposureScores do
     old = hosts.first # evidence received more than 24 hours ago is not in force: nothing written
     HostApplicability.create!(host: old, in_use_reported: true, library_scan: "ran", library_scanned_at: 2.days.ago, library_scan_received_at: 2.days.ago,
                               loaded_by_listeners: [ { "listener" => "x", "service" => nil, "class" => "network", "sockets" => [], "packages" => [ VulnerabilityFinding.where(host: old).pick(:package) ] } ])
-    expect(quiet { migration.send(:write_listeners) }).to eq(2)
+    lines = []
+    expect(ListenerBackfill.new(log: ->(message) { lines << message }).run!).to eq(2)
+    expect(lines).to eq([ "wrote the listener of 2 findings on 2 hosts with listener evidence" ])
     expect(VulnerabilityFinding.where(host:).order(:id).pluck(:listener)).to eq([ 2, 1 ]) # the network listener wins
     expect(VulnerabilityFinding.where(host: old).pluck(:listener).uniq).to eq([ nil ])
-    expect(quiet { migration.send(:write_listeners) }).to eq(0) # again: nothing left to write
-    quiet { migration.send(:recount) }
+    expect(ListenerBackfill.new.run!).to eq(0) # again: nothing left to write
+    quiet { migration.send(:upgrade) }
     expect(points).to eq([ 21, 21 + 5 + 0 ]) # the high N4 on pkg-a: +5 for the network; the low F1 on pkg-b: +0 for loopback
     expect(ssh.reload.library_scan).to eq("ran")
     expect(connection.table_exists?(:compliance_score_recounts)).to be(false)
@@ -88,14 +90,24 @@ RSpec.describe RecountExposureScores do
 
   it "refuses with the upgrade step when the estimate is too long, and the rake task recounts, resumably" do
     stub_const("#{described_class}::INLINE_SECONDS", 0.000001)
-    expect { quiet { migration.send(:recount) } }.to raise_error(%r{fleet-cmdb upgrade step needed: recounting every host's exposure and work would take more than .* s.*compliance_summaries:recount_scores && docker restart}m)
+    expect { quiet { migration.send(:upgrade) } }.to raise_error(%r{fleet-cmdb upgrade step needed: writing the findings' listeners and recounting every host's exposure and work would take more than .* s.*compliance_summaries:recount_scores && docker restart}m)
     expect(points).to eq([ nil, nil ])
     expect(rake).to end_with("every host recounted (#{Host.count} in this run)\nDone. Start the server again: its migrations finish the upgrade.\n")
     expect(points).to eq([ 21, 21 ])
     stub_const("#{described_class}::INLINE_SECONDS", 90)
-    quiet { migration.send(:recount) }
+    quiet { migration.send(:upgrade) }
     expect(rake).to eq("Nothing to recount: the upgrade's recount is finished.\n")
     expect { ComplianceFixRecount.new(table: "users") }.to raise_error(ArgumentError, /unknown recount table/)
+  end
+
+  it "counts the listener backfill in the estimate, and the rake task writes the listeners before it recounts" do
+    HostApplicability.create!(host: hosts.first, in_use_reported: true, library_scan: "ran", library_scanned_at: Time.current, library_scan_received_at: Time.current,
+                              loaded_by_listeners: [ { "listener" => "x", "service" => nil, "class" => "network", "sockets" => [], "packages" => [ VulnerabilityFinding.where(host: hosts.first).pick(:package) ] } ])
+    stub_const("ListenerBackfill::HOST_SECONDS", 100)
+    expect { quiet { migration.send(:upgrade) } }.to raise_error(/about 2 min/)
+    expect(VulnerabilityFinding.where(host: hosts.first).where.not(listener: nil)).to be_empty # refused before writing anything
+    expect(rake).to start_with("wrote the listener of 1 findings on 1 hosts with listener evidence\nTo recount:")
+    expect(VulnerabilityFinding.where(host: hosts.first).where.not(listener: nil).count).to eq(1)
   end
 
   it "says how long when it counted everything" do

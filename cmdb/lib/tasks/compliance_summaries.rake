@@ -40,8 +40,11 @@ namespace :compliance_summaries do
     recount_after_upgrade.call(ComplianceFixRecount::TABLE)
   end
 
-  desc "Recount every host's exposure tier, points, and work after the upgrade that added them (resumable); then restart the server"
+  desc "Write the findings' listeners, then recount every host's exposure tier, points, and work after the upgrade that added them (resumable); then restart the server"
   task recount_scores: :environment do
+    # The findings' listeners first, so no host is counted without its listener points (review of #305, S2).
+    $stdout.sync = true
+    ListenerBackfill.new(log: ->(message) { puts message }).run!
     recount_after_upgrade.call("compliance_score_recounts")
   end
 end
