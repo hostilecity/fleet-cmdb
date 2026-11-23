@@ -1216,6 +1216,9 @@ forced_timeout() {
 # agent reached MemoryMax or TasksMax (or a MemoryHigh, if a drop-in sets one). The peaks are kept for scenario 374.
 agent_limits() {
     local seen event count
+    # After a failed scenario the service may not run (recovery mode instead, say): say so plainly.
+    [ -n "$(vm 'systemctl show fleet-agent -p ControlGroup --value')" ] \
+        || fail "$1: fleet-agent.service is not running, so it has no control group to read"
     # shellcheck disable=SC2016 # expanded in the guest
     seen=$(vm 'cg=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value)
 echo "memory.peak $(cat "$cg/memory.peak" 2> /dev/null || echo unknown)"
