@@ -85,9 +85,11 @@ class HostVulnerabilitiesController < ApplicationController
       cursors = HostTriageSections::CURSORS.to_h { |section| [ section, [ params[:"#{section}_after"], params[:"#{section}_before"] ] ] }
       # With no open finding triaged yet, only the not-triaged section is drawn: no bucket reads 0 for them (#277 item 15).
       untriaged_only = @bucket_counts["untriaged"].positive? && @bucket_counts["untriaged"] == @state_counts["open"]
+      # The host's decisions (VT-OVERRIDES #261): the decision column, O1's reasons, and the decisions due. One query.
+      @decisions = HostDecisions.new(@host.id)
       @sections = HostTriageSections.new(scope.where(state: %w[open reopened]), bucket: untriaged_only ? "untriaged" : @bucket, rule: @rule, cursors:,
-                                                                                untriaged: @bucket_counts["untriaged"])
-      @work = HostVulnerabilityWork.new(@host.id)
+                                                                                untriaged: @bucket_counts["untriaged"], decisions: @decisions)
+      @work = HostVulnerabilityWork.new(@host.id, decisions: @decisions)
       @listeners = VulnerabilityTriage::HostFacts.listener_coverage(@host.id)
     end
     @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")

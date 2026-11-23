@@ -1,8 +1,9 @@
 # The Low risk and Ignorable sections' rows on a host's Vulnerabilities tab (VT-HOST-TAB #260, VT-D04; approved mockup
 # host-vulns.html): one row per rule with its count of findings and its largest package, read in one query whatever
-# the host's finding count. Each row links to that rule's package rows (HostFindingGroups on the same findings).
+# the host's finding count, with how many of its findings are known exploited (a control may cover a KEV finding, which
+# must stay visible: VT-OVERRIDES #261). Each row links to that rule's package rows (HostFindingGroups on the same findings).
 class HostTriageRules
-  Row = Data.define(:rule, :bucket, :count, :package, :package_count)
+  Row = Data.define(:rule, :bucket, :count, :package, :package_count, :kev)
 
   attr_reader :rows
 
@@ -11,14 +12,15 @@ class HostTriageRules
     per_package = scope.except(:order, :preload, :includes).reselect(
       Arel.sql("vulnerability_findings.bucket_rule AS rule_id"), Arel.sql("vulnerability_findings.package AS package_name"),
       Arel.sql("vulnerability_findings.architecture AS package_architecture"), Arel.sql("count(*) AS n"),
-      Arel.sql("sum(count(*)) OVER (PARTITION BY vulnerability_findings.bucket_rule) AS total")
+      Arel.sql("sum(count(*)) OVER (PARTITION BY vulnerability_findings.bucket_rule) AS total"),
+      Arel.sql("sum(count(*) FILTER (WHERE vulnerability_findings.kev)) OVER (PARTITION BY vulnerability_findings.bucket_rule) AS kev_total")
     ).group("vulnerability_findings.bucket_rule", "vulnerability_findings.package", "vulnerability_findings.architecture")
     query = VulnerabilityFinding.unscoped.with(r: per_package).from("r").select(Arel.sql("DISTINCT ON (r.rule_id) r.*"))
                                 .order(Arel.sql("r.rule_id"), Arel.sql("r.n DESC"), Arel.sql('r.package_name COLLATE "C"'), Arel.sql('r.package_architecture COLLATE "C"'))
     @rows = VulnerabilityFinding.connection.select_all(query.arel, "HostTriageRules").map do |row|
       rule = VulnerabilityTriage.rule_for(row["rule_id"])
       Row.new(rule:, bucket: VulnerabilityTriage::RULES.fetch(rule), count: row["total"].to_i,
-              package: "#{row['package_name']}:#{row['package_architecture']}", package_count: row["n"].to_i)
+              package: "#{row['package_name']}:#{row['package_architecture']}", package_count: row["n"].to_i, kev: row["kev_total"].to_i)
     end.sort_by { |row| [ -row.count, VulnerabilityTriage::RULE_IDS.fetch(row.rule) ] }
   end
 

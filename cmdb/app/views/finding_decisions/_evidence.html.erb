@@ -1,0 +1,16 @@
+<%# The evidence a decision is recorded on (VT-OVERRIDES #261; mockup override.html, "Evidence now"): the bucket and
+    rule on this host, severity, the attack vector in words, KEV and EPSS, and listening. locals: signals
+    (FindingDecisions::Signals), candidate (this host's Candidate, or nil). %>
+<% words = VulnerabilityTriage::Reasons.vector_words(signals.cvss_av, signals.cvss_pr, signals.cvss_ui) %>
+<aside class="sheet" aria-labelledby="evidence_heading" id="evidence">
+  <h2 id="evidence_heading" class="mt0">Evidence now</h2>
+  <dl class="facts tight evidence">
+    <dt>Bucket</dt><dd><% if candidate&.bucket %><%= bucket_tag(candidate.bucket) %> (rule <span class="mono"><%= candidate.rule %></span>)<% else %>Not in Needs attention or Low risk<% end %></dd>
+    <dt>Severity</dt><dd><%= severity_tag(signals.severity) %></dd>
+    <dt>Reached</dt><dd><% if words %><span class="sig vec"><%= words.upcase_first %><span class="vecraw"><%= VulnerabilityTriage::Reasons.vector_text(signals.cvss_av, signals.cvss_pr, signals.cvss_ui) %></span></span><% else %>No CVSS vector<% end %></dd>
+    <dt>Known exploited</dt><dd><%= signals.kev? ? "Yes (#{signals.kev_cves.join(', ')}, on CISA's KEV list)" : "No (CISA's KEV list)" %></dd>
+    <dt>EPSS</dt><dd><%= signals.epss_score ? "#{(signals.epss_score.to_d * 100).round}%#{' (high band)' if signals.epss_high}" : "No score" %></dd>
+    <dt>On this host</dt><dd><%= candidate ? FindingDecisions::Candidates::LISTENING.fetch(candidate.listening).upcase_first : "Not known" %></dd>
+  </dl>
+  <p class="state-note">The decision keeps this evidence. If the evidence gets worse while it lasts (CISA lists it as exploited, EPSS reaches the high band, or the severity rises), the decision is <strong>suspended</strong>: a suspended control stops applying, and a suspended acceptance makes the finding due a new decision. If a fix appears, the finding moves to Fix available and the decision ends. Neither kind changes the finding's state or severity, or any open count.</p>
+</aside>

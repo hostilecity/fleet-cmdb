@@ -1,0 +1,81 @@
+<% content_for :title, "Record a decision: #{@advisory.advisory_id} on #{@host.name}" %>
+<% turbo_exempts_page_from_cache %>
+<%# The decision form (VT-OVERRIDES #261, VT-D05; mockup vuln-triage/override.html): kind, reason, until, and the hosts it
+    applies to, each with its own evidence and, for a control, a confirmation. A refused save comes back here with every
+    problem beside its field and in the summary, nothing saved. Operator text is escaped. %>
+<% errors = @errors %>
+<% field_error = ->(key, id) { tag.p(errors[key], class: "error-text", id: "#{id}_error") if errors[key] } %>
+<% kev_days = FindingDecisions.max_days(true) %>
+<% days = FindingDecisions.max_days(false) %>
+<% chosen = Array(@form[:host_ids]) %>
+<% confirmed = Array(@form[:confirmed_ids]) %>
+<p><%= link_to "← #{@host.name}: vulnerabilities", vulnerabilities_host_path(@host, anchor: "attn") %></p>
+<div class="page-head"><div><h1>Record a decision</h1>
+  <p><span class="mono"><%= @advisory.advisory_id %></span> on <%= link_to @host.name, vulnerabilities_host_path(@host) %> (<span class="mono"><%= @host.hostname %></span>)</p></div></div>
+
+<% if errors.any? %>
+  <div class="notice error" role="alert" id="decision_errors"><strong>The decision was not saved.</strong>
+    <p><%= pluralize(errors.size, "problem") %>: fix <%= errors.size == 1 ? "it" : "them" %> and save again.</p>
+    <ul class="problem-list"><% errors.each_value do |problem| %><li><%= problem %></li><% end %></ul></div>
+<% end %>
+<% if @this&.problem && errors.empty? %>
+  <div class="notice" role="status" id="decision_unavailable"><strong>No decision can be recorded on <%= @host.name %> now.</strong><p><%= @this.problem.upcase_first %></p></div>
+<% end %>
+
+<div class="columns">
+<%= form_with url: vulnerability_decisions_host_path(@host), method: :post, class: "form wide", id: "decision_form", "aria-labelledby": "form_heading" do %>
+  <%= hidden_field_tag :advisory_id, @advisory.id, id: nil %>
+  <h2 id="form_heading" class="mt0">What are you recording?</h2>
+  <fieldset<%= ' class="invalid"'.html_safe if errors[:kind] %>>
+    <legend>Decision</legend>
+    <div class="radio-cards">
+      <label class="choice"><%= radio_button_tag :kind, "control", @form[:kind] == "control", id: "kind_control" %><strong>A control is in place</strong><span class="hint">Something on or around this host stops the attack, such as a firewall rule or the service bound to a private interface. The finding moves to Low risk while the decision lasts, still scored well above plain Low risk. A known exploited finding keeps its "Known exploited" tier.</span></label>
+      <label class="choice"><%= radio_button_tag :kind, "accepted", @form[:kind] == "accepted", id: "kind_accepted" %><strong>Accept the risk for now</strong><span class="hint">Nothing stops the attack, and you have decided to live with it until a date, for example until a fix ships. The finding stays in Needs attention with its points and tier, marked accepted, and is no longer listed as a decision due.</span></label>
+    </div>
+    <%= field_error.(:kind, "kind") %>
+  </fieldset>
+  <div class="field<%= " invalid" if errors[:reason] %>">
+    <label for="reason">What is the control, or why is the risk acceptable?</label>
+    <%= text_area_tag :reason, @form[:reason], id: "reason", maxlength: FindingDecision::REASON_LENGTH.max, rows: 4, required: true,
+          "aria-invalid": (errors[:reason] ? "true" : nil), "aria-describedby": [ ("reason_error" if errors[:reason]), "reason_hint" ].compact.join(" ") %>
+    <%= field_error.(:reason, "reason") %>
+    <p class="hint" id="reason_hint">Required, <%= FindingDecision::REASON_LENGTH.min %> to <%= number_with_delimiter(FindingDecision::REASON_LENGTH.max) %> characters. Shown beside the finding and in the audit log. Do not paste secrets.</p>
+  </div>
+  <div class="field<%= " invalid" if errors[:expires_on] %>">
+    <label for="expires_on">Until</label>
+    <%= date_field_tag :expires_on, @form[:expires_on], id: "expires_on", min: Date.current.iso8601, max: FindingDecisions.last_day(kev: @signals.kev?).iso8601, required: true,
+          "aria-invalid": (errors[:expires_on] ? "true" : nil), "aria-describedby": [ ("expires_on_error" if errors[:expires_on]), "expires_on_hint" ].compact.join(" ") %>
+    <%= field_error.(:expires_on, "expires_on") %>
+    <p class="expiry-hint" id="expires_on_hint">The last day it applies (UTC). At most <%= days %> days (<%= kev_days %> days for a known exploited finding<%= ", as this one is" if @signals.kev? %>). When it ends, the finding goes back to its bucket and is listed under "Decisions due". No decision lasts for ever.</p>
+  </div>
+  <fieldset<%= ' class="invalid"'.html_safe if errors[:hosts] %> aria-describedby="hosts_hint">
+    <legend>Applies to</legend>
+    <p class="hint" id="hosts_hint">Other hosts with the same open finding are listed with their own evidence<%= ", at most #{FindingDecisions::Candidates::OTHERS}" if @others_capped %>. A control must be confirmed for each host, because a control on one host says nothing about another. Choosing more than <%= FindingDecisions::STEP_UP_ABOVE %> hosts needs a code from your authenticator app.</p>
+    <%= field_error.(:hosts, "hosts") %>
+    <ul class="per-host" id="decision_hosts">
+      <% @candidates.each do |candidate| %>
+        <% host = candidate.host %>
+        <% host_error = errors[:"host_#{host.id}"] %>
+        <% confirm_error = errors[:"confirm_#{host.id}"] %>
+        <li id="decision_host_<%= host.id %>"<%= ' class="invalid"'.html_safe if host_error || confirm_error %>>
+          <label><%= check_box_tag "host_ids[]", host.id, chosen.include?(host.id), id: "host_#{host.id}", disabled: candidate.problem.present? && !chosen.include?(host.id),
+                       "aria-invalid": (host_error ? "true" : nil), "aria-describedby": ("host_#{host.id}_error" if host_error) %> <strong><%= host.name %></strong><%= " (this host)" if host.id == @host.id %> <span class="host-line"><%= host.hostname %></span></label>
+          <span class="state-note"><%= decision_candidate_evidence(candidate) %></span>
+          <% if host_error %><p class="error-text" id="host_<%= host.id %>_error"><%= host_error %></p><% elsif candidate.problem %><span class="state-note">Cannot be chosen: <%= candidate.problem %></span><% end %>
+          <% unless candidate.problem %>
+            <label class="state-note"><%= check_box_tag "confirmed_ids[]", host.id, confirmed.include?(host.id), id: "confirm_#{host.id}",
+                                             "aria-invalid": (confirm_error ? "true" : nil), "aria-describedby": ("confirm_#{host.id}_error" if confirm_error) %> I confirm this control exists on <%= host.name %> (for a control only)</label>
+            <% if confirm_error %><p class="error-text" id="confirm_<%= host.id %>_error"><%= confirm_error %></p><% end %>
+          <% end %>
+        </li>
+      <% end %>
+    </ul>
+    <p class="hint">A decision covers the advisory on a host, for every binary package it matches there<% if @this&.packages.present? %> (here: <%= safe_join(@this.packages.map { |p| tag.span(p, class: "mono") }, ", ") %>)<% end %>. Each host gets its own decision and audit entry.</p>
+  </fieldset>
+  <% if @candidates.size > FindingDecisions::STEP_UP_ABOVE || errors[:second_factor_code] %>
+    <%= render "second_factors/prompt", result: second_factor_result, intro: "Choosing more than #{FindingDecisions::STEP_UP_ABOVE} hosts needs a code from your authenticator app; up to #{FindingDecisions::STEP_UP_ABOVE}, leave it empty.", required: false %>
+  <% end %>
+  <div class="actions"><button class="btn" type="submit">Save decision</button><%= link_to "Cancel", vulnerabilities_host_path(@host, anchor: "attn"), class: "btn quiet" %></div>
+<% end %>
+<%= render "finding_decisions/evidence", signals: @signals, candidate: @this %>
+</div>

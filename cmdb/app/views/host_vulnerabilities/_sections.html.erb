@@ -37,7 +37,7 @@
         <p class="muted" id="attention_none"><%= filtered ? "No findings in Needs attention match." : "Nothing here." %></p>
       <% else %>
         <div class="table-wrap"><table id="attention_list"><caption class="visually-hidden">Needs attention, by advisory</caption>
-          <thead><tr><th scope="col">Advisory and packages</th><th scope="col">Severity</th><th scope="col">Signals</th><th scope="col">Why this bucket</th></tr></thead><tbody>
+          <thead><tr><th scope="col">Advisory and packages</th><th scope="col">Severity</th><th scope="col">Signals</th><th scope="col">Why this bucket</th><th scope="col">Decision</th></tr></thead><tbody>
           <% attention.groups.each do |group| %>
             <% first = group.findings.first %>
             <tr><td><%= advisory_cell(group.advisory) %>
@@ -45,7 +45,8 @@
                 <% if triage %><%= triage_lines(first, triage[first], page: :tab, status: triage_status, os: triage_os) %><% end %></td>
               <td><%= severity_tag(group.advisory.severity) %></td>
               <td><%= advisory_signals(group, sections) %></td>
-              <td><%= safe_join(group.findings.map { |f| triage_reason(f, sections, signals) }.uniq(&:to_s)) %></td></tr>
+              <td><%= safe_join(group.findings.map { |f| triage_reason(f, sections, signals) }.uniq(&:to_s)) %></td>
+              <td class="decision"><%= decision_cell(host, group, sections.decisions) %></td></tr>
           <% end %>
           </tbody></table></div>
         <% if attention.paged? %>
@@ -67,6 +68,11 @@
       <% end %>
       <%# N5 (owner decision 2026-11-21): a package that a process holding a listening socket loads stays in Needs attention. Said
           honestly when this server cannot read that evidence, so its absence is never read as "nothing listens". %>
+      <%# Controls move findings to Low risk (O1), which is closed by default: said here, known exploited ones counted, so a
+          control never hides a finding (VT-OVERRIDES #261). %>
+      <% if (controlled = sections.rules&.rows&.find { |row| row.rule == "O1" }) %>
+        <p class="state-note" id="controlled_note"><%= link_to pluralize(number_with_delimiter(controlled.count), "finding") + " under a recorded control", vulnerabilities_host_path(host, link_params.except(:rule, :bucket).merge(rule: "O1", anchor: "low")) %> <%= controlled.count == 1 ? "is" : "are" %> in Low risk (rule O1), not here<%= ", #{number_with_delimiter(controlled.kev)} of them known exploited" if controlled.kev.positive? %>. A control lasts until its date, and is suspended if the evidence gets worse.</p>
+      <% end %>
       <% if (note = listeners_note(listeners)) %><p class="state-note" id="listeners_note"><%= note %></p><% end %>
     </div>
   </details>
@@ -86,7 +92,7 @@
           <thead><tr><th scope="col">Reason</th><th scope="col" class="num">Findings</th><th scope="col">Largest package</th><% if name == "ignorable" %><th scope="col">What you can do</th><% end %></tr></thead><tbody>
           <% rows.each do |row| %>
             <tr<%= ' aria-current="true"'.html_safe if sections.rule == row.rule %>><td><%= link_to rule_summary(row.rule, signals), vulnerabilities_host_path(host, link_params.except(:rule).merge(rule: (row.rule unless sections.rule == row.rule)).compact.merge(anchor:)) %></td>
-              <td class="num"><%= number_with_delimiter(row.count) %></td><td class="mono"><%= row.package %> (<%= number_with_delimiter(row.package_count) %>)</td>
+              <td class="num"><%= number_with_delimiter(row.count) %><% if row.kev.positive? %> <span class="sig kev"><%= number_with_delimiter(row.kev) %> known exploited</span><% end %></td><td class="mono"><%= row.package %> (<%= number_with_delimiter(row.package_count) %>)</td>
               <% if name == "ignorable" %><td><%= HostVulnerabilitiesHelper::IGNORABLE_NEXT.fetch(row.rule, "Nothing.") %></td><% end %></tr>
           <% end %>
           </tbody></table></div>

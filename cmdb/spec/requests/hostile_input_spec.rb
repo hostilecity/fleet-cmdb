@@ -22,11 +22,14 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
     # The one SVG the dashboard draws is the second factor's QR code (P3-S09): a rect and a path, nothing else.
     qr = doc.css("svg.qr")
     expect(qr.flat_map { |svg| svg.element_children.map(&:name) }.uniq - %w[rect path]).to be_empty, "unexpected content in the QR code on #{path}"
-    expect(doc.css("svg:not(.qr), svg svg, iframe, object, embed, img[src='x']")).to be_empty, "injected element on #{path}"
+    # The bucket strip's proportion bar (VT-HOST-TAB #260), drawn once a finding is triaged: rects only.
+    bar = doc.css("svg.propbar")
+    expect(bar.flat_map { |svg| svg.element_children.map(&:name) }.uniq - %w[rect]).to be_empty, "unexpected content in the bucket bar on #{path}"
+    expect(doc.css("svg:not(.qr):not(.propbar), svg svg, iframe, object, embed, img[src='x']")).to be_empty, "injected element on #{path}"
     expect(doc.xpath("//@*[starts-with(name(), 'on')]").map(&:name)).to be_empty, "event handler attribute on #{path}"
     expect(doc.css("[href], [src], [action]").flat_map { |node| node.attribute_nodes.map(&:value) }.grep(/\A\s*(javascript|data|vbscript):/i)).to be_empty, "script URL on #{path}"
     expect(doc.css("[autofocus]")).to be_empty, "autofocus attribute on #{path}"
-    expect(response.body).not_to match(/<script>alert|<svg(?! class="qr" xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 \d+ \d+" role="img")|<iframe|<img src=x/i), "raw hostile markup in #{path}"
+    expect(response.body).not_to match(/<script>alert|<svg(?! class="qr" xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 \d+ \d+" role="img"| class="propbar" viewBox="0 0 1000 12")|<iframe|<img src=x/i), "raw hostile markup in #{path}"
   end
 
   # Text from the VM or operator appears as text, character for character (so nothing is silently rewritten and
@@ -156,6 +159,22 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                                      last_fixed_version: fit(256), state: "reopened", first_seen_at: 2.hours.ago, resolved_at: 1.hour.ago, reopened_at: Time.current)
       end
 
+      # A finding decision with a hostile reason and evidence, by a hostile operator, suspended with hostile evidence of
+      # what changed, and its audit entry (VT-OVERRIDES #261): the tab's decision column, the decision's page, and the log.
+      let!(:decision) do
+        evidence = { "bucket" => "attention", "rule" => text.first(8), "severity" => text.first(16), "kev" => false, "epss_score" => text.first(16),
+                     "attack_vector" => text.first(32), "listening" => text.first(16) }
+        decision = FindingDecision.create!(host:, advisory: finding.advisory, kind: "accepted", reason: fit(1000), expires_on: Date.current + 5,
+                                           created_by: hostile_operator, evidence:)
+        decision.update!(ended_at: Time.current, ended_why: "suspended", ended_evidence: { text.first(20) => [ text.first(20), text.first(20) ] })
+        FindingDecision.transaction do
+          Audit.record(actor: hostile_operator, action: Audit::Actions::VULNERABILITY_DECISION_RECORDED, target: host,
+                       changes: { "reason" => text, "advisory" => text, "evidence" => text, "confirmed_for" => text })
+        end
+        finding.update_columns(bucket: VulnerabilityTriage::BUCKETS.fetch("attention"), bucket_rule: VulnerabilityTriage::RULE_IDS.fetch("N4"), kev: false) # rubocop:disable Rails/SkipsModelValidations
+        decision
+      end
+
       # Advisory imports whose file name, failure reason, and malformed records' locations, ids, and reasons are hostile, by a hostile
       # operator (P2-D06): an upload names its file, and the records come from the file.
       let!(:advisory_imports) do
@@ -212,6 +231,8 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
           [ "/hosts/#{triage_host.id}/vulnerabilities/package?package=libc6", true ],
           [ "/hosts/#{triage_host.id}/vulnerabilities?debian=#{CGI.escape(text.first(30))}", true ], [ "/hosts/#{host.id}/vulnerabilities/package?package=#{CGI.escape(text.first(128))}", true ],
           [ "/hosts/#{host.id}/vulnerabilities?q=#{CGI.escape(text.first(100))}&severity=#{CGI.escape(text.first(30))}&state=#{CGI.escape(text.first(30))}", false ],
+          [ "/hosts/#{host.id}/vulnerabilities/decisions/#{decision.id}", true ],
+          [ "/hosts/#{host.id}/vulnerabilities/decisions/new?advisory_id=#{finding.advisory_id}&kind=#{CGI.escape(text.first(30))}", false ],
           [ "/hosts/#{host.id}/revoke", true ], [ "/hosts/#{host.id}/retire", true ], [ "/hosts/#{host.id}/reenroll", true ],
           [ "/audit", true ], [ "/audit?actor=#{CGI.escape(text.first(100))}&target=#{CGI.escape(text.first(100))}&action=#{CGI.escape(text.first(30))}", false ],
           [ "/audit?host_id=#{host.id}", true ],
@@ -443,7 +464,7 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
 
   it "names the same views the dashboard has, so a new one cannot be forgotten here" do
     shown = %w[hosts#index hosts#show hosts#edit hosts#new compliance#index host_configs#show host_configs#compare host_packages#show host_packages#compare
-               host_vulnerabilities#show host_vulnerabilities#package
+               host_vulnerabilities#show host_vulnerabilities#package finding_decisions#new finding_decisions#edit
                host_actions#confirm_revoke host_actions#confirm_retire host_actions#confirm_reenroll
                audit_entries#index agent_releases#index agent_installs#show approvals#index approvals#show failed_jobs#index settings#edit sessions#new
                second_factors#show second_factors#setup second_factors#new_recovery_codes task_settings#show task_settings#confirm_remove
