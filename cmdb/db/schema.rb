@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_262002) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_295001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -351,6 +351,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_262002) do
     t.datetime "finished_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "prepare_step", limit: 80
+    t.bigint "prepare_cursor"
     t.index ["finished_at"], name: "index_evaluation_runs_on_finished_at"
     t.index ["kind", "state"], name: "index_evaluation_runs_unfinished", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
     t.check_constraint "kind::text = ANY (ARRAY['cis_rules'::character varying, 'advisories'::character varying, 'triage'::character varying]::text[])", name: "evaluation_runs_kind_valid"
