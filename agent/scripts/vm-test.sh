@@ -3,12 +3,25 @@
 # the supervisor killed, and the VM restarted, in the middle of an update. Run by the CI workflow
 # .github/workflows/agent-vm.yml on a GitHub runner:
 #
-#   scripts/vm-test.sh DIR IMAGE OUT      (run from agent/, as the runner user; no sudo)
+#   scripts/vm-test.sh DIR IMAGE OUT [GROUP]      (run from agent/, as the runner user; no sudo)
 #
-# DIR holds what the workflow prepared: test.key (a throwaway minisign key, never committed) and
-# fleet-agent-1.0.0 and fleet-agent-1.0.1, the musl agent built to trust it (update-smoke-build.sh).
+# DIR holds what the workflow prepared: test.key (a throwaway minisign key, never committed) and the
+# musl agent builds that trust it (update-smoke-build.sh), fleet-agent-VERSION, as GROUP needs them.
 # IMAGE is Debian's genericcloud image, already checked against Debian's SHA512SUMS. OUT receives the
 # results: results.xml (JUnit), results.md, one log per scenario, and the VM's serial console.
+#
+# GROUP picks the scenarios (#288). The groups are independent: each boots its own VM from the image
+# and starts from the same fresh install, so CI runs them side by side, one VM each (agent-vm.yml).
+#
+#   all        every scenario below, in one VM, in the order below (the default)
+#   install    290, 300, 309: the install refusals, the package report, what is in use (fleet-agent-1.0.0)
+#   updates-a  301 to 304: the supervisor killed, a hard reset, a reboot after confirming (1.0.0, 1.0.1)
+#   updates-b  305, 306, 308: a reboot before the switch, a crash loop, the units refresh (1.0.0, 1.0.1)
+#   packages   370 to 373: apply_package_updates (fleet-agent-1.0.0 is the fault build here, for the
+#              shorter lock wait of scenario 371; see below)
+#   recovery   307: recovery mode (1.0.0, 1.1.0 the fault build, 1.1.1)
+#
+# Every group ends with scenario 374, the memory and task limits, for the scenarios that ran in its VM.
 #
 # The VM runs under QEMU with KVM when /dev/kvm is usable, and falls back to TCG (with longer
 # timeouts) when not. It is configured by a cloud-init NoCloud seed with an SSH key generated here.
@@ -68,7 +81,14 @@
 #                            reported held back, reboot_required is reported and the VM is
 #                            not rebooted, needrestart names the service running the old executable and
 #                            it is not restarted, and a package report with the new version follows
-#   lock contention          another process holds the dpkg frontend lock: lock_timeout, nothing run
+#   lock contention          another process holds the dpkg frontend lock: lock_timeout, nothing run.
+#                            A release waits 300 s for the lock (LOCK_WAIT, D3). In the packages group
+#                            fleet-agent-1.0.0 is the fault build (`--cfg fleet_vm_fault`), which reads
+#                            a shorter wait from the state directory (src/vm_fault.rs, #288), so the
+#                            scenario takes seconds; scenario 370 still checks apt's own
+#                            DPkg::Lock::Timeout=300, and a unit test that a release waits 300 s. In
+#                            the other groups fleet-agent-1.0.0 is a normal build, and "all" waits the
+#                            full 300 s.
 #   agent restarted          the agent restarts during the upgrade: the upgrade runs on in its unit, and
 #                            the restarted agent reports it succeeded (threat model L8)
 #   forced timeout           a maintainer script that hangs, with a 60 s deadline: timed_out, the whole
@@ -77,7 +97,9 @@
 # Last, recovery mode (#180, ADR 0030), with two more builds: fleet-agent-1.1.0, the VM fault build
 # (src/vm_fault.rs; `VM_FAULT=1 update-smoke-build.sh`), and fleet-agent-1.1.1, a normal build:
 #
-#   crash loop on a confirmed version   1.1.0 is installed and confirmed; then a file in the state
+#   crash loop on a confirmed version   tasks are enabled as the package scenarios enable them, with a
+#                            10 s poll, and a refused task fills the ledger; 1.1.0 is installed and
+#                            confirmed, and polls for tasks; then a file in the state
 #                            directory makes its normal mode panic at every start. After exactly four
 #                            failed starts systemd's start limit ends the restarts; only then does
 #                            OnFailure= run (once), the rollback unit finds nothing to roll back, and
@@ -85,12 +107,14 @@
 #                            from the same binary, with no
 #                            capabilities, and no report or task poll. The server offers 1.1.1 (the
 #                            "fixed release"): recovery mode installs it through the signed path, 1.1.1
-#                            confirms in normal mode, and recovery mode has stopped.
+#                            confirms in normal mode and polls for tasks, and recovery mode has stopped.
+#                            The config (with [tasks]) and the ledger come through it all unchanged.
 set -euo pipefail
 
-dir=${1:?usage: scripts/vm-test.sh DIR IMAGE OUT}
-image=${2:?usage: scripts/vm-test.sh DIR IMAGE OUT}
-out=${3:?usage: scripts/vm-test.sh DIR IMAGE OUT}
+dir=${1:?usage: scripts/vm-test.sh DIR IMAGE OUT [GROUP]}
+image=${2:?usage: scripts/vm-test.sh DIR IMAGE OUT [GROUP]}
+out=${3:?usage: scripts/vm-test.sh DIR IMAGE OUT [GROUP]}
+group=${4:-all}
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source-path=SCRIPTDIR source=update-test-lib.sh
 . "$here/update-test-lib.sh"
@@ -116,21 +140,36 @@ DROPIN=/etc/systemd/system/fleet-agent-update.service.d
 # A state record the agent never writes: the backup before a switch must carry it, and a rollback must
 # put back exactly what it held, so a lost or skipped backup shows as a difference.
 MARKER=vm-test-marker.json
+# The fault build's lock wait (src/vm_fault.rs LOCK_WAIT_FILE), and the seconds the packages group sets.
+LOCK_WAIT_FILE=vm-test-lock-wait-seconds
+LOCK_WAIT_TEST=20
 
-for file in test.key "fleet-agent-$OLD" "fleet-agent-$NEW" "fleet-agent-$FAULTY" "fleet-agent-$FIXED"; do
+# The builds each group needs, and which of them are fault builds (the rest must not be).
+case $group in
+    all) builds=("$OLD" "$NEW" "$FAULTY" "$FIXED") faults=("$FAULTY") ;;
+    install) builds=("$OLD") faults=() ;;
+    updates-a | updates-b) builds=("$OLD" "$NEW") faults=() ;;
+    packages) builds=("$OLD") faults=("$OLD") ;;
+    recovery) builds=("$OLD" "$FAULTY" "$FIXED") faults=("$FAULTY") ;;
+    *) echo "vm-test: unknown group $group (all, install, updates-a, updates-b, packages, recovery)" >&2; exit 2 ;;
+esac
+for file in test.key "${builds[@]/#/fleet-agent-}"; do
     [ -s "$dir/$file" ] || { echo "vm-test: missing $dir/$file" >&2; exit 2; }
 done
 [ -s "$image" ] || { echo "vm-test: missing image $image" >&2; exit 2; }
-# Only the fault build has the fault (scripts/check-no-fault-hooks.sh proves a release has none).
+# Only a fault build has the fault (scripts/check-no-fault-hooks.sh proves a release has none).
 fault_marker=$(sed -n 's/^pub const FAULT_HOOK_MARKER: &str = "\(.*\)";$/\1/p' src/test_support.rs)
 [ -n "$fault_marker" ] || { echo "vm-test: FAULT_HOOK_MARKER not found in src/test_support.rs" >&2; exit 2; }
-grep -aqF "$fault_marker" "$dir/fleet-agent-$FAULTY" || { echo "vm-test: fleet-agent-$FAULTY is not the fault build" >&2; exit 2; }
-for version in "$OLD" "$NEW" "$FIXED"; do
-    if grep -aqF "$fault_marker" "$dir/fleet-agent-$version"; then
+for version in "${builds[@]}"; do
+    if [[ " ${faults[*]} " == *" $version "* ]]; then
+        grep -aqF "$fault_marker" "$dir/fleet-agent-$version" || { echo "vm-test: fleet-agent-$version is not the fault build" >&2; exit 2; }
+    elif grep -aqF "$fault_marker" "$dir/fleet-agent-$version"; then
         echo "vm-test: fleet-agent-$version contains the fault" >&2
         exit 2
     fi
 done
+old_is_fault_build=0
+[[ " ${faults[*]} " != *" $OLD "* ]] || old_is_fault_build=1
 image=$(cd "$(dirname "$image")" && pwd)/$(basename "$image")
 mkdir -p "$out/logs"
 out=$(cd "$out" && pwd)
@@ -212,14 +251,17 @@ qemu-system-x86_64 -name vm-01 -machine "q35,accel=$accel" -cpu "$cpu" -m 2048 -
 
 # --- Waiting, reporting -------------------------------------------------------------------------------
 
+# wait_until WHAT SECONDS COMMAND...: runs COMMAND every second until it succeeds, for at most SECONDS
+# (times the TCG factor). A wait of 5 s or more is logged, so the job log shows where a scenario's time goes.
 wait_until() {
-    local what=$1 seconds=$(($2 * slow)) end
+    local what=$1 seconds=$(($2 * slow)) end start=$SECONDS
     shift 2
     end=$((SECONDS + seconds))
     until "$@"; do
         ((SECONDS < end)) || fail "gave up after ${seconds}s waiting for $what"
         sleep 1
     done
+    ((SECONDS - start < 5)) || echo "vm-test: waited $((SECONDS - start))s for $what"
 }
 
 ssh_up() { vm_ok true; }
@@ -480,11 +522,16 @@ printf '# changed after signing\n' >> "$stub/releases/tampered-$OLD/fleet-agent"
 minisign -G -W -p "$tmp/other.pub" -s "$tmp/other.key" > /dev/null
 install_release "other-key-$OLD" "$tmp/refused.sh" "$tmp/other.key"
 install_release "older-$OLD" "$tmp/refused.sh" "$dir/test.key" 0.9.0
-mkrelease "$stub/releases" good "$NEW" "$dir/fleet-agent-$NEW" "$dir/test.key"
+# The update releases this group's builds allow.
+if [ -s "$dir/fleet-agent-$NEW" ]; then
+    mkrelease "$stub/releases" good "$NEW" "$dir/fleet-agent-$NEW" "$dir/test.key"
+fi
 mkscript "$tmp/loops.sh" "$LOOPING" "echo \"vm-test: release $LOOPING started\" >&2; sleep 2; exit 1"
 mkrelease "$stub/releases" crash_loop "$LOOPING" "$tmp/loops.sh" "$dir/test.key"
-mkrelease "$stub/releases" faulty "$FAULTY" "$dir/fleet-agent-$FAULTY" "$dir/test.key"
-mkrelease "$stub/releases" fixed "$FIXED" "$dir/fleet-agent-$FIXED" "$dir/test.key"
+if [ -s "$dir/fleet-agent-$FAULTY" ] && [ -s "$dir/fleet-agent-$FIXED" ]; then
+    mkrelease "$stub/releases" faulty "$FAULTY" "$dir/fleet-agent-$FAULTY" "$dir/test.key"
+    mkrelease "$stub/releases" fixed "$FIXED" "$dir/fleet-agent-$FIXED" "$dir/test.key"
+fi
 
 STUB_PUBLIC_URL="https://$SERVER_NAME:$PORT" STUB_CREDENTIAL="$CREDENTIAL" STUB_ENROLL_TOKEN="$ENROLL_TOKEN" \
     python3 "$here/update-stub.py" "$PORT" "$tmp/cert.pem" "$tmp/key.pem" "$stub" &
@@ -657,21 +704,44 @@ heartbeat_in_mode() {
 inventory_since() {
     event_exists "[.[] | select(.kind == \"inventory\" and .agent_version == \"$1\" and .status == 200 and .at > $since)] | length > 0"
 }
+task_poll_from() {
+    event_exists "[.[] | select(.kind == \"task_poll\" and .agent_version == \"$1\" and .status == 200 and .at > $since)] | length > 0"
+}
 
 # #180, ADR 0030: a confirmed version that crash-loops, with nothing to roll back to, goes to recovery mode
 # instead of stopping for good, and a fixed release reaches it through the signed update path.
 recovery_mode() {
     rollout=$1
     reset
-    # It runs after the package update scenarios, which add a [tasks] section to the config and task files to
-    # the state directory: what must stay unchanged is what is there now.
+    # Tasks on, as the package scenarios set them (in "all" they already have, #288): apply_package_updates
+    # enabled and a poll every 10 s, so normal mode polls and the check below that recovery mode does not
+    # can fail.
+    if ! vm_ok "grep -qx '\[tasks\]' /etc/fleet-agent/config.toml"; then
+        vm "printf '%s\n' '' '[tasks]' 'enabled = [\"apply_package_updates\"]' '' '[task_poll]' 'interval_seconds = 10' 'min_seconds = 5' \
+            >> /etc/fleet-agent/config.toml && $LIB/current/fleet-agent check-config > /dev/null \
+            && systemctl reset-failed fleet-agent && systemctl restart fleet-agent"
+    fi
+    # A task in the ledger: refresh_reports is not enabled here, so it is refused (and recorded, nothing
+    # run). The ledger with it and the [tasks] config must come through recovery mode and the fixed release.
+    task_id=$(printf '00000000-0000-4000-8000-%012d' "$1")
+    rm -f "$stub/task-result-$task_id.json"
+    set_plan "$(jq -nc --arg id "$task_id" '{task: {id: $id, type: "refresh_reports", parameters: {}, timeout_seconds: 600, catalog_version: 1}}')"
+    expect_task refused not_enabled_locally 120
+    # The agent removes its copy of the result once the server has accepted it.
+    wait_until "the agent to record the result as reported" 30 vm_ok "test ! -e $STATE/task-result.json"
+    # What must stay unchanged is what is there now (in "all", with the package scenarios' task files too).
     config_sum=$(vm 'sha256sum /etc/fleet-agent/config.toml')
     state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -size +0 ! -name 'update*' ! -name '$MARKER' -printf '%f '")
     empty_state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -empty ! -name 'update*' -printf '%f '")
+    [[ " $state_files " == *" task-ledger.jsonl "* ]] || fail "the task ledger is empty before the update: $state_files"
+    vm_ok "grep -qx '\[tasks\]' /etc/fleet-agent/config.toml" || fail "the config has no [tasks] section"
     offer faulty "$FAULTY"
     expect_result succeeded "$FAULTY"
     expect_one_version "$FAULTY" "$OLD"
-    echo "$FAULTY is installed and confirmed; now host state makes its normal mode fail at every start"
+    # Positive control for the no-poll check below: in normal mode, this build polls for tasks.
+    since=$(date +%s.%N)
+    wait_until "a task poll from $FAULTY in normal mode" 60 task_poll_from "$FAULTY"
+    echo "$FAULTY is installed and confirmed, and polls for tasks; now host state makes its normal mode fail at every start"
     since=$(date +%s.%N)
     # Everything the journal says from here on is this scenario's (the guest's clock is not the runner's).
     local cursor
@@ -737,6 +807,8 @@ recovery_mode() {
     wait_until "a heartbeat in normal mode from $FIXED" 90 heartbeat_in_mode "$FIXED" normal
     # The cause is still there; the fixed release runs normally with it, reports included.
     vm_ok "test -e $STATE/$POISON" || fail "the poison file is gone"
+    since=$(date +%s.%N)
+    wait_until "a task poll from $FIXED" 60 task_poll_from "$FIXED"
     # Its startup report may come before the checks above end (a random splay of up to 60 s): count from
     # the offer.
     since=$offered
@@ -1076,17 +1148,35 @@ packages_upgraded() {
 }
 
 lock_contention() {
+    # A release waits 300 s for the lock, then fails. The fault build (the packages group) waits what
+    # $LOCK_WAIT_FILE says, read when the agent starts (#288).
+    local wait=300 started took
+    if [ "$old_is_fault_build" = 1 ]; then
+        wait=$LOCK_WAIT_TEST
+        since=$(date +%s.%N)
+        # reset-failed: this restart would otherwise count towards the unit's start limit (4 in 5 minutes).
+        vm "printf '%s\n' $wait > $STATE/$LOCK_WAIT_FILE && chmod 0600 $STATE/$LOCK_WAIT_FILE \
+            && systemctl reset-failed fleet-agent && systemctl restart fleet-agent"
+        wait_until "a heartbeat from $OLD after the restart" 90 heartbeat_from "$OLD"
+    fi
     vm 'bash /tmp/vm-test-packages.sh publish fvt-slow_1.1_all.deb'
     vm "systemd-run --quiet --unit=fvt-locker python3 -c 'import fcntl, os, time
 fd = os.open(\"/var/lib/dpkg/lock-frontend\", os.O_RDWR | os.O_CREAT, 0o640)
 fcntl.lockf(fd, fcntl.LOCK_EX)
 time.sleep(1800)'"
     sleep 2
+    started=$SECONDS
     run_task "$1" 3600
-    # The agent waits 300 s for the lock, then fails.
-    expect_task failed lock_timeout 480
+    expect_task failed lock_timeout $((wait + 180))
+    took=$((SECONDS - started))
+    # The agent read no later start's file: the next scenario restarts it with the default again.
+    vm "rm -f $STATE/$LOCK_WAIT_FILE"
     vm 'systemctl stop fvt-locker'
+    ((took >= wait)) || fail "the task failed after ${took}s, before its ${wait}s wait for the lock ended"
+    echo "lock_timeout after ${took}s, waiting ${wait}s for the lock"
     [ "$(version_of fvt-slow)" = 1.0 ] || fail "fvt-slow was upgraded although the lock was held"
+    output_has "another program holds /var/lib/dpkg/lock-frontend; waiting up to $wait seconds for it"
+    output_has "held /var/lib/dpkg/lock-frontend for $wait seconds"
     output_has 'the package manager is busy'
     no_task_units || fail "a task unit is left"
     task_result | jq -e '.output | test("\\$ /usr/bin/apt-get") | not' > /dev/null || fail "apt-get ran although the lock was held"
@@ -1126,6 +1216,9 @@ forced_timeout() {
 # agent reached MemoryMax or TasksMax (or a MemoryHigh, if a drop-in sets one). The peaks are kept for scenario 374.
 agent_limits() {
     local seen event count
+    # After a failed scenario the service may not run (recovery mode instead, say): say so plainly.
+    [ -n "$(vm 'systemctl show fleet-agent -p ControlGroup --value')" ] \
+        || fail "$1: fleet-agent.service is not running, so it has no control group to read"
     # shellcheck disable=SC2016 # expanded in the guest
     seen=$(vm 'cg=/sys/fs/cgroup$(systemctl show fleet-agent -p ControlGroup --value)
 echo "memory.peak $(cat "$cg/memory.peak" 2> /dev/null || echo unknown)"
@@ -1176,33 +1269,49 @@ diagnostics() {
 
 os="Debian 13"
 record_header() {
-    echo "## Agent update failure tests on a VM (P1-A12)"
+    echo "## Agent update failure tests on a VM (P1-A12): $group"
     echo
+    echo "Scenario group \`$group\` (scripts/vm-test.sh; each group has a VM of its own)."
     echo "$os under QEMU ($accel), image $(basename "$image"); agent $OLD updated to $NEW (and $LOOPING, a crash-looping release); installed with the install page's commands (curl and minisign, the signature checked with the release key, then \`fleet-agent install\`)."
     echo "The package report check (AC-2.3) compares the agent's startup package report with \`dpkg-query --show\` on the VM."
     echo "The package update scenarios (P3-AGENT-UPDATES) run the real apply_package_updates task against a local repository of test packages built in the guest."
     echo "The units scenario (#232) starts from units older than recovery mode and checks that the confirmed update writes the new version's."
-    echo "The limits scenario (#182) checks the installed unit's memory and task limits are applied, and that no scenario brought the agent to them; it lists the peaks measured after the package scenarios."
+    echo "The limits scenario (#182) checks the installed unit's memory and task limits are applied, and that no scenario in this VM brought the agent to them; it lists the peaks the scenarios measured."
     echo "The recovery mode scenario (#180, ADR 0030) makes a confirmed $FAULTY (the VM fault build) crash-loop and checks that recovery mode installs $FIXED."
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
-scenario 290 "First install refuses a tampered binary, another key, and an older release (#181)" install_refusals
-scenario 300 "Package report matches dpkg-query (AC-2.3)" package_report_matches_dpkg
-scenario 309 "What is in use: listening services, the reboot flag, the library scan (VT-APPLICABILITY)" in_use_reported
-scenario 301 "Supervisor killed before the switch" kill_before_switch
-scenario 302 "Supervisor killed after the switch" kill_after_switch
-scenario 303 "Hard reset after the switch, before confirmation" reset_after_switch
-scenario 304 "Reboot after confirmation" reboot_after_confirmation
-scenario 305 "Reboot before the switch" reboot_before_switch
-scenario 306 "Crash-looping release across a reboot" crash_loop_and_reboot
-scenario 308 "Confirmed update refreshes the units (#232)" units_refreshed
-scenario 370 "Package updates applied, no reboot (AC-3.4, AC-3.5)" packages_upgraded
-scenario 371 "Package manager lock held: lock_timeout" lock_contention
-scenario 372 "Agent restarted during the upgrade (L8)" agent_restart_mid_upgrade
-scenario 373 "Forced timeout ends the process tree" forced_timeout
-scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits
-scenario 307 "Crash loop on a confirmed version: recovery mode (#180)" recovery_mode
+# in_group GROUP...: whether this run's group is one of GROUP, or all.
+in_group() { [ "$group" = all ] || [[ " $* " == *" $group "* ]]; }
+
+if in_group install; then
+    scenario 290 "First install refuses a tampered binary, another key, and an older release (#181)" install_refusals
+    scenario 300 "Package report matches dpkg-query (AC-2.3)" package_report_matches_dpkg
+    scenario 309 "What is in use: listening services, the reboot flag, the library scan (VT-APPLICABILITY)" in_use_reported
+fi
+if in_group updates-a; then
+    scenario 301 "Supervisor killed before the switch" kill_before_switch
+    scenario 302 "Supervisor killed after the switch" kill_after_switch
+    scenario 303 "Hard reset after the switch, before confirmation" reset_after_switch
+    scenario 304 "Reboot after confirmation" reboot_after_confirmation
+fi
+if in_group updates-b; then
+    scenario 305 "Reboot before the switch" reboot_before_switch
+    scenario 306 "Crash-looping release across a reboot" crash_loop_and_reboot
+    scenario 308 "Confirmed update refreshes the units (#232)" units_refreshed
+fi
+if in_group packages; then
+    scenario 370 "Package updates applied, no reboot (AC-3.4, AC-3.5)" packages_upgraded
+    scenario 371 "Package manager lock held: lock_timeout" lock_contention
+    scenario 372 "Agent restarted during the upgrade (L8)" agent_restart_mid_upgrade
+    scenario 373 "Forced timeout ends the process tree" forced_timeout
+fi
+# In "all", after the package scenarios as before; in a group, last, for what ran in its VM.
+[ "$group" != all ] || scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits
+if in_group recovery; then
+    scenario 307 "Crash loop on a confirmed version: recovery mode (#180)" recovery_mode
+fi
+[ "$group" = all ] || scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits
 
 # shellcheck disable=SC2016 # expanded in the guest
 os=$(vm '. /etc/os-release; echo "$PRETTY_NAME"' 2> /dev/null || echo "Debian 13")

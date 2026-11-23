@@ -1,13 +1,18 @@
-# Agent update failure tests on a disposable Debian 13 VM (P1-AGENT-UPDATE, P1-A12, ADR 0018).
+# Agent update failure tests on disposable Debian 13 VMs (P1-AGENT-UPDATE, P1-A12, ADR 0018).
 # Boots Debian's official genericcloud image under QEMU (KVM when the runner allows it, TCG otherwise),
 # installs the agent with the real installer, and kills the update supervisor and restarts the VM in
-# the middle of updates (agent/scripts/vm-test.sh); then runs the apply_package_updates task for real
-# against a local repository of test packages (P3-AGENT-UPDATES), and last makes a confirmed agent crash-loop
-# into recovery mode (#180, ADR 0030). The results are uploaded as the "vm-test-results"
-# artifact (JUnit and Markdown) and shown in the job summary.
+# the middle of updates (agent/scripts/vm-test.sh); runs the apply_package_updates task for real
+# against a local repository of test packages (P3-AGENT-UPDATES), and makes a confirmed agent crash-loop
+# into recovery mode (#180, ADR 0030).
+#
+# The scenarios run in independent groups, each on a VM of its own, side by side (#288): see the GROUP
+# list in vm-test.sh. Each group builds only the agent versions it needs, into agent/target, which
+# Swatinem/rust-cache keeps, so only the agent itself is compiled again. The job "Update failure tests
+# on a Debian 13 VM" waits for every group, fails if any did, and gathers their results: the
+# "vm-test-results" artifact (JUnit and Markdown per group) and the job summary.
 #
 # Separate from Agent CI because it takes several minutes; it runs on every change to agent/ and by
-# hand (workflow_dispatch). Release keys here are throwaway, generated in the job; none is committed.
+# hand (workflow_dispatch, which can pick one group, or "all" in one VM). Release keys here are throwaway, generated in the job; none is committed.
 name: Agent VM tests
 
 on:
@@ -21,6 +26,14 @@ on:
       - 'agent/**'
       - '.github/workflows/agent-vm.yml'
   workflow_dispatch:
+    inputs:
+      group:
+        # "groups" runs the five groups side by side, as on a PR. "all" runs every scenario in one VM on
+        # normal builds, so scenario 371 waits a release's full 300 s for the lock (about 25 minutes).
+        description: Scenario group (vm-test.sh GROUP), or "groups" for all five side by side
+        type: choice
+        default: groups
+        options: [groups, all, install, updates-a, updates-b, packages, recovery]
 
 permissions:
   contents: read
@@ -38,9 +51,15 @@ env:
 
 jobs:
   vm:
-    name: Update failure tests on a Debian 13 VM
+    name: VM tests (${{ matrix.group }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: ${{ matrix.group == 'all' && 75 || 45 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # One group by hand (workflow_dispatch), otherwise all five. The builds each needs are in the
+        # build step below.
+        group: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.group != 'groups') && format('["{0}"]', inputs.group) || '["install", "updates-a", "updates-b", "packages", "recovery"]') }}
     defaults:
       run:
         working-directory: agent
@@ -76,22 +95,52 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # agent/target holds the test builds' target directories (target/vm-test, target/vm-test-fault),
+          # so their dependencies are cached. One cache per group: each builds a different set.
           workspaces: agent
-          key: vm
+          key: vm-${{ matrix.group }}
 
       - name: Build the versions that trust a throwaway key
-        # 1.0.0 and 1.0.1 for the update failure tests; for recovery mode (#180), 1.1.0, the VM fault build
-        # (`--cfg fleet_vm_fault`, src/vm_fault.rs: a test-only fault, in a target directory of its own),
-        # and 1.1.1, a normal build. vm-test.sh checks that only 1.1.0 has the fault.
+        # BUILDS: normal builds of the versions the group needs; FAULT_BUILDS: VM fault builds
+        # (`--cfg fleet_vm_fault`, src/vm_fault.rs: test-only, never a release). vm-test.sh checks that
+        # exactly these have the fault. The normal builds share target/vm-test, one after another; the
+        # fault builds have their own target directory (their flags differ) and run beside them.
+        env:
+          GROUP: ${{ matrix.group }}
         run: |
           set -eu
+          case $GROUP in
+            all) BUILDS="1.0.0 1.0.1 1.1.1" FAULT_BUILDS="1.1.0" ;;
+            install) BUILDS="1.0.0" FAULT_BUILDS="" ;;
+            updates-a | updates-b) BUILDS="1.0.0 1.0.1" FAULT_BUILDS="" ;;
+            packages) BUILDS="" FAULT_BUILDS="1.0.0" ;;
+            recovery) BUILDS="1.0.0 1.1.1" FAULT_BUILDS="1.1.0" ;;
+            *) echo "::error::unknown group $GROUP"; exit 1 ;;
+          esac
           dir="$RUNNER_TEMP/vm-test"
           mkdir -p "$dir"
           minisign -G -W -p "$dir/test.pub" -s "$dir/test.key" > /dev/null
-          scripts/update-smoke-build.sh 1.0.0 "$dir/test.pub" "$dir/fleet-agent-1.0.0" "$RUNNER_TEMP/vm-target"
-          scripts/update-smoke-build.sh 1.0.1 "$dir/test.pub" "$dir/fleet-agent-1.0.1" "$RUNNER_TEMP/vm-target"
-          scripts/update-smoke-build.sh 1.1.1 "$dir/test.pub" "$dir/fleet-agent-1.1.1" "$RUNNER_TEMP/vm-target"
-          VM_FAULT=1 scripts/update-smoke-build.sh 1.1.0 "$dir/test.pub" "$dir/fleet-agent-1.1.0" "$RUNNER_TEMP/vm-target-fault"
+          fault_pid=
+          if [ -n "$FAULT_BUILDS" ]; then
+            (
+              for version in $FAULT_BUILDS; do
+                VM_FAULT=1 scripts/update-smoke-build.sh "$version" "$dir/test.pub" "$dir/fleet-agent-$version" "$PWD/target/vm-test-fault"
+              done
+            ) > "$RUNNER_TEMP/fault-build.log" 2>&1 &
+            fault_pid=$!
+          fi
+          for version in $BUILDS; do
+            scripts/update-smoke-build.sh "$version" "$dir/test.pub" "$dir/fleet-agent-$version" "$PWD/target/vm-test"
+          done
+          if [ -n "$fault_pid" ]; then
+            status=0
+            wait "$fault_pid" || status=$?
+            echo "::group::Fault builds"
+            cat "$RUNNER_TEMP/fault-build.log"
+            echo "::endgroup::"
+            [ "$status" = 0 ] || { echo "::error::the fault build failed (exit $status)"; exit 1; }
+          fi
+          ls -l "$dir"
 
       - name: Find the image and its published checksum
         id: image
@@ -136,10 +185,11 @@ jobs:
           fi
           echo "$SHA512  $image" | sha512sum -c -
 
-      - name: Kill and reboot in the middle of updates
+      - name: Run the scenarios of the group
         env:
           NAME: ${{ steps.image.outputs.name }}
-        run: scripts/vm-test.sh "$RUNNER_TEMP/vm-test" "$RUNNER_TEMP/debian-image/$NAME" "$RUNNER_TEMP/vm-test-results"
+          GROUP: ${{ matrix.group }}
+        run: scripts/vm-test.sh "$RUNNER_TEMP/vm-test" "$RUNNER_TEMP/debian-image/$NAME" "$RUNNER_TEMP/vm-test-results" "$GROUP"
 
       - name: Job summary
         if: always()
@@ -149,7 +199,47 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: vm-test-results
+          name: vm-test-results-${{ matrix.group }}
           path: ${{ runner.temp }}/vm-test-results
           if-no-files-found: warn
           retention-days: 90
+
+  results:
+    # The check that stands for all the groups: green only when every group passed.
+    name: Update failure tests on a Debian 13 VM
+    needs: vm
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download the groups' results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vm-test-results-*
+          path: vm-test-results
+
+      - name: Job summary
+        run: |
+          for file in vm-test-results/*/results.md; do
+            [ -s "$file" ] || continue
+            cat "$file" >> "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload the results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: vm-test-results
+          path: vm-test-results
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Every group passed
+        env:
+          RESULT: ${{ needs.vm.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "::error::a VM test group did not pass ($RESULT): see the VM tests jobs"
+            exit 1
+          fi
+          echo "every VM test group passed"
