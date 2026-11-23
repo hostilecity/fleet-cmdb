@@ -12,17 +12,17 @@ class TestReleaseKey
     @key_id = key_id.b
   end
 
-  # A key whose id, as a number, is id (for example 0x0A2E8E1D2E10F3B9, which minisign prints as A2E8E1D2E10F3B9).
+  # A key whose id, as a number, is id (for example 0x0A2E8E1D2E10F3B9).
   def self.with_id(id) = new(key_id: [ id ].pack("Q<"))
 
   # The base64 line of the minisign .pub file.
   def public_line = Base64.strict_encode64("Ed" + key_id + @pkey.raw_public_key)
 
-  # The whole .pub file, as minisign writes it.
+  # The whole .pub file, as minisign 0.12 writes it.
   def public_file = "untrusted comment: minisign public key #{id_hex}\n#{public_line}\n"
 
-  # As minisign prints it: uppercase hexadecimal without leading zeros ("%" PRIX64).
-  def id_hex = format("%X", key_id.unpack1("Q<"))
+  # As minisign 0.12 prints it, and Releases::PublicKey#id_hex: 16 uppercase hexadecimal digits.
+  def id_hex = format("%016X", key_id.unpack1("Q<"))
 
   # A .minisig for message. legacy: sign the message itself ("Ed"), not its hash.
   def sign(message, trusted_comment: "fleet-agent test release manifest", legacy: false, key_id: self.key_id)

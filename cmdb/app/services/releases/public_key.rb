@@ -40,9 +40,8 @@ module Releases
     end
 
     # The key id as minisign prints it ("minisign public key 9E62E8E1D2E10F3B"): the little-endian number
-    # in uppercase hexadecimal, without leading zeros (minisign's "%" PRIX64), so key 0x0A2E... prints
-    # as "A2E..." in the .pub file and in minisign's errors, and the page and the docs must say the same (#289).
-    def id_hex = format("%X", key_id.unpack1("Q<"))
+    # in uppercase hexadecimal.
+    def id_hex = key_id.reverse.unpack1("H*").upcase
 
     # The base64 line of the .pub file: what `minisign -P` takes, and what to compare by hand (the key id alone
     # is chosen by whoever made the key, so it is a name, not a fingerprint).
