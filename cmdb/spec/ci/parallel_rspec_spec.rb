@@ -29,7 +29,11 @@ RSpec.describe ParallelRspec do
   def write_results(name, examples:, failures: 0, pending: 0, outside: 0, messages: [])
     File.write(work("results-#{name}.json"), JSON.generate(
       "version" => "3.13.0", "seed" => 77, "messages" => messages,
-      "examples" => examples.map { |file, time| { "file_path" => "./#{file}", "run_time" => time, "status" => "passed" } },
+      # file => seconds, or [file that ran it, file that defines it (a shared example's support file)] => seconds
+      "examples" => examples.each_with_index.map do |(file, time), i|
+        ran, defined = Array(file)
+        { "id" => "./#{ran}[1:#{i + 1}]", "file_path" => "./#{defined || ran}", "run_time" => time, "status" => "passed" }
+      end,
       "summary" => { "example_count" => examples.size, "failure_count" => failures, "pending_count" => pending, "errors_outside_of_examples_count" => outside }
     ))
   end
@@ -59,13 +63,14 @@ RSpec.describe ParallelRspec do
   end
 
   describe "the number of processes" do
-    it "is one per CPU by default" do
+    it "is one per CPU by default, at most #{ParallelRspec::DEFAULT_MAX}" do
       expect(runner.processes).to eq(4)
+      expect([ 1, 2, 12 ].map { |cpus| described_class.new(env:, cpus:).processes }).to eq([ 1, 2, ParallelRspec::DEFAULT_MAX ])
     end
 
-    it "is PARALLEL_TEST_PROCESSORS when set, and at least one" do
-      env["PARALLEL_TEST_PROCESSORS"] = "3"
-      expect(runner.processes).to eq(3)
+    it "is PARALLEL_TEST_PROCESSORS when set, above the default's cap too, and at least one" do
+      env["PARALLEL_TEST_PROCESSORS"] = "6"
+      expect(runner.processes).to eq(6)
       env["PARALLEL_TEST_PROCESSORS"] = "0"
       expect(runner.processes).to eq(1)
     end
@@ -91,36 +96,49 @@ RSpec.describe ParallelRspec do
   context "with one process" do
     before { env["PARALLEL_TEST_PROCESSORS"] = "1" }
 
-    it "is a plain rspec run, with no database preparation" do
+    it "is a plain rspec run in the test environment, with no database preparation" do
       expect(runner.run).to eq(0)
-      expect(commands).to eq([ [ {}, %w[bundle exec rspec] ] ])
+      expect(commands).to eq([ [ { "RAILS_ENV" => "test" }, %w[bundle exec rspec] ] ])
       expect(out.string).to include("Running RSpec in one process (one process)")
     end
 
     it "passes on the paths and SEED, and fails when rspec does" do
       env["SEED"] = "5"
       expect(described_class.new(paths: [ "spec/models" ], env:, root:, out:, run: ->(*c) { commands << c && false }).run).to eq(1)
-      expect(commands.sole).to eq([ {}, "bundle", "exec", "rspec", "--seed", "5", "spec/models" ])
+      expect(commands.sole).to eq([ { "RAILS_ENV" => "test" }, "bundle", "exec", "rspec", "--seed", "5", "spec/models" ])
     end
   end
 
-  it "runs in one process when DATABASE_URL names one set of databases for all of them" do
-    env["DATABASE_URL"] = "postgres:///cmdb_spec"
+  it "runs in one process when DATABASE_URL or any other *_DATABASE_URL names one database for every process" do
+    env["QUEUE_DATABASE_URL"] = "postgres:///cmdb_spec_queue"
+    env["EMPTY_DATABASE_URL"] = ""
     expect(runner.run).to eq(0)
     expect(commands.sole.last).to eq(%w[bundle exec rspec])
-    expect(out.string).to include("DATABASE_URL names one set of test databases for every process")
+    expect(out.string).to include("(QUEUE_DATABASE_URL names one database for every process)")
+    env["DATABASE_URL"] = "postgres:///cmdb_spec"
+    described_class.new(env:, root:, out:, run: ->(*) { true }).run
+    expect(out.string).to include("(DATABASE_URL and QUEUE_DATABASE_URL name one database for every process)")
   end
 
   context "in parallel" do
     before { env["SEED"] = "77" }
 
-    it "prepares every process's databases, then runs the suite by runtime with one seed" do
+    it "prepares every process's test databases, then runs the suite by runtime with one seed, the timed specs together" do
       expect(runner.run).to eq(0)
+      # RAILS_ENV: parallel_tests sets it only in its rake tasks, and bin/ci locally runs without it (review of #293, B1).
       expect(commands).to eq([
-        [ {}, [ "bundle", "exec", "parallel_test", "-n", "4", "--exec", "bin/rails db:prepare" ] ],
-        [ {}, [ "bundle", "exec", "parallel_rspec", "-n", "4", "--group-by", "runtime", "--runtime-log", "spec/parallel_runtime_rspec.log",
-                "--allowed-missing", "100", "--verbose-rerun-command", "--test-options", "--seed 77", "--", "spec" ] ]
+        [ { "RAILS_ENV" => "test" }, [ "bundle", "exec", "parallel_test", "-n", "4", "--exec", "bin/rails db:prepare" ] ],
+        [ { "RAILS_ENV" => "test" }, [ "bundle", "exec", "parallel_rspec", "-n", "4", "--group-by", "runtime", "--runtime-log", "spec/parallel_runtime_rspec.log",
+                                       "--allowed-missing", "100", "--single", described_class::TIMED.source, "--verbose-rerun-command",
+                                       "--test-options", "--seed 77", "--", "spec" ] ]
       ])
+    end
+
+    it "puts every spec with a wall-clock budget, and only those, in the timed group" do
+      timed = Dir.glob("spec/**/*_spec.rb", base: Rails.root).grep(described_class::TIMED)
+      expect(timed).to contain_exactly("spec/services/vulnerability_matcher_performance_spec.rb", "spec/services/cis_dry_run_performance_spec.rb",
+                                       "spec/requests/api/heartbeat_performance_spec.rb", "spec/services/signals/epss_reader_spec.rb",
+                                       "spec/lib/cis_rules/evaluator_spec.rb")
     end
 
     it "runs only the paths given" do
@@ -158,27 +176,41 @@ RSpec.describe ParallelRspec do
       let(:writes) do
         lambda do |_root|
           write_results("1", examples: { "spec/a_spec.rb" => 1.25, "spec/b_spec.rb" => 2.0 }, failures: 1, pending: 1, messages: [ "m1" ])
-          write_results("2", examples: { "spec/a_spec.rb" => 0.5, "spec/c_spec.rb" => 3.0 }, outside: 2, messages: [ "m2" ])
+          write_results("2", examples: { "spec/a_spec.rb" => 0.5, "spec/c_spec.rb" => 3.0, [ "spec/c_spec.rb", "spec/support/shared.rb" ] => 0.25 },
+                             outside: 2, messages: [ "m2" ])
         end
       end
 
       it "merges them into one set of RSpec results, naming any process that wrote none" do
         runner.run
         expect(merged).to include("version" => "3.13.0", "seed" => 77, "processes" => 4, "missing_processes" => %w[3 4], "messages" => %w[m1 m2],
-                                  "summary_line" => "4 examples, 1 failure, 1 pending, 2 errors occurred outside of examples")
-        expect(merged["examples"].size).to eq(4)
-        expect(merged["summary"]).to eq("example_count" => 4, "failure_count" => 1, "pending_count" => 1, "errors_outside_of_examples_count" => 2, "duration" => 42.5)
+                                  "summary_line" => "5 examples, 1 failure, 1 pending, 2 errors occurred outside of examples")
+        expect(merged["examples"].size).to eq(5)
+        expect(merged["summary"]).to eq("example_count" => 5, "failure_count" => 1, "pending_count" => 1, "errors_outside_of_examples_count" => 2, "duration" => 42.5)
       end
 
-      it "records each file's runtime across the processes, in the checked-in log's format" do
+      it "records each file's runtime across the processes, in the checked-in log's format, shared examples in the file that ran them" do
         runner.run
-        expect(File.read(File.join(root, described_class::RECORDED_RUNTIMES))).to eq("spec/a_spec.rb:1.75\nspec/b_spec.rb:2.0\nspec/c_spec.rb:3.0\n")
+        expect(File.read(File.join(root, described_class::RECORDED_RUNTIMES))).to eq("spec/a_spec.rb:1.75\nspec/b_spec.rb:2.0\nspec/c_spec.rb:3.25\n")
       end
 
       it "writes no annotations outside GitHub Actions" do
         runner.run
         expect(annotations).to eq([])
       end
+    end
+
+    it "still merges the others' results when a process died with its files empty or cut short (review of #293, S1)" do
+      env["PARALLEL_TEST_PROCESSORS"] = "3"
+      described_class.new(env:, root:, out:, clock: -> { 0.0 }, run: lambda { |_e, *argv|
+        if argv[2] == "parallel_rspec"
+          write_results("1", examples: { "spec/a_spec.rb" => 1.0 })
+          File.write(work("results-2.json"), "")
+          File.write(work("results-3.json"), '{"examples": [{"id": "./spec/b')
+        end
+        argv[2] != "parallel_rspec"
+      }).run
+      expect(merged).to include("missing_processes" => %w[2 3], "summary_line" => "1 example, 0 failures")
     end
 
     it "words a run of one example as RSpec does" do
@@ -198,6 +230,7 @@ RSpec.describe ParallelRspec do
 
       let(:writes) do
         lambda do |_root|
+          %w[1 2].each { |name| write_results(name, examples: {}) }
           write_annotations("1", annotation("load error", outside: true), *Array.new(5) { |i| annotation("a#{i}") },
                             summary(failures: 5, outside: 1, reruns: Array.new(5) { |i| "bundle exec rspec ./spec/a_spec.rb:#{i} --seed 77 # a#{i}" }))
           write_annotations("2", *Array.new(4) { |i| annotation("b#{i}") }, annotation("late load error", outside: true),
@@ -218,19 +251,45 @@ RSpec.describe ParallelRspec do
         ])
       end
 
-      it "says which process reported nothing, even when the others passed" do
+      it "names a process that died, even when the others passed, from its empty or cut-short files (review of #293, S1)" do
         described_class.new(env:, root:, out:, clock: -> { 0.0 }, run: lambda { |_e, *argv|
-          write_annotations("1", summary) if argv[2] == "parallel_rspec"
+          if argv[2] == "parallel_rspec"
+            write_results("1", examples: {})
+            write_annotations("1", summary)
+            File.write(work("results-2.json"), "")
+            File.write(work("annotations-2.jsonl"), "#{JSON.generate(annotation('b0'))}\n{\"annotation\": \"::err")
+          end
+          argv[2] != "parallel_rspec" # the process that died fails the run
+        }).run
+        expect(annotations.size).to eq(2)
+        expect(annotations.first).to eq("::error title=RSpec%3A b0::b0")
+        expect(decode(annotations.last)).to eq("3 examples, 0 failures, seed 77.\nProcess 2 reported no results: it died or was killed; see the job log.")
+        expect(merged["missing_processes"]).to eq([ "2" ])
+      end
+
+      it "prints each process's progress every heartbeat while they run (review of #293, N4)" do
+        described_class.new(env:, root:, out:, clock: -> { 0.0 }, pause: ->(_seconds) { sleep 0.01 }, run: lambda { |_e, *argv|
+          if argv[2] == "parallel_rspec"
+            File.write(work("progress-1.txt"), "12")
+            deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+            sleep 0.01 until out.string.include?("RSpec running") || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          end
           true
         }).run
-        expect(annotations.size).to eq(1)
-        expect(decode(annotations.sole)).to eq("3 examples, 0 failures, seed 77.\nProcess 2 reported no results; see the job log.")
+        expect(out.string).to include("== RSpec running for 0 s; examples finished by process: 1: 12, 2: starting ==")
+      end
+
+      it "words a finished process's progress as it wrote it" do
+        FileUtils.mkdir_p(work(""))
+        File.write(work("progress-1.txt"), "40 done\n")
+        File.write(work("progress-2.txt"), "")
+        expect(runner.progress(2, 61.4)).to eq("RSpec running for 61 s; examples finished by process: 1: 40 done, 2: starting")
       end
 
       it "writes nothing for a passing run" do
         described_class.new(env:, root:, out:, clock: -> { 0.0 }, run: lambda { |_e, *argv|
           if argv[2] == "parallel_rspec"
-            %w[1 2].each { |name| write_annotations(name, summary, {}) }
+            %w[1 2].each { |name| write_results(name, examples: {}) && write_annotations(name, summary, {}) }
             File.write(work("annotations-2.jsonl"), "\n", mode: "a") # a blank line is skipped
           end
           true

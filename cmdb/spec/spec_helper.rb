@@ -11,6 +11,7 @@ unless ENV["NO_COVERAGE"]
 end
 
 require_relative "support/github_annotations_formatter"
+require_relative "support/progress_file_formatter"
 
 RSpec.configure do |config|
   # In GitHub Actions, failures also become annotations on the pull request (and readable through the API), and
@@ -23,6 +24,7 @@ RSpec.configure do |config|
     work = File.expand_path("../#{ParallelRspec::WORK_DIR}", __dir__)
     config.add_formatter("progress")
     config.add_formatter("json", "#{work}/results-#{process}.json")
+    config.add_formatter(ProgressFileFormatter, "#{work}/progress-#{process}.txt")
     config.add_formatter(GithubAnnotationsFormatter::Deferred, "#{work}/annotations-#{process}.jsonl") if GithubAnnotation.active?
   elsif GithubAnnotation.active?
     config.add_formatter("progress") # keep the usual output; adding a formatter replaces the default
