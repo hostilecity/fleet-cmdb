@@ -48,6 +48,21 @@ class HostTriageSections
   # The findings drawn under a package row.
   def self.shown(group) = group.findings.first(NESTED_MAX)
 
+  # The package page's sections (#283): the tab sections with package rows, whose "N more" link carries its section
+  # so the package page lists exactly the findings the row counts. A section's findings, as the tab selects them
+  # below: Fix available's kernel rows (K1, K2) or package rows (F1, F2), one Low risk or Ignorable rule's rows, or
+  # the open findings not triaged yet. scope: open and reopened findings; rule: a rule_param, for "rule".
+  PACKAGE_SECTIONS = %w[kernel fix rule untriaged].freeze
+
+  def self.section_scope(scope, section, rule = nil)
+    case section
+    when "kernel" then scope.where(bucket_rule: KERNEL_RULES.map { |name| VulnerabilityTriage::RULE_IDS.fetch(name) })
+    when "fix" then scope.where(bucket_rule: PACKAGE_RULES.map { |name| VulnerabilityTriage::RULE_IDS.fetch(name) })
+    when "rule" then scope.where(bucket_rule: VulnerabilityTriage::RULE_IDS.fetch(rule))
+    else scope.where(bucket: nil)
+    end
+  end
+
   # Every finding on the page, and every finding of a Fix available package row: its "Upgrade to" is the highest fix
   # of all of them, which F2's needs their inputs for (re-check of #281, N3). Fix available rows are upgrades, so
   # rarely long.

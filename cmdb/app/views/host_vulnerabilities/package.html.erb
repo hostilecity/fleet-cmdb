@@ -1,9 +1,12 @@
 <%= render "hosts/header", host: @host, credential: @credential, token: @token, summary: @summary, tab: :vulnerabilities, title: "#{@host.name}: findings for #{@package}" %>
+<%# One page of the package's findings (HostPackageFindings, #283): the counts are the package's whole counts, the
+    table and the notes beside it the page's findings, which the tab's filters may narrow (@filters). %>
+<% open_count = @package_counts["open"] + @package_counts["reopened"] %>
+<% total = @package_counts.values.sum %>
 <% open = @findings.reject { |f| f.state == "resolved" } %>
-<% resolved = @findings.select { |f| f.state == "resolved" } %>
-<%= render "hosts/advisory_freshness", statuses: @freshness %>
+<%= render "hosts/advisory_freshness", statuses: @freshness, signal_statuses: @signals %>
 <% unless @evaluated %>
-  <%= render "host_vulnerabilities/not_evaluated", host: @host, evaluation: @evaluation, context: @context, open_count: open.size %>
+  <%= render "host_vulnerabilities/not_evaluated", host: @host, evaluation: @evaluation, context: @context, open_count: open_count %>
 <% end %>
 <p><%= link_to "← Vulnerabilities", vulnerabilities_host_path(@host) %></p>
 <h2 class="page-title mono"><%= @package %></h2>
@@ -30,16 +33,17 @@
   </section>
   <section class="sheet flat" aria-labelledby="findings_summary_heading" id="package_summary">
     <h3 id="findings_summary_heading">Findings for this package</h3>
-    <% if @findings.empty? && !@evaluated %>
+    <% if total.zero? && !@evaluated %>
       <p class="muted" id="findings_unknown"><strong>Not known.</strong> This host's vulnerabilities have not been evaluated, so an absence of findings means nothing.</p>
-    <% elsif @findings.empty? && (@unchecked.any? || @unchecked_cut_short) %>
+    <% elsif total.zero? && (@unchecked.any? || @unchecked_cut_short) %>
       <p class="muted" id="findings_unchecked"><strong>No findings recorded, but not everything was checked.</strong>
         <%= @unchecked.any? ? "#{pluralize(@unchecked.size, 'advisory')} could not be compared for this package, listed below." : "The matcher could not check some package and advisory pairs and keeps only the first #{@evaluation.not_evaluated.size}, so this package may be one of them." %></p>
-    <% elsif @findings.empty? %>
+    <% elsif total.zero? %>
       <p class="none-open"><strong>No findings.</strong></p>
     <% else %>
-      <p><strong><%= open.size %> open</strong><%= " (#{open.count { |f| f.state == 'reopened' }} reopened)" if open.any? { |f| f.state == "reopened" } %>, <strong><%= resolved.size %> resolved</strong>.</p>
-      <% if (note = kernel_fix_note(@package, open.count(&:fixed_version))) %><p class="muted"><%= note %></p><% end %>
+      <p><strong><%= number_with_delimiter(open_count) %> open</strong><%= " (#{number_with_delimiter(@package_counts['reopened'])} reopened)" if @package_counts["reopened"].positive? %>, <strong><%= number_with_delimiter(@package_counts["resolved"]) %> resolved</strong>.</p>
+      <% if (note = kernel_fix_note(@package, @open_fixable)) %><p class="muted"><%= note %></p><% end %>
+      <%# The notes below are for the open findings on this page, so a package with thousands of findings draws one page of them. %>
       <% open.select(&:fixed_version).each do |finding| %>
         <p class="muted">For <span class="mono"><%= finding.advisory.advisory_id %></span>, the affected range the installed version is in is fixed in <span class="mono"><%= finding.fixed_version %></span>. Check the advisory for any other affected range before relying on a later version.</p>
       <% end %>
@@ -59,18 +63,41 @@
       <% @unchecked.each do |entry| %><li><span class="mono"><%= entry["advisory"] %></span> at <span class="mono"><%= entry["version"] %></span>: <%= entry["reason"] %></li><% end %>
     </ul></div>
 <% end %>
-<% if @findings.any? %>
-  <h3>All findings for <span class="mono"><%= @package %></span></h3>
+<% if total.positive? %>
+  <% filtered = @filters.except(:state).any? || @filters[:state] %>
+  <h3 id="package_findings_heading"><%= filtered ? "Findings for" : "All findings for" %> <span class="mono"><%= @package %></span></h3>
+  <% if filtered %>
+    <p class="notice info" role="status" id="package_filters"><%= pluralize(number_with_delimiter(@page.count), "finding") %> of the package's <%= number_with_delimiter(total) %> <%= @page.count == 1 ? "matches" : "match" %>: <%= package_filter_words(@filters) %>. <%= link_to "Show every finding of this package", package_vulnerabilities_host_path(@host, package: @package) %></p>
+  <% end %>
+  <% if @page.notice %>
+    <p class="notice info" role="status" id="package_page_notice"><% if @page.notice == :moved %>The findings changed since this page was opened, and none are left past it, so the first page is shown.<% else %>The page link is not one this page wrote, so the first page is shown.<% end %>
+      <%= link_to "Go to the first page", package_vulnerabilities_host_path(@host, @filters.merge(package: @package)) %></p>
+  <% end %>
+  <% if @findings.empty? %>
+    <p class="muted" id="package_no_match">No findings of this package match. <%= link_to "Show every finding of this package", package_vulnerabilities_host_path(@host, package: @package) %></p>
+  <% else %>
   <div class="table-wrap"><table id="package_findings"><caption class="visually-hidden">Findings for <%= @package %></caption>
-    <thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Package</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col"><%= @triage_release ? "Debian's triage (#{@triage_release})" : "Debian's triage" %></th><th scope="col">History</th></tr></thead><tbody>
+    <thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Package</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col"><%= @triage_release ? "Debian's triage (#{@triage_release})" : "Debian's triage" %></th><th scope="col">History</th><th scope="col">Bucket and why</th></tr></thead><tbody>
     <% @findings.each do |finding| %>
       <tr class="finding <%= finding.state %>"><td><%= severity_tag(finding.advisory.severity) %></td><td><%= advisory_cell(finding.advisory) %></td>
         <td><span class="mono"><%= finding.package %>:<%= finding.architecture %></span></td><td><span class="mono"><%= finding.installed_version %></span></td>
         <td><%= finding.fixed_version ? tag.span(finding.fixed_version, class: "mono") : tag.span("No fix available", class: "unavailable") %></td>
         <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>
         <td><%= triage_lines(finding, @triage[finding], page: :package, status: @triage_status, os: @triage_os) %></td>
-        <td><%= finding_history(finding) %></td></tr>
+        <td><%= finding_history(finding) %></td>
+        <td><%= package_finding_bucket(finding, @page, @signals) %></td></tr>
     <% end %>
   </tbody></table></div>
+  <% end %>
+  <% order = "Worst severity first, then the earliest first seen." %>
+  <% if @page.paged? %>
+    <nav class="pager" aria-label="Pages of findings for <%= @package %>" id="package_findings_pager">
+      <% if @page.previous %><%= link_to "Previous", package_vulnerabilities_host_path(@host, @filters.merge(package: @package, before: @page.previous)), rel: "prev" %><% else %><span class="off" aria-disabled="true">Previous</span><% end %>
+      <span class="muted"><%= pluralize(number_with_delimiter(@findings.size), "finding") %> shown of <%= number_with_delimiter(@page.count) %>. <%= order %></span>
+      <% if @page.next %><%= link_to "Next", package_vulnerabilities_host_path(@host, @filters.merge(package: @package, after: @page.next)), rel: "next" %><% else %><span class="off" aria-disabled="true">Next</span><% end %>
+    </nav>
+  <% else %>
+    <p class="pager" id="package_findings_pager"><span><%= pluralize(number_with_delimiter(@page.count), "finding") %>. <%= order %></span></p>
+  <% end %>
   <p class="muted">A finding keeps only its latest resolution and reopening, so a finding that came and went more than once lists the latest round.</p>
 <% end %>

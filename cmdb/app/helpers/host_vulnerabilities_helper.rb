@@ -290,4 +290,44 @@ module HostVulnerabilitiesHelper
     words = { "upgrade" => [ "an upgrade", "upgrades" ], "kernel_installed" => [ "a new kernel installed", "new kernels installed" ], "reboot" => [ "a reboot", "reboots" ] }
     words.filter_map { |kind, (one, many)| (n = by_kind[kind].to_i).positive? && (n == 1 ? one : "#{n} #{many}") }.to_sentence
   end
+
+  # --- The package page's filters and buckets (#283) ---
+
+  PACKAGE_SECTION_WORDS = {
+    "kernel" => "Fix available, the kernel's steps (K1, K2)", "fix" => "Fix available, package upgrades (F1, F2)", "untriaged" => "not triaged yet"
+  }.freeze
+  PACKAGE_STATE_WORDS = { "open" => "open and reopened", "resolved" => "resolved" }.freeze
+  PACKAGE_SIGNAL_WORDS = { "kev" => "known exploited (KEV)", "epss" => "EPSS high", "network" => "network, no login, no user action" }.freeze
+
+  # The tab's "N more" link under a package row: the package page with the tab's filters and the row's section and
+  # architecture, starting after the last finding the row drew, so it opens on exactly the findings it counts. section:
+  # one of HostTriageSections::PACKAGE_SECTIONS; rule: the rule shown, for "rule".
+  def package_more_path(host, group, link_params:, section:, rule: nil)
+    params = { package: group.package, arch: group.architecture, state: "open", section:, rule: (rule if section == "rule"),
+               **link_params.slice(:severity, :signal, :q, :debian, :fix), after: HostPackageFindings.cursor_of(HostTriageSections.shown(group).last) }
+    package_vulnerabilities_host_path(host, params.compact)
+  end
+
+  # "open and reopened, severity high, rule L2 (Low risk)": the package page's filters in words, the text search
+  # escaped as any text is.
+  def package_filter_words(filters)
+    words = []
+    words << PACKAGE_STATE_WORDS.fetch(filters[:state]) if filters[:state]
+    words << (filters[:section] == "rule" ? "rule #{filters[:rule]} (#{bucket_name(VulnerabilityTriage::RULES.fetch(filters[:rule]))})" : PACKAGE_SECTION_WORDS.fetch(filters[:section])) if filters[:section]
+    words << "architecture #{filters[:arch]}" if filters[:arch]
+    words << "severity #{filters[:severity]}" if filters[:severity]
+    words << "signal: #{PACKAGE_SIGNAL_WORDS.fetch(filters[:signal])}" if filters[:signal]
+    words << "Debian: no security update planned" if filters[:debian]
+    words << "the advisory data names a fix" if filters[:fix]
+    words << "matching \u201c#{filters[:q]}\u201d" if filters[:q]
+    words.join(", ")
+  end
+
+  # A finding's bucket and reason on the package page, as on the tab; a resolved finding is in no bucket.
+  def package_finding_bucket(finding, details, signals)
+    return tag.span("Resolved: in no bucket", class: "muted") if finding.state == "resolved"
+
+    bucket = VulnerabilityTriage.bucket_for(finding.bucket)
+    safe_join([ (bucket_tag(bucket) if bucket), " ", triage_reason(finding, details, signals) ].compact)
+  end
 end
