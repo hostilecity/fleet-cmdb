@@ -28,8 +28,8 @@ class CreateFindingDecisions < ActiveRecord::Migration[8.1]
       t.boolean :confirmed, null: false, default: false
       t.jsonb :evidence, null: false
       t.string :request_id, limit: 128
-      # The operator session that recorded it: the step-up counts a session's decisions over a rolling window (owner
-      # decision 2026-11-23, epic decision 37). Not a foreign key: sessions are deleted when they end, decisions never.
+      # The operator session that recorded it, for the record (the step-up counts the operator's decisions in every
+      # session, epic decision 37). Not a foreign key: sessions are deleted when they end, decisions never.
       t.bigint :operator_session_id
       t.datetime :ended_at
       t.bigint :ended_by_id
@@ -43,7 +43,8 @@ class CreateFindingDecisions < ActiveRecord::Migration[8.1]
       t.index :advisory_id, where: "ended_at IS NULL", name: "index_finding_decisions_active_advisory"
       # The hourly sweep reads the active rows in id order; ended rows are kept for ever, so this keeps it off them.
       t.index :id, where: "ended_at IS NULL", name: "index_finding_decisions_active_id"
-      t.index %i[operator_session_id created_at], name: "index_finding_decisions_session_window"
+      # The step-up's count: an operator's decisions over the last 15 minutes (epic decision 37).
+      t.index %i[created_by_id created_at], name: "index_finding_decisions_operator_window"
 
       t.check_constraint "kind IN (#{KINDS.map { |k| "'#{k}'" }.join(', ')})", name: "finding_decisions_kind_valid"
       t.check_constraint "char_length(reason) BETWEEN 10 AND 1000", name: "finding_decisions_reason_length"

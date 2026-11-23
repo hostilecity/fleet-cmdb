@@ -118,11 +118,13 @@ RSpec.describe FindingDecisions do
       expect(record(advisory: shell, until_on: Date.current + 31).errors[:expires_on]).to eq("Pick a date no later than #{(Date.current + 30).iso8601} (30 days from today, since it is known exploited).")
       # A KEV-listed advisory needs the second factor every time (owner decision 2026-11-23, epic decision 37).
       expect(record(advisory: shell, until_on: Date.current + 30).errors[:second_factor_code])
-        .to eq("A decision on a known exploited advisory needs a code from your authenticator app every time. Nothing was saved.")
-      expect(record(advisory: shell, until_on: Date.current + 30, stepped_up: true)).to be_saved
+        .to eq("A decision on a known exploited advisory needs a new code from your authenticator app every time. Nothing was saved.")
+      # Passed only by an open window: not enough on a KEV-listed advisory.
+      expect(record(advisory: shell, until_on: Date.current + 30, stepped_up: :window).errors[:second_factor_code]).to start_with("A decision on a known exploited advisory needs a new code")
+      expect(record(advisory: shell, until_on: Date.current + 30, stepped_up: :fresh)).to be_saved
       expect(rules(shell)).to eq("bash" => "O1") # a control may cover a KEV finding; its kev flag stays
       expect(VulnerabilityFinding.find_by!(host:, advisory: shell).kev).to be(true)
-      expect(record(advisory: shell, stepped_up: true).errors.values.sole).to eq("Media server: it already has a decision for this advisory: change or end that one.")
+      expect(record(advisory: shell, stepped_up: :fresh).errors.values.sole).to eq("Media server: it already has a decision for this advisory: change or end that one.")
     end
 
     it "refuses an advisory whose findings are only Ignorable, and a host with none" do
@@ -132,6 +134,16 @@ RSpec.describe FindingDecisions do
       expect(record(advisory: shell).errors.values.sole).to eq("Media server: its findings are Ignorable here, so there is nothing to decide.")
       bare = debian_host(name: "Bare", packages: [ [ "bash", "5.2.36-1", "bash" ] ])
       expect(record(advisory: tls, hosts: [ bare ]).errors.values.sole).to eq("Bare: it has no open finding for this advisory.")
+    end
+
+    it "refuses an advisory added to the KEV list between the form's check and the save's lock, so its 30-day limit holds" do
+      allow(Host).to receive(:lock).and_wrap_original do |original|
+        KevEntry.create!(cve_id: "CVE-2026-92002", date_added: Date.current) unless KevEntry.exists?(cve_id: "CVE-2026-92002")
+        original.call
+      end
+      outcome = record(until_on: Date.current + 80, stepped_up: :window)
+      expect(outcome.errors[:hosts]).to eq("The advisory was added to CISA's KEV list meanwhile; check the date (at most 30 days) and save again.")
+      expect(FindingDecision.count).to eq(0)
     end
 
     it "refuses findings not triaged yet, and a host retired between the form and the save" do
@@ -195,6 +207,17 @@ RSpec.describe FindingDecisions do
       expect(audits("decision_changed")).to be_empty
     end
 
+    it "suspends rather than changes a decision whose evidence got worse since it was recorded" do
+      decision = record(kind: "accepted", confirmed: [], until_on: Date.current + 10).decisions.sole
+      EpssScore.create!(cve_id: "CVE-2026-92002", score: 0.31, percentile: 0.97, band: "high", score_date: Date.current)
+      outcome = described_class.change!(decision, operator:, params: { reason: decision.reason, expires_on: (Date.current + 80).iso8601 })
+      expect(outcome.errors[:base]).to eq("The evidence got worse since it was recorded (EPSS band: none, now high), so it is now suspended and the finding is due a new decision. " \
+                                          "Record a new one on today's evidence.")
+      expect(decision.reload).to have_attributes(ended_why: "suspended", expires_on: Date.current + 10, ended_evidence: { "epss_band" => [ nil, "high" ] })
+      expect(audits("decision_suspended").sole).to have_attributes(actor_type: "system")
+      expect(audits("decision_changed")).to be_empty
+    end
+
     it "caps the last day in the database too, written past the application" do
       decision = record(kind: "accepted", confirmed: []).decisions.sole
       expect { FindingDecision.where(id: decision.id).update_all(expires_on: Date.current + 367) }.to raise_error(ActiveRecord::StatementInvalid, /expires_within_limit/) # rubocop:disable Rails/SkipsModelValidations
@@ -240,7 +263,7 @@ RSpec.describe FindingDecisions do
       import_advisories(osv_record(id: "DEBIAN-CVE-2026-93001", package: "bash", fixed: nil, severity: local, aliases: [ "CVE-2026-93009" ], modified: "2026-11-01T08:00:00Z"))
       import_kev(kev_file("CVE-2026-93001"))
       perform_evaluation_jobs
-      decision = record(kind: "accepted", advisory: shell, confirmed: [], until_on: Date.current + 20, stepped_up: true).decisions.sole
+      decision = record(kind: "accepted", advisory: shell, confirmed: [], until_on: Date.current + 20, stepped_up: :fresh).decisions.sole
       expect(decision.evidence).to include("kev" => true, "kev_cves" => [ "CVE-2026-93001" ])
       import_kev(kev_file("CVE-2026-93001", "CVE-2026-93009"))
       perform_evaluation_jobs
@@ -289,12 +312,21 @@ RSpec.describe FindingDecisions do
     it "catches in the hourly job an EPSS band turning high that moved no bucket" do
       import_kev(kev_file("CVE-2026-93001"))
       perform_evaluation_jobs
-      decision = record(kind: "accepted", advisory: shell, confirmed: [], until_on: Date.current + 30, stepped_up: true).decisions.sole
+      decision = record(kind: "accepted", advisory: shell, confirmed: [], until_on: Date.current + 30, stepped_up: :fresh).decisions.sole
       EpssScore.create!(cve_id: "CVE-2026-93001", score: 0.31, percentile: 0.97, band: "high", score_date: Date.current)
       expect(FindingDecisionExpiryJob.perform_now).to eq(1)
       expect(decision.reload).to have_attributes(ended_why: "suspended", ended_evidence: { "epss_band" => [ nil, "high" ] })
       expect(FindingDecisions::Lifecycle.review!([ host.id ])).to eq([])
       expect(FindingDecisions::Lifecycle.settle!([])).to be_nil
+    end
+  end
+
+  describe "the hourly job" do
+    it "drops a run that would overlap a running one, rather than queueing it behind" do
+      expect(FindingDecisionExpiryJob.concurrency_key).to eq("finding_decision_expiry")
+      expect(FindingDecisionExpiryJob.concurrency_limit).to eq(1)
+      expect(FindingDecisionExpiryJob.concurrency_on_conflict).to eq(:discard)
+      expect(FindingDecisionExpiryJob.concurrency_duration).to be >= 3.hours
     end
   end
 

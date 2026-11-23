@@ -19,7 +19,7 @@ module SecondFactors
     "change_task_settings" => "changing task settings",
     "replace_second_factor" => "moving to a new phone",
     "replace_recovery_codes" => "making new recovery codes",
-    "record_decisions" => "recording a finding decision on more than #{FindingDecisions::STEP_UP_ABOVE} hosts"
+    "record_decisions" => "recording or changing a finding decision"
   }.freeze
 
   class NotEnrolled < StandardError; end

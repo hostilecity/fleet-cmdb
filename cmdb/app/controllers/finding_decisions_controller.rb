@@ -29,11 +29,13 @@ class FindingDecisionsController < ApplicationController
     chosen = Array(@form[:host_ids]).uniq
     kev = FindingDecisions.signals([ @advisory.id ]).fetch(@advisory.id).kev?
     stepped_up = false
-    if FindingDecisions.step_up_needed?(Current.operator_session, chosen.size, kev:)
+    if FindingDecisions.step_up_needed?(current_operator, chosen.size, kev:)
       @second_factor_result = SecondFactors.step_up(operator_session: Current.operator_session, code: params[SecondFactorRequired::PARAM], purpose: "record_decisions", fresh: kev)
       return refuse_step_up(step_up_reason(kev, chosen.size), :new) unless @second_factor_result.passed?
 
-      stepped_up = true
+      # On a KEV-listed advisory the check above asked for a new code (fresh: true); otherwise the session's open window
+      # may have passed it. write! needs :fresh for a KEV-listed advisory, so one listed meanwhile asks again.
+      stepped_up = kev ? :fresh : :window
     end
 
     outcome = FindingDecisions.record!(operator: current_operator, host: @host, advisory: @advisory, params: @form, operator_session: Current.operator_session, stepped_up:)
@@ -94,8 +96,8 @@ class FindingDecisionsController < ApplicationController
   def step_up_reason(kev, count)
     return "A decision on a known exploited advisory needs a code from your authenticator app every time" if kev
 
-    recent = FindingDecisions.session_count(Current.operator_session)
-    "This session has recorded #{recent} host #{recent == 1 ? 'decision' : 'decisions'} in the last #{FindingDecisions::STEP_UP_WINDOW.in_minutes.to_i} minutes, " \
+    recent = FindingDecisions.recent_count(current_operator)
+    "You have recorded #{recent} host #{recent == 1 ? 'decision' : 'decisions'} in the last #{FindingDecisions::STEP_UP_WINDOW.in_minutes.to_i} minutes, in any session, " \
       "and #{count} more would pass #{FindingDecisions::STEP_UP_ABOVE}: that needs a code from your authenticator app"
   end
 
@@ -131,7 +133,7 @@ class FindingDecisionsController < ApplicationController
     @candidates = FindingDecisions::Candidates.load(@advisory, [ @host.id, *others, *chosen.first(FindingDecisions::MAX_HOSTS) ], signals: @signals)
     @this = @candidates.find { |c| c.host.id == @host.id }
     @others_capped = others.size >= FindingDecisions::Candidates::OTHERS
-    @session_count = FindingDecisions.session_count(Current.operator_session)
+    @recent_count = FindingDecisions.recent_count(current_operator)
     @errors ||= {}
   end
 

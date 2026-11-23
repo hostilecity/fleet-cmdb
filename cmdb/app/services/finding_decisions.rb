@@ -9,14 +9,17 @@
 #   entry, all with the request's id. Only on hosts where the advisory's open findings are in Needs attention or Low
 #   risk (none in Fix available), at most FLEET_DECISION_MAX_DAYS (90) days, or FLEET_DECISION_MAX_DAYS_KEV (30) for
 #   an advisory on CISA's KEV list; a control confirmed host by host.
-# - The second factor (owner decision 2026-11-23, epic decision 37, replacing decision 14's "one action"): a
-#   decision on an advisory on CISA's KEV list needs a code every time; any other needs one once the operator session
-#   has recorded more than STEP_UP_ABOVE host decisions within STEP_UP_WINDOW, counted on the server under the
-#   session's row lock, so splitting an action into smaller ones does not avoid it. The controller asks for the code
-#   (step_up_needed?); write! checks the count again under the lock and refuses (StepUpNeeded) when it was not given.
+# - The second factor (owner decision 2026-11-23, epic decision 37, replacing decision 14's "one action"; clarified to
+#   per operator to meet its purpose, review of #299): a decision on an advisory on CISA's KEV list needs a fresh code
+#   every time; any other needs one once the operator has recorded more than STEP_UP_ABOVE host decisions within
+#   STEP_UP_WINDOW, in any of their sessions, counted on the server under the operator's row lock, so neither splitting
+#   an action nor signing in again avoids it. The controller asks for the code (step_up_needed?); write! checks the
+#   count and the KEV status again under the locks and refuses (StepUpNeeded) when the code it needs was not given: a
+#   fresh one (:fresh) on a KEV-listed advisory, any (:fresh or :window) otherwise.
 # - change!: a new reason or expiry, still within the limit counted from the day it was recorded (a decision is
 #   never extended for ever: a longer one is a new decision, on today's evidence). On a KEV-listed advisory it needs
-#   a code too.
+#   a fresh code too. A decision whose evidence got worse since it was recorded is suspended instead of changed, as the
+#   sweep would suspend it.
 # - end!: ended by the operator.
 # A decision past its last day that the hourly job has not ended yet is never changed or ended by the operator: either
 # expires it there and then (audited as expired) and says so, so it cannot be revived.
@@ -107,20 +110,17 @@ module FindingDecisions
     kev && bucket != "ignorable" ? value * 2 : value
   end
 
-  # Host decisions the operator session recorded within STEP_UP_WINDOW.
-  def session_count(operator_session, now: Time.current)
-    return 0 unless operator_session
+  # Host decisions the operator recorded within STEP_UP_WINDOW, in any session.
+  def recent_count(operator, now: Time.current) = FindingDecision.where(created_by_id: operator.id, created_at: (now - STEP_UP_WINDOW)..).count
 
-    FindingDecision.where(operator_session_id: operator_session.id, created_at: (now - STEP_UP_WINDOW)..).count
-  end
-
-  # Whether recording count more host decisions in this session needs the second factor: always on a KEV-listed
-  # advisory, else when the session's count within the window would pass STEP_UP_ABOVE.
-  def step_up_needed?(operator_session, count, kev:, now: Time.current) = kev || session_count(operator_session, now:) + count > STEP_UP_ABOVE
+  # Whether recording count more host decisions needs the second factor: always on a KEV-listed advisory, else when the
+  # operator's count within the window would pass STEP_UP_ABOVE.
+  def step_up_needed?(operator, count, kev:, now: Time.current) = kev || recent_count(operator, now:) + count > STEP_UP_ABOVE
 
   # Records one decision per chosen host. params: kind, reason, expires_on (a "YYYY-MM-DD" text), host_ids,
   # confirmed_ids (the hosts whose control the operator confirmed). host: the host the form was opened from.
-  # operator_session: the session recording it; stepped_up: whether this request passed the second factor.
+  # operator_session: the session recording it (kept for the audit); stepped_up: false, or how this request passed
+  # the second factor: :fresh (a code was checked now) or :window (the session's open 5-minute window).
   def record!(operator:, host:, advisory:, params:, operator_session: nil, stepped_up: false, today: Date.current)
     kind = params[:kind].to_s
     reason = FindingDecision.sanitize_reason(params[:reason])
@@ -169,6 +169,10 @@ module FindingDecisions
       raise Refused, "This decision has ended; record a new one." unless current.active?
       next Lifecycle.expire!(current, now:) && :lapsed if current.lapsed?(today)
 
+      # Worse evidence since it was recorded: suspended, as the sweep would, rather than changed (review of #299).
+      worse = worsened(current.evidence, signals([ current.advisory_id ]).fetch(current.advisory_id))
+      next Lifecycle.suspend!(current, worse, now:) && [ :worse, worse ] if worse.any?
+
       changes = { "reason" => [ current.reason, reason ], "until" => [ current.expires_on.iso8601, expires_on.iso8601 ] }.reject { |_, (a, b)| a == b }
       raise Refused, "Nothing changed: edit the reason or the date, or cancel." if changes.empty?
 
@@ -178,6 +182,10 @@ module FindingDecisions
       current
     end
     return Outcome.new(decisions: [], errors: { base: LAPSED }, candidates: []) if changed == :lapsed
+    if changed.is_a?(Array)
+      return Outcome.new(decisions: [], errors: { base: "The evidence got worse since it was recorded (#{changes_words(changed.last)}), so it is now suspended " \
+                                                        "and the finding is due a new decision. Record a new one on today's evidence." }, candidates: [])
+    end
 
     Outcome.new(decisions: [ changed ], errors: {}, candidates: [])
   rescue Refused => e
@@ -272,15 +280,16 @@ module FindingDecisions
       ids = Host.lock.in_fleet.where(id: host_ids).order(:id).pluck(:id)
       raise Refused, "A host chosen was retired meanwhile; nothing was saved." unless ids.size == host_ids.size
 
-      # Under the session's lock (after the hosts', as no other path takes both), so two requests of one session at once
-      # are counted one after the other and cannot each stay under the threshold.
-      OperatorSession.lock.where(id: operator_session.id).pluck(:id) if operator_session
+      # Under the operator's lock (after the hosts', as no other path takes both: the step-up takes it in a transaction
+      # of its own, before), so two requests of one operator at once, from any sessions, are counted one after the
+      # other and cannot each stay under the threshold.
+      Operator.lock.where(id: operator.id).pluck(:id)
       now = signals([ advisory.id ]).fetch(advisory.id)
       raise Refused, "The advisory was added to CISA's KEV list meanwhile; check the date (at most #{max_days(true)} days) and save again." if now.kev? && !signals.kev?
-      if !stepped_up && step_up_needed?(operator_session, ids.size, kev: now.kev?)
-        raise StepUpNeeded, "A decision on a known exploited advisory needs a code from your authenticator app every time. Nothing was saved." if now.kev?
+      if step_up_needed?(operator, ids.size, kev: now.kev?) && !(stepped_up == :fresh || (stepped_up && !now.kev?))
+        raise StepUpNeeded, "A decision on a known exploited advisory needs a new code from your authenticator app every time. Nothing was saved." if now.kev?
 
-        raise StepUpNeeded, "This session has recorded #{session_count(operator_session)} host decisions in the last #{STEP_UP_WINDOW.in_minutes.to_i} minutes; " \
+        raise StepUpNeeded, "You have recorded #{recent_count(operator)} host decisions in the last #{STEP_UP_WINDOW.in_minutes.to_i} minutes, in any session; " \
                             "more than #{STEP_UP_ABOVE} need a code from your authenticator app. Nothing was saved."
       end
 

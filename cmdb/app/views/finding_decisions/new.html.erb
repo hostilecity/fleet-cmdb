@@ -50,7 +50,7 @@
   </div>
   <fieldset<%= ' class="invalid"'.html_safe if errors[:hosts] %> aria-describedby="hosts_hint">
     <legend>Applies to</legend>
-    <p class="hint" id="hosts_hint">Other hosts with the same open finding are listed with their own evidence<%= ", at most #{FindingDecisions::Candidates::OTHERS}" if @others_capped %>. A control must be confirmed for each host, because a control on one host says nothing about another. A known exploited advisory needs a code from your authenticator app every time; any other, once this session has recorded more than <%= FindingDecisions::STEP_UP_ABOVE %> host decisions in <%= FindingDecisions::STEP_UP_WINDOW.in_minutes.to_i %> minutes (<%= @session_count %> so far).</p>
+    <p class="hint" id="hosts_hint">Other hosts with the same open finding are listed with their own evidence<%= ", at most #{FindingDecisions::Candidates::OTHERS}" if @others_capped %>. A control must be confirmed for each host, because a control on one host says nothing about another. A known exploited advisory needs a code from your authenticator app every time; any other, once you have recorded more than <%= FindingDecisions::STEP_UP_ABOVE %> host decisions in <%= FindingDecisions::STEP_UP_WINDOW.in_minutes.to_i %> minutes, in any session (<%= @recent_count %> so far).</p>
     <%= field_error.(:hosts, "hosts") %>
     <ul class="per-host" id="decision_hosts">
       <% @candidates.each do |candidate| %>
@@ -74,8 +74,8 @@
   </fieldset>
   <% if @signals.kev? %>
     <%= render "second_factors/prompt", result: second_factor_result, ask: true, intro: "A decision on a known exploited advisory needs a code from your authenticator app every time." %>
-  <% elsif @session_count + @candidates.size > FindingDecisions::STEP_UP_ABOVE || errors[:second_factor_code] %>
-    <%= render "second_factors/prompt", result: second_factor_result, intro: "This session's host decisions in the last #{FindingDecisions::STEP_UP_WINDOW.in_minutes.to_i} minutes (#{@session_count} so far) and the hosts you choose: more than #{FindingDecisions::STEP_UP_ABOVE} need a code from your authenticator app. Otherwise leave it empty.", required: false %>
+  <% elsif @recent_count + @candidates.size > FindingDecisions::STEP_UP_ABOVE || errors[:second_factor_code] %>
+    <%= render "second_factors/prompt", result: second_factor_result, intro: "Your host decisions in the last #{FindingDecisions::STEP_UP_WINDOW.in_minutes.to_i} minutes, in any session (#{@recent_count} so far), and the hosts you choose: more than #{FindingDecisions::STEP_UP_ABOVE} need a code from your authenticator app. Otherwise leave it empty.", required: false %>
   <% end %>
   <div class="actions"><button class="btn" type="submit">Save decision</button><%= link_to "Cancel", vulnerabilities_host_path(@host, anchor: "attn"), class: "btn quiet" %></div>
 <% end %>

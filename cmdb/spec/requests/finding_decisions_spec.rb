@@ -153,7 +153,7 @@ RSpec.describe "Finding decisions", :signed_in, type: :request do
     expect(page.at_css("#second_factor_code")["required"]).to be_nil # needed only above 10 hosts
     save(kind: "accepted", hosts: [ host, *others ], confirmed: [])
     expect(response).to have_http_status(:forbidden)
-    expect(words(page.at_css("#decision_errors li"))).to eq("This session has recorded 0 host decisions in the last 15 minutes, and 11 more would pass 10: that needs a code from your authenticator app: type a code.")
+    expect(words(page.at_css("#decision_errors li"))).to eq("You have recorded 0 host decisions in the last 15 minutes, in any session, and 11 more would pass 10: that needs a code from your authenticator app: type a code.")
     expect(FindingDecision.count).to eq(0)
     save(kind: "accepted", hosts: [ host, *others ], confirmed: [], second_factor_code: totp_code(secret))
     expect(response).to redirect_to("#{tab}#attn")
@@ -162,7 +162,7 @@ RSpec.describe "Finding decisions", :signed_in, type: :request do
     expect(second_factor_audits.last.changeset).to include("purpose" => "record_decisions")
   end
 
-  it "counts the step-up per session over 15 minutes, so splitting an action into smaller ones does not avoid it" do
+  it "counts the step-up per operator over 15 minutes, so splitting an action into smaller ones does not avoid it" do
     others = Array.new(11) { |i| debian_host(name: "Host #{i}", hostname: "vm-#{format('%02d', i + 10)}.example.lan", packages:) }
     match(*others)
     secret = enrol_second_factor(operator).first
@@ -170,7 +170,7 @@ RSpec.describe "Finding decisions", :signed_in, type: :request do
     expect(response).to redirect_to("#{tab}#attn") # 6: no code
     save(kind: "accepted", hosts: others.last(5), confirmed: [])
     expect(response).to have_http_status(:forbidden) # 6 + 5 = 11 in 15 minutes
-    expect(words(page.at_css("#decision_errors li"))).to eq("This session has recorded 6 host decisions in the last 15 minutes, and 5 more would pass 10: that needs a code from your authenticator app: type a code.")
+    expect(words(page.at_css("#decision_errors li"))).to eq("You have recorded 6 host decisions in the last 15 minutes, in any session, and 5 more would pass 10: that needs a code from your authenticator app: type a code.")
     expect(FindingDecision.count).to eq(6)
     get form
     expect(page.at_css("#second_factor_code")).not_to be_nil # 6 so far and 12 listed
@@ -186,17 +186,51 @@ RSpec.describe "Finding decisions", :signed_in, type: :request do
     expect(response).to redirect_to("#{tab}#attn") # 6 + 5 = 11 again: with a code
   end
 
-  it "refuses a session's count that passes 10 under the lock, though the form's check passed" do
+  it "refuses an operator's count that passes 10 under the lock, though the form's check passed" do
     others = Array.new(3) { |i| debian_host(name: "Host #{i}", hostname: "vm-#{format('%02d', i + 30)}.example.lan", packages:) }
     match(*others)
-    # The form's check sees none; by the time the hosts and the session are locked, another request of the session has
-    # recorded 9 (simulated): 9 + 3 passes 10, and nothing is saved.
+    # The form's check sees none; by the time the hosts and the operator are locked, another request of the operator has
+    # recorded 9 (simulated; the real race is spec/services/finding_decisions_concurrency_spec.rb): 9 + 3 passes 10.
     calls = 0
-    allow(FindingDecisions).to receive(:session_count).and_wrap_original { |original, *args, **kw| (calls += 1) == 1 ? original.call(*args, **kw) : original.call(*args, **kw) + 9 }
+    allow(FindingDecisions).to receive(:recent_count).and_wrap_original { |original, *args, **kw| (calls += 1) == 1 ? original.call(*args, **kw) : original.call(*args, **kw) + 9 }
     save(kind: "accepted", hosts: others, confirmed: [])
     expect(response).to have_http_status(:forbidden)
-    expect(words(page.at_css("#decision_errors li"))).to eq("This session has recorded 9 host decisions in the last 15 minutes; more than 10 need a code from your authenticator app. Nothing was saved.")
+    expect(words(page.at_css("#decision_errors li"))).to eq("You have recorded 9 host decisions in the last 15 minutes, in any session; more than 10 need a code from your authenticator app. Nothing was saved.")
     expect(FindingDecision.count).to eq(0)
+  end
+
+  it "counts every session of the operator: signing in again starts no new count (clarified, review of #299)" do
+    others = Array.new(11) { |i| debian_host(name: "Host #{i}", hostname: "vm-#{format('%02d', i + 50)}.example.lan", packages:) }
+    match(*others)
+    enrol_second_factor(operator)
+    sessions = []
+    [ others.first(4), others[4, 3], others[7, 3] ].each do |hosts|
+      sign_in_operator # a new Google round trip: a new session each time
+      sessions << OperatorSession.where(operator:).maximum(:id)
+      save(kind: "accepted", hosts:, confirmed: [])
+      expect(response).to redirect_to("#{tab}#attn") # 4, 7, then 10: exactly 10 needs no code
+    end
+    expect(sessions.uniq.size).to eq(3)
+    expect(FindingDecision.where(created_by: operator).distinct.count(:operator_session_id)).to eq(3)
+    sign_in_operator
+    save(kind: "accepted", hosts: [ others.last ], confirmed: [])
+    expect(response).to have_http_status(:forbidden) # the 11th, from a fourth session
+    expect(words(page.at_css("#decision_errors li"))).to start_with("You have recorded 10 host decisions in the last 15 minutes, in any session, and 1 more would pass 10")
+    expect(FindingDecision.count).to eq(10)
+  end
+
+  it "asks for a new code on a KEV-listed advisory even while a step-up window is open" do
+    others = Array.new(11) { |i| debian_host(name: "Host #{i}", hostname: "vm-#{format('%02d', i + 70)}.example.lan", packages:) }
+    match(*others)
+    secret = enrol_second_factor(operator).first
+    save(kind: "accepted", hosts: others, confirmed: [], second_factor_code: totp_code(secret)) # 11: a code, so the window is open
+    expect(response).to redirect_to("#{tab}#attn")
+    import_kev(kev_file("CVE-2026-93001"))
+    perform_evaluation_jobs
+    save(advisory: shell, kind: "accepted", confirmed: [])
+    expect(response).to have_http_status(:forbidden)
+    expect(words(page.at_css("#decision_errors li"))).to eq("A decision on a known exploited advisory needs a code from your authenticator app every time: type a code.")
+    expect(FindingDecision.where(advisory: shell)).to be_empty
   end
 
   it "needs a fresh code every time for a KEV-listed advisory, to record or to change" do

@@ -115,6 +115,14 @@ module FindingDecisions
       true
     end
 
+    # Suspends a decision whose evidence got worse (changes: worsened's), now, and re-triages its findings: when an
+    # operator opens it to change it before the sweep or a re-triage does (review of #299).
+    def suspend!(decision, changes, now: Time.current)
+      finish!(decision, "suspended", Audit::Actions::VULNERABILITY_DECISION_SUSPENDED, now:, evidence: changes)
+      VulnerabilityMatcher.retriage!([ decision.host_id ], advisory_ids: [ decision.advisory_id ])
+      true
+    end
+
     def scope(host_ids, advisory_ids)
       scope = FindingDecision.active.where(host_id: host_ids)
       advisory_ids ? scope.where(advisory_id: advisory_ids) : scope

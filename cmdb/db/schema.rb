@@ -375,11 +375,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["advisory_id"], name: "index_finding_decisions_active_advisory", where: "(ended_at IS NULL)"
+    t.index ["created_by_id", "created_at"], name: "index_finding_decisions_operator_window"
     t.index ["expires_on"], name: "index_finding_decisions_active_expiry", where: "(ended_at IS NULL)"
     t.index ["host_id", "advisory_id", "id"], name: "index_finding_decisions_history"
     t.index ["host_id", "advisory_id"], name: "index_finding_decisions_active", unique: true, where: "(ended_at IS NULL)"
     t.index ["id"], name: "index_finding_decisions_active_id", where: "(ended_at IS NULL)"
-    t.index ["operator_session_id", "created_at"], name: "index_finding_decisions_session_window"
     t.check_constraint "(ended_at IS NULL) = (ended_why IS NULL)", name: "finding_decisions_ended_why"
     t.check_constraint "(ended_by_id IS NOT NULL) = (NOT ended_why::text IS DISTINCT FROM 'operator'::text)", name: "finding_decisions_ended_by"
     t.check_constraint "char_length(reason) >= 10 AND char_length(reason) <= 1000", name: "finding_decisions_reason_length"

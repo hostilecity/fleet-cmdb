@@ -2,7 +2,7 @@
     checks the code and does the action (Q11). The code goes in second_factor_code. ask: true always asks for a code
     (an action with fresh: true); otherwise an open window is shown as passed. id names the code box, for a page with
     more than one form that asks for a code. %>
-<%# required: false for a form that needs the code only in some cases (a finding decision on more than 10 hosts). %>
+<%# required: false for a form that needs the code only in some cases (a finding decision, once the operator's count passes 10). %>
 <%# locals: (result:, intro: "This needs a code from your authenticator app.", ask: false, label: "6-digit code", id: "second_factor_code", required: true) %>
 <% status = ask && result.status == :passed ? :code_required : result.status %>
 <% base = id.delete_suffix("_code") %>
