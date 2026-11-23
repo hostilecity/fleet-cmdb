@@ -103,6 +103,7 @@ jobs:
             cmdb/tmp/ci/bin-ci.log
             cmdb/tmp/rspec/results.json
             cmdb/tmp/rspec/parallel_runtime_rspec.log
+            cmdb/tmp/rspec/lock-timeouts-*.log
           if-no-files-found: ignore
           retention-days: 14
 
