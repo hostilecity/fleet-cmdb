@@ -332,10 +332,7 @@ module Partitions
       attempt = 0
       begin
         attempt += 1
-        ApplicationRecord.transaction(requires_new: true) do
-          connection.execute("SET LOCAL lock_timeout = #{connection.quote(timeout)}")
-          yield connection
-        end
+        ScopedLockTimeout.within(connection, timeout) { |c| yield c }
       rescue ActiveRecord::LockWaitTimeout
         raise Busy, "lock not granted in #{tries} tries of #{timeout}" if attempt >= tries
 
