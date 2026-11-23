@@ -804,3 +804,4 @@ td.decision .state-note { display: block; overflow-wrap: anywhere; }
 @media (max-width: 60rem) { .radio-cards { grid-template-columns: minmax(0, 1fr); } }
 @media (forced-colors: active) { .override-tag { forced-color-adjust: auto; border: 1px solid CanvasText; } }
 .mt0 { margin-top: 0; }
+.evidence .sig { white-space: normal; }

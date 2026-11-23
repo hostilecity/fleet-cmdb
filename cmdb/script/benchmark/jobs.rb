@@ -72,6 +72,7 @@ module FleetBenchmark
           work.call(Host.minimum(:id)..Host.maximum(:id))
         }, nil, true ],
         **triage_measurements(package_hosts),
+        **decision_measurements(package_hosts),
         # Row deletes: the tables that are not partitioned, and the legacy partition of a converted table (ADR 0027).
         "retention prune, row deletes (rolled back; per row deleted)" => [ retention_rows, -> { rolled_back { Retention.prune! } } ],
         # Partitions past the window detached and dropped, each host's newest row moved forward first (ADR 0027).
@@ -111,6 +112,43 @@ module FleetBenchmark
           sql = ApplicationRecord.sanitize_sql_array([ "SELECT sum(vuln_fix + vuln_attention + vuln_low_risk + vuln_ignorable + vuln_kev_open + vuln_fixable + cis_passed) " \
                                                        "FROM host_compliance_counts(ARRAY[?]::bigint[])", package_hosts ])
           ApplicationRecord.uncached { ApplicationRecord.connection.select_value(sql) }
+        } ]
+      }
+    end
+
+    # VT-OVERRIDES #261: finding decisions. A control on one advisory every package host has (the seed's TRIAGE_CVE, in
+    # Low risk) on each sampled host, or decisions on DECISION_ADVISORIES advisories of each, inserted in the rolled-back
+    # transaction; the transitions with them, the re-triage a decision runs, and the hourly sweep with nothing due and
+    # with every control suspended by a KEV listing. The evidence is recorded as critical, so only a KEV listing or a high
+    # EPSS band can make it worse.
+    DECISION_ADVISORIES = 100
+
+    def decision_measurements(package_hosts)
+      advisory = Advisory.where("aliases @> ARRAY[?]::varchar[]", TRIAGE_CVE).pick(:id)
+      return {} unless advisory && package_hosts.any?
+
+      operator = Operator.first || Operator.create!(google_uid: "bench-decisions", email: "bench@example.com")
+      many = Advisory.where("advisory_id LIKE 'BENCH-%'").order(:id).limit(DECISION_ADVISORIES).pluck(:id)
+      decide = lambda do |pairs|
+        now = Time.current
+        rows = pairs.map do |host_id, advisory_id|
+          { host_id:, advisory_id:, kind: "control", confirmed: true, reason: "benchmark control in place", expires_on: Date.current + 30, created_by_id: operator.id,
+            evidence: { "bucket" => "low_risk", "rule" => "L5", "severity" => "critical", "kev" => false, "epss_band" => nil }, created_at: now, updated_at: now }
+        end
+        rows.each_slice(5_000) { |slice| FindingDecision.insert_all(slice) }
+        true
+      end
+      one = -> { decide.call(package_hosts.map { |id| [ id, advisory ] }) }
+      grid = -> { decide.call(package_hosts.product(many)) }
+      {
+        "decisions: transitions, a control on every host (per host)" => [ package_hosts.size, -> { VulnerabilityMatcher.match!(package_hosts) }, one ],
+        "decisions: re-triage of the decided advisory (per host)" => [ package_hosts.size, -> { VulnerabilityMatcher.retriage!(package_hosts, advisory_ids: [ advisory ]) }, one ],
+        "decisions: hourly sweep, #{package_hosts.size * many.size} active, none due (per decision)" => [ package_hosts.size * many.size, -> { FindingDecisions::Lifecycle.sweep! }, grid ],
+        "decisions: hourly sweep, a KEV listing suspends every host's control (per decision)" => [ package_hosts.size, -> { FindingDecisions::Lifecycle.sweep! }, lambda {
+          one.call && KevEntry.insert_all([ { cve_id: TRIAGE_CVE, date_added: Date.current } ])
+        } ],
+        "decisions: the form's candidates, 50 hosts (per host)" => [ FindingDecisions::MAX_HOSTS, lambda {
+          FindingDecisions::Candidates.load(Advisory.find(advisory), [ package_hosts.first, *FindingDecisions::Candidates.other_host_ids(Advisory.find(advisory), except: package_hosts.first) ])
         } ]
       }
     end
