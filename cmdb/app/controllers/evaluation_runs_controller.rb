@@ -5,8 +5,9 @@
 #   that doubles each time, from 3 s up to a minute, while the run is unfinished and moving; it stops when the run
 #   is failed or has not moved for STALLED_AFTER. When the run is done, the frame reloads the page once, to show the
 #   results. A tick does not count as the operator's activity, so an open tab cannot keep a session alive.
-# - retry: a failed run is started again with the same rules or sources (a POST, CSRF-protected). The new run
-#   supersedes the failed one. Starting evaluation changes no setting and contacts no agent, so it is not audited,
+# - retry: a failed run is started again with the same rules or sources (a POST, CSRF-protected), under its row lock
+#   (EvaluationRun.retry!): a run with batches left carries on from them, any other is superseded by a new run, and a
+#   second press changes nothing. Starting evaluation changes no setting and contacts no agent, so it is not audited,
 #   as the runs a rule change or an import start are not.
 class EvaluationRunsController < ApplicationController
   def progress
@@ -19,9 +20,9 @@ class EvaluationRunsController < ApplicationController
     run = EvaluationRun.find(params[:id])
     return redirect_to(page_for(run), alert: "That run did not fail, so there is nothing to start again.") unless run.failed?
 
-    run.kind == "triage" ? EvaluationRun::Triage.retry!(run) : EvaluationRun.start!(run.kind, run.scope)
-    notice = { "cis_rules" => "Checking every host again.", "triage" => "Re-triaging the affected hosts again." }.fetch(run.kind, "Re-matching the affected hosts again.")
-    redirect_to page_for(run), notice:
+    retried = EvaluationRun.retry!(run)
+    carried_on = retried.id == run.id && !retried.superseded_by_id # reopened, rather than superseded by a new run
+    redirect_to page_for(run), notice: EvaluationRunsHelper::RETRY_TEXT.fetch(run.kind)[carried_on ? 1 : 0].last
   end
 
   private

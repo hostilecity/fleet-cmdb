@@ -49,21 +49,53 @@ RSpec.describe "Evaluation runs", :signed_in, type: :request do
     expect(node["data-controller"]).to be_nil
     expect(node.text.squish).to start_with("Stopped: 0 of 3 hosts done. Part of the work failed every retry")
     expect(node.at_css("form")["action"]).to eq("/evaluation-runs/#{run.id}/retry")
+    expect(node.at_css("button").text).to eq("Check the remaining hosts") # it carries on from its batch (review of #292)
 
     get "/rules/#{rule.id}"
     expect(page.at_css("#evaluation_progress_text").text).to start_with("Stopped")
 
     failed = run
-    expect { post "/evaluation-runs/#{failed.id}/retry" }.to change(EvaluationRun, :count).by(1)
+    expect { post "/evaluation-runs/#{failed.id}/retry" }.not_to change(EvaluationRun, :count) # carries on from its batch (#278)
     expect(response).to redirect_to("/rules/#{rule.id}")
-    expect(flash[:notice]).to eq("Checking every host again.")
+    expect(flash[:notice]).to eq("Checking the hosts that were left.")
     perform_evaluation_jobs
-    expect(failed.reload).to have_attributes(state: "superseded", superseded_by: run)
+    expect(failed.reload).to have_attributes(state: "finished", batches_done: 1, hosts_done: 3)
     get "/rules/#{rule.id}"
     expect(page.at_css("#evaluation_progress_text")).to be_nil
 
     post "/evaluation-runs/#{run.id}/retry" # finished: nothing to start
     expect(flash[:alert]).to eq("That run did not fail, so there is nothing to start again.")
+  end
+
+  it "says why a run the watch failed stopped, on Data sources, what to check first, and what its button does (#278, review of #292)" do
+    stopped = EvaluationRun.create!(kind: "advisories", scope: { "packages" => { "Debian:13" => [ "curl" ] }, "failure" => "stopped" }, state: "failed")
+    get "/data-sources"
+    node = page.at_css("#evaluation_progress_text")
+    expect(node.text.squish).to eq("Stopped: before its hosts were found. Its work was stopped 4 times, with no progress after the first, as when a job " \
+                                   "worker is restarted or runs out of memory part way (see the failed jobs), so some hosts were not checked. Check the job " \
+                                   "workers' memory and restarts, then start it again. Re-match again")
+    expect(node.at_css("form")["action"]).to eq("/evaluation-runs/#{stopped.id}/retry")
+
+    stopped.update!(started_at: 1.hour.ago, batch_count: 2, batches_done: 1, host_count: 2, hosts_done: 1)
+    stopped.batches.create!(position: 1, first_host_id: 1, last_host_id: 1, host_count: 1)
+    get "/data-sources"
+    node = page.at_css("#evaluation_progress_text")
+    expect(node.at_css("strong").text).to eq("Stopped: 1 of 2 hosts done.")
+    expect(node.at_css("button").text).to eq("Re-match the remaining hosts")
+    post "/evaluation-runs/#{stopped.id}/retry"
+    expect(flash[:notice]).to eq("Re-matching the hosts that were left.")
+    expect(stopped.reload).to have_attributes(state: "running", scope: { "packages" => { "Debian:13" => [ "curl" ] } })
+  end
+
+  it "says nothing more to do for a run that failed every retry" do
+    failed = EvaluationRun.create!(kind: "triage", scope: { "reason" => "all" }, state: "failed", started_at: 1.hour.ago, host_count: 3, hosts_done: 3)
+    failed.batches.create!(position: 1, first_host_id: 1, last_host_id: 1, host_count: 1)
+    get "/data-sources"
+    node = page.at_css("#evaluation_progress_text")
+    expect(node.text.squish).to eq("Stopped: 3 of 3 hosts done. Part of the work failed every retry (see the failed jobs), so some hosts were not checked. " \
+                                   "Re-triage the remaining hosts")
+    post "/evaluation-runs/#{failed.id}/retry"
+    expect(flash[:notice]).to eq("Re-triaging the hosts that were left.")
   end
 
   it "starts a failed re-matching run again from Data sources" do

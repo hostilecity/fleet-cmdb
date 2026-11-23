@@ -122,7 +122,7 @@ RSpec.describe EvaluationRun do
       end
       expect { perform_evaluation_jobs }.to raise_error(ActiveRecord::StatementInvalid, "boom")
       expect(run.reload).to have_attributes(state: "failed", batches_done: 3, hosts_done: 5, finished_at: be_present) # the others ran between its retries
-      expect(run.batches).to be_empty
+      expect(run.batches.count).to eq(1) # kept for its retry (#278); its job does nothing meanwhile
       perform_evaluation_jobs
       expect(run.reload).to have_attributes(state: "failed", batches_done: 3)
       expect(calls).to eq(ApplicationJob::ATTEMPTS)
@@ -139,6 +139,7 @@ RSpec.describe EvaluationRun do
       described_class.where(id: run.id).update_all(finished_at: 40.days.ago)
       covering = run_fleet_evaluation("cis_rules", "rule_ids" => rules.first(2).map(&:id)) # as "Check every host again" starts
       expect(run.reload).to have_attributes(state: "superseded", superseded_by: covering) # a failed run is kept until superseded
+      expect(run.batches).to be_empty
       expect(described_class.shown_for_rule(rules.second.id)).to be_nil
     end
 
