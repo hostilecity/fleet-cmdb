@@ -2,8 +2,8 @@ class EvaluationRun
   # An advisory import (Advisories::Import; scope packages { "Debian:13" => ["openssl"] } and the import's id), matched
   # by chunk (#196, ADR 0028):
   #
-  # - prepare! (once, as the run fans out, after the import committed): the chunks that hold a changed source are
-  #   matched again, for each ecosystem they are evaluated in, and then every other evaluation is moved to the newest
+  # - prepare! (once, as the run fans out, after the import committed; a resume carries on from its checkpoint, #295):
+  #   the chunks that hold a changed source are matched again, for each ecosystem they are evaluated in, and then every other evaluation is moved to the newest
   #   import if no import since its stamp changed one of its sources (VulnerabilityMatcher::Chunks.restamp!, decision
   #   7). Without that, every other chunk in use would look stale after each import and be matched again on its next
   #   use. The rule reads what each import changed (AdvisoryImport#changed_packages), so it holds when an earlier
@@ -40,19 +40,36 @@ class EvaluationRun
       packages.any? ? { "packages" => packages.to_h, "reason" => "matching" } : nil
     end
 
+    # Chunks matched between two moves of the checkpoint (#295): 5 matching transactions of
+    # VulnerabilityMatcher::Chunks::BATCH.
+    MATCH_PAGE = 1_000
+
     def initialize(scope)
-      @packages = scope["packages"].to_h.transform_values { |sources| Array(sources) }
+      @scope = scope.to_h.stringify_keys
+      @packages = @scope["packages"].to_h.transform_values { |sources| Array(sources) }
     end
 
     attr_reader :packages
 
-    def prepare!
-      stamp = AdvisoryImport.newest_succeeded_id # before any advisory data is read
-      touches.group_by(&:first).each do |ecosystem, list|
+    # The steps of prepare! (EvaluationRun::Checkpoint): the stamp, the chunks of each ecosystem it touches in turn
+    # (a backport's too, #274), the restamp.
+    def prepare_steps = [ "stamp", *touches.map(&:first).uniq.sort.map { |ecosystem| "match:#{ecosystem}" }, "restamp" ]
+
+    # Carries on from the checkpoint (#295): the stamp is read once and kept in the scope, so a resume matches the
+    # chunks left against the same import's data; each ecosystem's chunks are matched in id order, MATCH_PAGE at a
+    # time, the cursor moving after each page. Matching with force is idempotent, so a page killed part way is matched
+    # again whole. A chunk that came to hold a source after the cursor passed its id is new, and its own report's match
+    # reads the newest data.
+    def prepare!(checkpoint = Checkpoint.detached(prepare_steps))
+      checkpoint.step!("stamp") { @scope = @scope.merge("stamp" => AdvisoryImport.newest_succeeded_id) } # before any advisory data is read
+      stamp = @scope["stamp"]
+      touches.group_by(&:first).sort.each do |ecosystem, list|
+        next if checkpoint.done?("match:#{ecosystem}")
+
         evaluated = list.flat_map { |_, sources, backports| ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(ecosystem, sources, backports)).pluck(:package_chunk_id) }
-        VulnerabilityMatcher::Chunks.ensure!(evaluated, ecosystem, stamp:, force: true)
+        checkpoint.pages!("match:#{ecosystem}", evaluated, MATCH_PAGE) { |slice| VulnerabilityMatcher::Chunks.ensure!(slice, ecosystem, stamp:, force: true) }
       end
-      VulnerabilityMatcher::Chunks.restamp!(stamp)
+      checkpoint.step!("restamp") { VulnerabilityMatcher::Chunks.restamp!(stamp) }
     end
 
     def hosts = Host.in_fleet.where(id: affected_hosts).or(unevaluated)

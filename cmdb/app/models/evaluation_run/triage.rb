@@ -20,8 +20,9 @@ class EvaluationRun
   #   everywhere) makes the run "all" too.
   # - Staleness starts nothing and rewrites nothing (B1): only stored data changing does.
   # - A failed run can be started again (the Data sources page, EvaluationRun.retry!): a prepared run with batches left
-  #   carries on from them; any other is started again as a new run whose scope names the chunks it recorded, so it
-  #   re-runs the same hosts without claiming again, and supersedes it. A later run covers an earlier one only when it
+  #   carries on from them; one never split carries on preparing from its checkpoint (#295); any other is started
+  #   again as a new run whose scope names the chunks it recorded, so it re-runs the same hosts without claiming
+  #   again, and supersedes it. A later run covers an earlier one only when it
   #   re-runs every host the earlier one would (its chunks, or all), so latest-wins never drops a host.
   class Triage
     AT_ONCE = %w[kev kev_all advisory].freeze
@@ -57,32 +58,50 @@ class EvaluationRun
     # ADVISORY_LIMIT advisories).
     def advisory_ids = full? ? nil : scope["advisory_ids"]&.map(&:to_i)
 
+    # The steps of prepare! (EvaluationRun::Checkpoint, #295).
+    STEPS = %w[claim refresh sets].freeze
+
     # Claims, recomputes, records, releases; returns the scope the run keeps (EvaluationRun#fan_out! stores it too).
     # Crash-safe (review of #277, B2, and its re-checks): the run's id is in its stored scope before anything is recorded
     # under it, each slice's changed chunks are recorded in the transaction that changes them, and the prepared scope is
-    # stored before the claims are released. So a fan-out run again after a failure, from any point, reaches every host
-    # a committed slice changed, and claims not released are claimed again. A run whose job died with its worker (Solid
-    # Queue fails a killed worker's job without a retry) is resumed by EvaluationRunWatchJob: its fan-out or its
-    # remaining batches are queued again, at most EvaluationRun::RESUMES times in a row with no progress. A full run
-    # resumes rather than restarts: its base pass writes only the verdicts that change, and its batches carry on from
-    # those left.
-    def prepare!
-      return own_sets! if prepared?
+    # stored before the claims are released. A run whose job died with its worker (Solid Queue fails a killed worker's
+    # job without a retry) is resumed by EvaluationRunWatchJob, at most EvaluationRun::RESUMES times in a row with no
+    # progress.
+    #
+    # It carries on from its checkpoint (#295), so a resume, or the retry of a run never split, does not prepare again
+    # from the start:
+    # - claim: what it claimed (the rows' ids, the advisories they name, whether it is full) is stored in the scope with
+    #   the run's id, in the statement that moves the checkpoint. A resume uses that, and claims nothing again: a change
+    #   recorded since stays pending for the next run, and only the rows claimed are released.
+    # - refresh: the chunks, in id order, CHUNK_BATCH at a time, the cursor moving after each; a slice killed part way
+    #   is recomputed again (it writes only the verdicts that change, and records its changed chunks with them). The
+    #   signals barrier is taken again on every attempt, before the chunks are read. A chunk below the cursor that came to
+    #   hold an advisory since was matched after the first barrier, so it read the new signals itself.
+    # - sets: the sets holding the recorded chunks, in one statement (idempotent), stored with the prepared scope as the
+    #   checkpoint moves past it. Then the claims are released, and the claim dropped from the scope; a run killed
+    #   between the two releases them as it is resumed.
+    def prepare!(checkpoint = Checkpoint.detached(STEPS))
+      if prepared?
+        release_claimed!
+        return own_sets!
+      end
 
-      store!(scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).compact.uniq))
-      claimed, kinds, cves, advisories = claim_all
-      full = full? || kinds.include?("kev_all")
-      advisory_ids = full ? nil : advisories_for(cves, advisories)
+      checkpoint.step!("claim") { claim! }
+      advisory_ids = full? ? nil : scope.dig("claim", "advisory_ids").map(&:to_i)
       VulnerabilityMatcher::Chunks.signals_barrier! # every match that read the signals before they changed has committed
-      chunk_ids = full ? ChunkEvaluation.distinct.pluck(:package_chunk_id) : ChunkMatch.where(advisory_id: advisory_ids).distinct.pluck(:package_chunk_id)
       stats = Hash.new(0)
-      record = full ? nil : ->(ids) { record_chunks(ids) }
-      changed = chunk_ids.each_slice(CHUNK_BATCH).flat_map { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:) }
-      record_sets! unless full
-      store!(scope.merge("full" => full, "prepared" => true, "sets_run" => (@run_id unless full), "changes" => claimed.size, "advisories" => advisory_ids&.size,
-                         "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
-                         "chunks_changed" => changed.size, "verdicts_changed" => stats[:verdicts]))
-      TriageSignalChange.release!(claimed) if claimed.any?
+      unless checkpoint.done?("refresh")
+        chunk_ids = full? ? ChunkEvaluation.distinct.pluck(:package_chunk_id) : ChunkMatch.where(advisory_id: advisory_ids).distinct.pluck(:package_chunk_id)
+        record = full? ? nil : ->(ids) { record_chunks(ids) }
+        checkpoint.pages!("refresh", chunk_ids, CHUNK_BATCH) { |slice| stats[:chunks] += VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:).size }
+      end
+      checkpoint.step!("sets") do
+        record_sets! unless full?
+        @scope = scope.merge("prepared" => true, "sets_run" => (@run_id unless full?), "changes" => scope.dig("claim", "ids").size, "advisories" => advisory_ids&.size,
+                             "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
+                             "chunks_changed" => full? ? stats[:chunks] : TriageRunChunk.where(evaluation_run_id: @run_id).count, "verdicts_changed" => stats[:verdicts])
+      end
+      release_claimed!
       scope
     end
 
@@ -133,7 +152,27 @@ class EvaluationRun
 
     def refresh_always? = false
 
+    def prepare_steps = STEPS
+
     private
+
+    # The claim step: claims, and returns the scope to store with it.
+    def claim!
+      claimed, kinds, cves, advisories = claim_all
+      full = full? || kinds.include?("kev_all")
+      @scope = scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).compact.uniq, "full" => full,
+                           "claim" => { "ids" => claimed, "advisory_ids" => (advisories_for(cves, advisories) unless full) })
+    end
+
+    # Releases the rows the run claimed, once its prepared scope is stored, and drops them from the scope (the claim
+    # protocol's step 3, outside any transaction).
+    def release_claimed!
+      claimed = scope.dig("claim", "ids")
+      return unless claimed
+
+      TriageSignalChange.release!(claimed) if claimed.any?
+      store!(scope.except("claim"))
+    end
 
     # [claimed ids, kinds, CVE ids, advisory ids], claiming until nothing new comes (a row an import holds locked is
     # read again until it is released, so a repeat ends the loop).
