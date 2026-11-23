@@ -105,4 +105,42 @@ RSpec.describe GithubAnnotationsFormatter do
   it "is registered for the notifications it handles" do
     expect(RSpec::Core::Formatters::Loader.formatters[described_class]).to contain_exactly(:example_failed, :message, :dump_summary)
   end
+
+  # In one of bin/rspec-parallel's processes (#288): the same annotations, recorded for the runner, which applies the
+  # budget across the processes and writes one summary (spec/ci/parallel_rspec_spec.rb).
+  describe GithubAnnotationsFormatter::Deferred do
+    let(:formatter) { described_class.new(output, configuration) }
+
+    def records = output.string.lines.map { |line| JSON.parse(line) }
+
+    def summary(failed_examples:, outside: 0)
+      instance_double(RSpec::Core::Notifications::SummaryNotification, example_count: 40, failure_count: failed_examples.size, pending_count: 2,
+                                                                       failed_examples:, errors_outside_of_examples_count: outside)
+    end
+
+    it "records every annotation, the same as the formatter would emit, with no budget of its own" do
+      examples = Array.new(GithubAnnotationsFormatter::ANNOTATION_BUDGET + 3) { |i| example_double(i + 1) }
+      examples.each { |e| formatter.example_failed(failed(e)) }
+      formatter.message(message("An error occurred while loading ./spec/requests/hosts_spec.rb.\nNameError"))
+      expect(records.size).to eq(examples.size + 1)
+      expect(records.first).to eq("annotation" => "::error file=cmdb/spec/requests/hosts_spec.rb,line=1,title=RSpec%3A Hosts lists every fleet column::" \
+                                                  "Hosts lists every fleet column%0A%0AFailure/Error: expect(x).to eq(1)%0A%0A  expected: 1%0A       got: 2%0A%0A" \
+                                                  "seed 4242. Rerun: bundle exec rspec ./spec/requests/hosts_spec.rb:1 --seed 4242", "outside" => false)
+      expect(records.last).to include("annotation" => start_with("::error file=cmdb/spec/requests/hosts_spec.rb,title=RSpec%3A error outside examples::"), "outside" => true)
+    end
+
+    it "records the summary's counts and rerun commands instead of a summary annotation, even for a passing run" do
+      formatter.dump_summary(summary(failed_examples: [ example_double ], outside: 1))
+      formatter.dump_summary(summary(failed_examples: []))
+      expect(records).to eq([
+        { "summary" => { "examples" => 40, "failures" => 1, "pending" => 2, "errors_outside" => 1,
+                         "reruns" => [ "bundle exec rspec ./spec/requests/hosts_spec.rb:12 --seed 4242 # Hosts lists every fleet column" ] } },
+        { "summary" => { "examples" => 40, "failures" => 0, "pending" => 2, "errors_outside" => 0, "reruns" => [] } }
+      ])
+    end
+
+    it "is registered for the same notifications" do
+      expect(RSpec::Core::Formatters::Loader.formatters[described_class]).to contain_exactly(:example_failed, :message, :dump_summary)
+    end
+  end
 end

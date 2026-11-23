@@ -1,0 +1,7 @@
+#!/usr/bin/env ruby
+# The suite in parallel processes, each on its own test databases (#288, lib/ci/parallel_rspec.rb). bin/ci runs it.
+#   bin/rspec-parallel [spec paths]   PARALLEL_TEST_PROCESSORS=N (default: one per CPU), SEED=N, COVERAGE_MINIMUM=100
+require_relative "../lib/ci/parallel_rspec"
+
+Dir.chdir(File.expand_path("..", __dir__))
+exit ParallelRspec.new(paths: ARGV).run

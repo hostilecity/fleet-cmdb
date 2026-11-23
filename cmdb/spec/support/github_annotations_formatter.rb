@@ -1,18 +1,19 @@
-require_relative "../../lib/ci/github_annotation"
+require "json"
+require_relative "../../lib/ci/rspec_annotations"
 
 # Reports RSpec failures as GitHub Actions error annotations, so they show on the pull request and through the
 # checks API without the job log (#69):
 # - each failing example, at its file and line, with the error and the seed to reproduce it;
 # - errors outside examples (a spec file that fails to load, a :suite hook), which have no example;
 # - a summary with the counts, the seed, and the rerun command for every failure.
-# GitHub keeps at most 10 error annotations per step and silently drops the rest. Two are reserved, for the
-# summary and for bin/ci's own "step failed" annotation; failing examples and errors outside examples share the
-# rest, first come first served, and whatever does not fit is counted in the summary instead.
+# GitHub's limit of 10 per step is shared out as lib/ci/rspec_annotations.rb says. In one of bin/rspec-parallel's
+# processes, Deferred below records the same annotations in a file instead, and the runner emits them for all its
+# processes within that one limit (#288).
 class GithubAnnotationsFormatter
-  GITHUB_LIMIT_PER_STEP = 10
-  RESERVED = 2 # this summary and bin/ci's step annotation (lib/ci/step_annotations.rb)
-  ANNOTATION_BUDGET = GITHUB_LIMIT_PER_STEP - RESERVED
-  MAX_SUMMARY_FAILURES = 30
+  GITHUB_LIMIT_PER_STEP = RspecAnnotations::GITHUB_LIMIT_PER_STEP
+  RESERVED = RspecAnnotations::RESERVED
+  ANNOTATION_BUDGET = RspecAnnotations::BUDGET
+  MAX_SUMMARY_FAILURES = RspecAnnotations::MAX_SUMMARY_FAILURES
 
   RSpec::Core::Formatters.register self, :example_failed, :message, :dump_summary
 
@@ -40,16 +41,13 @@ class GithubAnnotationsFormatter
     return @unannotated_errors += 1 unless budget_left?
 
     file = text[/\AAn error occurred while loading \.\/(\S+?)\.?$/, 1]
-    emit("#{text}\n\n#{seed}.", title: "RSpec: error outside examples", file: file && "cmdb/#{file}")
+    emit("#{text}\n\n#{seed}.", title: "RSpec: error outside examples", file: file && "cmdb/#{file}", outside: true)
   end
 
   def dump_summary(summary)
     return if summary.failure_count.zero? && summary.errors_outside_of_examples_count.zero?
 
-    reruns = summary.failed_examples.first(MAX_SUMMARY_FAILURES).map { |example| "#{rerun(example)} # #{example.full_description}" }
-    reruns << "... and #{summary.failure_count - MAX_SUMMARY_FAILURES} more" if summary.failure_count > MAX_SUMMARY_FAILURES
-    reruns << "#{@unannotated_errors} more errors outside examples are not annotated; see the job log" if @unannotated_errors.positive?
-    emit([ "#{summary.totals_line}, #{seed}.", *reruns ].join("\n"), title: "RSpec failed: #{summary.totals_line}, #{seed}")
+    @output.puts("\n#{RspecAnnotations.summary(totals_line: summary.totals_line, seed:, reruns: reruns(summary), unannotated_errors: @unannotated_errors)}")
   end
 
   private
@@ -62,11 +60,32 @@ class GithubAnnotationsFormatter
     "bundle exec rspec #{example.location_rerun_argument}#{" --seed #{@configuration.seed}" if @configuration.seed_used?}"
   end
 
+  def reruns(summary) = summary.failed_examples.map { |example| "#{rerun(example)} # #{example.full_description}" }
+
   # Each command starts on a new line. The progress formatter writes its dots to the same stream without one,
   # and GitHub reads a workflow command only at the start of a line. Before #69 the annotation came out as
   # "F::error ..." and was silently ignored, so a failing example left no annotation at all.
-  def emit(message, **properties)
+  def emit(message, outside: false, **properties)
     @emitted += 1
     @output.puts("\n#{GithubAnnotation.error(message, **properties)}")
+  end
+
+  # In one of bin/rspec-parallel's processes: every annotation, and the summary's parts, as one JSON object per line in
+  # the process's own file. No budget here: the runner applies it across all the processes (lib/ci/parallel_rspec.rb).
+  class Deferred < GithubAnnotationsFormatter
+    RSpec::Core::Formatters.register self, :example_failed, :message, :dump_summary
+
+    def dump_summary(summary)
+      record(summary: { examples: summary.example_count, failures: summary.failure_count, pending: summary.pending_count,
+                        errors_outside: summary.errors_outside_of_examples_count, reruns: reruns(summary) })
+    end
+
+    private
+
+    def budget_left? = true
+
+    def emit(message, outside: false, **properties) = record(annotation: GithubAnnotation.error(message, **properties), outside:)
+
+    def record(fields) = @output.puts(JSON.generate(fields))
   end
 end
