@@ -114,3 +114,18 @@ The same container, PostgreSQL 16, its default settings. Seed `--hosts 100000 --
 | `compliance_summaries:rebuild` | | 51 to 73 s |
 
 The extra cost is about 1 ms a host with thousands of open findings (the distinct count of packages with a fix), paid only for hosts whose counts a transaction changed. `bin/benchmark explain` after: `/compliance` 5 statements, 113 to 134 ms; `?fix=available` and `?fix=available&vuln=high` 6 statements, 61 to 83 ms for both pages and the filtered count (the count reads the summaries, as the other filters' counts do); the recount probe 11.5 ms; the Vulnerabilities tab 10 statements as before, 89 ms, with the state and fix chips one grouped count of 5 ms; the tab filtered by `?fix=available` and `?fix=none` 41 ms for both pages.
+
+### Exposure scores on the summaries (#262, VT-SCORES)
+
+The same container (2 CPUs shared with other work, more loaded than for #256, so every figure here is about twice #256's), PostgreSQL 16 defaults. Seed `--hosts 100000 --package-hosts 1500 --advisories-per-source 5` (history options at 1): 1,201 hosts with 3,560 to 4,450 open findings each. The seed puts every finding in F1 or L5, so the 200 hosts measured had their findings rewritten to a realistic mix (about 650 Fix available with 30 K1, 50 Needs attention with KEV and listeners, 1,600 Low risk, 2,100 Ignorable): tier Known exploited, 4,900 to 6,200 points, about 250 work items each.
+
+| What | Before (`host_compliance_counts` v03) | After (v04) |
+|---|---|---|
+| The counts of 200 hosts in one call, per host (median of 5, three rounds) | 11.6 to 11.9 ms | 16.0 to 17.9 ms |
+| `host_compliance_summaries_refresh` of the same 200 hosts, writing nothing | | 2.7 to 3.6 s |
+| One package host's recount (`bin/benchmark explain`): counts, then refresh | | 12.4 ms, then 14.8 ms |
+| Fleet list sorted by exposure and by work, first and second page each (`explain`) | | 10 statements, 4.9 ms in all; each page an index read of 101 rows |
+| `compliance_summaries:check` over 100,001 hosts | | 75 s, no drift |
+| Migration `20261123262002`'s recount (`ComplianceFixRecount` on `compliance_score_recounts`) | | 53 s for 100,001 hosts; its estimate 77 s (counted in 0.34 s), so inline |
+
+v04 reads a host's open findings once and groups them two ways in that pass (by advisory and by source package); a first version that scanned them twice cost twice v03. VT-FIXABLE's three columns are no longer counted, which saved about 2 ms a host. The extra 4 to 6 ms a host (+40%) is paid only for hosts whose counts a transaction changed, about 1.5 thread-hours per million recounts. The Compliance page's `?bucket=` filter, like its severity filters, reads the summaries without an index (32 ms here, a sequential scan of 100,001 narrow rows); the fleet-wide totals were already one sum over them. Requests in development mode against this seed (median of 5): `/` 277 ms, `/?sort=exposure` 253 ms, `/?sort=work` 269 ms, `/compliance` 279 ms, `/compliance?bucket=attention` 329 ms, a Known exploited host's Vulnerabilities tab 322 ms (294 KB), its Overview 81 ms. In headless Chrome at 1,280 px the fleet list's table is 1,166 px wide in its 1,166 px frame (1,291 px before the Exposure cell's lines were split); axe-core 4.14 reports no violations on `/`, `/?sort=exposure`, `/compliance`, the tab, and the Overview, at 1,280 and 390 px.

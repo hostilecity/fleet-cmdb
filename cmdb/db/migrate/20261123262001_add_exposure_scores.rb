@@ -11,6 +11,9 @@
 #   host_compliance_summaries_refresh count them; vulnerability_exposure_points is the published points table; version
 #   6 of host_compliance_summaries_changed also notes a finding whose rule, listener, or source changed, and the agent's
 #   reboot flag (two triggers on host_applicability).
+# - VT-FIXABLE's summary columns (vuln_fixable, vuln_fix_packages, vuln_fix_severities) are dropped: the triage buckets
+#   replace them on the Compliance page and the fleet list (#281 item 1), and nothing reads them. The findings keep
+#   their fix flag (last_fixed_version), which the host tab's ?fix=available reads.
 #
 # One transaction, touching only the summaries' columns (metadata only: a nullable column, or a constant default) and
 # the functions and triggers. Every row reads "not scored" (NULL) until 20261123262002, or
@@ -21,6 +24,7 @@ class AddExposureScores < ActiveRecord::Migration[8.1]
                fixable_critical_since: :datetime, no_fixable_critical_since: :datetime }.freeze
   COUNTS = %i[vuln_kev_advisories vuln_fix_critical vuln_attention_undecided].freeze
   FLAGS = %i[work_kernel_install work_reboot].freeze
+  DROPPED = { vuln_fixable: :integer, vuln_fix_packages: :integer, vuln_fix_severities: :smallint }.freeze
   FUNCTIONS = { host_compliance_counts: [ 4, 3 ], host_compliance_summaries_refresh: [ 4, 3 ], host_compliance_summaries_changed: [ 6, 5 ] }.freeze
   TRIGGERS = %w[host_compliance_summaries_applicability_insert_delete host_compliance_summaries_applicability_update].freeze
   PROGRESS = "compliance_score_recounts".freeze
@@ -30,8 +34,9 @@ class AddExposureScores < ActiveRecord::Migration[8.1]
     NULLABLE.each { |name, type| add_column :host_compliance_summaries, name, type }
     COUNTS.each { |name| add_column :host_compliance_summaries, name, :integer, default: 0, null: false }
     FLAGS.each { |name| add_column :host_compliance_summaries, name, :boolean, default: false, null: false }
+    execute "DROP FUNCTION host_compliance_counts(bigint[])" # its result columns change; the refresh that reads it is replaced below
+    DROPPED.each_key { |name| remove_column :host_compliance_summaries, name }
     execute sql("functions/vulnerability_exposure_points_v01")
-    execute "DROP FUNCTION host_compliance_counts(bigint[])" # its result columns change
     FUNCTIONS.each { |name, (version, _)| execute sql("functions/#{name}_v#{format('%02d', version)}") }
     TRIGGERS.each { |name| execute sql("triggers/#{name}_v01") }
     create_progress
@@ -51,6 +56,7 @@ class AddExposureScores < ActiveRecord::Migration[8.1]
     drop_table PROGRESS, if_exists: true
     TRIGGERS.each { |name| execute "DROP TRIGGER IF EXISTS #{name} ON host_applicability" }
     execute "DROP FUNCTION host_compliance_counts(bigint[])"
+    DROPPED.each { |name, type| add_column :host_compliance_summaries, name, type, default: 0, null: false } # 0 until compliance_summaries:rebuild
     FUNCTIONS.each { |name, (_, version)| execute sql("functions/#{name}_v#{format('%02d', version)}") }
     execute "DROP FUNCTION vulnerability_exposure_points(smallint, text, boolean, smallint)"
     (NULLABLE.keys + COUNTS + FLAGS).each { |name| remove_column :host_compliance_summaries, name }

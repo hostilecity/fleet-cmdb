@@ -77,7 +77,7 @@ RSpec.describe "Host exposure", :signed_in, type: :request do
     expect(words(page.at_css("#glance_work"))).to eq("Work remaining 1 work item 1 upgrade · clears 1 finding progress withheld: last package report 5 days ago")
     get "/"
     expect(page.css("tr#row_host_#{host.id} td").map { |td| words(td) }[5..6])
-      .to eq([ "Fixes waiting 10 points · 0 need attention · as of the package report 5 days ago", "1 work item 1 upgrade, as of the package report 5 days ago" ])
+      .to eq([ "Fixes waiting 10 points · 0 need attention as of the package report 5 days ago", "1 work item 1 upgrade as of the package report 5 days ago" ])
     Setting.update_vulnerability_badges!(actor: Audit::SYSTEM, report_max_age: "7")
     get tab
     expect(words(page.at_css("#progress_text"))).to start_with("0 of 1 work item done")
@@ -102,7 +102,7 @@ RSpec.describe "Host exposure", :signed_in, type: :request do
     expect(words(page.at_css("#glance_exposure"))).to eq("Vulnerability exposure Known exploited 20 points · 1 known exploited · 0 need attention · not re-checked against KEV since 2026-11-01")
     expect(page.at_css("#score_tier").text.squish).to include("The tier and points are not re-checked against KEV since 2026-11-01: KEV listings are not shown as a lower tier.")
     get "/"
-    expect(words(page.at_css("tr#row_host_#{host.id} td:nth-child(6)"))).to eq("Known exploited 20 points · 0 need attention · not re-checked against KEV since 2026-11-01")
+    expect(words(page.at_css("tr#row_host_#{host.id} td:nth-child(6)"))).to eq("Known exploited 20 points · 0 need attention not re-checked against KEV since 2026-11-01")
   end
 
   it "shows no tier, points, or score breakdown on a host that is not evaluated or not triaged yet" do

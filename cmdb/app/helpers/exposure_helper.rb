@@ -58,9 +58,10 @@ module ExposureHelper
     return tag.span("Not triaged yet", class: "not-eval") unless scores.scored?
     return not_known(scores) if scores.exposure_points.zero? && scores_stale?(scores, badges)
 
-    detail = [ "#{pluralize(number_with_delimiter(scores.exposure_points), 'point')} · #{attention_words(scores.vuln_attention)}",
-               VulnerabilityExposure.kev_qualifier(kev), scores_as_of(scores, package_interval) ].compact.join(" · ")
-    safe_join([ link_to(tier_label(scores.exposure_tier), vulnerabilities_host_path(host, anchor: "score")), tag.span(detail, class: "rate-detail") ])
+    # One short line each, so the column stays narrow enough for the table to fit at 1,280 px.
+    lines = [ "#{pluralize(number_with_delimiter(scores.exposure_points), 'point')} · #{attention_words(scores.vuln_attention)}",
+              VulnerabilityExposure.kev_qualifier(kev), scores_as_of(scores, package_interval) ].compact
+    safe_join([ link_to(tier_label(scores.exposure_tier), vulnerabilities_host_path(host, anchor: "score")), *lines.map { |line| tag.span(line, class: "rate-detail") } ])
   end
 
   # The fleet list's Work cell: work items and what they are, or "Nothing to install" with the run badge.
@@ -80,7 +81,7 @@ module ExposureHelper
     end
 
     safe_join([ link_to(pluralize(number_with_delimiter(scores.work_items), "work item"), vulnerabilities_host_path(host, anchor: "work")),
-                tag.span([ work_words(scores), as_of ].compact.join(", "), class: "rate-detail") ])
+                *[ work_words(scores), as_of ].compact.map { |line| tag.span(line, class: "rate-detail") } ])
   end
 
   # The run badge, or why it is withheld (withheld: true to say so; the fleet list leaves it out), or nil when the host

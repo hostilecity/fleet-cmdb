@@ -139,7 +139,7 @@ The **tier** is the headline and the first sort key; the **points** order hosts 
 | Low risk | 2 | 1 | 0 | 0 |
 | Ignorable | 0 | 0 | 0 | 0 |
 
-A KEV-listed advisory scores double, except in Ignorable. A finding of a package a listening process loads (N5's evidence, in whatever bucket it ends up) adds exposure points on top; VT-SCORES sets how many, more for a network listener than a loopback one (decision 27). The values are a published constant (decision 13). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
+A KEV-listed advisory scores double, except in Ignorable. A finding of a package a listening process loads (N5's evidence, in whatever bucket it ends up) adds exposure points on top; VT-SCORES sets how many, more for a network listener than a loopback one (decision 27): once per advisory, not doubled, 10 / 5 / 2 / 1 for a network listener and 4 / 2 / 1 / 0 for a loopback-only one (critical, high, medium, low or unknown; [VT-SCORES As built](vt-scores.md#as-built-262), for the owner's OK). The values are a published constant (decision 13). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
 
 Points and tier depend on KEV membership, which the bucket alone does not capture (a KEV listing on a Fix available finding changes no bucket). So the finding stores a `kev` flag beside its bucket, written whenever it changes, and the summary triggers recount on it (S2). EPSS changes points only through the bucket.
 

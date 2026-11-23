@@ -135,3 +135,11 @@ When it refuses, on the server VM, as the deploy user:
 3. **Check, and turn the deploy back on:** `docker exec fleet-cmdb bin/rails compliance_summaries:check` ("Every host's compliance summary matches its rows"), then enable the Deploy workflow again. If `FLEET_JOBS_CONTAINER` is `true`, run the workflow once to bring the jobs container back.
 
 - Do not roll `20261120256002` back to recount again: `compliance_summaries:rebuild` recounts every host whenever needed, with the server up.
+
+## Exposure scores (#262)
+
+The upgrade adds each host's exposure tier, points, work items, and run times to the compliance summaries, and each finding's listener (migrations `20261123262001` and `20261123262002`; [compliance-summaries.md](compliance-summaries.md)). The second builds the fleet list's Exposure and Work indexes concurrently, queues the matching jobs of the hosts with listener evidence (so their findings get their listener), and recounts every host. Until a host is recounted, its tiles, fleet list cells, and the Compliance page's bucket line say "not scored" or "Not triaged yet", never 0.
+
+- **Small databases:** nothing to do. The recount uses the same estimate and limit as the fix counts' (above): inline at container start when it is at most 90 s.
+- **Large databases:** the migration refuses with `fleet-cmdb upgrade step needed`. Follow the steps of the fix counts above with `compliance_summaries:recount_scores` in place of `compliance_summaries:recount_fixes` (its progress row is in `compliance_score_recounts`); it costs a little more a host than the fix counts' (it groups each host's findings by advisory too, [benchmark.md](benchmark.md)).
+- Rolling back: `bin/rails db:migrate:down:primary VERSION=20261123262002` then `VERSION=20261123262001` drop the indexes, the columns, and the triggers, and restore the earlier functions.

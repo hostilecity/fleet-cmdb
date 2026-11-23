@@ -34,7 +34,7 @@ docker exec fleet-cmdb bin/rails settings:show
 docker exec fleet-cmdb bin/rails settings:liveness ONLINE_MINUTES=3 STALE_MINUTES=15
 ```
 
-The next evaluation, within a minute, applies them. Data retention (90 days) is changed the same way: [health-and-jobs.md](health-and-jobs.md#retention).
+The next evaluation, within a minute, applies them. Data retention (90 days) is changed the same way: [health-and-jobs.md](health-and-jobs.md#retention). So are the vulnerability badge settings (#262): `bin/rails settings:vulnerability_badges REPORT_DAYS=3 GRACE_DAYS=7` sets how old a package report may be before a host's run badge and progress are withheld, and how long a run is kept through a new fixable critical ([configuration.md](configuration.md)).
 
 ## Manage operators
 
