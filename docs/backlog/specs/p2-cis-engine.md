@@ -43,7 +43,7 @@ Implementation details for the GitHub issue with this key. The issue states only
 
 - Current result per host and rule (result, observed value, rule version, snapshot, evaluated at) and a history table of result **changes** (from, to, time, snapshot, rule version), so the dashboard can show a failure appearing and clearing without storing every evaluation.
 - Background job evaluating a host's latest config snapshot against all enabled rules, run after each new snapshot.
-- Re-evaluation job after a rule is added, edited, enabled, or disabled: re-runs the affected rule over each host's latest snapshot, with no agent contact. Disabled rules show as not evaluated.
+- Re-evaluation job after a rule is added, edited, enabled, or disabled: re-runs the affected rule over each host's latest snapshot, with no agent contact. Disabled rules show as not evaluated. It runs as a fleet-wide `EvaluationRun` (#197); a run whose worker is killed is resumed, and stops with a reason after 3 resumes with no progress, as advisory re-matching runs do ([P2-S11](p2-vulns.md), #278).
 - A dry run of an edited or new rule, for the edit preview, is [P2-S14](p2-rule-dryrun.md).
 - Per-host compliance summary computed from current results: passed, failed, not applicable, not readable, not evaluated.
 - Idempotent and safe to run twice.
