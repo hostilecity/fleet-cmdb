@@ -81,11 +81,17 @@ module AuditEntriesHelper
     Audit::Actions::SECOND_FACTOR_STEP_UP_FAILED => "Code refused",
     Audit::Actions::SECOND_FACTOR_LOCKED => "Locked after wrong codes",
     Audit::Actions::SECOND_FACTOR_RECOVERY_CODE_USED => "Recovery code used",
-    Audit::Actions::SECOND_FACTOR_RESET => "Reset from the console"
+    Audit::Actions::SECOND_FACTOR_RESET => "Reset from the console",
+    # Finding decisions (VT-OVERRIDES #261).
+    Audit::Actions::VULNERABILITY_DECISION_RECORDED => "Finding decision recorded",
+    Audit::Actions::VULNERABILITY_DECISION_CHANGED => "Finding decision changed",
+    Audit::Actions::VULNERABILITY_DECISION_ENDED => "Finding decision ended",
+    Audit::Actions::VULNERABILITY_DECISION_EXPIRED => "Finding decision expired",
+    Audit::Actions::VULNERABILITY_DECISION_SUSPENDED => "Finding decision suspended (evidence got worse)"
   }.freeze
 
   # Groups for the action filter, by the part before the dot. Actions added later group themselves.
-  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "signal" => "Exploitation signals", "task" => "Tasks", "task_setting" => "Task settings", "second_factor" => "Second factor" }.freeze
+  AUDIT_GROUPS = { "host" => "Hosts", "onboarding" => "Onboarding", "operator" => "Operators", "release" => "Agent releases", "rollout" => "Rollouts", "update" => "Agent updates", "setting" => "Settings", "rule" => "CIS-aligned rules", "advisory" => "Advisory data", "signal" => "Exploitation signals", "task" => "Tasks", "task_setting" => "Task settings", "second_factor" => "Second factor", "vulnerability" => "Vulnerability decisions" }.freeze
 
   SETTING_NAMES = { "liveness.online_threshold_minutes" => "Online threshold", "liveness.stale_threshold_minutes" => "Stale threshold" }.freeze
   INTERVAL_SETTING_NAMES = { "agent.heartbeat_seconds" => "Agent heartbeat interval", "agent.inventory_seconds" => "Agent inventory interval" }.freeze
@@ -147,6 +153,16 @@ module AuditEntriesHelper
     "service" => [ "Service", true ],
     "hosts" => [ "On which hosts", false ],
     "allowlist" => [ "Restartable services", true ],
+    # Finding decisions (VT-OVERRIDES #261): operator text (the reason) is escaped like every other value.
+    "advisory" => [ "Advisory", true ],
+    "decision_id" => [ "Decision", true ],
+    "decision_kind" => [ "Kind", false ],
+    "until" => [ "Until", true ],
+    "bucket" => [ "Bucket", false ],
+    "evidence" => [ "Evidence", false ],
+    "changed_evidence" => [ "What got worse", false ],
+    "confirmed_for" => [ "Confirmed for", false ],
+    "ended_why" => [ "Why it ended", false ],
     # Create-task flow (P3-S08, #32): a refused creation.
     "problems" => [ "Why refused", false ],
     **TASK_LIMIT_NAMES.transform_values { |label| [ label, true ] },

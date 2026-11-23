@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_22_274003) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -355,6 +355,36 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_274003) do
     t.index ["kind", "state"], name: "index_evaluation_runs_unfinished", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
     t.check_constraint "kind::text = ANY (ARRAY['cis_rules'::character varying, 'advisories'::character varying, 'triage'::character varying]::text[])", name: "evaluation_runs_kind_valid"
     t.check_constraint "state::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'finished'::character varying, 'superseded'::character varying, 'failed'::character varying]::text[])", name: "evaluation_runs_state_valid"
+  end
+
+  create_table "finding_decisions", force: :cascade do |t|
+    t.bigint "host_id", null: false
+    t.bigint "advisory_id", null: false
+    t.string "kind", limit: 16, null: false
+    t.text "reason", null: false
+    t.date "expires_on", null: false
+    t.bigint "created_by_id", null: false
+    t.boolean "confirmed", default: false, null: false
+    t.jsonb "evidence", null: false
+    t.string "request_id", limit: 128
+    t.datetime "ended_at"
+    t.bigint "ended_by_id"
+    t.string "ended_why", limit: 16
+    t.jsonb "ended_evidence"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["advisory_id"], name: "index_finding_decisions_active_advisory", where: "(ended_at IS NULL)"
+    t.index ["expires_on"], name: "index_finding_decisions_active_expiry", where: "(ended_at IS NULL)"
+    t.index ["host_id", "advisory_id", "id"], name: "index_finding_decisions_history"
+    t.index ["host_id", "advisory_id"], name: "index_finding_decisions_active", unique: true, where: "(ended_at IS NULL)"
+    t.check_constraint "(ended_at IS NULL) = (ended_why IS NULL)", name: "finding_decisions_ended_why"
+    t.check_constraint "(ended_by_id IS NOT NULL) = (NOT ended_why::text IS DISTINCT FROM 'operator'::text)", name: "finding_decisions_ended_by"
+    t.check_constraint "char_length(reason) >= 10 AND char_length(reason) <= 1000", name: "finding_decisions_reason_length"
+    t.check_constraint "ended_evidence IS NULL OR jsonb_typeof(ended_evidence) = 'object'::text AND octet_length(ended_evidence::text) <= 8192", name: "finding_decisions_ended_evidence_object"
+    t.check_constraint "ended_why IS NULL OR (ended_why::text = ANY (ARRAY['operator'::character varying, 'expired'::character varying, 'fixed'::character varying, 'suspended'::character varying, 'resolved'::character varying]::text[]))", name: "finding_decisions_ended_why_valid"
+    t.check_constraint "jsonb_typeof(evidence) = 'object'::text AND octet_length(evidence::text) <= 8192", name: "finding_decisions_evidence_object"
+    t.check_constraint "kind::text <> 'control'::text OR confirmed", name: "finding_decisions_control_confirmed"
+    t.check_constraint "kind::text = ANY (ARRAY['control'::character varying, 'accepted'::character varying]::text[])", name: "finding_decisions_kind_valid"
   end
 
   create_table "host_applicability", primary_key: "host_id", id: :bigint, default: nil, force: :cascade do |t|
@@ -1106,6 +1136,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_274003) do
   add_foreign_key "enrollment_tokens", "hosts"
   add_foreign_key "evaluation_batches", "evaluation_runs", on_delete: :cascade
   add_foreign_key "evaluation_runs", "evaluation_runs", column: "superseded_by_id", on_delete: :nullify
+  add_foreign_key "finding_decisions", "advisories"
+  add_foreign_key "finding_decisions", "hosts"
+  add_foreign_key "finding_decisions", "operators", column: "created_by_id"
+  add_foreign_key "finding_decisions", "operators", column: "ended_by_id"
   add_foreign_key "host_applicability", "hosts"
   add_foreign_key "host_compliance_summaries", "hosts"
   add_foreign_key "host_configs", "hosts"
@@ -1727,6 +1761,47 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_274003) do
       $function$
   SQL
 
+  create_function :finding_decisions_guard, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.finding_decisions_guard()
+       RETURNS trigger
+       LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        -- Operator decisions are kept as the record of what was decided (VT-OVERRIDES #261): never deleted.
+        IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+          RAISE EXCEPTION 'finding decisions are never deleted: % is not allowed', TG_OP
+            USING ERRCODE = 'insufficient_privilege';
+        END IF;
+
+        -- A decision starts active.
+        IF TG_OP = 'INSERT' THEN
+          IF NEW.ended_at IS NOT NULL THEN
+            RAISE EXCEPTION 'new finding decisions start active'
+              USING ERRCODE = 'check_violation';
+          END IF;
+          RETURN NEW;
+        END IF;
+
+        -- Ended is final: an ended decision never changes.
+        IF OLD.ended_at IS NOT NULL THEN
+          RAISE EXCEPTION 'finding decision % ended (%); it cannot change', OLD.id, OLD.ended_why
+            USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- What a decision is, on what, by whom, and the evidence it was recorded on never change. Only its reason and
+        -- expiry (an operator's change) and its end may.
+        IF NEW.id IS DISTINCT FROM OLD.id OR NEW.host_id IS DISTINCT FROM OLD.host_id OR NEW.advisory_id IS DISTINCT FROM OLD.advisory_id
+           OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.created_by_id IS DISTINCT FROM OLD.created_by_id
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.evidence IS DISTINCT FROM OLD.evidence
+           OR NEW.confirmed IS DISTINCT FROM OLD.confirmed OR NEW.request_id IS DISTINCT FROM OLD.request_id THEN
+          RAISE EXCEPTION 'a finding decision''s host, advisory, kind, author, evidence, and confirmation never change'
+            USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+      END;
+      $function$
+  SQL
+
   create_trigger :audit_entries_no_update_or_delete, sql_definition: <<-SQL
       CREATE TRIGGER audit_entries_no_update_or_delete BEFORE DELETE OR UPDATE ON public.audit_entries FOR EACH ROW EXECUTE FUNCTION audit_entries_append_only()
   SQL
@@ -1857,6 +1932,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_274003) do
 
   create_trigger :host_compliance_summaries_findings_update, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_findings_update AFTER UPDATE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :finding_decisions_guard, sql_definition: <<-SQL
+      CREATE TRIGGER finding_decisions_guard BEFORE INSERT OR DELETE OR UPDATE ON public.finding_decisions FOR EACH ROW EXECUTE FUNCTION finding_decisions_guard()
+  SQL
+
+  create_trigger :finding_decisions_no_truncate, sql_definition: <<-SQL
+      CREATE TRIGGER finding_decisions_no_truncate BEFORE TRUNCATE ON public.finding_decisions FOR EACH STATEMENT EXECUTE FUNCTION finding_decisions_guard()
   SQL
 
   create_trigger :vulnerability_findings_no_truncate, sql_definition: <<-SQL
