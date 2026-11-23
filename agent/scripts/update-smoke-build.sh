@@ -10,7 +10,10 @@
 #
 # The sources (and the task catalog they compile in) are copied to a fixed directory first, with the package version and release-keys/current.pub
 # changed there, so the working tree is never touched and no key can end up committed. The same directory
-# and RUSTFLAGS are used for every version, so after the first build only the agent itself is compiled.
+# and RUSTFLAGS are used for every version built into one TARGET_DIR, so after the first build only the
+# agent itself is compiled, and a TARGET_DIR the CI cache keeps (agent/target/...) keeps the dependencies
+# from run to run. Each TARGET_DIR has its own copy of the sources, so builds into different ones can run
+# at the same time (the VM tests build the fault build beside the normal ones, #288).
 set -eu
 
 version=${1:?usage: scripts/update-smoke-build.sh VERSION PUBKEY OUT [TARGET_DIR]}
@@ -24,7 +27,7 @@ if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     exit 2
 fi
 here=$(pwd)
-root=${TMPDIR:-/tmp}/update-smoke-src
+root=${TMPDIR:-/tmp}/update-smoke-src-$(basename "$target_dir")
 work=$root/agent
 rm -rf "$root"
 mkdir -p "$work" "$root/docs/api/tasks"
