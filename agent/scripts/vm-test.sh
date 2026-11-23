@@ -97,7 +97,9 @@
 # Last, recovery mode (#180, ADR 0030), with two more builds: fleet-agent-1.1.0, the VM fault build
 # (src/vm_fault.rs; `VM_FAULT=1 update-smoke-build.sh`), and fleet-agent-1.1.1, a normal build:
 #
-#   crash loop on a confirmed version   1.1.0 is installed and confirmed; then a file in the state
+#   crash loop on a confirmed version   tasks are enabled as the package scenarios enable them, with a
+#                            10 s poll, and a refused task fills the ledger; 1.1.0 is installed and
+#                            confirmed, and polls for tasks; then a file in the state
 #                            directory makes its normal mode panic at every start. After exactly four
 #                            failed starts systemd's start limit ends the restarts; only then does
 #                            OnFailure= run (once), the rollback unit finds nothing to roll back, and
@@ -105,7 +107,8 @@
 #                            from the same binary, with no
 #                            capabilities, and no report or task poll. The server offers 1.1.1 (the
 #                            "fixed release"): recovery mode installs it through the signed path, 1.1.1
-#                            confirms in normal mode, and recovery mode has stopped.
+#                            confirms in normal mode and polls for tasks, and recovery mode has stopped.
+#                            The config (with [tasks]) and the ledger come through it all unchanged.
 set -euo pipefail
 
 dir=${1:?usage: scripts/vm-test.sh DIR IMAGE OUT [GROUP]}
@@ -701,21 +704,44 @@ heartbeat_in_mode() {
 inventory_since() {
     event_exists "[.[] | select(.kind == \"inventory\" and .agent_version == \"$1\" and .status == 200 and .at > $since)] | length > 0"
 }
+task_poll_from() {
+    event_exists "[.[] | select(.kind == \"task_poll\" and .agent_version == \"$1\" and .status == 200 and .at > $since)] | length > 0"
+}
 
 # #180, ADR 0030: a confirmed version that crash-loops, with nothing to roll back to, goes to recovery mode
 # instead of stopping for good, and a fixed release reaches it through the signed update path.
 recovery_mode() {
     rollout=$1
     reset
-    # In "all" it runs after the package update scenarios, which add a [tasks] section to the config and task
-    # files to the state directory: what must stay unchanged is what is there now.
+    # Tasks on, as the package scenarios set them (in "all" they already have, #288): apply_package_updates
+    # enabled and a poll every 10 s, so normal mode polls and the check below that recovery mode does not
+    # can fail.
+    if ! vm_ok "grep -qx '\[tasks\]' /etc/fleet-agent/config.toml"; then
+        vm "printf '%s\n' '' '[tasks]' 'enabled = [\"apply_package_updates\"]' '' '[task_poll]' 'interval_seconds = 10' 'min_seconds = 5' \
+            >> /etc/fleet-agent/config.toml && $LIB/current/fleet-agent check-config > /dev/null \
+            && systemctl reset-failed fleet-agent && systemctl restart fleet-agent"
+    fi
+    # A task in the ledger: refresh_reports is not enabled here, so it is refused (and recorded, nothing
+    # run). The ledger with it and the [tasks] config must come through recovery mode and the fixed release.
+    task_id=$(printf '00000000-0000-4000-8000-%012d' "$1")
+    rm -f "$stub/task-result-$task_id.json"
+    set_plan "$(jq -nc --arg id "$task_id" '{task: {id: $id, type: "refresh_reports", parameters: {}, timeout_seconds: 600, catalog_version: 1}}')"
+    expect_task refused not_enabled_locally 120
+    # The agent removes its copy of the result once the server has accepted it.
+    wait_until "the agent to record the result as reported" 30 vm_ok "test ! -e $STATE/task-result.json"
+    # What must stay unchanged is what is there now (in "all", with the package scenarios' task files too).
     config_sum=$(vm 'sha256sum /etc/fleet-agent/config.toml')
     state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -size +0 ! -name 'update*' ! -name '$MARKER' -printf '%f '")
     empty_state_files=$(vm "cd $STATE && find . -maxdepth 1 -type f -empty ! -name 'update*' -printf '%f '")
+    [[ " $state_files " == *" task-ledger.jsonl "* ]] || fail "the task ledger is empty before the update: $state_files"
+    vm_ok "grep -qx '\[tasks\]' /etc/fleet-agent/config.toml" || fail "the config has no [tasks] section"
     offer faulty "$FAULTY"
     expect_result succeeded "$FAULTY"
     expect_one_version "$FAULTY" "$OLD"
-    echo "$FAULTY is installed and confirmed; now host state makes its normal mode fail at every start"
+    # Positive control for the no-poll check below: in normal mode, this build polls for tasks.
+    since=$(date +%s.%N)
+    wait_until "a task poll from $FAULTY in normal mode" 60 task_poll_from "$FAULTY"
+    echo "$FAULTY is installed and confirmed, and polls for tasks; now host state makes its normal mode fail at every start"
     since=$(date +%s.%N)
     # Everything the journal says from here on is this scenario's (the guest's clock is not the runner's).
     local cursor
@@ -781,6 +807,8 @@ recovery_mode() {
     wait_until "a heartbeat in normal mode from $FIXED" 90 heartbeat_in_mode "$FIXED" normal
     # The cause is still there; the fixed release runs normally with it, reports included.
     vm_ok "test -e $STATE/$POISON" || fail "the poison file is gone"
+    since=$(date +%s.%N)
+    wait_until "a task poll from $FIXED" 60 task_poll_from "$FIXED"
     # Its startup report may come before the checks above end (a random splay of up to 60 s): count from
     # the offer.
     since=$offered
