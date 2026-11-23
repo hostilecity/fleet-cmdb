@@ -20,6 +20,8 @@ RSpec.describe ParallelRspec do
                         })
   end
 
+  # Outside GitHub Actions unless an example says otherwise, wherever the suite itself runs.
+  before { allow(GithubAnnotation).to receive(:active?).and_return(false) }
   after { FileUtils.rm_rf(root) }
 
   def work(file) = File.join(root, described_class::WORK_DIR, file)
