@@ -105,6 +105,7 @@ module Advisories
       @counts = COUNTS.index_with(0)
       @problems = []
       @changed = Hash.new { |hash, key| hash[key] = Set.new }
+      @refilled = {}
       @seen = Set.new
       @ecosystems = Set.new
       @ecosystem_records = Hash.new(0)
@@ -180,6 +181,8 @@ module Advisories
       # earlier batch stored, in the same transaction.
       records = records.group_by(&:advisory_id).map { |_, versions| versions.max_by(&:modified_at) }
       existing = Advisory.where(advisory_id: records.map(&:advisory_id)).index_by(&:advisory_id)
+      @stored_ecosystems = AdvisoryPackage.where(advisory_id: existing.values.map(&:id)).distinct.pluck(:advisory_id, :ecosystem)
+                                          .group_by(&:first).transform_values { |rows| rows.map(&:last).sort }
       changes = records.select do |record|
         @seen << record.advisory_id
         record.package_keys.map(&:first).uniq.each do |ecosystem|
@@ -192,12 +195,15 @@ module Advisories
       write(changes, existing) if changes.any?
     end
 
-    # Counts the record and says whether it needs writing.
+    # Counts the record and says whether it needs writing. A record as modified as the stored one is written again when
+    # it has packages for ecosystems the stored one lacks or lost (an ecosystem this server keeps since then, #274:
+    # Debian:14 for trixie's backports); only those ecosystems' packages count as changed (@refilled).
     def classify(record, stored)
       outcome =
         if stored.nil? then record.packages.empty? ? "skipped" : "created"
         elsif stored.modified_at > record.modified_at then "older"
-        elsif stored.modified_at == record.modified_at && stored.withdrawn_reason != "absent" then "unchanged"
+        elsif stored.modified_at == record.modified_at && stored.withdrawn_reason != "absent"
+          refill?(record, stored) ? "updated" : "unchanged"
         else "updated"
         end
       @counts[outcome] += 1
@@ -205,11 +211,23 @@ module Advisories
       %w[created updated].include?(outcome)
     end
 
+    def refill?(record, stored)
+      ecosystems = record.package_keys.map(&:first).uniq.sort
+      return false if ecosystems == @stored_ecosystems.fetch(stored.id, [])
+
+      @refilled[record.advisory_id] = ecosystems.to_set ^ @stored_ecosystems.fetch(stored.id, []).to_set
+      true
+    end
+
     def write(records, existing)
       now = Time.current
       old_keys = AdvisoryPackage.where(advisory_id: existing.values_at(*records.map(&:advisory_id)).compact.map(&:id))
-                                .pluck(:ecosystem, :package)
-      (old_keys + records.flat_map(&:package_keys)).each { |ecosystem, package| @changed[ecosystem] << package }
+                                .pluck(:advisory_id, :ecosystem, :package).group_by(&:first)
+      records.each do |r|
+        keys = old_keys.fetch(existing[r.advisory_id]&.id, []).map { |_, ecosystem, package| [ ecosystem, package ] } + r.package_keys
+        only = @refilled[r.advisory_id]
+        keys.each { |ecosystem, package| @changed[ecosystem] << package if only.nil? || only.include?(ecosystem) }
+      end
 
       rows = records.map do |r|
         { advisory_id: r.advisory_id, source: @source, summary: r.summary, aliases: r.aliases, severity: r.severity, severity_raw: r.severity_raw,

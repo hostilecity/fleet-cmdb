@@ -27,6 +27,20 @@ class EvaluationRun
       { "packages" => Ecosystems.supported.index_with { sources }, "reason" => "matching" }
     end
 
+    # The scope of a re-match of every stored backport (#274, RematchBackports): the advisory sources they are matched
+    # as, under each ecosystem the fleet's backports are built from, so only the chunks holding a backport are matched
+    # again (touches). nil when no backport is stored.
+    def self.backports_scope
+      packages = Ecosystems.supported.filter_map do |ecosystem|
+        from = Ecosystems.backports_from(ecosystem) or next
+        sources = PackageChunkEntry.where(Ecosystems.backport_like_sql(ecosystem)).distinct.pluck(:name, :source).flat_map do |name, source|
+          [ SignedSources.resolve(ecosystem, name, source, "").source, source || name ]
+        end
+        [ from, sources.uniq.sort ] if sources.any?
+      end
+      packages.any? ? { "packages" => packages.to_h, "reason" => "matching" } : nil
+    end
+
     def initialize(scope)
       @packages = scope["packages"].to_h.transform_values { |sources| Array(sources) }
     end
@@ -35,8 +49,8 @@ class EvaluationRun
 
     def prepare!
       stamp = AdvisoryImport.newest_succeeded_id # before any advisory data is read
-      supported.each do |ecosystem, sources|
-        evaluated = ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(ecosystem, sources)).pluck(:package_chunk_id)
+      touches.group_by(&:first).each do |ecosystem, list|
+        evaluated = list.flat_map { |_, sources, backports| ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(ecosystem, sources, backports)).pluck(:package_chunk_id) }
         VulnerabilityMatcher::Chunks.ensure!(evaluated, ecosystem, stamp:, force: true)
       end
       VulnerabilityMatcher::Chunks.restamp!(stamp)
@@ -61,17 +75,26 @@ class EvaluationRun
 
     private
 
-    def supported = packages.select { |ecosystem, sources| Ecosystems.supported?(ecosystem) && sources.any? }
+    # [chunk ecosystem, sources, backports] for the fleet's ecosystems (VulnerabilityMatcher::Chunks.touches): a change
+    # in Debian:13 touches its chunks with those sources, and one in Debian:14 only its chunks with a backport of them
+    # (#274), so an advisory naming only Debian:14 (a CVE in code only newer series have) re-matches the hosts holding a
+    # backport of its source, not every host with the source.
+    def touches = VulnerabilityMatcher::Chunks.touches(packages).select { |ecosystem, _, _| Ecosystems.supported?(ecosystem) }
 
     # With the signed-template sources built from them (SignedSources): a change to linux's advisories is one to
     # linux-signed-amd64's images.
-    def changed_chunks(ecosystem, sources) = PackageChunkEntry.where("COALESCE(source, name) IN (?)", SignedSources.reported(sources, ecosystem)).select(:package_chunk_id)
+    def changed_chunks(ecosystem, sources, backports) = VulnerabilityMatcher::Chunks.entries_of(sources, ecosystem, backports).select(:package_chunk_id)
 
-    # host_package_sets rows on a set holding a chunk with a changed source (the source index, then the GIN index).
+    # host_package_sets rows on a set holding a chunk with a changed source (the source index, or the partial index
+    # for backports, then the GIN index).
     def affected_hosts
-      return HostPackageSet.none.select(:host_id) if supported.empty?
+      list = touches
+      return HostPackageSet.none.select(:host_id) if list.empty?
 
-      HostPackageSet.where(package_set_id: PackageSet.holding_sources(supported.values.flatten.uniq)).select(:host_id)
+      own, backports = list.partition { |_, _, backport| !backport }
+      sets = own.any? ? [ PackageSet.holding_sources(own.flat_map { |_, sources, _| sources }.uniq) ] : []
+      sets += backports.map { |ecosystem, sources, _| PackageSet.holding_chunks(changed_chunks(ecosystem, sources, true)) }
+      sets.map { |set| HostPackageSet.where(package_set_id: set) }.reduce(:or).select(:host_id)
     end
 
     # Hosts with no evaluation that had advisory data: none at all, or "no advisory data". A correlated NOT EXISTS, an

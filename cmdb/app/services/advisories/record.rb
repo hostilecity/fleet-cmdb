@@ -1,6 +1,7 @@
 module Advisories
   # One OSV record (https://ossf.github.io/osv-schema/), validated and cleaned for storage (P2-S10, DEC-11,
-  # NFR-1). Only the fleet profile's ecosystems are kept (Ecosystems); affected entries for others are ignored.
+  # NFR-1). Only the fleet profile's ecosystems, and those their backports are built from, are kept
+  # (Ecosystems.imported, #274); affected entries for others are ignored.
   #
   # A record is malformed, and Record.parse raises Malformed, when the fields this server uses are missing or
   # wrong: the id, modified, published and withdrawn times, and, for the fleet's ecosystems, package names and
@@ -95,7 +96,7 @@ module Advisories
         raise Malformed, "has affected[#{i}] that is not an object" unless entry.is_a?(Hash)
 
         ecosystem = entry.dig("package", "ecosystem") if entry["package"].is_a?(Hash)
-        entry.merge("index" => i) if Ecosystems.supported?(ecosystem)
+        entry.merge("index" => i) if Ecosystems.imported?(ecosystem)
       end
     end
 

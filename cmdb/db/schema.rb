@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_22_258001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_22_274002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -681,6 +681,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_258001) do
     t.string "architecture", limit: 32, null: false
     t.string "version", limit: 256, null: false
     t.string "source", limit: 128
+    t.index "COALESCE(source, name), package_chunk_id", name: "index_package_chunk_entries_on_backports", where: "((version)::text ~~ '%~bpo%'::text)"
     t.index "COALESCE(source, name), package_chunk_id", name: "index_package_chunk_entries_on_source_package"
   end
 
