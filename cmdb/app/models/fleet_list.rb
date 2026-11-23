@@ -62,6 +62,9 @@ class FleetList
     "nothing_to_install" => [ "Nothing to install", "#{SCORED} AND summaries.work_items = 0" ],
     "not_evaluated" => [ "Not evaluated", "summaries.enrollment_state = 'active' AND NOT summaries.vuln_evaluated" ]
   }.freeze
+  # "Nothing to install" is claimed only where the cell says it: not on a host whose package report is older than the
+  # badge setting, which reads "Not known" (review of #305, S6).
+  FRESH_REPORT = "EXISTS (SELECT 1 FROM host_package_sets p WHERE p.host_id = summaries.host_id AND p.received_at >= ?)".freeze
 
   COLUMNS = [ "hosts.*", "summaries.os_name", *FleetCompliance::COLUMNS ].freeze
 
@@ -94,6 +97,7 @@ class FleetList
     scope = scope.where(summaries: { status_rank: STATUS_RANKS.fetch(status) }) if status
     scope = scope.where(WITHOUT_RECOVERY_MODE) if recovery
     scope = scope.where(VULN_FILTERS.fetch(vulns).last) if vulns
+    scope = scope.where(FRESH_REPORT, Time.current - Setting.vulnerability_badges[:report_max_age]) if vulns == "nothing_to_install"
     scope
   end
 

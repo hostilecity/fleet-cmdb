@@ -23,6 +23,10 @@ class ComplianceFixRecount
   # on the summaries"): 0.17 ms a host and about 1.6 microseconds an open finding there.
   HOST_SECONDS = 0.0005
   FINDING_SECONDS = 0.000005
+  # Each table's rates [per host, per open finding]. The scores' recount groups each host's findings by advisory too:
+  # about 8 microseconds a finding measured (53 s for 100,001 hosts and 4.5 million open findings, docs/operations/
+  # benchmark.md), so 20 here, about 2.5 times (review of #305, N2).
+  RATES = { TABLE => [ HOST_SECONDS, FINDING_SECONDS ], "compliance_score_recounts" => [ HOST_SECONDS, 0.00002 ] }.freeze
 
   Estimate = Data.define(:seconds, :hosts, :findings, :complete) do
     def complete? = complete
@@ -31,6 +35,7 @@ class ComplianceFixRecount
   # table: the progress table, one of TABLES.
   def initialize(table: TABLE, log: ->(_message) { })
     @statements = STATEMENTS.fetch(table) { raise ArgumentError, "unknown recount table #{table}" }
+    @host_seconds, @finding_seconds = RATES.fetch(table)
     @table = table
     @log = log
     @conn = ApplicationRecord.connection
@@ -47,13 +52,13 @@ class ComplianceFixRecount
     return Estimate.new(seconds: 0.0, hosts: 0, findings: 0, complete: true) unless needed?
 
     after = last_host_id
-    host_limit = within && ((within / HOST_SECONDS).floor + 1)
+    host_limit = within && ((within / @host_seconds).floor + 1)
     hosts = bounded("SELECT 1 FROM hosts WHERE id > ?", after, host_limit)
-    return Estimate.new(seconds: hosts * HOST_SECONDS, hosts:, findings: 0, complete: false) if host_limit && hosts >= host_limit
+    return Estimate.new(seconds: hosts * @host_seconds, hosts:, findings: 0, complete: false) if host_limit && hosts >= host_limit
 
-    finding_limit = within && (((within - hosts * HOST_SECONDS) / FINDING_SECONDS).floor + 1)
+    finding_limit = within && (((within - hosts * @host_seconds) / @finding_seconds).floor + 1)
     findings = bounded("SELECT 1 FROM vulnerability_findings WHERE state IN ('open', 'reopened') AND host_id > ?", after, finding_limit)
-    Estimate.new(seconds: hosts * HOST_SECONDS + findings * FINDING_SECONDS, hosts:, findings:, complete: !(finding_limit && findings >= finding_limit))
+    Estimate.new(seconds: hosts * @host_seconds + findings * @finding_seconds, hosts:, findings:, complete: !(finding_limit && findings >= finding_limit))
   end
 
   # Recounts every host after the progress row's, BATCH at a time; returns how many it recounted.

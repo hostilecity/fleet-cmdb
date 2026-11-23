@@ -830,7 +830,6 @@ td.decision .state-note { display: block; overflow-wrap: anywhere; }
 .honest.withheld::before { content: "\2205"; content: "\2205" / ""; }
 td .honest { display: flex; width: fit-content; margin-top: 0.25rem; }
 .host-line { display: block; font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); overflow-wrap: anywhere; }
-details.score { margin: 0 0 1.25rem; }
-details.score > summary h2 { display: inline; margin: 0; }
+section.score { margin: 0 0 1.25rem; }
 details.score-table { margin-top: 0.75rem; }
 @media (forced-colors: active) { .honest { forced-color-adjust: auto; border: 1px solid CanvasText; } }

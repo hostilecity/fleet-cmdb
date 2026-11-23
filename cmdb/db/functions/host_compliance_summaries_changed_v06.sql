@@ -61,6 +61,18 @@ BEGIN
     RETURN NULL;
   END IF;
 
+  -- host_package_sets (row, VT-SCORES #262, review of #305 S4): a package report after a gap longer than the badge
+  -- setting (vulnerabilities.badge_report_max_age_days, 3 by default) ends the host's run: kind 8, with a recount. The
+  -- trigger's WHEN clause lets through only gaps over a day (the setting's least), so the reports that keep to
+  -- their schedule call nothing.
+  IF TG_TABLE_NAME = 'host_package_sets' THEN
+    IF NEW.received_at - OLD.received_at > COALESCE((SELECT CASE WHEN jsonb_typeof(st.value) = 'number' AND st.value::text ~ '^[0-9]{1,4}$' THEN (st.value::text)::integer END
+                                                       FROM settings st WHERE st.key = 'vulnerabilities.badge_report_max_age_days'), 3) * interval '1 day' THEN
+      PERFORM host_compliance_summaries_mark(ARRAY[NEW.host_id], 12::smallint);
+    END IF;
+    RETURN NULL;
+  END IF;
+
   -- host_vulnerability_evaluations (row, its state changed).
   IF TG_TABLE_NAME = 'host_vulnerability_evaluations' THEN
     host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;

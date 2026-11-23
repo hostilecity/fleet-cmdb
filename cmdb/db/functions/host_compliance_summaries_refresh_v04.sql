@@ -3,8 +3,7 @@ RETURNS void
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  -- The run's grace for a new fixable critical (owner decision 7; the vulnerabilities.run_grace_days setting).
-  grace interval := COALESCE((SELECT (st.value #>> '{}')::integer FROM settings st WHERE st.key = 'vulnerabilities.run_grace_days'), 7) * interval '1 day';
+  grace interval;
 BEGIN
   -- Recomputes the hosts' compliance counts (#193). Called from host_compliance_summaries_flush at commit, which has
   -- already locked these rows in one sorted statement, and by the rebuild and the recount queue. v02 (VT-FIXABLE,
@@ -15,11 +14,19 @@ BEGIN
   --   it has none);
   -- - no_fixable_critical_since: when its current run began, kept while a fixable critical is open. When the last one
   --   goes, the run carries on if it was open for less than the grace, and starts again now otherwise (a run's badge
-  --   is read from these with the same grace: VulnerabilityExposure::Run). Both move only while the host is scored
-  --   (evaluated, every open finding triaged), so a host not evaluated, or not triaged yet, starts no run.
+  --   is read from these with the same grace: VulnerabilityExposure::Run). A host that is not scored (not evaluated
+  --   now, or not every open finding triaged) has neither: its run ends, and a new one starts when it is scored again,
+  --   so a run never counts days the server could not see (S4 of the review of #305). A gap in package reports ends a
+  --   run too (host_compliance_summaries_flush v03).
   IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
     RETURN;
   END IF;
+
+  -- The run's grace for a new fixable critical (owner decision 7; the vulnerabilities.run_grace_days setting), read only
+  -- when there is something to recount. A value that is not a whole number of days (Setting writes only those) reads as
+  -- the default rather than failing every flush.
+  grace := COALESCE((SELECT CASE WHEN jsonb_typeof(st.value) = 'number' AND st.value::text ~ '^[0-9]{1,4}$' THEN (st.value::text)::integer END
+                       FROM settings st WHERE st.key = 'vulnerabilities.run_grace_days'), 7) * interval '1 day';
 
   -- Lock first, in host order, then count in a later statement: under READ COMMITTED that statement takes a new
   -- snapshot, so a transaction that waited here for another one counts what that one committed. Two transactions
@@ -40,10 +47,11 @@ BEGIN
     FROM host_compliance_counts(host_ids) c
     JOIN host_compliance_summaries o ON o.host_id = c.host_id
     CROSS JOIN LATERAL (
-      SELECT CASE WHEN c.exposure_tier IS NULL THEN o.fixable_critical_since
+      SELECT CASE WHEN c.exposure_tier IS NULL THEN NULL
                   WHEN c.vuln_fix_critical > 0 THEN COALESCE(o.fixable_critical_since, now())
              END AS fixable_since,
-             CASE WHEN c.exposure_tier IS NULL OR c.vuln_fix_critical > 0 THEN o.no_fixable_critical_since
+             CASE WHEN c.exposure_tier IS NULL THEN NULL
+                  WHEN c.vuln_fix_critical > 0 THEN o.no_fixable_critical_since
                   WHEN o.fixable_critical_since IS NULL THEN COALESCE(o.no_fixable_critical_since, now())
                   WHEN o.no_fixable_critical_since <= o.fixable_critical_since AND now() - o.fixable_critical_since < grace THEN o.no_fixable_critical_since
                   ELSE now()

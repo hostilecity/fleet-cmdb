@@ -26,7 +26,7 @@ class HostsController < ApplicationController
     @rules_defined = CisRule.exists?
     # The Exposure and Work cells' honesty rules (VT-SCORES #262), read once a page.
     @signal_statuses = Signals::Freshness.statuses
-    @scores = { kev: @signal_statuses.find { |status| status.signal == Signals::KEV }, badges: Setting.vulnerability_badges, package_interval: ReportSchedule.intervals.fetch("packages"),
+    @scores = { sources: { signals: @signal_statuses, trackers: DebianTriage::Freshness.statuses.index_by(&:release) }, badges: Setting.vulnerability_badges, package_interval: ReportSchedule.intervals.fetch("packages"),
                 advisories_stale: @advisory_freshness.to_h { |status| [ status.ecosystem, status.stale ] } }
   end
 

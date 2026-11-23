@@ -20,7 +20,7 @@ An advisory import that changes a severity is different: it can move the counts 
 
 `TRUNCATE` is refused on the tables the counts come from (`cis_results`, `vulnerability_findings`, `host_vulnerability_evaluations`, `host_inventories`): it would skip the triggers. Delete the rows instead.
 
-Nothing else writes the table. One setting is read by the recount: `vulnerabilities.run_grace_days` (7), how long a run is kept through a new fixable critical, applied when the last one goes ([configuration.md](configuration.md)). Changing it rewrites nothing.
+Nothing else writes the table. Two settings are read: `vulnerabilities.run_grace_days` (7), how long a run is kept through a new fixable critical, applied when the last one goes, and `vulnerabilities.badge_report_max_age_days` (3): a package report after a longer gap ends the host's run (a row trigger on `host_package_sets` that fires only for gaps over a day) ([configuration.md](configuration.md)). Changing them rewrites nothing.
 
 ## Upgrading
 

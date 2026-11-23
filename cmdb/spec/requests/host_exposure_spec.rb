@@ -18,6 +18,8 @@ RSpec.describe "Host exposure", :signed_in, type: :request do
     allow(VulnerabilityMatchJob).to receive(:perform_later)
     import_advisories(osv_record(id: "DEBIAN-CVE-2026-99001", package: "nothing-installed"), full: true) # the advisory data is current
     import_kev(kev_file("CVE-2026-99999"))
+    import_epss(epss_file([ [ "CVE-2026-99998", "0.01", "0.5" ] ], date: Date.current.iso8601)) # current: only the qualifiers a spec sets up show
+    import_triage(tracker_document("nothing-installed" => { "CVE-2026-99001" => { "trixie" => tracker_release } }))
   end
 
   it "shows the tier, points, and work on the tiles, why the points on the tab, and the run, each in its own unit" do
@@ -70,6 +72,8 @@ RSpec.describe "Host exposure", :signed_in, type: :request do
     expect(words(page.at_css("#glance_work"))).to eq("Work remaining Not known Last package report 5 days ago")
     get "/"
     expect(page.css("tr#row_host_#{host.id} td").map { |td| words(td) }[5..6]).to eq([ "Not known last package report 5 days ago", "Not known last package report 5 days ago" ])
+    get "/", params: { vulns: "nothing_to_install" } # the filter claims no more than the cells (review of #305, S6)
+    expect(page.at_css("tr#row_host_#{host.id}")).to be_nil
 
     findings!(host, "high", rule: "F1", source: "openssl")
     get tab
@@ -100,7 +104,7 @@ RSpec.describe "Host exposure", :signed_in, type: :request do
     SignalImport.where(signal: "kev").update_all(finished_at: Time.utc(2026, 11, 1, 9))
     get tab
     expect(words(page.at_css("#glance_exposure"))).to eq("Vulnerability exposure Known exploited 20 points · 1 known exploited · 0 need attention · not re-checked against KEV since 2026-11-01")
-    expect(page.at_css("#score_tier").text.squish).to include("The tier and points are not re-checked against KEV since 2026-11-01: KEV listings are not shown as a lower tier.")
+    expect(page.at_css("#score_tier").text.squish).to include("The tier and points are not re-checked against KEV since 2026-11-01: findings those sources would move to Needs attention or Fix available may be counted lower until they are.")
     get "/"
     expect(words(page.at_css("tr#row_host_#{host.id} td:nth-child(6)"))).to eq("Known exploited 20 points · 0 need attention not re-checked against KEV since 2026-11-01")
   end

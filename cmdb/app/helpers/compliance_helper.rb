@@ -79,9 +79,11 @@ module ComplianceHelper
       words = "#{number_with_delimiter(totals.buckets[bucket])} #{BUCKET_WORDS.fetch(bucket)}"
       words = "#{totals.buckets[bucket] == 1 ? '1 needs' : "#{number_with_delimiter(totals.buckets[bucket])} need"} attention" if bucket == "attention"
       item = link_to(words, link.call(bucket), "aria-current": (current == bucket ? "true" : nil))
-      bucket == "fix" ? safe_join([ item, " (#{pluralize(number_with_delimiter(totals.work_items), 'work item')})" ]) : item
+      bucket == "fix" ? safe_join([ item, " (#{pluralize(number_with_delimiter(totals.work_items), 'work item')} on #{totals.hosts_scored} scored #{'host'.pluralize(totals.hosts_scored)})" ]) : item
     end
-    safe_join([ safe_join(parts, " · "), " on #{totals.vulns_evaluated} of #{pluralize(totals.hosts, 'host')} evaluated." ])
+    # Which hosts each number covers (review of #305, S6): the findings are every active host's open ones, kept findings
+    # of hosts not evaluated now included, as the severity counts above; the work items only scored hosts'.
+    safe_join([ safe_join(parts, " · "), ": open findings of the #{pluralize(totals.hosts, 'active host')}, #{totals.vulns_evaluated} evaluated now." ])
   end
 
   # A host's open findings in Fix available and Needs attention on the Compliance page, linking to its tab's sections:

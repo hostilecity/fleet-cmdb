@@ -209,7 +209,7 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       findings!(old, "high", fixed: "2.0-1", rule: "F1") # kept from an earlier evaluation: in its bucket, no row detail
       triage_all!(web)
       get "/compliance"
-      expect(words(page.at_css("#fleet_buckets"))).to start_with("3 fix available (1 work item) · 1 needs attention · 2 low risk · 1 ignorable on")
+      expect(words(page.at_css("#fleet_buckets"))).to eq("3 fix available (1 work item on 2 scored hosts) · 1 needs attention · 2 low risk · 1 ignorable: open findings of the 5 active hosts, 2 evaluated now.")
       expect(page.css("#fleet_buckets a").map { |a| query(a) }).to eq(%w[fix attention low_risk ignorable].map { |b| { "bucket" => b } })
       detail = page.at_css("tr#compliance_host_#{web.id} th .fix-detail")
       expect(words(detail)).to eq("2 fix available · 1 finding needs attention")

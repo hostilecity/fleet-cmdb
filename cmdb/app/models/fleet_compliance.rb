@@ -94,8 +94,9 @@ class FleetCompliance
   end
 
   # Fleet-wide open counts over every active host, whatever the filters, so they equal the sum of the unfiltered table.
-  # buckets: open findings per bucket; work_items: the scored hosts' work items.
-  Totals = Data.define(:hosts, :cis_evaluated, :cis_passed, :cis_counted, :cis, :vulns_evaluated, :vulns, :buckets, :work_items) do
+  # buckets: open findings per bucket (kept findings of hosts not evaluated now included, as the severity counts);
+  # work_items: the work items of the hosts_scored hosts (evaluated, every open finding triaged).
+  Totals = Data.define(:hosts, :cis_evaluated, :cis_passed, :cis_counted, :cis, :vulns_evaluated, :vulns, :buckets, :work_items, :hosts_scored) do
     def cis_failed = cis.values.sum
     def vulns_open = vulns.values.sum
     def pass_rate = cis_counted.positive? ? cis_passed.fdiv(cis_counted) : nil
@@ -156,14 +157,16 @@ class FleetCompliance
   def self.totals
     sums = [ "count(*)", "count(*) FILTER (WHERE cis_counted > 0)", "sum(cis_passed)", "sum(cis_counted)",
              *CIS_SEVERITIES.map { |s| "sum(cis_#{s})" }, "count(*) FILTER (WHERE vuln_evaluated)",
-             *VULN_SEVERITIES.map { |s| "sum(vuln_#{s})" }, *BUCKETS.values.map { |column| "sum(#{column})" }, "sum(work_items)" ]
+             *VULN_SEVERITIES.map { |s| "sum(vuln_#{s})" }, *BUCKETS.values.map { |column| "sum(#{column})" }, "sum(work_items)",
+             "count(*) FILTER (WHERE exposure_tier IS NOT NULL)" ]
     values = HostComplianceSummary.where(enrollment_state: "active").pick(*sums.map { |sql| Arel.sql("COALESCE(#{sql}, 0)") }).map(&:to_i)
     hosts, cis_evaluated, cis_passed, cis_counted = values.shift(4)
     cis = CIS_SEVERITIES.zip(values.shift(CIS_SEVERITIES.size)).to_h
     vulns_evaluated = values.shift
     vulns = VULN_SEVERITIES.zip(values.shift(VULN_SEVERITIES.size)).to_h
     buckets = BUCKETS.keys.zip(values.shift(BUCKETS.size)).to_h
-    Totals.new(hosts:, cis_evaluated:, cis_passed:, cis_counted:, cis:, vulns_evaluated:, vulns:, buckets:, work_items: values.first)
+    work_items, hosts_scored = values
+    Totals.new(hosts:, cis_evaluated:, cis_passed:, cis_counted:, cis:, vulns_evaluated:, vulns:, buckets:, work_items:, hosts_scored:)
   end
 
   # The ids of hosts whose inventory reports a distribution release in the ecosystem (Ecosystems::TABLE, DEC-01), as a

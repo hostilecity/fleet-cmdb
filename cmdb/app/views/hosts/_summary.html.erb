@@ -19,7 +19,7 @@
     <%= glance_tile("Vulnerability exposure", tag.span("Not triaged yet", class: "not-eval"), "The re-triage after an upgrade has not reached this host yet", href: vulnerabilities_host_path(host), id: "glance_exposure") %>
     <%= glance_tile("Work remaining", tag.span("Not counted yet", class: "not-eval"), "Counted once its findings are triaged", href: vulnerabilities_host_path(host), id: "glance_work") %>
   <% else %>
-    <% big, detail = exposure_tile_parts(scores, kev: summary.kev_status, badges: summary.badges) %>
+    <% big, detail = exposure_tile_parts(scores, qualifiers: summary.qualifiers, badges: summary.badges) %>
     <%= glance_tile("Vulnerability exposure", big, detail, href: vulnerabilities_host_path(host, anchor: "score"), id: "glance_exposure") %>
     <% big, detail = work_tile_parts(scores, done: summary.work_done, badges: summary.badges) %>
     <%= glance_tile("Work remaining", big, detail, href: vulnerabilities_host_path(host, anchor: "work"), id: "glance_work") %>

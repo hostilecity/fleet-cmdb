@@ -160,17 +160,17 @@ RSpec.describe "Hosts", :signed_in, type: :request do
           "4 open CIS-aligned check failures (1 critical, 1 high) on 3 of 4 hosts evaluated. 5 open vulnerability findings (1 critical, 1 high) on 3 of 4 hosts evaluated."
         )
         # VT-SCORES (#262, VT-D06): the same findings by bucket, with the work items, each linking to the Compliance page.
-        expect(words(panel.at_css("#fleet_buckets"))).to eq("1 fix available (1 work item) · 1 needs attention · 1 low risk · 2 ignorable on 3 of 4 hosts evaluated.")
+        expect(words(panel.at_css("#fleet_buckets"))).to eq("1 fix available (1 work item on 3 scored hosts) · 1 needs attention · 1 low risk · 2 ignorable: open findings of the 4 active hosts, 3 evaluated now.")
         expect(panel.css("#fleet_buckets a").map { |a| a["href"] }).to eq(%w[fix attention low_risk ignorable].map { |b| "/compliance?bucket=#{b}" })
       end
 
       it "shows each host's pass rate, exposure, and work, linked to its tabs; not evaluated and not tracked are words, never zero" do
         get "/"
         # VT-SCORES (#262): the tier, the points, and how many findings need attention; the work items and what they are.
-        expect(cells(media)[4..6]).to eq([ "62.5% 3 failing, 1 high", "Exposed, no fix 24 points · 1 finding needs attention not checked against KEV", "1 work item 1 upgrade" ])
-        expect(cells(web)[4..6]).to eq([ "87.5% 1 failing, 1 critical", "Low 2 points · 0 need attention not checked against KEV", "Nothing to install" ])
+        expect(cells(media)[4..6]).to eq([ "62.5% 3 failing, 1 high", "Exposed, no fix 24 points · 1 finding needs attention not checked against KEV, EPSS, or Debian's tracker", "1 work item 1 upgrade" ])
+        expect(cells(web)[4..6]).to eq([ "87.5% 1 failing, 1 critical", "Low 2 points · 0 need attention not checked against KEV, EPSS, or Debian's tracker", "Nothing to install" ])
         expect(page.at_css("tr#row_host_#{media.id} .tier.t3")).not_to be_nil
-        expect(cells(backup)[4..6]).to eq([ "100% None failing", "Minimal 0 points · 0 need attention not checked against KEV", "Nothing to install" ])
+        expect(cells(backup)[4..6]).to eq([ "100% None failing", "Minimal 0 points · 0 need attention not checked against KEV, EPSS, or Debian's tracker", "Nothing to install" ])
         expect(cells(dns)[4..6]).to eq([ "Not evaluated: no config report yet", "Not evaluated: no inventory yet, so the distribution is not known", "Not known" ])
         expect(cells(pending)[4..6]).to eq([ "Not tracked", "Not tracked", "Not tracked" ])
         expect(page.at_css("tr#row_host_#{media.id} td:nth-child(5) a")["href"]).to eq("/hosts/#{media.id}/config#results")

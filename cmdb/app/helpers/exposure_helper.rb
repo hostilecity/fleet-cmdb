@@ -4,7 +4,8 @@
 # - A host that is not evaluated, or not triaged yet, shows that in words, never a tier, 0 points, or "Nothing to
 #   install". So does a host whose package report is older than the badge setting when its count is 0 ("Not known"):
 #   a stale host never shows 0 points or "Nothing to install"; a count above 0 is shown with its date.
-# - A stale or never-imported KEV source qualifies the tier ("not checked against KEV"); it never lowers it.
+# - A stale or never-imported KEV, EPSS, or Debian tracker source qualifies the tier ("not checked against KEV or
+#   EPSS"); the tier is never shown as a plain lower one (B1).
 # - A run badge is withheld, saying why, when the host is stale or the advisory data is; its words are exactly its
 #   claim ("No fixable critical for 12 days", "12-day run · 1 fixable critical, 4 days left").
 # - Words and shapes (the tier's bars, the badge's mark), never colour alone.
@@ -50,7 +51,8 @@ module ExposureHelper
   end
 
   # The fleet list's Exposure cell: tier, points, how many findings need attention.
-  def fleet_exposure_cell(host, row, kev:, badges:, package_interval:)
+  # sources: { signals: [KEV and EPSS statuses], trackers: { release => DebianTriage::Freshness::Status } }.
+  def fleet_exposure_cell(host, row, sources:, badges:, package_interval:)
     return tag.span("Not tracked", class: "muted") unless row
     return tag.span(safe_join([ "Not evaluated", tag.span(": #{vuln_reason_line(row).downcase_first}", class: "visually-hidden") ]), class: "not-eval") unless row.vulns_evaluated?
 
@@ -60,7 +62,7 @@ module ExposureHelper
 
     # One short line each, so the column stays narrow enough for the table to fit at 1,280 px.
     lines = [ "#{pluralize(number_with_delimiter(scores.exposure_points), 'point')} · #{attention_words(scores.vuln_attention)}",
-              VulnerabilityExposure.kev_qualifier(kev), scores_as_of(scores, package_interval) ].compact
+              *row_qualifiers(row, sources), scores_as_of(scores, package_interval) ].compact
     safe_join([ link_to(tier_label(scores.exposure_tier), vulnerabilities_host_path(host, anchor: "score")), *lines.map { |line| tag.span(line, class: "rate-detail") } ])
   end
 
@@ -86,11 +88,12 @@ module ExposureHelper
 
   # The run badge, or why it is withheld (withheld: true to say so; the fleet list leaves it out), or nil when the host
   # has no run.
-  def run_badge(scores, badges:, advisories_stale:, withheld: false, now: Time.current)
+  # id: the element id (the host tab's "run_badge"; none on the fleet list, which has a badge a row).
+  def run_badge(scores, badges:, advisories_stale:, withheld: false, id: nil, now: Time.current)
     return nil unless scores.scored?
 
     reason = VulnerabilityExposure.withheld(received: scores.packages_received_at, advisories_stale:, now:, max_age: badges[:report_max_age])
-    return (run_withheld(reason, scores) if withheld) if reason
+    return (run_withheld(reason, scores, id:) if withheld) if reason
 
     run = VulnerabilityExposure.run(scores, now:, grace: badges[:run_grace])
     return nil unless run
@@ -99,28 +102,29 @@ module ExposureHelper
     if run.grace?
       left = (run.left / 1.day).ceil
       tag.span(safe_join([ "#{days}-day run", tag.span("#{pluralize(run.open, 'fixable critical')}, #{pluralize(left, 'day')} left", class: "scope") ], " · "),
-               class: "honest grace", id: "run_badge")
+               class: "honest grace run-badge", id:)
     else
       tag.span(safe_join([ "No fixable critical", tag.span(days.zero? ? "for less than a day" : "for #{pluralize(days, 'day')}", class: "scope") ], " "),
-               class: "honest streak", id: "run_badge")
+               class: "honest streak run-badge", id:)
     end
   end
 
   RUN_WITHHELD = { no_report: "no package report yet", advisories_stale: "the advisory data is out of date" }.freeze
 
-  def run_withheld(reason, scores)
+  def run_withheld(reason, scores, id: nil)
     why = reason == :report_old ? "last package report #{seen_ago(scores.packages_received_at)}" : RUN_WITHHELD.fetch(reason)
-    tag.span(safe_join([ "Run withheld", tag.span(why, class: "scope") ], ": "), class: "honest withheld", id: "run_badge")
+    tag.span(safe_join([ "Run withheld", tag.span(why, class: "scope") ], ": "), class: "honest withheld run-badge", id:)
   end
 
   # The host summary tiles (mockup tiles.html): [big, detail] of Vulnerability exposure for a scored host.
-  def exposure_tile_parts(scores, kev:, badges:, now: Time.current)
+  # qualifiers: VulnerabilityExposure.qualifiers for the host.
+  def exposure_tile_parts(scores, qualifiers:, badges:, now: Time.current)
     stale = scores_stale?(scores, badges, now:)
     return [ tag.span("Not known", class: "not-eval"), "Last package report #{seen_ago(scores.packages_received_at)}" ] if stale && scores.exposure_points.zero?
 
     detail = [ pluralize(number_with_delimiter(scores.exposure_points), "point"),
                ("#{number_with_delimiter(scores.vuln_kev_advisories)} known exploited" if scores.vuln_kev_advisories.positive?),
-               attention_words(scores.vuln_attention), VulnerabilityExposure.kev_qualifier(kev),
+               attention_words(scores.vuln_attention), *qualifiers,
                ("as of the package report #{seen_ago(scores.packages_received_at)}" if stale) ].compact.join(" · ")
     [ tier_label(scores.exposure_tier), detail ]
   end
@@ -140,12 +144,20 @@ module ExposureHelper
     end
     progress = if stale then "progress withheld: last package report #{seen_ago(scores.packages_received_at)}"
     elsif (total = done + items).zero? then nil
-    else safe_join([ tag.meter("#{done} of #{total}", min: 0, max: total, value: done), " #{done} of #{total} done in 30 days" ])
+    # The meter's own text is hidden from assistive technology: the words after it say the same (review of #305, N6).
+    else safe_join([ tag.meter("#{done} of #{total}", min: 0, max: total, value: done, "aria-hidden": "true"), " #{done} of #{total} done in 30 days" ])
     end
     [ big, safe_join([ what, progress ].compact, tag.br) ]
   end
 
   private
+
+  # A fleet row's qualifiers: KEV and EPSS, and its release's tracker data (never imported when the release has none).
+  def row_qualifiers(row, sources)
+    release = DebianTriage::Releases.for_ecosystem(row.vuln_ecosystem)
+    tracker = release && sources[:trackers].fetch(release) { DebianTriage::Freshness::Status.new(release:, updated_at: nil, stale: true) }
+    VulnerabilityExposure.qualifiers(signals: sources[:signals], tracker:)
+  end
 
   def not_known(scores)
     safe_join([ tag.span("Not known", class: "not-eval"), tag.span("last package report #{seen_ago(scores.packages_received_at)}", class: "rate-detail") ])

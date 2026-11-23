@@ -48,7 +48,7 @@
     <label>Search name or hostname<%= search_field_tag :q, @compliance.q, placeholder: "vm-01 or Media server", maxlength: FleetCompliance::QUERY_MAX %></label>
     <label>Tag<%= select_tag :tag, options_for_select(@tags, @compliance.tag), include_blank: "All tags" %></label>
     <label>Status<%= select_tag :status, options_for_select(FleetCompliance::STATUSES.invert, @compliance.status), include_blank: "All hosts" %></label>
-    <label>Triage<%= select_tag :bucket, options_for_select(FleetCompliance::BUCKETS.keys.map { |b| [ "Has #{bucket_name(b).downcase} findings", b ] }, @compliance.bucket), include_blank: "All hosts" %></label>
+    <label>Triage<%= select_tag :bucket, options_for_select(FleetCompliance::BUCKETS.keys.map { |b| [ "Has findings in #{bucket_name(b)}", b ] }, @compliance.bucket), include_blank: "All hosts" %></label>
     <label>Sort<%= select_tag :sort, options_for_select(FleetCompliance::SORTS.invert, @compliance.sort) %></label>
     <%= hidden_field_tag :ecosystem, @compliance.ecosystem if @compliance.ecosystem %>
     <%= hidden_field_tag :cis, @compliance.cis if @compliance.cis %>
