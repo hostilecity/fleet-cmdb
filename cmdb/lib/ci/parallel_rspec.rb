@@ -196,5 +196,10 @@ class ParallelRspec
 
   def path(*parts) = File.join(@root, *parts)
 
-  def say(text) = @out.puts("== #{text} ==")
+  # Flushed at once: in CI stdout is a pipe (bin/ci | tee), where Ruby buffers it, and the heartbeat must show while
+  # the processes run, not after them.
+  def say(text)
+    @out.puts("== #{text} ==")
+    @out.flush
+  end
 end

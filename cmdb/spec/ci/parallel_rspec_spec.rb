@@ -267,7 +267,8 @@ RSpec.describe ParallelRspec do
         expect(merged["missing_processes"]).to eq([ "2" ])
       end
 
-      it "prints each process's progress every heartbeat while they run (review of #293, N4)" do
+      it "prints each process's progress every heartbeat while they run, flushed at once (review of #293, N4)" do
+        allow(out).to receive(:flush).and_call_original
         described_class.new(env:, root:, out:, clock: -> { 0.0 }, pause: ->(_seconds) { sleep 0.01 }, run: lambda { |_e, *argv|
           if argv[2] == "parallel_rspec"
             File.write(work("progress-1.txt"), "12")
@@ -277,6 +278,7 @@ RSpec.describe ParallelRspec do
           true
         }).run
         expect(out.string).to include("== RSpec running for 0 s; examples finished by process: 1: 12, 2: starting ==")
+        expect(out).to have_received(:flush).at_least(2).times # the preparing line and the heartbeat, each as it is printed
       end
 
       it "words a finished process's progress as it wrote it" do
