@@ -19,18 +19,13 @@ class EvaluationRun
   #   every verdict and every host. A kev_all change (KEV data appeared or was cleared, so rule I5 turns on or off
   #   everywhere) makes the run "all" too.
   # - Staleness starts nothing and rewrites nothing (B1): only stored data changing does.
-  # - A failed run can be started again (the Data sources page, Triage.retry!): a prepared run with batches left carries
-  #   on from them; any other is started again as a new run whose scope names the chunks it recorded, so it re-runs the
-  #   same hosts without claiming again, and supersedes it. A later run covers an earlier one only when it
+  # - A failed run can be started again (the Data sources page, EvaluationRun.retry!): a prepared run with batches left
+  #   carries on from them; any other is started again as a new run whose scope names the chunks it recorded, so it
+  #   re-runs the same hosts without claiming again, and supersedes it. A later run covers an earlier one only when it
   #   re-runs every host the earlier one would (its chunks, or all), so latest-wins never drops a host.
   class Triage
     AT_ONCE = %w[kev kev_all advisory].freeze
     REASONS = %w[kev daily all].freeze
-    # How many times in a row TriageRunWatchJob resumes a run whose job died with no progress since the last resume,
-    # before it fails the run. A resume after progress (a batch counted) starts the count again, so a long full run
-    # survives any number of deploys once it is split; its preparation is not progress (no cursor: a resume prepares
-    # again), so 4 deploys during one preparation fail it.
-    RESUMES = 3
     CLAIM = 1_000
     CHUNK_BATCH = 5_000
     # Up to this many advisories, the run re-triages only their findings on each host (VulnerabilityMatcher.retriage!,
@@ -39,41 +34,10 @@ class EvaluationRun
     # advisory ids are kept in the run's scope, so the limit also bounds that row.
     ADVISORY_LIMIT = 20_000
 
-    # Starts a failed run again (Data sources' "Re-triage again"), with a fresh resume count (fourth review of #277),
-    # all under the run's row lock (fifth review: so a second press, even one that read the run as failed before the
-    # first committed, finds it no longer failed and changes nothing). A prepared run with batches left is reopened and
-    # carries on from them, as a resume does, so a failed full run does not start from scratch. Any other (one never
-    # split has no batches, and reopening it would finish it with no host re-triaged) is superseded at once by a new
-    # run from its scope. Returns the run that now carries the work.
-    def self.retry!(run)
-      EvaluationRun.transaction do
-        locked = EvaluationRun.lock.find(run.id)
-        next locked unless locked.failed?
-
-        scope = locked.scope.except(*RESUME_KEYS)
-        if locked.work.prepared? && locked.batches.exists?
-          locked.update!(state: "running", finished_at: nil, scope:)
-          ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(locked.id) }
-          next locked
-        end
-
-        retried = EvaluationRun.create!(kind: "triage", scope:)
-        locked.batches.delete_all
-        locked.update!(state: "superseded", superseded_by: retried, finished_at: Time.current)
-        drop_sets([ locked.id ])
-        ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(retried.id) }
-        retried
-      end
-    end
-
     # Deletes runs' triage_run_sets rows once the current transaction commits (fifth review of #277: up to about
     # 900,000 rows a run at a million hosts, which nothing reads once the run has finished or been superseded, since
     # every run reads only the sets it recorded itself).
     def self.drop_sets(run_ids) = ActiveRecord.after_all_transactions_commit { TriageRunSet.where(evaluation_run_id: run_ids).delete_all }
-
-    # What TriageRunWatchJob keeps in a run's scope: how many resumes in a row made no progress, and the progress
-    # (batches done) at the last one.
-    RESUME_KEYS = %w[resumes resume_progress].freeze
 
     # Starts a run once the current transaction commits.
     def self.start_after_commit(reason) = EvaluationRun.after_commit_start("triage", { "reason" => reason })
@@ -98,9 +62,10 @@ class EvaluationRun
     # under it, each slice's changed chunks are recorded in the transaction that changes them, and the prepared scope is
     # stored before the claims are released. So a fan-out run again after a failure, from any point, reaches every host
     # a committed slice changed, and claims not released are claimed again. A run whose job died with its worker (Solid
-    # Queue fails a killed worker's job without a retry) is resumed by TriageRunWatchJob: its fan-out or its remaining
-    # batches are queued again, at most RESUMES times. A full run resumes rather than restarts: its base pass writes only
-    # the verdicts that change, and its batches carry on from those left.
+    # Queue fails a killed worker's job without a retry) is resumed by EvaluationRunWatchJob: its fan-out or its
+    # remaining batches are queued again, at most EvaluationRun::RESUMES times in a row with no progress. A full run
+    # resumes rather than restarts: its base pass writes only the verdicts that change, and its batches carry on from
+    # those left.
     def prepare!
       return own_sets! if prepared?
 

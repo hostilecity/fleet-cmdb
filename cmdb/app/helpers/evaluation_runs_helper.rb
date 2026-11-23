@@ -25,6 +25,15 @@ module EvaluationRunsHelper
     "#{number_with_delimiter(run.hosts_done)} of #{pluralize(number_with_delimiter(run.host_count), 'host')} done"
   end
 
+  # Why a failed run stopped: a job that failed every retry, or (#278) one stopped again and again with no progress,
+  # which Solid Queue records as a failed job too (a worker killed by a restart or for its memory).
+  def evaluation_failure_text(run)
+    return "Part of the work failed every retry" unless run.stopped?
+
+    "Its work was stopped #{EvaluationRun::RESUMES + 1} times in a row with no progress, as when a job worker is " \
+      "restarted or runs out of memory part way"
+  end
+
   def evaluation_refresh_seconds(tick) = [ FIRST_REFRESH_SECONDS * (2**tick.clamp(0, 10)), LAST_REFRESH_SECONDS ].min
 
   def evaluation_stalled?(run) = run.updated_at < STALLED_AFTER.ago

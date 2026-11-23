@@ -54,16 +54,26 @@ RSpec.describe "Evaluation runs", :signed_in, type: :request do
     expect(page.at_css("#evaluation_progress_text").text).to start_with("Stopped")
 
     failed = run
-    expect { post "/evaluation-runs/#{failed.id}/retry" }.to change(EvaluationRun, :count).by(1)
+    expect { post "/evaluation-runs/#{failed.id}/retry" }.not_to change(EvaluationRun, :count) # carries on from its batch (#278)
     expect(response).to redirect_to("/rules/#{rule.id}")
     expect(flash[:notice]).to eq("Checking every host again.")
     perform_evaluation_jobs
-    expect(failed.reload).to have_attributes(state: "superseded", superseded_by: run)
+    expect(failed.reload).to have_attributes(state: "finished", batches_done: 1, hosts_done: 3)
     get "/rules/#{rule.id}"
     expect(page.at_css("#evaluation_progress_text")).to be_nil
 
     post "/evaluation-runs/#{run.id}/retry" # finished: nothing to start
     expect(flash[:alert]).to eq("That run did not fail, so there is nothing to start again.")
+  end
+
+  it "says why a run the watch failed stopped, on Data sources, with its button (#278)" do
+    stopped = EvaluationRun.create!(kind: "advisories", scope: { "packages" => { "Debian:13" => [ "curl" ] }, "failure" => "stopped" }, state: "failed")
+    get "/data-sources"
+    node = page.at_css("#evaluation_progress_text")
+    expect(node.text.squish).to start_with("Stopped: 0 of 0 hosts done. Its work was stopped 4 times in a row with no progress, as when a job worker " \
+                                           "is restarted or runs out of memory part way (see the failed jobs), so some hosts were not checked.")
+    expect(node.at_css("form")["action"]).to eq("/evaluation-runs/#{stopped.id}/retry")
+    expect(node.at_css("button, input[type=submit]").then { |b| b.text.presence || b["value"] }).to eq("Re-match again")
   end
 
   it "starts a failed re-matching run again from Data sources" do

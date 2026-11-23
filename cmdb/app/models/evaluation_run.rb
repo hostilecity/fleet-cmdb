@@ -14,10 +14,14 @@
 # - Latest wins: a run supersedes the unfinished and failed runs of its kind that it covers (the same rules, or the
 #   same sources), whose remaining batches then do nothing. Results are read under the host lock, so an older run's
 #   batch still working writes the newer rule's results anyway.
-# - Failed: when the fan-out or a batch fails every retry (after_discard on their jobs), the run stops: its remaining
-#   batches are deleted (a triage run keeps them) and it is failed, which ends its progress line. The page says so, with
-#   a button that starts the same run again (EvaluationRunsController#retry; a triage run with batches left carries on
-#   from them, EvaluationRun::Triage.retry!), and a later run that covers it supersedes it.
+# - Failed: when the fan-out or a batch fails every retry (after_discard on their jobs), the run stops: it keeps its
+#   remaining batches, whose jobs check its state and do nothing, and it is failed, which ends its progress line. The
+#   page says so, with a button that starts it again (EvaluationRunsController#retry, EvaluationRun.retry!: a run with
+#   batches left carries on from them), and a later run that covers it supersedes it.
+# - Killed (#278): Solid Queue fails the job of a worker that was killed (a deploy's restart past the shutdown timeout,
+#   the OOM killer) without a retry, so after_discard never runs. EvaluationRunWatchJob resumes a run whose jobs are
+#   gone from what it recorded (its fan-out again, or its remaining batches), and fails it, with the reason "stopped",
+#   after RESUMES resumes in a row with no progress.
 # - Progress: batches_done of batch_count and hosts_done of host_count, shown where the run was triggered (the rule page,
 #   the Advisory data sources page). The dashboard refreshes once when the run finishes, if what it shows changed.
 # - Runs finished or superseded more than KEPT ago are deleted when a run starts; a failed run is kept until a later
@@ -30,6 +34,14 @@ class EvaluationRun < ApplicationRecord
   SUPERSEDABLE = (UNFINISHED + %w[failed]).freeze
   BATCH_SIZE = 1_000
   KEPT = 30.days
+  # How many times in a row EvaluationRunWatchJob resumes a run whose job died with no progress since the last resume,
+  # before it fails the run. A resume after progress (a batch counted, or the run split) starts the count again, so a
+  # long run survives any number of deploys once it is split; its preparation is not progress (no cursor: a resume
+  # prepares again), so 4 deploys during one preparation fail it (reviews of #277).
+  RESUMES = 3
+  # What EvaluationRunWatchJob keeps in a run's scope: how many resumes in a row made no progress, the progress
+  # ([state, batches done]) at the last one, and why it failed the run ("failure" => "stopped"). A retry drops them.
+  WATCH_KEYS = %w[resumes resume_progress failure].freeze
 
   has_many :batches, class_name: "EvaluationBatch", inverse_of: :evaluation_run, dependent: :delete_all
   # A triage run's changed chunks (deleted with the run by the foreign key).
@@ -64,8 +76,7 @@ class EvaluationRun < ApplicationRecord
     runs.unfinished.first || runs.find_by(state: "failed")
   end
 
-  # Stops a run whose fan-out or a batch failed every retry (the jobs' after_discard). Its remaining batches are
-  # deleted, so their jobs do nothing; what its finished batches changed is refreshed.
+  # Stops a run whose fan-out or a batch failed every retry (the jobs' after_discard): fail_locked!.
   def self.fail!(run_id)
     transaction do
       run = lock.find_by(id: run_id)
@@ -75,15 +86,41 @@ class EvaluationRun < ApplicationRecord
     end
   end
 
-  # Fails this run, whose row the caller has locked: its remaining batches are deleted, so their jobs do nothing (a
-  # triage run keeps them, so its retry carries on from them: EvaluationRun::Triage.retry!; their jobs check the state
-  # and do nothing meanwhile); what its finished batches changed is refreshed.
-  def fail_locked!
-    batches.delete_all unless kind == "triage"
+  # Fails this run, whose row the caller has locked. It keeps its remaining batches, so its retry carries on from them
+  # (EvaluationRun.retry!); their jobs check the state and do nothing meanwhile. What its finished batches changed is
+  # refreshed. failure: why, when it is not a job failing every retry ("stopped": EvaluationRunWatchJob).
+  def fail_locked!(failure: nil)
+    self.scope = scope.merge("failure" => failure) if failure
     self.state = "failed"
     self.finished_at = Time.current
     FleetBroadcast.refresh if shown_changed
     save!
+  end
+
+  # Starts a failed run again (the button on its page), with a fresh resume count, all under the run's row lock, so a
+  # second press, even one that read the run as failed before the first committed, finds it no longer failed and
+  # changes nothing (fifth review of #277). A run with batches left (it was split, so prepared) is reopened and carries
+  # on from them, as a resume does, so a failed run of a million hosts does not start from scratch. Any other (one
+  # never split has no batches, and reopening it would finish it with no host done) is superseded at once by a new run
+  # from its scope. Returns the run that now carries the work.
+  def self.retry!(run)
+    transaction do
+      locked = lock.find(run.id)
+      next locked unless locked.failed?
+
+      scope = locked.scope.except(*WATCH_KEYS)
+      if locked.batches.exists?
+        locked.update!(state: "running", finished_at: nil, scope:)
+        ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(locked.id) }
+        next locked
+      end
+
+      retried = create!(kind: locked.kind, scope:)
+      locked.update!(state: "superseded", superseded_by: retried, finished_at: Time.current)
+      Triage.drop_sets([ locked.id ]) if locked.kind == "triage"
+      ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(retried.id) }
+      retried
+    end
   end
 
   def work
@@ -97,6 +134,9 @@ class EvaluationRun < ApplicationRecord
   def unfinished? = UNFINISHED.include?(state)
 
   def failed? = state == "failed"
+
+  # Failed by EvaluationRunWatchJob: its job was stopped RESUMES + 1 times in a row with no progress.
+  def stopped? = failed? && scope["failure"] == "stopped"
 
   def shown? = unfinished? || failed?
 
