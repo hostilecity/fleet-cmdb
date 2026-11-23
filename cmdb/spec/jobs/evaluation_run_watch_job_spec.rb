@@ -212,6 +212,22 @@ RSpec.describe EvaluationRunWatchJob do
       expect_both_hosts_correct
     end
 
+    it "does not queue again the batches of a reopened run whose jobs are still queued (review of #292)" do
+      run = import_curl
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      queued, raised = run.batches.order(:position).pluck(:id)
+      clear_enqueued_jobs
+      live_job("EvaluationBatchJob", queued) # still waiting behind other work
+      EvaluationRun.fail!(run.id) # the other batch raised every retry
+      expect(EvaluationRun.retry!(run)).to eq(run)
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      expect(batch_jobs.map { |job| job["arguments"] }).to eq([ [ raised ] ]) # not the one whose job is queued
+      perform_evaluation_jobs
+      EvaluationBatchJob.perform_now(queued) # its queued job, run at last
+      expect(run.reload).to have_attributes(state: "finished", batches_done: 2, hosts_done: 2)
+      expect_both_hosts_correct
+    end
+
     it "never resumes a run that failed by raising every retry" do
       run = import_curl
       perform_enqueued_jobs(only: EvaluationRunJob)

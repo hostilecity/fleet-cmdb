@@ -12,19 +12,20 @@
 # A dead run is resumed from what it recorded, by queueing its fan-out again: a queued run prepares again (each kind's
 # preparation is safe to run again from any point: an advisory import's chunks are matched again, a triage run carries
 # on from its scope); a running run queues its remaining batches again (each is counted once, and a batch killed part
-# way runs again, idempotently) and finishes when it was split into none. A running run with no batches left (each
-# was counted, but the worker died before the run was) is finished, not resumed. Only resumes with no progress since
-# the last one count (scope "resumes", with [state, batches done] at the last one in "resume_progress"; preparation is
-# not progress, since a resume prepares again from the start); after EvaluationRun::RESUMES of them in a row the run
-# is failed with the reason "stopped" (EvaluationRun#fail_locked!), which shows it where it was started with its
-# button, whose retry carries on from its batches with a fresh count (EvaluationRun.retry!). A run that failed by
+# way runs again, idempotently). A running run with no batches left (split into none, and killed before it was
+# finished: the last batch's count finishes its run in the same transaction) is finished, not resumed. Only resumes
+# with no progress since the last one count (scope "resumes", with [state, batches done] at the last one in
+# "resume_progress"). Preparation is not progress and has no checkpoint: a resume prepares again from the start (an
+# import's chunks are all matched again), so 4 deploys during one long preparation fail the run. After
+# EvaluationRun::RESUMES resumes in a row with no progress the run is failed with the reason "stopped"
+# (EvaluationRun#fail_locked!), which shows it where it was started with its button, whose retry carries on from its
+# batches with a fresh count (EvaluationRun.retry!). A run that failed by
 # raising every retry is never resumed, so one bad advisory, rule or host cannot stop later runs. Each resume is one
 # transaction, and its job is queued after it commits: a watch killed part way leaves each run resumed or as it was.
 class EvaluationRunWatchJob < ApplicationJob
   queue_as :default
 
   STALE_AFTER = 10.minutes
-  JOBS = %w[EvaluationRunJob EvaluationBatchJob].freeze
 
   # Returns { "resumed" => [run ids], "failed" => [run ids], "finished" => [run ids] }.
   def perform(now: Time.current)
@@ -69,11 +70,5 @@ class EvaluationRunWatchJob < ApplicationJob
     end
   end
 
-  # { job class => Set of the first argument (a run or batch id) of its live jobs }.
-  def live_arguments
-    jobs = SolidQueue::Job.where(class_name: JOBS, finished_at: nil).where.missing(:failed_execution).pluck(:class_name, :arguments)
-    jobs.each_with_object(Hash.new { |h, k| h[k] = Set.new }) do |(name, arguments), live|
-      live[name] << Array(arguments.is_a?(Hash) ? arguments["arguments"] : nil).first
-    end
-  end
+  def live_arguments = EvaluationRun.live_jobs
 end

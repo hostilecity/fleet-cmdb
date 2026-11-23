@@ -11,8 +11,8 @@
       <%= link_to "failed jobs", failed_jobs_path, data: { turbo_frame: "_top" } %>. Reload the page to check again.</p>
   <% elsif run.failed? %>
     <div class="notice" id="evaluation_progress_text" role="status"><strong>Stopped: <%= evaluation_count_text(run) %>.</strong>
-      <p><%= evaluation_failure_text(run) %> (see the <%= link_to "failed jobs", failed_jobs_path, data: { turbo_frame: "_top" } %>), so some hosts were not checked.</p>
-      <%= button_to({ "cis_rules" => "Check every host again", "triage" => "Re-triage again" }.fetch(run.kind, "Re-match again"), retry_evaluation_run_path(run), class: "btn quiet",
+      <p><%= evaluation_failure_text(run) %> (see the <%= link_to "failed jobs", failed_jobs_path, data: { turbo_frame: "_top" } %>), so some hosts were not checked.<%= " #{evaluation_next_step(run)}" if evaluation_next_step(run) %></p>
+      <%= button_to(evaluation_retry_label(run), retry_evaluation_run_path(run), class: "btn quiet",
                     form: { data: { turbo_frame: "_top" } }) %></div>
   <% else %>
     <%# Done: the page reloads once, to show the results. %>

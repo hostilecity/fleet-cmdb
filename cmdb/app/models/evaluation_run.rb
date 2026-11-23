@@ -100,7 +100,8 @@ class EvaluationRun < ApplicationRecord
   # Starts a failed run again (the button on its page), with a fresh resume count, all under the run's row lock, so a
   # second press, even one that read the run as failed before the first committed, finds it no longer failed and
   # changes nothing (fifth review of #277). A run with batches left (it was split, so prepared) is reopened and carries
-  # on from them, as a resume does, so a failed run of a million hosts does not start from scratch. Any other (one
+  # on from them, as a resume does, so a failed run of a million hosts does not start from scratch; the batches whose
+  # jobs are still queued (a run failed by one batch raising every retry) are not queued again by its fan-out. Any other (one
   # never split has no batches, and reopening it would finish it with no host done) is superseded at once by a new run
   # from its scope. Returns the run that now carries the work.
   def self.retry!(run)
@@ -109,7 +110,7 @@ class EvaluationRun < ApplicationRecord
       next locked unless locked.failed?
 
       scope = locked.scope.except(*WATCH_KEYS)
-      if locked.batches.exists?
+      if locked.carries_on?
         locked.update!(state: "running", finished_at: nil, scope:)
         ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(locked.id) }
         next locked
@@ -135,6 +136,10 @@ class EvaluationRun < ApplicationRecord
 
   def failed? = state == "failed"
 
+  # Whether a failed run's retry carries on from the batches it had left (it was split, so prepared), rather than
+  # starting over as a new run (EvaluationRun.retry!; its button says which, EvaluationRunsHelper::RETRY_TEXT).
+  def carries_on? = batches.exists?
+
   # Failed by EvaluationRunWatchJob: its job was stopped RESUMES + 1 times in a row with no progress.
   def stopped? = failed? && scope["failure"] == "stopped"
 
@@ -143,6 +148,9 @@ class EvaluationRun < ApplicationRecord
   # Splits a queued run into batches and supersedes the older runs it covers (EvaluationRunJob). A retried fan-out
   # enqueues the batches still waiting again; a duplicated batch job counts once.
   def fan_out!
+    # A running run's fan-out again (a resume, a retry that reopened it, a fan-out retried after its split) leaves out
+    # the batches that still have a live job: a reopened run's other batches may still be queued (review of #292).
+    again = state == "running"
     # The work's own preparation, before the hosts are found (an import matches its changed chunks, ADR 0028); outside
     # the run's lock, since it can take a while. Idempotent, so a retried fan-out may run it again.
     if state == "queued"
@@ -162,8 +170,21 @@ class EvaluationRun < ApplicationRecord
       supersede!(older)
       batches.order(:position).pluck(:id)
     end
+    batch_ids -= self.class.live_jobs["EvaluationBatchJob"].to_a if again && batch_ids.any?
     ActiveJob.perform_all_later(batch_ids.map { |batch_id| EvaluationBatchJob.new(batch_id) }) if batch_ids.any?
     finish_empty!
+  end
+
+  # { job class => Set of the first argument (a run or batch id) } of the live Solid Queue jobs of a run: neither
+  # finished nor failed, so claimed, ready, scheduled (a retry pending) or blocked. EvaluationRunWatchJob reads them to
+  # tell a dead run from a live one; a fan-out again, to queue only the batches with none.
+  JOBS = %w[EvaluationRunJob EvaluationBatchJob].freeze
+
+  def self.live_jobs
+    jobs = SolidQueue::Job.where(class_name: JOBS, finished_at: nil).where.missing(:failed_execution).pluck(:class_name, :arguments)
+    jobs.each_with_object(Hash.new { |h, k| h[k] = Set.new }) do |(name, arguments), live|
+      live[name] << Array(arguments.is_a?(Hash) ? arguments["arguments"] : nil).first
+    end
   end
 
   # Counts a finished batch (EvaluationBatchJob): once, under the run's row lock, deleting the batch row. A batch whose

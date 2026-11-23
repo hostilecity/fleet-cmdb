@@ -20,9 +20,9 @@ class EvaluationRunsController < ApplicationController
     run = EvaluationRun.find(params[:id])
     return redirect_to(page_for(run), alert: "That run did not fail, so there is nothing to start again.") unless run.failed?
 
-    EvaluationRun.retry!(run)
-    notice = { "cis_rules" => "Checking every host again.", "triage" => "Re-triaging the affected hosts again." }.fetch(run.kind, "Re-matching the affected hosts again.")
-    redirect_to page_for(run), notice:
+    retried = EvaluationRun.retry!(run)
+    carried_on = retried.id == run.id && !retried.superseded_by_id # reopened, rather than superseded by a new run
+    redirect_to page_for(run), notice: EvaluationRunsHelper::RETRY_TEXT.fetch(run.kind)[carried_on ? 1 : 0].last
   end
 
   private
