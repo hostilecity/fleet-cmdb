@@ -28,7 +28,7 @@ class AddExposureScores < ActiveRecord::Migration[8.1]
   FLAGS = %i[work_kernel_install work_reboot].freeze
   DROPPED = { vuln_fixable: :integer, vuln_fix_packages: :integer, vuln_fix_severities: :smallint }.freeze
   FUNCTIONS = { host_compliance_counts: [ 4, 3 ], host_compliance_summaries_refresh: [ 4, 3 ], host_compliance_summaries_changed: [ 6, 5 ],
-                host_compliance_summaries_flush: [ 3, 2 ] }.freeze
+                host_compliance_summaries_flush: [ 3, 2 ], host_compliance_summaries_mark: [ 2, 1 ] }.freeze
   # Trigger => its table.
   TRIGGERS = { host_compliance_summaries_applicability_insert_delete: :host_applicability, host_compliance_summaries_applicability_update: :host_applicability,
                host_compliance_summaries_package_sets_gap: :host_package_sets }.freeze

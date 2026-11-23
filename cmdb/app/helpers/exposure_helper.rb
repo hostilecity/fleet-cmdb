@@ -67,7 +67,9 @@ module ExposureHelper
   end
 
   # The fleet list's Work cell: work items and what they are, or "Nothing to install" with the run badge.
-  def fleet_work_cell(host, row, badges:, package_interval:, advisories_stale:)
+  # sources: as fleet_exposure_cell's; only the tracker's qualifies work (F2: Debian's fixes before the advisory data's;
+  # KEV and EPSS move findings into Needs attention, never into Fix available).
+  def fleet_work_cell(host, row, badges:, package_interval:, advisories_stale:, sources:)
     return tag.span("Not tracked", class: "muted") unless row
     return tag.span("Not known", class: "not-eval") unless row.vulns_evaluated?
 
@@ -76,23 +78,25 @@ module ExposureHelper
     return not_known(scores) if scores.work_items.zero? && scores_stale?(scores, badges)
 
     as_of = scores_as_of(scores, package_interval)
+    tracker = row_tracker(row, sources)
+    qualifier = VulnerabilityExposure.qualifiers(signals: [], tracker:)
     if scores.work_items.zero?
-      lines = [ ("#{attention_words(scores.vuln_attention)}, no fix yet" if scores.vuln_attention.positive?), as_of ].compact
+      lines = [ ("#{attention_words(scores.vuln_attention)}, no fix yet" if scores.vuln_attention.positive?), *qualifier, as_of ].compact
       return safe_join([ tag.span("Nothing to install", class: "none-open"), *lines.map { |line| tag.span(line, class: "rate-detail") },
-                         run_badge(scores, badges:, advisories_stale:) ].compact)
+                         run_badge(scores, badges:, advisories_stale:, tracker_stale: tracker&.stale) ].compact)
     end
 
     safe_join([ link_to(pluralize(number_with_delimiter(scores.work_items), "work item"), vulnerabilities_host_path(host, anchor: "work")),
-                *[ work_words(scores), as_of ].compact.map { |line| tag.span(line, class: "rate-detail") } ])
+                *[ work_words(scores), *qualifier, as_of ].compact.map { |line| tag.span(line, class: "rate-detail") } ])
   end
 
   # The run badge, or why it is withheld (withheld: true to say so; the fleet list leaves it out), or nil when the host
   # has no run.
   # id: the element id (the host tab's "run_badge"; none on the fleet list, which has a badge a row).
-  def run_badge(scores, badges:, advisories_stale:, withheld: false, id: nil, now: Time.current)
+  def run_badge(scores, badges:, advisories_stale:, tracker_stale: false, withheld: false, id: nil, now: Time.current)
     return nil unless scores.scored?
 
-    reason = VulnerabilityExposure.withheld(received: scores.packages_received_at, advisories_stale:, now:, max_age: badges[:report_max_age])
+    reason = VulnerabilityExposure.withheld(received: scores.packages_received_at, advisories_stale:, tracker_stale:, now:, max_age: badges[:report_max_age])
     return (run_withheld(reason, scores, id:) if withheld) if reason
 
     run = VulnerabilityExposure.run(scores, now:, grace: badges[:run_grace])
@@ -109,7 +113,8 @@ module ExposureHelper
     end
   end
 
-  RUN_WITHHELD = { no_report: "no package report yet", advisories_stale: "the advisory data is out of date" }.freeze
+  RUN_WITHHELD = { no_report: "no package report yet", advisories_stale: "the advisory data is out of date",
+                   tracker_stale: "Debian's tracker data is out of date or not imported" }.freeze
 
   def run_withheld(reason, scores, id: nil)
     why = reason == :report_old ? "last package report #{seen_ago(scores.packages_received_at)}" : RUN_WITHHELD.fetch(reason)
@@ -131,16 +136,17 @@ module ExposureHelper
 
   # [big, detail] of Work remaining for a scored host: work items, what they are and the findings they clear, and the
   # progress of the last 30 days (withheld when the package report is old, VT-M5 rule 2).
-  def work_tile_parts(scores, done:, badges:, now: Time.current)
+  # qualifiers: the tracker's (VulnerabilityExposure.qualifiers with no signals), which can leave fixes uncounted.
+  def work_tile_parts(scores, done:, badges:, qualifiers: [], now: Time.current)
     stale = scores_stale?(scores, badges, now:)
     return [ tag.span("Not known", class: "not-eval"), "Last package report #{seen_ago(scores.packages_received_at)}" ] if stale && scores.work_items.zero?
 
     items = scores.work_items
     big = safe_join([ number_with_delimiter(items), " ", tag.small(items == 1 ? "work item" : "work items") ])
     what = if items.zero?
-      [ "Nothing to install", ("#{attention_words(scores.vuln_attention)}, no fix yet" if scores.vuln_attention.positive?) ].compact.join(" · ")
+      [ "Nothing to install", ("#{attention_words(scores.vuln_attention)}, no fix yet" if scores.vuln_attention.positive?), *qualifiers ].compact.join(" · ")
     else
-      "#{work_words(scores)} · clears #{pluralize(number_with_delimiter(scores.vuln_fix), 'finding')}"
+      [ "#{work_words(scores)} · clears #{pluralize(number_with_delimiter(scores.vuln_fix), 'finding')}", *qualifiers ].join(" · ")
     end
     progress = if stale then "progress withheld: last package report #{seen_ago(scores.packages_received_at)}"
     elsif (total = done + items).zero? then nil
@@ -152,11 +158,14 @@ module ExposureHelper
 
   private
 
-  # A fleet row's qualifiers: KEV and EPSS, and its release's tracker data (never imported when the release has none).
-  def row_qualifiers(row, sources)
+  # A fleet row's qualifiers: KEV and EPSS, and its release's tracker data.
+  def row_qualifiers(row, sources) = VulnerabilityExposure.qualifiers(signals: sources[:signals], tracker: row_tracker(row, sources))
+
+  # The tracker status of a fleet row's release (never imported when the table has none for it), or nil when its
+  # release has no tracker data to read.
+  def row_tracker(row, sources)
     release = DebianTriage::Releases.for_ecosystem(row.vuln_ecosystem)
-    tracker = release && sources[:trackers].fetch(release) { DebianTriage::Freshness::Status.new(release:, updated_at: nil, stale: true) }
-    VulnerabilityExposure.qualifiers(signals: sources[:signals], tracker:)
+    release && sources[:trackers].fetch(release) { DebianTriage::Freshness::Status.new(release:, updated_at: nil, stale: true) }
   end
 
   def not_known(scores)

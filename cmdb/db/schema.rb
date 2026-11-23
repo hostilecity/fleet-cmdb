@@ -1546,7 +1546,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
       AS $function$
       BEGIN
         -- Notes that this transaction changed what the hosts' summaries are built from (#193). kinds is a bit set: 1 the
-        -- host's own fields or operating system (a sync), 2 its liveness only (the status sort key), 4 its counts. Nothing
+        -- host's own fields or operating system (a sync), 2 its liveness only (the status sort key), 4 its counts, 8 a
+        -- package report after a gap that ends its run (v02, VT-SCORES #262: host_compliance_summaries_flush v03). Nothing
         -- here locks a summary row: host_compliance_summaries_flush does it once, sorted, at commit. The rows are keyed by
         -- transaction, so two transactions marking one host never wait for each other.
         IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN

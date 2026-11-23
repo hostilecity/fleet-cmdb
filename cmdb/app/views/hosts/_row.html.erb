@@ -9,6 +9,6 @@
   <td><%= host.os_name.presence || tag.span("Not reported", class: "unavailable") %></td>
   <td><%= fleet_cis_cell(host, row, rules_defined) %></td>
   <td><%= fleet_exposure_cell(host, row, sources: scores[:sources], badges: scores[:badges], package_interval: scores[:package_interval]) %></td>
-  <td><%= fleet_work_cell(host, row, badges: scores[:badges], package_interval: scores[:package_interval], advisories_stale: row && scores[:advisories_stale].fetch(row.vuln_ecosystem, true)) %></td>
+  <td><%= fleet_work_cell(host, row, badges: scores[:badges], package_interval: scores[:package_interval], advisories_stale: row && scores[:advisories_stale].fetch(row.vuln_ecosystem, true), sources: scores[:sources]) %></td>
   <td class="mono"><%= host.agent_version.presence || tag.span("—", class: "unavailable") %></td>
 </tr>

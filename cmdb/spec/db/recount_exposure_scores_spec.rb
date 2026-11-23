@@ -23,6 +23,7 @@ RSpec.describe RecountExposureScores do
   def unscored! = HostComplianceSummary.update_all(exposure_tier: nil, exposure_points: nil, work_items: nil, work_upgrades: nil) # as 20261123262001 leaves them
   def points = hosts.map { |host| HostComplianceSummary.find(host.id).exposure_points }
   def migration = @migration ||= described_class.new
+  def backfill(**) = ListenerBackfill.new(recount: ComplianceFixRecount.new(table: AddExposureScores::PROGRESS), **)
 
   def rake
     Rake::Task["compliance_summaries:recount_scores"].reenable
@@ -51,11 +52,11 @@ RSpec.describe RecountExposureScores do
     HostApplicability.create!(host: old, in_use_reported: true, library_scan: "ran", library_scanned_at: 2.days.ago, library_scan_received_at: 2.days.ago,
                               loaded_by_listeners: [ { "listener" => "x", "service" => nil, "class" => "network", "sockets" => [], "packages" => [ VulnerabilityFinding.where(host: old).pick(:package) ] } ])
     lines = []
-    expect(ListenerBackfill.new(log: ->(message) { lines << message }).run!).to eq(2)
+    expect(backfill(log: ->(message) { lines << message }).run!).to eq(2)
     expect(lines).to eq([ "wrote the listener of 2 findings on 2 hosts with listener evidence" ])
     expect(VulnerabilityFinding.where(host:).order(:id).pluck(:listener)).to eq([ 2, 1 ]) # the network listener wins
     expect(VulnerabilityFinding.where(host: old).pluck(:listener).uniq).to eq([ nil ])
-    expect(ListenerBackfill.new.run!).to eq(0) # again: nothing left to write
+    expect(backfill.run!).to eq(0) # again: nothing left to write
     quiet { migration.send(:upgrade) }
     expect(points).to eq([ 21, 21 + 5 + 0 ]) # the high N4 on pkg-a: +5 for the network; the low F1 on pkg-b: +0 for loopback
     expect(ssh.reload.library_scan).to eq("ran")
@@ -108,6 +109,29 @@ RSpec.describe RecountExposureScores do
     expect(VulnerabilityFinding.where(host: hosts.first).where.not(listener: nil)).to be_empty # refused before writing anything
     expect(rake).to start_with("wrote the listener of 1 findings on 1 hosts with listener evidence\nTo recount:")
     expect(VulnerabilityFinding.where(host: hosts.first).where.not(listener: nil).count).to eq(1)
+    # The restart after the upgrade step: the recount is done, so the backfill is not counted again, and the upgrade
+    # finishes rather than refusing for ever (re-check of #305, B1).
+    expect(backfill.estimate).to eq(0.0)
+    quiet { migration.send(:upgrade) }
+    expect(connection.table_exists?(:compliance_score_recounts)).to be(false)
+    expect(rake).to eq("Nothing to recount: the upgrade's recount is finished.\n") # and the task, run again, writes nothing either
+  end
+
+  it "backfills only hosts that are evaluated now, counting only as far as the estimate needs" do
+    evidence = { "listener" => "x", "service" => nil, "class" => "network", "sockets" => [] }
+    hosts.each do |host|
+      HostApplicability.create!(host:, in_use_reported: true, library_scan: "ran", library_scanned_at: Time.current, library_scan_received_at: Time.current,
+                                loaded_by_listeners: [ evidence.merge("packages" => VulnerabilityFinding.where(host:).pluck(:package)) ])
+    end
+    HostVulnerabilityEvaluation.find_by!(host: hosts.first).update!(state: "not_evaluated", reason: "unreadable_packages") # its findings kept as they were
+    expect(backfill.estimate).to eq(ListenerBackfill::HOST_SECONDS)
+    expect(backfill.run!).to eq(2)
+    expect(VulnerabilityFinding.where(host: hosts.first).where.not(listener: nil)).to be_empty
+    stub_const("ListenerBackfill::HOST_SECONDS", 1.0)
+    HostVulnerabilityEvaluation.find_by!(host: hosts.first).update!(state: "evaluated", reason: nil)
+    expect(backfill.estimate(within: 0.5)).to eq(1.0) # stopped counting after the first host past the limit
+    connection.execute("UPDATE compliance_score_recounts SET last_host_id = 1") # the recount has started: the backfill is done
+    expect([ backfill.estimate, backfill.run! ]).to eq([ 0.0, 0 ])
   end
 
   it "says how long when it counted everything" do

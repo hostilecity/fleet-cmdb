@@ -28,13 +28,16 @@ class HostSummary
 
   # What qualifies the tier and points (VulnerabilityExposure.qualifiers): KEV's and EPSS's freshness and the tracker
   # data of the release the host was evaluated for, as on the fleet list; read when the tile is drawn (two queries).
-  def qualifiers
-    @qualifiers ||= begin
-      release = DebianTriage::Releases.for_ecosystem(vulnerability_evaluation&.ecosystem)
-      tracker = release && (DebianTriage::Freshness.statuses(now:).find { |status| status.release == release } ||
-                            DebianTriage::Freshness::Status.new(release:, updated_at: nil, stale: true))
-      VulnerabilityExposure.qualifiers(signals: Signals::Freshness.statuses(now:), tracker:)
-    end
+  def qualifiers = @qualifiers ||= VulnerabilityExposure.qualifiers(signals: Signals::Freshness.statuses(now:), tracker: tracker_status)
+
+  # The tracker data of the release the host was evaluated for, or nil when the release has none to read (one query):
+  # it qualifies the work too, and withholds the run while stale (re-check of #305, S2).
+  def tracker_status
+    return @tracker_status if defined?(@tracker_status)
+
+    release = DebianTriage::Releases.for_ecosystem(vulnerability_evaluation&.ecosystem)
+    @tracker_status = release && (DebianTriage::Freshness.statuses(now:).find { |status| status.release == release } ||
+                                  DebianTriage::Freshness::Status.new(release:, updated_at: nil, stale: true))
   end
 
   # Findings that are open or reopened.

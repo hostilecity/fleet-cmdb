@@ -21,7 +21,7 @@
   <% else %>
     <% big, detail = exposure_tile_parts(scores, qualifiers: summary.qualifiers, badges: summary.badges) %>
     <%= glance_tile("Vulnerability exposure", big, detail, href: vulnerabilities_host_path(host, anchor: "score"), id: "glance_exposure") %>
-    <% big, detail = work_tile_parts(scores, done: summary.work_done, badges: summary.badges) %>
+    <% big, detail = work_tile_parts(scores, done: summary.work_done, badges: summary.badges, qualifiers: VulnerabilityExposure.qualifiers(signals: [], tracker: summary.tracker_status)) %>
     <%= glance_tile("Work remaining", big, detail, href: vulnerabilities_host_path(host, anchor: "work"), id: "glance_work") %>
   <% end %>
   <% if summary.any_received? || summary.report_types(:missing).any? %>

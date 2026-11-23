@@ -380,7 +380,7 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
     expect(page.at_css("#not_evaluated")).to be_nil
     expect(page.css("nav.tabs a").map { |a| words(a) }.grep(/\AVulnerabilities/).sole).to eq("Vulnerabilities 0 to act on")
     expect(words(page.at_css("#glance_exposure"))).to eq("Vulnerability exposure Minimal 0 points · 0 need attention · not checked against KEV, EPSS, or Debian's tracker")
-    expect(words(page.at_css("#glance_work"))).to eq("Work remaining 0 work items Nothing to install")
+    expect(words(page.at_css("#glance_work"))).to eq("Work remaining 0 work items Nothing to install · not checked against Debian's tracker")
   end
 
   describe "a host that cannot be evaluated says so and why, never an empty list" do

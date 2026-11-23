@@ -63,10 +63,10 @@ class RecountExposureScores < ActiveRecord::Migration[8.1]
 
   # The listener backfill, then the recount, when both fit in INLINE_SECONDS; else the upgrade step, before either.
   def upgrade
-    backfill = ListenerBackfill.new(log: ->(message) { say(message, true) })
     recount = ComplianceFixRecount.new(table: AddExposureScores::PROGRESS, log: ->(message) { say(message, true) })
+    backfill = ListenerBackfill.new(recount:, log: ->(message) { say(message, true) }) # nothing to do once the recount has started (B1)
     estimate = recount.estimate(within: INLINE_SECONDS)
-    seconds = backfill.estimate + estimate.seconds
+    seconds = backfill.estimate(within: INLINE_SECONDS) + estimate.seconds
     if seconds > INLINE_SECONDS
       raise "#{UPGRADE_STEP}: writing the findings' listeners and recounting every host's exposure and work would take " \
             "#{too_long(estimate.with(seconds:))}, too long for container start; they read \"not scored\" until then. #{RUNBOOK}"

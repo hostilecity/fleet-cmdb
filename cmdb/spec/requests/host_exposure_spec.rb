@@ -99,6 +99,21 @@ RSpec.describe "Host exposure", :signed_in, type: :request do
     expect(words(page.at_css("#run_badge"))).to eq("Run withheld: the advisory data is out of date")
   end
 
+  it "qualifies the work and withholds the run while the release's tracker data is stale or missing (re-check of #305, S2)" do
+    backdate(no_fixable_critical_since: 12.days)
+    get tab
+    expect(words(page.at_css("#run_badge"))).to eq("No fixable critical for 12 days")
+    TriageImport.update_all(finished_at: Time.utc(2026, 11, 1, 9)) # F2's fixes come from it: it may hold fixes not counted
+    get tab
+    expect(words(page.at_css("#run_badge"))).to eq("Run withheld: Debian's tracker data is out of date or not imported")
+    expect(words(page.at_css("#glance_work"))).to eq("Work remaining 0 work items Nothing to install · not re-checked against Debian's tracker since 2026-11-01")
+    get "/"
+    expect(words(page.at_css("tr#row_host_#{host.id} td:nth-child(7)"))).to eq("Nothing to install not re-checked against Debian's tracker since 2026-11-01")
+    findings!(host, "low", rule: "F1")
+    get "/"
+    expect(words(page.at_css("tr#row_host_#{host.id} td:nth-child(7)"))).to eq("1 work item 1 upgrade not re-checked against Debian's tracker since 2026-11-01")
+  end
+
   it "names a stale or never-imported KEV source beside the tier, never a lower tier" do
     findings!(host, "high", rule: "F1", kev: true)
     SignalImport.where(signal: "kev").update_all(finished_at: Time.utc(2026, 11, 1, 9))
