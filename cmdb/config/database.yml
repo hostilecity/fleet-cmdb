@@ -106,15 +106,21 @@ development:
 # Warning: The database defined as "test" will be erased and
 # re-generated from your development database when you run "rake".
 # Do not set this db to the same as development or production.
+# bin/rspec-parallel runs the suite in several processes (#288). Each has its own set of test databases, numbered by
+# parallel_tests in TEST_ENV_NUMBER ("" for the first, then 2, 3, ...): cmdb_test and cmdb_test_queue, then
+# cmdb_test_p2 and cmdb_test_p2_queue, and so on. The "_p" keeps two names apart (cmdb_r1 in process 12 is cmdb_r1_p12,
+# never cmdb_r12). CMDB_TEST_DATABASE renames the set (cmdb_test by default), so several checkouts can share one
+# PostgreSQL server. DATABASE_URL and QUEUE_DATABASE_URL override these names, so a run with either is one process.
+<% test_database = ENV.fetch("CMDB_TEST_DATABASE", "cmdb_test") + (ENV["TEST_ENV_NUMBER"].to_s.empty? ? "" : "_p#{ENV["TEST_ENV_NUMBER"]}") %>
 test:
   primary: &primary_test
     <<: *default
-    database: cmdb_test
+    database: <%= test_database %>
   # Solid Queue's tables, so specs can run real jobs and read real failures (P1-O02). Cache and cable are
   # not needed in tests (null cache, test cable adapter).
   queue:
     <<: *primary_test
-    database: cmdb_test_queue
+    database: <%= test_database %>_queue
     migrations_paths: db/queue_migrate
   # Always present in tests, on the test database itself, so every page ReplicaReads lists runs on the reading role
   # with writes refused (the transactional fixtures share the writing connection with it).

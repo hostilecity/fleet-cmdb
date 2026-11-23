@@ -11,11 +11,22 @@ unless ENV["NO_COVERAGE"]
 end
 
 require_relative "support/github_annotations_formatter"
+require_relative "support/progress_file_formatter"
 
 RSpec.configure do |config|
   # In GitHub Actions, failures also become annotations on the pull request (and readable through the API), and
   # the full results are written as JSON for the workflow to keep as an artifact (#69).
-  if GithubAnnotation.active?
+  # In one of bin/rspec-parallel's processes (#288), both go to the process's own files, which the runner merges
+  # into the same results and annotations as one process would give (lib/ci/parallel_rspec.rb).
+  if ENV["PARALLEL_TEST_GROUPS"]
+    require_relative "../lib/ci/parallel_rspec"
+    process = ParallelRspec.process_name(ENV["TEST_ENV_NUMBER"])
+    work = File.expand_path("../#{ParallelRspec::WORK_DIR}", __dir__)
+    config.add_formatter("progress")
+    config.add_formatter("json", "#{work}/results-#{process}.json")
+    config.add_formatter(ProgressFileFormatter, "#{work}/progress-#{process}.txt")
+    config.add_formatter(GithubAnnotationsFormatter::Deferred, "#{work}/annotations-#{process}.jsonl") if GithubAnnotation.active?
+  elsif GithubAnnotation.active?
     config.add_formatter("progress") # keep the usual output; adding a formatter replaces the default
     config.add_formatter(GithubAnnotationsFormatter)
     config.add_formatter("json", File.expand_path("../tmp/rspec/results.json", __dir__))

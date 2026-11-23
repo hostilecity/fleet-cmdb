@@ -198,12 +198,7 @@ module LiveRefresh
   def briefly
     # with_connection, not .connection: that would lease the connection to this thread for good, so a thread that
     # borrowed one (with_connection) would never give it back to the pool.
-    PendingRefresh.with_connection do |connection|
-      connection.transaction(requires_new: true) do
-        connection.execute("SET LOCAL lock_timeout = '#{REQUEST_LOCK_TIMEOUT}'")
-        yield
-      end
-    end
+    PendingRefresh.with_connection { |connection| ScopedLockTimeout.within(connection, REQUEST_LOCK_TIMEOUT) { yield } }
   end
 
   # Groups: a prefix and the stream every page of the group also subscribes to.

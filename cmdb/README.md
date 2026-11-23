@@ -60,12 +60,26 @@ NO_COVERAGE=1 bundle exec rspec spec/requests   # a subset, without coverage
 bin/rubocop                             # style
 bin/brakeman                            # static security analysis
 bin/bundler-audit                       # known-vulnerable gems
-bin/ci                                  # all of the above, in order (this is what CI runs)
+bin/rspec-parallel                      # the suite in one process per CPU, each on its own test databases
+bin/ci                                  # all of the above, in order, RSpec through bin/rspec-parallel (this is what CI runs)
 ```
 
-The test environment uses two databases, `cmdb_test` and `cmdb_test_queue` (Solid Queue's tables, so specs can run and fail real jobs); `DATABASE_URL` and `QUEUE_DATABASE_URL` override their names, for example to run several checkouts side by side. Tests never reach the network (WebMock blocks everything except localhost). Put factories in `spec/factories/` and shared helpers in `spec/support/`.
+The test environment uses two databases, `cmdb_test` and `cmdb_test_queue` (Solid Queue's tables, so specs can run and fail real jobs). `CMDB_TEST_DATABASE` renames the pair (`CMDB_TEST_DATABASE=cmdb_mine` gives `cmdb_mine` and `cmdb_mine_queue`), for example to run several checkouts side by side; `DATABASE_URL` and `QUEUE_DATABASE_URL` override the names too, but name one database for every process, so with either of them, or any other `*_DATABASE_URL`, set `bin/rspec-parallel` runs a single process. Tests never reach the network (WebMock blocks everything except localhost). Put factories in `spec/factories/` and shared helpers in `spec/support/`.
 
 Specs run in random order. To reproduce a failure, rerun with the seed RSpec printed: `bundle exec rspec spec/path_spec.rb:12 --seed 1234`. In GitHub Actions, each failing example, any error outside an example, and any failed `bin/ci` step also becomes an error annotation on the pull request (with the seed and the rerun command), because the job log cannot always be read. The workflow keeps the full `bin/ci` log and RSpec's JSON results as the `bin-ci-log` artifact.
+
+### Parallel runs
+
+`bin/ci` runs the suite with `bin/rspec-parallel` (#288): [parallel_tests](https://github.com/grosser/parallel_tests) in one process per CPU, at most 4 (GitHub's runner has 4 vCPUs, and more processes were no faster there). `PARALLEL_TEST_PROCESSORS=N` sets the number, above 4 too; with 1, or with any `*_DATABASE_URL` set (each names one database for every process), it is a plain `bundle exec rspec`.
+
+- **Databases:** each process has its own pair, numbered by `TEST_ENV_NUMBER`: `cmdb_test` and `cmdb_test_queue` for the first, then `cmdb_test_p2` and `cmdb_test_p2_queue`, and so on (with `CMDB_TEST_DATABASE=cmdb_mine`, `cmdb_mine_p2`; the `_p` keeps `cmdb_r1` in process 12 apart from `cmdb_r12`). Each pair takes up to about 6 connections at once. The runner prepares every pair first with `bin/rails db:prepare` in the test environment (both schemas and the history tables' partitions), and `spec/rails_helper.rb` checks the schema and partitions again in each process. To drop the extra pairs, `RAILS_ENV=test bundle exec parallel_test -n N --exec "bin/rails db:drop"`.
+- **Balance:** files are shared out by the runtimes in `spec/parallel_runtime_rspec.log`. A file missing from it counts as the average, so a stale log only balances less well. Each run writes fresh runtimes to `tmp/rspec/parallel_runtime_rspec.log`, which Server CI keeps in the `bin-ci-log` artifact; copy CI's over the checked-in log when the processes finish far apart. A shared example's time counts for the spec file that includes it.
+- **Seed:** one seed for every process (`SEED=N` to choose it), printed with each failure's rerun command. A rerun of one file runs it alone, without the other files its process ran.
+- **Coverage:** SimpleCov merges the processes' results, and the first process checks `COVERAGE_MINIMUM` against the merged total after the others finish, so a line no process ran still fails `bin/ci`. The runner deletes earlier runs' results first, so they cannot fill a gap.
+- **Results and annotations:** each process writes its RSpec JSON results and, in GitHub Actions, its annotations to `tmp/rspec/parallel/`. The runner merges the results into `tmp/rspec/results.json` and emits the annotations within GitHub's limit for the step, with one summary for the whole run. A process that died (its files missing, empty, or cut short) is listed in `missing_processes` and named in the summary; the run still fails.
+- **Progress in CI:** in GitHub Actions each process's output is printed in one piece when it ends (`--serialize-stdout`), so the runner prints a heartbeat every 60 s with how many examples each process has finished. A process whose count stops is hung; its own output is lost if the job's 20-minute timeout ends it.
+- **Isolation:** a spec must not depend on running alone. Everything in one database (rows, settings, partitions, advisory locks, event triggers) is per process. What the PostgreSQL server shares between databases is not: roles, databases a spec creates, and `pg_locks` and `pg_stat_activity`, so filter those by `current_database()`. Files a spec writes under `tmp/` need a unique name. A short `lock_timeout` for a few statements goes through `ScopedLockTimeout.within`: a `SET LOCAL` in a savepoint lasts to the end of the whole transaction, which in a spec is the rest of the example, and made specs give up on locks autovacuum held (#296). When a statement in the suite does hit its lock timeout, `spec/support/lock_timeout_report.rb` records who held locks in that database at that moment (pid, backend type such as autovacuum worker, lock, relation, query) in `tmp/rspec/lock-timeouts-N.log`, which Server CI keeps in its artifact. Specs that provoke a timeout on purpose are recorded too.
+- **Timed specs:** specs that time real work against a budget (`*_performance_spec.rb`, the EPSS reader's, the CIS evaluator's regex time limit; `ParallelRspec::TIMED`) all run in the first process, one after another (parallel_tests `--single`), so no two of them compete for the CPU. A new spec with a wall-clock budget belongs in that list; `spec/ci/parallel_rspec_spec.rb` lists them.
 
 Specs that use threads (`spec/services/*_concurrency_spec.rb`) run outside the test transaction. Each thread loads its own records on its own connection: Active Record objects are not thread-safe, and sharing one between threads made a spec fail intermittently (#69).
 
@@ -77,7 +91,7 @@ Specs that use threads (`spec/services/*_concurrency_spec.rb`) run outside the t
 
 ## Databases
 
-Development uses `cmdb_development` plus `cmdb_development_cache`, `_queue`, and `_cable`, mirroring production's layout. Tests use a single `cmdb_test` database with the test adapters for jobs, cache, and cable.
+Development uses `cmdb_development` plus `cmdb_development_cache`, `_queue`, and `_cable`, mirroring production's layout. Tests use `cmdb_test` and `cmdb_test_queue` (one pair per process in a parallel run, above), with the null cache and the test cable adapter.
 
 Recurring jobs are declared in `config/recurring.yml` and run by Solid Queue's scheduler. Later issues add their jobs there.
 

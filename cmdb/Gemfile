@@ -66,6 +66,9 @@ group :development, :test do
 
   # Omakase Ruby styling [https://github.com/rails/rubocop-rails-omakase/]
   gem "rubocop-rails-omakase", require: false
+
+  # Runs the suite in several processes, each on its own test databases (bin/rspec-parallel, #288)
+  gem "parallel_tests", require: false
 end
 
 group :development do

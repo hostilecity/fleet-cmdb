@@ -24,7 +24,7 @@ cd agent && cargo fmt --check && cargo clippy --all-targets -- -D warnings && ca
 ruby docs/backlog/import.rb check      # the backlog and specs, from the repository root
 ```
 
-`bin/ci` needs PostgreSQL running. A subset is quicker: `NO_COVERAGE=1 bundle exec rspec spec/requests` in `cmdb/`. The agent builds only on Linux; on macOS, run its checks in a Linux container as in [`agent/README.md`](../../agent/README.md#build-and-check).
+`bin/ci` needs PostgreSQL running. It runs RSpec in one process per CPU, at most 4, each on its own test databases (`PARALLEL_TEST_PROCESSORS=N` to change it; see [`cmdb/README.md`](../../cmdb/README.md#parallel-runs)). A subset is quicker: `NO_COVERAGE=1 bundle exec rspec spec/requests` in `cmdb/`. The agent builds only on Linux; on macOS, run its checks in a Linux container as in [`agent/README.md`](../../agent/README.md#build-and-check).
 
 ## 2. The server
 
