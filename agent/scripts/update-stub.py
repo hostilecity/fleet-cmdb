@@ -35,6 +35,8 @@ accepted with empty directives; package reports may be gzip, as the server allow
     "slow_heartbeat": {"version": "1.0.1", "seconds": 6}
                                     heartbeats from that version are answered late
     "results_503": 2                the first N posts of each update result get 503
+    "report_request": ["packages"]  sent in every heartbeat response as the report_request directive
+                                    (the agent answers once per request episode; VT-APPLICABILITY)
     "task": {"id": "<uuid>", "type": "apply_package_updates", "parameters": {}, "timeout_seconds": 3600,
              "catalog_version": 1}
                   A task for the task API (P3-S03): heartbeats carry `tasks_available` and polls deliver it
@@ -192,6 +194,8 @@ class Handler(BaseHTTPRequestHandler):
         task = current.get("task")
         if task and task["id"] not in STARTED_TASKS:
             directives["tasks_available"] = {}
+        if current.get("report_request"):
+            directives["report_request"] = {"types": current["report_request"]}
         offer = current.get("directive")
         if offer and offer["rollout_id"] not in DONE_ROLLOUTS:
             base = f"{PUBLIC_URL}/api/v1/releases/{offer['release']}"

@@ -14,6 +14,8 @@
 #   are not in the PackageSet, so findings for them resolve as removed at the next matching, and reopen when the
 #   package is listed again (P2-S08, P2-S11 owner decision).
 # - A new report, changed or not, satisfies the host's pending packages report request (ReportRequests, P2-S03).
+# - What is in use (in_use, FR-2.6) goes to HostApplicability, written only when it changes; a report without it
+#   (unreadable and unsupported ones included) clears it.
 #
 # Vulnerability matching (P2-S11) runs after a new snapshot, for that host, once the transaction commits.
 module PackageRecorder
@@ -43,6 +45,9 @@ module PackageRecorder
     set.update!(manager: report.manager, unsupported_reason: report.unsupported_reason, package_count: report.unreadable? ? set.package_count.to_i : report.packages.size,
                 content_hash: hash, skipped: report.skipped.map(&:to_h), warnings: report.warnings, report_id: report.report_id, schema_version: report.schema_version,
                 collected_at: report.collected_at, received_at: now)
+    # What is in use (FR-2.6, #258), written only when it changes. A new snapshot has queued the host's re-triage already,
+    # so a change of listener evidence in the same report queues no second one (final review of #268, S3).
+    HostApplicability.record_in_use!(host_id:, report:, now:, retriage: !snapshot)
     Result.new(report_id: report.report_id, duplicate: false, snapshot:)
   end
 end

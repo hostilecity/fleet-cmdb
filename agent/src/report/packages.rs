@@ -43,6 +43,7 @@ use super::time::rfc3339;
 use super::{Transport, new_report_id};
 use crate::client::ApiError;
 use crate::facts::host::Host;
+use crate::in_use::{self, InUse};
 use crate::packages::{self, Collected, Listing, Package, Skipped};
 use crate::retry::{Backoff, Rng};
 use crate::shutdown::Shutdown;
@@ -108,6 +109,11 @@ pub struct Reporter<'a, R: Rng> {
     tick_started: Instant,
     /// No startup report is built before this (the startup splay, #200). A request is not held back.
     first_at: Option<Instant>,
+    /// What is in use (FR-2.6, VT-A01) is collected and sent with a dpkg listing; `None` leaves it
+    /// out, as reports did before (the tests that are not about it).
+    in_use: Option<in_use::Scan>,
+    /// The last library scan, reused for an hour (owner decision 2026-11-20).
+    scan_memo: in_use::scan::Memo,
 }
 
 impl<'a, R: Rng> Reporter<'a, R> {
@@ -136,7 +142,17 @@ impl<'a, R: Rng> Reporter<'a, R> {
             new_id: new_report_id,
             tick_started: Instant::now(),
             first_at: None,
+            in_use: None,
+            scan_memo: in_use::scan::Memo::default(),
         }
+    }
+
+    /// Collects what is in use with each dpkg listing ([`crate::in_use`]), with the library scan when
+    /// `scan` turns it on; the last scan is kept in `state_dir` ([`in_use::scan::Memo`]).
+    pub fn with_in_use(mut self, scan: in_use::Scan, state_dir: &std::path::Path) -> Self {
+        self.in_use = Some(scan);
+        self.scan_memo = in_use::scan::Memo::in_dir(state_dir);
+        self
     }
 
     /// Stops starting work once `stop` is requested: the listing is not run, a listing that finishes
@@ -242,7 +258,42 @@ impl<'a, R: Rng> Reporter<'a, R> {
             );
             return;
         }
-        let encoded = encode(&report_id, &collected_at, &collected);
+        let in_use_started = Instant::now();
+        let in_use = match (&collected, &self.in_use) {
+            (Collected::Dpkg(_), Some(scan)) => Some(in_use::collect(
+                self.host,
+                scan,
+                &mut self.scan_memo,
+                self.stop,
+            )),
+            _ => None,
+        };
+        let in_use_ms = in_use_started.elapsed().as_millis() as u64;
+        if self.stopping() {
+            tracing::info!(
+                reason = reason.as_str(),
+                "the agent is stopping; the package list is not sent"
+            );
+            return;
+        }
+        if let Some(found) = &in_use {
+            for warning in &found.warnings {
+                tracing::warn!(warning = warning.as_str(), "in use");
+            }
+            if let Some(used) = &found.in_use {
+                tracing::info!(
+                    listening = used.listening.len(),
+                    services = used.services.len(),
+                    unnamed_network = used.unnamed_listeners.network,
+                    unnamed_loopback = used.unnamed_listeners.loopback,
+                    library_scan = used.library_scan,
+                    libraries = used.libraries.as_ref().map_or(0, Vec::len),
+                    elapsed_ms = in_use_ms,
+                    "read what is in use"
+                );
+            }
+        }
+        let encoded = encode_with(&report_id, &collected_at, &collected, in_use.as_ref());
         self.hold_until = None;
         self.retry_at = None;
         let span = tracing::info_span!("package_report", report_id = report_id.as_str());
@@ -396,6 +447,9 @@ struct Body<'a> {
     /// Left out when empty: absent means none (the contract), and a server that predates it is unchanged.
     #[serde(skip_serializing_if = "<[Skipped]>::is_empty")]
     skipped: &'a [Skipped],
+    /// Left out when not collected; `null` when it could not be read (FR-2.6, VT-A01).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_use: Option<Option<&'a InUse>>,
     warnings: Vec<Warning<'a>>,
 }
 
@@ -407,8 +461,28 @@ struct Warning<'a> {
 
 /// The gzip-compressed `packages.request` body. A dpkg listing too large for the server's limits
 /// becomes an `unreadable` report saying so ([`Encoded::refused`]).
+#[cfg(test)]
 pub fn encode(report_id: &str, collected_at: &str, collected: &Collected) -> Encoded {
+    encode_with(report_id, collected_at, collected, None)
+}
+
+/// [`encode`], with what is in use when it was collected (sent only with a dpkg listing).
+pub fn encode_with(
+    report_id: &str,
+    collected_at: &str,
+    collected: &Collected,
+    in_use: Option<&in_use::Collected>,
+) -> Encoded {
     let empty = Listing::default();
+    let in_use_warnings: Vec<String> = in_use
+        .map(|found| {
+            found
+                .warnings
+                .iter()
+                .map(|w| crate::facts::clip_reason(w))
+                .collect()
+        })
+        .unwrap_or_default();
     let without_packages = |manager: &'static str, reason: &str| {
         let reason = crate::facts::clip_reason(reason);
         let body = Body::new(report_id, collected_at, Some((manager, &reason)), &empty);
@@ -417,7 +491,37 @@ pub fn encode(report_id: &str, collected_at: &str, collected: &Collected) -> Enc
     };
     let (body, json_bytes) = match collected {
         Collected::Dpkg(listing) => {
-            match compress(&Body::new(report_id, collected_at, None, listing)) {
+            const TOO_LARGE: &str = "what is in use was left out: with it the report would be larger than a package report may be";
+            let with_in_use = |in_use: Option<Option<&InUse>>,
+                               extra: &[&str]|
+             -> Result<(Vec<u8>, usize), String> {
+                let mut body = Body::new(report_id, collected_at, None, listing);
+                if in_use.is_some() {
+                    body.in_use = in_use;
+                    // The listing's warnings come first; the contract allows 64 in all.
+                    let room = packages::MAX_WARNINGS.saturating_sub(body.warnings.len());
+                    body.warnings.extend(
+                        in_use_warnings
+                            .iter()
+                            .map(String::as_str)
+                            .chain(extra.iter().copied())
+                            .take(room)
+                            .map(|message| Warning {
+                                field: "in_use",
+                                message,
+                            }),
+                    );
+                }
+                compress(&body)
+            };
+            let first = with_in_use(in_use.map(|found| found.in_use.as_ref()), &[]);
+            // Too large with in_use: send the listing without it (null, with a warning), rather than
+            // lose a good listing to `unreadable` (review of #268, N4).
+            let result = match (first, in_use) {
+                (Err(_), Some(_)) => with_in_use(Some(None), &[TOO_LARGE]),
+                (result, _) => result,
+            };
+            match result {
                 Ok(done) => done,
                 Err(why) => {
                     let (body, json_bytes) = without_packages("unreadable", &why);
@@ -459,6 +563,7 @@ impl<'a> Body<'a> {
             unsupported_reason: without.map(|(_, reason)| reason),
             packages: if dpkg { &listing.packages } else { &[] },
             skipped: if dpkg { &listing.skipped } else { &[] },
+            in_use: None,
             warnings: if dpkg {
                 listing
                     .warnings

@@ -57,7 +57,7 @@ The owner asked for three categories; this has four, which the owner approved (d
 | 12 | I5 | Ignorable | The tracker's urgency for the release is `unimportant`, and KEV data has been imported at least once (rules N1 and N2, above, override it). | "Debian rates it unimportant: it does not affect the Debian binary packages, or is thought unexploitable in most situations." |
 | 13 | N3 | Needs attention | The tracker's urgency for the release is `end-of-life`, or the package is `<removed>` from the release but still installed: no security support. | "Debian no longer supports this package in trixie, so no fix will come." |
 | 14 | N4 | Needs attention | Severity medium or higher, and either the CVSS vector says network, no privileges, no user action, or there is no vector and the tracker's scope is remote (an `unknown` severity counts as medium, owner's OK in #277). | "Reachable over the network with no login and no user action." |
-| 15 | N5 | Needs attention | A process holding a listening socket loads the package (VT-APPLICABILITY's evidence, while the host's scan is at most 24 hours old), so L2 to L5 cannot apply (owner decision 2026-11-21; [VT-APPLICABILITY](vt-applicability.md) has the final wording). | "Loaded by openssh-server, which listens on the network, so it stays in Needs attention." |
+| 15 | N5 | Needs attention | A process holding a listening socket loads the package: the agent's library scan lists it in `loaded_by_listeners`, and the server received that scan less than 24 hours ago (decision 27; [VT-APPLICABILITY](vt-applicability.md)). So L2 to L5 cannot apply. | "Loaded by openssh-server (ssh.service on 0.0.0.0:22/tcp), which listens on the network, so it stays in Needs attention." (the unit and sockets only when the scan names them) |
 | 16 | L2 | Low risk | Attack vector local or physical, or no vector and the tracker's scope is local. | "Needs local access: an attacker must already run code on this host." |
 | 17 | L3 | Low risk | Network or adjacent vector that needs privileges or a user's action. | "Needs a logged-in attacker or a user to open something." |
 | 18 | L4 | Low risk | The tracker has a no-DSA note for the release (no reason, postponed, or ignored). | "Debian judged it a minor issue and plans no security update for trixie; a fix is expected in the next point release." (the last part only when the tracker says so) |
@@ -76,7 +76,7 @@ Why this order:
 - **End of life (N3) is not ignorable.** The tracker's `<end-of-life>` tag means a package "not anymore supported by the security team in a (old-)stable release" ([security_tracker.html](https://security-team.debian.org/security_tracker.html), as checked in the review); the tracker's JSON puts it in the urgency field. No fix will ever come, which is a reason to act (decision 2).
 - **"Ignored" and "postponed" are not ignorable either.** `<ignored>` means "a valid/strong reason not to fix it" and `<postponed>` "a minor issue ... that may be fixed later" ([LTS team, CVE triage](https://lts-team.pages.debian.net/cve-triage.html)). Neither says the flaw cannot be exploited, so they are L4, overridden by N1, N2, or N4 (decision 4). The tracker itself hides them unless asked ("include issues tagged <no-dsa>", [tracker release view](https://security-tracker.debian.org/tracker/status/release/testing)).
 - **Network exposure without agent data fails toward attention (N4)** (decision 8).
-- **In-use evidence only escalates (N5)** (owner decision 2026-11-21). A package a listening process loads is reachable while it runs, so its findings cannot be Low risk. A package not seen running is never demoted: the scan sees only what runs at that moment, so "not seen running" does not mean low risk. There is no idle rule.
+- **In-use evidence only escalates (N5), never demotes** (decision 27). A package a listening process loads is reachable while it runs, so its findings cannot be Low risk, and they add exposure points (VT-M3). A package not seen running is never demoted: the scan sees only what runs at that moment (not short-lived helpers, cron jobs, or `sftp-server` sessions), so "not seen running" does not mean low risk. There is no idle rule.
 
 ### Missing and stale data (B1, S3)
 
@@ -86,7 +86,7 @@ Missing data never makes a finding look safer, and stale data is still evidence:
 - **Turned off** (the URL setting emptied): the last data is kept and goes stale, as above. Turning a feed off never lowers a score.
 - **Never imported** (no stored data): N1 or N2 cannot fire and I5 does not apply (those findings fall to L4 or L5, more cautious than Ignorable). The tier and score are shown with "not checked against KEV" (or EPSS), never as a plain lower tier.
 - **A CVE with no EPSS score** (EPSS lags new CVEs): N2 does not fire; its reason says "no EPSS score yet". I5 does not depend on EPSS, so EPSS being off or missing a CVE never moves a finding into or out of Ignorable.
-- **No tracker entry** disables F2, I3, I4, I5, N3, and L4. **No listener evidence**, or evidence older than 24 hours, leaves N5 unfired, so the finding is triaged as without it; in-use evidence never demotes a finding (owner decision 2026-11-21). **No running kernel** disables I1, K1, and K2 (the image's findings are triaged by the other rules).
+- **No tracker entry** disables F2, I3, I4, I5, N3, and L4. **No listener evidence** (no in-use report, the scan off or failed, a kernel before 5.14, or a scan the server received 24 hours ago or more) leaves N5 unfired, so the finding is triaged as without it; in-use evidence never demotes a finding (decision 27). **No running kernel** disables I1, K1, and K2 (the image's findings are triaged by the other rules).
 
 ### Debian Security Tracker states and where they land
 
@@ -121,7 +121,7 @@ The server fetches every feed; agents need no internet access. Each new feed fol
 - **Tenable VPR** is a proprietary 0.1 to 10 score, and "Tenable does not customize these values for your organization" ([Tenable](https://docs.tenable.com/nessus/Content/RiskMetrics.htm)). **Not taken:** a learned score cannot explain itself.
 - **Qualys TruRisk** sums severity-weighted detection scores per band, scaled by asset criticality ([Qualys](https://docs.qualys.com/en/vmdr/latest/threat/calculating_asset_risk_score.htm)). **Taken:** a host score as a weighted sum by band. **Not taken:** its detection score and asset criticality (decision 13).
 - **Snyk's priority score** adds factors for severity, exploit maturity, reachability, fixability, recency, and social trends ([Snyk](https://docs.snyk.io/manage-issues/issue-management/priority-score)). **Taken:** fixability and exploit maturity as separate factors. **Not taken:** recency and social trends.
-- **Wiz**: "Installed-but-not-running findings drop in priority", "Internet-facing assets jump to the front of the queue", KEV is a "high-confidence urgency signal" ([Wiz](https://www.wiz.io/academy/vulnerability-management/vulnerability-prioritization)). **Taken:** a listening process as an escalation (N5), KEV first (N1). **Not taken** (owner decision 2026-11-21): lowering installed-but-not-running findings, since not seen running does not mean low risk.
+- **Wiz**: "Installed-but-not-running findings drop in priority", "Internet-facing assets jump to the front of the queue", KEV is a "high-confidence urgency signal" ([Wiz](https://www.wiz.io/academy/vulnerability-management/vulnerability-prioritization)). **Taken:** a listening process as an escalation (N5), KEV first (N1). **Not taken** (decision 27): lowering installed-but-not-running findings, since not seen running does not mean low risk.
 
 ## VT-M3: Exposure tier and score
 
@@ -139,7 +139,7 @@ The **tier** is the headline and the first sort key; the **points** order hosts 
 | Low risk | 2 | 1 | 0 | 0 |
 | Ignorable | 0 | 0 | 0 | 0 |
 
-A KEV-listed advisory scores double, except in Ignorable. The values are a published constant (decision 13). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
+A KEV-listed advisory scores double, except in Ignorable. A finding of a package a listening process loads (N5's evidence, in whatever bucket it ends up) adds exposure points on top; VT-SCORES sets how many, more for a network listener than a loopback one (decision 27). The values are a published constant (decision 13). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
 
 Points and tier depend on KEV membership, which the bucket alone does not capture (a KEV listing on a Fix available finding changes no bucket). So the finding stores a `kev` flag beside its bucket, written whenever it changes, and the summary triggers recount on it (S2). EPSS changes points only through the bucket.
 
@@ -229,7 +229,7 @@ The **first cut** is 1 to 5 (decision 21): it answers "what is fixable, what nee
 ## Acceptance criteria (the whole epic)
 
 - [ ] Every open finding on an evaluated host is in exactly one bucket with a rule id and a readable reason, and the four bucket counts add up to the open count on the host tab, the fleet list, and the Risk page
-- [ ] No finding moves to a less cautious bucket, and no score or tier drops, because data is missing, stale, or turned off; and no badge implies a host is safe
+- [ ] No finding moves to a less cautious bucket, and no score or tier drops, because data is missing, stale, or turned off; and no badge implies a host is safe. One exception (decision 28, decided by the owner on 2026-11-22): when N5's evidence expires (24 hours after the server received the scan) or is withdrawn (a failed scan, the scan turned off, no in-use report), an escalated finding returns to the bucket the other rules give it, and never goes below it
 - [ ] Fleet pages cost the same per page at a million hosts as at 50 (measured with `bin/benchmark`), and nothing is computed per host times findings on a page view
 
 ## Decided by the owner (2026-11-19)
@@ -265,4 +265,11 @@ The owner approved the proposal on 2026-11-19 (PR #265) and answered all 26 open
 
 ## Decided by the owner (2026-11-21)
 
-27. **Scan evidence never demotes a finding.** "Not seen running" does not mean low risk, so rule L1 ("idle") and N4's idle check are removed. Only provably active packages are escalated: rule N5 puts a finding Needs attention when a process holding a listening socket loads its package. The mockups' L1 rows are superseded. VT-APPLICABILITY (#258) reports the evidence and writes the adapter; its spec has the final text of this decision.
+27. **Scan evidence never demotes a finding; only listeners escalate** (2026-11-21, after the fourth review of #268; replaces L1 as approved on 2026-11-19 and the 2026-11-20 and 2026-11-21 decisions that refined it). "Not continuously running does not equal low risk, and trying to prove a package is never executed is a trap": an hourly snapshot cannot see short-lived helpers, cron jobs, or `sftp-server` sessions. So rule L1 ("idle") and N4's idle check are removed with their proof rules (the `native` list, on-demand directories, the D-Bus, timer, and cron parsing), and packages keep their standard bucket. Rule N5 puts a finding in Needs attention when a process holding a listening socket loads its package, by VT-APPLICABILITY's library scan (`loaded_by_listeners`); VT-SCORES adds exposure points for it, more for a network listener than a loopback one. The evidence lasts until 24 hours after the server received the report that carried the scan (by the server's clock), and a failed or turned-off scan, or a report without the in-use object, withdraws it at once; the finding then returns to the bucket the other rules give it, never below. That is the one exception to the second acceptance criterion, which names it (decision 28). The reason names the listener's package, its systemd unit, and up to 4 of its listening sockets. The mockups' L1 rows ("belongs to a service that is not running", "or idle") are superseded; VT-HOST-TAB updates them.
+
+## Decided by the owner (2026-11-22)
+
+28. **N5's evidence may lapse without lowering below baseline** (#268). When the evidence expires (24 hours after the server received the scan) or is withdrawn (a failed or turned-off scan, or a report without the in-use object), an escalated finding returns to the bucket the other rules give it, never below. This is the one exception to the second acceptance criterion, which says so.
+29. **Escalation needs Linux 5.14 or later** (#268): the scan tells which processes hold a listening socket from `fdinfo`'s `ino:` line, and on an older kernel it escalates nothing, with a warning.
+30. **Processes with a root filesystem of their own are skipped as listeners** (#268): a container's files are its image's, which the host's package lists would wrongly name. A chroot'd process (haproxy's workers, postfix's `smtpd`) counts.
+31. **The agent soak samples open descriptors as the fewest of three counts half a second apart** (#268), so a report in progress is not counted as growth (`agent/scripts/soak.sh`, `docs/operations/agent-soak.md`).

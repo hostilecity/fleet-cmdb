@@ -15,7 +15,9 @@
 #    only show as a quietly missing fact across the fleet.
 # 4. Both send a package report (P2-AGENT-PACKAGES, gzip): the sandboxed one must list the same
 #    packages as the unsandboxed one, with the same manager and no new warning, so `dpkg-query` works
-#    under the unit (the runner is a dpkg system).
+#    under the unit (the runner is a dpkg system). Both report what is in use (FR-2.6, VT-A01), and the
+#    sandboxed one names the same listening packages, and the same running services' packages give or take two
+#    that started or stopped between the runs: no new privilege is needed.
 # 5. The sandboxed agent opened its task ledger (P3-A02) in the state directory: an append-only file it
 #    flushes with fsync, file and directory, before any task step returns, so the sandbox must allow both.
 # 6. The unit's memory and task limits (#182) are in force on the sandboxed services: `systemctl show` and
@@ -208,6 +210,30 @@ for problem in problems:
 if problems:
     sys.exit(1)
 print(f"sandbox-smoke: the sandboxed agent listed the same {len(sandboxed['packages'])} packages as the unsandboxed one")
+
+# What is in use (FR-2.6, VT-A01): read under the unit as it is, with no new privilege, so the sandboxed
+# agent must name the same listening and running services' packages as the unsandboxed one.
+problems = []
+for label, report in (("sandboxed", sandboxed), ("unsandboxed", baseline)):
+    if report.get("in_use") is None:
+        reasons = [w["message"] for w in report["warnings"] if w["field"] == "in_use"]
+        problems.append(f"the {label} agent reported no in_use: {reasons}")
+if not problems:
+    if sandboxed["in_use"]["listening"] != baseline["in_use"]["listening"]:
+        problems.append(f"in_use.listening {sandboxed['in_use']['listening']}, unsandboxed {baseline['in_use']['listening']}")
+    # The two runs are a second apart, and a runner's services come and go meanwhile (udev was seen to), so a
+    # couple of differences in the running services are timing; more would be the sandbox.
+    services = set(sandboxed["in_use"]["services"]) ^ set(baseline["in_use"]["services"])
+    if len(services) > 2 or not sandboxed["in_use"]["services"]:
+        problems.append(f"in_use.services {sandboxed['in_use']['services']}, unsandboxed {baseline['in_use']['services']}")
+    elif services:
+        print(f"sandbox-smoke: running services that differ between the two runs (timing): {sorted(services)}")
+for problem in problems:
+    print(f"sandbox-smoke: {problem}", file=sys.stderr)
+if problems:
+    sys.exit(1)
+print(f"sandbox-smoke: in use, read in the sandbox: listening {sandboxed['in_use']['listening']}, "
+      f"{len(sandboxed['in_use']['services'])} services' packages, unnamed {sandboxed['in_use']['unnamed_listeners']}")
 EOF
 if ! result=$(python3 "$tmp/compare.py" "$tmp/sandboxed/inventory.json" "$tmp/baseline/inventory.json" \
     "$tmp/sandboxed/packages.json" "$tmp/baseline/packages.json" 2>&1); then

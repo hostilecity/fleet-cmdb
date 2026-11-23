@@ -13,7 +13,8 @@ Writes a Markdown summary and exits 1 when a check fails. The checks, and the to
   outages       the measured window includes at least one outage and one flapping period
   memory        resident memory: the median of the last quarter of the measured window is at most 10% (and at
                 least 1 MiB) above the median of the first quarter
-  descriptors   the most open descriptors in the last quarter is no more than in the first quarter
+  descriptors   the most open descriptors in the last quarter is no more than in the first quarter (each sample is the
+                fewest of three counts half a second apart, scripts/soak.sh, so a report in progress is not growth)
   threads       likewise for threads
   state         the state directory: no more entries in the last quarter than in the first, and its size at
                 most 512 bytes above the first quarter's largest (records are rewritten in place, and a number

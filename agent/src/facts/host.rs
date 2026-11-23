@@ -4,7 +4,11 @@
 //! - [`Host::read`]: a bounded read of a regular file;
 //! - [`Host::list`]: the names in a directory, bounded;
 //! - [`Host::run`]: one program from a fixed list of absolute paths, with fixed arguments, no shell,
-//!   a cleared environment, a time limit, and a bound on the output.
+//!   a cleared environment, a time limit, and a bound on the output;
+//! - [`Host::socket_cgroups`] and [`Host::directories`], for what is in use (FR-2.6, VT-A01): the
+//!   kernel's `sock_diag` dump of listening sockets with their cgroup ids, and the directories of a tree
+//!   with their inode numbers (a cgroup's id is its directory's inode). Both read only, need no
+//!   privilege, and are bounded; readers that predate them never call them.
 //!
 //! Every reader goes through this trait, so a test can give it a fake host that serves fixture files
 //! and canned command output and records what was asked. That is how the tests prove that the files
@@ -145,6 +149,74 @@ pub trait Host: Send + Sync {
     fn list(&self, dir: &Path, max_entries: usize) -> io::Result<Vec<String>>;
     /// Standard output of the command.
     fn run(&self, command: &Command) -> Result<Vec<u8>, RunError>;
+
+    /// Where the symlink at `path` points, not followed further (`readlink(2)`): a process's
+    /// descriptors and program in `/proc` for the library scan (VT-A02). The default says unsupported.
+    fn link(&self, path: &Path) -> io::Result<PathBuf> {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot read links",
+        ))
+    }
+
+    /// The `fdinfo` of a socket this process opens for the purpose, so the scan knows the socket
+    /// filesystem's mount id and whether this kernel's `fdinfo` has `ino:` (the library scan, VT-A02).
+    /// The default says unsupported.
+    fn own_socket_fdinfo(&self) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot name the socket filesystem",
+        ))
+    }
+
+    /// The first `bytes` bytes of a file, however long it is (a process's `fdinfo`, the library scan).
+    /// The default reads it through [`Host::read`].
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        let mut all = self.read(path, 64 * 1024 * 1024)?;
+        all.truncate(bytes);
+        Ok(all)
+    }
+
+    /// The device and inode of what `path` leads to (`stat(2)`): a process's root, the library scan.
+    /// The default says unsupported.
+    fn identity(&self, path: &Path) -> io::Result<(u64, u64)> {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot identify files",
+        ))
+    }
+
+    /// The listening TCP and bound UDP sockets (IPv4 and IPv6) the kernel's `sock_diag` netlink
+    /// interface lists, with their cgroup ids. More than `max` is an error. Hosts that cannot answer
+    /// (the test fakes, unless a test gives them sockets) say so.
+    fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
+        let _ = max;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot list sockets",
+        ))
+    }
+
+    /// Every directory under `root`, `root` itself first as `""`, as `(inode, path relative to root)`,
+    /// breadth first and sorted by name within a directory; symlinks are not followed. More than `max`
+    /// is an error.
+    fn directories(&self, root: &Path, max: usize) -> io::Result<Vec<(u64, String)>> {
+        let _ = (root, max);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot walk directories",
+        ))
+    }
+}
+
+/// One socket from [`Host::socket_cgroups`]: its inode, as `/proc/net` shows it, and the id of the
+/// cgroup of the process that created it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketCgroup {
+    pub inode: u64,
+    pub cgroup: u64,
 }
 
 /// Reads a file through `host`, refusing the paths that hold secrets ([`is_secret_path`]).
@@ -182,6 +254,9 @@ enum Op {
     Stat,
     Read,
     List,
+    Sockets,
+    Walk,
+    Link,
 }
 
 type Blocked = Arc<Mutex<HashSet<(Op, PathBuf)>>>;
@@ -295,6 +370,100 @@ impl Host for RealHost {
     fn run(&self, command: &Command) -> Result<Vec<u8>, RunError> {
         run(command)
     }
+
+    fn link(&self, path: &Path) -> io::Result<PathBuf> {
+        self.bounded(Op::Link, path, |path| fs::read_link(path))
+    }
+
+    fn own_socket_fdinfo(&self) -> io::Result<String> {
+        own_socket_fdinfo()
+    }
+
+    fn head(&self, path: &Path, bytes: usize) -> io::Result<Vec<u8>> {
+        self.bounded(Op::Read, path, move |path| fsx::read_prefix(path, bytes))
+    }
+
+    fn identity(&self, path: &Path) -> io::Result<(u64, u64)> {
+        self.bounded(Op::Stat, path, identity)
+    }
+
+    fn socket_cgroups(&self, max: usize) -> io::Result<Vec<SocketCgroup>> {
+        self.bounded(Op::Sockets, Path::new("sock_diag"), move |_| {
+            crate::in_use::netlink::dump(max)
+        })
+    }
+
+    fn directories(&self, root: &Path, max: usize) -> io::Result<Vec<(u64, String)>> {
+        self.bounded(Op::Walk, root, move |root| walk_directories(root, max))
+    }
+}
+
+/// [`Host::own_socket_fdinfo`] on this machine: an unbound `AF_UNIX` socket's.
+pub fn own_socket_fdinfo() -> io::Result<String> {
+    use std::os::fd::AsRawFd;
+    let socket = std::os::unix::net::UnixDatagram::unbound()?;
+    fs::read_to_string(format!("/proc/self/fdinfo/{}", socket.as_raw_fd()))
+}
+
+/// [`Host::identity`] on this machine.
+pub fn identity(path: &Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::metadata(path)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+/// A number field of a `/proc/<pid>/fdinfo/<fd>` file (`mnt_id:\t8`).
+pub fn fdinfo_field(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        (name == key).then(|| value.trim().parse().ok())?
+    })
+}
+
+/// [`Host::directories`] on the real filesystem. `readdir` gives each entry's inode and type, so no
+/// directory is `stat`ed but the root.
+fn walk_directories(root: &Path, max: usize) -> io::Result<Vec<(u64, String)>> {
+    use std::os::unix::fs::DirEntryExt;
+    let mut found = vec![(fs::metadata(root)?.ino(), String::new())];
+    let mut next = 0;
+    while next < found.len() {
+        let relative = found[next].1.clone();
+        next += 1;
+        let dir = if relative.is_empty() {
+            root.to_owned()
+        } else {
+            root.join(&relative)
+        };
+        let mut children = Vec::new();
+        // A directory removed meanwhile (a service stopped) is skipped, not an error.
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let path = if relative.is_empty() {
+                name
+            } else {
+                format!("{relative}/{name}")
+            };
+            children.push((entry.ino(), path));
+        }
+        children.sort_by(|a, b| a.1.cmp(&b.1));
+        if found.len() + children.len() > max {
+            return Err(io::Error::other(format!(
+                "more than {max} directories under {}",
+                root.display()
+            )));
+        }
+        found.extend(children);
+    }
+    Ok(found)
 }
 
 /// How much of a program's standard error is kept, only to quote its first line.

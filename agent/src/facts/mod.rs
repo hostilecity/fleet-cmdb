@@ -250,6 +250,52 @@ impl<'a> Ctx<'a> {
         self.host.list(std::path::Path::new(dir), max_entries)
     }
 
+    /// [`Host::link`], within the budget, as a string; a target that is not UTF-8 is an error.
+    pub fn link(&self, path: &str) -> io::Result<String> {
+        self.in_time()?;
+        self.host
+            .link(std::path::Path::new(path))?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| io::Error::other("the link's target is not UTF-8"))
+    }
+
+    /// [`Host::own_socket_fdinfo`], within the budget.
+    pub fn own_socket_fdinfo(&self) -> io::Result<String> {
+        self.in_time()?;
+        self.host.own_socket_fdinfo()
+    }
+
+    /// [`Host::head`], within the budget; refuses secret files.
+    pub fn head(&self, path: &str, bytes: usize) -> io::Result<Vec<u8>> {
+        self.in_time()?;
+        if host::is_secret_path(path) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refused: a secret file",
+            ));
+        }
+        self.host.head(std::path::Path::new(path), bytes)
+    }
+
+    /// [`Host::identity`], within the budget.
+    pub fn identity(&self, path: &str) -> io::Result<(u64, u64)> {
+        self.in_time()?;
+        self.host.identity(std::path::Path::new(path))
+    }
+
+    /// [`Host::socket_cgroups`], within the budget.
+    pub fn socket_cgroups(&self, max: usize) -> io::Result<Vec<host::SocketCgroup>> {
+        self.in_time()?;
+        self.host.socket_cgroups(max)
+    }
+
+    /// [`Host::directories`], within the budget.
+    pub fn directories(&self, root: &str, max: usize) -> io::Result<Vec<(u64, String)>> {
+        self.in_time()?;
+        self.host.directories(std::path::Path::new(root), max)
+    }
+
     /// Filesystem calls share the budget with commands (review of #114): none starts once it is used
     /// up, so 512 paths on a dead mount cost at most the budget plus one [`host::IO_TIMEOUT`], not
     /// 512 of them.

@@ -41,6 +41,7 @@ class Host < ApplicationRecord
   has_many :tasks, dependent: :restrict_with_exception
   # Per-heartbeat state, in a narrow table so heartbeats leave this row alone (#192); nil until the first heartbeat.
   has_one :liveness, class_name: "HostLiveness", dependent: :restrict_with_exception
+  has_one :applicability, class_name: "HostApplicability", dependent: :restrict_with_exception # FR-2.6 (#258)
 
   validates :name, presence: true, length: { maximum: 100 }, format: { without: CONTROL_CHARACTERS }
   validates :hostname, presence: true, length: { maximum: 253 }, format: { with: HOSTNAME_FORMAT, allow_blank: true }

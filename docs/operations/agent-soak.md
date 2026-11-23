@@ -12,7 +12,7 @@
 | Then, every 4 hours | The server is down for 10 minutes, then up and down every 30 seconds for 10 minutes, then up. |
 | End | Only the versions `current` and `previous` point to are installed, and nothing is left of staging, the backup, the update record, or the result. |
 
-Every minute, and as the update and rollback start and end, a sample records the agent's main PID, version, systemd restart count, resident memory, open descriptors, threads, the state directory's size and entries, and the installed versions.
+Every minute, and as the update and rollback start and end, a sample records the agent's main PID, version, systemd restart count, resident memory, open descriptors (the fewest of three counts half a second apart, so the pipes and sockets of a report in progress are not counted as growth), threads, the state directory's size and entries, and the installed versions.
 
 ## The verdict
 

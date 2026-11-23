@@ -417,4 +417,88 @@ RSpec.describe "POST /api/v1/reports/packages", type: :request do
     Rails.logger.info("[package_reports_spec] 3,000 packages, #{first.to_json.bytesize} bytes (#{body.bytesize} gzip): #{timings.transform_values { |t| t.round(3) }}")
     expect(timings.values).to all(be < 5.0)
   end
+
+  describe "what is in use (FR-2.6, #258)" do
+    let(:scanned) { ApiContract.example("packages.request", "in-use-library-scan") }
+
+    def stored = HostApplicability.find_by(host_id: host.id)
+
+    it "stores listening packages by class, running services, unnamed listeners, and the scan, apart from the package set" do
+      send_report(report)
+      set_hash = HostPackageSet.find_by!(host:).content_hash
+      in_use = scanned["in_use"].merge("listening" => scanned["in_use"]["listening"] + [ { "package" => "openssh-server", "class" => "network" } ])
+      expect { send_report(report(in_use:)) }.not_to change(PackageSnapshot, :count)
+      expect(response).to have_http_status(:ok)
+      expect(HostPackageSet.find_by!(host:).content_hash).to eq(set_hash)
+      expect(stored).to have_attributes(in_use_reported: true, listening_network: %w[openssh-server samba], listening_loopback: [],
+                                        running_services: %w[cron openssh-server samba], unnamed_network: 1, unnamed_loopback: 0,
+                                        library_scan: "ran", libraries: %w[libc6 libssl3t64], stale_libraries: [ "libssl3t64" ])
+    end
+
+    it "stores what listening processes load, one entry per listener and unit, merged and sorted" do # fifth review, N2, N6
+      uses = scanned["in_use"]["loaded_by_listeners"]
+      samba = uses.last
+      duplicate = samba.merge("class" => "loopback", "sockets" => [ "127.0.0.1:139/tcp", "192.0.2.10:139/tcp" ], "packages" => [ "zlib1g" ])
+      unnamed = { "listener" => nil, "service" => nil, "class" => "loopback", "sockets" => [ "127.0.0.1:631/tcp" ], "packages" => [ "libc6" ] }
+      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => [ duplicate, *uses.reverse, unnamed ])))
+      expect(response).to have_http_status(:ok)
+      expect(stored.loaded_by_listeners).to eq([ unnamed, uses.first,
+                                                 samba.merge("sockets" => [ "0.0.0.0:445/tcp", "192.0.2.10:139/tcp", "127.0.0.1:139/tcp" ],
+                                                             "packages" => (samba["packages"] + [ "zlib1g" ]).sort) ])
+      now = Time.current
+      expect(stored.in_use_by_listener?("libssl3t64", now:, network: true)).to be(true)
+      expect(stored.listener_details("libssl3t64", now:).first).to include("listener" => "samba", "service" => "smbd.service", "class" => "network")
+    end
+
+    it "derives the class from the sockets, accepts an entry with none, and keeps an unknowing kernel apart" do # re-review, N2 to N4
+      uses = [ { "listener" => "samba", "service" => "smbd.service", "class" => "loopback", "sockets" => [ "0.0.0.0:445/tcp" ], "packages" => [ "samba" ] },
+               { "listener" => "tailscale", "service" => "tailscaled.service", "class" => "network", "sockets" => [], "packages" => [ "tailscale" ] } ]
+      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => uses)))
+      expect(response).to have_http_status(:ok)
+      expect(stored.loaded_by_listeners.map { |use| use.values_at("listener", "class", "sockets") })
+        .to eq([ [ "samba", "network", [ "0.0.0.0:445/tcp" ] ], [ "tailscale", "network", [] ] ])
+      send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => nil)))
+      expect(response).to have_http_status(:ok)
+      expect(stored.loaded_by_listeners).to be_nil
+    end
+
+    it "refuses a socket whose address cannot be read, and writes nothing" do # fifth review, N4
+      [ "[1:2:3:4:5:6:7:8:9]:22/tcp", "[192.0.2.1]:22/tcp" ].each do |socket| # re-review, N6: IPv4 is never bracketed
+        bad = scanned["in_use"]["loaded_by_listeners"].map { |use| use.merge("sockets" => [ socket ]) }
+        expect { send_report(report(in_use: scanned["in_use"].merge("loaded_by_listeners" => bad))) }.not_to change(HostApplicability, :count)
+        expect_error(:bad_request, "validation_failed")
+        expect(response.body).to include("/in_use/loaded_by_listeners/0/sockets/0")
+      end
+    end
+
+    it "writes only when what is in use changes" do
+      send_report(report(in_use: scanned["in_use"]))
+      changed_at = stored.in_use_changed_at
+      writes = []
+      counter = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\A\s*(INSERT|UPDATE)[^"]*"host_applicability"/) }
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+        travel(1.hour) { send_report(report(in_use: scanned["in_use"])) }
+      end
+      expect(writes).to eq([])
+      expect(stored.in_use_changed_at).to eq(changed_at)
+    end
+
+    it "clears it when a report has none: an unreadable one, or one that could not read it" do
+      send_report(report(in_use: scanned["in_use"]))
+      expect(stored).to have_attributes(loaded_by_listeners: scanned["in_use"]["loaded_by_listeners"], library_scanned_at: Time.iso8601("2026-01-01T11:30:00Z"))
+      send_report(ApiContract.example("packages.request", "unreadable-manager").merge("report_id" => SecureRandom.uuid))
+      expect(stored.in_use_reported).to be(false) # review of #268, S1: old use data never looks current
+      send_report(report(in_use: scanned["in_use"]))
+      failed = ApiContract.example("packages.request", "in-use-unreadable")
+      send_report(failed.merge("report_id" => SecureRandom.uuid))
+      expect(stored).to have_attributes(in_use_reported: false, libraries: [], library_scan: nil)
+      expect(HostPackageSet.find_by!(host:).warnings).to include("field" => "in_use", "message" => failed["warnings"][0]["message"])
+    end
+
+    it "refuses in_use with an unsupported package manager, and writes nothing" do
+      payload = ApiContract.examples_for("packages.request", kind: "invalid").find { |e| e.name == "in-use-with-unsupported" }.data
+      expect { send_report(payload.merge("report_id" => SecureRandom.uuid)) }.not_to change(HostApplicability, :count)
+      expect_error(:bad_request, "validation_failed")
+    end
+  end
 end
