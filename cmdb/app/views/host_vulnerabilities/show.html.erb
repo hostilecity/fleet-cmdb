@@ -24,6 +24,14 @@
   </tbody></table></div>
   <% if @evaluation.not_evaluated_count > @evaluation.not_evaluated.size %><p class="muted">Showing the first <%= @evaluation.not_evaluated.size %>.</p><% end %>
 <% end %>
+<%# Backports (#274): matched against the release they are built from as well as the host's own; say so, and where that release's data names nothing for one. %>
+<% if @backports&.any? %>
+  <div class="notice info" role="status" id="backports"><strong><%= pluralize(@backports.count, "backport") %> on this host.</strong>
+    <p>Packages from the release's backports are built from <%= @backports.from_name %>, so they are matched against its advisories as well as this release's. This release's advisories and Debian's triage for it follow another series: a fix in them is not taken as fixing a backport, and a finding on one resolves as fixed only when <%= @backports.from_name %>'s data shows it.</p>
+    <% if @backports.uncovered.any? %><p><%= @backports.from_name %>'s advisory data names nothing for <%= safe_join(@backports.uncovered.map { |p| tag.span(p.source, class: "mono") }.uniq, ", ") %>, so what affects only the backport's series cannot be found for <%= @backports.uncovered.one? ? "it" : "them" %>.</p><% end %>
+    <ul id="backport_list"><% @backports.packages.each do |p| %><li><%= link_to "#{p.name}:#{p.architecture}", package_vulnerabilities_host_path(@host, package: p.name), class: "mono" %> <span class="mono"><%= p.version %></span></li><% end %></ul>
+    <% if @backports.more? %><p class="muted">Showing the first <%= @backports.packages.size %>.</p><% end %></div>
+<% end %>
 <% if evaluated || @state_counts["all"].positive? %>
   <% link_params = { state: (@state unless @state == "open"), severity: @severity, signal: @signal, q: @query.presence, debian: @debian, fix: @fix, bucket: @bucket, rule: @rule }.compact %>
   <% if @sections && (@state_counts["open"].positive? || evaluated) %>
