@@ -25,6 +25,10 @@ OnFailure=fleet-agent-rollback.service fleet-agent-recovery.service
 [Service]
 Type=exec
 ExecStart=/usr/lib/fleet-agent/current/fleet-agent run
+# After every stop, records how the agent stopped ($SERVICE_RESULT, $EXIT_CODE, $EXIT_STATUS, which systemd
+# resets when it starts the service again) in the state directory, for the next heartbeat (#251). Same
+# sandbox, nothing else written; "-" so it never fails the stop, which only changes what the next heartbeat says.
+ExecStopPost=-/usr/lib/fleet-agent/current/fleet-agent note-stop
 Restart=on-failure
 RestartSec=10s
 # OnFailure= only once the service has given up (its start limit, or exit status 78), not on every
