@@ -27,16 +27,15 @@ class EvaluationRun
       { "packages" => Ecosystems.supported.index_with { sources }, "reason" => "matching" }
     end
 
-    # The scope of a re-match of every stored backport (#274, RematchBackports): the advisory sources they are matched
-    # as, under each ecosystem the fleet's backports are built from, so only the chunks holding a backport are matched
-    # again (touches). nil when no backport is stored.
+    # The scope of a re-match of every stored backport (#274: bin/rails vulnerabilities:rematch_backports, and the first
+    # full import that keeps Debian:14): the advisory sources they are matched as (Backports.sources), under each
+    # ecosystem the fleet's backports are built from, so only the chunks holding a backport are matched again (touches).
+    # nil when no backport is stored.
     def self.backports_scope
       packages = Ecosystems.supported.filter_map do |ecosystem|
         from = Ecosystems.backports_from(ecosystem) or next
-        sources = PackageChunkEntry.where(Ecosystems.backport_like_sql(ecosystem)).distinct.pluck(:name, :source).flat_map do |name, source|
-          [ SignedSources.resolve(ecosystem, name, source, "").source, source || name ]
-        end
-        [ from, sources.uniq.sort ] if sources.any?
+        sources = Backports.sources(ecosystem)
+        [ from, sources ] if sources.any?
       end
       packages.any? ? { "packages" => packages.to_h, "reason" => "matching" } : nil
     end

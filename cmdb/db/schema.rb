@@ -210,6 +210,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_274002) do
     t.integer "base_rule", limit: 2
     t.boolean "kev"
     t.string "triage_fixed_version", limit: 256
+    t.string "from_fixed_version", limit: 256
+    t.boolean "keep_only", default: false, null: false
     t.index ["advisory_id"], name: "index_chunk_matches_on_advisory_id"
   end
   add_check_constraint "chunk_matches", "(base_rule IS NULL) = (base_bucket IS NULL) AND (base_rule IS NULL) = (kev IS NULL) AND (base_rule IS NULL OR base_bucket =\nCASE\n    WHEN base_rule = ANY (ARRAY[3, 4, 5, 6]) THEN 1\n    WHEN base_rule = ANY (ARRAY[10, 11, 13, 14, 15]) THEN 2\n    WHEN base_rule = ANY (ARRAY[9, 16, 17, 18, 19]) THEN 3\n    WHEN base_rule = ANY (ARRAY[1, 2, 7, 8, 12]) THEN 4\n    ELSE NULL::integer\nEND)", name: "chunk_matches_base_valid"

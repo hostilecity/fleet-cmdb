@@ -7,20 +7,18 @@ module Ecosystems
   # [os id, version_id] => OSV ecosystem
   TABLE = { [ "debian", "13" ] => "Debian:13" }.freeze
 
-  # Backports (#274, ADR 0011). A package from the release's backports suite (trixie-backports) is not the release's
-  # own: Debian builds it from the next release's version (forky's) with "~bpo<release>+<n>" appended, the security
-  # tracker does not cover it for the release, and the release's advisories follow the release's own series (6.12 for
-  # trixie's kernel), so they can neither show the backport fixed nor find what affects only its series. OSV lists the
+  # Backports (#274, ADR 0011; the owner chose matching them against the release they are built from on 2026-11-23). A
+  # package from the release's backports suite (trixie-backports) is not the release's own: Debian builds it from the
+  # next release's version (forky's) with "~bpo<release>+<n>" appended, the security tracker does not cover it for the
+  # release, and the release's advisories follow the release's own series (6.12 for trixie's kernel). OSV lists the
   # ~bpo13 builds under Debian:14. A package whose version has the marker is also matched against that ecosystem's
-  # advisories, at its own version (dpkg sorts 7.3.4-1~bpo13+1 just below 7.3.4-1, as OSV's own lists do). It is still
-  # matched against its own release's advisories, so this only adds findings, and a finding on it resolves as fixed
-  # only when the other ecosystem's advisory names its source. The marker is the release's number, so a bookworm
-  # backport left on a trixie host (~bpo12, built from trixie's version) is matched as trixie's own.
+  # advisories, at its own version, once its data is complete here (Backports.data?), and still against its own
+  # release's; VulnerabilityMatcher::Chunks.backport_verdict and VulnerabilityMatcher#resolved say how. The marker is
+  # the release's number, so a bookworm backport left on a trixie host (~bpo12, built from trixie's version) is matched
+  # as trixie's own. Known limit (#304): trixie-backports-sloppy builds after forky's release still carry ~bpo13.
   #   ecosystem => { "marker" => what its backports' versions contain, "from" => the ecosystem they are built from }
   BACKPORTS = { "Debian:13" => { "marker" => "~bpo13+", "from" => "Debian:14" } }.freeze
 
-  # Any release's backport version: <version it was built from>~bpo<release>+<n>.
-  BACKPORT_VERSION = /~bpo\d+\+\d/
 
   # The package manager whose version order each ecosystem's ranges use (PackageVersions).
   MANAGERS = { "Debian:13" => "dpkg", "Debian:14" => "dpkg" }.freeze

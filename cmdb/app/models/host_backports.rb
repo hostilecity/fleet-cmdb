@@ -1,48 +1,59 @@
 # A host's backports (#274, Ecosystems::BACKPORTS), for the notice on its Vulnerabilities tab: the packages whose
-# version has its release's backports marker (trixie-backports' ~bpo13), and whether the advisory data of the release
-# they are built from (Debian:14) names each one's source. Those packages are matched against that release's
-# advisories as well as their own, and their findings resolve as fixed only on its evidence; where it names nothing
-# for a package, what affects only the backport's series cannot be found, and the notice says so. One query for the
-# backports of the host's set (its chunks, then the primary key, with the count in the same statement), and one for
-# the advisory sources when there are any. Reads only.
+# version has its release's backports marker (trixie-backports' ~bpo13), whether the advisory data of the release they
+# are built from (Debian:14) is here yet (Backports.data?), the sources of all of them that data names nothing for (so
+# what affects only the backport's series cannot be found for them), and how many of the host's open findings only a
+# keep_only verdict holds open. Reads only, and only on a host with a backport: one query for its backports (its
+# set's chunks, then the primary key, the count in the same statement), then the sources, the data, and the kept count.
 class HostBackports
   LIMIT = 20
 
-  Package = Data.define(:name, :architecture, :version, :source, :covered)
+  Package = Data.define(:name, :architecture, :version)
 
-  attr_reader :ecosystem, :from, :packages, :count
+  attr_reader :ecosystem, :from, :packages, :count, :uncovered, :kept
 
   # ecosystem: the host's (its evaluation's); package_set_id: its package set (nil: none).
-  def initialize(ecosystem, package_set_id)
+  def initialize(ecosystem, package_set_id, host_id: nil)
     @ecosystem = ecosystem
     @from = Ecosystems.backports_from(ecosystem)
     @packages = []
+    @uncovered = []
     @count = 0
-    load(package_set_id) if @from && package_set_id
+    @kept = 0
+    load(package_set_id, host_id) if @from && package_set_id
   end
 
   def any? = count.positive?
-
-  # The backports listed whose source the other release's data names nothing for.
-  def uncovered = packages.reject(&:covered)
 
   def more? = count > packages.size
 
   def from_name = Ecosystems.display_name(from)
 
+  # Whether the release they are built from has complete data here; until then they are matched on the host
+  # release's data alone, as before #274.
+  def data? = @data
+
   private
 
-  def load(package_set_id)
-    chunks = PackageSet.where(id: package_set_id).select(Arel.sql("unnest(chunk_ids)"))
-    rows = PackageChunkEntry.where(package_chunk_id: chunks).where(Ecosystems.backport_like_sql(ecosystem)).order(:name, :architecture).limit(LIMIT)
-                            .pluck(:name, :architecture, :version, :source, Arel.sql("count(*) OVER ()"))
+  def load(package_set_id, host_id)
+    entries = PackageChunkEntry.where(package_chunk_id: PackageSet.where(id: package_set_id).select(Arel.sql("unnest(chunk_ids)")))
+                               .where(Ecosystems.backport_like_sql(ecosystem))
+    rows = entries.order(:name, :architecture).limit(LIMIT).pluck(:name, :architecture, :version, Arel.sql("count(*) OVER ()"))
     return if rows.empty?
 
     @count = rows.first.last
-    sources = rows.to_h { |name, _, version, source, _| [ name, SignedSources.resolve(ecosystem, name, source, version).source ] }
-    named = AdvisoryPackage.where(ecosystem: from, package: (sources.values + rows.map { |name, _, _, source, _| source || name }).uniq).distinct.pluck(:package).to_set
-    @packages = rows.map do |name, architecture, version, source, _|
-      Package.new(name:, architecture:, version:, source: sources[name], covered: named.include?(sources[name]) || named.include?(source || name))
-    end
+    @packages = rows.map { |name, architecture, version, _| Package.new(name:, architecture:, version:) }
+    @data = Backports.data?(ecosystem)
+    @uncovered = uncovered_sources(entries) if @data
+    @kept = VulnerabilityFinding.with_details.active.where(host_id:).where(kept: true).count if @data && host_id
+  end
+
+  # The advisory sources of every backport of the host (not only those listed) that Debian:14's data names nothing for:
+  # a package counts as covered when either name it is matched under is named.
+  def uncovered_sources(entries)
+    pairs = entries.distinct.pluck(:name, :source, :version).map do |name, source, version|
+      [ SignedSources.resolve(ecosystem, name, source, version).source, source || name ]
+    end.uniq
+    named = AdvisoryPackage.where(ecosystem: from, package: pairs.flatten.uniq).distinct.pluck(:package).to_set
+    pairs.reject { |names| names.any? { |n| named.include?(n) } }.map(&:first).uniq.sort
   end
 end

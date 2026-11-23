@@ -126,6 +126,7 @@ module Advisories
         end
         check_deadline!
         sweep_absent if @full && @counts["malformed"].zero?
+        first_backports_data! if @full && @counts["malformed"].zero?
         changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
         # changed_packages: what re-matching needs to know this import touched, even after its run (ADR 0028 decision 7).
         outcome = { state: "succeeded", ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators, finished_at: Time.current,
@@ -209,6 +210,17 @@ module Advisories
       @counts[outcome] += 1
       @counts["withdrawn"] += 1 if record.withdrawn? && %w[created updated].include?(outcome) && stored&.withdrawn_reason != "withdrawn"
       %w[created updated].include?(outcome)
+    end
+
+    # The first full import that keeps the release the fleet's backports are built from (Backports.data?, #274) changes
+    # how every stored backport is matched, not only those whose sources it changed: their sources count as changed.
+    def first_backports_data!
+      Ecosystems.supported.each do |ecosystem|
+        from = Ecosystems.backports_from(ecosystem)
+        next unless from && @ecosystems.include?(from) && !Backports.data?(ecosystem)
+
+        Backports.sources(ecosystem).each { |source| @changed[from] << source }
+      end
     end
 
     def refill?(record, stored)

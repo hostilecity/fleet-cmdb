@@ -24,13 +24,19 @@
   </tbody></table></div>
   <% if @evaluation.not_evaluated_count > @evaluation.not_evaluated.size %><p class="muted">Showing the first <%= @evaluation.not_evaluated.size %>.</p><% end %>
 <% end %>
-<%# Backports (#274): matched against the release they are built from as well as the host's own; say so, and where that release's data names nothing for one. %>
+<%# Backports (#274, HostBackports): how they are matched, which findings only a keep_only verdict holds open, and the sources the release they are built from has no data for. %>
 <% if @backports&.any? %>
-  <div class="notice info" role="status" id="backports"><strong><%= pluralize(@backports.count, "backport") %> on this host.</strong>
-    <p>Packages from the release's backports are built from <%= @backports.from_name %>, so they are matched against its advisories as well as this release's. This release's advisories and Debian's triage for it follow another series: a fix in them is not taken as fixing a backport, and a finding on one resolves as fixed only when <%= @backports.from_name %>'s data shows it.</p>
-    <% if @backports.uncovered.any? %><p><%= @backports.from_name %>'s advisory data names nothing for <%= safe_join(@backports.uncovered.map { |p| tag.span(p.source, class: "mono") }.uniq, ", ") %>, so what affects only the backport's series cannot be found for <%= @backports.uncovered.one? ? "it" : "them" %>.</p><% end %>
-    <ul id="backport_list"><% @backports.packages.each do |p| %><li><%= link_to "#{p.name}:#{p.architecture}", package_vulnerabilities_host_path(@host, package: p.name), class: "mono" %> <span class="mono"><%= p.version %></span></li><% end %></ul>
-    <% if @backports.more? %><p class="muted">Showing the first <%= @backports.packages.size %>.</p><% end %></div>
+  <% b = @backports %>
+  <div class="notice info" role="status" id="backports"><strong><%= pluralize(b.count, "backport") %> on this host.</strong>
+    <% if b.data? %>
+      <p>They are built from <%= b.from_name %>, so they are matched against its advisories as well as this release's. A fix that only this release's data records is not counted for them, and neither is Debian's triage for this release. A fix in <%= b.from_name %>'s data counts only once a backport at or above it is installed.</p>
+      <% if b.kept.positive? %><p id="backports_kept"><%= pluralize(b.kept, "open finding is", plural: "open findings are") %> kept open: only this release's data says <%= b.kept == 1 ? "it is" : "they are" %> fixed, and <%= b.from_name %> has no data for <%= b.kept == 1 ? "its" : "their" %> source. <%= b.kept == 1 ? "It is" : "They are" %> still triaged, and resolve<%= "s" if b.kept == 1 %> when the package is removed, the advisory is withdrawn, or <%= b.from_name %>'s data shows <%= b.kept == 1 ? "it" : "them" %> fixed or not affected.</p><% end %>
+      <% if b.uncovered.any? %><p id="backports_uncovered"><%= b.from_name %>'s advisory data names nothing for <%= safe_join(b.uncovered.map { |source| tag.span(source, class: "mono") }, ", ") %>, so what affects only the backport's series cannot be found for <%= b.uncovered.one? ? "that source" : "those sources" %>.</p><% end %>
+    <% else %>
+      <p id="backports_no_data"><%= b.from_name %>'s advisory data, which they are built from, is not imported yet: it comes with the next full advisory import. Until then they are matched on this release's data alone, which follows another series, so findings can be missing.</p>
+    <% end %>
+    <ul id="backport_list"><% b.packages.each do |p| %><li><%= link_to "#{p.name}:#{p.architecture}", package_vulnerabilities_host_path(@host, package: p.name), class: "mono" %> <span class="mono"><%= p.version %></span></li><% end %></ul>
+    <% if b.more? %><p class="muted">Showing the first <%= b.packages.size %>.</p><% end %></div>
 <% end %>
 <% if evaluated || @state_counts["all"].positive? %>
   <% link_params = { state: (@state unless @state == "open"), severity: @severity, signal: @signal, q: @query.presence, debian: @debian, fix: @fix, bucket: @bucket, rule: @rule }.compact %>

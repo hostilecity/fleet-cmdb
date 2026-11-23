@@ -95,7 +95,7 @@ class HostVulnerabilitiesController < ApplicationController
     @advisory_count = AdvisoryPackage.where(ecosystem: @evaluation.ecosystem).distinct.count(:advisory_id) if @evaluation && !@evaluation.not_evaluated?
     # Backports are matched against the release they are built from too (#274): the tab says which, and where that
     # release's data names nothing for one.
-    @backports = HostBackports.new(@evaluation.ecosystem, @package_set&.package_set_id) if @evaluation && !@evaluation.not_evaluated?
+    @backports = HostBackports.new(@evaluation.ecosystem, @package_set&.package_set_id, host_id: @host.id) if @evaluation && !@evaluation.not_evaluated?
   end
 
   def package

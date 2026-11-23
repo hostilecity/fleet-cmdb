@@ -271,6 +271,25 @@ RSpec.describe "vulnerabilities rake tasks" do
     end
   end
 
+  describe "vulnerabilities:rematch_backports (#274)" do
+    include ActiveJob::TestHelper
+
+    def rematch_backports
+      Rake::Task["vulnerabilities:rematch_backports"].reenable
+      Rake::Task["vulnerabilities:rematch_backports"].invoke
+    end
+
+    it "queues a re-match of every stored backport's source under Debian:14, and refuses with none stored" do
+      allow(VulnerabilityMatchJob).to receive(:perform_later)
+      expect { rematch_backports }.to raise_error(SystemExit).and output("No backport is stored: nothing to re-match.\n").to_stderr
+      debian_host(packages: [ [ "linux-image-7.0.9+deb13-amd64", "7.0.9-1~bpo13+1", "linux-signed-amd64" ], [ "openssl", "3.5.0-1", "openssl" ] ])
+      expect { rematch_backports }.to output(/\AQueued re-match \d+ of the backports of 2 sources: its progress is on the Data sources page\.\n\z/).to_stdout
+      run = EvaluationRun.sole
+      expect(run).to have_attributes(kind: "advisories", scope: { "packages" => { "Debian:14" => %w[linux linux-signed-amd64] }, "reason" => "matching" })
+      expect(EvaluationRunJob).to have_been_enqueued.with(run.id)
+    end
+  end
+
   it "vulnerabilities:validate_triage_checks says what it validated (VT-BUCKETS #259)" do
     Rake::Task["vulnerabilities:validate_triage_checks"].reenable
     expect { Rake::Task["vulnerabilities:validate_triage_checks"].invoke }
