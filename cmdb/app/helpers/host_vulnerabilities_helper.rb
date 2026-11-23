@@ -304,7 +304,7 @@ module HostVulnerabilitiesHelper
   # one of HostTriageSections::PACKAGE_SECTIONS; rule: the rule shown, for "rule".
   def package_more_path(host, group, link_params:, section:, rule: nil)
     params = { package: group.package, arch: group.architecture, state: "open", section:, rule: (rule if section == "rule"),
-               **link_params.slice(:severity, :signal, :q, :debian, :fix), after: HostPackageFindings.cursor_of(HostTriageSections.shown(group).last) }
+               **link_params.slice(:severity, :signal, :q, :debian, :fix), after: HostPackageFindings.cursor_of(HostTriageSections.shown(group).last), from: "tab" }
     package_vulnerabilities_host_path(host, params.compact)
   end
 

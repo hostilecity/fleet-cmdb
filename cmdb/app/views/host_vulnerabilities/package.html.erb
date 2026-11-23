@@ -69,6 +69,9 @@
   <% if filtered %>
     <p class="notice info" role="status" id="package_filters"><%= pluralize(number_with_delimiter(@page.count), "finding") %> of the package's <%= number_with_delimiter(total) %> <%= @page.count == 1 ? "matches" : "match" %>: <%= package_filter_words(@filters) %>. <%= link_to "Show every finding of this package", package_vulnerabilities_host_path(@host, package: @package) %></p>
   <% end %>
+  <% if @from_tab %>
+    <p class="muted" id="package_from_tab">Starting after the first <%= HostTriageSections::NESTED_MAX %> findings, which the Vulnerabilities tab shows under this package's row.</p>
+  <% end %>
   <% if @page.notice %>
     <p class="notice info" role="status" id="package_page_notice"><% if @page.notice == :moved %>The findings changed since this page was opened, and none are left past it, so the first page is shown.<% else %>The page link is not one this page wrote, so the first page is shown.<% end %>
       <%= link_to "Go to the first page", package_vulnerabilities_host_path(@host, @filters.merge(package: @package)) %></p>
@@ -77,7 +80,7 @@
     <p class="muted" id="package_no_match">No findings of this package match. <%= link_to "Show every finding of this package", package_vulnerabilities_host_path(@host, package: @package) %></p>
   <% else %>
   <div class="table-wrap"><table id="package_findings"><caption class="visually-hidden">Findings for <%= @package %></caption>
-    <thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Package</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col"><%= @triage_release ? "Debian's triage (#{@triage_release})" : "Debian's triage" %></th><th scope="col">History</th><th scope="col">Bucket and why</th></tr></thead><tbody>
+    <thead><tr><th scope="col">Severity</th><th scope="col">Advisory</th><th scope="col">Package</th><th scope="col">Installed then</th><th scope="col">Fixed in</th><th scope="col">State</th><th scope="col"><%= @triage_release ? "Debian's triage (#{@triage_release})" : "Debian's triage" %></th><th scope="col">History</th><th scope="col">Why this bucket</th></tr></thead><tbody>
     <% @findings.each do |finding| %>
       <tr class="finding <%= finding.state %>"><td><%= severity_tag(finding.advisory.severity) %></td><td><%= advisory_cell(finding.advisory) %></td>
         <td><span class="mono"><%= finding.package %>:<%= finding.architecture %></span></td><td><span class="mono"><%= finding.installed_version %></span></td>

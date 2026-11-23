@@ -8,14 +8,14 @@
 # - Pages: keyset pages of PER_PAGE findings after (or before) a cursor holding the whole sort key, as #253's package
 #   rows and HostAdvisoryGroups do: a cursor that does not parse, or one with nothing past it any more, reads the first
 #   page and says so (notice). The page is one query and its advisories one more; the count of every finding the
-#   filters keep one more; and the page's triage inputs (VulnerabilityTriage::Explain, for the reasons) and its CVEs'
+#   filters keep one more, unless the caller has it already (count: the package's whole count, with no filter); and the page's triage inputs (VulnerabilityTriage::Explain, for the reasons) and its CVEs'
 #   KEV dates and EPSS scores a fixed number, so the page costs the same statements whatever the package's size.
 #
 # scope: the findings shown, a VulnerabilityFinding.with_details relation joined to advisories (the controller's
 # filters applied). The reasons' helper (triage_reason) reads inputs, kev_dates, and epss_scores, as on
 # HostTriageSections.
 class HostPackageFindings
-  PER_PAGE = 100
+  PER_PAGE = 50 # as the tab's pages (HostFindingGroups, HostAdvisoryGroups)
   CURSOR_MAX = 200
   ID = HostAdvisoryGroups::ID
 
@@ -45,13 +45,13 @@ class HostPackageFindings
     [ Advisory::SEVERITIES.index(finding.advisory.severity) + 1, finding.first_seen_at.utc.iso8601(6), finding.advisory.advisory_id, finding.id ].join(",")
   end
 
-  def initialize(scope, after: nil, before: nil, per_page: PER_PAGE, now: Time.current)
+  def initialize(scope, after: nil, before: nil, per_page: PER_PAGE, count: nil, now: Time.current)
     @scope = scope
     @per_page = per_page
     cursor = before || after
     @notice = :invalid if cursor == :invalid
     cursor = nil if cursor == :invalid
-    @count = scope.except(:order, :preload, :includes).count
+    @count = count || scope.except(:order, :preload, :includes).count
     load(cursor, !before.nil? && !cursor.nil?)
     load_details(now)
   end

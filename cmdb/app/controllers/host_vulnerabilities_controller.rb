@@ -98,7 +98,7 @@ class HostVulnerabilitiesController < ApplicationController
 
   # One package's findings, paged (#283). With no filter, every finding of the package in every state, as before. The
   # tab's "N more" link carries its filters, each checked against a fixed list (state, severity, signal, debian, fix,
-  # section and rule) or a pattern (arch, the cursors) and the text search capped as on the tab, so the page lists
+  # section and rule), the package's own architectures (arch), or a pattern (the cursors), and the text search capped as on the tab, so the page lists
   # exactly the findings the link counts, from the one after the last the tab drew. The filters are the tab's own
   # (filtered, with_signal, FindingTriage.no_dsa, HostTriageSections.section_scope).
   def package
@@ -106,15 +106,20 @@ class HostVulnerabilitiesController < ApplicationController
     load_evaluation
     @installed = PackageStore.entries(PackageStore.chunk_ids_of(@package_set&.package_set_id), names: [ @package ])
     findings = VulnerabilityFinding.with_details.where(host_id: @host.id, package: @package)
-    # The package's whole counts, whatever the filters: by state and by the stored fix flag, in one query.
-    by_state = findings.group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL)).count
-    @package_counts = VulnerabilityFinding::STATES.index_with { |state| by_state.sum { |(s, _), n| s == state ? n : 0 } }
-    @open_fixable = by_state.sum { |(state, fixable), n| state != "resolved" && fixable ? n : 0 }
+    # The package's whole counts, whatever the filters: by state, by the stored fix flag, and by architecture (the ones
+    # ?arch= may name), in one query.
+    by_state = findings.group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL), :architecture).count
+    @package_counts = VulnerabilityFinding::STATES.index_with { |state| by_state.sum { |(s, _, _), n| s == state ? n : 0 } }
+    @open_fixable = by_state.sum { |(state, fixable, _), n| state != "resolved" && fixable ? n : 0 }
+    @architectures = (by_state.keys.map(&:last) + @installed.map(&:architecture)).uniq
     raise ActiveRecord::RecordNotFound, "the host has no such package and no finding for it" if @installed.empty? && by_state.empty?
 
     load_package_filters
     load_triage_context
-    @page = HostPackageFindings.new(package_scope(findings), after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]))
+    @page = HostPackageFindings.new(package_scope(findings), after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]),
+                                                             count: (@package_counts.values.sum if @filters.empty?))
+    # Opened from the tab's "N more" row (?from=tab, with its cursor): the page starts after the findings the row drew.
+    @from_tab = params[:from] == "tab" && params[:after].present? && @page.notice.nil?
     @findings = @page.findings
     @signals = Signals::Freshness.statuses
     @set = @package_set
@@ -179,7 +184,7 @@ class HostVulnerabilitiesController < ApplicationController
     @signal = SIGNALS.include?(params[:signal]) && @state != "resolved" ? params[:signal] : nil
     @debian = params[:debian] == "no_dsa" && @state == "open" ? "no_dsa" : nil
     @fix = params[:fix] == "available" && @state == "open" ? "available" : nil
-    @arch = params[:arch].to_s if HostFindingGroups::NAME.match?(params[:arch].to_s)
+    @arch = params[:arch].to_s if @architectures.include?(params[:arch].to_s) # one of the package's own, never echoed otherwise
     @rule = HostTriageSections.rule_param(params[:rule])
     section = params[:section].to_s
     @section = section if @state == "open" && HostTriageSections::PACKAGE_SECTIONS.include?(section) && (section != "rule" || @rule)
