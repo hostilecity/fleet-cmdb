@@ -12,6 +12,11 @@
 class ComplianceFixRecount
   TABLE = "compliance_fix_recounts".freeze
   TABLES = [ TABLE, "compliance_score_recounts" ].freeze
+  # Each progress table's statements, written out once from the fixed list (never from a caller's string).
+  STATEMENTS = TABLES.to_h do |name|
+    [ name, { last: "SELECT last_host_id FROM #{name} WHERE id = 1", start: "INSERT INTO #{name} (id, last_host_id) VALUES (1, 0) ON CONFLICT (id) DO NOTHING",
+              move: "UPDATE #{name} SET last_host_id = ? WHERE id = 1" }.freeze ]
+  end.freeze
   BATCH = 100
   LOG_EVERY = 10_000 # hosts
   # The estimate's rates, about three times those measured on 2 shared CPUs (docs/operations/benchmark.md, "Fix counts
@@ -25,8 +30,7 @@ class ComplianceFixRecount
 
   # table: the progress table, one of TABLES.
   def initialize(table: TABLE, log: ->(_message) { })
-    raise ArgumentError, "unknown recount table #{table}" unless TABLES.include?(table)
-
+    @statements = STATEMENTS.fetch(table) { raise ArgumentError, "unknown recount table #{table}" }
     @table = table
     @log = log
     @conn = ApplicationRecord.connection
@@ -35,7 +39,7 @@ class ComplianceFixRecount
   # Whether there is a recount to do: the progress row exists until the migration that finishes it drops it.
   def needed? = @conn.table_exists?(@table)
 
-  def last_host_id = @conn.select_value("SELECT last_host_id FROM #{@table} WHERE id = 1").to_i
+  def last_host_id = @conn.select_value(@statements.fetch(:last)).to_i
 
   # The time the hosts left would take. With within (seconds), it counts only far enough to tell that the time is past
   # it, and then says it stopped counting (complete: false), so it reads little of a large database.
@@ -56,7 +60,7 @@ class ComplianceFixRecount
   def run!(batch: BATCH)
     return 0 unless needed?
 
-    @conn.execute("INSERT INTO #{@table} (id, last_host_id) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
+    @conn.execute(@statements.fetch(:start))
     done = 0
     loop do
       ids = @conn.select_values(sql("SELECT id FROM hosts WHERE id > ? ORDER BY id LIMIT ?", last_host_id, batch)).map(&:to_i)
@@ -64,7 +68,7 @@ class ComplianceFixRecount
 
       ApplicationRecord.transaction do
         @conn.execute(sql("SELECT host_compliance_summaries_refresh(ARRAY[?]::bigint[])", ids))
-        @conn.execute(sql("UPDATE #{@table} SET last_host_id = ? WHERE id = 1", ids.last))
+        @conn.execute(sql(@statements.fetch(:move), ids.last))
       end
       done += ids.size
       @log.call("#{done} hosts recounted, up to host #{ids.last}") if done / LOG_EVERY > (done - ids.size) / LOG_EVERY
