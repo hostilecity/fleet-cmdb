@@ -123,6 +123,22 @@ module HostVulnerabilitiesHelper
   # and cuts them too).
   # Said where a stored rule no longer matches the data as it reads now (review of #281, B1).
   RETRIAGE_PENDING = "Re-triage pending: the data changed since this finding was triaged.".freeze
+  # Why rule N5 cannot escalate this host's findings now (HostFacts.listener_coverage, #268's data), said in the Needs
+  # attention section so the absence of evidence is never read as "nothing listens". Each ends with the same reassurance:
+  # nothing is made less urgent for lack of it (owner decision 2026-11-21).
+  LISTENER_NOTES = {
+    unread: "Listening services are not read yet, so rule N5 (a package a listening process loads stays here) applies to no finding.",
+    not_reported: "This host's agent doesn't report listening data yet (it predates that report, or its last package report carried none), so rule N5 cannot apply here.",
+    scan_off: "The library scan is off on this host, so which packages listening processes load is not known, and rule N5 cannot apply here. It is enabled on the VM itself (library_scan = true in the agent's config).",
+    scan_failed: "This host's last library scan failed, so which packages listening processes load is not known, and rule N5 cannot apply here until a scan succeeds.",
+    kernel_too_old: "This host's kernel can't tell which processes listen: Linux 5.14 or later is needed. So rule N5 cannot apply here.",
+    expired: "This host's last library scan is more than 24 hours old, so its listener evidence is no longer used; rule N5 applies again after the next scan."
+  }.freeze
+  LISTENER_NOTE_TAIL = "Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay here by rule N4.".freeze
+
+  # The note for a coverage, or nil when the evidence is current (:known).
+  def listeners_note(coverage) = (text = LISTENER_NOTES[coverage]) && "#{text} #{LISTENER_NOTE_TAIL}"
+
   # Source packages named in Work remaining; the rest are counted.
   UPGRADES_LISTED = 8
   BUCKET_CLASSES = { "fix" => "fix", "attention" => "attn", "low_risk" => "low", "ignorable" => "ign" }.freeze

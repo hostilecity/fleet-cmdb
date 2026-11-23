@@ -67,12 +67,7 @@
       <% end %>
       <%# N5 (owner decision 2026-11-21): a package that a process holding a listening socket loads stays in Needs attention. Said
           honestly when this server cannot read that evidence, so its absence is never read as "nothing listens". %>
-      <% case listeners %>
-      <% when :unread %>
-        <p class="state-note" id="listeners_note">Listening services are not read yet, so rule N5 (a package a listening process loads stays here) applies to no finding. Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay here by rule N4.</p>
-      <% when :unknown %>
-        <p class="state-note" id="listeners_note">This host's kernel can't tell which processes listen: Linux 5.14 or later is needed. So rule N5 cannot apply here. Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay here by rule N4.</p>
-      <% end %>
+      <% if (note = listeners_note(listeners)) %><p class="state-note" id="listeners_note"><%= note %></p><% end %>
     </div>
   </details>
 <% end %>
@@ -102,7 +97,7 @@
             <%= render "host_vulnerabilities/bucket_groups", **common, groups: sections.rule_groups, id: "rule_list", caption: "Rule #{sections.rule}, by package", action: :none, cursor: "rule", pager_label: "Rule #{sections.rule} pages", anchor: %>
           <% end %>
         <% else %>
-          <p class="state-note">Each reason opens its package rows.<%= " Low risk is not \"safe\": a finding moves to Needs attention by itself if a signal appears (a KEV listing, EPSS at 10% or more#{', or a listening process loading the package' unless listeners == :unread})." if name == "low_risk" %></p>
+          <p class="state-note">Each reason opens its package rows.<%= " Low risk is not \"safe\": a finding moves to Needs attention by itself if a signal appears (a KEV listing, EPSS at 10% or more#{', or a listening process loading the package' if listeners == :known})." if name == "low_risk" %></p>
         <% end %>
       <% end %>
     </div>

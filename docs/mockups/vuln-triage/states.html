@@ -34,7 +34,7 @@
 
 <h2 id="no-in-use">The agent does not report listening services</h2>
 <div class="notice info" role="status"><strong>This host's kernel can't tell which processes listen: Linux 5.14 or later is needed.</strong><p>So rule N5 (a package a listening process loads stays in Needs attention) cannot apply here. Nothing is made less urgent for lack of it: medium or worse findings reachable over the network without a login stay in Needs attention by rule N4. Revised 2026-11-22 (VT-EPIC decision 27): this data only ever escalates a finding.</p></div>
-<p class="state-note">On a server that does not read listening services at all yet, the Needs attention section says so in one line instead: "Listening services are not read yet, so rule N5 applies to no finding."</p>
+<p class="state-note">The Needs attention section says the same in one line, and names the other cases the same way: the agent doesn't report listening data yet (it predates that report), the library scan is off on this VM (its default) or failed, the last scan is more than 24 hours old, or, on a server that does not read listening services at all, that they are not read yet. With current evidence there is no note.</p>
 
 <h2 id="not-evaluated">Host not evaluated</h2>
 <div class="glance" role="group" aria-label="Summary for a host that is not evaluated">
