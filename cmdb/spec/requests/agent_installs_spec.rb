@@ -26,6 +26,13 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     skip "minisign is not installed"
   end
 
+  # A key id as the installed minisign prints it: 0.12 and later (Debian 13; CI's Ubuntu runner) with 16 digits ("%016" PRIX64),
+  # as the page does; 0.11 (Debian 12) without leading zeros ("%" PRIX64) (#289).
+  def minisign_key_id(id)
+    version = Gem::Version.new(`minisign -v`[/\d+(\.\d+)+/])
+    format(version >= Gem::Version.new("0.12") ? "%016X" : "%X", id)
+  end
+
   # What the commands download: the app's own answers for the agent hostname; from GitHub, github_key for the key and
   # the repository's own agent/trust file for a certificate authority. replace swaps in other bytes for a URL, as a
   # hostile server (or GitHub) would.
@@ -181,18 +188,22 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
       end
     end
 
-    it "refuses a manifest signed by a key other than the repository's, even one this server was set to trust" do
-      attacker = TestReleaseKey.new
-      trust_release_keys(current: attacker)
-      publish_repository_keys(current: release_key)
-      import_release(signed_release(version: "1.2.0", key: attacker), operator:)
-      get "/agents/install"
-      expect(page.at_css("#release_key_warning").text).to include("FLEET_RELEASE_KEY_CURRENT differs from the repository's", "treat this server as compromised")
-      expect(command("release_key")).to include("signed with key #{attacker.id_hex}", "not one of the keys in this server's copy of the repository")
-      output, ok, = run_on_vm(vm_commands, web(vm_commands, github_key: release_key.public_file))
-      expect(ok).to be(false)
-      expect(output).to include("Signature key id in fleet-agent.manifest.json.minisig is #{attacker.id_hex}")
-      expect(output).not_to include("fleet-agent: OK")
+    # Fixed ids, not random ones, so an id that starts with 0 is always checked: the page names the key with all 16
+    # digits, as minisign 0.12 on Debian 13 does, and minisign 0.11 prints it without leading zeros (#289).
+    { 0x0A2E8E1D2E10F3B9 => "0A2E8E1D2E10F3B9", 0x9E62E8E1D2E10F3B => "9E62E8E1D2E10F3B" }.each do |id, shown|
+      it "refuses a manifest signed by a key other than the repository's, even one this server was set to trust (key #{shown})" do
+        attacker = TestReleaseKey.with_id(id)
+        trust_release_keys(current: attacker)
+        publish_repository_keys(current: release_key)
+        import_release(signed_release(version: "1.2.0", key: attacker), operator:)
+        get "/agents/install"
+        expect(page.at_css("#release_key_warning").text).to include("FLEET_RELEASE_KEY_CURRENT differs from the repository's", "treat this server as compromised")
+        expect(command("release_key")).to include("signed with key #{shown},", "not one of the keys in this server's copy of the repository")
+        output, ok, = run_on_vm(vm_commands, web(vm_commands, github_key: release_key.public_file))
+        expect(ok).to be(false)
+        expect(output).to include("Signature key id in fleet-agent.manifest.json.minisig is #{minisign_key_id(id)}\n")
+        expect(output).not_to include("fleet-agent: OK")
+      end
     end
 
     it "refuses a changed manifest under the release's own signature" do

@@ -56,7 +56,7 @@ The primary path is the dashboard's **Agents > Install an agent** page. It shows
    |---|---|
    | `fleet-agent: FAILED` | The binary is not the one the signed manifest names (changed, or the download was cut short) |
    | `Signature verification failed` | The manifest or its signature was changed |
-   | `Signature key id in fleet-agent.manifest.json.minisig is … but the key id in the public key is …` | The release was signed by a key that is not the repository's |
+   | `Signature key id in fleet-agent.manifest.json.minisig is … but the key id in the public key is …` | The release was signed by a key that is not the repository's. With minisign 0.11 (Debian 12), an ID that starts with `0` is printed without its leading zeros; it is the same key the page names with 16 digits |
    | `Trusted comment: fleet-agent <another version> …`, then `no properly formatted checksum lines found` | A signed release, but not the one the command names (for example an older one) |
    | `curl: (22) … 404` on the key | No such release tag on GitHub, or the VM cannot reach GitHub (below) |
 

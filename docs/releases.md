@@ -88,7 +88,7 @@ This is the check the install page's commands make on a new VM ([install-agent.m
 | Current private key (encrypted) and its password | The `release` environment's secrets `AGENT_RELEASE_SIGNING_KEY` and `AGENT_RELEASE_SIGNING_KEY_PASSWORD` | Only the `sign` job, after the owner approves the run |
 | Backups of both private keys (encrypted) and their passwords | Offline, with the owner (for example a password manager plus an offline copy) | The owner |
 
-The keys in the repository today, to compare by hand (a key ID is chosen when the key is made, so compare the whole public key, not only the ID):
+The keys in the repository today, to compare by hand (a key ID is chosen when the key is made, so compare the whole public key, not only the ID). IDs are written as minisign 0.12 and later print them, and as the install page shows them: 16 uppercase hexadecimal digits. minisign 0.11 drops leading zeros, so it prints an ID that starts with `0` with fewer digits:
 
 | Key | ID | Public key |
 |---|---|---|
@@ -103,7 +103,7 @@ A private key is never committed, never printed in CI, and never used in tests: 
 
 ### Generating the keys (once, by the owner)
 
-On a trusted machine with minisign 0.11 or later (`apt install minisign`). minisign asks for a password for each key; use a different strong password for each and keep them with the backups.
+On a trusted machine with minisign 0.12 or later (`apt install minisign` on Debian 13), so the `.pub` file names the key with all 16 digits, as the install page does (0.11 drops leading zeros). minisign asks for a password for each key; use a different strong password for each and keep them with the backups.
 
 ```sh
 umask 077
