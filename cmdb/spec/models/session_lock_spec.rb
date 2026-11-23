@@ -7,7 +7,10 @@ RSpec.describe SessionLock do
   KEY = "1234567, 89".freeze
 
   def holders = ApplicationRecord.uncached do
-    ApplicationRecord.connection.select_values("SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 1234567 AND objid = 89 AND granted")
+    ApplicationRecord.connection.select_values(<<~SQL.squish)
+      SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 1234567 AND objid = 89 AND granted
+         AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+    SQL
   end
 
   def statements(&)
