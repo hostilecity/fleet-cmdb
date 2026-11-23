@@ -26,7 +26,7 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
     skip "minisign is not installed"
   end
 
-  # A key id as the installed minisign prints it: 0.12 and later (Debian 13, and CI) with 16 digits ("%016" PRIX64),
+  # A key id as the installed minisign prints it: 0.12 and later (Debian 13; CI's Ubuntu runner) with 16 digits ("%016" PRIX64),
   # as the page does; 0.11 (Debian 12) without leading zeros ("%" PRIX64) (#289).
   def minisign_key_id(id)
     version = Gem::Version.new(`minisign -v`[/\d+(\.\d+)+/])
