@@ -88,7 +88,7 @@ This is the check the install page's commands make on a new VM ([install-agent.m
 | Current private key (encrypted) and its password | The `release` environment's secrets `AGENT_RELEASE_SIGNING_KEY` and `AGENT_RELEASE_SIGNING_KEY_PASSWORD` | Only the `sign` job, after the owner approves the run |
 | Backups of both private keys (encrypted) and their passwords | Offline, with the owner (for example a password manager plus an offline copy) | The owner |
 
-The keys in the repository today, to compare by hand (a key ID is chosen when the key is made, so compare the whole public key, not only the ID):
+The keys in the repository today, to compare by hand (a key ID is chosen when the key is made, so compare the whole public key, not only the ID). IDs are written as minisign prints them, in uppercase hexadecimal without leading zeros, so an ID can be shorter than 16 digits; the install page and the release list show them the same way:
 
 | Key | ID | Public key |
 |---|---|---|

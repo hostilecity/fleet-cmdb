@@ -181,18 +181,22 @@ RSpec.describe "Agent install page", :signed_in, type: :request do
       end
     end
 
-    it "refuses a manifest signed by a key other than the repository's, even one this server was set to trust" do
-      attacker = TestReleaseKey.new
-      trust_release_keys(current: attacker)
-      publish_repository_keys(current: release_key)
-      import_release(signed_release(version: "1.2.0", key: attacker), operator:)
-      get "/agents/install"
-      expect(page.at_css("#release_key_warning").text).to include("FLEET_RELEASE_KEY_CURRENT differs from the repository's", "treat this server as compromised")
-      expect(command("release_key")).to include("signed with key #{attacker.id_hex}", "not one of the keys in this server's copy of the repository")
-      output, ok, = run_on_vm(vm_commands, web(vm_commands, github_key: release_key.public_file))
-      expect(ok).to be(false)
-      expect(output).to include("Signature key id in fleet-agent.manifest.json.minisig is #{attacker.id_hex}")
-      expect(output).not_to include("fleet-agent: OK")
+    # Fixed ids, not random ones: minisign prints an id without its leading zeros, and the page must name the key
+    # exactly as minisign does (#289).
+    { 0x0A2E8E1D2E10F3B9 => "A2E8E1D2E10F3B9", 0x9E62E8E1D2E10F3B => "9E62E8E1D2E10F3B" }.each do |id, printed|
+      it "refuses a manifest signed by a key other than the repository's, even one this server was set to trust (key #{printed})" do
+        attacker = TestReleaseKey.with_id(id)
+        trust_release_keys(current: attacker)
+        publish_repository_keys(current: release_key)
+        import_release(signed_release(version: "1.2.0", key: attacker), operator:)
+        get "/agents/install"
+        expect(page.at_css("#release_key_warning").text).to include("FLEET_RELEASE_KEY_CURRENT differs from the repository's", "treat this server as compromised")
+        expect(command("release_key")).to include("signed with key #{printed},", "not one of the keys in this server's copy of the repository")
+        output, ok, = run_on_vm(vm_commands, web(vm_commands, github_key: release_key.public_file))
+        expect(ok).to be(false)
+        expect(output).to include("Signature key id in fleet-agent.manifest.json.minisig is #{printed}\n")
+        expect(output).not_to include("fleet-agent: OK")
+      end
     end
 
     it "refuses a changed manifest under the release's own signature" do
