@@ -12,7 +12,7 @@
 # "vm-test-results" artifact (JUnit and Markdown per group) and the job summary.
 #
 # Separate from Agent CI because it takes several minutes; it runs on every change to agent/ and by
-# hand (workflow_dispatch). Release keys here are throwaway, generated in the job; none is committed.
+# hand (workflow_dispatch, which can pick one group, or "all" in one VM). Release keys here are throwaway, generated in the job; none is committed.
 name: Agent VM tests
 
 on:
@@ -26,6 +26,14 @@ on:
       - 'agent/**'
       - '.github/workflows/agent-vm.yml'
   workflow_dispatch:
+    inputs:
+      group:
+        # "groups" runs the five groups side by side, as on a PR. "all" runs every scenario in one VM on
+        # normal builds, so scenario 371 waits a release's full 300 s for the lock (about 25 minutes).
+        description: Scenario group (vm-test.sh GROUP), or "groups" for all five side by side
+        type: choice
+        default: groups
+        options: [groups, all, install, updates-a, updates-b, packages, recovery]
 
 permissions:
   contents: read
@@ -45,29 +53,13 @@ jobs:
   vm:
     name: VM tests (${{ matrix.group }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.group == 'all' && 75 || 45 }}
     strategy:
       fail-fast: false
       matrix:
-        # builds: normal builds of the versions the group needs; fault_builds: VM fault builds
-        # (`--cfg fleet_vm_fault`, src/vm_fault.rs: test-only, never a release). vm-test.sh checks
-        # that exactly these have the fault.
-        include:
-          - group: install
-            builds: 1.0.0
-            fault_builds: ''
-          - group: updates-a
-            builds: 1.0.0 1.0.1
-            fault_builds: ''
-          - group: updates-b
-            builds: 1.0.0 1.0.1
-            fault_builds: ''
-          - group: packages
-            builds: ''
-            fault_builds: 1.0.0
-          - group: recovery
-            builds: 1.0.0 1.1.1
-            fault_builds: 1.1.0
+        # One group by hand (workflow_dispatch), otherwise all five. The builds each needs are in the
+        # build step below.
+        group: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.group != 'groups') && format('["{0}"]', inputs.group) || '["install", "updates-a", "updates-b", "packages", "recovery"]') }}
     defaults:
       run:
         working-directory: agent
@@ -109,13 +101,22 @@ jobs:
           key: vm-${{ matrix.group }}
 
       - name: Build the versions that trust a throwaway key
-        # The normal builds share target/vm-test, one after another; the fault builds have their own
-        # target directory (their flags differ) and run at the same time, beside them.
+        # BUILDS: normal builds of the versions the group needs; FAULT_BUILDS: VM fault builds
+        # (`--cfg fleet_vm_fault`, src/vm_fault.rs: test-only, never a release). vm-test.sh checks that
+        # exactly these have the fault. The normal builds share target/vm-test, one after another; the
+        # fault builds have their own target directory (their flags differ) and run beside them.
         env:
-          BUILDS: ${{ matrix.builds }}
-          FAULT_BUILDS: ${{ matrix.fault_builds }}
+          GROUP: ${{ matrix.group }}
         run: |
           set -eu
+          case $GROUP in
+            all) BUILDS="1.0.0 1.0.1 1.1.1" FAULT_BUILDS="1.1.0" ;;
+            install) BUILDS="1.0.0" FAULT_BUILDS="" ;;
+            updates-a | updates-b) BUILDS="1.0.0 1.0.1" FAULT_BUILDS="" ;;
+            packages) BUILDS="" FAULT_BUILDS="1.0.0" ;;
+            recovery) BUILDS="1.0.0 1.1.1" FAULT_BUILDS="1.1.0" ;;
+            *) echo "::error::unknown group $GROUP"; exit 1 ;;
+          esac
           dir="$RUNNER_TEMP/vm-test"
           mkdir -p "$dir"
           minisign -G -W -p "$dir/test.pub" -s "$dir/test.key" > /dev/null
