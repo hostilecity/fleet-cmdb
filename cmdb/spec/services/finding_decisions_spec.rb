@@ -197,6 +197,12 @@ RSpec.describe FindingDecisions do
       expect(entry).to have_attributes(actor_type: "system")
       expect(entry.changeset).to include("ended_why" => "suspended", "changed_evidence" => "known exploited: no, now yes")
       expect(HostDecisions.new(host.id).due_ids([ tls.id ])).to eq([ tls.id ])
+      # A batch run again (EvaluationRun.retry!, or EvaluationRunWatchJob resuming a killed worker's run, #292) and the
+      # hourly sweep after it end nothing twice: they act on active decisions only.
+      VulnerabilityMatcher.retriage!([ host.id ], advisory_ids: [ tls.id ])
+      match
+      expect(FindingDecisionExpiryJob.perform_now).to eq(0)
+      expect(audits("decision_suspended").count).to eq(1)
     end
 
     it "suspends an acceptance when the severity rises, and it is due again" do
