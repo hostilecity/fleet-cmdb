@@ -50,7 +50,7 @@ RSpec.describe "Backports on the Vulnerabilities tab", :signed_in, type: :reques
     import_advisories(both("DEBIAN-CVE-2026-64253"))
     VulnerabilityMatcher.match!([ host.id ])
     get "/hosts/#{host.id}/vulnerabilities"
-    expect(words(page.at_css("#backports_no_data"))).to start_with("Debian 14 (forky)'s advisory data, which they are built from, is not imported yet")
+    expect(words(page.at_css("#backports_no_data"))).to start_with("Debian 14 (forky)'s advisory data, which they are built from, has not come with a full advisory import yet.")
     expect(page.at_css("#backports_uncovered")).to be_nil
     expect(words(page.at_css("#backports"))).to include("Showing the first 1.")
 
@@ -78,6 +78,28 @@ RSpec.describe "Backports on the Vulnerabilities tab", :signed_in, type: :reques
     expect(page.at_css("#triage_filter a").text.squish).to eq("Debian: no security update planned 2")
     get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "calibre" }
     expect(page.text.squish).to include("Debian's triage for trixie is about its own package, not this backport, so it is not shown or used.")
+  end
+
+  it "says when the last full import skipped Debian 14 entries, and Data sources shows forky's state (review S2)" do
+    host = debian_host(packages: bpo)
+    get "/data-sources"
+    expect(words(page.at_css("#backports_data"))).to start_with("Backports. Debian:14 (Debian 14 (forky)) is kept only to match Debian 13 (trixie)'s backports. Not complete yet")
+    bad = both("DEBIAN-CVE-2026-91030").tap { |r| r["affected"].last["package"]["name"] = "Bad Name" }
+    import_advisories(both("DEBIAN-CVE-2026-64253"), bad, full: true, origin: "feed")
+    VulnerabilityMatcher.match!([ host.id ])
+    get "/hosts/#{host.id}/vulnerabilities"
+    expect(words(page.at_css("#backports_skipped"))).to eq("The last full import skipped 1 malformed entry of Debian 14 (forky)'s data, so findings that rest on it can be missing. See Data sources .")
+    get "/data-sources"
+    expect(words(page.at_css("#backports_data"))).to match(/Complete since the full import of .+, which skipped 1 malformed Debian:14 entry\.\z/)
+  end
+
+  it "says a K1 backports finding's fix is installed, as its reason does (review S3)" do
+    host = debian_host(packages: [ bpo[0], [ "linux-image-7.3.4+deb13-amd64", "7.3.4-1~bpo13+1", "linux-signed-amd64" ] ])
+    record_inventory(host, kernel_version: "7.0.9+deb13-amd64")
+    import_advisories(both("DEBIAN-CVE-2026-64253"), full: true, origin: "feed")
+    VulnerabilityMatcher.match!([ host.id ])
+    get "/hosts/#{host.id}/vulnerabilities/package", params: { package: bpo[0][0] }
+    expect(page.text.squish).to include("Fixed in 7.1.3-1, which is installed (a backport at or above it)")
   end
 
   it "shows no notice on a host with no backport, or one not evaluated" do

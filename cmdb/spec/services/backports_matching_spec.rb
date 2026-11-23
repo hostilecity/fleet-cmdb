@@ -118,6 +118,19 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
     expect(finding(host, "linux-image-amd64", "DEBIAN-CVE-2026-64253")).to have_attributes(state: "resolved", resolution: "fixed")
   end
 
+  it "resolves a backport's finding on trixie's fix before forky's data is complete, as before #274, and reopens it once forky has no data for its source (review S1, N1)" do
+    host = debian_host(packages: [ calibre ])
+    import_advisories(record("DEBIAN-CVE-2026-26064", trixie: nil, forky: :absent, package: "calibre")) # not a full import
+    match(host)
+    import_advisories(record("DEBIAN-CVE-2026-26064", trixie: "8.5.0+ds-1+deb13u2", forky: :absent, package: "calibre", modified: "2026-11-01T00:00:00Z"))
+    match(host, at: now + 1.hour)
+    expect(finding(host, "calibre", "DEBIAN-CVE-2026-26064")).to have_attributes(state: "resolved", resolution: "fixed")
+
+    import_full(record("DEBIAN-CVE-2026-26064", trixie: "8.5.0+ds-1+deb13u2", forky: :absent, package: "calibre", modified: "2026-11-01T00:00:00Z"), cve_39748)
+    VulnerabilityMatcher.match_again!
+    expect(finding(host, "calibre", "DEBIAN-CVE-2026-26064")).to have_attributes(state: "reopened", kept: true, fixed_version: nil)
+  end
+
   it "resolves a backport's finding as not affected when neither release's advisory names its source" do
     host = debian_host(packages: [ bpo_image ])
     import_full(record("DEBIAN-CVE-2026-91002", trixie: nil, forky: "6.16.3-1"))
@@ -358,13 +371,17 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
   end
 
   describe "Debian:14's data" do
-    it "is complete only after a full import with no malformed record kept it" do
+    it "is complete once a full import kept it, malformed records and Debian:14 entries counted, not holding it back (review S2)" do
       import_advisories(cve_64253)
       expect(Backports).not_to be_data("Debian:13")
-      import_advisories(cve_64253, "not json", full: true)
-      expect(Backports).not_to be_data("Debian:13")
-      import_full(cve_64253)
+      expect(Backports.status("Debian:13")).to have_attributes(from: "Debian:14", complete: false, import: nil, skipped_entries: 0, malformed: 0)
+      bad_forky = cve_39748.tap { |r| r["affected"].last["ranges"].first["events"] = [ { "fixed" => "6.16.3-1" } ] } # no introduced event
+      result = import_advisories(cve_64253, bad_forky, "not json", full: true)
       expect(Backports).to be_data("Debian:13")
+      expect(Backports.status("Debian:13")).to have_attributes(complete: true, import: result.import, skipped_entries: 1, malformed: 1)
+      # The bad forky entry costs its record nothing for trixie.
+      expect(AdvisoryPackage.joins(:advisory).where(advisories: { advisory_id: "DEBIAN-CVE-2025-39748" }).pluck(:ecosystem)).to eq([ "Debian:13" ])
+      expect(Backports.status("Debian:14")).to be_nil
       expect(Backports).not_to be_data("Debian:14")
     end
 

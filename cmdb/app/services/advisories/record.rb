@@ -6,7 +6,9 @@ module Advisories
   # A record is malformed, and Record.parse raises Malformed, when the fields this server uses are missing or
   # wrong: the id, modified, published and withdrawn times, and, for the fleet's ecosystems, package names and
   # ECOSYSTEM ranges. Everything kept is text with control characters removed and a length cap. A reference
-  # is stored only when it is an http or https URL; others are counted as rejected and dropped.
+  # is stored only when it is an http or https URL; others are counted as rejected and dropped. An entry of an
+  # ecosystem kept only for backports (Debian:14, #274) that is malformed is skipped and counted (skipped_entries),
+  # never the record: it cannot cost the fleet's own ecosystems their data.
   class Record
     class Malformed < StandardError; end
 
@@ -26,7 +28,7 @@ module Advisories
     CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
     attr_reader :advisory_id, :summary, :aliases, :severity, :severity_raw, :reference_url, :rejected_urls,
-                :published_at, :modified_at, :withdrawn_at, :packages, :cvss
+                :published_at, :modified_at, :withdrawn_at, :packages, :cvss, :skipped_entries
 
     # Parses the bytes of one JSON document.
     def self.parse(bytes)
@@ -58,6 +60,7 @@ module Advisories
       @modified_at = time(data, "modified", required: true)
       @published_at = time(data, "published")
       @withdrawn_at = time(data, "withdrawn")
+      @skipped_entries = 0
       affected = fleet_affected(data["affected"])
       @packages = build_packages(affected)
       @summary = self.class.clean_text(data["summary"], SUMMARY_LIMIT) || self.class.clean_text(data["details"].to_s.lines.first, SUMMARY_LIMIT)
@@ -96,8 +99,22 @@ module Advisories
         raise Malformed, "has affected[#{i}] that is not an object" unless entry.is_a?(Hash)
 
         ecosystem = entry.dig("package", "ecosystem") if entry["package"].is_a?(Hash)
-        entry.merge("index" => i) if Ecosystems.imported?(ecosystem)
+        next unless Ecosystems.imported?(ecosystem)
+
+        entry = entry.merge("index" => i)
+        next entry if Ecosystems.supported?(ecosystem) || valid_entry?(entry)
+
+        @skipped_entries += 1
+        nil
       end
+    end
+
+    # A backports-only ecosystem's entry: whether its package name and ranges are valid (build_packages checks them
+    # again, raising for the fleet's own).
+    def valid_entry?(entry)
+      entry["package"]["name"].is_a?(String) && entry["package"]["name"].match?(PACKAGE) && ranges_of(entry) && true
+    rescue Malformed
+      false
     end
 
     # One Package per ecosystem and source package, with the ranges of every affected entry naming it.

@@ -126,7 +126,7 @@ module Advisories
         end
         check_deadline!
         sweep_absent if @full && @counts["malformed"].zero?
-        first_backports_data! if @full && @counts["malformed"].zero?
+        first_backports_data! if @full
         changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
         # changed_packages: what re-matching needs to know this import touched, even after its run (ADR 0028 decision 7).
         outcome = { state: "succeeded", ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators, finished_at: Time.current,
@@ -157,7 +157,10 @@ module Advisories
       raise Record::Malformed, entry.problem if entry.problem
 
       begin
-        Record.parse(entry.bytes).tap { |record| @counts["rejected_urls"] += record.rejected_urls }
+        Record.parse(entry.bytes).tap do |record|
+          @counts["rejected_urls"] += record.rejected_urls
+          @counts["skipped_entries"] = @counts.fetch("skipped_entries", 0) + record.skipped_entries if record.skipped_entries.positive?
+        end
       rescue StandardError => e
         # A shape Record did not anticipate must not roll back the whole import (review of #103).
         raise e if e.is_a?(Record::Malformed)

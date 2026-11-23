@@ -28,9 +28,12 @@ class HostBackports
 
   def from_name = Ecosystems.display_name(from)
 
-  # Whether the release they are built from has complete data here; until then they are matched on the host
-  # release's data alone, as before #274.
-  def data? = @data
+  # Whether the release they are built from has complete data here (Backports.status); until then they are matched on
+  # the host release's data alone, as before #274.
+  def data? = @status&.complete || false
+
+  # How many of that release's entries the newest full import keeping it skipped as malformed.
+  def skipped_entries = @status&.skipped_entries.to_i
 
   private
 
@@ -42,9 +45,9 @@ class HostBackports
 
     @count = rows.first.last
     @packages = rows.map { |name, architecture, version, _| Package.new(name:, architecture:, version:) }
-    @data = Backports.data?(ecosystem)
-    @uncovered = uncovered_sources(entries) if @data
-    @kept = VulnerabilityFinding.with_details.active.where(host_id:).where(kept: true).count if @data && host_id
+    @status = Backports.status(ecosystem)
+    @uncovered = uncovered_sources(entries) if data?
+    @kept = VulnerabilityFinding.with_details.active.where(host_id:).where(kept: true).count if data? && host_id
   end
 
   # The advisory sources of every backport of the host (not only those listed) that Debian:14's data names nothing for:

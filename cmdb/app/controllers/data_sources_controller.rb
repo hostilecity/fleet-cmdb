@@ -122,6 +122,7 @@ class DataSourcesController < ApplicationController
     @tracker = TriageDataSources.new
     @signals = SignalDataSources.new # VT-D03 (#257): the KEV and EPSS panels
     @matching = EvaluationRun.shown_for_advisories # #197: progress of re-matching after an import
+    @backports = Ecosystems.supported.filter_map { |ecosystem| Backports.status(ecosystem)&.then { |s| [ ecosystem, s ] } } # #274
   end
 
   def refuse(message, field: :advisory_file)

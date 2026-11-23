@@ -43,10 +43,12 @@ module HostVulnerabilitiesHelper
     nil
   end
 
-  # A backport's (#274): a fix only the release it is built from records is shown but is not a fix for this release, and
-  # a kept finding says why it is open.
+  # A backport's (#274): a fix only the release it is built from records is shown but is not a fix for this release,
+  # unless a backport at or above it is installed (K1, as its reason says), and a kept finding says why it is open.
   def fixed_in(finding)
     if finding.fixed_version then safe_join([ "Fixed in ", tag.span(finding.fixed_version, class: "mono") ])
+    elsif finding.from_fixed_version && finding.bucket_rule == VulnerabilityTriage::RULE_IDS.fetch("K1")
+      safe_join([ "Fixed in ", tag.span(finding.from_fixed_version, class: "mono"), ", which is installed (a backport at or above it)" ])
     elsif finding.from_fixed_version
       tag.span(safe_join([ "Fixed in ", tag.span(finding.from_fixed_version, class: "mono"), " in the release this backport is built from; no backport of it known yet" ]),
                class: "unavailable")
