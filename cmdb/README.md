@@ -186,10 +186,10 @@ An operator can ask a host's agent for fresh config, inventory, and package repo
 
 ### Advisory data
 
-Vulnerability advisories (FR-2.4, DEC-11, P2-S10, P2-S13) are OSV records for the fleet profile's ecosystems: `Ecosystems` (`app/models/ecosystems.rb`) maps an inventory's os id and version to one, and only `debian` `13` → `Debian:13` is listed (DEC-01). Records for other ecosystems are skipped.
+Vulnerability advisories (FR-2.4, DEC-11, P2-S10, P2-S13) are OSV records for the fleet profile's ecosystems: `Ecosystems` (`app/models/ecosystems.rb`) maps an inventory's os id and version to one, and only `debian` `13` → `Debian:13` is listed (DEC-01). The import also keeps `Debian:14`, the release trixie's backports are built from, for matching them (`Ecosystems::BACKPORTS`, #274). Records for other ecosystems are skipped.
 
 - **Import** (`Advisories::Import`, `app/services/advisories`), from a `.json` file, a directory of them, or a `.zip` archive such as OSV's `all.zip`. Each run is one transaction, so input that cannot be read at all imports nothing.
-  - **Idempotent** by advisory id and `modified`: the same or an older record changes nothing, and a newer one replaces the advisory and its packages.
+  - **Idempotent** by advisory id and `modified`: the same or an older record changes nothing, and a newer one replaces the advisory and its packages. A record as modified as the stored one is written again when it names an ecosystem the stored one lacks or no longer names one (after an ecosystem is added to the import), and only that ecosystem's packages count as changed.
   - **Malformed records** are skipped and reported with where they were and why, and the valid records import.
   - **Limits:** each document is read to at most 2 MiB, and an archive may be at most `FLEET_ADVISORY_MAX_DOWNLOAD_MB` and hold at most a million documents and 8 GiB of JSON. For scale, measured by the owner on 2026-11-07, OSV's Debian `all.zip` was 77.4 MiB zipped, 73,658 JSON records, 260.9 MiB of JSON in all, and its largest record 34.1 KiB (`DLA-4008-1.json`). That leaves 6x to 60x headroom for growth and more releases; check the limits again when distributions are added.
   - **Stored:** text has control characters removed and a length cap, and only `http` and `https` reference URLs are kept.
