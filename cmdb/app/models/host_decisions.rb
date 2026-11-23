@@ -21,7 +21,7 @@ class HostDecisions
   def initialize(host_id, today: Date.current)
     @today = today
     decisions = FindingDecision.find_by_sql([ LATEST, host_id ])
-    ActiveRecord::Associations::Preloader.new(records: decisions, associations: %i[created_by ended_by]).call
+    ActiveRecord::Associations::Preloader.new(records: decisions, associations: %i[created_by ended_by advisory]).call
     @entries = decisions.to_h { |d| [ d.advisory_id, Entry.new(decision: d, open: d.has_open_finding) ] }
   end
 

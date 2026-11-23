@@ -15,6 +15,7 @@ module FindingDecisions
   module Lifecycle
     BATCH = 5_000
     HOST_SLICE = 100
+    DECISION_SLICE = 100
 
     module_function
 
@@ -54,18 +55,9 @@ module FindingDecisions
 
     # The hourly pass. Returns how many decisions it ended.
     def sweep!(now: Time.current)
-      today = now.to_date
-      due = []
-      signals = {}
-      FindingDecision.active.in_batches(of: BATCH) do |batch|
-        rows = batch.pluck(:id, :host_id, :advisory_id, :expires_on, :evidence)
-        missing = rows.map { |row| row[2] }.uniq - signals.keys
-        signals.merge!(FindingDecisions.signals(missing)) if missing.any?
-        due.concat(rows.select { |_, _, advisory_id, expires_on, evidence| expires_on < today || FindingDecisions.worsened(evidence, signals.fetch(advisory_id)).any? })
-      end
+      due = due_by_host(now)
       ended = 0
-      due.group_by { |row| row[1] }.keys.sort.each_slice(HOST_SLICE) do |hosts|
-        advisories = due.select { |row| hosts.include?(row[1]) }.map { |row| row[2] }.uniq
+      slices(due).each do |hosts, advisories|
         FindingDecision.transaction do
           Host.lock.where(id: hosts).order(:id).pluck(:id)
           before = scope(hosts, advisories).count
@@ -75,6 +67,52 @@ module FindingDecisions
         end
       end
       ended
+    end
+
+    # { host id => [advisory ids] } of the active decisions past their last day or with worse evidence: the active rows
+    # in id order (a partial index keeps the scan off the ended ones), a batch at a time, keeping only the due rows'
+    # host and advisory, so memory grows with what is due and each slice reads its own hosts' lists.
+    def due_by_host(now)
+      today = now.to_date
+      due = Hash.new { |h, k| h[k] = [] }
+      signals = {}
+      FindingDecision.active.in_batches(of: BATCH) do |batch|
+        rows = batch.pluck(:host_id, :advisory_id, :expires_on, :evidence)
+        missing = rows.map { |row| row[1] }.uniq - signals.keys
+        signals.merge!(FindingDecisions.signals(missing)) if missing.any?
+        rows.each do |host_id, advisory_id, expires_on, evidence|
+          due[host_id] << advisory_id if expires_on < today || FindingDecisions.worsened(evidence, signals.fetch(advisory_id)).any?
+        end
+      end
+      due.default_proc = nil
+      due
+    end
+
+    # [[host ids, advisory ids]] in host id order: at most HOST_SLICE hosts and DECISION_SLICE due decisions a slice (a
+    # host with more is split by advisory), so a mass expiry or suspension holds each slice's host locks briefly.
+    def slices(due)
+      units = due.keys.sort.flat_map { |host| due.fetch(host).each_slice(DECISION_SLICE).map { |advisories| [ host, advisories ] } }
+      list = []
+      count = 0
+      units.each do |host, advisories|
+        last = list.last
+        if last.nil? || last[0].size >= HOST_SLICE || count + advisories.size > DECISION_SLICE
+          list << [ [], [] ]
+          count = 0
+        end
+        list.last[0] << host unless list.last[0].last == host
+        list.last[1].concat(advisories)
+        count += advisories.size
+      end
+      list.map { |hosts, advisories| [ hosts, advisories.uniq ] }
+    end
+
+    # Ends a decision past its last day as expired, now, and re-triages its findings: when an operator opens it to change
+    # or end it before the hourly job does, so it is never revived.
+    def expire!(decision, now: Time.current)
+      finish!(decision, "expired", Audit::Actions::VULNERABILITY_DECISION_EXPIRED, now:)
+      VulnerabilityMatcher.retriage!([ decision.host_id ], advisory_ids: [ decision.advisory_id ])
+      true
     end
 
     def scope(host_ids, advisory_ids)
@@ -90,6 +128,6 @@ module FindingDecisions
       true
     end
 
-    private_class_method :scope, :finish!
+    private_class_method :scope, :finish!, :due_by_host, :slices
   end
 end

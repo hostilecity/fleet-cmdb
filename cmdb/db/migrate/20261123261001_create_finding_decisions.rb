@@ -28,6 +28,9 @@ class CreateFindingDecisions < ActiveRecord::Migration[8.1]
       t.boolean :confirmed, null: false, default: false
       t.jsonb :evidence, null: false
       t.string :request_id, limit: 128
+      # The operator session that recorded it: the step-up counts a session's decisions over a rolling window (owner
+      # decision 2026-11-23, epic decision 37). Not a foreign key: sessions are deleted when they end, decisions never.
+      t.bigint :operator_session_id
       t.datetime :ended_at
       t.bigint :ended_by_id
       t.string :ended_why, limit: 16
@@ -38,6 +41,9 @@ class CreateFindingDecisions < ActiveRecord::Migration[8.1]
       t.index %i[host_id advisory_id id], name: "index_finding_decisions_history"
       t.index :expires_on, where: "ended_at IS NULL", name: "index_finding_decisions_active_expiry"
       t.index :advisory_id, where: "ended_at IS NULL", name: "index_finding_decisions_active_advisory"
+      # The hourly sweep reads the active rows in id order; ended rows are kept for ever, so this keeps it off them.
+      t.index :id, where: "ended_at IS NULL", name: "index_finding_decisions_active_id"
+      t.index %i[operator_session_id created_at], name: "index_finding_decisions_session_window"
 
       t.check_constraint "kind IN (#{KINDS.map { |k| "'#{k}'" }.join(', ')})", name: "finding_decisions_kind_valid"
       t.check_constraint "char_length(reason) BETWEEN 10 AND 1000", name: "finding_decisions_reason_length"
@@ -48,6 +54,9 @@ class CreateFindingDecisions < ActiveRecord::Migration[8.1]
       t.check_constraint "ended_why IS NULL OR ended_why IN (#{ENDINGS.map { |e| "'#{e}'" }.join(', ')})", name: "finding_decisions_ended_why_valid"
       # Only an operator's end names an operator; the system's never does.
       t.check_constraint "(ended_by_id IS NOT NULL) = (ended_why IS NOT DISTINCT FROM 'operator')", name: "finding_decisions_ended_by"
+      # No decision runs past the longest limit a setting allows, counted from the day it was recorded (UTC), even
+      # written past the application: FindingDecisions keeps it within FLEET_DECISION_MAX_DAYS.
+      t.check_constraint "expires_on <= created_at::date + 366", name: "finding_decisions_expires_within_limit"
       # A control is confirmed for its host (epic decision 15); an acceptance needs no confirmation.
       t.check_constraint "kind <> 'control' OR confirmed", name: "finding_decisions_control_confirmed"
     end

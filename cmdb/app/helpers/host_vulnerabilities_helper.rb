@@ -188,9 +188,27 @@ module HostVulnerabilitiesHelper
       [ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), *rule_qualifiers(rule, signals) ].join(" ")
     end
     reason = tag.span(safe_join([ text, tag.span(rule, class: "rule-id") ]), class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
-    return reason unless rule == "O1" && decision
+    if rule == "O1" && decision
+      safe_join([ tag.span("Control in place", class: "override-tag"), reason, " ", link_to("Change or end", vulnerability_decision_host_path(finding.host_id, decision)) ])
+    elsif VulnerabilityTriage::RULES.fetch(rule) == "low_risk" && (other = sections.decisions&.for(finding.advisory_id))
+      safe_join([ reason, decision_note(finding.host_id, other, sections.decisions) ].compact)
+    else
+      reason
+    end
+  end
 
-    safe_join([ tag.span("Control in place", class: "override-tag"), reason, " ", link_to("Change or end", vulnerability_decision_host_path(finding.host_id, decision)) ])
+  # A decision on a Low risk finding that is not O1 (an acceptance, or a control no longer in force), on its nested
+  # row: its tag and its link (review of #299, S3). nil when it ended for good (fixed, resolved, by an operator).
+  def decision_note(host_id, decision, decisions)
+    link = ->(text) { link_to(text, vulnerability_decision_host_path(host_id, decision)) }
+    tag_for = if decision.in_force?(decisions.today) then [ decision.kind_name, ("accepted" if decision.accepted?), "Until #{decision.expires_on.iso8601}." ]
+    elsif decision.active? then [ "Decision expired", "suspended", "Its last day was #{decision.expires_on.iso8601}." ]
+    elsif decision.suspended? then [ "Decision suspended", "suspended", "The evidence got worse (#{FindingDecisions.changes_words(decision.ended_evidence.to_h)})." ]
+    end
+    return nil unless tag_for
+
+    name, css, note = tag_for
+    tag.span(safe_join([ tag.span(name, class: [ "override-tag", css ].compact), " ", note, " ", link.("Change or end") ]), class: "state-note decision-note")
   end
 
   # Rule O1's reason (VT-OVERRIDES #261, mockup override.html): who recorded the control and when, until when, its text
@@ -205,9 +223,10 @@ module HostVulnerabilitiesHelper
   # decision in force (an accepted risk stays here, marked, and is not due; a control here means its re-triage has not
   # run yet), one past its last day that the hourly job has not ended, a suspended one with what got worse, or the link
   # to record one. Operator text is escaped.
-  def decision_cell(host, group, decisions)
-    decision = decisions.for(group.advisory.id)
-    record = link_to("Record a decision\u2026", new_vulnerability_decision_host_path(host, advisory_id: group.advisory.id))
+  def decision_cell(host, advisory, decisions)
+    decision = decisions.for(advisory.id)
+    record = safe_join([ link_to("Record a control\u2026", new_vulnerability_decision_host_path(host, advisory_id: advisory.id, kind: "control")),
+                         link_to("Accept the risk\u2026", new_vulnerability_decision_host_path(host, advisory_id: advisory.id, kind: "accepted")) ], tag.br)
     return record if decision.nil?
 
     change = link_to("Change or end", vulnerability_decision_host_path(host, decision))
@@ -222,7 +241,7 @@ module HostVulnerabilitiesHelper
       what = FindingDecisions.changes_words(decision.ended_evidence.to_h)
       text = "#{decision.kind_name} by #{decision.created_by.display_name} on #{decision.created_at.utc.to_date.iso8601} (\u201C#{decision.reason}\u201D), " \
              "but on #{decision.ended_at.utc.to_date.iso8601} the evidence got worse (#{what}). It no longer applies; the finding is due a new decision."
-      safe_join([ tag.span("Decision suspended", class: "override-tag suspended"), tag.span(text, class: "state-note"), link_to("Record a new decision\u2026", new_vulnerability_decision_host_path(host, advisory_id: group.advisory.id)) ])
+      safe_join([ tag.span("Decision suspended", class: "override-tag suspended"), tag.span(text, class: "state-note"), link_to("Record a new decision\u2026", new_vulnerability_decision_host_path(host, advisory_id: advisory.id)) ])
     else
       safe_join([ record, tag.span("The last decision #{DECISION_ENDINGS.fetch(decision.ended_why)} on #{decision.ended_at.utc.to_date.iso8601}.", class: "state-note") ])
     end

@@ -4,9 +4,11 @@
 #
 # - new / create: one advisory on the host the page was opened from, and on other hosts with the same open finding
 #   (each listed with its own evidence; at most FindingDecisions::MAX_HOSTS in one action). A control must be
-#   confirmed host by host. More than FindingDecisions::STEP_UP_ABOVE hosts needs the second factor (epic decision 14),
-#   checked on the server whatever the form sent.
-# - edit / update / end_decision: one decision of the host: a new reason or date, or its end.
+#   confirmed host by host. The second factor (owner decision 2026-11-23, epic decision 37): every time on a KEV-listed
+#   advisory (a fresh code), and otherwise once the session has recorded more than FindingDecisions::STEP_UP_ABOVE host
+#   decisions within 15 minutes, counted on the server, so splitting an action does not avoid it.
+# - edit / update / end_decision: one decision of the host: a new reason or date (with a fresh code on a KEV-listed
+#   advisory), or its end.
 #
 # Any signed-in, allowlisted operator may decide (the dashboard has no roles); the host must be in the fleet, every
 # chosen host is checked again on the server under its row lock, and every write is audited with the operator
@@ -25,17 +27,21 @@ class FindingDecisionsController < ApplicationController
   def create
     @form = form_params
     chosen = Array(@form[:host_ids]).uniq
-    if chosen.size > FindingDecisions::STEP_UP_ABOVE
-      @second_factor_result = SecondFactors.step_up(operator_session: Current.operator_session, code: params[SecondFactorRequired::PARAM], purpose: "record_decisions")
-      unless @second_factor_result.passed?
-        @errors = { second_factor_code: "Choosing more than #{FindingDecisions::STEP_UP_ABOVE} hosts needs a code from your authenticator app: #{STEP_UP_PROBLEMS.fetch(@second_factor_result.status)}." }
-        load_form
-        return render(:new, status: @second_factor_result.status == :locked ? :too_many_requests : :forbidden)
-      end
+    kev = FindingDecisions.signals([ @advisory.id ]).fetch(@advisory.id).kev?
+    stepped_up = false
+    if FindingDecisions.step_up_needed?(Current.operator_session, chosen.size, kev:)
+      @second_factor_result = SecondFactors.step_up(operator_session: Current.operator_session, code: params[SecondFactorRequired::PARAM], purpose: "record_decisions", fresh: kev)
+      return refuse_step_up(step_up_reason(kev, chosen.size), :new) unless @second_factor_result.passed?
+
+      stepped_up = true
     end
 
-    outcome = FindingDecisions.record!(operator: current_operator, host: @host, advisory: @advisory, params: @form)
-    if outcome.saved?
+    outcome = FindingDecisions.record!(operator: current_operator, host: @host, advisory: @advisory, params: @form, operator_session: Current.operator_session, stepped_up:)
+    if outcome.errors.key?(:second_factor_code)
+      @errors = outcome.errors
+      load_form
+      render :new, status: :forbidden
+    elsif outcome.saved?
       redirect_to vulnerabilities_host_path(@host, anchor: "attn"), notice: saved_notice(outcome.decisions)
     else
       @errors = outcome.errors
@@ -46,10 +52,15 @@ class FindingDecisionsController < ApplicationController
 
   def edit
     @form = { reason: @decision.reason, expires_on: @decision.expires_on.iso8601 }
+    @kev = FindingDecisions.signals([ @advisory.id ]).fetch(@advisory.id).kev?
   end
 
   def update
     @form = params.permit(:reason, :expires_on).to_h.symbolize_keys
+    if (@kev = FindingDecisions.signals([ @advisory.id ]).fetch(@advisory.id).kev?)
+      @second_factor_result = SecondFactors.step_up(operator_session: Current.operator_session, code: params[SecondFactorRequired::PARAM], purpose: "record_decisions", fresh: true)
+      return refuse_step_up("Changing a decision on a known exploited advisory needs a code from your authenticator app every time", :edit) unless @second_factor_result.passed?
+    end
     outcome = FindingDecisions.change!(@decision, operator: current_operator, params: @form)
     if outcome.saved?
       redirect_to vulnerabilities_host_path(@host, anchor: "attn"), notice: "Decision changed for #{@host.name}: #{@advisory.advisory_id} until #{outcome.decisions.first.expires_on.iso8601}. Its bucket, points, and tier are unchanged."
@@ -67,6 +78,7 @@ class FindingDecisionsController < ApplicationController
     else
       @form = { reason: @decision.reason, expires_on: @decision.expires_on.iso8601 }
       @errors = outcome.errors
+      @decision.reload
       render :edit, status: :unprocessable_content
     end
   end
@@ -77,6 +89,25 @@ class FindingDecisionsController < ApplicationController
   }.freeze
 
   private
+
+  # Why the code is asked for: a KEV-listed advisory, or the session's count within the window.
+  def step_up_reason(kev, count)
+    return "A decision on a known exploited advisory needs a code from your authenticator app every time" if kev
+
+    recent = FindingDecisions.session_count(Current.operator_session)
+    "This session has recorded #{recent} host #{recent == 1 ? 'decision' : 'decisions'} in the last #{FindingDecisions::STEP_UP_WINDOW.in_minutes.to_i} minutes, " \
+      "and #{count} more would pass #{FindingDecisions::STEP_UP_ABOVE}: that needs a code from your authenticator app"
+  end
+
+  def refuse_step_up(reason, view)
+    @errors = { second_factor_code: "#{reason}: #{STEP_UP_PROBLEMS.fetch(@second_factor_result.status)}." }
+    if view == :new
+      load_form
+    else
+      @decision.reload
+    end
+    render view, status: @second_factor_result.status == :locked ? :too_many_requests : :forbidden
+  end
 
   def load_host
     @host = Host.in_fleet.find(params[:id]) # a retired host has nothing left to decide
@@ -100,6 +131,7 @@ class FindingDecisionsController < ApplicationController
     @candidates = FindingDecisions::Candidates.load(@advisory, [ @host.id, *others, *chosen.first(FindingDecisions::MAX_HOSTS) ], signals: @signals)
     @this = @candidates.find { |c| c.host.id == @host.id }
     @others_capped = others.size >= FindingDecisions::Candidates::OTHERS
+    @session_count = FindingDecisions.session_count(Current.operator_session)
     @errors ||= {}
   end
 
@@ -113,12 +145,17 @@ class FindingDecisionsController < ApplicationController
   # What was saved and what it changed (mockup override.html, "Saved"): read back from the findings, so it never says a
   # finding moved before its re-triage did. Points are the advisory's on the host, by the epic's VT-M3 table.
   def saved_notice(decisions)
-    decision = decisions.find { |d| d.host_id == @host.id } || decisions.first
+    decision = (decisions.find { |d| d.host_id == @host.id } || decisions.first).reload
     on = decisions.size == 1 ? decision.host.name : "#{pluralize(decisions.size, 'host')} (each with its own decision and audit entry)"
     evidence = decision.evidence
     rules = VulnerabilityFinding.active.where(host_id: decision.host_id, advisory_id: @advisory.id).pluck(:bucket_rule).map { |r| VulnerabilityTriage.rule_for(r) }
     before = FindingDecisions.points(evidence["bucket"], evidence["severity"], evidence["kev"])
     head = "Decision saved for #{on}."
+    unless decision.active?
+      # Suspended in the same transaction: the evidence got worse between the form and the save (review of #299).
+      return "#{head} It was suspended at once, since the evidence got worse while it was saved (#{FindingDecisions.changes_words(decision.ended_evidence.to_h)}). " \
+             "#{@advisory.advisory_id} is due a new decision."
+    end
     if decision.control?
       after = FindingDecisions.points("control", evidence["severity"], evidence["kev"])
       moved = rules.include?("O1") ? "is now in Low risk with \"Control in place\"" : "moves to Low risk with \"Control in place\" when its re-triage runs, in a few seconds,"

@@ -10,12 +10,15 @@ module FindingDecisions
   # - and why it cannot be chosen (problem), or nil: no open finding, a finding not triaged yet, one in Fix available
   #   (upgrade instead), none in Needs attention or Low risk, or an active decision already.
   #
-  # others lists other hosts in the fleet with the same open finding, at most OTHERS: read from the findings' advisory
-  # index with a limit and no sort, so an advisory every host has costs the same as one on two hosts.
+  # others lists other hosts in the fleet with the same open finding, at most OTHERS: from at most SCAN_ROWS of the
+  # advisory's finding rows (its index, no sort), open or resolved, so the rows read are bounded too, whatever the fleet
+  # size and however many have resolved (review of #299). When most of them have resolved, fewer hosts may be listed;
+  # any host with the finding can still be decided from its own tab.
   class Candidates
     OTHERS = FindingDecisions::MAX_HOSTS - 1
     # Rows read to find OTHERS other hosts (an advisory matches a few binary packages per host).
     OTHER_ROWS = OTHERS * 8
+    SCAN_ROWS = OTHER_ROWS * 10
     LISTENING = { "network" => "listening on the network", "loopback" => "listening on loopback only", "none" => "no listener reported" }.freeze
 
     Candidate = Data.define(:host, :findings, :rule, :listening, :firewall, :decision, :problem, :signals) do
@@ -33,7 +36,8 @@ module FindingDecisions
 
     # Up to OTHERS other in-fleet host ids with an open finding of the advisory, besides except.
     def self.other_host_ids(advisory, except:)
-      VulnerabilityFinding.where(advisory_id: advisory.id, state: %w[open reopened]).where.not(host_id: except).limit(OTHER_ROWS).pluck(:host_id).uniq
+      scanned = VulnerabilityFinding.where(advisory_id: advisory.id).limit(SCAN_ROWS).select(:host_id, :state)
+      VulnerabilityFinding.from(scanned, :vulnerability_findings).where(state: %w[open reopened]).where.not(host_id: except).limit(OTHER_ROWS).pluck(:host_id).uniq
                           .then { |ids| Host.in_fleet.where(id: ids).order(:id).limit(OTHERS).pluck(:id) }
     end
 

@@ -21,7 +21,7 @@ Part of [VT-EPIC](vt-epic.md) (approved by the owner, 2026-11-19), not in the fi
 
 ### Scope
 
-- `GET /risk`, **Risk** in the top bar after Compliance (epic decision 20): the fleet bucket strip, hosts per tier, the two burn-down charts (SVG with title, description, and a table), most exposed hosts (tier, then points) and most work (work items), top 5 each from the summary indexes, quick wins, hosts with no fixable critical and the longest run, and decisions due (VT-OVERRIDES).
+- `GET /risk`, **Risk** in the top bar after Compliance (epic decision 20): the fleet bucket strip, hosts per tier, the two burn-down charts (SVG with title, description, and a table), most exposed hosts (tier, then points) and most work (work items), top 5 each from the summary indexes, quick wins, hosts with no fixable critical and the longest run, and decisions due (VT-OVERRIDES: Needs attention advisories with no decision in force, plus decisions ending within 7 days, past their last day, or suspended; the fleet count without accepted risks needs #298).
 - No progress figures (they are per host; S5c). Every count says how many hosts were evaluated; staleness qualifiers as on the host tab; the honesty rules of epic VT-M5; no ranking of people.
 - Live refresh as the fleet pages, with a fixed number of statements per view.
 

@@ -34,8 +34,9 @@ RSpec.describe FindingDecisions do
 
   def rules(advisory, on: host) = VulnerabilityFinding.active.where(host: on, advisory:).order(:package).pluck(:package, :bucket_rule).to_h.transform_values { |r| VulnerabilityTriage.rule_for(r) }
 
-  def record(kind: "control", advisory: tls, hosts: [ host ], confirmed: hosts, reason: "smbd bound to the storage VLAN only; nftables drops 445/tcp", until_on: 30.days.from_now.to_date)
-    described_class.record!(operator:, host: hosts.first, advisory:,
+  def record(kind: "control", advisory: tls, hosts: [ host ], confirmed: hosts, reason: "smbd bound to the storage VLAN only; nftables drops 445/tcp", until_on: 30.days.from_now.to_date,
+             stepped_up: false, operator_session: nil)
+    described_class.record!(operator:, host: hosts.first, advisory:, stepped_up:, operator_session:,
                             params: { kind:, reason:, expires_on: until_on.iso8601, host_ids: hosts.map(&:id), confirmed_ids: confirmed.map(&:id) })
   end
 
@@ -115,10 +116,13 @@ RSpec.describe FindingDecisions do
       perform_evaluation_jobs
       expect(rules(shell)).to eq("bash" => "N1")
       expect(record(advisory: shell, until_on: Date.current + 31).errors[:expires_on]).to eq("Pick a date no later than #{(Date.current + 30).iso8601} (30 days from today, since it is known exploited).")
-      expect(record(advisory: shell, until_on: Date.current + 30)).to be_saved
+      # A KEV-listed advisory needs the second factor every time (owner decision 2026-11-23, epic decision 37).
+      expect(record(advisory: shell, until_on: Date.current + 30).errors[:second_factor_code])
+        .to eq("A decision on a known exploited advisory needs a code from your authenticator app every time. Nothing was saved.")
+      expect(record(advisory: shell, until_on: Date.current + 30, stepped_up: true)).to be_saved
       expect(rules(shell)).to eq("bash" => "O1") # a control may cover a KEV finding; its kev flag stays
       expect(VulnerabilityFinding.find_by!(host:, advisory: shell).kev).to be(true)
-      expect(record(advisory: shell).errors.values.sole).to eq("Media server: it already has a decision for this advisory: change or end that one.")
+      expect(record(advisory: shell, stepped_up: true).errors.values.sole).to eq("Media server: it already has a decision for this advisory: change or end that one.")
     end
 
     it "refuses an advisory whose findings are only Ignorable, and a host with none" do
@@ -177,6 +181,25 @@ RSpec.describe FindingDecisions do
       expect(described_class.change!(decision, operator:, params: { reason: "", expires_on: "" }).errors.keys).to eq(%i[reason expires_on])
     end
 
+    it "expires a decision past its last day when an operator changes or ends it, rather than reviving it" do
+      decision = record(until_on: Date.current).decisions.sole
+      other = record(advisory: shell, kind: "accepted", confirmed: [], until_on: Date.current).decisions.sole
+      travel 1.day
+      outcome = described_class.change!(decision, operator:, params: { reason: "a reason long enough", expires_on: (Date.current + 10).iso8601 })
+      expect(outcome.errors[:base]).to start_with("It passed its last day, so it has now ended as expired")
+      expect(decision.reload).to have_attributes(ended_why: "expired", expires_on: Date.current - 1)
+      expect(rules(tls)).to eq("libssl3t64" => "N4", "openssl" => "N4")
+      expect(described_class.end!(other, operator:).errors[:base]).to start_with("It passed its last day")
+      expect(other.reload).to have_attributes(ended_why: "expired", ended_by: nil)
+      expect(audits("decision_expired").pluck(:actor_type)).to eq(%w[system system])
+      expect(audits("decision_changed")).to be_empty
+    end
+
+    it "caps the last day in the database too, written past the application" do
+      decision = record(kind: "accepted", confirmed: []).decisions.sole
+      expect { FindingDecision.where(id: decision.id).update_all(expires_on: Date.current + 367) }.to raise_error(ActiveRecord::StatementInvalid, /expires_within_limit/) # rubocop:disable Rails/SkipsModelValidations
+    end
+
     it "never deletes a decision or changes one that ended" do
       decision = record(kind: "accepted", confirmed: []).decisions.sole
       expect { decision.destroy }.to raise_error(ActiveRecord::StatementInvalid, /never deleted/)
@@ -191,11 +214,11 @@ RSpec.describe FindingDecisions do
       decision = record.decisions.sole
       import_kev(kev_file("CVE-2026-92002"))
       perform_evaluation_jobs
-      expect(decision.reload).to have_attributes(ended_why: "suspended", ended_evidence: { "kev" => [ false, true ] })
+      expect(decision.reload).to have_attributes(ended_why: "suspended", ended_evidence: { "kev" => [ false, true ], "kev_cves" => [ [], [ "CVE-2026-92002" ] ] })
       expect(rules(tls)).to eq("libssl3t64" => "N1", "openssl" => "N1")
       entry = audits("decision_suspended").sole
       expect(entry).to have_attributes(actor_type: "system")
-      expect(entry.changeset).to include("ended_why" => "suspended", "changed_evidence" => "known exploited: no, now yes")
+      expect(entry.changeset).to include("ended_why" => "suspended", "changed_evidence" => "known exploited: no, now yes; CVEs on the KEV list: none, now CVE-2026-92002")
       expect(HostDecisions.new(host.id).due_ids([ tls.id ])).to eq([ tls.id ])
       # A batch run again (EvaluationRun.retry!, or EvaluationRunWatchJob resuming a killed worker's run, #292) and the
       # hourly sweep after it end nothing twice: they act on active decisions only.
@@ -203,6 +226,27 @@ RSpec.describe FindingDecisions do
       match
       expect(FindingDecisionExpiryJob.perform_now).to eq(0)
       expect(audits("decision_suspended").count).to eq(1)
+    end
+
+    it "suspends a decision in the triage re-run itself, when the KEV list changed under it (review of #299, 2a)" do
+      decision = record.decisions.sole
+      KevEntry.create!(cve_id: "CVE-2026-92002", date_added: Date.current) # no triage run: only the re-run below sees it
+      VulnerabilityMatcher.retriage!([ host.id ], advisory_ids: [ tls.id ])
+      expect(decision.reload.ended_why).to eq("suspended")
+      expect(rules(tls)).to eq("libssl3t64" => "N4", "openssl" => "N4") # the control no longer applies; the base is not refreshed here
+    end
+
+    it "suspends when another CVE of the advisory joins the KEV list, as the lists differ" do
+      import_advisories(osv_record(id: "DEBIAN-CVE-2026-93001", package: "bash", fixed: nil, severity: local, aliases: [ "CVE-2026-93009" ], modified: "2026-11-01T08:00:00Z"))
+      import_kev(kev_file("CVE-2026-93001"))
+      perform_evaluation_jobs
+      decision = record(kind: "accepted", advisory: shell, confirmed: [], until_on: Date.current + 20, stepped_up: true).decisions.sole
+      expect(decision.evidence).to include("kev" => true, "kev_cves" => [ "CVE-2026-93001" ])
+      import_kev(kev_file("CVE-2026-93001", "CVE-2026-93009"))
+      perform_evaluation_jobs
+      FindingDecisionExpiryJob.perform_now
+      expect(decision.reload).to have_attributes(ended_why: "suspended", ended_evidence: { "kev_cves" => [ [ "CVE-2026-93001" ], %w[CVE-2026-93001 CVE-2026-93009] ] })
+      expect(audits("decision_suspended").sole.changeset["changed_evidence"]).to eq("CVEs on the KEV list: CVE-2026-93001, now CVE-2026-93001, CVE-2026-93009")
     end
 
     it "suspends an acceptance when the severity rises, and it is due again" do
@@ -245,12 +289,26 @@ RSpec.describe FindingDecisions do
     it "catches in the hourly job an EPSS band turning high that moved no bucket" do
       import_kev(kev_file("CVE-2026-93001"))
       perform_evaluation_jobs
-      decision = record(kind: "accepted", advisory: shell, confirmed: [], until_on: Date.current + 30).decisions.sole
+      decision = record(kind: "accepted", advisory: shell, confirmed: [], until_on: Date.current + 30, stepped_up: true).decisions.sole
       EpssScore.create!(cve_id: "CVE-2026-93001", score: 0.31, percentile: 0.97, band: "high", score_date: Date.current)
       expect(FindingDecisionExpiryJob.perform_now).to eq(1)
       expect(decision.reload).to have_attributes(ended_why: "suspended", ended_evidence: { "epss_band" => [ nil, "high" ] })
       expect(FindingDecisions::Lifecycle.review!([ host.id ])).to eq([])
       expect(FindingDecisions::Lifecycle.settle!([])).to be_nil
+    end
+  end
+
+  describe "the sweep's slices" do
+    it "keeps each slice to 100 hosts and 100 due decisions, splitting a host with more by advisory, in host id order" do
+      due = { 3 => [ 7 ], 1 => (1..250).to_a, 2 => [ 1 ], **(10..120).to_h { |id| [ id, [ 5 ] ] } }
+      slices = FindingDecisions::Lifecycle.send(:slices, due)
+      expect(slices.first(2)).to eq([ [ [ 1 ], (1..100).to_a ], [ [ 1 ], (101..200).to_a ] ])
+      expect(slices[2][0].first(3)).to eq([ 1, 2, 3 ])
+      expect(slices[2][1]).to eq((201..250).to_a + [ 1, 7, 5 ]) # 50 + 1 + 1 + 48 hosts' one each: 100 decisions
+      expect(slices[2][0].size).to eq(51)
+      expect(slices.drop(2).map { |hosts, _| hosts.size }).to all(be <= 100)
+      expect(slices.flat_map(&:first).uniq).to eq([ 1, 2, 3, *10..120 ])
+      expect(slices.sum { |hosts, _| hosts.sum { |h| h == 1 ? 0 : 1 } }).to eq(due.size - 1)
     end
   end
 

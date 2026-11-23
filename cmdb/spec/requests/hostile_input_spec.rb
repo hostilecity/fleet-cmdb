@@ -172,6 +172,12 @@ RSpec.describe "Hostile input in every view", :signed_in, type: :request do
                        changes: { "reason" => text, "advisory" => text, "evidence" => text, "confirmed_for" => text })
         end
         finding.update_columns(bucket: VulnerabilityTriage::BUCKETS.fetch("attention"), bucket_rule: VulnerabilityTriage::RULE_IDS.fetch("N4"), kev: false) # rubocop:disable Rails/SkipsModelValidations
+        # And one in force, on a second hostile advisory in Needs attention (review of #299, 2b): its cell draws the reason too.
+        advisory = Advisory.create!(advisory_id: "#{fit(120)}-inforce", source: fit(256), summary: fit(512), severity: "high", modified_at: Time.current)
+        VulnerabilityFinding.create!(host:, advisory:, package: fit(128), architecture: "amd64", last_source: fit(128), last_installed_version: fit(256),
+                                     state: "open", first_seen_at: 1.hour.ago, bucket: VulnerabilityTriage::BUCKETS.fetch("attention"),
+                                     bucket_rule: VulnerabilityTriage::RULE_IDS.fetch("N4"), kev: false)
+        FindingDecision.create!(host:, advisory:, kind: "accepted", reason: fit(1000), expires_on: Date.current + 5, created_by: hostile_operator, evidence:)
         decision
       end
 

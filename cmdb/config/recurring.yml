@@ -137,7 +137,7 @@ production:
     class: TriageListenerExpiryJob
     schedule: every hour at minute 19
   # VT-S06 (#261): finding decisions past their last day expire, and those whose evidence got worse are suspended; each
-  # re-triages its findings. Shortly after midnight UTC too, so a decision ends within the hour after its last day.
+  # re-triages its findings. Hourly, so a decision ends within about an hour of the end of its last day (UTC).
   finding_decision_expiry:
     class: FindingDecisionExpiryJob
     schedule: every hour at minute 7

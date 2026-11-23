@@ -2,7 +2,8 @@
     risk and Ignorable closed (VT-HOST-TAB #260, mockup host-vulns.html). Counts in the summaries are the bucket's whole
     count; a filter says how many of them it keeps. keep-open stops a live refresh from closing one the operator
     opened. locals: host, sections, counts, link_params, open, filtered, signals, triage, triage_status, triage_os,
-    listeners (VulnerabilityTriage::HostFacts.listener_coverage). %>
+    listeners (VulnerabilityTriage::HostFacts.listener_coverage), due_elsewhere (decisions due whose advisory has no
+    finding in Needs attention). %>
 <% common = { host:, sections:, signals:, triage:, triage_status:, triage_os:, link_params:, open: } %>
 <% kept = ->(n, total) { filtered && n != total ? " (#{number_with_delimiter(n)} match the filters)" : "" } %>
 <div data-controller="keep-open" data-action="turbo:before-morph-attribute->keep-open#protect" id="bucket_sections">
@@ -46,7 +47,7 @@
               <td><%= severity_tag(group.advisory.severity) %></td>
               <td><%= advisory_signals(group, sections) %></td>
               <td><%= safe_join(group.findings.map { |f| triage_reason(f, sections, signals) }.uniq(&:to_s)) %></td>
-              <td class="decision"><%= decision_cell(host, group, sections.decisions) %></td></tr>
+              <td class="decision"><%= decision_cell(host, group.advisory, sections.decisions) %></td></tr>
           <% end %>
           </tbody></table></div>
         <% if attention.paged? %>
@@ -68,6 +69,16 @@
       <% end %>
       <%# N5 (owner decision 2026-11-21): a package that a process holding a listening socket loads stays in Needs attention. Said
           honestly when this server cannot read that evidence, so its absence is never read as "nothing listens". %>
+      <%# Decisions due on advisories with no finding in Needs attention (a decision on a Low risk finding, review of #299,
+          S3): listed here, so every decision counted as due has a row to act on. %>
+      <% if due_elsewhere.any? %>
+        <div class="table-wrap"><table id="due_elsewhere"><caption>Decisions due on findings outside Needs attention</caption>
+          <thead><tr><th scope="col">Advisory</th><th scope="col">Decision</th></tr></thead><tbody>
+          <% due_elsewhere.each do |decision| %>
+            <tr><td><span class="mono"><%= decision.advisory.advisory_id %></span></td><td class="decision"><%= decision_cell(host, decision.advisory, sections.decisions) %></td></tr>
+          <% end %>
+          </tbody></table></div>
+      <% end %>
       <%# Controls move findings to Low risk (O1), which is closed by default: said here, known exploited ones counted, so a
           control never hides a finding (VT-OVERRIDES #261). %>
       <% if (controlled = sections.rules&.rows&.find { |row| row.rule == "O1" }) %>
@@ -83,7 +94,7 @@
   <% chosen = sections.rule && VulnerabilityTriage::RULES[sections.rule] == name %>
   <% anchor = HostVulnerabilitiesHelper::BUCKET_IDS.fetch(name) %>
   <details class="bucket" id="<%= anchor %>"<%= " open" if chosen || sections.bucket == name %>>
-    <summary><h2><%= bucket_tag(name) %></h2><span class="muted"><%= pluralize(number_with_delimiter(counts[name]), "finding") %><%= kept.(rows.sum(&:count), counts[name]) %> · <%= name == "low_risk" ? "no fix for this release; local only, needs a login or a user's action, low severity or minor, or no exploitation signal or exposure is known" : "Debian or this host's own state says it does not apply here" %></span></summary>
+    <summary><h2><%= bucket_tag(name) %></h2><span class="muted"><%= pluralize(number_with_delimiter(counts[name]), "finding") %><%= kept.(rows.sum(&:count), counts[name]) %> · <%= name == "low_risk" ? "no fix for this release; local only, needs a login or a user's action, low severity or minor, no exploitation signal or exposure is known, or under a recorded control" : "Debian or this host's own state says it does not apply here" %></span></summary>
     <div class="inner">
       <% if rows.empty? %>
         <p class="muted" id="<%= anchor %>_none"><%= filtered ? "No findings in #{bucket_name(name)} match." : "Nothing here." %></p>

@@ -29,7 +29,8 @@ BEGIN
   IF NEW.id IS DISTINCT FROM OLD.id OR NEW.host_id IS DISTINCT FROM OLD.host_id OR NEW.advisory_id IS DISTINCT FROM OLD.advisory_id
      OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.created_by_id IS DISTINCT FROM OLD.created_by_id
      OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.evidence IS DISTINCT FROM OLD.evidence
-     OR NEW.confirmed IS DISTINCT FROM OLD.confirmed OR NEW.request_id IS DISTINCT FROM OLD.request_id THEN
+     OR NEW.confirmed IS DISTINCT FROM OLD.confirmed OR NEW.request_id IS DISTINCT FROM OLD.request_id
+     OR NEW.operator_session_id IS DISTINCT FROM OLD.operator_session_id THEN
     RAISE EXCEPTION 'a finding decision''s host, advisory, kind, author, evidence, and confirmation never change'
       USING ERRCODE = 'check_violation';
   END IF;

@@ -15,7 +15,7 @@
     <% kernel = [ ("a new kernel package" if work.kernel_install), ("a kernel reboot" if work.reboot) ].compact %>
     <% what = { "fix" => ([ (pluralize(upgrades, "package upgrade") if upgrades.positive?), *kernel ].to_sentence.presence || "nothing to upgrade"),
                 "attention" => "#{pluralize(work.attention_advisories, 'advisory', plural: 'advisories')}, no fix yet",
-                "low_risk" => "no fix; local only, needs a login or a user's action, low severity or minor, or nothing known", "ignorable" => "does not apply here" } %>
+                "low_risk" => "no fix; local only, needs a login or a user's action, low severity or minor, nothing known, or under a recorded control", "ignorable" => "does not apply here" } %>
     <% act = { "fix" => (kernel.any? && upgrades.positive? ? "Upgrade, then reboot" : kernel.any? ? "Reboot" : "Upgrade"),
                "attention" => "#{pluralize(work.decisions_due, 'needs', plural: 'need')} a decision", "low_risk" => "Watch", "ignorable" => "Nothing to do" } %>
     <% names.each do |name| %>

@@ -46,6 +46,7 @@
       <p class="expiry-hint" id="expires_on_hint">No later than <%= last.iso8601 %>, the limit counted from the day it was recorded. To go on longer, end it and record a new decision on today's evidence.</p>
     </div>
     <% if errors[:base] %><p class="error-text" id="base_error"><%= errors[:base] %></p><% end %>
+    <% if @kev %><%= render "second_factors/prompt", result: second_factor_result, ask: true, intro: "Changing a decision on a known exploited advisory needs a code from your authenticator app every time." %><% end %>
     <div class="actions"><button class="btn" type="submit">Save changes</button><%= link_to "Cancel", vulnerabilities_host_path(@host, anchor: "attn"), class: "btn quiet" %></div>
   <% end %>
   <%= form_with url: end_vulnerability_decision_host_path(@host, @decision), method: :post, class: "form wide", id: "end_form", "aria-labelledby": "end_heading" do %>

@@ -5,6 +5,8 @@
 # audited, and catches a worse signal no triage run re-triaged.
 class FindingDecisionExpiryJob < ApplicationJob
   queue_as :default
+  # A long sweep (a mass expiry) and the next hour's do not run side by side: the next one waits for it.
+  limits_concurrency key: "finding_decision_expiry", duration: 3.hours
 
   def perform(now: Time.current)
     ended = FindingDecisions::Lifecycle.sweep!(now:)

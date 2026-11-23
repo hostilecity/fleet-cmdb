@@ -367,6 +367,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
     t.boolean "confirmed", default: false, null: false
     t.jsonb "evidence", null: false
     t.string "request_id", limit: 128
+    t.bigint "operator_session_id"
     t.datetime "ended_at"
     t.bigint "ended_by_id"
     t.string "ended_why", limit: 16
@@ -377,11 +378,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
     t.index ["expires_on"], name: "index_finding_decisions_active_expiry", where: "(ended_at IS NULL)"
     t.index ["host_id", "advisory_id", "id"], name: "index_finding_decisions_history"
     t.index ["host_id", "advisory_id"], name: "index_finding_decisions_active", unique: true, where: "(ended_at IS NULL)"
+    t.index ["id"], name: "index_finding_decisions_active_id", where: "(ended_at IS NULL)"
+    t.index ["operator_session_id", "created_at"], name: "index_finding_decisions_session_window"
     t.check_constraint "(ended_at IS NULL) = (ended_why IS NULL)", name: "finding_decisions_ended_why"
     t.check_constraint "(ended_by_id IS NOT NULL) = (NOT ended_why::text IS DISTINCT FROM 'operator'::text)", name: "finding_decisions_ended_by"
     t.check_constraint "char_length(reason) >= 10 AND char_length(reason) <= 1000", name: "finding_decisions_reason_length"
     t.check_constraint "ended_evidence IS NULL OR jsonb_typeof(ended_evidence) = 'object'::text AND octet_length(ended_evidence::text) <= 8192", name: "finding_decisions_ended_evidence_object"
     t.check_constraint "ended_why IS NULL OR (ended_why::text = ANY (ARRAY['operator'::character varying, 'expired'::character varying, 'fixed'::character varying, 'suspended'::character varying, 'resolved'::character varying]::text[]))", name: "finding_decisions_ended_why_valid"
+    t.check_constraint "expires_on <= (created_at::date + 366)", name: "finding_decisions_expires_within_limit"
     t.check_constraint "jsonb_typeof(evidence) = 'object'::text AND octet_length(evidence::text) <= 8192", name: "finding_decisions_evidence_object"
     t.check_constraint "kind::text <> 'control'::text OR confirmed", name: "finding_decisions_control_confirmed"
     t.check_constraint "kind::text = ANY (ARRAY['control'::character varying, 'accepted'::character varying]::text[])", name: "finding_decisions_kind_valid"
@@ -1793,7 +1797,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
         IF NEW.id IS DISTINCT FROM OLD.id OR NEW.host_id IS DISTINCT FROM OLD.host_id OR NEW.advisory_id IS DISTINCT FROM OLD.advisory_id
            OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.created_by_id IS DISTINCT FROM OLD.created_by_id
            OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.evidence IS DISTINCT FROM OLD.evidence
-           OR NEW.confirmed IS DISTINCT FROM OLD.confirmed OR NEW.request_id IS DISTINCT FROM OLD.request_id THEN
+           OR NEW.confirmed IS DISTINCT FROM OLD.confirmed OR NEW.request_id IS DISTINCT FROM OLD.request_id
+           OR NEW.operator_session_id IS DISTINCT FROM OLD.operator_session_id THEN
           RAISE EXCEPTION 'a finding decision''s host, advisory, kind, author, evidence, and confirmation never change'
             USING ERRCODE = 'check_violation';
         END IF;

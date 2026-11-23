@@ -8,11 +8,18 @@
 # - record!: one action for one advisory on up to MAX_HOSTS hosts (N8), each with its own decision, evidence, and audit
 #   entry, all with the request's id. Only on hosts where the advisory's open findings are in Needs attention or Low
 #   risk (none in Fix available), at most FLEET_DECISION_MAX_DAYS (90) days, or FLEET_DECISION_MAX_DAYS_KEV (30) for
-#   an advisory on CISA's KEV list; a control confirmed host by host. More than STEP_UP_ABOVE hosts needs the
-#   second factor (epic decision 14; the controller checks it).
+#   an advisory on CISA's KEV list; a control confirmed host by host.
+# - The second factor (owner decision 2026-11-23, epic decision 37, replacing decision 14's "one action"): a
+#   decision on an advisory on CISA's KEV list needs a code every time; any other needs one once the operator session
+#   has recorded more than STEP_UP_ABOVE host decisions within STEP_UP_WINDOW, counted on the server under the
+#   session's row lock, so splitting an action into smaller ones does not avoid it. The controller asks for the code
+#   (step_up_needed?); write! checks the count again under the lock and refuses (StepUpNeeded) when it was not given.
 # - change!: a new reason or expiry, still within the limit counted from the day it was recorded (a decision is
-#   never extended for ever: a longer one is a new decision, on today's evidence).
+#   never extended for ever: a longer one is a new decision, on today's evidence). On a KEV-listed advisory it needs
+#   a code too.
 # - end!: ended by the operator.
+# A decision past its last day that the hourly job has not ended yet is never changed or ended by the operator: either
+# expires it there and then (audited as expired) and says so, so it cannot be revived.
 # Each re-triages the advisory's findings on its hosts at once (VulnerabilityMatcher.retriage!: a decision moves no
 # other finding), so the tab shows the new bucket when the page reloads.
 #
@@ -20,13 +27,14 @@
 # - expired, the day after expires_on (FindingDecisionExpiryJob, hourly; the control source already stops applying
 #   a control on that day);
 # - suspended, when the evidence gets worse than recorded: a CVE of the advisory added to KEV, its EPSS band
-#   becoming high, or its severity rising. Checked in every host's transitions and triage re-runs (so a KEV listing
+#   becoming high, or its severity rising (any CVE of the advisory newly on the list, compared as lists). Checked in every host's transitions and triage re-runs (so a KEV listing
 #   suspends at once, in the run it starts) and hourly for every active decision;
 # - ended when a fix appears (a finding it covers in K1, K2, F1, or F2) or when every finding it covers resolves,
 #   in the host's transitions.
 # A suspended or ended decision stays visible with why; the finding is then due a new decision.
 module FindingDecisions
   STEP_UP_ABOVE = 10
+  STEP_UP_WINDOW = 15.minutes
   MAX_HOSTS = 50
   # Active decisions this close to their last day are listed as due (VT-D05).
   EXPIRING_WITHIN = 7
@@ -51,6 +59,8 @@ module FindingDecisions
   end
 
   class Refused < StandardError; end
+  # The session's count under its lock needs the second factor, which this request did not pass.
+  class StepUpNeeded < StandardError; end
 
   module_function
 
@@ -81,6 +91,8 @@ module FindingDecisions
   def worsened(evidence, signals)
     changes = {}
     changes["kev"] = [ false, true ] if signals.kev? && !evidence["kev"]
+    recorded = Array(evidence["kev_cves"])
+    changes["kev_cves"] = [ recorded, signals.kev_cves ] if (signals.kev_cves - recorded).any?
     changes["epss_band"] = [ evidence["epss_band"], "high" ] if signals.epss_high && evidence["epss_band"] != "high"
     if SEVERITY_RANK.fetch(signals.severity, 2) > SEVERITY_RANK.fetch(evidence["severity"].to_s, 2)
       changes["severity"] = [ evidence["severity"], signals.severity ]
@@ -95,9 +107,21 @@ module FindingDecisions
     kev && bucket != "ignorable" ? value * 2 : value
   end
 
+  # Host decisions the operator session recorded within STEP_UP_WINDOW.
+  def session_count(operator_session, now: Time.current)
+    return 0 unless operator_session
+
+    FindingDecision.where(operator_session_id: operator_session.id, created_at: (now - STEP_UP_WINDOW)..).count
+  end
+
+  # Whether recording count more host decisions in this session needs the second factor: always on a KEV-listed
+  # advisory, else when the session's count within the window would pass STEP_UP_ABOVE.
+  def step_up_needed?(operator_session, count, kev:, now: Time.current) = kev || session_count(operator_session, now:) + count > STEP_UP_ABOVE
+
   # Records one decision per chosen host. params: kind, reason, expires_on (a "YYYY-MM-DD" text), host_ids,
   # confirmed_ids (the hosts whose control the operator confirmed). host: the host the form was opened from.
-  def record!(operator:, host:, advisory:, params:, today: Date.current)
+  # operator_session: the session recording it; stepped_up: whether this request passed the second factor.
+  def record!(operator:, host:, advisory:, params:, operator_session: nil, stepped_up: false, today: Date.current)
     kind = params[:kind].to_s
     reason = FindingDecision.sanitize_reason(params[:reason])
     chosen = Array(params[:host_ids]).map(&:to_s).grep(/\A[1-9]\d{0,18}\z/).map(&:to_i).uniq
@@ -123,14 +147,17 @@ module FindingDecisions
     end
     return Outcome.new(decisions: [], errors:, candidates:) if errors.any?
 
-    decisions = write!(operator:, advisory:, kind:, reason:, expires_on:, host_ids: chosen, signals:)
+    decisions = write!(operator:, advisory:, kind:, reason:, expires_on:, host_ids: chosen, signals:, operator_session:, stepped_up:)
     Outcome.new(decisions:, errors: {}, candidates:)
   rescue Refused => e
     Outcome.new(decisions: [], errors: { hosts: e.message }, candidates:)
+  rescue StepUpNeeded => e
+    Outcome.new(decisions: [], errors: { second_factor_code: e.message }, candidates:)
   end
 
   # A new reason or expiry for an active decision, within the limit from the day it was recorded.
-  def change!(decision, operator:, params:, today: Date.current)
+  def change!(decision, operator:, params:, now: Time.current)
+    today = now.to_date
     reason = FindingDecision.sanitize_reason(params[:reason])
     errors = {}
     reason_problem(reason)&.then { |problem| errors[:reason] = problem }
@@ -140,6 +167,7 @@ module FindingDecisions
 
     changed = locked(decision) do |current|
       raise Refused, "This decision has ended; record a new one." unless current.active?
+      next Lifecycle.expire!(current, now:) && :lapsed if current.lapsed?(today)
 
       changes = { "reason" => [ current.reason, reason ], "until" => [ current.expires_on.iso8601, expires_on.iso8601 ] }.reject { |_, (a, b)| a == b }
       raise Refused, "Nothing changed: edit the reason or the date, or cancel." if changes.empty?
@@ -149,6 +177,8 @@ module FindingDecisions
                    changes: identity(current).merge(changes))
       current
     end
+    return Outcome.new(decisions: [], errors: { base: LAPSED }, candidates: []) if changed == :lapsed
+
     Outcome.new(decisions: [ changed ], errors: {}, candidates: [])
   rescue Refused => e
     Outcome.new(decisions: [], errors: { base: e.message }, candidates: [])
@@ -158,11 +188,15 @@ module FindingDecisions
   def end!(decision, operator:, now: Time.current)
     locked(decision) do |current|
       raise Refused, "This decision has already ended." unless current.active?
+      next Outcome.new(decisions: [], errors: { base: LAPSED }, candidates: []) if current.lapsed?(now.to_date) && Lifecycle.expire!(current, now:)
 
       current.update!(ended_at: now, ended_by: operator, ended_why: "operator")
-      Audit.record(actor: operator, action: Audit::Actions::VULNERABILITY_DECISION_ENDED, target: current.host,
-                   changes: identity(current).merge("ended_why" => "operator", "bucket" => effect_on_end(current)))
+      before = buckets_of(current)
       VulnerabilityMatcher.retriage!([ current.host_id ], advisory_ids: [ current.advisory_id ])
+      # The bucket read back after the re-triage, not the one recorded as evidence (the base may have moved since).
+      bucket = [ before, buckets_of(current) ] if current.control?
+      Audit.record(actor: operator, action: Audit::Actions::VULNERABILITY_DECISION_ENDED, target: current.host,
+                   changes: identity(current).merge("ended_why" => "operator", "bucket" => bucket).compact)
       Outcome.new(decisions: [ current ], errors: {}, candidates: [])
     end
   rescue Refused => e
@@ -174,12 +208,12 @@ module FindingDecisions
     { "decision_id" => decision.id, "advisory" => decision.advisory.advisory_id, "decision_kind" => decision.kind_name.downcase }
   end
 
-  # What ending a decision does to its findings' bucket, for the audit entry: a control returns them to the bucket
-  # recorded as its evidence; an acceptance changes none.
-  def effect_on_end(decision)
-    return nil unless decision.control?
+  LAPSED = "It passed its last day, so it has now ended as expired and the finding is due a new decision. Record a new one to go on.".freeze
 
-    [ "low risk", VulnerabilityTriage::BUCKET_NAMES.fetch(decision.evidence["bucket"], "the rules' bucket").downcase ]
+  # The buckets of the decision's open findings on its host, as stored ("low risk", or "needs attention, ignorable").
+  def buckets_of(decision)
+    ids = VulnerabilityFinding.active.where(host_id: decision.host_id, advisory_id: decision.advisory_id).distinct.pluck(:bucket).compact.sort
+    ids.map { |id| VulnerabilityTriage::BUCKET_NAMES.fetch(VulnerabilityTriage.bucket_for(id)).downcase }.join(", ").presence || "none open"
   end
 
   # The evidence sentence of the audit log: "critical; network, no login, no user action; not KEV; EPSS 0.04;
@@ -199,7 +233,15 @@ module FindingDecisions
   # "known exploited: no, now yes; severity: medium, now high", for the audit log and the tab.
   def changes_words(changes)
     names = { "kev" => "known exploited", "epss_band" => "EPSS band", "severity" => "severity" }
-    word = ->(value) { value == true ? "yes" : value == false ? "no" : (value || "none").to_s }
+    names["kev_cves"] = "CVEs on the KEV list"
+    word = lambda do |value|
+      case value
+      when true then "yes"
+      when false then "no"
+      when Array then value.empty? ? "none" : value.join(", ")
+      else (value || "none").to_s
+      end
+    end
     changes.map { |field, (before, after)| "#{names.fetch(field, field)}: #{word.(before)}, now #{word.(after)}" }.join("; ")
   end
 
@@ -225,10 +267,22 @@ module FindingDecisions
 
   # Writes the decisions under the hosts' locks, checking each host again there, then re-triages the advisory's
   # findings on them in the same transaction.
-  def write!(operator:, advisory:, kind:, reason:, expires_on:, host_ids:, signals:)
+  def write!(operator:, advisory:, kind:, reason:, expires_on:, host_ids:, signals:, operator_session:, stepped_up:)
     FindingDecision.transaction do
       ids = Host.lock.in_fleet.where(id: host_ids).order(:id).pluck(:id)
       raise Refused, "A host chosen was retired meanwhile; nothing was saved." unless ids.size == host_ids.size
+
+      # Under the session's lock (after the hosts', as no other path takes both), so two requests of one session at once
+      # are counted one after the other and cannot each stay under the threshold.
+      OperatorSession.lock.where(id: operator_session.id).pluck(:id) if operator_session
+      now = signals([ advisory.id ]).fetch(advisory.id)
+      raise Refused, "The advisory was added to CISA's KEV list meanwhile; check the date (at most #{max_days(true)} days) and save again." if now.kev? && !signals.kev?
+      if !stepped_up && step_up_needed?(operator_session, ids.size, kev: now.kev?)
+        raise StepUpNeeded, "A decision on a known exploited advisory needs a code from your authenticator app every time. Nothing was saved." if now.kev?
+
+        raise StepUpNeeded, "This session has recorded #{session_count(operator_session)} host decisions in the last #{STEP_UP_WINDOW.in_minutes.to_i} minutes; " \
+                            "more than #{STEP_UP_ABOVE} need a code from your authenticator app. Nothing was saved."
+      end
 
       candidates = Candidates.load(advisory, ids, signals:)
       if (stale = candidates.find(&:problem))
@@ -237,7 +291,8 @@ module FindingDecisions
 
       decisions = candidates.map do |candidate|
         decision = FindingDecision.create!(host: candidate.host, advisory:, kind:, reason:, expires_on:, created_by: operator,
-                                           confirmed: kind == "control", evidence: candidate.evidence, request_id: Current.request_id)
+                                           confirmed: kind == "control", evidence: candidate.evidence, request_id: Current.request_id,
+                                           operator_session_id: operator_session&.id)
         before = VulnerabilityTriage::BUCKET_NAMES.fetch(candidate.bucket).downcase
         Audit.record(actor: operator, action: Audit::Actions::VULNERABILITY_DECISION_RECORDED, target: candidate.host,
                      changes: identity(decision).merge("reason" => reason, "until" => expires_on.iso8601,
@@ -261,5 +316,5 @@ module FindingDecisions
     end
   end
 
-  private_class_method :write!, :locked
+  private_class_method :write!, :locked, :buckets_of
 end

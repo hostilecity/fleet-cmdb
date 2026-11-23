@@ -805,3 +805,4 @@ td.decision .state-note { display: block; overflow-wrap: anywhere; }
 @media (forced-colors: active) { .override-tag { forced-color-adjust: auto; border: 1px solid CanvasText; } }
 .mt0 { margin-top: 0; }
 .evidence .sig { white-space: normal; }
+.decision-note { display: block; margin-top: 0.25rem; }
