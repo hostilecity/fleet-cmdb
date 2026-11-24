@@ -60,17 +60,16 @@ class EvaluationRun
     end
 
     # Works through ids, sorted and unique (the step reads them after(name), in that order), in a paged step: yields
-    # each slice of size, then moves the cursor to its last id, storing scope.call with it when scope is given (running
-    # totals, review of #308). Then moves on to the next step. An id at or before the cursor is skipped, should the
-    # caller pass one.
-    def pages!(name, ids, size, scope: nil)
+    # each slice of size, then moves the cursor to its last id. Then moves on to the next step. An id at or before the
+    # cursor is skipped, should the caller pass one.
+    def pages!(name, ids, size)
       return if done?(name)
 
       from = after(name)
       ids = ids.drop(ids.bsearch_index { |id| id > from } || ids.size) if from
       ids.each_slice(size) do |slice|
         yield slice
-        advance!(name, slice.last, scope: scope&.call)
+        advance!(name, slice.last)
       end
       advance!(next_step(name))
     end

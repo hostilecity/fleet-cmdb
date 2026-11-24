@@ -75,9 +75,9 @@ class EvaluationRun
     #   every rewrite of it: review of #308). A resume claims nothing again: a change recorded since (a new row, or a
     #   claimed one recorded again, which gets a new id) stays pending for the next run, delayed, never lost. Each attempt
     #   reads its advisories from the claimed rows that still exist; one another run released was re-triaged by that run.
-    # - refresh: the chunks after the cursor, in id order (in SQL, review of #308), CHUNK_BATCH at a time, the cursor and
-    #   the running totals moving after each; a slice killed part way is recomputed again (it writes only the verdicts
-    #   that change, and records its changed chunks with them). The signals barrier is taken again on every attempt,
+    # - refresh: the chunks after the cursor, in id order (in SQL, review of #308), CHUNK_BATCH at a time, the cursor
+    #   moving after each; a slice killed part way is recomputed again (it writes only the verdicts that change, and
+    #   records its changed chunks and adds to the totals with them, so the totals are exact). The signals barrier is taken again on every attempt,
     #   before the chunks are read. A chunk below the cursor that came to hold an advisory since was matched after the
     #   first barrier, so it read the new signals itself.
     # - sets: the sets holding the recorded chunks, in one statement (idempotent), stored with the prepared scope as the
@@ -97,8 +97,7 @@ class EvaluationRun
         record_sets! unless full?
         @scope = scope.merge("prepared" => true, "sets_run" => (@run_id unless full?), "changes" => claims.count, "advisories" => advisory_ids&.size,
                              "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
-                             "chunks_changed" => full? ? scope["chunks_changed"].to_i : TriageRunChunk.where(evaluation_run_id: @run_id).count,
-                             "verdicts_changed" => scope["verdicts_changed"].to_i)
+                             "chunks_changed" => full? ? totals.first : TriageRunChunk.where(evaluation_run_id: @run_id).count, "verdicts_changed" => totals.last)
       end
       release_claimed!
       scope
@@ -163,20 +162,38 @@ class EvaluationRun
       advisories_for(rows.filter_map(&:first).uniq, rows.filter_map(&:last).uniq)
     end
 
-    # The base refresh over the chunks after the cursor, with running totals kept in the scope across attempts (review
-    # of #308): a slice killed part way and recomputed counts only what its repeat changes.
+    # The base refresh over the chunks after the cursor. Its totals are exact across attempts (review of #308): each
+    # refresh transaction adds what it changed to the run's verdicts_changed and chunks_changed, and records its changed
+    # chunks, before it commits, so a slice killed part way and repeated changes nothing more and counts nothing more,
+    # and a run that prepares again from the start (another step list) never counts a verdict twice.
     def refresh!(checkpoint, advisory_ids)
       after = checkpoint.after("refresh")
       rows = full? ? ChunkEvaluation.all : ChunkMatch.where(advisory_id: advisory_ids)
       rows = rows.where(package_chunk_id: (after + 1)..) if after
       chunk_ids = rows.distinct.order(:package_chunk_id).pluck(:package_chunk_id)
-      record = full? ? nil : ->(ids) { record_chunks(ids) }
-      checkpoint.pages!("refresh", chunk_ids, CHUNK_BATCH, scope: -> { scope }) do |slice|
-        stats = Hash.new(0)
-        changed = VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:)
-        @scope = scope.merge("verdicts_changed" => scope["verdicts_changed"].to_i + stats[:verdicts], "chunks_changed" => scope["chunks_changed"].to_i + changed.size)
+      changed = lambda do |ids, verdicts|
+        record_chunks(ids) unless full?
+        add_totals!(ids.size, verdicts)
       end
+      checkpoint.pages!("refresh", chunk_ids, CHUNK_BATCH) { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: changed) }
     end
+
+    TOTALS_SQL = <<~SQL.squish.freeze
+      UPDATE evaluation_runs SET scope = scope || jsonb_build_object(
+        'chunks_changed', COALESCE((scope ->> 'chunks_changed')::bigint, 0) + :chunks,
+        'verdicts_changed', COALESCE((scope ->> 'verdicts_changed')::bigint, 0) + :verdicts)
+      WHERE id = :run
+    SQL
+
+    # Inside a refresh transaction: adds to the run's totals (the run's row, in the scope's two keys only).
+    def add_totals!(chunks, verdicts)
+      EvaluationRun.connection.exec_update(EvaluationRun.sanitize_sql_array([ TOTALS_SQL, { chunks:, verdicts:, run: @run_id.to_i } ]))
+    end
+
+    # The totals as stored, every attempt's: [chunks, verdicts]. For a full run, which records no chunks, a chunk counts
+    # once for each ecosystem it is evaluated in (one, but for a chunk two releases share); a run of advisories counts
+    # its recorded chunks instead.
+    def totals = (EvaluationRun.where(id: @run_id).pick(Arel.sql("scope -> 'chunks_changed'"), Arel.sql("scope -> 'verdicts_changed'")) || [ 0, 0 ]).map(&:to_i)
 
     # Releases the rows the run claimed, once its prepared scope is stored, and deletes its claims (the claim
     # protocol's step 3, outside any transaction).
