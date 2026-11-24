@@ -20,6 +20,7 @@ RSpec.describe "Host package findings", :signed_in, type: :request do
   end
 
   def words(node) = node&.xpath(".//text()")&.map(&:text)&.join(" ")&.squish
+  RSpec::Matchers.define_negated_matcher :not_including, :include
 
   # The advisory ids of the package page's rows, in order.
   def page_ids = page.css("#package_findings tbody tr").map { |row| row.at_css("td:nth-child(2)").at_css("a, span.mono").text }
@@ -197,6 +198,33 @@ RSpec.describe "Host package findings", :signed_in, type: :request do
     callback = ->(*, payload) { roles << ApplicationRecord.current_role if payload[:sql].include?("AS severity_rank") }
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { get more }
     expect(roles).to eq([ :reading ]) # #237: the page reads a caught-up replica when one is configured
+  end
+
+  it "probes no finding's verdict one at a time on the tab or the package page, filtered or not (#302)" do
+    import(bash: 8, kernel: 3)
+    # Still affected at a newer version: no finding row is written, so only the verdict, the page rows' details, has it.
+    report_packages(host, [ running, [ "bash", "5.2.37-3", "bash" ], [ "curl", "8.14.1-2", "curl" ] ])
+    VulnerabilityMatcher.match!([ host.id ])
+    expect(VulnerabilityFinding.where(host:, package: "bash").distinct.pluck(:last_installed_version)).to eq([ "5.2.37-2" ])
+    probes = []
+    callback = ->(*, payload) { probes << payload[:sql] if payload[:sql].include?("LEFT JOIN LATERAL ( SELECT m.source") }
+    tab = "/hosts/#{host.id}/vulnerabilities"
+    paths = [ [ tab, {} ], [ tab, { rule: "L2" } ], [ tab, { state: "all" } ], [ tab, { q: "bash" } ], [ tab, { debian: "no_dsa" } ], [ tab, { bucket: "fix" } ],
+              [ package_page, { package: "bash" } ], [ package_page, { package: "bash", q: "bash", state: "open", section: "rule", rule: "L2" } ],
+              [ package_page, { package: running.first } ] ]
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+      paths.each do |path, params|
+        get(path, params:)
+        expect(response).to have_http_status(:ok)
+      end
+    end
+    expect(probes).to be_empty
+    get tab, params: { rule: "L2" }
+    expect(words(page.at_css("#rule_list > tbody:has(a[href$='package=bash'])"))).to include("5.2.37-3").and(not_including("5.2.37-2"))
+    get package_page, params: { package: "bash" }
+    expect(words(page.at_css("#package_findings"))).to include("5.2.37-3").and(not_including("5.2.37-2"))
+    get package_page, params: { package: "bash", q: "bash" }
+    expect(page_ids.size).to eq(8) # the text search still reads the source, through the host's verdicts
   end
 
   describe "the paths that make the counts exact (review of #297, S2)" do
