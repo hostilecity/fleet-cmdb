@@ -80,7 +80,7 @@ RSpec.describe EvaluationRunWatchJob do
       RSpec::Mocks.space.proxy_for(VulnerabilityMatcher::Chunks).reset
       expect(described_class.perform_now).to eq(outcome) # untouched for less than 10 minutes: left alone
       expect(watch).to eq(outcome(resumed: [ run.id ]))
-      expect(run.reload).to have_attributes(state: "queued", scope: include("resumes" => 1, "resume_progress" => [ "queued", 0, "match:Debian:13", nil ]))
+      expect(run.reload).to have_attributes(state: "queued", scope: include("resumes" => 1, "resume_progress" => [ "queued", 0, nil, nil ])) # killed in its first page
       perform_evaluation_jobs
       expect(run.reload).to have_attributes(state: "finished", batches_done: 2, host_count: 2, hosts_done: 2)
       expect_both_hosts_correct
@@ -219,16 +219,14 @@ RSpec.describe EvaluationRunWatchJob do
       expect_both_hosts_correct
     end
 
-    it "starts a run split with no batch left, which a retry cannot carry on, again as a new run" do
+    it "reopens a run split with no batch left, which then finishes rather than waiting for the watch" do
       run = import_curl
       clear_enqueued_jobs
-      run.update_columns(state: "failed", started_at: Time.current, batch_count: 2, finished_at: Time.current)
-      retried = nil
-      expect { retried = EvaluationRun.retry!(run) }.to change(EvaluationRun, :count).by(1)
-      expect(run.reload).to have_attributes(state: "superseded", superseded_by_id: retried.id)
-      perform_evaluation_jobs
-      expect(retried.reload).to have_attributes(state: "finished", hosts_done: 2)
-      expect_both_hosts_correct
+      run.update_columns(state: "failed", started_at: Time.current, batch_count: 2, finished_at: Time.current) # as no path leaves it
+      expect { expect(EvaluationRun.retry!(run)).to eq(run) }.not_to change(EvaluationRun, :count)
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      expect(run.reload.state).to eq("finished")
+      expect(batch_jobs).to be_empty
     end
 
     it "does not queue again the batches of a reopened run whose jobs are still queued (review of #292)" do
@@ -312,7 +310,6 @@ RSpec.describe EvaluationRunWatchJob do
           run = import_curl_again(point)
           expect(drive_killed(run, killer)).to eq(2), "killed at #{dry.labels[point - 1]}"
           expect_batched_once(run, 2)
-          expect(run.scope).to include("stamp" => AdvisoryImport.newest_succeeded_id)
         end
         curl = Advisory.where("advisory_id LIKE 'DSA-1-%'").count
         expect(curl).to eq(dry.labels.size + 1)

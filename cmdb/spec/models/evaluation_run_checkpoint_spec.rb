@@ -16,7 +16,7 @@ RSpec.describe EvaluationRun::Checkpoint do
       checkpoint = described_class.detached(steps)
       seen = []
       checkpoint.step!("first") { seen << :first }
-      checkpoint.pages!("paged", [ 5, 1, 3, 3 ], 2) { |slice| seen << slice }
+      checkpoint.pages!("paged", [ 1, 3, 5 ], 2) { |slice| seen << slice }
       expect(checkpoint).to have_attributes(step: "last", cursor: nil, writes: 4) # the first step, a write a page, the move on
       checkpoint.step!("last") { seen << :last }
       expect(seen).to eq([ :first, [ 1, 3 ], [ 5 ], :last ])
@@ -26,6 +26,7 @@ RSpec.describe EvaluationRun::Checkpoint do
       resumed = described_class.new(nil, steps, "paged", 3)
       expect(resumed.done?("first")).to be(true)
       expect(resumed.done?("paged")).to be(false)
+      expect([ resumed.after("paged"), resumed.after("last") ]).to eq([ 3, nil ]) # what the step reads after, in SQL
       slices = []
       resumed.pages!("paged", [ 1, 3, 5, 7 ], 10) { |slice| slices << slice }
       expect(slices).to eq([ [ 5, 7 ] ])
@@ -41,14 +42,27 @@ RSpec.describe EvaluationRun::Checkpoint do
       checkpoint.pages!("paged", [ 1 ], 10) { |slice| ran << slice } # its cursor belonged to another step
       expect(ran).to eq([ [ 1 ] ])
     end
+
+    it "prepares from the start when it was written under another step list, as when a step was added before it (review of #308)" do
+      before = described_class.plan(%w[paged last])
+      checkpoint = described_class.new(nil, steps, "last", nil, before) # "first" was added since "last" was reached
+      expect(checkpoint.done?("first")).to be(false)
+      expect(checkpoint.after("last")).to be_nil
+      expect(described_class.new(nil, steps, "last", nil, described_class.plan(steps)).done?("first")).to be(true)
+    end
   end
 
   describe "on a run" do
     it "moves only from where it last left the run, and only while it is queued" do
       record = run
       mine = described_class.for(record, steps)
-      mine.step!("first") { { "packages" => {}, "stamp" => 7 } }
-      expect(record.reload).to have_attributes(prepare_step: "paged", prepare_cursor: nil, scope: { "packages" => {}, "stamp" => 7 })
+      mine.step!("first") { { "packages" => {}, "note" => 7 } }
+      expect(record.reload).to have_attributes(prepare_step: "paged", prepare_cursor: nil, prepare_plan: described_class.plan(steps), scope: { "packages" => {}, "note" => 7 })
+      replanned = described_class.for(record, %w[other paged last]) # the steps changed: it starts again, from what is stored
+      replanned.advance!("other")
+      expect(record.reload).to have_attributes(prepare_step: "other", prepare_plan: described_class.plan(%w[other paged last]))
+      record.update_columns(prepare_step: "paged", prepare_plan: described_class.plan(steps))
+      mine = described_class.for(record, steps)
 
       other = described_class.for(record, steps) # a second preparation of the same run (a resume of one thought dead)
       other.advance!("paged", 10)

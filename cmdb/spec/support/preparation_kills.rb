@@ -24,13 +24,17 @@ module PreparationKills
 
     def armed
       @armed = true
+      @open = ActiveRecord::Base.connection.open_transactions # the test's own, when it has one
       yield
     ensure
       @armed = false
     end
 
+    # A move of the checkpoint inside a transaction (the triage claim's) has not committed yet: a kill there rolls it
+    # back, as a kill before it does, so it is no point of its own.
     def point!(label)
       return unless @armed
+      return if label.start_with?("after checkpoint") && ActiveRecord::Base.connection.open_transactions > @open
 
       @index += 1
       @labels << label if @attempt == 1
