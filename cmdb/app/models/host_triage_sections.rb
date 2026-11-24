@@ -66,12 +66,14 @@ class HostTriageSections
     end
   end
 
-  # Every finding on the page, and every finding of a Fix available package row: its "Upgrade to" is the highest fix
-  # of all of them, which F2's needs their inputs for (re-check of #281, N3). Fix available rows are upgrades, so
-  # rarely long.
-  def findings
-    Array(packages&.groups).flat_map(&:findings) +
-      [ kernel, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map { |group| self.class.shown(group) } } +
+  # Every finding on the page, and every finding a Fix available package row loads: its "Upgrade to" is the highest
+  # fix of all its findings, which F2's needs their inputs for (re-check of #281, N3), so a row past NESTED_MAX loads
+  # its witnesses too (HostFindingGroups, #318): one finding of each fixed version, and every one with none.
+  def findings = (Array(packages&.groups).flat_map(&:loaded) + drawn).uniq
+
+  # The findings drawn on the page: what Debian's triage lines are read for (FindingTriage, review of #321, N3).
+  def drawn
+    [ packages, kernel, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map { |group| self.class.shown(group) } } +
       Array(attention&.groups).flat_map(&:findings)
   end
 
@@ -83,7 +85,8 @@ class HostTriageSections
 
   def groups(scope, section)
     after, before = cursor(section)
-    HostFindingGroups.new(scope, host_id: @host_id, rank: :offenders, after: HostFindingGroups.cursor(after, :offenders), before: HostFindingGroups.cursor(before, :offenders))
+    HostFindingGroups.new(scope, host_id: @host_id, rank: :offenders, after: HostFindingGroups.cursor(after, :offenders), before: HostFindingGroups.cursor(before, :offenders),
+                                 witnesses: section == "fix")
   end
 
   def advisory_groups(scope)

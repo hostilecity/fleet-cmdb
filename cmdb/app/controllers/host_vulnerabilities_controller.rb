@@ -97,8 +97,9 @@ class HostVulnerabilitiesController < ApplicationController
       @exposure = HostExposure.new(@host.id) if @summary.scores&.scored?
     end
     @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")
-    # Debian's triage for the open and reopened rows on the page (T5); none on the resolved list.
-    @triage = @sections && FindingTriage.load(@sections.findings)
+    # Debian's triage for the open and reopened rows drawn on the page (T5); none on the resolved list, nor for a Fix
+    # available row's witnesses, which are not drawn (review of #321, N3).
+    @triage = @sections && FindingTriage.load(@sections.drawn)
     @advisory_count = AdvisoryPackage.where(ecosystem: @evaluation.ecosystem).distinct.count(:advisory_id) if @evaluation && !@evaluation.not_evaluated?
     # Backports are matched against the release they are built from too (#274): the tab says which, and where that
     # release's data names nothing for one.
