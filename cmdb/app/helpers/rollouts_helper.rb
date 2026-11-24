@@ -56,10 +56,8 @@ module RolloutsHelper
   def rollout_stage_progress(rollout, stage, counts, canary_names)
     if stage > rollout.current_stage
       "Hosts are chosen when it opens"
-    elsif stage == rollout.current_stage && rollout.state == "running" && (until_at = Rollouts.observing_until(rollout))
-      # #251: confirmed, and observed for restart loops before it moves on.
-      next_step = rollout.final_stage? ? "then the rollout completes" : "then the next stage opens"
-      "All confirmed; observing until #{until_at.utc.strftime('%H:%M UTC')}, #{next_step}"
+    elsif stage == rollout.current_stage && rollout.state == "running" && (words = observation_words(rollout, counts))
+      words
     elsif stage.zero? && canary_names.any?
       total = counts.values.sum
       names = canary_names.first(3)
@@ -123,12 +121,45 @@ module RolloutsHelper
     "#{detail}. #{when_text}"
   end
 
-  # For a host that was already in a restart loop when it was offered the update (#251, owner decision 2026-11-23):
-  # its restarts do not count towards the halt, and this says why. nil otherwise.
+  # What the open, confirmed stage is waiting for (#251, re-check of #307, S4 and N1): hosts of earlier stages that have
+  # not confirmed (after an early Advance), its observation time, or nothing (it moves on within a minute). nil while
+  # the stage has hosts that have not confirmed, or its confirmation is not noted yet.
+  def observation_words(rollout, counts)
+    total = counts.values.sum
+    return unless counts.fetch("confirmed", 0) == total
+    return if total.positive? && rollout.stage_confirmed_at.nil?
+
+    until_at = Rollouts.observing_until(rollout)
+    return if until_at.nil?
+
+    final = rollout.final_stage?
+    if final && rollout.rollout_hosts.where(state: %w[pending updating]).exists?
+      "All confirmed; waiting for hosts of earlier stages to confirm, then observed for #{pluralize(Rollouts.config.stage_observe.in_minutes.to_i, 'minute')}"
+    elsif Time.current < until_at
+      "All confirmed; observing until #{observation_time(until_at)}, #{final ? 'then the rollout completes' : 'then the next stage opens'}"
+    else
+      "Observed; #{final ? 'the rollout completes within a minute' : 'the next stage is opening'}"
+    end
+  end
+
+  # "14:05 UTC" today, "2026-11-30 14:05 UTC" on another day (the observation time may be up to a week).
+  def observation_time(time) = time.utc.strftime(time.utc.to_date == Time.current.utc.to_date ? "%H:%M UTC" : "%Y-%m-%d %H:%M UTC")
+
+  # For a host that was already in a restart loop when it was offered the update (#251, owner decisions 2026-11-23 and
+  # 2026-11-24), with the limit and window in force at its offer: not counted until its exemption ends, or counted
+  # because an earlier rollout marked it, or counted since the exemption ended. nil otherwise.
   def looping_before_words(member)
     return unless Rollouts.looping_before_offer?(member)
 
-    "looping before this update (#{pluralize(member.restarts_before_offer, 'restart')} in the #{pluralize(Rollouts.restart_loop.window.in_hours.to_i, 'hour')} before it), so not counted"
+    before = "looping before this update (#{pluralize(member.restarts_before_offer, 'restart')} in the #{pluralize(member.restart_window_hours, 'hour')} before it)"
+    ends = Rollouts.exemption_ends_at(member)
+    if member.restart_loop_before
+      "#{before}, after an earlier rollout's update, so counted"
+    elsif Time.current < ends
+      "#{before}, so not counted until #{observation_time(ends)}"
+    else
+      "#{before}; counted since #{observation_time(ends)}"
+    end
   end
 
   # "Restarted more than 3 times within 24 hours of the update" (#251): the restart-loop settings in force.

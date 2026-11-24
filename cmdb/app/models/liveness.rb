@@ -118,6 +118,11 @@ module Liveness
   # keeps, so a time sent with more digits still compares equal to the stored one (review of #307, S2).
   def process_columns(process, host, now, agent_time)
     return [ 0, {} ] unless process && plausible_process?(process, agent_time)
+    # A heartbeat of a process older than the one stored was held up (in a queue, behind a lock) while a newer process
+    # started: what it says is out of date, and its count would read as a reset and count again restarts that were
+    # counted (re-check of #307, S3). Both starts are the agent's own clock, and a process never starts before the one
+    # it replaced. Ignored, as a heartbeat without the object.
+    return [ 0, {} ] if host.agent_process_started_at && agent_time_of(process["started_at"]) < host.agent_process_started_at
 
     restarts = process["restarts"]
     known = host.agent_restarts

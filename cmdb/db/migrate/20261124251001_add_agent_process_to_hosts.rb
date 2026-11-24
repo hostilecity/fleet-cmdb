@@ -15,9 +15,14 @@
 #
 # Nullable columns without defaults rewrite no row, and the check constraints are added NOT VALID, so nothing scans
 # hosts while this transaction holds its ACCESS EXCLUSIVE lock; the next migration validates them with a lock that
-# lets heartbeats keep writing (as #235 did).
+# lets heartbeats keep writing (as #235 did). It gives up if the lock is not granted within 3 s: while it waits, every
+# query on hosts, every heartbeat included, queues behind it (as 20261112192001 does; re-check of #307, N4).
 class AddAgentProcessToHosts < ActiveRecord::Migration[8.1]
   def change
+    reversible do |direction|
+      direction.up { execute "SET LOCAL lock_timeout = '3s'" }
+      direction.down { execute "SET LOCAL lock_timeout = '3s'" }
+    end
     change_table :hosts, bulk: true do |t|
       t.datetime :agent_process_started_at
       t.bigint :agent_restarts

@@ -164,6 +164,37 @@ RSpec.describe "Rollouts and restart loops (#251)" do
       expect(audit_actions.last).to eq(Audit::Actions::ROLLOUT_COMPLETED)
     end
 
+    it "observes the last stage too: still running 29 minutes after it confirmed, completed after 30 (re-check, S2)" do
+      confirm(canary)
+      travel 30.minutes
+      minute_job
+      expect(rollout.reload.current_stage).to eq(2)
+      offer(other)
+      travel 1.second
+      confirm(other)
+      travel 29.minutes
+      minute_job
+      expect(rollout.reload.state).to eq("running")
+      travel 1.minute
+      minute_job
+      expect(rollout.reload.state).to eq("completed")
+    end
+
+    it "observes a host that confirms after an early Advance, also into an empty last stage (re-check, S4)" do
+      other.update_columns(agent_version: "0.3.0") # the last stage then has no host
+      Rollouts.advance!(rollout.reload, actor: create(:operator))
+      Rollouts.advance!(rollout.reload, actor: create(:operator)) if rollout.reload.current_stage < rollout.stage_percents.size
+      expect(rollout.reload).to have_attributes(state: "running", current_stage: rollout.stage_percents.size)
+      confirm(canary) # the canary, still updating when the operator advanced, confirms now
+      expect(rollout.reload).to have_attributes(state: "running", last_confirmed_at: be_within(1.second).of(Time.current))
+      travel 29.minutes
+      minute_job
+      expect(rollout.reload.state).to eq("running")
+      travel 1.minute
+      minute_job
+      expect(rollout.reload.state).to eq("completed")
+    end
+
     it "lets an operator advance at once, and observes again from a resume" do
       confirm(canary)
       Rollouts.halt!(rollout.reload, actor: create(:operator))
@@ -184,12 +215,12 @@ RSpec.describe "Rollouts and restart loops (#251)" do
 
   describe "a host already looping before its offer (owner decision 2026-11-23, review of #307, S6)" do
     it "does not count, and says it was looping before" do
-      member.update_columns(restarts_before_offer: 4)
+      member.update_columns(restarts_before_offer: 4, restart_limit: 3, restart_window_hours: 24, restart_loop_before: false)
       restarted(canary, 9)
       expect(member.reload.state).to eq("updating")
       expect(rollout.reload.state).to eq("running")
-      expect(helper_words(member)).to eq("looping before this update (4 restarts in the 24 hours before it), so not counted")
-      member.update_columns(restarts_before_offer: 3) # exactly the limit: not looping, so counted
+      expect(helper_words(member)).to start_with("looping before this update (4 restarts in the 24 hours before it), so not counted until ")
+      member.update_columns(restarts_before_offer: 3) # exactly the limit stored at the offer: not looping, so counted
       restarted(canary, 4)
       expect(member.reload.state).to eq("restart_loop")
     end
@@ -204,7 +235,82 @@ RSpec.describe "Rollouts and restart loops (#251)" do
       expect(member.reload.restarts_before_offer).to eq(0)
     end
 
+    it "ends the exemption one window after the offer: from then on its restarts count (owner decision 2026-11-24)" do
+      member.update_columns(restarts_before_offer: 9, restart_limit: 3, restart_window_hours: 24, restart_loop_before: false)
+      restarted(canary, 9)
+      expect(member.reload.state).to eq("updating")
+      travel 24.hours
+      expect(helper_words(member)).to start_with("looping before this update (9 restarts in the 24 hours before it); counted since ")
+      4.times do
+        travel 5.minutes
+        restarted(canary, 1)
+      end
+      expect(member.reload.state).to eq("restart_loop")
+    end
+
+    it "keeps the limit and window of the offer when the settings change during the rollout (N2)" do
+      member.update_columns(restarts_before_offer: 4, restart_limit: 3, restart_window_hours: 24, restart_loop_before: false)
+      Rails.configuration.x.restart_loop.limit = 10
+      Rails.configuration.x.restart_loop.window = 2.hours
+      expect(Rollouts.exempt_from_restarts?(member.reload)).to be(true)
+      expect(helper_words(member)).to start_with("looping before this update (4 restarts in the 24 hours before it)")
+      expect(Rollouts.exemption_ends_at(member)).to eq(member.offered_at + 24.hours)
+    end
+
+    it "halts a fix release that leaks the same way at its canary, although it looped before its offer (the re-check's probe)" do
+      # Rollout A (0.3.0) leaks: its canary is marked and A halts. The operator cancels A.
+      restarted(canary, 4)
+      expect(member.reload.state).to eq("restart_loop")
+      Rollouts.cancel!(rollout.reload, actor: create(:operator))
+      # An hour later, rollout B (0.4.0) with the same canary. Its first offer sees 4 restarts before it, but A marked
+      # the host: not exempt. B leaks the same way, and halts at the canary.
+      travel 1.hour
+      b = start_rollout(release: release_for_rollout("0.4.0"), canaries: [ canary ])
+      offer(canary)
+      b_member = b.rollout_hosts.find_by!(host: canary)
+      expect(b_member).to have_attributes(restarts_before_offer: 4, restart_limit: 3, restart_window_hours: 24, restart_loop_before: true)
+      expect(helper_words(b_member)).to eq("looping before this update (4 restarts in the 24 hours before it), after an earlier rollout's update, so counted")
+      travel 1.second
+      4.times do
+        travel 5.minutes
+        restarted(canary, 1)
+      end
+      expect(b_member.reload.state).to eq("restart_loop")
+      expect(b.reload).to have_attributes(state: "halted", current_stage: 0)
+    end
+
+    it "is not ended by an earlier rollout's mark older than the window" do
+      restarted(canary, 4)
+      Rollouts.cancel!(rollout.reload, actor: create(:operator))
+      travel 25.hours
+      canary.update_columns(agent_recent_restarts: [ 1.hour.ago ] * 4)
+      b = start_rollout(release: release_for_rollout("0.4.0"), canaries: [ canary ])
+      offer(canary)
+      expect(b.rollout_hosts.find_by!(host: canary)).to have_attributes(restarts_before_offer: 4, restart_loop_before: false)
+    end
+
+    it "counts the window's edges at the offer: a restart exactly a window before is out, one at the offer's instant is in (N3)" do
+      loner = host_running("0.2.0").first
+      Rollouts.cancel!(rollout, actor: create(:operator))
+      second = start_rollout(release: release_for_rollout("0.4.0"), canaries: [ loner ])
+      freeze_time do
+        loner.update_columns(agent_recent_restarts: [ Time.current, 1.hour.ago, 24.hours.ago ])
+        offer(loner)
+      end
+      expect(second.rollout_hosts.sole.restarts_before_offer).to eq(2)
+    end
+
     def helper_words(member) = Object.new.extend(ActionView::Helpers::TextHelper, RolloutsHelper).looping_before_words(member)
+  end
+
+  it "does not count a restart at the offer's own instant (review of #307, N2; re-check, N3)" do
+    travel_back
+    freeze_time do
+      at_offer = member.reload.offered_at
+      canary.update_columns(agent_recent_restarts: [ at_offer ] * 4 + [ at_offer + 1 ] * 3, agent_restarts: 7)
+      expect(Host.transaction { Rollouts.restarts_seen!(host: canary.reload, recent: canary.agent_recent_restarts, now: at_offer + 2) }).to be_nil
+      expect(Host.transaction { Rollouts.restarts_seen!(host: canary, recent: [ at_offer + 1 ] * 4, now: at_offer + 2) }).to be_present
+    end
   end
 
   it "keeps the restart_loop mark's time when a success arrives late (review of #307, N3)" do

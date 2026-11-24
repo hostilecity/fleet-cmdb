@@ -185,9 +185,24 @@ module Rollouts
     end
   end
 
-  # When the open stage's observation ends (#251): FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES after its hosts had all confirmed,
-  # or nil while they have not.
-  def observing_until(rollout) = rollout.stage_confirmed_at && rollout.stage_confirmed_at + config.stage_observe
+  # When the open stage's observation ends (#251): FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES after the later of the time its
+  # hosts had all confirmed and the time any host of the rollout last confirmed, so a host of an earlier stage that
+  # confirms after an operator's early Advance is observed too (re-check of #307, S4). nil before either.
+  def observing_until(rollout)
+    from = [ rollout.stage_confirmed_at, rollout.last_confirmed_at ].compact.max
+    from && from + config.stage_observe
+  end
+
+  # Whether the open stage, every host of it confirmed, has been observed long enough to move on (#251): its
+  # observation time has passed, or none is needed (an observation time of 0; a stage without hosts, once any host
+  # that confirmed before it has been observed).
+  def observed?(rollout, now = Time.current)
+    return true if config.stage_observe.zero?
+    return false if rollout.stage_confirmed_at.nil? && rollout.rollout_hosts.exists?(stage: rollout.current_stage)
+
+    until_at = observing_until(rollout)
+    until_at.nil? || now >= until_at
+  end
 
   def halt!(rollout, actor:, reason: "halted by an operator")
     in_state!(rollout, "running") { halt_locked!(rollout, actor:, reason:) }
@@ -281,11 +296,18 @@ module Rollouts
   # window before the offer (#251, owner decision 2026-11-23): more than the limit means it was already looping, which
   # then does not count towards the halt (restarts_seen!). Once per host and rollout, so the hosts row is read by key
   # once. Returns the rows changed (1, or 0 when another heartbeat offered it first).
+  # With the count it stores the limit and window in force (re-check of #307, N2), so a later change of either setting
+  # does not move the decision, and whether an earlier rollout marked the host restart_loop within that window: then
+  # its loop was an update's doing, and it is not exempt (owner decision 2026-11-24).
   def first_offer!(id, now)
-    RolloutHost.where(id:, state: "pending").update_all([ <<~SQL.squish, now, now, now - restart_loop.window, now ])
-      state = 'updating', offered_at = ?, updated_at = ?,
+    start = now - restart_loop.window
+    RolloutHost.where(id:, state: "pending").update_all([ <<~SQL.squish, now, now, restart_loop.limit, restart_loop.window.in_hours.to_i, start, now, start ])
+      state = 'updating', offered_at = ?, updated_at = ?, restart_limit = ?, restart_window_hours = ?,
       restarts_before_offer = (SELECT count(*) FROM hosts h, unnest(h.agent_recent_restarts) t
-                                WHERE h.id = rollout_hosts.host_id AND t > ? AND t <= ?)
+                                WHERE h.id = rollout_hosts.host_id AND t > ? AND t <= ?),
+      restart_loop_before = EXISTS (SELECT 1 FROM rollout_hosts e
+                                     WHERE e.host_id = rollout_hosts.host_id AND e.id <> rollout_hosts.id
+                                       AND e.state = 'restart_loop' AND e.resolved_at > ?)
     SQL
   end
   private_class_method :first_offer!
@@ -312,6 +334,8 @@ module Rollouts
     # A host marked restart_loop (#251) stays so when it confirms late: it runs the version, and keeps restarting.
     state = member.state == "restart_loop" && outcome == "succeeded" ? "restart_loop" : OUTCOME_STATES.fetch(outcome)
     member.update!(state:, resolved_at: member.state == "restart_loop" ? member.resolved_at : now)
+    # The rollout moves on only once this confirmation, too, has been observed (#251; re-check of #307, S4).
+    rollout.update!(last_confirmed_at: now) if state == "confirmed"
     Audit.record(actor: host, action: OUTCOME_ACTIONS.fetch(outcome), target: update,
                  changes: { "rollout_id" => rollout.id, "version" => update.version, "reason" => reason })
     FleetBroadcast.hosts_changed([ host_id ])
@@ -341,7 +365,7 @@ module Rollouts
   def restarts_seen!(host:, recent:, now: Time.current)
     member = RolloutHost.joins(:rollout).where(host_id: host.id, state: RESTART_COUNTED_STATES, rollouts: { state: Rollout::OPEN_STATES })
                         .where.not(offered_at: nil).first
-    return unless member && !looping_before_offer?(member)
+    return unless member && !exempt_from_restarts?(member, now)
 
     restarts = restarts_after(recent, member.offered_at, now - restart_loop.window)
     return unless restarts > restart_loop.limit
@@ -376,8 +400,20 @@ module Rollouts
   # time, and happened before it; review of #307, N2) and at or after since.
   def restarts_after(recent, offered, since) = Array(recent).count { |at| at > offered && at >= since }
 
-  # The host was already looping when it was offered the update (#251): more than the limit within the window before.
-  def looping_before_offer?(member) = member.restarts_before_offer.to_i > restart_loop.limit
+  # The host was already looping when it was offered the update (#251): more than the limit in force at the offer within
+  # the window before it (owner decision 2026-11-23). Not counted towards the halt, with two limits (owner decision
+  # 2026-11-24, re-check of #307, S1): never when an earlier rollout marked it restart_loop within that window (an
+  # update caused that loop: a fix release that leaks the same way must still halt at its canaries), and only until one
+  # window after the offer, when every restart in the window is one after the offer.
+  def looping_before_offer?(member) = member.restarts_before_offer.to_i > member.restart_limit.to_i && member.restart_limit.present?
+
+  # Whether that exemption holds now: looping before, not marked by an earlier rollout, and within one window of the offer.
+  def exempt_from_restarts?(member, now = Time.current)
+    looping_before_offer?(member) && !member.restart_loop_before && now < exemption_ends_at(member)
+  end
+
+  # When a looping-before host's exemption ends: one window, as at its offer, after the offer.
+  def exemption_ends_at(member) = member.offered_at + member.restart_window_hours.hours
 
   # "1 time", "4 times".
   def count_words(count, word) = "#{count} #{count == 1 ? word : word.pluralize}"
@@ -445,9 +481,8 @@ module Rollouts
     if rollout.stage_confirmed_at.nil? && config.stage_observe.positive? && rollout.rollout_hosts.exists?(stage: rollout.current_stage)
       rollout.update!(stage_confirmed_at: Time.current)
       FleetBroadcast.refresh
-      return
     end
-    return if rollout.stage_confirmed_at && Time.current < observing_until(rollout)
+    return unless observed?(rollout)
 
     if rollout.final_stage?
       # After an operator advanced early, hosts of earlier stages may still be pending or updating. Completing now
@@ -479,13 +514,7 @@ module Rollouts
   # Running at stage from, not the last, every host of it confirmed, and observed (#251): its observation time over, or
   # none needed (an observation time of 0, or a stage without hosts).
   def advanceable?(rollout, from)
-    return false unless rollout.state == "running" && rollout.current_stage == from && !rollout.final_stage? && stage_confirmed?(rollout)
-
-    if rollout.stage_confirmed_at
-      Time.current >= observing_until(rollout)
-    else
-      config.stage_observe.zero? || !rollout.rollout_hosts.exists?(stage: from)
-    end
+    rollout.state == "running" && rollout.current_stage == from && !rollout.final_stage? && stage_confirmed?(rollout) && observed?(rollout)
   end
   private_class_method :advanceable?
 

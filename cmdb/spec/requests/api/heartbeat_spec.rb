@@ -502,6 +502,27 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
       expect(host.agent_restart_loop_at).to eq(host.agent_recent_restarts[Rollouts.restart_loop.limit])
     end
 
+    it "ignores a delayed heartbeat from a process that has since been replaced (re-check of #307, S3)" do
+      beat(process(started_at: "2026-01-01T11:00:00.000Z", restarts: 2))
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 3)) # P' after one more restart: counts 1
+      expect(host.reload.agent_recent_restarts.size).to eq(1)
+      # P's heartbeat, held up while P died, lands now: no "reset", no restart counted, nothing moved back.
+      expect(hosts_writes { beat(process(started_at: "2026-01-01T11:00:00.000Z", restarts: 2)) }).to be_empty
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 3))
+      expect(host.reload).to have_attributes(agent_restarts: 3, agent_process_started_at: Time.utc(2026, 1, 1, 12))
+      expect(host.agent_recent_restarts.size).to eq(1)
+    end
+
+    it "keeps the (limit + 1)th newest restart in the indexed column (re-check of #307, N3)" do
+      beat(process)
+      times = (1..5).map { |n| Time.current.change(usec: 0) + (n * 60) }
+      times.each_with_index do |at, n|
+        travel_to(at) { beat(process(started_at: "2026-01-01T12:0#{n}:00.000Z", restarts: n + 1)) }
+      end
+      expect(host.reload.agent_recent_restarts).to eq(times.reverse)
+      expect(host.agent_restart_loop_at).to eq(times.reverse[3])
+    end
+
     it "keeps at most 32 restarts, newest first" do
       beat(process)
       beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 40))

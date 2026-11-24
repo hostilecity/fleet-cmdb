@@ -846,6 +846,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_251004) do
     t.datetime "updated_at", null: false
     t.string "from_version", limit: 64
     t.integer "restarts_before_offer", limit: 2
+    t.integer "restart_limit", limit: 2
+    t.integer "restart_window_hours", limit: 2
+    t.boolean "restart_loop_before"
     t.index ["host_id"], name: "index_rollout_hosts_on_host_id"
     t.index ["offered_at"], name: "index_rollout_hosts_updating", where: "((state)::text = 'updating'::text)"
     t.index ["rollout_id", "host_id"], name: "index_rollout_hosts_on_rollout_id_and_host_id", unique: true
@@ -874,6 +877,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_251004) do
     t.datetime "updated_at", null: false
     t.integer "halted_seconds", default: 0, null: false
     t.datetime "stage_confirmed_at"
+    t.datetime "last_confirmed_at"
     t.index ["agent_release_id"], name: "index_rollouts_on_agent_release_id"
     t.index ["open_slot"], name: "index_rollouts_one_open", unique: true
     t.check_constraint "(open_slot IS NOT NULL) = (state::text = ANY (ARRAY['running'::character varying, 'halted'::character varying]::text[]))", name: "rollouts_open_slot_matches_state"
