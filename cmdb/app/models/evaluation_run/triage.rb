@@ -21,8 +21,8 @@ class EvaluationRun
   # - Staleness starts nothing and rewrites nothing (B1): only stored data changing does.
   # - A failed run can be started again (the Data sources page, EvaluationRun.retry!): a prepared run with batches left
   #   carries on from them; one never split carries on preparing from its checkpoint (#295), claiming nothing again. A
-  #   later run covers an earlier one only when it re-runs every host the earlier one would (its chunks, or all), so
-  #   latest-wins never drops a host.
+  #   later run covers an earlier one only when it re-runs every host the earlier one would: a full run, which covers
+  #   any prepared one (#295: no run carries another's chunks), so latest-wins never drops a host.
   class Triage
     AT_ONCE = %w[kev kev_all advisory].freeze
     REASONS = %w[kev daily all].freeze
@@ -136,16 +136,11 @@ class EvaluationRun
       advisory_ids ? VulnerabilityMatcher.retriage!(ids, advisory_ids:) : VulnerabilityMatcher.match!(ids).changed_host_ids
     end
 
-    # A run that is not prepared is never covered, not even by a full run: a run still preparing may refresh after this
-    # one has read the bases (review of #277, re-check S2). A prepared run is covered by a full run, or by one that
-    # re-runs its chunks for at least its advisories.
-    def covers?(other)
-      return false unless other.is_a?(Triage) && other.prepared?
-      return true if full?
-      return false if other.full? || !(other.chunk_runs - chunk_runs).empty?
-
-      advisory_ids.nil? || (!other.advisory_ids.nil? && (other.advisory_ids - advisory_ids).empty?)
-    end
+    # A full run covers a prepared one: it re-runs every host. A run that is not prepared is never covered, not even by
+    # a full run, since it may refresh after this one has read the bases (review of #277, re-check S2). Any other run
+    # covers none: each records its changed chunks under its own id only (since #295 a retry reopens the run itself,
+    # so no run carries another's), so none is sure to re-run every one of another's hosts.
+    def covers?(other) = other.is_a?(Triage) && other.prepared? && full?
 
     def refresh_always? = false
 
