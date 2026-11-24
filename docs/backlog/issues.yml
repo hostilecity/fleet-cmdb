@@ -249,6 +249,7 @@
   done:
     - "Only hosts in an open stage running an older version receive the update directive, including agents below the minimum version."
     - "A reported rollback or missing confirmation halts the rollout until an operator resumes it, and every rollout action and outcome is audited."
+    - "A host whose agent restarts more than 3 times in 24 hours after the update counts as failed and halts the rollout; heartbeats report restarts and the last stop, shown on the host page and filterable in the fleet list (#251)."
   blocked_by: [P1-RELEASES, P1-HEARTBEAT, P1-DASH-FLEET]
 
 - key: P1-AGENT-UPDATE

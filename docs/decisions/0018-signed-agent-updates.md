@@ -1,6 +1,6 @@
 # ADR 0018: Signed remote agent updates with automatic rollback
 
-- Status: Accepted (owner, scope change #54); amended by [ADR 0030](0030-agent-recovery-mode.md): a crash loop with nothing to roll back to ends in recovery mode, not a stopped agent
+- Status: Accepted (owner, scope change #54); amended by [ADR 0030](0030-agent-recovery-mode.md): a crash loop with nothing to roll back to ends in recovery mode, not a stopped agent; and by #251 (owner, 2026-11-23): a host whose agent keeps restarting after the update counts as failed for its stage ("Restart loops" below)
 - Decision issue: DEC-18
 - Requirements: `FR-S.5`, `FR-1.5`, `FR-1.6`, `NFR-1`, `NFR-4`, `NFR-5`, `AC-1.9`, `AC-1.10`
 - Amends: [ADR 0003](0003-agent-privilege.md) and [ADR 0014](0014-task-trust-model.md) (consequences only; see below). Lifts the "agent self-update" exclusion in `docs/requirements.md` section 1.
@@ -22,6 +22,15 @@ Upgrading by hand on every VM does not suit a self-sufficient agent, and will no
 **Distribution.** The server stores imported releases and serves them to agents on the agent hostname, so a LAN without internet access works. Because artifacts are signed, where they are fetched from does not matter: the manifest URL can later point at a CDN or object store without changing the agent.
 
 **Rollout.** Operators set a target version for the fleet and run a rollout: named canary hosts first, then the rest in stages. The target reaches each agent as a directive in the heartbeat response, as in [ADR 0013](0013-on-demand-reports.md), so agents still make every connection. Any rollback or failed update halts the rollout until an operator resumes it. Every request, success, failure, and rollback is audited.
+
+**Restart loops (#251, owner decision 2026-11-23).** A release that leaks memory slowly is killed at the unit's `MemoryMax=` and restarted by systemd 10 seconds later. If the kills come minutes apart it never reaches the start limit, so nothing rolls it back, and each new process authenticates, heartbeats, and confirms normally. So each canary looks healthy, and the rollout would go on to the whole fleet. To see it:
+
+- Heartbeats carry an optional `process` object (additive in v1): the process's start, systemd's `NRestarts` for `fleet-agent.service` (read once per process with `systemctl show`), and how the process before it stopped. The stop comes from the unit's `ExecStopPost=` (`fleet-agent note-stop`), which records the `$SERVICE_RESULT`, `$EXIT_CODE`, and `$EXIT_STATUS` systemd gives it. The running agent cannot read the stop with `systemctl show` itself: systemd resets `Result`, `ExecMainCode`, and `ExecMainStatus` when it starts the service again, auto-restarts included. `note-stop` runs in the service's own sandbox, as root, and writes only one state record. The unit's `systemd-analyze security` exposure stays 1.9.
+- The server counts restarts from `NRestarts`: a rise counts the difference, and a fall (a manual start, an update, or a boot reset it) counts the new value. It keeps the server's time of the last 32 restarts on the host, and writes the hosts row only when something changed.
+- **A host of the open rollout that restarts more than `FLEET_RESTART_LOOP_RESTARTS` times (default 3) within `FLEET_RESTART_LOOP_WINDOW_HOURS` (default 24) counts as failed for its stage.** Only restarts after the host was offered the update count, and only for a host that is updating or confirmed. It is marked `restart_loop`, which is audited (`update.restart_loop`). Its stage cannot complete, and a running rollout halts until an operator resumes it, as for a rollback. A late `succeeded` result keeps the mark. The check runs only on a heartbeat that shows a new restart, so a steady heartbeat pays nothing for it.
+- The same two settings drive the fleet list's "Restarted: more than N times in H hours" filter and the host page's notice.
+
+**Known limit:** a stage advances as soon as all its hosts have confirmed. A leak that needs more than a few minutes to make 4 restarts therefore halts the rollout during the next stage, not at the canaries. The halt stops new offers, and hosts already offered still update. Holding each stage open for an observation time before it advances would close this gap. That is not built: it is a new rollout setting that needs the owner's decision.
 
 **Install and rollback on the VM.**
 
