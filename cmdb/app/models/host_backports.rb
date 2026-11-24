@@ -69,7 +69,7 @@ class HostBackports
     @uncovered = uncovered_sources(entries) if data?
     return unless data? && host_id
 
-    @kept_sources = VulnerabilityFinding.with_details.active.where(host_id:).where(kept: true).pluck(:source)
+    @kept_sources = VulnerabilityFinding.with_host_details(host_id).active.where(kept: true).pluck(:source)
     @kept = @kept_sources.size
   end
 

@@ -7,12 +7,13 @@
 #   right after the last finding it drew (cursor_of).
 # - Pages: keyset pages of PER_PAGE findings after (or before) a cursor holding the whole sort key, as #253's package
 #   rows and HostAdvisoryGroups do: a cursor that does not parse, or one with nothing past it any more, reads the first
-#   page and says so (notice). The page is one query and its advisories one more; the count of every finding the
+#   page and says so (notice). The page is one query (its rows picked and sorted on the plain findings table, then
+#   their details looked up for those rows only, #302) and its advisories one more; the count of every finding the
 #   filters keep one more, unless the caller has it already (count: the package's whole count, with no filter); and the page's triage inputs (VulnerabilityTriage::Explain, for the reasons) and its CVEs'
 #   KEV dates and EPSS scores a fixed number, so the page costs the same statements whatever the package's size.
 #
-# scope: the findings shown, a VulnerabilityFinding.with_details relation joined to advisories (the controller's
-# filters applied). The reasons' helper (triage_reason) reads inputs, kev_dates, epss_scores, and decisions, as on
+# scope: the findings shown, a relation of findings joined to advisories (the controller's filters applied): the plain
+# table, or with details when a filter reads one (VulnerabilityFinding.with_host_details). host_id: the host they are of. The reasons' helper (triage_reason) reads inputs, kev_dates, epss_scores, and decisions, as on
 # HostTriageSections. decisions: the host's HostDecisions (VT-OVERRIDES #261), so a finding here shows the decision tags
 # it has on the tab: O1's control and its link, a Low risk finding's decision, and a Needs attention finding's, which
 # the tab shows in its Decision column.
@@ -21,9 +22,11 @@ class HostPackageFindings
   CURSOR_MAX = 200
   ID = HostAdvisoryGroups::ID
 
-  KEY = 'f.severity_rank, f.first_seen_at, f.advisory_key COLLATE "C", f.id'.freeze
+  KEY = 'vulnerability_findings.severity_rank, vulnerability_findings.first_seen_at, vulnerability_findings.advisory_key COLLATE "C", vulnerability_findings.id'.freeze
   CURSOR_KEY = '(?::integer, ?::timestamp, ? COLLATE "C", ?::bigint)'.freeze
   RANK_SQL = "array_position(ARRAY['critical', 'high', 'medium', 'low', 'unknown']::varchar[], advisories.severity)".freeze
+  # KEY over a finding joined to its advisory, to sort the page's rows read with their details.
+  ROW_KEY = [ RANK_SQL, "vulnerability_findings.first_seen_at", 'advisories.advisory_id COLLATE "C"', "vulnerability_findings.id" ].freeze
 
   attr_reader :findings, :previous, :next, :count, :notice, :inputs, :kev_dates, :epss_scores, :decisions
 
@@ -47,8 +50,9 @@ class HostPackageFindings
     [ Advisory::SEVERITIES.index(finding.advisory.severity) + 1, finding.first_seen_at.utc.iso8601(6), finding.advisory.advisory_id, finding.id ].join(",")
   end
 
-  def initialize(scope, after: nil, before: nil, per_page: PER_PAGE, count: nil, decisions: nil, now: Time.current)
+  def initialize(scope, host_id:, after: nil, before: nil, per_page: PER_PAGE, count: nil, decisions: nil, now: Time.current)
     @scope = scope
+    @host_id = host_id
     @decisions = decisions
     @per_page = per_page
     cursor = before || after
@@ -79,15 +83,18 @@ class HostPackageFindings
   end
 
   # The page's findings (one more, to tell whether there is a next page) past the cursor, in one query, and their
-  # advisories in one more (preload).
+  # advisories in one more (preload). The rows are picked on the scope with their sort key (KEY), then read again with
+  # their details and sorted by the same key (ROW_KEY), so the details are looked up for those rows only (#302).
   def read(cursor, backwards)
-    keyed = @scope.except(:order).select(Arel.sql("vulnerability_findings.*"), Arel.sql("#{RANK_SQL} AS severity_rank"),
-                                         Arel.sql("advisories.advisory_id AS advisory_key"))
-    query = VulnerabilityFinding.unscoped.from(keyed, :f).select(Arel.sql("f.*")).preload(:advisory)
-    query = query.where("(#{KEY}) #{backwards ? '<' : '>'} #{CURSOR_KEY}", *cursor) if cursor
-    order = KEY.split(", ").map { |key| backwards ? Arel.sql(key).desc : Arel.sql(key) }
-    query.order(*order).limit(@per_page + 1).to_a
+    keyed = @scope.except(:order, :preload, :includes).select(Arel.sql("vulnerability_findings.id"), Arel.sql("vulnerability_findings.first_seen_at"),
+                                                              Arel.sql("#{RANK_SQL} AS severity_rank"), Arel.sql("advisories.advisory_id AS advisory_key"))
+    page = VulnerabilityFinding.unscoped.from(keyed, :vulnerability_findings)
+    page = page.where("(#{KEY}) #{backwards ? '<' : '>'} #{CURSOR_KEY}", *cursor) if cursor
+    page = page.order(*ordered(KEY.split(", "), backwards)).limit(@per_page + 1)
+    VulnerabilityFinding.with_details_of(page, host_id: @host_id).joins(:advisory).preload(:advisory).order(*ordered(ROW_KEY, backwards)).to_a
   end
+
+  def ordered(parts, backwards) = parts.map { |part| backwards ? Arel.sql(part).desc : Arel.sql(part) }
 
   def load_details(now)
     @inputs = VulnerabilityTriage::Explain.load(findings, now:)

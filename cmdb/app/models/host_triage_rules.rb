@@ -7,7 +7,8 @@ class HostTriageRules
 
   attr_reader :rows
 
-  # scope: the findings shown, a VulnerabilityFinding.with_details relation joined to advisories.
+  # scope: the findings shown, a relation of findings joined to advisories (as HostFindingGroups'); counted on the
+  # plain table unless a filter reads a detail (#302).
   def initialize(scope)
     per_package = scope.except(:order, :preload, :includes).reselect(
       Arel.sql("vulnerability_findings.bucket_rule AS rule_id"), Arel.sql("vulnerability_findings.package AS package_name"),

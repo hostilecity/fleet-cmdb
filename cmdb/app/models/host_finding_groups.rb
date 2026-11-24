@@ -17,7 +17,8 @@
 #   the counts change under a live refresh (review of #253, S1): it shows the packages that now sort after that key.
 #   A cursor that does not parse, or one with nothing after (or before) it any more, reads the first page and says so
 #   (notice). The groups are aggregated in the database in one query whatever the page (a host has at most a few
-#   thousand findings); only the page's packages' findings are loaded, in one more query. A package whose findings
+#   thousand findings), on the plain findings table; only the page's packages' findings are loaded, with their details
+#   (VulnerabilityFinding.with_details_of: looked up for those findings only, #302), in one more query. A package whose findings
 #   left the list between the two (a matching run committing, or a replica replaying) is left off the page rather
 #   than failing it, and the page's rows count the findings loaded (S2).
 class HostFindingGroups
@@ -75,10 +76,12 @@ class HostFindingGroups
     nil
   end
 
-  # scope: the findings shown, a VulnerabilityFinding.with_details relation joined to advisories. after, before:
+  # scope: the findings shown, a relation of findings joined to advisories: the plain table, or with details when a
+  # filter reads one (VulnerabilityFinding.with_host_details). host_id: the host they are of. after, before:
   # cursors from HostFindingGroups.cursor for this rank (before wins).
-  def initialize(scope, rank: :offenders, after: nil, before: nil, per_page: PER_PAGE)
+  def initialize(scope, host_id:, rank: :offenders, after: nil, before: nil, per_page: PER_PAGE)
     @scope = scope
+    @host_id = host_id
     @rank = rank
     @per_page = per_page
     cursor = before || after
@@ -144,8 +147,8 @@ class HostFindingGroups
 
     table = VulnerabilityFinding.arel_table
     pairs = rows.map { |row| Arel::Nodes::Grouping.new([ Arel::Nodes.build_quoted(row["package"]), Arel::Nodes.build_quoted(row["architecture"]) ]) }
-    findings = @scope.where(Arel::Nodes::In.new(Arel::Nodes::Grouping.new([ table[:package], table[:architecture] ]), pairs)).to_a
-                     .group_by { |finding| [ finding.package, finding.architecture ] }
+    page = @scope.where(Arel::Nodes::In.new(Arel::Nodes::Grouping.new([ table[:package], table[:architecture] ]), pairs))
+    findings = VulnerabilityFinding.with_details_of(page, host_id: @host_id).preload(:advisory).to_a.group_by { |finding| [ finding.package, finding.architecture ] }
     rows.filter_map do |row|
       list = findings[[ row["package"], row["architecture"] ]] or next
 

@@ -7,7 +7,8 @@
 # - Pages: keyset pages of PER_PAGE advisories after (or before) a cursor holding the whole sort key, as
 #   HostFindingGroups does (review of #253, S1): a cursor that does not parse, or one with nothing past it any more,
 #   reads the first page and says so (notice). The advisories are aggregated in the database in one query whatever the
-#   page, and only the page's findings are loaded, in one more. An advisory whose findings left the list between the
+#   page, on the plain findings table, and only the page's findings are loaded, with their details (looked up for
+#   those findings only, #302), in one more. An advisory whose findings left the list between the
 #   two is left off the page.
 class HostAdvisoryGroups
   PER_PAGE = 50
@@ -37,9 +38,10 @@ class HostAdvisoryGroups
     [ rank.to_i, kev.to_i, id ]
   end
 
-  # scope: the findings shown, a VulnerabilityFinding.with_details relation joined to advisories.
-  def initialize(scope, after: nil, before: nil, per_page: PER_PAGE)
+  # scope: the findings shown, a relation of findings joined to advisories (as HostFindingGroups'), of host_id.
+  def initialize(scope, host_id:, after: nil, before: nil, per_page: PER_PAGE)
     @scope = scope
+    @host_id = host_id
     @per_page = per_page
     cursor = before || after
     @notice = :invalid if cursor == :invalid
@@ -90,7 +92,8 @@ class HostAdvisoryGroups
   def build(rows)
     return [] if rows.empty?
 
-    findings = @scope.where(advisory_id: rows.map { |row| row["advisory_ref"] }).to_a.group_by(&:advisory_id)
+    page = @scope.where(advisory_id: rows.map { |row| row["advisory_ref"] })
+    findings = VulnerabilityFinding.with_details_of(page, host_id: @host_id).preload(:advisory).to_a.group_by(&:advisory_id)
     rows.filter_map do |row|
       list = findings[row["advisory_ref"]] or next
 
