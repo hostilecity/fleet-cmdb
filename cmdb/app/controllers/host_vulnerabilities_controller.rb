@@ -195,13 +195,15 @@ class HostVulnerabilitiesController < ApplicationController
   end
 
   # The package page's filters (#283), each kept only when it is one of the tab's values. Its state defaults to every
-  # state, as the page always listed; @filters are the ones kept, for its links; the tab's link says "open". As on the tab, the signal applies to every state but
-  # resolved alone, and the Debian chip, the fix flag, and a section to the open and reopened list only.
+  # state, as the page always listed; @filters are the ones kept, for its links; the tab's link says "open", or
+  # "resolved" from a row of its resolved list (#303). The signal applies to every state: the tab's resolved list keeps
+  # it under "All", so a resolved row's link carries it. The Debian chip, the fix flag, and a section apply to the open
+  # and reopened list only.
   def load_package_filters
     @state = STATES.include?(params[:state]) ? params[:state] : "all"
     @severity = Advisory::SEVERITIES.include?(params[:severity]) ? params[:severity] : nil
     @query = params[:q].to_s.strip.first(QUERY_MAX)
-    @signal = SIGNALS.include?(params[:signal]) && @state != "resolved" ? params[:signal] : nil
+    @signal = SIGNALS.include?(params[:signal]) ? params[:signal] : nil
     @debian = params[:debian] == "no_dsa" && @state == "open" ? "no_dsa" : nil
     @fix = params[:fix] == "available" && @state == "open" ? "available" : nil
     @arch = params[:arch].to_s if @architectures.include?(params[:arch].to_s) # one of the package's own, never echoed otherwise

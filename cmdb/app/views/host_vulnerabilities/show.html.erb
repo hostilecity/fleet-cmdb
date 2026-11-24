@@ -104,7 +104,8 @@
         <p class="muted"><%= filtered ? "No resolved findings match." : "None yet." %></p>
       <% else %>
         <%= render "host_vulnerabilities/groups", host: @host, groups: @resolved_groups, caption: "Resolved vulnerability findings by package", id: "resolved_list",
-                                                  open: @query.present?, link_params:, pager_label: "Resolved finding pages", cursor_prefix: "resolved_" %>
+                                                  open: @query.present?, link_params:, pager_label: "Resolved finding pages", cursor_prefix: "resolved_",
+                                                  limit: HostTriageSections::NESTED_MAX %>
       <% end %>
     </section>
   <% end %>

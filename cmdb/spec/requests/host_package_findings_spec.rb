@@ -163,7 +163,7 @@ RSpec.describe "Host package findings", :signed_in, type: :request do
     expect(response.body).not_to include("i386")
     get package_page, params: { package: "bash", state: "open", section: "rule", rule: "K1" } # not a Low risk or Ignorable rule: no section
     expect(words(page.at_css("#package_filters"))).to eq("3 findings of the package's 3 match: open and reopened. Show every finding of this package")
-    get package_page, params: { package: "bash", state: "resolved", section: "untriaged", signal: "kev", fix: "available" } # open-only filters, ignored
+    get package_page, params: { package: "bash", state: "resolved", section: "untriaged", debian: "no_dsa", fix: "available" } # open-only filters, ignored
     expect(words(page.at_css("#package_filters"))).to start_with("0 findings of the package's 3 match: resolved.")
     expect(page.at_css("#package_no_match")).not_to be_nil
 
@@ -330,6 +330,74 @@ RSpec.describe "Host package findings", :signed_in, type: :request do
       expect(page_ids).to eq(%w[DEBIAN-CVE-2026-93001 DEBIAN-CVE-2026-93002])
       expect(words(page.at_css("#package_filters"))).to start_with("3 findings of the package's 6 match: open and reopened, not triaged yet, architecture amd64, " \
                                                                    "signal: network, no login, no user action, Debian: no security update planned, the advisory data names a fix.")
+    end
+
+    # A resolved package row (#303): a removed kernel image leaves every finding it had under one row of the resolved list.
+    def resolve(*ids)
+      VulnerabilityFinding.joins(:advisory).where(host:, advisories: { advisory_id: ids.map { |i| "DEBIAN-CVE-2026-93#{format('%03d', i)}" } })
+                          .update_all(state: "resolved", resolution: "removed", resolved_at: Time.current, bucket: nil, bucket_rule: nil, kev: nil)
+    end
+
+    it "caps a resolved row too, landing its link on exactly the resolved findings it counts, with the tab's filters (#303)" do
+      stub_const("HostTriageSections::NESTED_MAX", 1)
+      # 93000 to 93003 on the network, 93004 and 93005 local; all but 93003 and 93005 resolve.
+      import_advisories(*Array.new(6) { |i| osv_record(id: "DEBIAN-CVE-2026-93#{format('%03d', i)}", package: "bash", fixed: nil, severity: i < 4 ? network : local) }, full: true)
+      VulnerabilityMatcher.match!([ host.id ])
+      resolve(0, 1, 2, 4)
+      get "/hosts/#{host.id}/vulnerabilities", params: { state: "resolved" }
+      row = page.at_css("#resolved_list > tbody:has(a[href$='package=bash'])")
+      shown = tab_ids("resolved_list")
+      expect(shown.size).to eq(1)
+      expect(words(row.at_css("tr.more"))).to eq("Open the package page : 3 more findings here match. The first 1 are shown, worst severity first; " \
+                                                 "the package page lists the rest with the same filters, in pages.")
+      expect(link_query(row.at_css("tr.more a")["href"]).except("after")).to eq("package" => "bash", "arch" => "amd64", "state" => "resolved", "from" => "tab")
+      get row.at_css("tr.more a")["href"]
+      rest = page_ids
+      expect(rest.size).to eq(3)
+      expect(shown + rest).to match_array(%w[DEBIAN-CVE-2026-93000 DEBIAN-CVE-2026-93001 DEBIAN-CVE-2026-93002 DEBIAN-CVE-2026-93004])
+      expect(reasons).to all(eq("Resolved: in no bucket"))
+      expect(words(page.at_css("#package_filters"))).to eq("4 findings of the package's 6 match: resolved, architecture amd64. Show every finding of this package")
+      expect(words(page.at_css("#package_from_tab"))).to eq("Starting after the first 1 findings, which the Vulnerabilities tab shows under this package's row.")
+
+      # Under "All" the tab's signal narrows the resolved list too: the link carries it, and the page applies it, so the
+      # local 93004 is in neither.
+      get "/hosts/#{host.id}/vulnerabilities", params: { state: "all", signal: "network", severity: "critical", q: "bash" }
+      row = page.at_css("#resolved_list > tbody:has(a[href$='package=bash'])")
+      shown = tab_ids("resolved_list")
+      expect(words(row.at_css("tr.more"))).to start_with("Open the package page : 2 more findings here match.")
+      expect(link_query(row.at_css("tr.more a")["href"]).except("after")).to eq("package" => "bash", "arch" => "amd64", "state" => "resolved", "signal" => "network",
+                                                                               "severity" => "critical", "q" => "bash", "from" => "tab")
+      get row.at_css("tr.more a")["href"]
+      expect(shown + page_ids).to match_array(%w[DEBIAN-CVE-2026-93000 DEBIAN-CVE-2026-93001 DEBIAN-CVE-2026-93002])
+      expect(words(page.at_css("#package_filters"))).to start_with("3 findings of the package's 6 match: resolved, architecture amd64, severity critical, " \
+                                                                   "signal: network, no login, no user action, matching “bash”.")
+    end
+
+    it "draws a resolved row in the same statements whatever its number of findings, from the replica (#303)" do
+      stub_const("HostTriageSections::NESTED_MAX", 1)
+      statements = lambda do |path, **params|
+        sql = []
+        counter = ->(*, payload) { sql << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:sql].match?(/\A(SET|BEGIN|COMMIT|ROLLBACK)\b/) }
+        ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { get path, params: }
+        expect(response).to have_http_status(:ok)
+        sql.size
+      end
+      import(bash: 3)
+      VulnerabilityFinding.where(host:, package: "bash").update_all(state: "resolved", resolution: "removed", resolved_at: Time.current, bucket: nil, bucket_rule: nil, kev: nil)
+      tab = "/hosts/#{host.id}/vulnerabilities"
+      more = -> { get(tab, params: { state: "resolved" }) && page.at_css("#resolved_list tr.more a")["href"] }
+      cases = [ [ tab, { state: "resolved" } ], [ tab, { state: "all", q: "bash" } ], [ more.call, {} ] ]
+      before = cases.map { |path, params| statements.call(path, **params) }
+      import(bash: 60)
+      VulnerabilityFinding.where(host:, package: "bash").update_all(state: "resolved", resolution: "removed", resolved_at: Time.current, bucket: nil, bucket_rule: nil, kev: nil)
+      expect(cases.map { |path, params| statements.call(path, **params) }).to eq(before)
+      get tab, params: { state: "resolved" }
+      expect(words(page.at_css("#resolved_list > tbody:has(a[href$='package=bash']) tr.more"))).to start_with("Open the package page : 59 more findings here match.")
+
+      roles = []
+      callback = ->(*, payload) { roles << ApplicationRecord.current_role if payload[:name] == "HostFindingGroups" }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { get tab, params: { state: "resolved" } }
+      expect(roles).to eq([ :reading ]) # #198: the tab reads a caught-up replica when one is configured
     end
 
     it "gives a reason that needs the KEV date its date" do
