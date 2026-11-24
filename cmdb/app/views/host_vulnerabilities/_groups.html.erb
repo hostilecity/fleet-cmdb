@@ -3,7 +3,8 @@
     fix; the resolved list's say how they resolved (review of #253, S3). locals: host, groups (HostFindingGroups),
     caption, id, open (groups expanded: a text search), link_params, pager_label, cursor_prefix; and triage (FindingTriage, or nil),
     triage_status, triage_os: Debian's triage under the advisory of open and reopened rows (P2-D08, T1, T5); limit: the
-    most findings drawn under a row, the rest on the package page (the tab's not-triaged section, VT-HOST-TAB).
+    most findings drawn under a row, the rest on the package page (the tab's not-triaged section, VT-HOST-TAB, and its
+    resolved list, #303).
     keep-open stops a live refresh (a Turbo morph) from closing a disclosure the operator opened. %>
 <% triage = local_assigns[:triage] %>
 <% resolved = groups.rank == :severity %>
@@ -31,7 +32,7 @@
                 <td><%= finding_dates(finding) %></td></tr>
             <% end %>
             <% if limit && group.total > limit %>
-              <tr class="nested more"><td colspan="5"><%= link_to "Open the package page", package_more_path(host, group, link_params: local_assigns[:link_params], section: "untriaged") %>: <%= number_with_delimiter(group.total - limit) %> more findings here match. The first <%= limit %> are shown, worst severity first; the package page lists the rest with the same filters, in pages.</td></tr>
+              <tr class="nested more"><td colspan="5"><%= link_to "Open the package page", resolved ? package_more_path(host, group, link_params: local_assigns[:link_params], state: "resolved") : package_more_path(host, group, link_params: local_assigns[:link_params], section: "untriaged") %>: <%= number_with_delimiter(group.total - limit) %> more findings here match. The first <%= limit %> are shown, worst severity first; the package page lists the rest with the same filters, in pages.</td></tr>
             <% end %>
           </tbody></table>
         </details></td></tr>
