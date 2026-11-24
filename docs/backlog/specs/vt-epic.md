@@ -139,7 +139,7 @@ The **tier** is the headline and the first sort key; the **points** order hosts 
 | Low risk | 2 | 1 | 0 | 0 |
 | Ignorable | 0 | 0 | 0 | 0 |
 
-A KEV-listed advisory scores double, except in Ignorable. A finding of a package a listening process loads (N5's evidence, in whatever bucket it ends up) adds exposure points on top; VT-SCORES sets how many, more for a network listener than a loopback one (decision 27): once per advisory, not doubled, 10 / 5 / 2 / 1 for a network listener and 4 / 2 / 1 / 0 for a loopback-only one (critical, high, medium, low or unknown; [VT-SCORES As built](vt-scores.md#as-built-262), for the owner's OK). The values are a published constant (decision 13). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
+A KEV-listed advisory scores double, except in Ignorable. A finding of a package a listening process loads (N5's evidence, in whatever bucket it ends up) adds exposure points on top; VT-SCORES sets how many, more for a network listener than a loopback one (decision 27): once per advisory, not doubled, 10 / 5 / 2 / 1 for a network listener and 4 / 2 / 1 / 0 for a loopback-only one (critical, high, medium, low or unknown; [VT-SCORES As built](vt-scores.md#as-built-262); decided by the owner, decision 38). The values are a published constant (decision 13). The host tab shows the breakdown ([tiles.html](../../mockups/vuln-triage/tiles.html#score)). Severity is the normalised severity (ADR 0011), never Debian's urgency.
 
 Points and tier depend on KEV membership, which the bucket alone does not capture (a KEV listing on a Fix available finding changes no bucket). So the finding stores a `kev` flag beside its bucket, written whenever it changes, and the summary triggers recount on it (S2). EPSS changes points only through the bucket.
 
@@ -285,3 +285,29 @@ Decided on VT-HOST-TAB's PR (#281):
 Decided on VT-OVERRIDES' PR (#299):
 
 37. **The second factor for decisions is counted over a rolling window, and always asked on a KEV-listed advisory** (2026-11-23, after the review of #299; replaces decision 14's "one action covering more than 10 hosts"). An operator who has recorded more than 10 host decisions within 15 minutes needs the TOTP step-up, counted on the server under the operator's row lock, so splitting a request does not get around it. The owner's wording was "per session"; it is clarified to per operator, across all their sessions, to meet that purpose, since a new Google sign-in starts a new session (re-review of #299; approved by the owner on 2026-11-23). A decision on an advisory on CISA's KEV list needs a fresh code every time it is recorded or changed. Threat-model row H12. The approved mockups' V14 (`index.html`, `override.html`) are annotated (approved by the owner on 2026-11-23).
+
+Decided on VT-SCORES' PR (#305):
+
+38. **VT-SCORES' 20 items are approved as built** (2026-11-23 and 2026-11-24, every item of #305's "Needs the owner's OK"; [VT-SCORES As built](vt-scores.md#as-built-262)):
+    - **Scoring:**
+      - the listener points (network 10 / 5 / 2 / 1, loopback only 4 / 2 / 1 / 0, once per advisory, not doubled, not in Ignorable);
+      - "scored" means evaluated now with every open finding triaged;
+      - "fixable critical" means a critical advisory with a finding in Fix available;
+      - the source qualifiers (KEV, EPSS, and Debian's tracker on the tier and points; the tracker on work and the run);
+      - runs end when a host stops being scored or after a gap in package reports (a server outage longer than the setting ends every run), but not for a stale advisory feed, which withholds the badge.
+    - **Pages:**
+      - the stale-host wording ("Not known", "as of");
+      - the run badge beside "Nothing to install" only on the fleet list;
+      - the "Known exploited" filter as tier 4;
+      - the `?vulns=` semantics;
+      - which hosts the bucket line covers;
+      - the fleet list deviations from `fleet.html` (Last seen and Operating system kept, name as the default sort, Exposure and Work one way only, hostname and tags no longer sortable from the page).
+    - **Settings and data:**
+      - the two badge settings as database settings with a rake task, 1 to 30 days;
+      - a malformed value read as the default;
+      - the run withheld while the advisory data is stale;
+      - the sort indexes over every host in the fleet;
+      - VT-FIXABLE's summary columns dropped;
+      - the upgrade's listener backfill.
+    - **Decisions due (#298, option 2):** read as `ended_at IS NULL`, recounted off the sweep's locks, with the tab adding the decisions ending soon, past their last day, or suspended outside Needs attention.
+
