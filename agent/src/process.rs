@@ -13,7 +13,9 @@
 //!   `ExecMainStatus` when it starts the service again, so the running agent cannot read them for the run
 //!   before its own. systemd gives them to `ExecStopPost=` instead (`$SERVICE_RESULT`, `$EXIT_CODE`,
 //!   `$EXIT_STATUS`), and the unit runs `fleet-agent note-stop` there, which writes [`LAST_STOP`] in the
-//!   state directory ([`note_stop`]). The next process reads it once, at its start ([`read_last_stop`]).
+//!   state directory ([`note_stop`]). The next process reads it once, at its start, and removes it
+//!   ([`Start::read`]), so a stop that wrote no record (a power loss, a hard reset, a kernel panic, or a write
+//!   that failed) is reported as unknown, never as the stop before it (review of #307, S3).
 //!
 //! `note-stop` runs under the service's own sandbox, as root like the service, and only writes that
 //! record: no privilege is added, and the unit's `systemd-analyze security` exposure is unchanged. Every
@@ -70,11 +72,21 @@ pub struct Start {
 }
 
 impl Start {
-    /// The process started at `started` (wall clock); the stop record is read from `state_dir` now.
+    /// The process started at `started` (wall clock); the stop record is read from `state_dir` now and removed, so
+    /// it describes only the stop just before this process. A record that cannot be removed is reported all the same,
+    /// with a warning: the next process could then report it again.
     pub fn read(state_dir: &Path, started: SystemTime) -> Self {
+        let last_stop = read_last_stop(state_dir);
+        match std::fs::remove_file(state_dir.join(LAST_STOP)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                "cannot remove {LAST_STOP} after reading it ({e}); if the agent next stops without systemd running its stop hook, that stop may be reported as this one"
+            ),
+        }
         Self {
             started_at: rfc3339(started),
-            last_stop: read_last_stop(state_dir),
+            last_stop,
         }
     }
 }
@@ -400,7 +412,11 @@ mod tests {
         let start = Start::read(dir.root(), at());
         assert_eq!(start.started_at, "2026-01-01T11:59:49.512Z");
         assert_eq!(start.last_stop, Some(stop));
+        // Read once: the next process, after a stop that wrote nothing (a power loss), knows of no stop.
+        assert!(!dir.path(LAST_STOP).exists());
+        assert_eq!(Start::read(dir.root(), at()).last_stop, None);
         assert!(note_stop(dir.root(), env(&[]), at()).is_err());
+        assert!(!dir.path(LAST_STOP).exists());
     }
 
     #[test]
@@ -425,6 +441,9 @@ mod tests {
         }
         dir.write(LAST_STOP, &format!("{good}{}", " ".repeat(2000)));
         assert_eq!(read_last_stop(dir.root()), None, "a record past the cap");
+        // A record that is not one is removed too, so it is not looked at again.
+        Start::read(dir.root(), at());
+        assert!(!dir.path(LAST_STOP).exists());
     }
 
     struct Answer(Result<String, String>);
