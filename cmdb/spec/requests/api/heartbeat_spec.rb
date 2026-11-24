@@ -436,6 +436,143 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
     end
   end
 
+  describe "the agent process and its restarts (#251)" do
+    let(:oom) { { result: "oom-kill", exit_code: "killed", exit_status: 9, stopped_at: "2026-01-01T11:59:49.512Z" } }
+
+    def process(started_at: "2026-01-01T11:00:00.250Z", restarts: 0, last_stop: nil) = { started_at:, restarts:, last_stop: }
+
+    # The heartbeat's agent_time is after every process start below: a start after it is refused as implausible.
+    def beat(process) = heartbeat(body(agent_time: "2026-01-01T23:00:00Z", process:))
+
+    def hosts_writes
+      writes = []
+      callback = ->(*, payload) { writes << payload[:sql] if payload[:sql].match?(/\AUPDATE "hosts"/) }
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { yield }
+      writes
+    end
+
+    it "stores the process, writes the hosts row only when it changes, and counts restarts from systemd's count" do
+      allow(FleetBroadcast).to receive(:hosts_changed)
+      freeze_time do
+        beat(process)
+        expect(host.reload).to have_attributes(agent_process_started_at: Time.utc(2026, 1, 1, 11, 0, 0.25r), agent_restarts: 0,
+                                               agent_recent_restarts: nil, agent_restarted_at: nil, agent_last_stop_result: nil)
+        # Steady: nothing more is written to hosts, and nothing is broadcast, whatever the agent adds inside.
+        expect(hosts_writes { beat(process.merge(pid: 42)) }).to be_empty
+      end
+      # Killed at its memory limit; systemd restarted it once. The new process says so, with how the last one stopped.
+      first = Time.current.change(usec: 0)
+      travel_to(first) { beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 1, last_stop: oom)) }
+      expect(host.reload).to have_attributes(agent_restarts: 1, agent_recent_restarts: [ first ], agent_restarted_at: first,
+                                             agent_last_stop_result: "oom-kill", agent_last_stop_exit_code: "killed",
+                                             agent_last_stop_exit_status: 9, agent_last_stop_at: Time.utc(2026, 1, 1, 11, 59, 49.512r))
+      # Heartbeats failed meanwhile: a jump of 3 counts 3, at this heartbeat's time, newest first.
+      second = first + 10.minutes
+      travel_to(second) { beat(process(started_at: "2026-01-01T12:10:00.000Z", restarts: 4, last_stop: oom)) }
+      expect(host.reload.agent_recent_restarts).to eq([ second, second, second, first ])
+      expect(host.agent_restarts_within(1.day, now: second)).to eq(4)
+      expect(host.restart_loop?(now: second)).to be(true)
+      expect(host.restart_loop?(now: first + 25.hours)).to be(false)
+      # A start by a person or an update resets systemd's count: no restart. One after it counts one.
+      third = second + 1.hour
+      travel_to(third) { beat(process(started_at: "2026-01-01T13:10:00.000Z", restarts: 0, last_stop: oom.merge(result: "success", exit_code: "exited", exit_status: 0))) }
+      expect(host.reload).to have_attributes(agent_restarts: 0, agent_restarted_at: second, agent_last_stop_result: "success", agent_last_stop_exit_status: 0)
+      travel_to(third + 1.minute) { beat(process(started_at: "2026-01-01T13:11:00.000Z", restarts: 1, last_stop: oom)) }
+      expect(host.reload.agent_recent_restarts.size).to eq(5)
+      # A lower count than the last one is a reset followed by that many restarts.
+      travel_to(third + 2.minutes) { beat(process(started_at: "2026-01-01T13:12:00.000Z", restarts: 5, last_stop: oom)) }
+      travel_to(third + 3.minutes) { beat(process(started_at: "2026-01-01T13:13:00.000Z", restarts: 2, last_stop: oom)) }
+      expect(host.reload.agent_recent_restarts.size).to eq(11)
+      # Changes broadcast: the first heartbeat (online), then each heartbeat that counted restarts (5).
+      expect(FleetBroadcast).to have_received(:hosts_changed).with([ host.id ]).exactly(6).times
+    end
+
+    it "writes nothing on a steady heartbeat whose times have more digits than PostgreSQL keeps (review of #307, S2)" do
+      fine = process(started_at: "2026-01-01T11:00:00.123456789Z", last_stop: oom.merge(stopped_at: "2026-01-01T10:59:00.987654321Z"))
+      beat(fine)
+      expect(host.reload.agent_process_started_at).to eq(Time.utc(2026, 1, 1, 11, 0, 0.123457r))
+      expect(hosts_writes { 3.times { beat(fine) } }).to be_empty
+    end
+
+    it "counts a jump to systemd's largest count as the history's 32 entries, without building a larger list (N3)" do
+      beat(process)
+      allow(Array).to receive(:new).and_call_original
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 4_294_967_295))
+      expect(host.reload.agent_recent_restarts.size).to eq(Liveness::RESTART_HISTORY)
+      expect(host.agent_restart_loop_at).to eq(host.agent_recent_restarts[Rollouts.restart_loop.limit])
+    end
+
+    it "ignores a delayed heartbeat from a process that has since been replaced (re-check of #307, S3)" do
+      beat(process(started_at: "2026-01-01T11:00:00.000Z", restarts: 2))
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 3)) # P' after one more restart: counts 1
+      expect(host.reload.agent_recent_restarts.size).to eq(1)
+      # P's heartbeat, held up while P died, lands now: no "reset", no restart counted, nothing moved back.
+      expect(hosts_writes { beat(process(started_at: "2026-01-01T11:00:00.000Z", restarts: 2)) }).to be_empty
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 3))
+      expect(host.reload).to have_attributes(agent_restarts: 3, agent_process_started_at: Time.utc(2026, 1, 1, 12))
+      expect(host.agent_recent_restarts.size).to eq(1)
+    end
+
+    it "keeps the (limit + 1)th newest restart in the indexed column (re-check of #307, N3)" do
+      beat(process)
+      times = (1..5).map { |n| Time.current.change(usec: 0) + (n * 60) }
+      times.each_with_index do |at, n|
+        travel_to(at) { beat(process(started_at: "2026-01-01T12:0#{n}:00.000Z", restarts: n + 1)) }
+      end
+      expect(host.reload.agent_recent_restarts).to eq(times.reverse)
+      expect(host.agent_restart_loop_at).to eq(times.reverse[3])
+    end
+
+    it "keeps at most 32 restarts, newest first" do
+      beat(process)
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 40))
+      expect(host.reload.agent_recent_restarts.size).to eq(Liveness::RESTART_HISTORY)
+      beat(process(started_at: "2026-01-01T12:01:00.000Z", restarts: 41))
+      expect(host.reload.agent_recent_restarts.size).to eq(Liveness::RESTART_HISTORY)
+    end
+
+    it "counts nothing on the first report, or while the agent cannot read the count, and keeps the last known count" do
+      beat(process(restarts: 7))
+      expect(host.reload).to have_attributes(agent_restarts: 7, agent_recent_restarts: nil)
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: nil))
+      expect(host.reload).to have_attributes(agent_restarts: 7, agent_process_started_at: Time.utc(2026, 1, 1, 12), agent_recent_restarts: nil)
+      # Recovery mode reports the failed service's count, unchanged, from another process: no restart.
+      beat(process(started_at: "2026-01-01T12:05:00.000Z", restarts: 7))
+      expect(host.reload.agent_recent_restarts).to be_nil
+    end
+
+    it "keeps what it stored for a heartbeat without the object, such as the installer's" do
+      beat(process(restarts: 2, last_stop: oom))
+      expect(hosts_writes { heartbeat }).to be_empty
+      expect(host.reload).to have_attributes(agent_restarts: 2, agent_last_stop_result: "oom-kill")
+    end
+
+    it "ignores, without refusing the heartbeat, a process object the agent could not have sent" do
+      beat(process(restarts: 1))
+      allow(Rails.logger).to receive(:warn)
+      [ process(started_at: "2026-01-01T23:00:01.500Z", restarts: 9), # after the heartbeat's own agent_time
+        process(restarts: 9, last_stop: oom.merge(exit_code: nil)), # a status without a code
+        process(restarts: 9, last_stop: oom.merge(exit_code: "exited", exit_status: nil)),
+        process(restarts: 9, last_stop: oom.merge(exit_status: 200)) ].each do |odd|
+        beat(odd)
+        expect(response).to have_http_status(:ok)
+        expect(host.reload).to have_attributes(agent_restarts: 1, agent_recent_restarts: nil, agent_last_stop_result: nil)
+      end
+      expect(Rails.logger).to have_received(:warn).with(/could not have sent/).exactly(4).times
+      beat(process(restarts: 1, last_stop: oom.merge(exit_status: nil)))
+      expect(host.reload).to have_attributes(agent_last_stop_result: "oom-kill", agent_last_stop_exit_status: nil)
+    end
+
+    it "rejects a malformed process object without changing what was stored" do
+      beat(process(restarts: 2))
+      beat(process(restarts: -1))
+      expect_error(:bad_request, "validation_failed")
+      beat(process(restarts: 3, last_stop: oom.merge(result: "OOM KILL")))
+      expect_error(:bad_request, "validation_failed")
+      expect(host.reload.agent_restarts).to eq(2)
+    end
+  end
+
   it_behaves_like "the docs/api contract examples", "heartbeat.request", accepted: :ok do
     def submit_example(data, valid:) = heartbeat(data)
   end

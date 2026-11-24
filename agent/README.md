@@ -49,6 +49,8 @@ fleet-agent update-supervise, update-rollback
                                            internal: run by the agent and by systemd while updating (see Updates)
 fleet-agent library-scan                   internal: the optional library-use scan, run only in its own transient
                                            unit when [packages] library_scan = true (FR-2.6, VT-A02)
+fleet-agent note-stop [--config PATH]      internal: run by the unit's ExecStopPost= to record how the agent stopped,
+                                           which the next process's heartbeats report (#251)
 fleet-agent --version | --help
 ```
 
@@ -244,6 +246,7 @@ The unit also caps the agent's memory and tasks (#182): `MemoryMax=128M`, `Memor
 | `facts` | Configuration fact readers behind a `Host` trait (files, `sshd -T`, systemd, apt, passwd), the manifest parser, and bounded, validated collection; see [Configuration reports](#configuration-reports) | P2-A01, P2-A02, P2-A03 |
 | `packages` | Package manager detection and the dpkg listing, checked against the contract; see [Package reports](#package-reports) | P2-AGENT-PACKAGES |
 | `in_use` | What is in use, sent in the package report: listening and running services' packages from `/proc/net`, `sock_diag`, the cgroup tree, `systemctl`, and dpkg's file lists, and the optional library-use scan in its own unit (`library-scan`); see `docs/operations/agent-packages.md` | FR-2.6, VT-APPLICABILITY |
+| `process` | The heartbeat's `process` object: this process's start, systemd's `NRestarts` (one `systemctl show` per process), and how the process before it stopped, from `last-stop.json`, which `note-stop` writes when the unit's `ExecStopPost=` runs it; every value checked and capped | #251 |
 | `state` | Persistent state in `/var/lib/fleet-agent` | P1-AGENT-CORE, P1-AGENT-REPORT |
 | `fsx` | Shared file helpers: bounded reads of regular files, atomic writes, stale temporary-file cleanup, `flock` locks | P1-AGENT-REPORT |
 | `logging` | Structured journal logging, no secrets | P1-AGENT-CORE |

@@ -10,8 +10,8 @@
 #
 # 1. Source: each line of non-test code that calls `tests::crash_at(` or `tests::fail_point(` comes
 #    straight after a `#[cfg(test)]` line, and Cargo.toml declares no `[features]` that could switch
-#    hooks on in another build. The VM test's faults (src/vm_fault.rs: the crash loop, #180, and the
-#    shorter lock wait, #288) are compiled only with `--cfg fleet_vm_fault`, which only the VM test's
+#    hooks on in another build. The VM test's faults (src/vm_fault.rs: the crash loop, #180, the
+#    shorter lock wait, #288, and the one-shot leak, #251) are compiled only with `--cfg fleet_vm_fault`, which only the VM test's
 #    fault builds set: every call to them comes
 #    straight after `#[cfg(fleet_vm_fault)]`, its module after `#[cfg(any(test, fleet_vm_fault))]`, and
 #    neither the release build script, the release workflow, nor a Cargo config file names the cfg.

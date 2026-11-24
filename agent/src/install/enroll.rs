@@ -570,6 +570,8 @@ pub fn confirm(
             tasks: crate::tasks::Capabilities::of(&config.tasks),
             recovery: None,
             units,
+            // The installer is not the service's process: the server keeps what the service reported (#251).
+            process: None,
         };
         let error = match client.post_json(HEARTBEAT_PATH, &body) {
             Ok(response) if response.status == 200 => {

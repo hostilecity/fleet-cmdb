@@ -1,10 +1,10 @@
 # Words and lamps for rollouts and agent updates (P1-D09, approved mockups agents.html, agents-halted.html, and
 # host.html's "Agent updates"). Every status has its word; colour is never the only signal.
 module RolloutsHelper
-  PROBLEM_STATES = %w[failed rolled_back unconfirmed].freeze
+  PROBLEM_STATES = %w[failed rolled_back unconfirmed restart_loop].freeze
   # The order a stage's counts are listed in.
   STATE_WORDS = { "confirmed" => "confirmed", "updating" => "updating", "pending" => "waiting", "rolled_back" => "rolled back",
-                  "failed" => "failed", "unconfirmed" => "not confirmed" }.freeze
+                  "failed" => "failed", "unconfirmed" => "not confirmed", "restart_loop" => "restarted too often" }.freeze
 
   # "1. Canary", "2. 25% of hosts", "3. Everyone else": stage 0 is the canaries; each later stage brings the
   # rollout up to its share of the hosts on an older version.
@@ -56,6 +56,8 @@ module RolloutsHelper
   def rollout_stage_progress(rollout, stage, counts, canary_names)
     if stage > rollout.current_stage
       "Hosts are chosen when it opens"
+    elsif stage == rollout.current_stage && rollout.state == "running" && (words = observation_words(rollout, counts))
+      words
     elsif stage.zero? && canary_names.any?
       total = counts.values.sum
       names = canary_names.first(3)
@@ -74,13 +76,14 @@ module RolloutsHelper
   def rollout_host_status(member, rollout, reason: nil)
     version = rollout.agent_release.version
     case member.state
-    when "confirmed" then [ "online", "Confirmed on #{version}", nil ]
+    when "confirmed" then [ "online", "Confirmed on #{version}", looping_before_words(member) ]
     # Neutral: from_version is the version when the stage chose the host, and a manual upgrade or another update
     # may have changed it since. The From column shows it as that snapshot; the outcome does not claim it runs it.
     when "rolled_back" then [ "offline", "Rolled back", reason ]
     when "failed" then [ "offline", "Failed", reason ]
     when "unconfirmed" then [ "offline", "No result within #{Rollouts.config.confirmation_timeout.in_minutes.to_i} minutes", nil ]
-    when "updating" then [ "stale", "Offered #{version}, waiting for its result", nil ]
+    when "restart_loop" then [ "offline", restart_loop_words, nil ] # #251
+    when "updating" then [ "stale", "Offered #{version}, waiting for its result", looping_before_words(member) ]
     else pending_status(member, rollout, version)
     end
   end
@@ -94,7 +97,7 @@ module RolloutsHelper
   def agent_update_summary(member, rollout)
     lamp, = rollout_host_status(member, rollout)
     outcome = { "confirmed" => nil, "rolled_back" => "rolled back", "failed" => "failed", "unconfirmed" => "not confirmed",
-                "updating" => "updating", "pending" => (rollout.state == "running" ? "waiting" : "not offered") }[member.state]
+                "restart_loop" => "restarted too often", "updating" => "updating", "pending" => (rollout.state == "running" ? "waiting" : "not offered") }[member.state]
     words = [ [ member.from_version, rollout.agent_release.version ].compact.join(" → "), outcome ].compact.join(", ")
     tag.span(words, class: [ "lamp", lamp ])
   end
@@ -107,7 +110,7 @@ module RolloutsHelper
       took = (update.received_at - member.offered_at).round if update && member.offered_at
       confirmed = took ? "Confirmed in #{took < 60 ? pluralize(took, 'second') : human_duration(took)}" : "Confirmed"
       # A succeeded result may carry a note, such as units the agent could not refresh after the update (#232).
-      [ confirmed, update&.reason.presence ].compact.join("; ")
+      [ confirmed, update&.reason.presence, looping_before_words(member) ].compact.join("; ")
     when "rolled_back", "failed"
       # The version the agent reported with the result is what it ran then, unlike from_version (a snapshot).
       [ update&.reason.presence, ("reported by #{update.reported_agent_version}" if update&.reported_agent_version.present?) ]
@@ -116,6 +119,53 @@ module RolloutsHelper
       rollout_host_status(member, rollout)[1]
     end
     "#{detail}. #{when_text}"
+  end
+
+  # What the open, confirmed stage is waiting for (#251, re-check of #307, S4 and N1): hosts of earlier stages that have
+  # not confirmed (after an early Advance), its observation time, or nothing (it moves on within a minute). nil while
+  # the stage has hosts that have not confirmed, or its confirmation is not noted yet.
+  def observation_words(rollout, counts)
+    total = counts.values.sum
+    return unless counts.fetch("confirmed", 0) == total
+    return if total.positive? && rollout.stage_confirmed_at.nil?
+
+    until_at = Rollouts.observing_until(rollout)
+    return if until_at.nil?
+
+    final = rollout.final_stage?
+    if final && rollout.rollout_hosts.where(state: %w[pending updating]).exists?
+      "All confirmed; waiting for hosts of earlier stages to confirm, then observed for #{pluralize(Rollouts.config.stage_observe.in_minutes.to_i, 'minute')}"
+    elsif Time.current < until_at
+      "All confirmed; observing until #{observation_time(until_at)}, #{final ? 'then the rollout completes' : 'then the next stage opens'}"
+    else
+      "Observed; #{final ? 'the rollout completes within a minute' : 'the next stage is opening'}"
+    end
+  end
+
+  # "14:05 UTC" today, "2026-11-30 14:05 UTC" on another day (the observation time may be up to a week).
+  def observation_time(time) = time.utc.strftime(time.utc.to_date == Time.current.utc.to_date ? "%H:%M UTC" : "%Y-%m-%d %H:%M UTC")
+
+  # For a host that was already in a restart loop when it was offered the update (#251, owner decisions 2026-11-23 and
+  # 2026-11-24), with the limit and window in force at its offer: not counted until its exemption ends, or counted
+  # because an earlier rollout marked it, or counted since the exemption ended. nil otherwise.
+  def looping_before_words(member)
+    return unless Rollouts.looping_before_offer?(member)
+
+    before = "looping before this update (#{pluralize(member.restarts_before_offer, 'restart')} in the #{pluralize(member.restart_window_hours, 'hour')} before it)"
+    ends = Rollouts.exemption_ends_at(member)
+    if member.restart_loop_before
+      "#{before}, after an earlier rollout's update, so counted"
+    elsif Time.current < ends
+      "#{before}, so not counted until #{observation_time(ends)}"
+    else
+      "#{before}; counted since #{observation_time(ends)}"
+    end
+  end
+
+  # "Restarted more than 3 times within 24 hours of the update" (#251): the restart-loop settings in force.
+  def restart_loop_words
+    settings = Rollouts.restart_loop
+    "Restarted more than #{pluralize(settings.limit, 'time')} within #{pluralize(settings.window.in_hours.to_i, 'hour')} of the update"
   end
 
   private

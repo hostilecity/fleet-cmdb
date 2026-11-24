@@ -98,6 +98,22 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(page.at_css("#all_recovery_set_up a")["href"]).to eq("/")
       end
 
+      it "filters to the agents in a restart loop, with a labelled select and plain wording (#251)" do
+        get "/"
+        select = page.at_css("label select[name=restarts]")
+        expect(select.parent.text.squish).to start_with("Restarted")
+        expect(select.css("option").map { |o| [ o["value"], o.text ] }).to eq([ [ "", "Any" ], [ "loop", "More than 3 times in 24 hours" ] ])
+        get "/", params: { restarts: "loop" }
+        expect(words(page.at_css("#no_restart_loops"))).to eq("No agent restarted more than 3 times in 24 hours. Show the whole fleet")
+        media.update_columns(agent_restarted_at: 1.hour.ago, agent_recent_restarts: [ 1.hour.ago ] * 4, agent_restart_loop_at: 1.hour.ago)
+        get "/", params: { restarts: "loop", sort: "status" }
+        expect(row_names).to eq([ "Media server" ])
+        expect(page.at_css("select[name=restarts] option[selected]")["value"]).to eq("loop")
+        expect(query(page.at_css("th a[href*='sort=name']"))).to include("restarts" => "loop")
+        get "/", params: { restarts: "loop", tag: "nope" }
+        expect(page.at_css(".empty strong").text).to eq(%(No hosts match tag "nope" with restarted more than 3 times in 24 hours.))
+      end
+
       it "draws no pager when the fleet fits one page, as on the approved mockup" do
         get "/"
         expect(page.at_css("#fleet_pager")).to be_nil
@@ -366,6 +382,40 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       get "/hosts/#{host.id}"
       expect(words(section.call)).to start_with("Recovery mode is set up.")
       expect(section.call["class"]).to be_nil
+      host.revoke!(actor: operator)
+      get "/hosts/#{host.id}"
+      expect(section.call).to be_nil
+    end
+
+    it "shows the agent's restarts and how it last stopped, and explains a restart loop (#251)" do
+      section = -> { page.at_css("#agent_updates #agent_process_host_#{host.id}") }
+      get "/hosts/#{host.id}"
+      expect(section.call).to be_nil # no heartbeat yet
+      record_heartbeat(host)
+      get "/hosts/#{host.id}"
+      expect(words(section.call)).to eq("Agent version 0.1.0 does not report its restarts. Agent releases after 0.1.1 report them.")
+      started = Time.utc(2026, 1, 1, 12)
+      host.update_columns(agent_process_started_at: started, agent_restarts: nil)
+      get "/hosts/#{host.id}"
+      rows = -> { section.call.css("dt").to_h { |dt| [ dt.text, dt.next_element.text.squish ] } }
+      expect(rows.call).to eq("Agent running since" => "2026-01-01 12:00 UTC (agent's clock)", "Restarts in the last 24 hours" => "0",
+                              "Restarts by systemd" => "Not known (since it was last started by a person, an update, or a boot)",
+                              "Last stop" => "Not recorded (the units on the VM are from before agent releases after 0.1.1 and have no stop hook; " \
+                                             "a confirmed update writes the new ones. Or the agent stopped without systemd running the hook, as in a power loss or a hard reset.)")
+      expect(page.at_css("#restart_loop_host_#{host.id}")).to be_nil
+      restarts = [ 10.minutes.ago, 20.minutes.ago, 30.minutes.ago, 40.minutes.ago ]
+      host.update_columns(agent_restarts: 4, agent_recent_restarts: restarts, agent_restarted_at: restarts.first,
+                          agent_last_stop_result: "oom-kill", agent_last_stop_exit_code: "killed", agent_last_stop_exit_status: 9,
+                          agent_last_stop_at: started - 10)
+      get "/hosts/#{host.id}"
+      notice = page.at_css("#restart_loop_host_#{host.id}")
+      expect(notice["role"]).to eq("status")
+      expect(words(notice)).to include("The agent restarted 4 times in the last 24 hours.", "looks online",
+                                       "Killed at its memory limit (systemd: oom-kill, killed by signal 9 (SIGKILL))",
+                                       "journalctl -u fleet-agent", "The agent was killed for using too much memory")
+      expect(rows.call).to include("Restarts in the last 24 hours" => "4 (last #{restarts.first.utc.strftime('%Y-%m-%d %H:%M UTC')})",
+                                   "Restarts by systemd" => "4 (since it was last started by a person, an update, or a boot)",
+                                   "Last stop" => "Killed at its memory limit (systemd: oom-kill, killed by signal 9 (SIGKILL)) 2026-01-01 11:59 UTC")
       host.revoke!(actor: operator)
       get "/hosts/#{host.id}"
       expect(section.call).to be_nil

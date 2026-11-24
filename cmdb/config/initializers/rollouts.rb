@@ -33,4 +33,37 @@ Rails.application.configure do
   # A host that was sent the directive and has not reported a result within this long is marked unconfirmed,
   # which halts the rollout. The agent's own rollback deadline is 5 minutes (ADR 0018).
   rollouts.confirmation_timeout ||= Integer(ENV.fetch("FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES", "30")).clamp(1..).minutes
+
+  # Once every host of a stage has confirmed, the stage stays open this long before the next one opens, or the last one
+  # completes the rollout (#251, owner decision 2026-11-23, ADR 0018): restarts keep counting meanwhile, so a release
+  # that leaks slowly halts at the canaries, not after the whole fleet has it. An operator's Advance does not wait. A
+  # whole number of minutes from 0 (no observation) to 10,080 (a week); anything else stops the server from starting.
+  rollouts.stage_observe ||= begin
+    value = ENV.fetch("FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES", "30")
+    minutes = Integer(value, 10, exception: false)
+    raise "FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES must be a whole number of minutes from 0 to 10080 (got #{value.inspect})" unless minutes&.between?(0, 10_080)
+
+    minutes.minutes
+  end
+
+  # A restart loop (#251, ADR 0018): an agent that systemd restarted more than restart_limit times within
+  # restart_window. A host in a rollout that does so after it was sent the update counts as failed for its stage, which
+  # halts the rollout (owner, 2026-11-23: 3 times in 24 hours), and the fleet list's "Restarted" filter lists the hosts
+  # that did so. Whole numbers: restarts from 1 to 31 (the hosts row keeps the last 32 restarts, Liveness::RESTART_HISTORY),
+  # hours from 1 to 168; anything else stops the server from starting.
+  restart_loop = config.x.restart_loop
+  restart_loop.limit ||= begin
+    value = ENV.fetch("FLEET_RESTART_LOOP_RESTARTS", "3")
+    limit = Integer(value, 10, exception: false)
+    raise "FLEET_RESTART_LOOP_RESTARTS must be a whole number of restarts from 1 to 31 (got #{value.inspect})" unless limit&.between?(1, 31)
+
+    limit
+  end
+  restart_loop.window ||= begin
+    value = ENV.fetch("FLEET_RESTART_LOOP_WINDOW_HOURS", "24")
+    hours = Integer(value, 10, exception: false)
+    raise "FLEET_RESTART_LOOP_WINDOW_HOURS must be a whole number of hours from 1 to 168 (got #{value.inspect})" unless hours&.between?(1, 168)
+
+    hours.hours
+  end
 end

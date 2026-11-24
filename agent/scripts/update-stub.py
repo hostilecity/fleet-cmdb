@@ -207,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                 "binary_url": f"{base}/binary",
             }
         log(kind="heartbeat", agent_version=agent, status=200, directive=bool(directives),
-            recovery=body.get("recovery"), units=body.get("units"))
+            recovery=body.get("recovery"), units=body.get("units"), process=body.get("process"))
         save("heartbeat.json", body)
         self.send(200, {"server_time": now, "directives": directives})
 

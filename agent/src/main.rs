@@ -2,7 +2,8 @@
 //!
 //! Commands: `run` (the default), `check-config`, `--version`, and `--help` (P1-A01); `install` and
 //! `uninstall` (P1-A10, in [`install`]); `verify-release` (P1-PACKAGING, in [`release`]); `self-test`,
-//! `update-supervise`, and `update-rollback` (P1-AGENT-UPDATE, in [`update`]). `run` sends heartbeats
+//! `update-supervise`, and `update-rollback` (P1-AGENT-UPDATE, in [`update`]); `note-stop` (#251, in
+//! [`process`]). `run` sends heartbeats
 //! and inventory reports ([`report`], P1-AGENT-REPORT) and acts on the server's update directive.
 //! `run --recovery` is recovery mode ([`recovery`], ADR 0030), which only `fleet-agent-recovery.service`
 //! starts.
@@ -27,6 +28,7 @@ mod install;
 mod logging;
 mod owner;
 mod packages;
+mod process;
 mod recovery;
 mod release;
 mod report;
@@ -81,6 +83,8 @@ Commands:
                 Internal: run by the agent and by systemd while updating (see `fleet-agent self-test --help`)
   library-scan  Internal: the optional library-use scan, run only in its own transient unit when
                 `[packages] library_scan = true` (VT-A02)
+  note-stop     Internal: run by fleet-agent.service's ExecStopPost= to record how the agent stopped,
+                which the next heartbeat reports (#251)
 
 Options:
   -c, --config PATH  Config file [default: /etc/fleet-agent/config.toml]
@@ -572,6 +576,10 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
         return in_use::scan::main();
+    }
+    // How the service stopped (#251): run only by the unit's ExecStopPost=.
+    if args.first().and_then(|a| a.to_str()) == Some(process::NOTE_STOP) {
+        return process::main(args);
     }
     if matches!(
         args.first().and_then(|a| a.to_str()),

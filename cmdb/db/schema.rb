@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_304001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_24_251004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -621,14 +621,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_304001) do
     t.datetime "agent_recovery_retry_at"
     t.string "agent_recovery_reason", limit: 256
     t.string "agent_recovery_coverage", limit: 16
+    t.datetime "agent_process_started_at"
+    t.bigint "agent_restarts"
+    t.datetime "agent_restarted_at"
+    t.datetime "agent_recent_restarts", array: true
+    t.datetime "agent_restart_loop_at"
+    t.string "agent_last_stop_result", limit: 32
+    t.string "agent_last_stop_exit_code", limit: 8
+    t.integer "agent_last_stop_exit_status", limit: 2
+    t.datetime "agent_last_stop_at"
     t.index ["agent_version"], name: "index_hosts_in_fleet_on_agent_version", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index ["enrollment_state"], name: "index_hosts_on_enrollment_state"
     t.index ["hostname"], name: "index_hosts_on_hostname"
     t.index ["hostname"], name: "index_hosts_on_hostname_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["name"], name: "index_hosts_on_name_trigram", opclass: :gin_trgm_ops, using: :gin
     t.index ["tags"], name: "index_hosts_on_tags", using: :gin
+    t.index ["agent_restart_loop_at"], name: "index_hosts_restart_loops", where: "(agent_restart_loop_at IS NOT NULL)"
     t.index ["id"], name: "index_hosts_without_recovery_mode", where: "(((enrollment_state)::text = 'active'::text) AND (first_seen_at IS NOT NULL) AND ((agent_recovery_coverage)::text IS DISTINCT FROM 'set_up'::text))"
+    t.check_constraint "agent_last_stop_exit_code::text = ANY (ARRAY['exited'::character varying, 'killed'::character varying, 'dumped'::character varying]::text[])", name: "hosts_agent_last_stop_exit_code_valid"
+    t.check_constraint "agent_last_stop_exit_status >= 0 AND agent_last_stop_exit_status <= 255", name: "hosts_agent_last_stop_exit_status_valid"
     t.check_constraint "agent_recovery_coverage::text = ANY (ARRAY['set_up'::character varying, 'not_set_up'::character varying, 'unchecked'::character varying]::text[])", name: "hosts_agent_recovery_coverage_valid"
+    t.check_constraint "agent_restarts >= 0 AND agent_restarts <= '4294967295'::bigint", name: "hosts_agent_restarts_valid"
+    t.check_constraint "cardinality(agent_recent_restarts) <= 32", name: "hosts_agent_recent_restarts_capped"
     t.check_constraint "enrollment_state::text = ANY (ARRAY['pending'::character varying::text, 'active'::character varying::text, 'revoked'::character varying::text, 'retired'::character varying::text])", name: "hosts_enrollment_state_valid"
   end
 
@@ -831,11 +845,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_304001) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "from_version", limit: 64
+    t.integer "restarts_before_offer", limit: 2
+    t.integer "restart_limit", limit: 2
+    t.integer "restart_window_hours", limit: 2
+    t.boolean "restart_loop_before"
     t.index ["host_id"], name: "index_rollout_hosts_on_host_id"
     t.index ["offered_at"], name: "index_rollout_hosts_updating", where: "((state)::text = 'updating'::text)"
     t.index ["rollout_id", "host_id"], name: "index_rollout_hosts_on_rollout_id_and_host_id", unique: true
     t.index ["rollout_id", "stage", "state"], name: "index_rollout_hosts_on_rollout_id_and_stage_and_state"
-    t.check_constraint "state::text = ANY (ARRAY['pending'::character varying, 'updating'::character varying, 'confirmed'::character varying, 'failed'::character varying, 'rolled_back'::character varying, 'unconfirmed'::character varying]::text[])", name: "rollout_hosts_state_valid"
+    t.check_constraint "state::text = ANY (ARRAY['pending'::character varying, 'updating'::character varying, 'confirmed'::character varying, 'failed'::character varying, 'rolled_back'::character varying, 'unconfirmed'::character varying, 'restart_loop'::character varying]::text[])", name: "rollout_hosts_state_valid"
   end
 
   create_table "rollouts", force: :cascade do |t|
@@ -858,6 +876,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_304001) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.integer "halted_seconds", default: 0, null: false
+    t.datetime "stage_confirmed_at"
+    t.datetime "last_confirmed_at"
     t.index ["agent_release_id"], name: "index_rollouts_on_agent_release_id"
     t.index ["open_slot"], name: "index_rollouts_one_open", unique: true
     t.check_constraint "(open_slot IS NOT NULL) = (state::text = ANY (ARRAY['running'::character varying, 'halted'::character varying]::text[]))", name: "rollouts_open_slot_matches_state"

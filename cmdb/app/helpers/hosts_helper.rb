@@ -22,4 +22,7 @@ module HostsHelper
   def change_value(value)
     value.nil? ? unavailable : tag.span(value, class: "mono")
   end
+
+  # How the agent process before the running one stopped (#251), in words (Host#agent_last_stop_words).
+  def agent_last_stop_words(host) = host.agent_last_stop_words
 end

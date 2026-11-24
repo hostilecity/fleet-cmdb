@@ -43,11 +43,21 @@ RSpec.configure do |config|
   # One-second spread, whatever the stage's size: every offer time is the opening time, so directives are due at once.
   config.around do |example|
     rollouts = Rails.configuration.x.rollouts
-    saved = rollouts.to_h.slice(:spread, :confirmation_timeout, :downloads_per_second, :large_fleet_hosts)
+    saved = rollouts.to_h.slice(:spread, :confirmation_timeout, :downloads_per_second, :large_fleet_hosts, :stage_observe)
     rollouts.spread = 1
     rollouts.downloads_per_second = 1_000_000
+    # No stage observation (#251) unless a spec sets one: these specs are about what happens once a stage confirms.
+    rollouts.stage_observe = 0.minutes
     example.run
   ensure
     saved.each { |key, value| rollouts.public_send(:"#{key}=", value) }
+  end
+  # The restart-loop settings (#251), as a spec may change them.
+  config.around do |example|
+    restart_loop = Rails.configuration.x.restart_loop
+    saved = restart_loop.to_h.slice(:limit, :window)
+    example.run
+  ensure
+    saved.each { |key, value| restart_loop.public_send(:"#{key}=", value) }
   end
 end

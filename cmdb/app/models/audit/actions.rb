@@ -30,6 +30,8 @@ module Audit
     UPDATE_FAILED = "update.failed"
     UPDATE_ROLLED_BACK = "update.rolled_back"
     UPDATE_UNCONFIRMED = "update.unconfirmed"
+    # #251: a host in a rollout whose agent restarted more than the restart-loop limit after the update.
+    UPDATE_RESTART_LOOP = "update.restart_loop"
     SETTING_CHANGED = "setting.changed"
     RULE_CREATED = "rule.created"
     RULE_EDITED = "rule.edited"

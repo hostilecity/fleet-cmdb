@@ -527,6 +527,11 @@ mod tests {
     fn the_unit_starts_the_current_version_and_is_marked_as_ours() {
         assert!(UNIT.starts_with(UNIT_MARKER));
         assert!(UNIT.contains("ExecStart=/usr/lib/fleet-agent/current/fleet-agent run\n"));
+        // #251: how it stopped, recorded by the same binary, never failing the stop.
+        assert!(
+            UNIT.contains("ExecStopPost=-/usr/lib/fleet-agent/current/fleet-agent note-stop\n")
+        );
+        assert!(!RECOVERY_UNIT.contains("ExecStopPost="));
         assert!(UNIT.contains("Restart=on-failure\n"));
         assert!(UNIT.contains("RestartPreventExitStatus=78\n"));
         assert!(UNIT.contains("StateDirectory=fleet-agent\n"));
@@ -657,6 +662,8 @@ mod tests {
                 || [
                     "Type",
                     "ExecStart",
+                    // #251: how the service stopped, which recovery mode's own stops are not.
+                    "ExecStopPost",
                     "Restart",
                     "RestartSec",
                     "RestartPreventExitStatus",

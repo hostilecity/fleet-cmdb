@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "agent_version": "1.4.0",
+  "hostname": "vm-01.example.lan",
+  "uptime_seconds": 120,
+  "agent_time": "2026-01-01T12:02:00.000Z",
+  "process": {
+    "started_at": "2026-01-01T13:00:00.250+01:00",
+    "restarts": 3,
+    "last_stop": {
+      "result": "oom-kill",
+      "exit_code": "killed",
+      "exit_status": 9,
+      "stopped_at": "2026-01-01T11:59:49.512Z"
+    }
+  }
+}

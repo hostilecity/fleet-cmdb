@@ -381,6 +381,76 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
     expect(stage_cards.first).to end_with("Canary 0, Canary 1, Canary 2 and 1 more")
   end
 
+  describe "a host that restarted too often after the update (#251)" do
+    it "says so on the Agents page, among the problem hosts, and in the host's update history" do
+      rollout = travel_to(Time.utc(2026, 1, 1, 8, 0)) { started.tap { offer(canary_host) } }
+      travel_to(Time.utc(2026, 1, 1, 9, 0)) do
+        Host.transaction { Rollouts.restarts_seen!(host: canary_host, recent: [ Time.current ] * 4) }
+      end
+      expect(rollout.reload).to have_attributes(state: "halted", halt_reason: "Media server restarted 4 times within 24 hours of the update.")
+
+      get "/agents"
+      expect(host_rows.first[3]).to eq("Restarted more than 3 times within 24 hours of the update")
+      expect(stage_cards.first).to start_with("1. Canary 0 of 1 confirmed, 1 restarted too often")
+      get "/agents/rollouts/#{rollout.id}/resume"
+      expect(page.css("#problem_hosts li").map { |li| li.then { words(_1) } }).to eq([ "Media server: Restarted more than 3 times within 24 hours of the update" ])
+      get "/hosts/#{canary_host.id}"
+      expect(page.css("#agent_updates tbody tr").map { |row| words(row) })
+        .to eq([ "0.2.0 → 0.3.0, restarted too often Restarted more than 3 times within 24 hours of the update. 2026-01-01 09:00 UTC" ])
+      get "/audit"
+      expect(page.text).to include("Agent restarted too often after an update")
+    end
+  end
+
+  describe "the stage observation time and hosts looping before the update (#251, review of #307, S4, S6)" do
+    it "says until when a confirmed stage is observed, and what follows it" do
+      Rails.configuration.x.rollouts.stage_observe = 30.minutes
+      rollout = travel_to(Time.utc(2026, 1, 1, 8, 0)) { started.tap { offer(canary_host) } }
+      travel_to(Time.utc(2026, 1, 1, 8, 1)) { report(rollout, canary_host) }
+      travel_to(Time.utc(2026, 1, 1, 8, 2)) do
+        get "/agents"
+        expect(stage_cards.first).to eq("1. Canary 1 of 1 confirmed All confirmed; observing until 08:31 UTC, then the next stage opens")
+        rollout.update_columns(current_stage: rollout.stage_percents.size)
+        get "/agents"
+        expect(stage_cards.last).to end_with("All confirmed; observing until 08:31 UTC, then the rollout completes")
+      end
+    end
+
+    it "dates an observation that ends on another day, says when it is over, and what a final stage waits for (N1, S4)" do
+      Rails.configuration.x.rollouts.stage_observe = 2.days
+      rollout = travel_to(Time.utc(2026, 1, 1, 8, 0)) { started.tap { offer(canary_host) } }
+      travel_to(Time.utc(2026, 1, 1, 8, 1)) { report(rollout, canary_host) }
+      travel_to(Time.utc(2026, 1, 1, 9, 0)) do
+        get "/agents"
+        expect(stage_cards.first).to end_with("All confirmed; observing until 2026-01-03 08:01 UTC, then the next stage opens")
+      end
+      travel_to(Time.utc(2026, 1, 3, 8, 2)) do # past it, before the minute job: said as it is
+        get "/agents"
+        expect(stage_cards.first).to end_with("Observed; the next stage is opening")
+      end
+      # An early Advance to the last stage, with a host of the first still updating: the page says what it waits for.
+      other_host = host_running("0.2.0", name: "Late canary").first
+      rollout.rollout_hosts.create!(host: other_host, stage: 0, state: "updating", offer_at: Time.current, offered_at: Time.current)
+      rollout.update_columns(current_stage: rollout.stage_percents.size, stage_confirmed_at: Time.current)
+      get "/agents"
+      expect(stage_cards.last).to end_with("All confirmed; waiting for hosts of earlier stages to confirm, then observed for 2880 minutes")
+    end
+
+    it "shows a host that was looping before its offer as such, on the Agents page and the host page" do
+      rollout = travel_to(Time.utc(2026, 1, 1, 8, 0)) { started.tap { offer(canary_host) } }
+      rollout.rollout_hosts.sole.update_columns(restarts_before_offer: 5)
+      travel_to(Time.utc(2026, 1, 1, 8, 30)) do
+        get "/agents"
+        expect(host_rows.first[3]).to eq("Offered 0.3.0, waiting for its result looping before this update (5 restarts in the 24 hours before it), so not counted until 2026-01-02 08:00 UTC")
+      end
+      travel_to(Time.utc(2026, 1, 1, 8, 1)) { report(rollout, canary_host) }
+      travel_to(Time.utc(2026, 1, 2, 9, 0)) do # one window after the offer: counted from then on (owner decision 2026-11-24)
+        get "/hosts/#{canary_host.id}"
+        expect(words(page.at_css("#agent_updates tbody tr"))).to include("Confirmed in 1 minute; looping before this update (5 restarts in the 24 hours before it); counted since 08:00 UTC")
+      end
+    end
+  end
+
   describe "the host page's agent updates" do
     it "says when the host has not been part of a rollout" do
       get "/hosts/#{canary_host.id}"

@@ -1,5 +1,6 @@
 //! The fault the VM test uses to make a confirmed agent crash-loop (#180, `scripts/vm-test.sh`,
-//! "Crash loop on a confirmed version"), and the shorter lock wait its lock scenario uses (#288).
+//! "Crash loop on a confirmed version"), the shorter lock wait its lock scenario uses (#288), and the leak
+//! its memory-limit scenario uses (#251).
 //! Compiled only into unit tests and into the VM test's fault
 //! build (`RUSTFLAGS=--cfg fleet_vm_fault`, `scripts/update-smoke-build.sh` with `VM_FAULT=1`), never
 //! into a release: `scripts/check-no-fault-hooks.sh` checks the source and the release binary
@@ -29,6 +30,29 @@ pub fn check(state_dir: &Path) {
     std::hint::black_box(MARKER);
     if state_dir.join(POISON).exists() {
         panic!("vm-test fault: {POISON} is in the state directory");
+    }
+}
+
+/// The file that makes normal mode leak memory once, until the kernel kills it at the unit's `MemoryMax=`.
+pub const LEAK: &str = "vm-test-leak";
+
+/// How much the leak takes at each step, and how long it waits between steps.
+const LEAK_STEP: usize = 4 * 1024 * 1024;
+const LEAK_PAUSE: Duration = Duration::from_millis(50);
+
+/// With [`LEAK`] in `state_dir`, removes it and then takes memory, every byte written so it is really
+/// used, until the kernel kills the agent (a leaking release meeting its memory limit, #251). Once: the
+/// file is gone before the first byte, so the agent systemd starts next runs normally. A file that cannot
+/// be removed leaks nothing, so the fault can never become a crash loop.
+pub fn leak(state_dir: &Path) {
+    std::hint::black_box(MARKER);
+    if std::fs::remove_file(state_dir.join(LEAK)).is_err() {
+        return;
+    }
+    let mut held: Vec<Vec<u8>> = Vec::new();
+    loop {
+        held.push(std::hint::black_box(vec![0x5a; LEAK_STEP]));
+        std::thread::sleep(LEAK_PAUSE);
     }
 }
 
@@ -69,6 +93,16 @@ mod tests {
         dir.write(POISON, "");
         let panicked = std::panic::catch_unwind(|| check(dir.root()));
         assert!(panicked.is_err());
+    }
+
+    #[test]
+    fn without_the_leak_file_nothing_leaks() {
+        // With the file the fault never returns, so only its absence is tested here; the VM test runs it.
+        let dir = crate::test_support::TempDir::new();
+        leak(dir.root());
+        dir.write(LEAK, "");
+        std::fs::remove_file(dir.path(LEAK)).unwrap();
+        leak(dir.root());
     }
 
     #[test]

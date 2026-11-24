@@ -1,5 +1,5 @@
 # The fleet list and its counts (FR-1.5, P1-D02). Built from query parameters so every view is linkable:
-# q (name or hostname), tag, status, recovery (#232), vulns (VT-SCORES #262), sort, dir, and a keyset cursor, after or
+# q (name or hostname), tag, status, recovery (#232), vulns (VT-SCORES #262), restarts (#251), sort, dir, and a keyset cursor, after or
 # before (#193). Retired hosts are never
 # listed or counted. A page is 100 rows read in index order after the cursor host (KeysetPage), from each host's
 # HostComplianceSummary, which carries the sort keys, the operating system name, and FleetCompliance's counts, so the
@@ -74,7 +74,16 @@ class FleetList
   RECOVERY_FILTERS = { "missing" => "Not set up" }.freeze
   WITHOUT_RECOVERY_MODE = "hosts.enrollment_state = 'active' AND hosts.first_seen_at IS NOT NULL AND hosts.agent_recovery_coverage IS DISTINCT FROM 'set_up'".freeze
 
-  attr_reader :q, :tag, :status, :recovery, :vulns, :sort, :direction
+  # The restart-loop filter (#251): hosts whose agent systemd restarted more than the restart-loop limit within its
+  # window (config.x.restart_loop, 3 times in 24 hours by default). agent_restart_loop_at is the (limit + 1)th newest
+  # restart, within the window exactly when there were more than limit; it is the partial index index_hosts_restart_loops,
+  # so the page reads only the hosts that loop, whatever the fleet's size (review of #307, S1). The array condition is
+  # the same rule read from agent_recent_restarts, for a host whose column was stored under a higher limit; after
+  # lowering FLEET_RESTART_LOOP_RESTARTS, `bin/rails restart_loops:refresh` (Host.refresh_restart_loops!) stores it again.
+  RESTART_FILTERS = %w[loop].freeze
+  RESTART_LOOP = "hosts.agent_restart_loop_at >= :since AND hosts.agent_recent_restarts[:position] >= :since".freeze
+
+  attr_reader :q, :tag, :status, :recovery, :vulns, :restarts, :sort, :direction
 
   def initialize(params = {})
     @q = params[:q].to_s.strip.first(100).presence
@@ -84,6 +93,7 @@ class FleetList
     @vulns = VULN_FILTERS.key?(params[:vulns]) ? params[:vulns] : nil
     @sort = SORTS.key?(params[:sort]) || RANKED.key?(params[:sort]) ? params[:sort] : "name"
     @direction = RANKED.key?(@sort) || params[:dir] == "desc" ? "desc" : "asc"
+    @restarts = RESTART_FILTERS.include?(params[:restarts]) ? params[:restarts] : nil
     @cursor = KeysetPage.cursor(params)
   end
 
@@ -98,7 +108,14 @@ class FleetList
     scope = scope.where(WITHOUT_RECOVERY_MODE) if recovery
     scope = scope.where(VULN_FILTERS.fetch(vulns).last) if vulns
     scope = scope.where(FRESH_REPORT, Time.current - Setting.vulnerability_badges[:report_max_age]) if vulns == "nothing_to_install"
+    scope = scope.where(RESTART_LOOP, since: Time.current - Rollouts.restart_loop.window, position: Rollouts.restart_loop.limit + 1) if restarts
     scope
+  end
+
+  # The restart filter's words, with the settings in force: "More than 3 times in 24 hours".
+  def self.restart_filter_label
+    settings = Rollouts.restart_loop
+    "More than #{ActionController::Base.helpers.pluralize(settings.limit, 'time')} in #{ActionController::Base.helpers.pluralize(settings.window.in_hours.to_i, 'hour')}"
   end
 
   def keys
@@ -143,10 +160,13 @@ class FleetList
     end
   end
 
-  def filtered? = q.present? || tag.present? || status.present? || recovery.present? || vulns.present?
+  def filtered? = q.present? || tag.present? || status.present? || recovery.present? || vulns.present? || restarts.present?
 
   # Only the recovery-mode filter is set: an empty list then means every active host is covered (#232).
-  def only_recovery_filter? = recovery.present? && q.blank? && tag.blank? && status.blank? && vulns.blank?
+  def only_recovery_filter? = recovery.present? && q.blank? && tag.blank? && status.blank? && vulns.blank? && restarts.blank?
+
+  # Only the restart filter is set: an empty list then means no agent is in a restart loop (#251).
+  def only_restart_filter? = restarts.present? && q.blank? && tag.blank? && status.blank? && recovery.blank? && vulns.blank?
 
   # Whether the page was asked for by a cursor (Previous or Next), so an empty page may only mean its hosts moved on.
   def cursor? = @cursor.any?
@@ -155,12 +175,12 @@ class FleetList
   # Work sort highest first only). A new sort starts at the first page.
   def sort_params(column)
     dir = RANKED.key?(column) || (sort == column && direction == "asc") ? "desc" : "asc"
-    { q:, tag:, status:, recovery:, vulns:, sort: column, dir: (dir unless RANKED.key?(column)) }.compact
+    { q:, tag:, status:, recovery:, vulns:, restarts:, sort: column, dir: (dir unless RANKED.key?(column)) }.compact
   end
 
   # The filters and sort, defaults left out, for the pager's links (which add a cursor) and the first page.
   def list_params
-    { q:, tag:, status:, recovery:, vulns:, sort: (sort unless sort == "name"), dir: (direction unless direction == "asc" || RANKED.key?(sort)) }.compact
+    { q:, tag:, status:, recovery:, vulns:, restarts:, sort: (sort unless sort == "name"), dir: (direction unless direction == "asc" || RANKED.key?(sort)) }.compact
   end
 
   def aria_sort(column)

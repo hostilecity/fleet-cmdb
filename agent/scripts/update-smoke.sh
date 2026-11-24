@@ -388,6 +388,10 @@ if in_group limits; then
     wait_until "a heartbeat from the restarted agent" 90 heartbeat_from "$OLD"
     service_active || fail "killed for memory: the service is not active"
     [ "$(restarts)" -gt "$before" ] || fail "killed for memory: systemd did not restart it (NRestarts $(restarts))"
+    # #251: the restarted agent's heartbeats carry systemd's count. (How it stopped is checked by the VM test's
+    # scenario 375: here the lowered MemoryMax is still in force when ExecStopPost= runs.)
+    reported=$(jq -rs "[.[] | select(.kind == \"heartbeat\" and .status == 200 and .at > $since)] | last | .process.restarts" "$events")
+    [ "$reported" = "$(restarts)" ] || fail "killed for memory: the heartbeat says $reported restarts, systemd $(restarts)"
     recovery_stopped || fail "killed for memory: recovery mode runs after a single kill"
     [ -f "$STATE/task-ledger.jsonl" ] || fail "killed for memory: the task ledger is gone"
     [ "$(cat "$STATE/task-ledger.jsonl")" = "$ledger_before" ] || fail "killed for memory: the task ledger changed"

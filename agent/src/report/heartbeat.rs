@@ -49,6 +49,10 @@ pub struct HeartbeatRequest {
     /// loop was not told where the units are (tests).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub units: Option<crate::install::Units>,
+    /// This process and its service (#251): when it started, systemd's restart count, and how the process
+    /// before it stopped. Absent only where the loop was not told about the process (tests).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process: Option<crate::process::Report>,
 }
 
 /// The state record of this process's first accepted heartbeat (in the state directory). `install`
@@ -83,6 +87,13 @@ pub struct Heartbeat<'a, R: Rng> {
     units_dir: Option<(std::path::PathBuf, &'a dyn crate::install::Systemd)>,
     /// The last unit check that failed, logged once until it changes.
     units_problem: std::cell::RefCell<Option<String>>,
+    /// What `process` reports, and the `systemctl` to read `NRestarts` with ([`Heartbeat::with_process`]).
+    process: Option<(crate::process::Start, &'a dyn crate::install::Systemd)>,
+    /// `NRestarts`, once read: it changes only when systemd starts a new process, so one read per
+    /// process is enough.
+    restarts: std::cell::Cell<Option<u32>>,
+    /// The last `NRestarts` read that failed, logged once until it changes.
+    restarts_problem: std::cell::RefCell<Option<String>>,
     backoff: Backoff<R>,
     rng: R,
     started: Instant,
@@ -104,6 +115,9 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             recovery: None,
             units_dir: None,
             units_problem: std::cell::RefCell::default(),
+            process: None,
+            restarts: std::cell::Cell::default(),
+            restarts_problem: std::cell::RefCell::default(),
             backoff,
             rng,
             started,
@@ -192,6 +206,46 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         })
     }
 
+    /// Reports `process` in every heartbeat (#251): `start` (read once when the process started) and
+    /// systemd's `NRestarts`, which `systemd` is asked for once, at the first heartbeat (again at the next
+    /// one while it cannot answer).
+    pub fn with_process(
+        mut self,
+        start: crate::process::Start,
+        systemd: &'a dyn crate::install::Systemd,
+    ) -> Self {
+        self.process = Some((start, systemd));
+        self
+    }
+
+    /// `process` for one heartbeat. A `systemctl` that cannot say sends `restarts: null`, with a warning
+    /// logged once.
+    fn process(&self) -> Option<crate::process::Report> {
+        let (start, systemd) = self.process.as_ref()?;
+        if self.restarts.get().is_none() {
+            match crate::process::restarts(*systemd) {
+                Ok(count) => {
+                    self.restarts.set(Some(count));
+                    self.restarts_problem.borrow_mut().take();
+                }
+                Err(why) => {
+                    let mut last = self.restarts_problem.borrow_mut();
+                    if last.as_deref() != Some(why.as_str()) {
+                        tracing::warn!(
+                            "cannot read how often systemd restarted the agent ({why}); heartbeats say it is not known"
+                        );
+                        *last = Some(why);
+                    }
+                }
+            }
+        }
+        Some(crate::process::Report {
+            started_at: start.started_at.clone(),
+            restarts: self.restarts.get(),
+            last_stop: start.last_stop.clone(),
+        })
+    }
+
     /// Recovery mode moved its next try of normal mode: later heartbeats say when.
     pub fn set_recovery_retry_at(&mut self, retry_at: String) {
         if let Some(status) = &mut self.recovery {
@@ -226,17 +280,18 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         now: Instant,
         wall: SystemTime,
     ) -> HeartbeatRequest {
-        self.request_with(hostname, now, wall, self.units())
+        self.request_with(hostname, now, wall, self.units(), self.process())
     }
 
-    /// The request, with `units` already checked. [`Heartbeat::beat`] checks them first and takes the times
-    /// after, so a slow `systemctl` never sends an old `agent_time` (re-review of #235).
+    /// The request, with `units` and `process` already read. [`Heartbeat::beat`] reads them first and takes
+    /// the times after, so a slow `systemctl` never sends an old `agent_time` (re-review of #235).
     fn request_with(
         &self,
         hostname: Option<String>,
         now: Instant,
         wall: SystemTime,
         units: Option<crate::install::Units>,
+        process: Option<crate::process::Report>,
     ) -> HeartbeatRequest {
         HeartbeatRequest {
             schema_version: AGENT_SCHEMA_VERSION,
@@ -247,6 +302,7 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
             tasks: self.capabilities.clone(),
             recovery: self.recovery.clone(),
             units,
+            process,
         }
     }
 
@@ -259,17 +315,19 @@ impl<'a, R: Rng> Heartbeat<'a, R> {
         wall: SystemTime,
     ) -> Duration {
         let _span = tracing::info_span!("heartbeat").entered();
-        // The units check may wait on systemctl (up to 2 x UNITS_CHECK_TIMEOUT): the times are moved on by what
-        // it took, so `agent_time` and `uptime_seconds` are those of the request.
+        // The units check may wait on systemctl (up to 2 x UNITS_CHECK_TIMEOUT), and so may the process's first
+        // NRestarts read (one more): the times are moved on by what they took, so `agent_time` and
+        // `uptime_seconds` are those of the request.
         let checking = Instant::now();
         let units = self.units();
+        let process = self.process();
         let took = checking.elapsed();
-        let (now, wall) = if self.units_dir.is_some() {
+        let (now, wall) = if self.units_dir.is_some() || self.process.is_some() {
             (now + took, wall + took)
         } else {
             (now, wall)
         };
-        let request = self.request_with(hostname, now, wall, units);
+        let request = self.request_with(hostname, now, wall, units, process);
         let body = match serde_json::to_value(&request) {
             Ok(body) => body,
             // A struct of strings and integers always serialises; keep going if it ever does not.
@@ -552,6 +610,128 @@ mod tests {
         );
         assert!(
             sent < wall() + Duration::from_secs(10),
+            "{:?}",
+            body["agent_time"]
+        );
+    }
+
+    /// `systemctl show --property=NRestarts` that answers from a script, one answer a call, and counts.
+    struct Restarts(
+        std::cell::RefCell<Vec<Result<String, String>>>,
+        std::cell::Cell<usize>,
+    );
+
+    impl crate::install::Systemd for Restarts {
+        fn unavailable(&self) -> Option<String> {
+            None
+        }
+        fn systemctl(&self, args: &[&str]) -> Result<String, String> {
+            assert_eq!(args[..2], ["show", "--property=NRestarts"]);
+            self.1.set(self.1.get() + 1);
+            self.0.borrow_mut().remove(0)
+        }
+    }
+
+    #[test]
+    fn every_heartbeat_reports_the_process_and_reads_the_restart_count_once() {
+        // #251: the start and the stop before it are fixed for the process, and NRestarts changes only
+        // when systemd starts a new one, so it is read until it is known, and then never again.
+        let intervals = intervals();
+        let started = Instant::now();
+        let systemd = Restarts(
+            std::cell::RefCell::new(vec![
+                Err("timed out".into()),
+                Err("timed out".into()),
+                Ok("3\n".into()),
+            ]),
+            std::cell::Cell::new(0),
+        );
+        let start = crate::process::Start {
+            started_at: "2026-01-01T11:00:00.250Z".into(),
+            last_stop: Some(crate::process::LastStop {
+                result: "oom-kill".into(),
+                exit_code: Some("killed".into()),
+                exit_status: Some(9),
+                stopped_at: "2026-01-01T10:59:49.512Z".into(),
+            }),
+        };
+        let hb = heartbeat(&intervals, started).with_process(start, &systemd);
+        let process = || {
+            let body = serde_json::to_value(hb.request(None, started, wall())).unwrap();
+            assert_conforms("v1", "heartbeat.request", &body);
+            body["process"].clone()
+        };
+        let stop = json!({"result": "oom-kill", "exit_code": "killed", "exit_status": 9, "stopped_at": "2026-01-01T10:59:49.512Z"});
+        let ((), logs) = logs_of(|| {
+            for _ in 0..2 {
+                assert_eq!(
+                    process(),
+                    json!({"started_at": "2026-01-01T11:00:00.250Z", "restarts": null, "last_stop": stop})
+                );
+            }
+        });
+        assert_eq!(
+            logs.matches("cannot read how often systemd restarted the agent")
+                .count(),
+            1,
+            "{logs}"
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                process(),
+                json!({"started_at": "2026-01-01T11:00:00.250Z", "restarts": 3, "last_stop": stop})
+            );
+        }
+        assert_eq!(systemd.1.get(), 3, "read until known, then never again");
+        // Without a stop record (units from before #251): null.
+        let none = Restarts(
+            std::cell::RefCell::new(vec![Ok("0".into())]),
+            std::cell::Cell::new(0),
+        );
+        let start = crate::process::Start {
+            started_at: "2026-01-01T11:00:00.250Z".into(),
+            last_stop: None,
+        };
+        let hb = heartbeat(&intervals, started).with_process(start, &none);
+        let body = serde_json::to_value(hb.request(None, started, wall())).unwrap();
+        assert_conforms("v1", "heartbeat.request", &body);
+        assert_eq!(body["process"]["last_stop"], json!(null));
+        assert_eq!(body["process"]["restarts"], 0);
+        // Not told about the process (tests elsewhere): left out.
+        let body =
+            serde_json::to_value(heartbeat(&intervals, started).request(None, started, wall()))
+                .unwrap();
+        assert!(body.get("process").is_none());
+    }
+
+    #[test]
+    fn a_slow_restart_count_does_not_send_an_old_agent_time() {
+        struct Slow(Duration);
+        impl crate::install::Systemd for Slow {
+            fn unavailable(&self) -> Option<String> {
+                None
+            }
+            fn systemctl(&self, _: &[&str]) -> Result<String, String> {
+                std::thread::sleep(self.0);
+                Ok("1".into())
+            }
+        }
+        let intervals = intervals();
+        let started = Instant::now();
+        let slow = Slow(Duration::from_millis(700));
+        let start = crate::process::Start {
+            started_at: "2026-01-01T11:00:00.250Z".into(),
+            last_stop: None,
+        };
+        let mut hb = heartbeat(&intervals, started).with_process(start, &slow);
+        let transport = FakeTransport::new(vec![]);
+        transport.push(ok(envelope(json!({}))));
+        hb.beat(&transport, None, started, wall());
+        let (_, body) = transport.sent().pop().unwrap();
+        assert_eq!(body["process"]["restarts"], 1);
+        let sent = parse_rfc3339(body["agent_time"].as_str().unwrap()).unwrap();
+        assert!(
+            sent >= wall() + Duration::from_millis(700),
             "{:?}",
             body["agent_time"]
         );

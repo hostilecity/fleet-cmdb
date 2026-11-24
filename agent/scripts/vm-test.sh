@@ -19,9 +19,13 @@
 #   updates-b  305, 306, 308: a reboot before the switch, a crash loop, the units refresh (1.0.0, 1.0.1)
 #   packages   370 to 373: apply_package_updates (fleet-agent-1.0.0 is the fault build here, for the
 #              shorter lock wait of scenario 371; see below)
-#   recovery   307: recovery mode (1.0.0, 1.1.0 the fault build, 1.1.1)
+#   recovery   375, a kill at the memory limit reported in the heartbeat, then 307, recovery mode (1.0.0,
+#              1.1.0 the fault build, 1.1.1). 375 runs first: 307 leaves 1.1.1 with 1.1.0 as previous, so
+#              1.0.0, which every scenario's reset starts from, is no longer installed after it.
 #
-# Every group ends with scenario 374, the memory and task limits, for the scenarios that ran in its VM.
+# Every group ends with scenario 374, the memory and task limits, for the scenarios that ran in its VM. It
+# does not count the one kill scenario 375 causes on purpose: it reads the journal only after the cursor 375
+# leaves in $tmp/oom-expected-cursor once that kill is reported.
 #
 # The VM runs under QEMU with KVM when /dev/kvm is usable, and falls back to TCG (with longer
 # timeouts) when not. It is configured by a cloud-init NoCloud seed with an SSH key generated here.
@@ -128,6 +132,8 @@ FAULTY=1.1.0
 FIXED=1.1.1
 # The file that makes the fault build's normal mode panic (src/vm_fault.rs).
 POISON=vm-test-poison
+# The VM fault build's one-shot leak (src/vm_fault.rs LEAK, #251).
+LEAK=vm-test-leak
 SERVER_NAME=agent.example.lan
 PORT=8443
 SSH_PORT=${VM_SSH_PORT:-2222}
@@ -343,7 +349,7 @@ reset() {
         rm -f $LIB/previous
         ln -sfn versions/$OLD $LIB/current
         rm -rf $STATE/update $STATE/update.json $STATE/update-confirmed.json $STATE/update-result.json $STATE/update.lock
-        rm -f $STATE/$POISON $STATE/recovery.json $STATE/last-failure.json
+        rm -f $STATE/$POISON $STATE/$LEAK $STATE/recovery.json $STATE/last-failure.json
         systemctl start fleet-agent"
     since=$(date +%s.%N)
     wait_until "a heartbeat from $OLD" 90 heartbeat_from "$OLD"
@@ -693,6 +699,50 @@ units_refreshed() {
     wait_until "a heartbeat from $NEW saying recovery mode is set up" 90 heartbeat_units "$NEW" true
     echo "the confirmed update wrote $NEW's units and reloaded systemd; one start; heartbeats say recovery mode is set up"
     printf '%s' "succeeded: units refreshed, units.recovery true" > "$tmp/last-result"
+}
+
+# heartbeat_process VERSION JQ: an acknowledged heartbeat from VERSION since $since whose `process` matches JQ.
+heartbeat_process() {
+    event_exists "[.[] | select(.kind == \"heartbeat\" and .agent_version == \"$1\" and .status == 200 and .at > $since and .process != null and ($2))] | length > 0"
+}
+
+# #251: a confirmed release that leaks is killed at the unit's MemoryMax and restarted by systemd, which is
+# not a crash loop (no start limit, no recovery mode). The next process's heartbeat says so: systemd's restart
+# count, and how the process before it stopped, from the record ExecStopPost= wrote.
+memory_kill_reported() {
+    rollout=$1
+    reset
+    offer faulty "$FAULTY"
+    expect_result succeeded "$FAULTY"
+    expect_one_version "$FAULTY" "$OLD"
+    since=$(date +%s.%N)
+    wait_until "a heartbeat from $FAULTY with its process" 90 heartbeat_process "$FAULTY" '.process.restarts == 0'
+    local cursor
+    cursor=$(vm "journalctl -n 1 --show-cursor --no-pager -o cat | sed -n 's/^-- cursor: //p'")
+    [ -n "$cursor" ] || fail "cannot read the journal's cursor"
+    # A restart by hand sets NRestarts to 0; the process it starts takes memory until the kernel kills it, once.
+    vm "touch $STATE/$LEAK && chmod 0600 $STATE/$LEAK && systemctl restart fleet-agent"
+    since=$(date +%s.%N)
+    # systemd's result is oom-kill or signal (status KILL), as it sees the cgroup's OOM event or the exit
+    # first (update-smoke.sh, oom_killed); either way the main process was killed by SIGKILL.
+    local stopped='.process.restarts == 1 and (.process.last_stop.result == "oom-kill" or .process.last_stop.result == "signal")
+        and .process.last_stop.exit_code == "killed" and .process.last_stop.exit_status == 9'
+    wait_until "a heartbeat after the kill, saying how the agent stopped" $((120 * slow)) heartbeat_process "$FAULTY" "$stopped"
+    vm_ok "journalctl -k --no-pager -o cat | grep -Fq 'oom_memcg=/system.slice/fleet-agent.service'" \
+        || fail "the kernel logged no OOM kill in fleet-agent.service's cgroup"
+    vm_ok "test ! -e $STATE/$LEAK" || fail "the leak's file is still there"
+    [ "$(vm 'systemctl show -p NRestarts --value fleet-agent')" = 1 ] || fail "systemd restarted the agent $(vm 'systemctl show -p NRestarts --value fleet-agent') times, expected once"
+    vm_ok 'systemctl is-active --quiet fleet-agent' || fail "fleet-agent.service is not active after the restart"
+    vm_ok '! systemctl is-active --quiet fleet-agent-recovery' || fail "recovery mode runs after a single kill"
+    local journal process
+    journal=$(vm "journalctl --after-cursor='$cursor' -u fleet-agent --no-pager -o cat")
+    ! grep -q "note-stop:" <<< "$journal" || fail "note-stop complained: $(grep 'note-stop:' <<< "$journal" | head -n 3)"
+    process=$(jq -cs "[.[] | select(.kind == \"heartbeat\" and .agent_version == \"$FAULTY\" and .status == 200 and .at > $since)] | last | .process" "$events")
+    echo "the restarted agent reports $process"
+    # Scenario 374 counts only kills after this point (within_limits).
+    vm "journalctl -n 1 --show-cursor --no-pager -o cat | sed -n 's/^-- cursor: //p'" > "$tmp/oom-expected-cursor"
+    [ -s "$tmp/oom-expected-cursor" ] || fail "cannot read the journal's cursor after the kill"
+    printf '%s' "killed at MemoryMax and restarted once; heartbeat: $(jq -r '"restarts \(.restarts), last stop \(.last_stop.result) \(.last_stop.exit_code) \(.last_stop.exit_status)"' <<< "$process")" > "$tmp/last-result"
 }
 
 # heartbeat_in_mode VERSION recovery|normal: an acknowledged heartbeat from VERSION since $since, in that mode.
@@ -1242,8 +1292,11 @@ within_limits() {
             | sort | tr '\n' ' ' | sed 's/ $//')
         [ "$shown" = "$want" ] || fail "$unit has '$shown', the unit file says '$want'"
     done
-    # No OOM kill of the agent in any scenario the journal still holds (this boot at least).
-    if vm "journalctl -u fleet-agent --no-pager -o cat | grep -q oom-kill"; then
+    # No OOM kill of the agent in any scenario the journal still holds (this boot at least), except the one
+    # scenario 375 causes on purpose: then only the journal after its cursor counts.
+    local after=""
+    [ ! -s "$tmp/oom-expected-cursor" ] || after="--after-cursor='$(cat "$tmp/oom-expected-cursor")'"
+    if vm "journalctl -u fleet-agent $after --no-pager -o cat | grep -q oom-kill"; then
         fail "the agent was killed for memory: $(vm 'journalctl -u fleet-agent --no-pager -o short-iso | grep -B2 oom-kill | tail -n 6')"
     fi
     agent_limits "now"
@@ -1278,6 +1331,7 @@ record_header() {
     echo "The units scenario (#232) starts from units older than recovery mode and checks that the confirmed update writes the new version's."
     echo "The limits scenario (#182) checks the installed unit's memory and task limits are applied, and that no scenario in this VM brought the agent to them; it lists the peaks the scenarios measured."
     echo "The recovery mode scenario (#180, ADR 0030) makes a confirmed $FAULTY (the VM fault build) crash-loop and checks that recovery mode installs $FIXED."
+    echo "The memory-limit scenario (#251) makes a confirmed $FAULTY leak once, so the kernel kills it at MemoryMax, and checks that the restarted agent's heartbeat reports systemd's restart count and how it stopped."
     echo "Each update scenario ends by checking that exactly one working version runs (links, installed versions, the service's binary, one agent process, no supervisor or update record left, an acknowledged heartbeat), that the configuration and credential are unchanged, and that a state record holds exactly what it should: kept after a confirmed update, restored by a rollback."
 }
 
@@ -1309,6 +1363,8 @@ fi
 # In "all", after the package scenarios as before; in a group, last, for what ran in its VM.
 [ "$group" != all ] || scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits
 if in_group recovery; then
+    # Before 307, whose two updates leave 1.0.0 uninstalled; 374 skips the kill this one causes on purpose.
+    scenario 375 "A kill at the memory limit is reported in the heartbeat (#251)" memory_kill_reported
     scenario 307 "Crash loop on a confirmed version: recovery mode (#180)" recovery_mode
 fi
 [ "$group" = all ] || scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits

@@ -1,6 +1,6 @@
 # ADR 0018: Signed remote agent updates with automatic rollback
 
-- Status: Accepted (owner, scope change #54); amended by [ADR 0030](0030-agent-recovery-mode.md): a crash loop with nothing to roll back to ends in recovery mode, not a stopped agent
+- Status: Accepted (owner, scope change #54); amended by [ADR 0030](0030-agent-recovery-mode.md): a crash loop with nothing to roll back to ends in recovery mode, not a stopped agent; and by #251 (owner, 2026-11-23; the design below approved by the owner 2026-11-24): a host whose agent keeps restarting after the update counts as failed for its stage ("Restart loops" below)
 - Decision issue: DEC-18
 - Requirements: `FR-S.5`, `FR-1.5`, `FR-1.6`, `NFR-1`, `NFR-4`, `NFR-5`, `AC-1.9`, `AC-1.10`
 - Amends: [ADR 0003](0003-agent-privilege.md) and [ADR 0014](0014-task-trust-model.md) (consequences only; see below). Lifts the "agent self-update" exclusion in `docs/requirements.md` section 1.
@@ -22,6 +22,31 @@ Upgrading by hand on every VM does not suit a self-sufficient agent, and will no
 **Distribution.** The server stores imported releases and serves them to agents on the agent hostname, so a LAN without internet access works. Because artifacts are signed, where they are fetched from does not matter: the manifest URL can later point at a CDN or object store without changing the agent.
 
 **Rollout.** Operators set a target version for the fleet and run a rollout: named canary hosts first, then the rest in stages. The target reaches each agent as a directive in the heartbeat response, as in [ADR 0013](0013-on-demand-reports.md), so agents still make every connection. Any rollback or failed update halts the rollout until an operator resumes it. Every request, success, failure, and rollback is audited.
+
+**Restart loops (#251, owner decision 2026-11-23; decided in full 2026-11-24).** The owner approved on 2026-11-24 every point below: the stop hook, the counting rules, the three settings and their ranges, and the observation choices with their known limit. A release that leaks memory slowly is killed at the unit's `MemoryMax=` and restarted by systemd 10 seconds later. If the kills come minutes apart it never reaches the start limit, so nothing rolls it back, and each new process authenticates, heartbeats, and confirms normally. So each canary looks healthy, and the rollout would go on to the whole fleet. To see it:
+
+- Heartbeats carry an optional `process` object (additive in v1): the process's start, systemd's `NRestarts` for `fleet-agent.service` (read once per process with `systemctl show`), and how the process before it stopped. The stop comes from the unit's `ExecStopPost=` (`fleet-agent note-stop`), which records the `$SERVICE_RESULT`, `$EXIT_CODE`, and `$EXIT_STATUS` systemd gives it. The running agent cannot read the stop with `systemctl show` itself: systemd resets `Result`, `ExecMainCode`, and `ExecMainStatus` when it starts the service again, auto-restarts included. `note-stop` runs in the service's own sandbox, as root, and writes only one state record. The unit's `systemd-analyze security` exposure stays 1.9.
+- The server counts restarts from `NRestarts`: a rise counts the difference, and a fall (a manual start, an update, or a boot reset it) counts the new value. It keeps the server's time of the last 32 restarts on the host, and writes the hosts row only when something changed.
+- **A host of the open rollout that restarts more than `FLEET_RESTART_LOOP_RESTARTS` times (default 3, 1 to 31) within `FLEET_RESTART_LOOP_WINDOW_HOURS` (default 24, 1 to 168) counts as failed.** The rule:
+  - Only a host the rollout offered the update counts, while it is `updating` or `confirmed`, and while the rollout is open: from the offer to the end of the rollout, across later stages.
+  - Only restarts strictly after the offer count, and only those within the window.
+  - **Baseline (owner decisions 2026-11-23 and 2026-11-24):** a host with more than the limit within the window *before* its offer was already looping, for example a host with too many packages for its memory limit. It does not count towards the halt, with two limits:
+    - it is never exempt when an earlier rollout marked it `restart_loop` within that window, because an update caused that loop. So a fix release that leaks the same way as the one it replaces still halts at its canaries;
+    - the exemption ends one window after the offer, and from then on its restarts count, since every restart in the window is then after the offer.
+    The first offer stores the count, the limit and window in force (so a later change of either setting moves neither the decision nor its words), and whether an earlier rollout marked the host (`rollout_hosts.restarts_before_offer`, `restart_limit`, `restart_window_hours`, `restart_loop_before`). The rollout and host pages say "looping before this update", then "so not counted until …", "after an earlier rollout's update, so counted", or "counted since …".
+  - A heartbeat from a process older than the one stored (held up while a newer one started) is ignored, so a late heartbeat never counts restarts again.
+  - A counted host is marked `restart_loop` and audited (`update.restart_loop`), at most once per rollout. Its stage cannot complete, and a running rollout halts until an operator resumes it, as for a rollback. A late `succeeded` result is stored and keeps the mark: the host runs the release and keeps restarting.
+  - The halt reason names the host, the count, the window, and the last stop in words, for example "killed at its memory limit".
+  - The check runs only on a heartbeat that shows a new restart, so a steady heartbeat pays nothing for it.
+- **Stage observation time (owner decisions 2026-11-23 and 2026-11-24).** Once every host of a stage has confirmed, the stage stays open for `FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES` (default 30, 0 for none, at most 10,080) before the next stage opens. The time counts from the later of the stage's confirmation and the last confirmation of any host of the rollout (`rollouts.last_confirmed_at`), so a host of an earlier stage that confirms after an operator's early Advance is observed too, before the next stage or the end. Restarts keep counting meanwhile, so a release whose leak needs 20 minutes or more for its fourth restart halts at the canaries, before any other host is chosen.
+  - The last stage is observed too, before the rollout completes: once completed, nothing can halt it.
+  - The rollout page shows "All confirmed; observing until HH:MM UTC" (with the date when it is not today), "waiting for hosts of earlier stages to confirm" for a last stage that waits for them, and "Observed; the next stage is opening" once the time has passed.
+  - A stage without hosts is not observed.
+  - A resume observes the stage again from the resume.
+  - An operator's Advance opens the next stage at once: it is an operator's choice.
+  - `RolloutTimeoutJob` moves the rollout on, within a minute of the end of the observation.
+  - Restarts count from a host's offer, and the observation ends 30 minutes after the last confirmation. So a host is watched from its offer to that point, about its time to confirm plus 30 minutes. A loop that needs longer for its fourth restart can still pass a stage; raise the setting for slower ones.
+- The same restart-loop settings drive the fleet list's "Restarted: more than N times in H hours" filter and the host page's notice. The filter reads only the hosts that loop: the (limit + 1)th newest restart is stored in an indexed column. After lowering `FLEET_RESTART_LOOP_RESTARTS`, `bin/rails restart_loops:refresh` stores it again.
 
 **Install and rollback on the VM.**
 

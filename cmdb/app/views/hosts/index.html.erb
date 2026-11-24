@@ -19,6 +19,8 @@
   <label>Recovery mode<%= select_tag :recovery, options_for_select(FleetList::RECOVERY_FILTERS.invert, @fleet.recovery), include_blank: "Any" %></label>
   <%# VT-SCORES (#262, VT-D06). %>
   <label>Vulnerabilities<%= select_tag :vulns, options_for_select(FleetList::VULN_FILTERS.transform_values(&:first).invert, @fleet.vulns), include_blank: "All hosts" %></label>
+  <%# #251: agents systemd keeps restarting (a leak killed at its memory limit, say), which still heartbeat normally. %>
+  <label>Restarted<%= select_tag :restarts, options_for_select({ FleetList.restart_filter_label => "loop" }, @fleet.restarts), include_blank: "Any" %></label>
   <%= hidden_field_tag :sort, @fleet.sort unless @fleet.sort == "name" %>
   <%= hidden_field_tag :dir, @fleet.direction unless @fleet.direction == "asc" %>
   <button class="btn quiet" type="submit">Apply</button>
@@ -39,9 +41,14 @@
     <p><strong>Every active host that has sent a heartbeat has recovery mode set up.</strong></p>
     <p><%= link_to "Show the whole fleet", root_path %></p>
   </div>
+<% elsif @hosts.empty? && @fleet.only_restart_filter? %>
+  <div class="sheet empty" id="no_restart_loops">
+    <p><strong>No agent restarted <%= FleetList.restart_filter_label.downcase %>.</strong></p>
+    <p><%= link_to "Show the whole fleet", root_path %></p>
+  </div>
 <% elsif @hosts.empty? %>
   <div class="sheet empty">
-    <p><strong>No hosts match <%= [ (@fleet.q && %("#{@fleet.q}")), (@fleet.tag && %(tag "#{@fleet.tag}")), (@fleet.status && "status #{FleetList::STATUSES[@fleet.status]}"), (@fleet.recovery && "recovery mode not set up"), (@fleet.vulns && %(vulnerabilities "#{FleetList::VULN_FILTERS.dig(@fleet.vulns, 0)}")) ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>
+    <p><strong>No hosts match <%= [ (@fleet.q && %("#{@fleet.q}")), (@fleet.tag && %(tag "#{@fleet.tag}")), (@fleet.status && "status #{FleetList::STATUSES[@fleet.status]}"), (@fleet.recovery && "recovery mode not set up"), (@fleet.restarts && "restarted #{FleetList.restart_filter_label.downcase}"), (@fleet.vulns && %(vulnerabilities "#{FleetList::VULN_FILTERS.dig(@fleet.vulns, 0)}")) ].compact.to_sentence(two_words_connector: " with ", last_word_connector: ", and ") %>.</strong></p>
     <p><%= link_to "Clear the search and filters", root_path %></p>
   </div>
 <% else %>

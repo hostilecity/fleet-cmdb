@@ -92,7 +92,7 @@ openssl x509 -req -in "$tmp/server.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pe
 
 # The unit's [Service] options, minus how the service starts and restarts.
 properties=$(sed -n '/^\[Service\]/,/^\[/p' "$unit" | grep -E '^[A-Za-z]+=' \
-    | grep -Ev '^(ExecStart|Type|Restart|RestartSec|RestartPreventExitStatus|StateDirectory|StateDirectoryMode)=')
+    | grep -Ev '^(ExecStart|ExecStopPost|Type|Restart|RestartSec|RestartPreventExitStatus|StateDirectory|StateDirectoryMode)=')
 [ -n "$properties" ] || { echo "sandbox-smoke: no [Service] options in $unit" >&2; exit 1; }
 
 # The large host's dpkg database, made from this runner's own packages.

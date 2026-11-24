@@ -16,7 +16,7 @@
 # 3. The recovery unit runs the agent too (recovery mode, ADR 0030), so it is held to the same threshold
 #    and its exposure must be no higher than the service's: recovery mode gains no privilege.
 #
-# The ExecStart= binaries are swapped for /bin/true, since the agent is not installed where this runs.
+# The ExecStart= (and the service's ExecStopPost=) binaries are swapped for /bin/true, since the agent is not installed where this runs.
 set -eu
 
 unit=${1:-src/install/fleet-agent.service}
@@ -26,10 +26,16 @@ max_exposure=${MAX_EXPOSURE:-20}
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-sed 's#^ExecStart=/usr/lib/fleet-agent/current/fleet-agent #ExecStart=/bin/true #' "$unit" \
+sed -e 's#^ExecStart=/usr/lib/fleet-agent/current/fleet-agent #ExecStart=/bin/true #' \
+    -e 's#^ExecStopPost=-/usr/lib/fleet-agent/current/fleet-agent #ExecStopPost=-/bin/true #' "$unit" \
     > "$tmp/fleet-agent.service"
 if ! grep -q '^ExecStart=/bin/true run$' "$tmp/fleet-agent.service"; then
     echo "check-unit: ExecStart= is not /usr/lib/fleet-agent/current/fleet-agent run" >&2
+    exit 1
+fi
+# #251: how the agent stopped is recorded by the same binary, and never fails the stop ("-").
+if ! grep -q '^ExecStopPost=-/bin/true note-stop$' "$tmp/fleet-agent.service"; then
+    echo "check-unit: ExecStopPost= is not -/usr/lib/fleet-agent/current/fleet-agent note-stop" >&2
     exit 1
 fi
 
