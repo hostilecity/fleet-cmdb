@@ -9,7 +9,8 @@
 # - A host that is not evaluated says so and why (HostVulnerabilityEvaluation, or HostContext before matching has
 #   run), never an empty list; findings kept from an earlier evaluation say they may be out of date. Packages the
 #   matcher could not check are listed. Advisory data freshness (Advisories::Freshness, P2-S13) is shown.
-# - package: every finding for one package name on the host, with when it was first seen, resolved, and reopened.
+# - package: the findings for one package name on the host, with when each was first seen, resolved, and reopened, its
+#   bucket and reason, in keyset pages (HostPackageFindings, #283); the tab's "N more" link opens it with the tab's filters.
 # - Triage (VT-HOST-TAB #260, FR-2.6; approved mockup vuln-triage/host-vulns.html): the open list is drawn by
 #   bucket (HostTriageSections): a strip of the four bucket counts, which always add up to the open count (counted in
 #   the state counts' one grouped query, so over the whole open list whatever the filters), work remaining and 30-day
@@ -98,13 +99,32 @@ class HostVulnerabilitiesController < ApplicationController
     @backports = HostBackports.new(@evaluation.ecosystem, @package_set&.package_set_id, host_id: @host.id) if @evaluation && !@evaluation.not_evaluated?
   end
 
+  # One package's findings, paged (#283). With no filter, every finding of the package in every state, as before. The
+  # tab's "N more" link carries its filters, each checked against a fixed list (state, severity, signal, debian, fix,
+  # section and rule), the package's own architectures (arch), or a pattern (the cursors), and the text search capped as on the tab, so the page lists
+  # exactly the findings the link counts, from the one after the last the tab drew. The filters are the tab's own
+  # (filtered, with_signal, FindingTriage.no_dsa, HostTriageSections.section_scope).
   def package
     @package = params[:package].to_s
     load_evaluation
     @installed = PackageStore.entries(PackageStore.chunk_ids_of(@package_set&.package_set_id), names: [ @package ])
-    @findings = sorted(VulnerabilityFinding.with_details.where(host_id: @host.id, package: @package).preload(:advisory).to_a)
-    raise ActiveRecord::RecordNotFound, "the host has no such package and no finding for it" if @installed.empty? && @findings.empty?
+    findings = VulnerabilityFinding.with_details.where(host_id: @host.id, package: @package)
+    # The package's whole counts, whatever the filters: by state, by the stored fix flag, and by architecture (the ones
+    # ?arch= may name), in one query.
+    by_state = findings.group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL), :architecture).count
+    @package_counts = VulnerabilityFinding::STATES.index_with { |state| by_state.sum { |(s, _, _), n| s == state ? n : 0 } }
+    @open_fixable = by_state.sum { |(state, fixable, _), n| state != "resolved" && fixable ? n : 0 }
+    @architectures = (by_state.keys.map(&:last) + @installed.map(&:architecture)).uniq
+    raise ActiveRecord::RecordNotFound, "the host has no such package and no finding for it" if @installed.empty? && by_state.empty?
 
+    load_package_filters
+    load_triage_context
+    @page = HostPackageFindings.new(package_scope(findings), after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]),
+                                                             count: (@package_counts.values.sum if @filters.empty?))
+    # Opened from the tab's "N more" row (?from=tab, with its cursor): the page starts after the findings the row drew.
+    @from_tab = params[:from] == "tab" && params[:after].present? && @page.notice.nil?
+    @findings = @page.findings
+    @signals = Signals::Freshness.statuses
     @set = @package_set
     @evaluated = @evaluation.present? && !@evaluation.not_evaluated?
     # The package and advisory pairs the matcher could not compare for this package, and whether the list it keeps was cut
@@ -112,10 +132,11 @@ class HostVulnerabilitiesController < ApplicationController
     @unchecked = @evaluated ? @evaluation.not_evaluated.select { |entry| entry["package"] == @package } : []
     @unchecked_cut_short = @evaluated && @evaluation.not_evaluated_count > @evaluation.not_evaluated.size
     @ecosystem = @findings.first&.ecosystem || HostVulnerabilityEvaluation.where(host_id: @host.id).pick(:ecosystem)
-    sources = (@installed.map(&:source) + @findings.map(&:source)).compact.uniq
-    @siblings = VulnerabilityFinding.with_details.where(host_id: @host.id, source: sources).where.not(package: @package).distinct.order(:package).pluck(:package)
-    load_triage_context
-    @triage = FindingTriage.load(@findings) # every row, as today's note (T5)
+    # Every source the package's findings name, not only the page's, in the same query.
+    sources = findings.select(:source).distinct
+    siblings = VulnerabilityFinding.with_details.where(host_id: @host.id).where.not(package: @package)
+    @siblings = siblings.where(source: @installed.filter_map(&:source)).or(siblings.where(source: sources)).distinct.order(:package).pluck(:package)
+    @triage = FindingTriage.load(@findings) # every row on the page, as today's note (T5)
   end
 
   private
@@ -156,8 +177,34 @@ class HostVulnerabilitiesController < ApplicationController
     scope
   end
 
-  # Severity, worst first, then the earliest first seen.
-  def sorted(findings) = findings.sort_by { |f| [ Advisory::SEVERITIES.index(f.advisory.severity), f.first_seen_at, f.advisory.advisory_id ] }
+  # The package page's filters (#283), each kept only when it is one of the tab's values. Its state defaults to every
+  # state, as the page always listed; @filters are the ones kept, for its links; the tab's link says "open". As on the tab, the signal applies to every state but
+  # resolved alone, and the Debian chip, the fix flag, and a section to the open and reopened list only.
+  def load_package_filters
+    @state = STATES.include?(params[:state]) ? params[:state] : "all"
+    @severity = Advisory::SEVERITIES.include?(params[:severity]) ? params[:severity] : nil
+    @query = params[:q].to_s.strip.first(QUERY_MAX)
+    @signal = SIGNALS.include?(params[:signal]) && @state != "resolved" ? params[:signal] : nil
+    @debian = params[:debian] == "no_dsa" && @state == "open" ? "no_dsa" : nil
+    @fix = params[:fix] == "available" && @state == "open" ? "available" : nil
+    @arch = params[:arch].to_s if @architectures.include?(params[:arch].to_s) # one of the package's own, never echoed otherwise
+    @rule = HostTriageSections.rule_param(params[:rule])
+    section = params[:section].to_s
+    @section = section if @state == "open" && HostTriageSections::PACKAGE_SECTIONS.include?(section) && (section != "rule" || @rule)
+    @rule = nil unless @section == "rule"
+    @filters = { state: (@state unless @state == "all"), severity: @severity, signal: @signal, q: @query.presence, debian: @debian, fix: @fix,
+                 section: @section, rule: @rule, arch: @arch }.compact
+  end
+
+  # The package page's findings: the tab's filters in the tab's order, then the architecture.
+  def package_scope(findings)
+    scope = filtered(findings)
+    scope = FindingTriage.no_dsa(scope, release: @triage_release, status: @triage_status) if @debian
+    scope = with_signal(scope) if @signal
+    scope = scope.with_fix if @fix
+    scope = HostTriageSections.section_scope(scope, @section, @rule) if @section
+    @arch ? scope.where(architecture: @arch) : scope
+  end
 
   # One section's page of package groups, each with its own cursor (after and before for the open section,
   # resolved_after and resolved_before for the resolved one). The open section ranks the biggest offenders first; the

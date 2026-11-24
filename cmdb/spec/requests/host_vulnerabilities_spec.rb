@@ -32,8 +32,8 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
   # [package row, [advisory rows]] for each group of a findings table; the advisories are in the group's disclosure.
   def groups(table) = page.css("##{table} > tbody").map { |body| [ words(body.at_css("tr.pkg-group")), body.css("table.nested-findings tbody tr").map { |row| row.css("td").map { |td| cell_words(td) } } ] }
 
-  # The package page's rows, without the Debian's triage column (P2-D08).
-  def package_rows = page.css("#package_findings tbody tr").map { |row| row.css("td").map { |td| cell_words(td) }.tap { |cells| cells.delete_at(6) } }
+  # The package page's rows, without the Debian's triage column (P2-D08) and the bucket column (#283, its own spec).
+  def package_rows = page.css("#package_findings tbody tr").map { |row| row.css("td").map { |td| cell_words(td) }.tap { |cells| cells.delete_at(6) && cells.pop } }
 
   describe "an evaluated host" do
     let!(:host) do

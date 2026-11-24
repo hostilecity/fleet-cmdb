@@ -314,7 +314,7 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
       import_triage(sample)
       get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "libc6" }
       expect(page.css("#package_findings thead th").map { |th| th.text.squish })
-        .to eq([ "Severity", "Advisory", "Package", "Installed then", "Fixed in", "State", "Debian's triage (trixie)", "History" ])
+        .to eq([ "Severity", "Advisory", "Package", "Installed then", "Fixed in", "State", "Debian's triage (trixie)", "History", "Why this bucket" ])
       cell = page.at_css("#package_findings tbody tr td:nth-child(7)")
       expect(line(cell.at_css(".triage"))).to eq([
         "Debian: no security update planned (Minor issue); fix planned for the next point release",
@@ -562,7 +562,12 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
 
     package = ->(host) { count_queries { get "/hosts/#{host.id}/vulnerabilities/package", params: { package: "acme1" } } }
     expect(package.call(large)).to eq(package.call(small))
-    expect(package.call(large)).to be <= 24 + 9 # +1: the host's set's chunk ids, before its package's entries (#196); +1: the inventory interval (#255); +1: KEV's and EPSS's freshness (#257)
+    # +1: the host's set's chunk ids, before its package's entries (#196); +1: the inventory interval (#255); +1: KEV's and
+    # EPSS's freshness (#257, still one statement: read once, for the line and the reasons); +16 since the page is paged
+    # (#283): the package's counts by state and architecture (the page's count too, with no filter), and the page's triage
+    # inputs (VulnerabilityTriage::Explain, about 13) with its KEV dates and EPSS scores, for each finding's bucket and
+    # reason; a filter adds the filtered count. None grows with the findings.
+    expect(package.call(large)).to be <= 24 + 9 + 16
     puts format("\n  500 findings: tab %d queries, %.0f ms (best of 3); package page %d queries", queries, timings.min * 1000, package.call(large)) if ENV["SHOW_TIMINGS"]
   end
 end
