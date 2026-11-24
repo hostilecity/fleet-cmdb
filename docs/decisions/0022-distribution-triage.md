@@ -21,5 +21,6 @@ The Debian Security Tracker publishes all of its data as one JSON document (`htt
 ## Consequences
 
 - One more outbound HTTPS destination (`security-tracker.debian.org`), which can be turned off; findings then show that Debian's triage is not available.
+- **Backports' release versions (#304; owner decision of 2026-11-23 on PR #309, ADR 0011).** The import also keeps, from the same document, the current version of each source in the releases trixie's backports are built from (forky, and duke after forky's release), from the entries' `repositories`. Matching reads them only to tell a trixie-backports build from a trixie-backports-sloppy one, and so which release's OSV ranges a backport is also compared with. That is a fact about the release, not Debian's triage: OSV stays the only source of affected ranges, fixes, and severity (item 3). Without the tracker, backports are matched against both releases, which only adds findings.
 - The data can be stale or missing for a CVE. The dashboard says so rather than implying Debian has no opinion.
 - Debian asks automated clients to fetch the file sparingly. A 6-hour schedule with a conditional request keeps within that.

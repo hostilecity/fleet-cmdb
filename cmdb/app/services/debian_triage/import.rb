@@ -18,6 +18,12 @@ module DebianTriage
   # - A release no active host reports any more, or one taken out of the release table, has its stored data
   #   deleted, without the truncation guard (dropping a release the fleet does not use is expected), and the audit
   #   entry says so. A release a host starts reporting is imported at the next refresh.
+  # - Backports (#304): for each release a fleet's backports are built from (forky, and duke for the sloppy builds,
+  #   Ecosystems.backports_tracker_releases), it also keeps each source package's current version, the highest of its
+  #   suites' versions in the entries' "repositories" (forky, forky-security), in BackportSourceVersion, replaced
+  #   whenever the document names the release (kept as it was when it does not). Matching reads forky's to tell
+  #   trixie-backports builds from sloppy ones (Backports.releases_for); a change to one queues a re-match of the
+  #   backports of those sources, once Debian:15's advisory data is complete.
   # - It never touches findings, advisories, or matching itself (ADR 0022, item 3). Since VT-BUCKETS (#259) Debian's
   #   triage decides findings' triage buckets (ADR 0032), never their state or severity: each replaced release records
   #   how many entries the document added and how many changed what the rules read (counts, the churn VT-M6's daily
@@ -73,6 +79,7 @@ module DebianTriage
       @counts = { "packages" => 0, "entries" => 0, "other_ids" => 0, "other_releases" => 0, "malformed" => 0, "repeated" => 0 }
       @problems = []
       @rows = []
+      @versions = Hash.new { |hash, ecosystem| hash[ecosystem] = {} }
 
       TriageImport.transaction do
         self.class.lock!
@@ -101,7 +108,47 @@ module DebianTriage
       create_staging
       reader.each { |package| read(package) }
       flush
+      store_backport_versions
       replace_releases.tap { connection.execute("DROP TABLE #{STAGING}") }
+    end
+
+    # #304: a backports release's versions, as the document has them, keeping the highest of a source's suites.
+    def collect_version(release, package, data)
+      ecosystem = Ecosystems.backports_tracker_releases[release] or return
+      repositories = data["repositories"] if data.is_a?(Hash)
+      return unless repositories.is_a?(Hash)
+
+      scheme = (@version_scheme ||= PackageVersions.for(Ecosystems.manager(ecosystem)))
+      repositories.each_value do |version|
+        next unless version.is_a?(String) && version.match?(Advisories::Record::VERSION)
+
+        parsed = scheme.parse(version)
+        next if parsed.is_a?(PackageVersions::Invalid)
+
+        known = @versions[ecosystem][package]
+        @versions[ecosystem][package] = [ version, parsed ] if known.nil? || scheme.compare(parsed, known.last).positive?
+      end
+    end
+
+    # Replaces each named release's versions, counts them, and queues a re-match of the backports whose sources'
+    # versions in the release they are built from changed, when the sloppy release's data is complete (the only time
+    # matching reads them).
+    def store_backport_versions
+      changed = {}
+      @versions.each do |ecosystem, versions|
+        stored = BackportSourceVersion.where(ecosystem:).pluck(:package, :version).to_h
+        now = Time.current
+        rows = versions.map { |package, (version, _)| { ecosystem:, package:, version:, updated_at: now } }
+        changed[ecosystem] = (stored.keys | versions.keys).select { |package| stored[package] != versions[package]&.first }.sort
+        BackportSourceVersion.where(ecosystem:).delete_all
+        rows.each_slice(BATCH) { |slice| BackportSourceVersion.insert_all(slice) }
+        (@counts["backport_versions"] ||= {})[ecosystem] = rows.size
+      end
+      Ecosystems.supported.each do |into|
+        sloppy = Ecosystems::BACKPORTS.dig(into, "sloppy")
+        sources = changed[Ecosystems.backports_from(into)]
+        VulnerabilityMatchJob.after_import(sloppy => sources) if sources.present? && Backports.complete(into).include?(sloppy)
+      end
     end
 
     # Dropped first: an import that raised inside an enclosing transaction (a spec's) leaves it behind.
@@ -134,6 +181,7 @@ module DebianTriage
 
       scope = SCOPES.include?(entry["scope"]) ? entry["scope"] : nil
       entry["releases"].each do |release, data|
+        collect_version(release, package, data)
         next @counts["other_releases"] += 1 unless @releases.include?(release)
 
         @rows << [ release, package, cve_id, *triage(data), scope ]

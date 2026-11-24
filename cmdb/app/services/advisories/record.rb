@@ -28,7 +28,7 @@ module Advisories
     CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 
     attr_reader :advisory_id, :summary, :aliases, :severity, :severity_raw, :reference_url, :rejected_urls,
-                :published_at, :modified_at, :withdrawn_at, :packages, :cvss, :skipped_entries
+                :published_at, :modified_at, :withdrawn_at, :packages, :cvss, :skipped_entries, :skipped_by_ecosystem
 
     # Parses the bytes of one JSON document.
     def self.parse(bytes)
@@ -61,6 +61,7 @@ module Advisories
       @published_at = time(data, "published")
       @withdrawn_at = time(data, "withdrawn")
       @skipped_entries = 0
+      @skipped_by_ecosystem = Hash.new(0) # #304: per release, for Data sources and the host tab
       affected = fleet_affected(data["affected"])
       @packages = build_packages(affected)
       @summary = self.class.clean_text(data["summary"], SUMMARY_LIMIT) || self.class.clean_text(data["details"].to_s.lines.first, SUMMARY_LIMIT)
@@ -105,6 +106,7 @@ module Advisories
         next entry if Ecosystems.supported?(ecosystem) || valid_entry?(entry)
 
         @skipped_entries += 1
+        @skipped_by_ecosystem[ecosystem] += 1
         nil
       end
     end

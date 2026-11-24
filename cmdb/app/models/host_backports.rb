@@ -20,6 +20,7 @@ class HostBackports
     @statuses = []
     @count = 0
     @kept = 0
+    @kept_sources = []
     load(package_set_id, host_id) if @from && package_set_id
   end
 
@@ -41,15 +42,18 @@ class HostBackports
   # The complete releases' statuses.
   def complete = statuses.select(&:complete)
 
-  # The complete releases whose data is older than the freshness limit (#304).
-  def stale = complete.select(&:stale)
+  # The complete releases whose data is older than the freshness limit, or not in the full imports since (#304).
+  def stale = complete.select { |s| s.stale || s.missing }
+
+  # The Data sources paragraph about a release.
+  def anchor(status) = status.sloppy ? "backports_sloppy_data" : "backports_data"
+
+  # The complete releases whose data names nothing for a kept finding's source (review of #309, S3): what holds them open.
+  def kept_releases = uncovered.select { |_, sources| sources.intersect?(@kept_sources) }.keys
 
   # A notice paragraph's id: the name for the release they are built from, with the release's after it for another
   # ("backports_stale_debian_15").
   def element_id(name, release) = release == from ? name : "#{name}_#{release.parameterize(separator: '_')}"
-
-  # How many of the release's entries the newest full import keeping it skipped as malformed.
-  def skipped_entries = primary&.skipped_entries.to_i
 
   private
 
@@ -63,19 +67,30 @@ class HostBackports
     @packages = rows.map { |name, architecture, version, _| Package.new(name:, architecture:, version:) }
     @statuses = Backports.statuses(ecosystem)
     @uncovered = uncovered_sources(entries) if data?
-    @kept = VulnerabilityFinding.with_details.active.where(host_id:).where(kept: true).count if data? && host_id
+    return unless data? && host_id
+
+    @kept_sources = VulnerabilityFinding.with_details.active.where(host_id:).where(kept: true).pluck(:source)
+    @kept = @kept_sources.size
   end
 
   # { release => sources }: the advisory sources of every backport of the host (not only those listed) that each
   # complete release's data names nothing for, releases with none left out. A package counts as covered when either
   # name it is matched under is named.
   def uncovered_sources(entries)
-    pairs = entries.distinct.pluck(:name, :source, :version).map do |name, source, version|
-      [ SignedSources.resolve(ecosystem, name, source, version).source, source || name ]
-    end.uniq
     releases = complete.map(&:from)
-    named = AdvisoryPackage.where(ecosystem: releases, package: pairs.flatten.uniq).distinct.pluck(:ecosystem, :package).to_set
-    releases.to_h { |release| [ release, pairs.reject { |names| names.any? { |n| named.include?([ release, n ]) } }.map(&:first).uniq.sort ] }
-            .reject { |_, sources| sources.empty? }
+    scheme = PackageVersions.for(Ecosystems.manager(ecosystem))
+    targets = entries.distinct.pluck(:name, :source, :version).map do |name, source, version|
+      [ SignedSources.resolve(ecosystem, name, source, version), SignedSources::Target.new(source || name, version, nil) ]
+    end
+    versions = Backports.from_versions(ecosystem, releases, targets.flatten.map(&:source))
+    # Each package's names, and the releases it is matched against (Backports.releases_for, #304).
+    pairs = targets.map do |mapped, reported|
+      names = [ mapped.source, reported.source ]
+      [ names, Backports.releases_for(ecosystem, releases, names, mapped.version, versions, scheme) ]
+    end
+    named = AdvisoryPackage.where(ecosystem: releases, package: pairs.flat_map(&:first).uniq).distinct.pluck(:ecosystem, :package).to_set
+    releases.to_h do |release|
+      [ release, pairs.select { |names, matched| matched.include?(release) && names.none? { |n| named.include?([ release, n ]) } }.map { |names, _| names.first }.uniq.sort ]
+    end.reject { |_, sources| sources.empty? }
   end
 end

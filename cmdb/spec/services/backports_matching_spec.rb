@@ -323,7 +323,7 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
         .to end_with("Fixed in 7.1.3-1 in the release this backport is built from, with no backport above it known here yet, so it is not counted as a fix.")
       expect(VulnerabilityTriage::Reasons.sentence("K1", inputs)).to eq("Fixed in 7.1.3-1, which is installed. Reboot into it.")
       expect(VulnerabilityTriage::Reasons.sentence("L5", inputs.with(kept: true, from_fixed_version: nil)))
-        .to end_with("Kept open: only this release's data says it is fixed, which is no evidence for a backport, and the release it is built from has no data for linux.")
+        .to end_with("Kept open: no release's data says it is affected, but a release this backport can be built from has no data for linux, so another release's fix is no evidence for it.")
     end
   end
 

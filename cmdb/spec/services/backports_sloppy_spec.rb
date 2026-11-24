@@ -4,7 +4,10 @@ require "rails_helper"
 # "~bpo${release}+${build}" for the release it is built for (backports.debian.org/Contribute), so once forky is released
 # the sloppy builds of Debian 15's versions carry ~bpo13+ as trixie-backports' builds of forky's do, as
 # buster-backports-sloppy's builds from bookworm carried ~bpo10+1 (apache2 2.4.53-2~bpo10+1) and buster-backports' from
-# bullseye did. A version cannot tell them apart, so a backport is matched against Debian:15 too, once its data is here.
+# bullseye did. The version order tells them apart (owner decision of 2026-11-23 on PR #309): Debian refuses uploads to
+# the old backports suite "with versions greater than in new stable or new stable-security", so a ~bpo13+ build above
+# forky's version of its source (the security tracker's "repositories", BackportSourceVersion) is a sloppy one, matched
+# against Debian:15 as well; at or below it, against Debian:14 only; with forky's version unknown, against both.
 #
 # Versions follow Debian's forms: trixie's linux 6.12.48-1, trixie-backports' 7.0.9-1~bpo13+1 (built from forky
 # testing), a trixie-backports build of a forky stable update 7.1.3-1+deb14u1~bpo13+1 (as bookworm-backports'
@@ -95,6 +98,131 @@ RSpec.describe "Matching trixie-backports-sloppy builds (#304)" do # rubocop:dis
     expect(finding(host, "calibre", "DEBIAN-CVE-2027-90006")).to have_attributes(state: "open")
   end
 
+  # The security tracker's forky (and duke) versions of a source, as its JSON document lists them per CVE.
+  def tracker_versions(package, forky: nil, duke: nil, cve: "CVE-2027-90100")
+    releases = { "trixie" => tracker_release(repositories: { "trixie" => "6.12.99-1" }) }
+    releases["forky"] = tracker_release(repositories: forky) if forky
+    releases["duke"] = tracker_release(repositories: duke) if duke
+    import_triage(tracker_document(package => { cve => releases }))
+  end
+
+  describe "the version rule (review of #309, S1)" do
+    let(:cve) { record("DEBIAN-CVE-2027-90101", trixie: "6.12.99-1", forky: "7.1.3-1+deb14u3", duke: "7.6.4-1") }
+    let(:installed) { [ "linux-image-7.1.3+deb13-amd64", "7.1.3-1+deb14u5~bpo13+1", "linux-signed-amd64" ] }
+    let(:running) { [ "linux-image-7.1.2+deb13-amd64", "7.1.2-1~bpo13+1", "linux-signed-amd64" ] }
+
+    it "matches a build at or below forky's version against Debian:14 only, so forky's fix counts and K1 is reached" do
+      at_fix = debian_host(packages: [ installed ])
+      reboot = debian_host(packages: [ running, installed ]).tap { |h| record_inventory(h, kernel_version: "7.1.2+deb13-amd64") }
+      sloppy = debian_host(packages: [ sloppy_build ])
+      duke_only = record("DEBIAN-CVE-2027-90108", trixie: :absent, forky: :absent, duke: "7.6.4-1") # code only Debian 15's series has
+      import_full(cve, duke_only)
+
+      # forky's version unknown: matched against both, which only adds (the conservative choice).
+      match(at_fix, reboot, sloppy)
+      expect(finding(at_fix, installed[0], cve["id"])).to have_attributes(state: "open", from_fixed_version: "7.6.4-1")
+      expect(finding(at_fix, installed[0], duke_only["id"])).to have_attributes(state: "open")
+      expect(VulnerabilityTriage.rule_for(finding(reboot, running[0], cve["id"]).bucket_rule)).not_to eq("K1")
+
+      expect(VulnerabilityMatchJob).to receive(:after_import).with("Debian:15" => [ "linux" ]).and_call_original
+      tracker_versions("linux", forky: { "forky" => "7.1.3-1+deb14u4", "forky-security" => "7.1.3-1+deb14u5" }, duke: { "duke" => "7.6.4-1" })
+      expect(BackportSourceVersion.of("Debian:14", [ "linux" ])).to eq("linux" => "7.1.3-1+deb14u5") # the highest suite's
+      VulnerabilityMatcher.match_again!
+      match(at_fix, reboot, sloppy, at: now + 1.hour)
+      # 7.1.3-1+deb14u5~bpo13+1 sorts below forky's 7.1.3-1+deb14u5: a trixie-backports build, past forky's fix.
+      expect(finding(at_fix, installed[0], cve["id"])).to have_attributes(state: "resolved", resolution: "fixed")
+      # Debian 15's advisory is not this build's: neither release it is matched against names it.
+      expect(finding(at_fix, installed[0], duke_only["id"])).to have_attributes(state: "resolved", resolution: "not_affected")
+      expect(finding(reboot, running[0], cve["id"])).to have_attributes(state: "open", from_fixed_version: "7.1.3-1+deb14u3")
+      expect(VulnerabilityTriage.rule_for(finding(reboot, running[0], cve["id"]).bucket_rule)).to eq("K1")
+      # 7.6.2-1~bpo13+1 sorts above it: a sloppy build, still matched against Debian 15.
+      expect(finding(sloppy, sloppy_build[0], cve["id"])).to have_attributes(state: "open", from_fixed_version: "7.6.4-1")
+    end
+
+    it "keeps the stored versions when a document does not name the release, ignores versions dpkg cannot parse, and queues nothing before Debian:15" do
+      expect(VulnerabilityMatchJob).not_to receive(:after_import)
+      tracker_versions("linux", forky: { "forky" => "7.1.3-1+deb14u5", "forky-security" => "not a version!" })
+      tracker_versions("calibre", forky: { "forky" => "bad:version" })
+      expect(BackportSourceVersion.pluck(:ecosystem, :package, :version)).to eq([ %w[Debian:14 linux 7.1.3-1+deb14u5] ])
+      tracker_versions("linux")
+      expect(BackportSourceVersion.count).to eq(1)
+      expect(Backports.from_versions("Debian:13", [ "Debian:14" ], [ "linux" ])).to eq({})
+      expect(Backports.releases_for("Debian:12", [], [ "linux" ], "1.0-1", {}, PackageVersions.for("dpkg"))).to eq([])
+      scheme = PackageVersions.for("dpkg")
+      expect(Backports.releases_for("Debian:13", %w[Debian:14 Debian:15], [ "linux" ], "bad:version", { "linux" => "7.1.3-1" }, scheme)).to eq(%w[Debian:14 Debian:15])
+    end
+
+    it "resolves a sloppy build's finding as fixed on Debian 15's evidence alone (review N1)" do
+      host = debian_host(packages: [ [ "calibre", "9.6.0+ds-1~bpo13+1", "calibre" ] ])
+      tracker_versions("calibre", forky: { "forky" => "9.5.0+ds-1" })
+      import_full(record("DEBIAN-CVE-2027-90102", trixie: :absent, forky: :absent, duke: nil, package: "calibre"),
+                  record("DEBIAN-CVE-2027-90103", trixie: "9.0.0+ds-1+deb13u1", forky: "9.5.0+ds-1", duke: "9.5.0+ds-1", package: "calibre"))
+      match(host)
+      expect(finding(host, "calibre", "DEBIAN-CVE-2027-90102")).to have_attributes(state: "open")
+      import_advisories(record("DEBIAN-CVE-2027-90102", trixie: :absent, forky: :absent, duke: "9.5.9+ds-1", package: "calibre", modified: "2026-11-01T00:00:00Z"))
+      match(host, at: now + 1.hour)
+      expect(finding(host, "calibre", "DEBIAN-CVE-2027-90102")).to have_attributes(state: "resolved", resolution: "fixed")
+    end
+  end
+
+  describe "a release that was complete and is then dropped (review of #309, S2)", withdrawal_guard: { share: 1.0, min_records: 0 } do
+    let(:duke_only) { record("DEBIAN-CVE-2027-90104", trixie: "6.12.99-1", forky: "7.1.3-1", duke: "7.6.4-1") }
+    let(:forky_only) { record("DEBIAN-CVE-2027-90105", trixie: "6.12.99-1", forky: "7.6.9-1", duke: :absent) }
+    let(:without) { ->(r, ecosystem) { r.merge("affected" => r["affected"].reject { |a| a["package"]["ecosystem"] == ecosystem }) } }
+
+    it "keeps its last rows, so no finding resolves for its lack, and drops them once an import has that release's data" do
+      host = debian_host(packages: [ sloppy_build ])
+      import_full(duke_only, forky_only)
+      match(host)
+      expect(finding(host, sloppy_build[0], duke_only["id"])).to have_attributes(state: "open")
+      expect(finding(host, sloppy_build[0], forky_only["id"])).to have_attributes(state: "open")
+
+      # A mirror with neither release: the records are as modified as before, and a newer one is rewritten.
+      result = travel(1.hour) { import_full(without.call(without.call(duke_only, "Debian:15"), "Debian:14"), without.call(forky_only.merge("modified" => "2026-11-01T00:00:00Z"), "Debian:14")) }
+      expect(result.import.counts).to include("held_entries" => 3, "unchanged" => 1, "updated" => 1)
+      expect(result.changed_packages).to eq("Debian:13" => [ "linux" ])
+      expect(Backports.statuses("Debian:13").map(&:state)).to eq(%i[dropped dropped])
+      match(host, at: now + 2.hours)
+      expect(VulnerabilityFinding.where(host:).pluck(:state)).to all(eq("open"))
+
+      # OSV again, with Debian 14 and 15, but this advisory's Debian 15 entry really gone: that one goes.
+      other = record("DEBIAN-CVE-2027-90106", trixie: "6.12.99-1", forky: "7.1.3-1", duke: "7.6.4-1")
+      result = travel(2.hours) { import_full(without.call(duke_only, "Debian:15"), forky_only.merge("modified" => "2026-11-01T00:00:00Z"), other) }
+      expect(result.import.counts).not_to have_key("held_entries")
+      expect(result.changed_packages["Debian:15"]).to eq([ "linux" ])
+      match(host, at: now + 3.hours)
+      expect(finding(host, sloppy_build[0], duke_only["id"])).to have_attributes(state: "resolved")
+      expect(finding(host, sloppy_build[0], forky_only["id"])).to have_attributes(state: "open")
+    end
+
+    it "takes a partial import's record as it is, and keeps nothing of a withdrawn one" do
+      import_full(duke_only, forky_only)
+      import_advisories(without.call(duke_only, "Debian:15").merge("modified" => "2026-11-01T00:00:00Z"))
+      expect(AdvisoryPackage.where(ecosystem: "Debian:15").count).to eq(0)
+      # An archive with no Debian 14 at all: the other record's rows are held, the withdrawn one's are not.
+      import_full(without.call(duke_only, "Debian:14"), without.call(forky_only, "Debian:14").merge("modified" => "2026-11-02T00:00:00Z", "withdrawn" => "2026-11-02T00:00:00Z"))
+      expect(AdvisoryPackage.joins(:advisory).where(advisories: { advisory_id: duke_only["id"] }).order(:ecosystem).pluck(:ecosystem)).to eq(%w[Debian:13 Debian:14])
+      expect(AdvisoryPackage.joins(:advisory).where(advisories: { advisory_id: forky_only["id"] }).pluck(:ecosystem)).to eq([ "Debian:13" ])
+    end
+
+    it "lists a source Debian 15 has nothing for only for a backport matched against it" do
+      host = debian_host(packages: [ [ "calibre", "9.5.0+ds-1~bpo13+1", "calibre" ], [ "libfoo1", "2.0-1~bpo13+1", "foo" ] ])
+      tracker_versions("calibre", forky: { "forky" => "9.5.0+ds-1" })
+      import_full(duke_only, record("DEBIAN-CVE-2027-90109", trixie: "1.0-1", forky: "1.0-1", duke: :absent, package: "calibre"))
+      match(host)
+      backports = HostBackports.new("Debian:13", HostPackageSet.find_by!(host_id: host.id).package_set_id, host_id: host.id)
+      expect(backports.uncovered).to eq("Debian:14" => [ "foo" ], "Debian:15" => [ "foo" ]) # calibre is forky-series: not matched against Debian 15
+    end
+  end
+
+  it "counts a backport's sources as changed only on the first full import that keeps a release (review N1)" do
+    debian_host(packages: [ sloppy_build ])
+    cve = record("DEBIAN-CVE-2027-90107", trixie: "6.12.99-1", forky: "7.1.3-1", duke: "7.6.4-1")
+    expect(import_full(cve).changed_packages.keys).to include("Debian:15")
+    again = travel(1.hour) { import_full(cve) }
+    expect(again.changed_packages).to eq({})
+  end
+
   describe "the releases' statuses (Backports.statuses)", withdrawal_guard: { share: 1.0, min_records: 0 } do
     let(:trixie_only) { osv_record(id: "DSA-9101-1", package: "openssl", fixed: "3.5.1-1+deb13u1") }
     let(:with_forky) { record("DEBIAN-CVE-2026-64253", trixie: "6.12.95-1", forky: "7.1.3-1", duke: :absent) }
@@ -117,11 +245,20 @@ RSpec.describe "Matching trixie-backports-sloppy builds (#304)" do # rubocop:dis
       travel(Advisories.config.max_age + 2.hours) do
         expect(statuses["Debian:14"]).to have_attributes(state: :stale, stale: true, missing: nil)
         missed_again = import_full(trixie_only).import
-        expect(statuses["Debian:14"]).to have_attributes(state: :stale, import: kept, missing: missed_again)
+        expect(statuses["Debian:14"]).to have_attributes(state: :dropped, stale: true, import: kept, missing: missed_again)
+        expect(statuses["Debian:14"]).to be_warning
       end
       expect(Backports.statuses("Debian:12")).to eq([])
       expect(Backports.status("Debian:12")).to be_nil
       expect(Backports.complete("Debian:12")).to eq([])
+    end
+
+    it "warns for Debian 15 once the tracker lists it and full imports still arrive without it (review N2)" do
+      import_full(with_forky)
+      expect(statuses["Debian:15"].state).to eq(:awaited)
+      tracker_versions("linux", duke: { "duke" => "7.6.4-1" })
+      expect(statuses["Debian:15"]).to have_attributes(state: :missing, published: true)
+      expect(statuses["Debian:15"]).to be_warning
     end
 
     it "does not count a partial import, and a sloppy release once kept is fresh and goes stale as the others do" do

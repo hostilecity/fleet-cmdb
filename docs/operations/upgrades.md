@@ -36,9 +36,9 @@ Nothing to do: the next full advisory import does the work.
 
 Nothing to do, now or at forky's release.
 
-- **What runs at the upgrade.** No migration and no re-match. Data sources gains two rows, `Debian:14` and `Debian:15`.
-- **At forky's release.** OSV starts publishing `Debian:15`. The first full import that has it stores it (another release's worth of `advisory_packages` rows, about as many as `Debian:14`'s) and counts every stored backport's sources as changed under `Debian:15`, so it re-matches only the hosts holding a backport, once, as #274's first import did. Findings that `Debian:14` or trixie showed fixed, on a backport whose source `Debian:15` has no data for, reopen as kept then.
-- **Rolling back.** The older code ignores `Debian:15` rows and matches against `Debian:14` alone. After rolling forward, run `bin/rails vulnerabilities:rematch_backports`.
+- **What runs at the upgrade.** `CreateBackportSourceVersions` adds an empty table; the next Debian Security Tracker refresh fills it with forky's (and, later, Debian 15's) version of each source it lists, a few tens of thousands of small rows. No re-match. Data sources gains two rows, `Debian:14` and `Debian:15`.
+- **At forky's release.** OSV starts publishing `Debian:15`. The first full import that has it stores it (another release's worth of `advisory_packages` rows, about as many as `Debian:14`'s) and counts every stored backport's sources as changed under `Debian:15`, so it re-matches only the hosts holding a backport, once, as #274's first import did. Only backports above forky's version of their source (or of a source the tracker does not list) are matched against it. Findings that `Debian:14` or trixie showed fixed, on such a backport whose source `Debian:15` has no data for, reopen as kept then.
+- **Rolling back.** The older code ignores `Debian:15` rows and the new table, and matches against `Debian:14` alone. After rolling forward, run `bin/rails vulnerabilities:rematch_backports`.
 
 ## Signed kernel images get their findings (#270)
 
