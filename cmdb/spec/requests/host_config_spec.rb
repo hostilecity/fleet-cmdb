@@ -52,7 +52,7 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
         expect(page.css("nav.tabs a").map { |a| [ a.text, a["href"], a["aria-current"] ] }.first(2))
           .to eq([ [ "Overview", "/hosts/#{host.id}", ("page" if i.zero?) ], [ "Configuration", "/hosts/#{host.id}/config", ("page" if i == 1) ] ])
         expect(page.css("#host_summary > *").map { |tile| tile.at_css(".label").text })
-          .to eq([ "CIS-aligned checks", "Open vulnerabilities", "Packages", "Last reports received" ])
+          .to eq([ "CIS-aligned checks", "Vulnerability exposure", "Work remaining", "Last reports received" ]) # VT-SCORES #262, epic decision 18
       end
       expect(page.at_css("title").text).to eq("Media server: configuration · Fleet CMDB")
     end
@@ -67,11 +67,12 @@ RSpec.describe "Host configuration", :signed_in, type: :request do
       expect(response.body).not_to match(/CIS[- ]compliant/i)
     end
 
-    it "says not evaluated, not 0 or 100%, for vulnerabilities and packages it knows nothing about, and when reports arrived" do
+    it "says not evaluated, not 0 or 100%, for vulnerabilities it knows nothing about, and when reports arrived" do
       travel_to(start + 3.minutes)
       get "/hosts/#{host.id}"
-      expect(words(page.at_css("#glance_vulns"))).to eq("Open vulnerabilities Not evaluated Packages have not been matched against advisories yet")
-      expect(words(page.at_css("#glance_packages"))).to eq("Packages Not known No package report yet")
+      expect(words(page.at_css("#glance_exposure"))).to eq("Vulnerability exposure Not evaluated Packages have not been matched against advisories yet")
+      expect(words(page.at_css("#glance_work"))).to eq("Work remaining Not known Packages have not been matched against advisories yet")
+      expect(page.at_css("#glance_packages")).to be_nil # the Packages tab shows the count (epic decision 18)
       expect(words(page.at_css("#glance_reports"))).to eq("Last reports received Waiting for packages Config 2 minutes ago No package report yet Inventory 3 minutes ago")
       expect(page.at_css("#glance_reports")["href"]).to eq("/hosts/#{host.id}#report_requests")
     end

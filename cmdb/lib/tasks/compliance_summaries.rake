@@ -22,16 +22,30 @@ namespace :compliance_summaries do
     end
   end
 
-  # The upgrade step of migration 20261120256002 on a large database (#256, docs/operations/upgrades.md): resumable.
-  desc "Recount every host's vulnerability fix counts after the upgrade that added them (resumable); then restart the server"
-  task recount_fixes: :environment do
+  # The upgrade steps of migrations 20261120256002 (#256) and 20261123262002 (#262) on a large database
+  # (docs/operations/upgrades.md): resumable.
+  recount_after_upgrade = lambda do |table|
     $stdout.sync = true # progress as it goes, also into a log file
-    recount = ComplianceFixRecount.new(log: ->(message) { puts message })
+    recount = ComplianceFixRecount.new(table:, log: ->(message) { puts message })
     next puts("Nothing to recount: the upgrade's recount is finished.") unless recount.needed?
 
     estimate = recount.estimate
     puts "To recount: #{estimate.hosts} hosts with #{estimate.findings} open findings, about #{(estimate.seconds / 60).ceil} min at the estimate's rates."
     recount.run!
     puts "Done. Start the server again: its migrations finish the upgrade."
+  end
+
+  desc "Recount every host's vulnerability fix counts after the upgrade that added them (resumable); then restart the server"
+  task recount_fixes: :environment do
+    recount_after_upgrade.call(ComplianceFixRecount::TABLE)
+  end
+
+  desc "Write the findings' listeners, then recount every host's exposure tier, points, and work after the upgrade that added them (resumable); then restart the server"
+  task recount_scores: :environment do
+    # The findings' listeners first, so no host is counted without its listener points (review of #305, S2); only while
+    # the recount has not started, so only in the upgrade step, with the server down (re-check of #305, S1).
+    $stdout.sync = true
+    ListenerBackfill.new(recount: ComplianceFixRecount.new(table: "compliance_score_recounts"), log: ->(message) { puts message }).run!
+    recount_after_upgrade.call("compliance_score_recounts")
   end
 end

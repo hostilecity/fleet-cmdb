@@ -1,11 +1,14 @@
+<%# One fleet list row. locals: compliance ({ host id => FleetCompliance::Row } for active hosts), rules_defined, and scores: what the
+    Exposure and Work cells read once a page (sources: the KEV and EPSS statuses and the tracker's by release, badges: Setting.vulnerability_badges,
+    package_interval: the package report interval, advisories_stale: { ecosystem => stale }). %>
+<% row = compliance[host.id] %>
 <tr id="<%= dom_id(host, :row) %>">
-  <td><%= link_to host.name, host_path(host) %></td>
+  <td><%= link_to host.name, host_path(host) %><span class="host-line"><%= host.hostname %></span><% if host.tags.any? %><span class="state-note"><% host.tags.each do |t| %><%= link_to t, root_path(tag: t), class: "tag" %><% end %></span><% end %></td>
   <td><%= status_lamp(host) %><%= recovery_badge(host) %></td>
   <td class="muted"><%= seen_ago(host.last_seen_at) %></td>
-  <td class="mono"><%= host.hostname %></td>
-  <td><% host.tags.each do |t| %><%= link_to t, root_path(tag: t), class: "tag" %><% end %></td>
   <td><%= host.os_name.presence || tag.span("Not reported", class: "unavailable") %></td>
-  <td><%= fleet_cis_cell(host, compliance[host.id], rules_defined) %></td>
-  <td><%= fleet_vulns_cell(host, compliance[host.id]) %></td>
+  <td><%= fleet_cis_cell(host, row, rules_defined) %></td>
+  <td><%= fleet_exposure_cell(host, row, sources: scores[:sources], badges: scores[:badges], package_interval: scores[:package_interval]) %></td>
+  <td><%= fleet_work_cell(host, row, badges: scores[:badges], package_interval: scores[:package_interval], advisories_stale: row && scores[:advisories_stale].fetch(row.vuln_ecosystem, true), sources: scores[:sources]) %></td>
   <td class="mono"><%= host.agent_version.presence || tag.span("—", class: "unavailable") %></td>
 </tr>

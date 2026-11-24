@@ -22,6 +22,12 @@ module DebianTriage
                    .filter_map { |id, version_id| for_os("id" => id, "version_id" => version_id) }.uniq.sort
     end
 
+    # The release for an ecosystem ("Debian:13" => "trixie"), or nil (VT-SCORES #262: the tier's tracker qualifier).
+    def for_ecosystem(ecosystem)
+      id, version = ecosystem.to_s.split(":", 2)
+      for_os("id" => id, "version_id" => version)
+    end
+
     # The release for an inventory's os hash ({"id" => "debian", "version_id" => "13"}), or nil.
     def for_os(os)
       return nil unless os.is_a?(Hash)

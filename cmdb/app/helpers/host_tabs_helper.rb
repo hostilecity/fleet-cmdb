@@ -89,15 +89,4 @@ module HostTabsHelper
       "#{line}, older than #{human_duration(ReportSchedule::OVERDUE_INTERVALS * summary.intervals.fetch(type))}"
     end, tag.br)
   end
-
-  # "dpkg, set last changed 1 day ago" for the packages tile.
-  def package_tile_detail(summary)
-    set = summary.package_set
-    return "No package report yet" if set.nil?
-    return "Unsupported package manager" if set.unsupported?
-    return "Package database could not be read" unless set.known?
-    return "Last report could not be read, list is from the last one that could" if set.unreadable?
-
-    [ set.manager, (" set last changed #{seen_ago(summary.packages_changed_at)}" if summary.packages_changed_at) ].compact.join(",")
-  end
 end

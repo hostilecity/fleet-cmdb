@@ -14,8 +14,9 @@ RSpec.describe RecountFixFlagsInSummaries do
 
   def quiet(&) = ActiveRecord::Migration.suppress_messages(&)
   def progress! = quiet { AddFixCountsToComplianceSummaries.new.create_progress }
-  def zero! = HostComplianceSummary.update_all(vuln_fixable: 0, vuln_fix_packages: 0, vuln_fix_severities: 0)
-  def fixable = hosts.map { |host| HostComplianceSummary.find(host.id).vuln_fixable }
+  # The fix counts' columns are gone since VT-SCORES (#262); the recount is the same refresh, so the open count stands in.
+  def zero! = HostComplianceSummary.update_all(vuln_high: 0, vuln_low: 0)
+  def fixable = hosts.map { |host| HostComplianceSummary.find(host.id).vuln_open }
   def migrate(direction = :up) = quiet { described_class.new.migrate(direction) }
 
   def rake

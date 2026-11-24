@@ -143,20 +143,23 @@ RSpec.describe FleetCompliance do
     expect(names(status: "bogus", cis: "bogus", vuln: "bogus").size).to eq(6)
   end
 
-  it "counts and filters by open findings with a fix, of a severity when one is named, never on a host not evaluated (VT-FIXABLE #256)" do
-    findings!(web, "low", "low", fixed: "2.0-1")
-    findings!(media, "high", fixed: "2.0-1")
-    findings!(media, "high", state: "resolved", fixed: "2.0-1") # resolved: not counted
-    findings!(old, "critical", fixed: "2.0-1") # kept from an earlier evaluation: open, but never counted as fixable (Q6)
-    expect([ web, media, old, dns ].map { |host| row(host).then { |r| [ r.vulns_fixable, r.vulns_fix_packages ] } }).to eq([ [ 2, 2 ], [ 1, 1 ], [ 0, 0 ], [ 0, 0 ] ])
-    expect(names(fix: "available", sort: "name")).to eq([ "Media server", "Web A" ])
-    expect(names(fix: "available", vuln: "high")).to eq([ "Media server" ]) # a high finding with a fix (#252 question 8)
-    expect(names(fix: "available", vuln: "critical")).to eq([]) # Web A has a critical, but not one with a fix
-    expect(names(vuln: "critical", sort: "name")).to eq([ "Old findings", "Web A" ])
-    expect(names(fix: "bogus").size).to eq(6)
-    expect(described_class.totals).to have_attributes(hosts_fixable: 2, vulns_fixable: 3)
-    list = described_class.new(fix: "available", vuln: "high")
-    expect([ list.params_with, list.filtered? ]).to eq([ { vuln: "high", fix: "available" }, true ])
+  it "counts and filters by triage bucket, with the work items and the exposure on each row (VT-SCORES #262, replacing VT-FIXABLE's fix filter)" do
+    findings!(web, "low", "low", fixed: "2.0-1", rule: "F1", source: "curl")
+    findings!(media, "high", rule: "N4")
+    findings!(media, "high", state: "resolved") # resolved: not counted
+    findings!(old, "critical", rule: "F1") # kept from an earlier evaluation: in its bucket, but the host is not scored
+    expect(row(web).scores.scored?).to be(false) # the before block's findings are not triaged yet
+    triage_all!(web, media, old)
+    expect([ web, media, old ].map { |host| row(host).buckets.values }).to eq([ [ 2, 0, 2, 0 ], [ 0, 1, 5, 0 ], [ 1, 0, 1, 0 ] ])
+    # Web A: two low F1 (1 each) and its critical and low L5 (2 and 0); Media server: a high N4 (20), its high L5 (1).
+    expect([ web, media, old ].map { |host| row(host).scores.then { |sc| [ sc.exposure_tier, sc.exposure_points, sc.work_items ] } }).to eq([ [ 1, 4, 1 ], [ 3, 21, 0 ], [ nil, nil, nil ] ])
+    expect(names(bucket: "fix", sort: "name")).to eq([ "Old findings", "Web A" ])
+    expect(names(bucket: "attention")).to eq([ "Media server" ])
+    expect(names(bucket: "attention", vuln: "critical")).to eq([]) # both: a critical finding and one that needs attention
+    expect(names(bucket: "bogus").size).to eq(6)
+    expect(described_class.totals).to have_attributes(buckets: { "fix" => 3, "attention" => 1, "low_risk" => 8, "ignorable" => 0 }, work_items: 1)
+    list = described_class.new(bucket: "fix", vuln: "high")
+    expect([ list.params_with, list.filtered? ]).to eq([ { vuln: "high", bucket: "fix" }, true ])
   end
 
   it "filters by the distribution release an ecosystem covers, from the inventory, for the Data sources page's link" do

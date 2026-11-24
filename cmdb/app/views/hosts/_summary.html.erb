@@ -8,15 +8,22 @@
     <%= glance_tile("CIS-aligned checks", tag.span("Not evaluated", class: "not-eval"),
                     cis.total.zero? ? "No rules are defined" : "No check has a pass or fail result yet", href: config_host_path(host, anchor: "results"), id: "glance_cis") %>
   <% end %>
-  <% if summary.vulnerabilities_evaluated? %>
-    <%= glance_tile("Open vulnerabilities", summary.open_findings.zero? ? tag.span("None open", class: "none-open") : number_with_delimiter(summary.open_findings),
-                    summary.open_findings.zero? ? "Evaluated #{seen_ago(summary.vulnerability_evaluation.evaluated_at).downcase_first}" : severity_counts(summary.open_severities), href: vulnerabilities_host_path(host), id: "glance_vulns") %>
+  <%# VT-SCORES (#262, epic decision 18): exposure and work remaining replace the open count and the Packages tile. A host not evaluated, or
+      not triaged yet, says so; never a tier, 0 points, or "Nothing to install". %>
+  <% scores = summary.scores %>
+  <% if !summary.vulnerabilities_evaluated? %>
+    <% why = summary.vulnerability_evaluation&.detail || "Packages have not been matched against advisories yet" %>
+    <%= glance_tile("Vulnerability exposure", tag.span("Not evaluated", class: "not-eval"), why, href: vulnerabilities_host_path(host), id: "glance_exposure") %>
+    <%= glance_tile("Work remaining", tag.span("Not known", class: "not-eval"), why, href: vulnerabilities_host_path(host), id: "glance_work") %>
+  <% elsif scores.nil? || !scores.scored? %>
+    <%= glance_tile("Vulnerability exposure", tag.span("Not triaged yet", class: "not-eval"), "The re-triage after an upgrade has not reached this host yet", href: vulnerabilities_host_path(host), id: "glance_exposure") %>
+    <%= glance_tile("Work remaining", tag.span("Not counted yet", class: "not-eval"), "Counted once its findings are triaged", href: vulnerabilities_host_path(host), id: "glance_work") %>
   <% else %>
-    <%= glance_tile("Open vulnerabilities", tag.span("Not evaluated", class: "not-eval"),
-                    summary.vulnerability_evaluation&.detail || "Packages have not been matched against advisories yet", href: vulnerabilities_host_path(host), id: "glance_vulns") %>
+    <% big, detail = exposure_tile_parts(scores, qualifiers: summary.qualifiers, badges: summary.badges) %>
+    <%= glance_tile("Vulnerability exposure", big, detail, href: vulnerabilities_host_path(host, anchor: "score"), id: "glance_exposure") %>
+    <% big, detail = work_tile_parts(scores, done: summary.work_done, badges: summary.badges, qualifiers: VulnerabilityExposure.qualifiers(signals: [], tracker: summary.tracker_status)) %>
+    <%= glance_tile("Work remaining", big, detail, href: vulnerabilities_host_path(host, anchor: "work"), id: "glance_work") %>
   <% end %>
-  <%= glance_tile("Packages", summary.package_set&.known? ? number_with_delimiter(summary.package_set.package_count) : tag.span("Not known", class: "not-eval"),
-                  package_tile_detail(summary), href: packages_host_path(host), id: "glance_packages") %>
   <% if summary.any_received? || summary.report_types(:missing).any? %>
     <%= glance_tile("Last reports received", reports_headline(summary), reports_detail(summary),
                     href: host_path(host, anchor: "report_requests"), id: "glance_reports") %>

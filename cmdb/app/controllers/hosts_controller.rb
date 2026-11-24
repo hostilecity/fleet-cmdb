@@ -13,7 +13,7 @@ class HostsController < ApplicationController
   REPORT_REQUEST_LIMIT = 10
 
   def index
-    @fleet = FleetList.new(params.permit(:q, :tag, :status, :recovery, :sort, :dir, :after, :before))
+    @fleet = FleetList.new(params.permit(:q, :tag, :status, :recovery, :vulns, :sort, :dir, :after, :before))
     @hosts = @fleet.hosts
     @counts = FleetList.counts
     @total = @fleet.filtered? ? @fleet.total : @counts.values.sum
@@ -24,6 +24,10 @@ class HostsController < ApplicationController
     @compliance = FleetCompliance.rows_for(@hosts.select { |host| host.enrollment_state == "active" })
     @compliance_totals = FleetCompliance.totals
     @rules_defined = CisRule.exists?
+    # The Exposure and Work cells' honesty rules (VT-SCORES #262), read once a page.
+    @signal_statuses = Signals::Freshness.statuses
+    @scores = { sources: { signals: @signal_statuses, trackers: DebianTriage::Freshness.statuses.index_by(&:release) }, badges: Setting.vulnerability_badges, package_interval: ReportSchedule.intervals.fetch("packages"),
+                advisories_stale: @advisory_freshness.to_h { |status| [ status.ecosystem, status.stale ] } }
   end
 
   def show

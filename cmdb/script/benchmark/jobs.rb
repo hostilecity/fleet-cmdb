@@ -108,8 +108,10 @@ module FleetBenchmark
         "triage: #{TRACKER_CVES} changed tracker CVEs, base (per verdict)" => [ tracker_verdicts, -> { rolled_back { VulnerabilityTriage::Base.refresh!(tracker_chunks, advisory_ids: tracker) } } ],
         "triage: every verdict's base again (per verdict)" => [ verdicts, -> { rolled_back { VulnerabilityTriage::Base.refresh!(ChunkEvaluation.pluck(:package_chunk_id)) } } ],
         "summary counts, host_compliance_counts (per package host)" => [ package_hosts.size, lambda {
-          # Every bucket column read, so no part of the function is planned away; uncached, so each run counts again.
-          sql = ApplicationRecord.sanitize_sql_array([ "SELECT sum(vuln_fix + vuln_attention + vuln_low_risk + vuln_ignorable + vuln_kev_open + vuln_fixable + cis_passed) " \
+          # Every bucket column read, and the exposure and work (VT-SCORES #262), so no part of the function is planned
+          # away; uncached, so each run counts again.
+          sql = ApplicationRecord.sanitize_sql_array([ "SELECT sum(vuln_fix + vuln_attention + vuln_low_risk + vuln_ignorable + vuln_kev_open + cis_passed " \
+                                                       "+ COALESCE(exposure_points, 0) + COALESCE(work_items, 0) + vuln_attention_undecided) " \
                                                        "FROM host_compliance_counts(ARRAY[?]::bigint[])", package_hosts ])
           ApplicationRecord.uncached { ApplicationRecord.connection.select_value(sql) }
         } ]

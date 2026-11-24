@@ -1,35 +1,50 @@
-# The one-time recount of every host's compliance summary after the fix counts were added (VT-FIXABLE #256,
-# migrations 20261120256001 and 20261120256002), resumable, with an estimate of what is left (as #196's
-# PackageStoreBackfill, review of #267, S3).
+# A one-time recount of every host's compliance summary after an upgrade added columns to it, resumable, with an
+# estimate of what is left (as #196's PackageStoreBackfill, review of #267, S3): the fix counts (VT-FIXABLE #256,
+# migrations 20261120256001 and 20261120256002, table compliance_fix_recounts) and the exposure scores (VT-SCORES
+# #262, migrations 20261123262001 and 20261123262002, table compliance_score_recounts).
 #
-# Progress is the last host id recounted, in compliance_fix_recounts (one row, made by 20261120256001 and dropped by
-# 20261120256002 once every host is done), so a run that stops, by an interrupt, a timeout, or a restarted container,
+# Progress is the last host id recounted, in the table's one row (made by the first migration and dropped by the
+# second once every host is done), so a run that stops, by an interrupt, a timeout, or a restarted container,
 # carries on where it stopped. Hosts are recounted in id order, BATCH at a time, each batch in its own transaction
 # that runs host_compliance_summaries_refresh (which locks the batch's summary rows in host order, as every flush
 # does) and moves the progress row, so a summary flush for those hosts waits for at most one batch: 0.8 s measured
 # for 100 hosts with 3,560 open findings each. A recount is idempotent: a row already right is not rewritten.
 class ComplianceFixRecount
   TABLE = "compliance_fix_recounts".freeze
+  TABLES = [ TABLE, "compliance_score_recounts" ].freeze
+  # Each progress table's statements, written out once from the fixed list (never from a caller's string).
+  STATEMENTS = TABLES.to_h do |name|
+    [ name, { last: "SELECT last_host_id FROM #{name} WHERE id = 1", start: "INSERT INTO #{name} (id, last_host_id) VALUES (1, 0) ON CONFLICT (id) DO NOTHING",
+              move: "UPDATE #{name} SET last_host_id = ? WHERE id = 1" }.freeze ]
+  end.freeze
   BATCH = 100
   LOG_EVERY = 10_000 # hosts
   # The estimate's rates, about three times those measured on 2 shared CPUs (docs/operations/benchmark.md, "Fix counts
   # on the summaries"): 0.17 ms a host and about 1.6 microseconds an open finding there.
   HOST_SECONDS = 0.0005
   FINDING_SECONDS = 0.000005
+  # Each table's rates [per host, per open finding]. The scores' recount groups each host's findings by advisory too:
+  # about 8 microseconds a finding measured (53 s for 100,001 hosts and 4.5 million open findings, docs/operations/
+  # benchmark.md), so 20 here, about 2.5 times (review of #305, N2).
+  RATES = { TABLE => [ HOST_SECONDS, FINDING_SECONDS ], "compliance_score_recounts" => [ HOST_SECONDS, 0.00002 ] }.freeze
 
   Estimate = Data.define(:seconds, :hosts, :findings, :complete) do
     def complete? = complete
   end
 
-  def initialize(log: ->(_message) { })
+  # table: the progress table, one of TABLES.
+  def initialize(table: TABLE, log: ->(_message) { })
+    @statements = STATEMENTS.fetch(table) { raise ArgumentError, "unknown recount table #{table}" }
+    @host_seconds, @finding_seconds = RATES.fetch(table)
+    @table = table
     @log = log
     @conn = ApplicationRecord.connection
   end
 
   # Whether there is a recount to do: the progress row exists until the migration that finishes it drops it.
-  def needed? = @conn.table_exists?(TABLE)
+  def needed? = @conn.table_exists?(@table)
 
-  def last_host_id = @conn.select_value("SELECT last_host_id FROM compliance_fix_recounts WHERE id = 1").to_i
+  def last_host_id = @conn.select_value(@statements.fetch(:last)).to_i
 
   # The time the hosts left would take. With within (seconds), it counts only far enough to tell that the time is past
   # it, and then says it stopped counting (complete: false), so it reads little of a large database.
@@ -37,20 +52,20 @@ class ComplianceFixRecount
     return Estimate.new(seconds: 0.0, hosts: 0, findings: 0, complete: true) unless needed?
 
     after = last_host_id
-    host_limit = within && ((within / HOST_SECONDS).floor + 1)
+    host_limit = within && ((within / @host_seconds).floor + 1)
     hosts = bounded("SELECT 1 FROM hosts WHERE id > ?", after, host_limit)
-    return Estimate.new(seconds: hosts * HOST_SECONDS, hosts:, findings: 0, complete: false) if host_limit && hosts >= host_limit
+    return Estimate.new(seconds: hosts * @host_seconds, hosts:, findings: 0, complete: false) if host_limit && hosts >= host_limit
 
-    finding_limit = within && (((within - hosts * HOST_SECONDS) / FINDING_SECONDS).floor + 1)
+    finding_limit = within && (((within - hosts * @host_seconds) / @finding_seconds).floor + 1)
     findings = bounded("SELECT 1 FROM vulnerability_findings WHERE state IN ('open', 'reopened') AND host_id > ?", after, finding_limit)
-    Estimate.new(seconds: hosts * HOST_SECONDS + findings * FINDING_SECONDS, hosts:, findings:, complete: !(finding_limit && findings >= finding_limit))
+    Estimate.new(seconds: hosts * @host_seconds + findings * @finding_seconds, hosts:, findings:, complete: !(finding_limit && findings >= finding_limit))
   end
 
   # Recounts every host after the progress row's, BATCH at a time; returns how many it recounted.
   def run!(batch: BATCH)
     return 0 unless needed?
 
-    @conn.execute("INSERT INTO compliance_fix_recounts (id, last_host_id) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
+    @conn.execute(@statements.fetch(:start))
     done = 0
     loop do
       ids = @conn.select_values(sql("SELECT id FROM hosts WHERE id > ? ORDER BY id LIMIT ?", last_host_id, batch)).map(&:to_i)
@@ -58,7 +73,7 @@ class ComplianceFixRecount
 
       ApplicationRecord.transaction do
         @conn.execute(sql("SELECT host_compliance_summaries_refresh(ARRAY[?]::bigint[])", ids))
-        @conn.execute(sql("UPDATE compliance_fix_recounts SET last_host_id = ? WHERE id = 1", ids.last))
+        @conn.execute(sql(@statements.fetch(:move), ids.last))
       end
       done += ids.size
       @log.call("#{done} hosts recounted, up to host #{ids.last}") if done / LOG_EVERY > (done - ids.size) / LOG_EVERY

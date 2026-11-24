@@ -48,8 +48,8 @@ class HostVulnerabilitiesController < ApplicationController
     # Counted on the findings alone, in one query: the details' joins add no rows (#254). Grouped by the triage bucket
     # too (VT-HOST-TAB #260), so the four buckets add up to the open count in the same snapshot; a NULL bucket on an
     # open finding is one the upgrade's background re-triage has not reached yet (#277 item 15).
-    # And by the stored fix flag (VT-FIXABLE #256), for ?fix=available: the count the Compliance page and the fleet list
-    # link here with.
+    # And by the stored fix flag (VT-FIXABLE #256), for ?fix=available (nothing links there since VT-SCORES #262 put the
+    # buckets on the Compliance page and the fleet list; #301 proposes removing it).
     by_state = VulnerabilityFinding.where(host_id: @host.id).group(:state, :bucket, Arel.sql(VulnerabilityFinding::FIX_SQL)).count
     count = ->(states) { by_state.sum { |(state, _, _), n| states.include?(state) ? n : 0 } }
     @state_counts = { "open" => count.(%w[open reopened]), "resolved" => count.(%w[resolved]) }
@@ -65,9 +65,8 @@ class HostVulnerabilitiesController < ApplicationController
     @rule = HostTriageSections.rule_param(params[:rule]) if @state != "resolved"
     # The chip narrows the open and reopened list, the rows that show Debian's triage (T3, T5).
     @debian = params[:debian] == "no_dsa" && @state == "open" ? "no_dsa" : nil
-    # The Compliance page's and the fleet list's "N with a fix" land here (review of #281, S1): the open findings whose
-    # advisory data names a fix, the same stored flag they count, so the numbers agree. No chip: the bucket strip is
-    # the tab's own "Fix available".
+    # ?fix=available (review of #281, S1): the open findings whose advisory data names a fix, the stored flag. No chip:
+    # the bucket strip is the tab's own "Fix available".
     @fix = params[:fix] == "available" && @state == "open" ? "available" : nil
     load_triage_context
     @signals = Signals::Freshness.statuses
@@ -92,6 +91,9 @@ class HostVulnerabilitiesController < ApplicationController
                                                                                 untriaged: @bucket_counts["untriaged"], decisions: @decisions)
       @work = HostVulnerabilityWork.new(@host.id, decisions: @decisions)
       @listeners = VulnerabilityTriage::HostFacts.listener_coverage(@host.id)
+      # Why the host has its points (VT-SCORES #262), for a scored host only: a host not evaluated, or not triaged
+      # yet, has no points to explain.
+      @exposure = HostExposure.new(@host.id) if @summary.scores&.scored?
     end
     @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")
     # Debian's triage for the open and reopened rows on the page (T5); none on the resolved list.
@@ -157,6 +159,8 @@ class HostVulnerabilitiesController < ApplicationController
     @evaluation = HostVulnerabilityEvaluation.find_by(host_id: @host.id)
     @context = HostContext.load([ @host.id ]).first unless @evaluation
     @freshness = Advisories::Freshness.statuses
+    # The run badge is withheld while the advisory data for the host's release is stale (VT-M5 rule 2).
+    @advisories_stale = @freshness.find { |status| status.ecosystem == (@evaluation&.ecosystem || @context&.ecosystem) }&.stale != false
     @package_set = HostPackageSet.find_by(host_id: @host.id)
   end
 

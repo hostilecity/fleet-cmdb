@@ -7,6 +7,19 @@ class ComplianceSummaryRecountJob < ApplicationJob
 
   def self.after_import = ActiveRecord.after_all_transactions_commit { perform_later }
 
+  # The same for accepted risks recorded or ended (VT-SCORES #262, #298; the trigger queues their hosts): once a
+  # transaction, however many decisions it writes (a sweep slice ends up to a hundred), after it commits.
+  def self.after_decisions
+    return if Thread.current[:compliance_recount_after_decisions]
+
+    Thread.current[:compliance_recount_after_decisions] = true
+    ApplicationRecord.current_transaction.after_rollback { Thread.current[:compliance_recount_after_decisions] = nil }
+    ActiveRecord.after_all_transactions_commit do
+      Thread.current[:compliance_recount_after_decisions] = nil
+      perform_later
+    end
+  end
+
   def perform
     recounted = HostComplianceSummary.drain_recounts!
     FleetBroadcast.refresh if recounted.positive?

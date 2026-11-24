@@ -1,4 +1,4 @@
-<%# The fleet list's compliance panel (P2-D05, owner decision Q8): the fleet-wide open counts of the Compliance view, in two sentences. Not evaluated is said in words, never as 0. Locals: totals (FleetCompliance::Totals), rules_defined. %>
+<%# The fleet list's compliance panel (P2-D05, owner decision Q8): the fleet-wide open counts of the Compliance view, in two sentences, and the bucket totals with the work items (VT-SCORES #262). Not evaluated is said in words, never as 0. Locals: totals (FleetCompliance::Totals), rules_defined. %>
 <section class="sheet flat compliance-panel" aria-labelledby="compliance_summary_h" id="compliance_summary">
   <div class="group-head"><h2 id="compliance_summary_h">Compliance</h2><%= link_to "View fleet compliance", compliance_path %></div>
   <p>
@@ -15,4 +15,8 @@
       <strong><%= totals.vulns_open %></strong> open vulnerability <%= "finding".pluralize(totals.vulns_open) %> (<%= critical_and_high(totals.vulns) %>) on <%= totals.vulns_evaluated %> of <%= pluralize(totals.hosts, "host") %> evaluated.
     <% end %>
   </p>
+  <%# VT-SCORES (#262, VT-D06): the same findings by triage bucket, and the work items, each bucket linking to the Compliance page filtered by it. %>
+  <% unless totals.vulns_evaluated.zero? && totals.vulns_open.zero? %>
+    <p id="fleet_buckets"><%= bucket_totals_line(totals, ->(bucket) { compliance_path(bucket:) }) %></p>
+  <% end %>
 </section>

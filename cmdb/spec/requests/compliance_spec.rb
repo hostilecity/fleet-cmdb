@@ -200,37 +200,34 @@ RSpec.describe "Compliance", :signed_in, type: :request do
       expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage" with distribution Debian:13.))
     end
 
-    it "says how many open findings have a fix, and filters by it, alone or with a severity (VT-FIXABLE #256)" do
-      get "/compliance"
-      expect(words(page.at_css("#fleet_fixable"))).to eq("No evaluated host has an open finding with a fix available.")
-      expect(page.at_css("tr#compliance_host_#{web.id} th .fix-detail").text).to eq("None with a fix")
-      findings!(web, "low", "low", fixed: "2.0-1")
+    it "draws a line of bucket totals under the severity strip, each a filter, and each host's fix and attention counts (VT-SCORES #262)" do
+      findings!(web, "low", "low", fixed: "2.0-1", rule: "F1")
+      findings!(web, "high", rule: "N4")
+      findings!(web, "medium", rule: "I2")
       old = enrolled_host(name: "Old findings").first
       vulns_evaluated!(old, state: "not_evaluated", reason: "unsupported_package_manager")
-      findings!(old, "high", fixed: "2.0-1") # kept from an earlier evaluation: never counted as having a fix
+      findings!(old, "high", fixed: "2.0-1", rule: "F1") # kept from an earlier evaluation: in its bucket, no row detail
+      triage_all!(web)
       get "/compliance"
-      expect(words(page.at_css("#fleet_fixable"))).to eq("1 host has open findings with a fix available: 2 findings.")
-      expect(page.at_css("#fleet_fixable a")["href"]).to eq("/compliance?fix=available")
-      link = page.at_css("tr#compliance_host_#{web.id} th .fix-detail a")
-      expect([ link.text, link["href"] ]).to eq([ "2 with a fix", "/hosts/#{web.id}/vulnerabilities?fix=available" ])
+      expect(words(page.at_css("#fleet_buckets"))).to eq("3 fix available (1 work item on 2 scored hosts) · 1 needs attention · 2 low risk · 1 ignorable: open findings of the 5 active hosts, 2 evaluated now.")
+      expect(page.css("#fleet_buckets a").map { |a| query(a) }).to eq(%w[fix attention low_risk ignorable].map { |b| { "bucket" => b } })
+      detail = page.at_css("tr#compliance_host_#{web.id} th .fix-detail")
+      expect(words(detail)).to eq("2 fix available · 1 finding needs attention")
+      expect(detail.css("a").map { |a| a["href"] }).to eq([ "/hosts/#{web.id}/vulnerabilities?bucket=fix#fix", "/hosts/#{web.id}/vulnerabilities?bucket=attention#attn" ])
       expect(page.at_css("tr#compliance_host_#{old.id} th .fix-detail")).to be_nil
-      expect(page.css("#compliance_table th .fix-detail").size).to eq(1) # build and backup have nothing open
-      expect(page.css("select[name=fix] option").map { |o| [ o.text, o["value"] ] }).to eq([ [ "All hosts", "" ], [ "Has open findings with a fix", "available" ] ])
+      expect(page.css("select[name=bucket] option").map { |o| o["value"] }).to eq([ "", "fix", "attention", "low_risk", "ignorable" ])
 
-      get "/compliance", params: { fix: "available" }
+      get "/compliance", params: { bucket: "attention" }
       expect(row_names).to eq([ "Web A" ])
-      expect(words(page.at_css("#fix_filter"))).to eq("Showing evaluated hosts with an open finding that has a fix available. Show hosts with or without a fix")
-      expect(page.at_css("#fix_filter a")["href"]).to eq("/compliance")
-      expect(page.at_css("select[name=fix] option[selected]")["value"]).to eq("available")
-      get "/compliance", params: { fix: "available", vuln: "low" }
-      expect(row_names).to eq([ "Web A" ])
-      expect(words(page.at_css("#severity_filter span"))).to eq("Showing hosts with open low vulnerability findings with a fix.")
-      expect(page.at_css("#severity_filter a")["href"]).to eq("/compliance") # one sentence, one link that clears both (review of #267, N1)
-      expect(page.at_css("#fix_filter")).to be_nil
-      get "/compliance", params: { fix: "available", vuln: "critical" }
-      expect(words(page.at_css("#no_matches strong"))).to eq("No hosts match open critical vulnerability findings with a fix.")
-      get "/compliance", params: { fix: "available", tag: "storage" }
-      expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage" with open findings with a fix.))
+      expect(words(page.at_css("#bucket_filter"))).to eq("Showing hosts with open findings in Needs attention. Show hosts in every bucket")
+      expect(page.at_css("#bucket_filter a")["href"]).to eq("/compliance")
+      expect(page.at_css("#fleet_buckets a[aria-current=true]").text).to eq("1 needs attention")
+      expect(page.at_css("select[name=bucket] option[selected]")["value"]).to eq("attention")
+      get "/compliance", params: { bucket: "fix", vuln: "high" }
+      expect(row_names).to eq([ "Web A", "Old findings" ]) # worst first: Web A has a critical too
+      expect(words(page.at_css("#bucket_filter span"))).to eq("Showing hosts with open findings in Fix available (and open high findings, not necessarily the same ones).")
+      get "/compliance", params: { bucket: "low_risk", tag: "storage" }
+      expect(words(page.at_css("#no_matches strong"))).to eq(%(No hosts match tag "storage" with open findings in Low risk.))
     end
 
     it "explains when nothing matches, with a way back" do

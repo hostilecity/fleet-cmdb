@@ -2,7 +2,8 @@
     host-vulns.html). Done items are the host's work events, which only its own reports write, so an advisory
     correction counts nothing; Low risk and Ignorable findings never count. locals: host, work (HostVulnerabilityWork),
     summary (HostSummary), attention (Needs attention findings), untriaged and open (findings not triaged yet, and all open
-    ones): with none triaged yet, no work is counted, so "Nothing to install" never stands for findings with no bucket. %>
+    ones): with none triaged yet, no work is counted, so "Nothing to install" never stands for findings with no bucket.
+    advisories_stale: whether the host's advisory data is stale, for the run badge (VT-SCORES #262). %>
 <% shown = HostVulnerabilitiesHelper::UPGRADES_LISTED %>
 <div class="work" id="work">
   <section class="sheet" aria-labelledby="work_heading">
@@ -26,6 +27,8 @@
         <% end %>
         <% if work.reboot %>
           <li><strong>Reboot</strong> into the newer kernel, which is installed but not running. It clears <%= pluralize(work.reboot.advisories, "kernel advisory", plural: "kernel advisories") %> on the running kernel: an installed kernel does nothing until it is booted.</li>
+        <% elsif work.reboot_flag_only? %>
+          <li id="work_reboot_flag"><strong>Reboot</strong>: the host reports that one is required<%= safe_join([ ", for ", safe_join(work.reboot_packages.first(shown).map { |p| tag.span(p, class: "mono") }, ", ") ]) if work.reboot_packages.present? %>. Until then, updated libraries may still be loaded in running programs.</li>
         <% end %>
       </ul>
     <% end %>
@@ -40,7 +43,7 @@
   </section>
   <section class="sheet" aria-labelledby="progress_heading" id="progress">
     <h2 id="progress_heading">Progress, last 30 days</h2>
-    <% if (why = progress_withheld(summary) || ("no open finding is triaged yet, so work remaining is not known." if untriaged.positive? && untriaged == open)) %>
+    <% if (why = progress_withheld(summary, max_age: summary.badges[:report_max_age]) || ("no open finding is triaged yet, so work remaining is not known." if untriaged.positive? && untriaged == open)) %>
       <p id="progress_withheld">Withheld: <%= why %></p>
     <% elsif work.nothing? %>
       <p id="progress_none">Nothing to install, and nothing done in the last 30 days.<%= " #{pluralize(number_with_delimiter(attention), 'finding')} still #{attention == 1 ? 'needs' : 'need'} attention." if attention.positive? %></p>
@@ -50,6 +53,8 @@
       <div class="progress-line"><meter id="progress_meter" min="0" max="<%= total %>" value="<%= work.done %>" aria-describedby="progress_text"><%= work.done %> of <%= total %></meter> <span class="big"><%= work.done %> of <%= total %></span></div>
       <p id="progress_text"><%= work.done %> of <%= pluralize(total, "work item") %> done<%= " (#{work_done_words(work.done_by_kind)})" if work.done.positive? %>.<%= " They cleared #{pluralize(number_with_delimiter(work.cleared), 'finding')}." if work.done.positive? %> <%= work.remaining %> <%= work.remaining == 1 ? "is" : "are" %> left.</p>
     <% end %>
+    <%# The run (VT-SCORES #262, VT-M5 rule 5), or why it is withheld. %>
+    <% if summary.scores&.scored? && (badge = run_badge(summary.scores, badges: summary.badges, advisories_stale:, tracker_stale: summary.tracker_status&.stale, withheld: true, id: "run_badge")) %><p id="run"><%= badge %></p><% end %>
     <p class="state-note">Done means the host's own reports show it: an installed version changed, a new kernel appeared, or the running kernel changed. A finding resolved because the advisory data changed counts nothing. Low risk and Ignorable findings never count.</p>
   </section>
 </div>

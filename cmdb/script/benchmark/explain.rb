@@ -44,22 +44,27 @@ module FleetBenchmark
           first = FleetList.new(sort: "last_seen").hosts.to_a
           FleetList.new(sort: "last_seen", after: first.last.id.to_s).hosts.to_a
         },
+        # VT-SCORES (#262): the Exposure and Work sorts, each an expression index read in order; the first page and the
+        # page after it.
+        "fleet list sorted by exposure and by work (first and second page each)" => lambda {
+          %w[exposure work].each do |sort|
+            first = FleetList.new(sort:).hosts.to_a
+            FleetList.new(sort:, after: first.last.id.to_s).hosts.to_a
+          end
+        },
+        "compliance /compliance?bucket=attention (one page view)" => lambda {
+          FleetCompliance.new(bucket: "attention").rows
+          FleetCompliance.new(bucket: "attention").total
+        },
         "compliance /compliance (one page view)" => lambda {
           c = FleetCompliance.new
           FleetCompliance.totals
           c.rows
           FleetCompliance.tags
         },
-        # VT-FIXABLE (#256): hosts with an open finding that has a fix, and of a severity with one.
-        "compliance /compliance?fix=available and &vuln=high (one page view each)" => lambda {
-          FleetCompliance.totals
-          FleetCompliance.new(fix: "available").rows
-          FleetCompliance.new(fix: "available").total
-          FleetCompliance.new(fix: "available", vuln: "high").rows
-        },
         # The per-host recount the summary triggers run at commit (ADR 0026), with the fix counts (#256): the counts
         # function alone, then the refresh that writes them.
-        "compliance summary recount of one package host (counts with the fix flag)" => lambda {
+        "compliance summary recount of one package host (counts with the fix flag, buckets, and exposure)" => lambda {
           ids = "ARRAY[#{package_host.id}]::bigint[]"
           ApplicationRecord.connection.select_all("SELECT * FROM host_compliance_counts(#{ids})")
           ApplicationRecord.connection.select_all("SELECT host_compliance_summaries_refresh(#{ids})")

@@ -792,7 +792,6 @@ td.decision .state-note { display: block; overflow-wrap: anywhere; }
 .radio-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
 .radio-cards .choice { margin: 0; }
 .radio-cards .choice .hint { display: block; margin: 0.25rem 0 0 1.5rem; }
-.host-line { display: block; font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); }
 .per-host { margin: 0.5rem 0 0; padding: 0; list-style: none; }
 .per-host li { border: 1px solid var(--rule); border-radius: 4px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; background: var(--sheet); }
 .per-host li.invalid { border-color: #b42318; }
@@ -806,3 +805,31 @@ td.decision .state-note { display: block; overflow-wrap: anywhere; }
 .mt0 { margin-top: 0; }
 .evidence .sig { white-space: normal; }
 .decision-note { display: block; margin-top: 0.25rem; }
+/* Exposure tier, run badge, and score (VT-SCORES #262; mockups tiles.html, fleet.html, states.html). The tier has bars
+   as well as its word, and the badge a mark, so neither depends on colour. */
+.tier { display: inline-flex; align-items: center; gap: 0.375rem; font-weight: 700; font-size: 0.875rem; white-space: nowrap; }
+.tier::before { font-size: 0.5625rem; letter-spacing: 0.0625rem; font-weight: 400; color: var(--ink); }
+.tier.t4::before { content: "\25AE\25AE\25AE\25AE"; content: "\25AE\25AE\25AE\25AE" / ""; }
+.tier.t3::before { content: "\25AE\25AE\25AE\25AF"; content: "\25AE\25AE\25AE\25AF" / ""; }
+.tier.t2::before { content: "\25AE\25AE\25AF\25AF"; content: "\25AE\25AE\25AF\25AF" / ""; }
+.tier.t1::before { content: "\25AE\25AF\25AF\25AF"; content: "\25AE\25AF\25AF\25AF" / ""; }
+.tier.t0::before { content: "\25AF\25AF\25AF\25AF"; content: "\25AF\25AF\25AF\25AF" / ""; }
+.tier.t4 { color: #8c1d13; }
+.tier.t3 { color: #a2381a; }
+.tier.t2 { color: #7a5410; }
+.tier.t1, .tier.t0 { color: #3d4f4b; }
+.glance .big .tier { font-size: 1.125rem; white-space: normal; }
+.glance .detail meter { width: 4rem; vertical-align: middle; }
+.honest { display: inline-flex; gap: 0.375rem; align-items: baseline; font-size: 0.8125rem; padding: 0.0625rem 0.5rem; border-radius: 999px; border: 1px solid var(--lamp-online); background: #e7f3ea; color: #1d5a2b; }
+.honest .scope { color: var(--ink-soft); }
+.honest.streak { border-color: var(--petrol); background: #e6f0f2; color: var(--petrol-dark); }
+.honest.streak::before { content: "\25B8"; content: "\25B8" / ""; }
+.honest.grace { border-color: #b7791f; background: var(--warn-bg); color: #6a4a10; }
+.honest.grace::before { content: "\25B8"; content: "\25B8" / ""; }
+.honest.withheld { border-style: dashed; border-color: var(--lamp-off); background: var(--panel); color: var(--ink-soft); }
+.honest.withheld::before { content: "\2205"; content: "\2205" / ""; }
+td .honest { display: flex; width: fit-content; margin-top: 0.25rem; }
+.host-line { display: block; font-family: var(--mono); font-size: 0.8125rem; color: var(--ink-soft); overflow-wrap: anywhere; }
+section.score { margin: 0 0 1.25rem; }
+details.score-table { margin-top: 0.75rem; }
+@media (forced-colors: active) { .honest { forced-color-adjust: auto; border: 1px solid CanvasText; } }
