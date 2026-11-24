@@ -88,7 +88,7 @@ class HostVulnerabilitiesController < ApplicationController
       untriaged_only = @bucket_counts["untriaged"].positive? && @bucket_counts["untriaged"] == @state_counts["open"]
       # The host's decisions (VT-OVERRIDES #261): the decision column, O1's reasons, and the decisions due. One query.
       @decisions = HostDecisions.new(@host.id)
-      @sections = HostTriageSections.new(scope.where(state: %w[open reopened]), bucket: untriaged_only ? "untriaged" : @bucket, rule: @rule, cursors:,
+      @sections = HostTriageSections.new(scope.where(state: %w[open reopened]), host_id: @host.id, bucket: untriaged_only ? "untriaged" : @bucket, rule: @rule, cursors:,
                                                                                 untriaged: @bucket_counts["untriaged"], decisions: @decisions)
       @work = HostVulnerabilityWork.new(@host.id, decisions: @decisions)
       @listeners = VulnerabilityTriage::HostFacts.listener_coverage(@host.id)
@@ -125,7 +125,7 @@ class HostVulnerabilitiesController < ApplicationController
     load_package_filters
     load_triage_context
     # The host's decisions (VT-OVERRIDES #261), for the same decision tags as the tab's. One query.
-    @page = HostPackageFindings.new(package_scope(host_findings.where(package: @package)), after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]),
+    @page = HostPackageFindings.new(package_scope(host_findings.where(package: @package)), host_id: @host.id, after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]),
                                                              count: (@package_counts.values.sum if @filters.empty?), decisions: HostDecisions.new(@host.id))
     # Opened from the tab's "N more" row (?from=tab, with its cursor): the page starts after the findings the row drew.
     @from_tab = params[:from] == "tab" && params[:after].present? && @page.notice.nil?
@@ -229,6 +229,6 @@ class HostVulnerabilitiesController < ApplicationController
   def groups(scope, section)
     prefix = section == :resolved ? "resolved_" : ""
     rank = section == :resolved ? :severity : :offenders
-    HostFindingGroups.new(scope, rank:, after: HostFindingGroups.cursor(params[:"#{prefix}after"], rank), before: HostFindingGroups.cursor(params[:"#{prefix}before"], rank))
+    HostFindingGroups.new(scope, host_id: @host.id, rank:, after: HostFindingGroups.cursor(params[:"#{prefix}after"], rank), before: HostFindingGroups.cursor(params[:"#{prefix}before"], rank))
   end
 end

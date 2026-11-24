@@ -10,7 +10,8 @@
 #
 # Then the triage inputs of every finding on the page (VulnerabilityTriage::Explain, for the reasons) and the KEV dates
 # and EPSS scores of their CVEs, for the reasons and the signals. scope: the open and reopened findings the filters
-# keep, a VulnerabilityFinding.with_details relation joined to advisories. bucket: the one section to show (?bucket=),
+# keep, a relation of host_id's findings joined to advisories: the plain table, or with details when a filter reads one
+# (VulnerabilityFinding.with_host_details; the sections add the details to the rows they load, #302). bucket: the one section to show (?bucket=),
 # or nil for all. cursors: { section => [after, before] } as parameters. untriaged: how many open findings have no
 # bucket. decisions: the host's HostDecisions (VT-OVERRIDES #261), for the decision column and O1's reasons.
 class HostTriageSections
@@ -28,7 +29,8 @@ class HostTriageSections
   # The rule of a ?rule= parameter when it is one of Low risk's or Ignorable's, else nil.
   def self.rule_param(value) = VulnerabilityTriage::RULES.key?(value) && RULE_BUCKETS.include?(VulnerabilityTriage::RULES[value]) ? value : nil
 
-  def initialize(scope, bucket: nil, rule: nil, cursors: {}, untriaged: 0, decisions: nil, now: Time.current)
+  def initialize(scope, host_id:, bucket: nil, rule: nil, cursors: {}, untriaged: 0, decisions: nil, now: Time.current)
+    @host_id = host_id
     @decisions = decisions
     @bucket = bucket
     @rule = rule && shown?(VulnerabilityTriage::RULES.fetch(rule)) ? rule : nil
@@ -81,12 +83,12 @@ class HostTriageSections
 
   def groups(scope, section)
     after, before = cursor(section)
-    HostFindingGroups.new(scope, rank: :offenders, after: HostFindingGroups.cursor(after, :offenders), before: HostFindingGroups.cursor(before, :offenders))
+    HostFindingGroups.new(scope, host_id: @host_id, rank: :offenders, after: HostFindingGroups.cursor(after, :offenders), before: HostFindingGroups.cursor(before, :offenders))
   end
 
   def advisory_groups(scope)
     after, before = cursor("attention")
-    HostAdvisoryGroups.new(scope, after: HostAdvisoryGroups.cursor(after), before: HostAdvisoryGroups.cursor(before))
+    HostAdvisoryGroups.new(scope, host_id: @host_id, after: HostAdvisoryGroups.cursor(after), before: HostAdvisoryGroups.cursor(before))
   end
 
   def load_details(now)

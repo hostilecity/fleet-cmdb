@@ -13,7 +13,7 @@
 #   KEV dates and EPSS scores a fixed number, so the page costs the same statements whatever the package's size.
 #
 # scope: the findings shown, a relation of findings joined to advisories (the controller's filters applied): the plain
-# table, or with details when a filter reads one (VulnerabilityFinding.with_host_details). The reasons' helper (triage_reason) reads inputs, kev_dates, epss_scores, and decisions, as on
+# table, or with details when a filter reads one (VulnerabilityFinding.with_host_details). host_id: the host they are of. The reasons' helper (triage_reason) reads inputs, kev_dates, epss_scores, and decisions, as on
 # HostTriageSections. decisions: the host's HostDecisions (VT-OVERRIDES #261), so a finding here shows the decision tags
 # it has on the tab: O1's control and its link, a Low risk finding's decision, and a Needs attention finding's, which
 # the tab shows in its Decision column.
@@ -50,8 +50,9 @@ class HostPackageFindings
     [ Advisory::SEVERITIES.index(finding.advisory.severity) + 1, finding.first_seen_at.utc.iso8601(6), finding.advisory.advisory_id, finding.id ].join(",")
   end
 
-  def initialize(scope, after: nil, before: nil, per_page: PER_PAGE, count: nil, decisions: nil, now: Time.current)
+  def initialize(scope, host_id:, after: nil, before: nil, per_page: PER_PAGE, count: nil, decisions: nil, now: Time.current)
     @scope = scope
+    @host_id = host_id
     @decisions = decisions
     @per_page = per_page
     cursor = before || after
@@ -90,7 +91,7 @@ class HostPackageFindings
     page = VulnerabilityFinding.unscoped.from(keyed, :vulnerability_findings)
     page = page.where("(#{KEY}) #{backwards ? '<' : '>'} #{CURSOR_KEY}", *cursor) if cursor
     page = page.order(*ordered(KEY.split(", "), backwards)).limit(@per_page + 1)
-    VulnerabilityFinding.with_details_of(page).joins(:advisory).preload(:advisory).order(*ordered(ROW_KEY, backwards)).to_a
+    VulnerabilityFinding.with_details_of(page, host_id: @host_id).joins(:advisory).preload(:advisory).order(*ordered(ROW_KEY, backwards)).to_a
   end
 
   def ordered(parts, backwards) = parts.map { |part| backwards ? Arel.sql(part).desc : Arel.sql(part) }

@@ -77,10 +77,11 @@ class HostFindingGroups
   end
 
   # scope: the findings shown, a relation of findings joined to advisories: the plain table, or with details when a
-  # filter reads one (VulnerabilityFinding.with_host_details). after, before:
+  # filter reads one (VulnerabilityFinding.with_host_details). host_id: the host they are of. after, before:
   # cursors from HostFindingGroups.cursor for this rank (before wins).
-  def initialize(scope, rank: :offenders, after: nil, before: nil, per_page: PER_PAGE)
+  def initialize(scope, host_id:, rank: :offenders, after: nil, before: nil, per_page: PER_PAGE)
     @scope = scope
+    @host_id = host_id
     @rank = rank
     @per_page = per_page
     cursor = before || after
@@ -147,7 +148,7 @@ class HostFindingGroups
     table = VulnerabilityFinding.arel_table
     pairs = rows.map { |row| Arel::Nodes::Grouping.new([ Arel::Nodes.build_quoted(row["package"]), Arel::Nodes.build_quoted(row["architecture"]) ]) }
     page = @scope.where(Arel::Nodes::In.new(Arel::Nodes::Grouping.new([ table[:package], table[:architecture] ]), pairs))
-    findings = VulnerabilityFinding.with_details_of(page).preload(:advisory).to_a.group_by { |finding| [ finding.package, finding.architecture ] }
+    findings = VulnerabilityFinding.with_details_of(page, host_id: @host_id).preload(:advisory).to_a.group_by { |finding| [ finding.package, finding.architecture ] }
     rows.filter_map do |row|
       list = findings[[ row["package"], row["architecture"] ]] or next
 
