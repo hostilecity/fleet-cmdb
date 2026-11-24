@@ -119,5 +119,47 @@ RSpec.describe HostFindingGroups do
     expect(statements.size).to eq(2)
     expect(statements.last).to include("row_number() OVER (PARTITION BY vulnerability_findings.package, vulnerability_findings.architecture ORDER BY")
                            .and match(/row_rank <= (3|\$\d+)/)
+                           .and include("count(*) FILTER (WHERE vulnerability_findings.state = 'reopened') OVER (PARTITION BY vulnerability_findings.package, vulnerability_findings.architecture)")
+  end
+
+  # Review of #321, S1: a matching run that commits between the groups' query and the findings' load (the tab reads
+  # with no transaction, often from a replica) must not make a row contradict itself. Five of bash's seven findings
+  # are resolved when the groups are read and reopened before the findings are loaded: the row counts the seven its
+  # load saw, and draws its "N more", as when every finding was loaded.
+  it "counts a row from the same statement as its findings, whatever commits between the two queries" do
+    import
+    bash(2, 3, 4, 5, 6).update_all(state: "resolved", resolution: "fixed", resolved_at: Time.current, bucket: nil, bucket_rule: nil, kev: nil)
+    allow_any_instance_of(described_class).to receive(:read).and_wrap_original do |original, *arguments| # rubocop:disable RSpec/AnyInstance
+      original.call(*arguments).tap do
+        bash(2, 3, 4, 5, 6).update_all(state: "reopened", resolution: nil, resolved_at: nil, reopened_at: Time.current, bucket: 3, bucket_rule: 19, kev: false)
+      end
+    end
+    groups = described_class.new(scope.where(state: %w[open reopened]), host_id: host.id)
+    group = groups.groups.find { |g| g.package == "bash" }
+    expect(group.findings.size).to eq(3)
+    expect(counts(group)).to eq(expected(VulnerabilityFinding.where(host:, package: "bash").preload(:advisory).to_a))
+    expect(group.total).to eq(7)
+    expect(group.states).to eq("open" => 2, "reopened" => 5)
+    expect(group.total).to be > HostTriageSections::NESTED_MAX # so the tab draws its "N more"
+  end
+
+  # Review of #321, N1: the window picks the row's first findings in the order Ruby draws them, bytewise ("C"), whatever
+  # the database's collation, or the "N more" cursor would skip or repeat findings. The advisory id column gets ICU's
+  # root collation (in PostgreSQL's ICU builds, CI's included), which puts "a" before "B": bytewise, B1 and C1 come
+  # before a1; under ICU, a1 and B1 would be loaded instead. Rolled back.
+  it "picks a row's first findings in bytewise advisory id order, whatever the database's collation" do
+    ActiveRecord::Base.connection.execute('ALTER TABLE advisories ALTER COLUMN advisory_id TYPE varchar(128) COLLATE "und-x-icu"')
+    ActiveRecord::Base.connection.clear_cache!
+    expect(ActiveRecord::Base.connection.select_value(%q(SELECT 'a' < 'B' COLLATE "und-x-icu"))).to be(true)
+    stub_const("HostTriageSections::NESTED_MAX", 1)
+    import_advisories(*%w[DEBIAN-CVE-2026-a1 DEBIAN-CVE-2026-B1 DEBIAN-CVE-2026-C1].map { |id| osv_record(id:, package: "bash", fixed: nil, severity: cvss("C:H/I:H/A:H")) }, full: true)
+    VulnerabilityMatcher.match!([ host.id ])
+    VulnerabilityFinding.where(host:).update_all(first_seen_at: 1.day.ago.beginning_of_minute)
+    group = described_class.new(scope, host_id: host.id).groups.sole
+    expect(group.findings.map { |f| f.advisory.advisory_id }).to eq(%w[DEBIAN-CVE-2026-B1 DEBIAN-CVE-2026-C1])
+    expect(group.total).to eq(3)
+  ensure
+    ActiveRecord::Base.connection.execute('ALTER TABLE advisories ALTER COLUMN advisory_id TYPE varchar(128) COLLATE "default"')
+    ActiveRecord::Base.connection.clear_cache!
   end
 end

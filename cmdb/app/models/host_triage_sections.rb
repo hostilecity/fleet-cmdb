@@ -69,9 +69,11 @@ class HostTriageSections
   # Every finding on the page, and every finding a Fix available package row loads: its "Upgrade to" is the highest
   # fix of all its findings, which F2's needs their inputs for (re-check of #281, N3), so a row past NESTED_MAX loads
   # its witnesses too (HostFindingGroups, #318): one finding of each fixed version, and every one with none.
-  def findings
-    Array(packages&.groups).flat_map(&:loaded) +
-      [ kernel, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map { |group| self.class.shown(group) } } +
+  def findings = (Array(packages&.groups).flat_map(&:loaded) + drawn).uniq
+
+  # The findings drawn on the page: what Debian's triage lines are read for (FindingTriage, review of #321, N3).
+  def drawn
+    [ packages, kernel, rule_groups, untriaged ].compact.flat_map { |list| list.groups.flat_map { |group| self.class.shown(group) } } +
       Array(attention&.groups).flat_map(&:findings)
   end
 
