@@ -8,7 +8,10 @@
 # - agent_last_stop_*: how the process before it stopped, as systemd told the unit's ExecStopPost=;
 # - agent_recent_restarts: the server's time of each restart the heartbeats showed, newest first, at most 32
 #   (Liveness::RESTART_HISTORY), from which "restarted more than N times in the last day" is counted exactly for any
-#   N below 32; agent_restarted_at is its first element, the last change, which the fleet filter's index reads.
+#   N below 32; agent_restarted_at is its first element, the last change;
+# - agent_restart_loop_at: its (limit + 1)th element (config.x.restart_loop.limit), or NULL with fewer restarts: the
+#   host is in a restart loop while this is within the window, which the fleet filter's partial index reads, so the
+#   filter's page reads only the hosts that loop (review of #307, S1).
 #
 # Nullable columns without defaults rewrite no row, and the check constraints are added NOT VALID, so nothing scans
 # hosts while this transaction holds its ACCESS EXCLUSIVE lock; the next migration validates them with a lock that
@@ -20,6 +23,7 @@ class AddAgentProcessToHosts < ActiveRecord::Migration[8.1]
       t.bigint :agent_restarts
       t.datetime :agent_restarted_at
       t.datetime :agent_recent_restarts, array: true
+      t.datetime :agent_restart_loop_at
       t.string :agent_last_stop_result, limit: 32
       t.string :agent_last_stop_exit_code, limit: 8
       t.integer :agent_last_stop_exit_status, limit: 2

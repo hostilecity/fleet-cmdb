@@ -105,7 +105,7 @@ RSpec.describe "Hosts", :signed_in, type: :request do
         expect(select.css("option").map { |o| [ o["value"], o.text ] }).to eq([ [ "", "Any" ], [ "loop", "More than 3 times in 24 hours" ] ])
         get "/", params: { restarts: "loop" }
         expect(words(page.at_css("#no_restart_loops"))).to eq("No agent restarted more than 3 times in 24 hours. Show the whole fleet")
-        media.update_columns(agent_restarted_at: 1.hour.ago, agent_recent_restarts: [ 1.hour.ago ] * 4)
+        media.update_columns(agent_restarted_at: 1.hour.ago, agent_recent_restarts: [ 1.hour.ago ] * 4, agent_restart_loop_at: 1.hour.ago)
         get "/", params: { restarts: "loop", sort: "status" }
         expect(row_names).to eq([ "Media server" ])
         expect(page.at_css("select[name=restarts] option[selected]")["value"]).to eq("loop")
@@ -393,14 +393,15 @@ RSpec.describe "Hosts", :signed_in, type: :request do
       expect(section.call).to be_nil # no heartbeat yet
       record_heartbeat(host)
       get "/hosts/#{host.id}"
-      expect(words(section.call)).to eq("Agent version 0.1.0 does not report its restarts. Releases from #251 on do.")
+      expect(words(section.call)).to eq("Agent version 0.1.0 does not report its restarts. Agent releases after 0.1.1 report them.")
       started = Time.utc(2026, 1, 1, 12)
       host.update_columns(agent_process_started_at: started, agent_restarts: nil)
       get "/hosts/#{host.id}"
       rows = -> { section.call.css("dt").to_h { |dt| [ dt.text, dt.next_element.text.squish ] } }
       expect(rows.call).to eq("Agent running since" => "2026-01-01 12:00 UTC (agent's clock)", "Restarts in the last 24 hours" => "0",
                               "Restarts by systemd" => "Not known (since it was last started by a person, an update, or a boot)",
-                              "Last stop" => "Not recorded")
+                              "Last stop" => "Not recorded (the units on the VM are from before agent releases after 0.1.1 and have no stop hook; " \
+                                             "a confirmed update writes the new ones. Or the agent stopped without systemd running the hook, as in a power loss or a hard reset.)")
       expect(page.at_css("#restart_loop_host_#{host.id}")).to be_nil
       restarts = [ 10.minutes.ago, 20.minutes.ago, 30.minutes.ago, 40.minutes.ago ]
       host.update_columns(agent_restarts: 4, agent_recent_restarts: restarts, agent_restarted_at: restarts.first,

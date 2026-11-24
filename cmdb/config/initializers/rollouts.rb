@@ -34,6 +34,18 @@ Rails.application.configure do
   # which halts the rollout. The agent's own rollback deadline is 5 minutes (ADR 0018).
   rollouts.confirmation_timeout ||= Integer(ENV.fetch("FLEET_UPDATE_CONFIRMATION_TIMEOUT_MINUTES", "30")).clamp(1..).minutes
 
+  # Once every host of a stage has confirmed, the stage stays open this long before the next one opens, or the last one
+  # completes the rollout (#251, owner decision 2026-11-23, ADR 0018): restarts keep counting meanwhile, so a release
+  # that leaks slowly halts at the canaries, not after the whole fleet has it. An operator's Advance does not wait. A
+  # whole number of minutes from 0 (no observation) to 10,080 (a week); anything else stops the server from starting.
+  rollouts.stage_observe ||= begin
+    value = ENV.fetch("FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES", "30")
+    minutes = Integer(value, 10, exception: false)
+    raise "FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES must be a whole number of minutes from 0 to 10080 (got #{value.inspect})" unless minutes&.between?(0, 10_080)
+
+    minutes.minutes
+  end
+
   # A restart loop (#251, ADR 0018): an agent that systemd restarted more than restart_limit times within
   # restart_window. A host in a rollout that does so after it was sent the update counts as failed for its stage, which
   # halts the rollout (owner, 2026-11-23: 3 times in 24 hours), and the fleet list's "Restarted" filter lists the hosts

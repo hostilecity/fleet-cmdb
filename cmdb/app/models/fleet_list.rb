@@ -75,11 +75,13 @@ class FleetList
   WITHOUT_RECOVERY_MODE = "hosts.enrollment_state = 'active' AND hosts.first_seen_at IS NOT NULL AND hosts.agent_recovery_coverage IS DISTINCT FROM 'set_up'".freeze
 
   # The restart-loop filter (#251): hosts whose agent systemd restarted more than the restart-loop limit within its
-  # window (config.x.restart_loop, 3 times in 24 hours by default). agent_recent_restarts holds the last restarts newest
-  # first, so the (limit + 1)th is within the window exactly when there were more than limit. The first condition is the
-  # partial index index_hosts_restarted, so only hosts that restarted within the window are read.
+  # window (config.x.restart_loop, 3 times in 24 hours by default). agent_restart_loop_at is the (limit + 1)th newest
+  # restart, within the window exactly when there were more than limit; it is the partial index index_hosts_restart_loops,
+  # so the page reads only the hosts that loop, whatever the fleet's size (review of #307, S1). The array condition is
+  # the same rule read from agent_recent_restarts, for a host whose column was stored under a higher limit; after
+  # lowering FLEET_RESTART_LOOP_RESTARTS, `bin/rails restart_loops:refresh` (Host.refresh_restart_loops!) stores it again.
   RESTART_FILTERS = %w[loop].freeze
-  RESTART_LOOP = "hosts.agent_restarted_at >= :since AND hosts.agent_recent_restarts[:position] >= :since".freeze
+  RESTART_LOOP = "hosts.agent_restart_loop_at >= :since AND hosts.agent_recent_restarts[:position] >= :since".freeze
 
   attr_reader :q, :tag, :status, :recovery, :vulns, :restarts, :sort, :direction
 

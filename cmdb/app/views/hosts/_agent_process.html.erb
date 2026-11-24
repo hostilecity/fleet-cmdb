@@ -5,7 +5,7 @@
 <% if host.enrollment_state == "active" && host.first_seen_at %>
   <div id="<%= dom_id(host, :agent_process) %>">
     <% if host.agent_process_started_at.nil? %>
-      <p class="muted">Agent version <code><%= host.agent_version %></code> does not report its restarts. Releases from #251 on do.</p>
+      <p class="muted">Agent version <code><%= host.agent_version %></code> does not report its restarts. Agent releases after 0.1.1 report them.</p>
     <% else %>
       <% window = Rollouts.restart_loop.window %>
       <% recent = host.agent_restarts_within(window) %>
@@ -20,7 +20,7 @@
         <dt>Agent running since</dt><dd><%= utc(host.agent_process_started_at) %> <span class="muted">(agent's clock)</span></dd>
         <dt>Restarts in the last <%= pluralize(window.in_hours.to_i, "hour") %></dt><dd><%= recent %><% if host.agent_restarted_at %> <span class="muted">(last <%= utc(host.agent_restarted_at) %>)</span><% end %></dd>
         <dt>Restarts by systemd</dt><dd><%= host.agent_restarts.nil? ? unavailable("Not known") : host.agent_restarts %> <span class="muted">(since it was last started by a person, an update, or a boot)</span></dd>
-        <dt>Last stop</dt><dd><% if host.agent_last_stop_result %><%= agent_last_stop_words(host) %> <span class="muted"><%= utc(host.agent_last_stop_at) %></span><% else %><%= unavailable("Not recorded") %><% end %></dd>
+        <dt>Last stop</dt><dd><% if host.agent_last_stop_result %><%= agent_last_stop_words(host) %> <span class="muted"><%= utc(host.agent_last_stop_at) %></span><% else %><%= unavailable("Not recorded") %> <span class="muted">(the units on the VM are from before agent releases after 0.1.1 and have no stop hook; a confirmed update writes the new ones. Or the agent stopped without systemd running the hook, as in a power loss or a hard reset.)</span><% end %></dd>
       </dl>
     <% end %>
   </div>

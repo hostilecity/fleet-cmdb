@@ -487,6 +487,21 @@ RSpec.describe "POST /api/v1/heartbeat", type: :request do
       expect(FleetBroadcast).to have_received(:hosts_changed).with([ host.id ]).exactly(6).times
     end
 
+    it "writes nothing on a steady heartbeat whose times have more digits than PostgreSQL keeps (review of #307, S2)" do
+      fine = process(started_at: "2026-01-01T11:00:00.123456789Z", last_stop: oom.merge(stopped_at: "2026-01-01T10:59:00.987654321Z"))
+      beat(fine)
+      expect(host.reload.agent_process_started_at).to eq(Time.utc(2026, 1, 1, 11, 0, 0.123457r))
+      expect(hosts_writes { 3.times { beat(fine) } }).to be_empty
+    end
+
+    it "counts a jump to systemd's largest count as the history's 32 entries, without building a larger list (N3)" do
+      beat(process)
+      allow(Array).to receive(:new).and_call_original
+      beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 4_294_967_295))
+      expect(host.reload.agent_recent_restarts.size).to eq(Liveness::RESTART_HISTORY)
+      expect(host.agent_restart_loop_at).to eq(host.agent_recent_restarts[Rollouts.restart_loop.limit])
+    end
+
     it "keeps at most 32 restarts, newest first" do
       beat(process)
       beat(process(started_at: "2026-01-01T12:00:00.000Z", restarts: 40))

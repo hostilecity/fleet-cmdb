@@ -168,15 +168,26 @@ module Rollouts
     end
   end
 
-  # Enqueues RolloutAdvanceJob for a running rollout whose current stage has confirmed and is not the last: a backstop
-  # for an advance job that was lost, run every minute by RolloutTimeoutJob. It only enqueues: that job runs on the
-  # realtime queue, which no long job may delay (S-7), and a stage's prepare can take minutes (review of #215). A
-  # duplicate job is harmless: prepares are serialised and the advance re-checks the stage.
+  # Run every minute by RolloutTimeoutJob, for each running rollout whose current stage has confirmed: moves it on once
+  # its observation time (config.stage_observe, #251) has passed, and is the backstop for an advance job that was lost.
+  # Under the rollout lock it only notes the time, enqueues RolloutAdvanceJob, or completes a rollout whose last stage
+  # was observed (advance_if_confirmed!): that job runs on the realtime queue, which no long job may delay (S-7), and a
+  # stage's prepare can take minutes, so it is left to RolloutAdvanceJob (review of #215). A duplicate job is harmless:
+  # prepares are serialised and the advance re-checks the stage.
   def advance_confirmed_stages!
     Rollout.where(state: "running").find_each do |rollout|
-      RolloutAdvanceJob.perform_later(rollout.id, rollout.current_stage) if advanceable?(rollout, rollout.current_stage)
+      next unless stage_confirmed?(rollout)
+
+      rollout.with_lock do
+        advance_if_confirmed!(rollout, actor: Audit::SYSTEM)
+        FleetBroadcast.refresh unless rollout.state == "running"
+      end
     end
   end
+
+  # When the open stage's observation ends (#251): FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES after its hosts had all confirmed,
+  # or nil while they have not.
+  def observing_until(rollout) = rollout.stage_confirmed_at && rollout.stage_confirmed_at + config.stage_observe
 
   def halt!(rollout, actor:, reason: "halted by an operator")
     in_state!(rollout, "running") { halt_locked!(rollout, actor:, reason:) }
@@ -188,7 +199,9 @@ module Rollouts
       now = Time.current
       # The time halted no longer counts against the open stage's window (#199): its pending offers stay spread.
       halted = rollout.halted_at ? (now - rollout.halted_at).floor : 0
-      rollout.update!(state: "running", resumed_by: actor, resumed_at: now, halted_seconds: rollout.halted_seconds + halted)
+      # A resume observes the stage again from now (#251): what halted it may have been a restart loop.
+      rollout.update!(state: "running", resumed_by: actor, resumed_at: now, halted_seconds: rollout.halted_seconds + halted,
+                      stage_confirmed_at: nil)
       Audit.record(actor:, action: Audit::Actions::ROLLOUT_RESUMED, target: rollout,
                    changes: { "state" => [ "halted", "running" ], "reason" => rollout.halt_reason })
       advance_if_confirmed!(rollout, actor: Audit::SYSTEM)
@@ -254,7 +267,7 @@ module Rollouts
       # The first offer re-reads the rollout under a share lock that never waits (see directive_for).
       return nil unless Rollout.where(id: rollout_id, state: "running").lock("FOR SHARE SKIP LOCKED").exists?
     end
-    if state == "pending" && RolloutHost.where(id:, state: "pending").update_all(state: "updating", offered_at: now, updated_at: now) == 1
+    if state == "pending" && first_offer!(id, now) == 1
       # Once per host and rollout, never on a repeat heartbeat: the request is on the host's audit trail even if the
       # rollout is cancelled before the host reports or times out.
       Audit.record(actor: Audit::SYSTEM, action: Audit::Actions::UPDATE_REQUESTED, target: Host.find(host_id),
@@ -263,6 +276,19 @@ module Rollouts
     end
     DIRECTIVE_FILES.transform_values { |file| Releases.download_url(version, file) }.merge(rollout_id:, version:)
   end
+
+  # Marks a pending host updating, offered now, in one statement that also stores its restarts within the restart-loop
+  # window before the offer (#251, owner decision 2026-11-23): more than the limit means it was already looping, which
+  # then does not count towards the halt (restarts_seen!). Once per host and rollout, so the hosts row is read by key
+  # once. Returns the rows changed (1, or 0 when another heartbeat offered it first).
+  def first_offer!(id, now)
+    RolloutHost.where(id:, state: "pending").update_all([ <<~SQL.squish, now, now, now - restart_loop.window, now ])
+      state = 'updating', offered_at = ?, updated_at = ?,
+      restarts_before_offer = (SELECT count(*) FROM hosts h, unnest(h.agent_recent_restarts) t
+                                WHERE h.id = rollout_hosts.host_id AND t > ? AND t <= ?)
+    SQL
+  end
+  private_class_method :first_offer!
 
   # Stores the outcome an agent reported (POST /api/v1/update-results). Runs inside the request transaction,
   # under the host row lock (AgentHostLock). A report_id already stored is a duplicate and changes nothing.
@@ -302,18 +328,22 @@ module Rollouts
   # row lock and in the heartbeat's transaction, only for a heartbeat whose `process` object shows new restarts; recent
   # is the host's agent_recent_restarts as now stored (newest first). A host of the open rollout that was sent the
   # update (updating or confirmed) and has restarted more than config.x.restart_loop.limit times within
-  # config.x.restart_loop.window, counting only restarts since it was offered, is marked restart_loop: it counts as
-  # failed, so its stage cannot complete, and a running rollout halts, as for a rollback. So a release that leaks
-  # slowly halts with the first hosts that run it, although each of their processes heartbeats and confirms normally.
-  # A host already failed, rolled back, or unconfirmed is left as it is, and one marked once is not marked again. One
-  # indexed read when the host is in no open rollout; lock order host row, then rollout, then rollout host. Returns the
-  # rollout host it marked, or nil.
+  # config.x.restart_loop.window, counting only restarts after its offer, is marked restart_loop: it counts as failed,
+  # so its stage cannot complete, and a running rollout halts, as for a rollback. The stage observation time
+  # (config.stage_observe) keeps a confirmed stage open meanwhile, so a release that leaks slowly halts with the first
+  # hosts that run it, although each of their processes heartbeats and confirms normally.
+  #
+  # A host that was already looping before its offer (more than the limit within the window before it,
+  # restarts_before_offer; owner decision 2026-11-23) is not counted: the update did not cause that, and the rollout and
+  # host pages say it was looping before. A host already failed, rolled back, or unconfirmed is left as it is, and one
+  # marked once is not marked again. One indexed read when the host is in no open rollout; lock order host row, then
+  # rollout, then rollout host. Returns the rollout host it marked, or nil.
   def restarts_seen!(host:, recent:, now: Time.current)
     member = RolloutHost.joins(:rollout).where(host_id: host.id, state: RESTART_COUNTED_STATES, rollouts: { state: Rollout::OPEN_STATES })
                         .where.not(offered_at: nil).first
-    return unless member
+    return unless member && !looping_before_offer?(member)
 
-    restarts = restarts_since(recent, [ now - restart_loop.window, member.offered_at ].max)
+    restarts = restarts_after(recent, member.offered_at, now - restart_loop.window)
     return unless restarts > restart_loop.limit
 
     rollout = Rollout.lock.find(member.rollout_id)
@@ -321,14 +351,16 @@ module Rollouts
     return unless Rollout::OPEN_STATES.include?(rollout.state) && RESTART_COUNTED_STATES.include?(member.state)
 
     member.update!(state: "restart_loop", resolved_at: now)
-    hours = restart_loop.window.in_hours.to_i
-    reason = "Restarted #{restarts} times within #{hours} hours of the update (more than #{restart_loop.limit})."
+    within = "#{count_words(restarts, 'time')} within #{count_words(restart_loop.window.in_hours.to_i, 'hour')} of the update"
+    stop = Host.where(id: host.id).first&.agent_last_stop_words # as this heartbeat stored it
+    last = "; last stop: #{stop.sub(/\A./, &:downcase)}" if stop
+    reason = "Restarted #{within} (more than #{restart_loop.limit})#{last}."
     Audit.record(actor: Audit::SYSTEM, action: Audit::Actions::UPDATE_RESTART_LOOP, target: member,
                  changes: { "host_id" => host.id, "rollout_id" => rollout.id, "version" => rollout.agent_release.version,
-                            "restarts" => restarts, "window_hours" => hours, "reason" => reason })
+                            "restarts" => restarts, "window_hours" => restart_loop.window.in_hours.to_i, "reason" => reason })
     FleetBroadcast.hosts_changed([ host.id ])
     if rollout.state == "running"
-      halt_locked!(rollout, actor: Audit::SYSTEM, reason: "#{host.name.truncate(100)} restarted #{restarts} times within #{hours} hours of the update.")
+      halt_locked!(rollout, actor: Audit::SYSTEM, reason: "#{host.name.truncate(100)} restarted #{within}#{last}.")
       FleetBroadcast.refresh
     end
     member
@@ -339,6 +371,16 @@ module Rollouts
 
   # How many of the times in recent (newest first) are at or after since.
   def restarts_since(recent, since) = Array(recent).count { |at| at >= since }
+
+  # How many are after offered (strictly: a restart counted by the heartbeat that took the offer has the offer's own
+  # time, and happened before it; review of #307, N2) and at or after since.
+  def restarts_after(recent, offered, since) = Array(recent).count { |at| at > offered && at >= since }
+
+  # The host was already looping when it was offered the update (#251): more than the limit within the window before.
+  def looping_before_offer?(member) = member.restarts_before_offer.to_i > restart_loop.limit
+
+  # "1 time", "4 times".
+  def count_words(count, word) = "#{count} #{count == 1 ? word : word.pluralize}"
 
   # Marks hosts that were sent the directive and have not reported within the confirmation timeout as
   # unconfirmed, and halts their running rollout. Returns the number of hosts marked. Idempotent.
@@ -391,9 +433,21 @@ module Rollouts
   end
   private_class_method :finish!
 
+  # Under the rollout lock. Once the open stage has confirmed, it is observed for config.stage_observe (#251, owner
+  # decision 2026-11-23): stage_confirmed_at is noted, and nothing moves on until that time has passed, so restarts of
+  # its hosts can still halt the rollout before the next stage is offered. The last stage is observed too, before the
+  # rollout completes: once completed, nothing can halt it. RolloutTimeoutJob calls this every minute
+  # (advance_confirmed_stages!). A stage without hosts, or an observation time of 0, moves on at once.
   def advance_if_confirmed!(rollout, actor:)
     return unless rollout.state == "running"
-    return if rollout.rollout_hosts.where(stage: rollout.current_stage).where.not(state: "confirmed").exists?
+    return unless stage_confirmed?(rollout)
+
+    if rollout.stage_confirmed_at.nil? && config.stage_observe.positive? && rollout.rollout_hosts.exists?(stage: rollout.current_stage)
+      rollout.update!(stage_confirmed_at: Time.current)
+      FleetBroadcast.refresh
+      return
+    end
+    return if rollout.stage_confirmed_at && Time.current < observing_until(rollout)
 
     if rollout.final_stage?
       # After an operator advanced early, hosts of earlier stages may still be pending or updating. Completing now
@@ -422,17 +476,27 @@ module Rollouts
   end
   private_class_method :check_advance!
 
-  # Running at stage from, not the last, and every host of it confirmed.
+  # Running at stage from, not the last, every host of it confirmed, and observed (#251): its observation time over, or
+  # none needed (an observation time of 0, or a stage without hosts).
   def advanceable?(rollout, from)
-    rollout.state == "running" && rollout.current_stage == from && !rollout.final_stage? &&
-      !rollout.rollout_hosts.where(stage: from).where.not(state: "confirmed").exists?
+    return false unless rollout.state == "running" && rollout.current_stage == from && !rollout.final_stage? && stage_confirmed?(rollout)
+
+    if rollout.stage_confirmed_at
+      Time.current >= observing_until(rollout)
+    else
+      config.stage_observe.zero? || !rollout.rollout_hosts.exists?(stage: from)
+    end
   end
   private_class_method :advanceable?
+
+  # Every host of the open stage has confirmed.
+  def stage_confirmed?(rollout) = !rollout.rollout_hosts.where(stage: rollout.current_stage).where.not(state: "confirmed").exists?
+  private_class_method :stage_confirmed?
 
   # Under the rollout lock: opens the next stage, whose hosts prepare_stage! chose, in one short update.
   def advance_stage!(rollout, actor:, reason:)
     from = rollout.current_stage
-    rollout.update!(current_stage: from + 1, stage_opened_at: Time.current)
+    rollout.update!(current_stage: from + 1, stage_opened_at: Time.current, stage_confirmed_at: nil)
     added = rollout.rollout_hosts.where(stage: from + 1).count
     Audit.record(actor:, action: Audit::Actions::ROLLOUT_ADVANCED, target: rollout,
                  changes: { "stage" => [ from, from + 1 ], "hosts_added" => added, "reason" => reason })

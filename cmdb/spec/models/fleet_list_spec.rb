@@ -84,19 +84,25 @@ RSpec.describe FleetList do
       expect(described_class.new(recovery: "everything").recovery).to be_nil
     end
 
+    # As the heartbeat stores them (Liveness.process_columns): the (limit + 1)th newest restart in the indexed column.
+    def restarted(host, times) = host.update_columns(agent_restarted_at: times.first, agent_recent_restarts: times,
+                                                     agent_restart_loop_at: times[Rollouts.restart_loop.limit])
+
     it "filters to the hosts whose agent restarted more than the limit within the window, with the other filters (#251)" do
       now = Time.current
-      media.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 4)  # 4 in a day
-      web.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 3)    # exactly 3: no
-      build.update_columns(agent_restarted_at: now - 2.hours, agent_recent_restarts: [ now - 2.hours ] * 3 + [ now - 25.hours ])
-      revoked.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 9) # not retired: listed
-      retired.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 9)
+      restarted(media, [ now - 1.hour ] * 4)  # 4 in a day
+      restarted(web, [ now - 1.hour ] * 3)    # exactly 3: no
+      restarted(build, [ now - 2.hours ] * 3 + [ now - 25.hours ])
+      restarted(revoked, [ now - 1.hour ] * 9) # not retired: listed
+      restarted(retired, [ now - 1.hour ] * 9)
       expect(names(restarts: "loop")).to eq([ "Media server", "Old proxy" ])
       expect(names(restarts: "loop", tag: "lab")).to eq([ "Media server" ])
       expect(names(restarts: "loop", status: "online")).to eq([ "Media server" ])
       # The settings in force: more than 2 in 48 hours takes in Build runner's, and web A's.
       Rails.configuration.x.restart_loop.limit = 2
       Rails.configuration.x.restart_loop.window = 48.hours
+      expect(Host.refresh_restart_loops!(batch: 2)).to eq(2) # a lower limit: web A's and Build runner's stored times move (S1)
+      expect(Host.refresh_restart_loops!).to eq(0)
       expect(names(restarts: "loop")).to eq([ "Build runner", "Media server", "Old proxy", "web A" ])
       expect(described_class.restart_filter_label).to eq("More than 2 times in 48 hours")
       list = described_class.new(restarts: "loop", sort: "status")
@@ -107,16 +113,16 @@ RSpec.describe FleetList do
       expect(described_class.new(restarts: "loop", recovery: "missing").only_restart_filter?).to be(false)
     end
 
-    it "starts the restart filter from a partial index of the hosts that ever restarted (#251)" do
+    it "reads the restart filter from a partial index of the hosts that loop (#251, review of #307, S1)" do
       # Structural, as for the recovery-mode index: the filter's first condition is a range on the indexed column,
       # which implies the index's predicate.
       predicate, columns = Host.connection.select_rows(<<~SQL).first
         SELECT pg_get_expr(i.indpred, i.indrelid), pg_get_indexdef(i.indexrelid) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-         WHERE c.relname = 'index_hosts_restarted'
+         WHERE c.relname = 'index_hosts_restart_loops'
       SQL
-      expect(predicate).to eq("(agent_restarted_at IS NOT NULL)")
-      expect(columns).to include("(agent_restarted_at)")
-      expect(FleetList::RESTART_LOOP).to start_with("hosts.agent_restarted_at >= :since AND ")
+      expect(predicate).to eq("(agent_restart_loop_at IS NOT NULL)")
+      expect(columns).to include("(agent_restart_loop_at)")
+      expect(FleetList::RESTART_LOOP).to start_with("hosts.agent_restart_loop_at >= :since AND ")
       plan = Host.connection.select_values("EXPLAIN #{described_class.new(restarts: 'loop').scope.to_sql}").join("\n")
       expect(plan).to include("agent_recent_restarts")
     end

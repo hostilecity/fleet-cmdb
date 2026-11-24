@@ -176,6 +176,58 @@ class Host < ApplicationRecord
   # A restart loop (#251): more than the restart-loop limit of restarts within its window, as the fleet filter lists.
   def restart_loop?(now: Time.current) = agent_restarts_within(now:) > Rollouts.restart_loop.limit
 
+  # Stores agent_restart_loop_at again for the restart-loop limit in force (review of #307, S1): the (limit + 1)th newest
+  # restart of every host with restarts, in batches of `batch` by id, each its own statement. The heartbeat keeps it for
+  # the limit in force when it wrote it, so this is needed once after FLEET_RESTART_LOOP_RESTARTS changes. Returns the
+  # number of rows changed.
+  def self.refresh_restart_loops!(batch: 10_000)
+    position = Rollouts.restart_loop.limit + 1
+    after = 0
+    changed = 0
+    loop do
+      ids = where.not(agent_recent_restarts: nil).where("id > ?", after).order(:id).limit(batch).pluck(:id)
+      break if ids.empty?
+
+      changed += where(id: ids).where("agent_restart_loop_at IS DISTINCT FROM agent_recent_restarts[?]", position)
+                               .update_all([ "agent_restart_loop_at = agent_recent_restarts[?]", position ])
+      after = ids.last
+    end
+    changed
+  end
+
+  # How the agent process before the running one stopped (#251), in words, from what systemd told the unit's
+  # ExecStopPost=. systemd's result for a kill at MemoryMax is oom-kill, or signal (status KILL) when it saw the process
+  # exit before the cgroup's OOM event, so a SIGKILL says it may have been the memory limit. nil without a record.
+  def agent_last_stop_words
+    result = agent_last_stop_result
+    return if result.nil?
+
+    "#{LAST_STOP_WORDS.fetch(result) { signal_words(result) }} " \
+      "(systemd: #{[ result, agent_last_stop_exit ].compact.join(', ')})"
+  end
+
+  LAST_STOP_WORDS = { "success" => "Stopped cleanly", "oom-kill" => "Killed at its memory limit", "exit-code" => "Exited with an error" }.freeze
+
+  private
+
+  def signal_words(result)
+    return "Stopped" unless result == "signal"
+
+    agent_last_stop_exit_status == 9 ? "Killed by SIGKILL, perhaps at its memory limit" : "Ended by a signal"
+  end
+
+  def agent_last_stop_exit
+    status = agent_last_stop_exit_status
+    case agent_last_stop_exit_code
+    when "exited" then "exit status #{status}"
+    when "killed", "dumped"
+      verb = agent_last_stop_exit_code == "dumped" ? "dumped core on" : "killed by"
+      "#{verb} #{status ? "signal #{status}#{' (SIGKILL)' if status == 9}" : 'a signal'}"
+    end
+  end
+
+  public
+
   # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an
   # active host that has not sent a heartbeat yet, and the enrollment state for everything else.
   def display_status

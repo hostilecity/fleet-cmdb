@@ -40,6 +40,7 @@ RSpec.describe "Rollouts and restart loops (#251)" do
     rollout
     travel 1.second
     offer(canary)
+    travel 1.second # restarts at the offer's own instant happened before it (N2)
   end
 
   it "marks a confirmed canary that restarts more than 3 times in 24 hours, halts the rollout, and audits both" do
@@ -57,7 +58,8 @@ RSpec.describe "Rollouts and restart loops (#251)" do
     restarted(canary, 1)
     expect(member.reload).to have_attributes(state: "restart_loop", resolved_at: be_within(1.second).of(Time.current))
     expect(rollout.reload).to have_attributes(state: "halted", halted_by: nil)
-    expect(rollout.halt_reason).to eq("#{canary.name} restarted 4 times within 24 hours of the update.")
+    expect(rollout.halt_reason).to eq("#{canary.name} restarted 4 times within 24 hours of the update; " \
+                                      "last stop: killed at its memory limit (systemd: oom-kill, killed by signal 9 (SIGKILL)).")
     expect(audit_actions.last(2)).to eq([ Audit::Actions::UPDATE_RESTART_LOOP, Audit::Actions::ROLLOUT_HALTED ])
     entry = AuditEntry.find_by!(action: Audit::Actions::UPDATE_RESTART_LOOP)
     expect(entry.changeset).to include("host_id" => canary.id, "rollout_id" => rollout.id, "version" => "0.3.0", "restarts" => 4, "window_hours" => 24)
@@ -94,7 +96,7 @@ RSpec.describe "Rollouts and restart loops (#251)" do
     expect(member.reload.state).to eq("updating")
     restarted(canary, 1)
     expect(member.reload.state).to eq("restart_loop")
-    expect(rollout.reload.halt_reason).to end_with("restarted 2 times within 1 hours of the update.")
+    expect(rollout.reload.halt_reason).to include("restarted 2 times within 1 hour of the update;")
   end
 
   it "marks a host of a halted rollout without halting it again, and leaves a failed host and one outside rollouts alone" do
@@ -120,6 +122,99 @@ RSpec.describe "Rollouts and restart loops (#251)" do
     expect(rollout.reload.state).to eq("running")
   end
 
+  describe "the stage observation time (owner decision 2026-11-23, review of #307, S4)" do
+    before { Rails.configuration.x.rollouts.stage_observe = 30.minutes }
+
+    def minute_job = RolloutTimeoutJob.perform_now
+
+    it "keeps a confirmed canary stage open, so a leak that needs 24 minutes for 4 restarts halts at the canaries" do
+      confirm(canary)
+      expect(rollout.reload).to have_attributes(current_stage: 0, stage_confirmed_at: be_within(1.second).of(Time.current))
+      expect(Rollouts.observing_until(rollout)).to be_within(1.second).of(30.minutes.from_now)
+      # A restart every 6 minutes: under the start limit, never recovery mode. The minute job keeps the stage open.
+      4.times do |n|
+        6.times do
+          travel 1.minute
+          minute_job
+        end
+        expect(rollout.reload.current_stage).to eq(0)
+        restarted(canary, 1)
+        expect(rollout.reload.state).to eq(n < 3 ? "running" : "halted")
+      end
+      expect(member.reload.state).to eq("restart_loop")
+      expect(rollout.rollout_hosts.where.not(host: canary)).to be_empty # no other host was chosen, let alone offered
+    end
+
+    it "opens the next stage once the observation time has passed without a restart loop, and observes the last one too" do
+      confirm(canary)
+      travel 29.minutes
+      minute_job
+      expect(rollout.reload.current_stage).to eq(0)
+      travel 1.minute
+      minute_job
+      # The empty 25% stage is not observed; the 100% stage takes the other host.
+      expect(rollout.reload).to have_attributes(current_stage: 2, stage_confirmed_at: nil, state: "running")
+      offer(other)
+      travel 1.second
+      confirm(other)
+      expect(rollout.reload).to have_attributes(state: "running", stage_confirmed_at: be_present)
+      travel 31.minutes
+      minute_job
+      expect(rollout.reload.state).to eq("completed")
+      expect(audit_actions.last).to eq(Audit::Actions::ROLLOUT_COMPLETED)
+    end
+
+    it "lets an operator advance at once, and observes again from a resume" do
+      confirm(canary)
+      Rollouts.halt!(rollout.reload, actor: create(:operator))
+      travel 40.minutes
+      Rollouts.resume!(rollout.reload, actor: create(:operator))
+      expect(rollout.reload).to have_attributes(current_stage: 0, stage_confirmed_at: be_within(1.second).of(Time.current))
+      minute_job
+      expect(rollout.reload.current_stage).to eq(0)
+      Rollouts.advance!(rollout.reload, actor: create(:operator))
+      expect(rollout.reload.current_stage).to be >= 1
+    end
+
+    it "does nothing for a job delivered while the stage is still observed" do
+      confirm(canary)
+      expect { Rollouts.advance_confirmed!(rollout.id, from: 0) }.not_to(change { rollout.reload.current_stage })
+    end
+  end
+
+  describe "a host already looping before its offer (owner decision 2026-11-23, review of #307, S6)" do
+    it "does not count, and says it was looping before" do
+      member.update_columns(restarts_before_offer: 4)
+      restarted(canary, 9)
+      expect(member.reload.state).to eq("updating")
+      expect(rollout.reload.state).to eq("running")
+      expect(helper_words(member)).to eq("looping before this update (4 restarts in the 24 hours before it), so not counted")
+      member.update_columns(restarts_before_offer: 3) # exactly the limit: not looping, so counted
+      restarted(canary, 4)
+      expect(member.reload.state).to eq("restart_loop")
+    end
+
+    it "stores the restarts within the window before the first offer, in the offer's own statement" do
+      loner = host_running("0.2.0").first
+      loner.update_columns(agent_recent_restarts: [ 1.minute.ago, 2.hours.ago, 23.hours.ago, 25.hours.ago ])
+      Rollouts.cancel!(rollout, actor: create(:operator))
+      second = start_rollout(release: release_for_rollout("0.4.0"), canaries: [ loner ])
+      offer(loner)
+      expect(second.rollout_hosts.sole.restarts_before_offer).to eq(3)
+      expect(member.reload.restarts_before_offer).to eq(0)
+    end
+
+    def helper_words(member) = Object.new.extend(ActionView::Helpers::TextHelper, RolloutsHelper).looping_before_words(member)
+  end
+
+  it "keeps the restart_loop mark's time when a success arrives late (review of #307, N3)" do
+    restarted(canary, 4)
+    marked = member.reload.resolved_at
+    travel 5.minutes
+    confirm(canary)
+    expect(member.reload).to have_attributes(state: "restart_loop", resolved_at: marked)
+  end
+
   describe "the settings at boot" do
     def boot(setting, key, value)
       saved = ENV.fetch(setting, nil)
@@ -136,6 +231,25 @@ RSpec.describe "Rollouts and restart loops (#251)" do
       expect(boot("FLEET_RESTART_LOOP_RESTARTS", :limit, "31")).to eq(31)
       expect(boot("FLEET_RESTART_LOOP_WINDOW_HOURS", :window, nil)).to eq(24.hours)
       expect(boot("FLEET_RESTART_LOOP_WINDOW_HOURS", :window, "168")).to eq(168.hours)
+    end
+
+    it "observes a confirmed stage for 30 minutes by default, from 0 (none) to a week" do
+      saved = ENV.fetch("FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES", nil)
+      boot_observe = lambda do |value|
+        ENV["FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES"] = value
+        Rails.configuration.x.rollouts.delete(:stage_observe)
+        load Rails.root.join("config/initializers/rollouts.rb")
+        Rails.configuration.x.rollouts.stage_observe
+      end
+      expect(boot_observe.(nil)).to eq(30.minutes)
+      expect(boot_observe.("0")).to eq(0.minutes)
+      expect(boot_observe.("10080")).to eq(10_080.minutes)
+      [ "", "-1", "10081", "1.5", "half" ].each do |value|
+        expect { boot_observe.(value) }
+          .to raise_error(RuntimeError, "FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES must be a whole number of minutes from 0 to 10080 (got #{value.inspect})")
+      end
+    ensure
+      ENV["FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES"] = saved
     end
 
     it "stops the server at boot, naming the setting, for anything else" do

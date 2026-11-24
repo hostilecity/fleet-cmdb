@@ -111,9 +111,11 @@ module Liveness
   # sets it to 0. So against the last known value a higher one counts the difference, and a lower one counts itself (a
   # reset, then that many restarts); the first value reported, an unread one (null), or an equal one counts none, so
   # the count is a lower bound: a reset followed by exactly as many restarts as before is not seen. Each counted restart
-  # is put in agent_recent_restarts at the server's time of this heartbeat, newest first, at most RESTART_HISTORY, and
-  # agent_restarted_at becomes that time. record_heartbeat! writes only the columns that changed: a process's
-  # heartbeats after its first change nothing.
+  # is put in agent_recent_restarts at the server's time of this heartbeat, newest first, at most RESTART_HISTORY,
+  # agent_restarted_at becomes that time, and agent_restart_loop_at the (limit + 1)th newest restart (nil with fewer),
+  # which the fleet filter's index reads (review of #307, S1). record_heartbeat! writes only the columns that changed: a
+  # process's heartbeats after its first change nothing. The agent's times are rounded to the microsecond PostgreSQL
+  # keeps, so a time sent with more digits still compares equal to the stored one (review of #307, S2).
   def process_columns(process, host, now, agent_time)
     return [ 0, {} ] unless process && plausible_process?(process, agent_time)
 
@@ -125,16 +127,20 @@ module Liveness
     else 0
     end
     stop = process["last_stop"]
-    columns = { agent_process_started_at: Time.iso8601(process["started_at"]), agent_restarts: restarts || known,
+    columns = { agent_process_started_at: agent_time_of(process["started_at"]), agent_restarts: restarts || known,
                 agent_last_stop_result: stop&.fetch("result"), agent_last_stop_exit_code: stop&.fetch("exit_code"),
-                agent_last_stop_exit_status: stop&.fetch("exit_status"), agent_last_stop_at: stop && Time.iso8601(stop["stopped_at"]) }
+                agent_last_stop_exit_status: stop&.fetch("exit_status"), agent_last_stop_at: stop && agent_time_of(stop["stopped_at"]) }
     if counted.positive?
       recent = ([ now ] * [ counted, RESTART_HISTORY ].min + Array(host.agent_recent_restarts)).first(RESTART_HISTORY)
-      columns.merge!(agent_recent_restarts: recent, agent_restarted_at: now)
+      columns.merge!(agent_recent_restarts: recent, agent_restarted_at: now, agent_restart_loop_at: recent[Rollouts.restart_loop.limit])
     end
     [ counted, columns ]
   end
   private_class_method :process_columns
+
+  # An agent timestamp as PostgreSQL stores it: to the microsecond (the contract allows nine digits).
+  def agent_time_of(text) = Time.iso8601(text).round(6)
+  private_class_method :agent_time_of
 
   # Whether a schema-valid `process` object is one the agent could have sent: its start no later than the heartbeat's
   # own agent_time (the same clock), and a stop's exit status as its exit code allows (an exit status 0 to 255 for
