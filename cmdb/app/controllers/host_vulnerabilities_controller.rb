@@ -44,7 +44,6 @@ class HostVulnerabilitiesController < ApplicationController
 
   def show
     load_evaluation
-    findings = VulnerabilityFinding.with_details.where(host_id: @host.id)
     # Counted on the findings alone, in one query: the details' joins add no rows (#254). Grouped by the triage bucket
     # too (VT-HOST-TAB #260), so the four buckets add up to the open count in the same snapshot; a NULL bucket on an
     # open finding is one the upgrade's background re-triage has not reached yet (#277 item 15).
@@ -70,11 +69,13 @@ class HostVulnerabilitiesController < ApplicationController
     @fix = params[:fix] == "available" && @state == "open" ? "available" : nil
     load_triage_context
     @signals = Signals::Freshness.statuses
-    scope = filtered(findings)
+    scope = filtered(host_findings)
     unless @state == "resolved"
       # The chip counts every open and reopened finding Debian plans no security update for, whatever the severity and
-      # text filters (T3), in one SQL count (review of #253, S6).
-      @no_dsa_count = FindingTriage.no_dsa(findings.active.joins(:advisory), release: @triage_release, status: @triage_status).count if @state == "open"
+      # text filters (T3), in one SQL count (review of #253, S6), over the host's details (its source, #302).
+      if @state == "open"
+        @no_dsa_count = FindingTriage.no_dsa(VulnerabilityFinding.with_host_details(@host.id).active.joins(:advisory), release: @triage_release, status: @triage_status).count
+      end
       scope = FindingTriage.no_dsa(scope, release: @triage_release, status: @triage_status) if @debian
       scope = with_signal(scope) if @signal
       if @fix
@@ -113,10 +114,9 @@ class HostVulnerabilitiesController < ApplicationController
     @package = params[:package].to_s
     load_evaluation
     @installed = PackageStore.entries(PackageStore.chunk_ids_of(@package_set&.package_set_id), names: [ @package ])
-    findings = VulnerabilityFinding.with_details.where(host_id: @host.id, package: @package)
     # The package's whole counts, whatever the filters: by state, by the stored fix flag, and by architecture (the ones
-    # ?arch= may name), in one query.
-    by_state = findings.group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL), :architecture).count
+    # ?arch= may name), in one query, on the plain table (#302).
+    by_state = VulnerabilityFinding.where(host_id: @host.id, package: @package).group(:state, Arel.sql(VulnerabilityFinding::FIX_SQL), :architecture).count
     @package_counts = VulnerabilityFinding::STATES.index_with { |state| by_state.sum { |(s, _, _), n| s == state ? n : 0 } }
     @open_fixable = by_state.sum { |(state, fixable, _), n| state != "resolved" && fixable ? n : 0 }
     @architectures = (by_state.keys.map(&:last) + @installed.map(&:architecture)).uniq
@@ -125,7 +125,7 @@ class HostVulnerabilitiesController < ApplicationController
     load_package_filters
     load_triage_context
     # The host's decisions (VT-OVERRIDES #261), for the same decision tags as the tab's. One query.
-    @page = HostPackageFindings.new(package_scope(findings), after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]),
+    @page = HostPackageFindings.new(package_scope(host_findings.where(package: @package)), after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]),
                                                              count: (@package_counts.values.sum if @filters.empty?), decisions: HostDecisions.new(@host.id))
     # Opened from the tab's "N more" row (?from=tab, with its cursor): the page starts after the findings the row drew.
     @from_tab = params[:from] == "tab" && params[:after].present? && @page.notice.nil?
@@ -138,9 +138,9 @@ class HostVulnerabilitiesController < ApplicationController
     @unchecked = @evaluated ? @evaluation.not_evaluated.select { |entry| entry["package"] == @package } : []
     @unchecked_cut_short = @evaluated && @evaluation.not_evaluated_count > @evaluation.not_evaluated.size
     @ecosystem = @findings.first&.ecosystem || HostVulnerabilityEvaluation.where(host_id: @host.id).pick(:ecosystem)
-    # Every source the package's findings name, not only the page's, in the same query.
-    sources = findings.select(:source).distinct
-    siblings = VulnerabilityFinding.with_details.where(host_id: @host.id).where.not(package: @package)
+    # Every source the package's findings name, not only the page's, in the same query, over the host's details (#302).
+    sources = VulnerabilityFinding.with_host_details(@host.id).where(package: @package).select(:source).distinct
+    siblings = VulnerabilityFinding.with_host_details(@host.id).where.not(package: @package)
     @siblings = siblings.where(source: @installed.filter_map(&:source)).or(siblings.where(source: sources)).distinct.order(:package).pluck(:package)
     @triage = FindingTriage.load(@findings) # every row on the page, as today's note (T5)
   end
@@ -165,6 +165,15 @@ class HostVulnerabilitiesController < ApplicationController
   end
 
   def filtered_besides_fix? = @severity || @query.present? || @debian || @signal
+
+  # The host's findings for the tab and the package page (#302): the plain table, so that counts, groups, and sorts
+  # look up no detail and the loaders add the details to the rows they show; with the host's details
+  # (VulnerabilityFinding.with_host_details) only when a filter reads one: the text search (the source) or Debian's
+  # no-DSA chip (the source, ecosystem, and installed version).
+  def host_findings
+    base = @query.present? || @debian ? VulnerabilityFinding.with_host_details(@host.id) : VulnerabilityFinding
+    base.where(host_id: @host.id)
+  end
 
   def with_signal(scope)
     case @signal
