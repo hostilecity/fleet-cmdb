@@ -215,14 +215,14 @@ module Advisories
       %w[created updated].include?(outcome)
     end
 
-    # The first full import that keeps the release the fleet's backports are built from (Backports.data?, #274) changes
-    # how every stored backport is matched, not only those whose sources it changed: their sources count as changed.
+    # The first full import that keeps a release the fleet's backports can be built from (Backports.complete, #274:
+    # Debian:14; #304: Debian:15 after forky's release) changes how every stored backport is matched, not only those
+    # whose sources it changed: their sources count as changed.
     def first_backports_data!
       Ecosystems.supported.each do |ecosystem|
-        from = Ecosystems.backports_from(ecosystem)
-        next unless from && @ecosystems.include?(from) && !Backports.data?(ecosystem)
-
-        Backports.sources(ecosystem).each { |source| @changed[from] << source }
+        fresh = Ecosystems.backports_releases(ecosystem).select { |from| @ecosystems.include?(from) } - Backports.complete(ecosystem)
+        sources = fresh.any? ? Backports.sources(ecosystem) : []
+        fresh.each { |from| sources.each { |source| @changed[from] << source } }
       end
     end
 

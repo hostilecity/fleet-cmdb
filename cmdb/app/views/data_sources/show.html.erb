@@ -27,13 +27,37 @@
         <td><%= link_to pluralize(row.hosts, "host"), compliance_path(ecosystem: status.ecosystem) %></td>
       </tr>
     <% end %>
+    <%# #304: the releases kept only to match backports, in the same table, with their own freshness. %>
+    <% @backports.each do |row| %>
+      <% b = row.status %>
+      <tr id="<%= "freshness_#{b.from.parameterize(separator: '_')}" %>">
+        <td><span class="mono"><%= b.from %></span><span class="state-note"><%= row.name %>: used for <%= Ecosystems.display_name(row.into) %>'s <%= b.sloppy ? "backports-sloppy builds" : "backports" %></span></td>
+        <td>
+          <% if b.state == :fresh %><span class="lamp online">Fresh</span>
+          <% elsif b.state == :stale %><span class="stale-word">Stale: older than <%= pluralize((Advisories.config.max_age / 1.hour).round, "hour") %></span>
+          <% elsif b.state == :missing %><span class="stale-word">Not in the imported archive</span>
+          <% elsif b.state == :awaited %><span class="muted">Not published yet</span>
+          <% else %><span class="stale-word">Never imported</span><% end %>
+        </td>
+        <td><% if b.updated_at %><%= utc(b.updated_at) %> <span class="state-note"><%= seen_ago(b.updated_at) %></span><% else %><span class="muted">Never</span><% end %></td>
+        <td><%= number_with_delimiter(row.current) %> current<span class="state-note"><%= number_with_delimiter(row.withdrawn) %> withdrawn</span></td>
+        <td><span class="muted">Backports only</span></td>
+      </tr>
+    <% end %>
     </tbody>
   </table></div>
-  <%# #274: the release the fleet's backports are built from, kept only to match them (Backports.status). %>
-  <% @backports.each do |ecosystem, b| %>
-    <p id="backports_data" data-ecosystem="<%= ecosystem %>"><strong>Backports.</strong> <span class="mono"><%= b.from %></span> (<%= Ecosystems.display_name(b.from) %>) is kept only to match <%= Ecosystems.display_name(ecosystem) %>'s backports.
+  <%# #274: what each of those releases is for, and its state (Backports.statuses). %>
+  <% @backports.each do |row| %>
+    <% b = row.status %>
+    <% into = row.into %>
+    <p id="<%= b.sloppy ? "backports_sloppy_data" : "backports_data" %>" data-ecosystem="<%= into %>">
+      <% if b.sloppy %><strong>Backports-sloppy.</strong> <span class="mono"><%= b.from %></span> (<%= row.name %>) is kept only to match <%= Ecosystems.display_name(into) %>'s backports-sloppy builds, which Debian makes from the testing release once <%= Ecosystems.display_name(Ecosystems.backports_from(into)) %> is released. They carry the same <span class="mono"><%= Ecosystems.backport_marker(into) %></span> marker as other backports, so every backport is matched against it too, once a full import has kept it.
+      <% else %><strong>Backports.</strong> <span class="mono"><%= b.from %></span> (<%= row.name %>) is kept only to match <%= Ecosystems.display_name(into) %>'s backports.<% end %>
       <% if b.complete %>Complete since the full import of <%= utc(b.import.finished_at) %><%= safe_join([ ", which skipped ", pluralize(b.skipped_entries, "malformed #{b.from} entry", plural: "malformed #{b.from} entries") ]) if b.skipped_entries.positive? %><%= safe_join([ " and found ", pluralize(b.malformed, "malformed record") ]) if b.malformed.positive? %>.
-      <% else %>Not complete yet: no full import has kept it, so backports are matched on <%= ecosystem %>'s data alone, which can miss their findings. It comes with the next full import whose archive has it (the scheduled refresh, or <span class="mono">bin/rails advisories:import FULL=1</span>).<% end %></p>
+        <% if b.missing %>The full imports since have none of it (the last at <%= utc(b.missing.finished_at) %>): the archive the server imports no longer has it, so it goes stale, and backports are matched on old data.<% elsif b.stale %>It is stale, so backports are matched on old data and their findings can be missing.<% end %>
+      <% elsif b.sloppy %>No full import has kept it yet. OSV publishes it once that release is testing; until then backports are matched without it.
+      <% elsif b.missing %>Never complete: the full imports so far had none of it (the last at <%= utc(b.missing.finished_at) %>), so the archive the server imports does not have it, and backports are matched on <%= into %>'s data alone, which can miss their findings. Import an archive that has it, such as OSV's Debian archive (the scheduled refresh's default, or <span class="mono">bin/rails advisories:import FULL=1</span>).
+      <% else %>Not complete yet: no full import has kept it, so backports are matched on <%= into %>'s data alone, which can miss their findings. It comes with the next full import whose archive has it (the scheduled refresh, or <span class="mono">bin/rails advisories:import FULL=1</span>).<% end %></p>
   <% end %>
   <p class="muted small">Data is stale when its last successful full import is older than <%= pluralize((Advisories.config.max_age / 1.hour).round, "hour") %>, or when it was never imported. A stale source is flagged here, on the Fleet list, on Compliance, and on every host's Vulnerabilities tab, because stale data looks like "no vulnerabilities".</p>
 </section>

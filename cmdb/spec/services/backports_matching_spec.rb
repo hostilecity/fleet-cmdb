@@ -371,9 +371,9 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
 
     it "carries a backports re-match through a failure and EvaluationRun.retry! (#292)" do
       import_full(cve_64253)
-      allow(Ecosystems).to receive(:backports_from).and_return(nil) # matched as before #274
+      allow(Backports).to receive(:complete).and_return([]) # matched as before #274
       match(bpo, trixie)
-      allow(Ecosystems).to receive(:backports_from).and_call_original
+      allow(Backports).to receive(:complete).and_call_original
       expect(open_findings(bpo)).to eq({})
 
       run = EvaluationRun.start!("advisories", EvaluationRun::Advisories.backports_scope)

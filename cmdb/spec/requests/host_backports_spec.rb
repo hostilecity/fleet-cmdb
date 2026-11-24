@@ -93,6 +93,69 @@ RSpec.describe "Backports on the Vulnerabilities tab", :signed_in, type: :reques
     expect(words(page.at_css("#backports_data"))).to match(/Complete since the full import of .+, which skipped 1 malformed Debian:14 entry\.\z/)
   end
 
+  describe "Debian 14's freshness and a release that never comes (#304)", withdrawal_guard: { share: 1.0, min_records: 0 } do
+    let(:trixie_only) { osv_record(id: "DSA-9101-1", package: "openssl", fixed: "3.5.1-1+deb13u1") }
+
+    # As if the imports so far had finished that long ago (a signed-in session does not survive travel).
+    def age_imports(by) = AdvisoryImport.update_all([ "finished_at = finished_at - ?::interval", "#{by.to_i} seconds" ])
+
+    def row(id) = page.at_css("#freshness_#{id}").css("td").map { |td| words(td) }
+
+    it "shows Debian 14 and Debian 15 in the freshness table, and says when full imports arrive without Debian 14" do
+      host = debian_host(packages: bpo)
+      get "/data-sources"
+      expect(row("debian_14")).to eq([ "Debian:14 Debian 14 (forky): used for Debian 13 (trixie)'s backports", "Never imported", "Never", "0 current 0 withdrawn", "Backports only" ])
+      expect(row("debian_15")).to eq([ "Debian:15 Debian 15 (duke): used for Debian 13 (trixie)'s backports-sloppy builds", "Not published yet", "Never", "0 current 0 withdrawn", "Backports only" ])
+      expect(words(page.at_css("#backports_sloppy_data"))).to start_with("Backports-sloppy. Debian:15 (Debian 15 (duke)) is kept only to match Debian 13 (trixie)'s " \
+                                                                         "backports-sloppy builds, which Debian makes from the testing release once Debian 14 (forky) is released.")
+      expect(words(page.at_css("#backports_sloppy_data"))).to end_with("No full import has kept it yet. OSV publishes it once that release is testing; until then backports are matched without it.")
+
+      import_advisories(trixie_only, full: true, origin: "feed") # an archive with no Debian:14
+      VulnerabilityMatcher.match!([ host.id ])
+      get "/data-sources"
+      expect(row("debian_14")[1]).to eq("Not in the imported archive")
+      expect(words(page.at_css("#backports_data"))).to match(/Never complete: the full imports so far had none of it \(the last at .+\), so the archive the server imports does not have it/)
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(words(page.at_css("#backports_no_data"))).to start_with("Debian 14 (forky)'s advisory data, which they are built from, is not in the archive the server imports: the last full import")
+    end
+
+    it "shows Debian 14 fresh, then stale on Data sources and the tab, and says when it stopped coming" do
+      host = debian_host(packages: bpo)
+      import_advisories(trixie_only, both("DEBIAN-CVE-2026-64253"), full: true, origin: "feed")
+      VulnerabilityMatcher.match!([ host.id ])
+      get "/data-sources"
+      expect(row("debian_14")[1..3]).to match([ "Fresh", /\A\d{4}-\d\d-\d\d \d\d:\d\d UTC/, "1 current 0 withdrawn" ])
+      expect(row("debian_15")[1]).to eq("Not published yet")
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(page.at_css("#backports_stale")).to be_nil
+
+      age_imports(Advisories.config.max_age + 1.hour)
+      import_advisories(trixie_only, both("DEBIAN-CVE-2026-64253", forky: :absent), full: true, origin: "feed") # Debian:13 keeps coming, forky's not
+      get "/data-sources"
+      expect(row("debian_14")[1]).to eq("Stale: older than 48 hours")
+      expect(words(page.at_css("#backports_data"))).to match(/The full imports since have none of it \(the last at .+\): the archive the server imports no longer has it/)
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(words(page.at_css("#backports_stale"))).to match(/\ADebian 14 \(forky\)'s advisory data was last updated .+, which is older than 48 hours, so they are matched on old data and findings can be missing\. The full imports since have none of it/)
+    end
+
+    it "matches against both releases once Debian 15's data is complete, and says which names nothing for a source" do
+      host = debian_host(packages: bpo)
+      duke = both("DEBIAN-CVE-2027-90009").tap { |r| r["affected"] << osv_record(id: "DEBIAN-CVE-2027-90009", package: "wireguard", fixed: "1.0.20260101-1", ecosystem: "Debian:15")["affected"].first }
+      import_advisories(duke, full: true, origin: "feed")
+      VulnerabilityMatcher.match!([ host.id ])
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(words(page.at_css("#backports"))).to include("They are built from Debian 14 (forky) or Debian 15 (duke), so they are matched against their advisories as well as this release's.")
+      expect(words(page.at_css("#backports_uncovered"))).to eq("Debian 14 (forky)'s advisory data names nothing for wireguard , so what affects only the backport's series cannot be found for that source.")
+      expect(words(page.at_css("#backports_uncovered_debian_15"))).to start_with("Debian 15 (duke)'s advisory data names nothing for linux ,")
+      age_imports(Advisories.config.max_age + 1.hour)
+      get "/hosts/#{host.id}/vulnerabilities"
+      expect(page.at_css("#backports_stale_debian_15")).to be_present
+      get "/data-sources"
+      expect(row("debian_15")[1]).to eq("Stale: older than 48 hours")
+      expect(words(page.at_css("#backports_sloppy_data"))).to match(/Complete since the full import of .+\. It is stale, so backports are matched on old data/)
+    end
+  end
+
   it "says a K1 backports finding's fix is installed, as its reason does (review S3)" do
     host = debian_host(packages: [ bpo[0], [ "linux-image-7.3.4+deb13-amd64", "7.3.4-1~bpo13+1", "linux-signed-amd64" ] ])
     record_inventory(host, kernel_version: "7.0.9+deb13-amd64")

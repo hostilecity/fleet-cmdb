@@ -32,6 +32,14 @@ Nothing to do: the next full advisory import does the work.
 - **Storage.** The `Debian:14` packages about double `advisory_packages` (one row per advisory, ecosystem, and source), and advisories that name only forky add `advisories` rows.
 - **Rolling back.** The older code skips `Debian:14` and resolves the backports' findings on trixie's data again at their next match. After rolling forward, run `bin/rails vulnerabilities:rematch_backports`: it re-matches every backport's source, and only the hosts holding a backport.
 
+## Backports-sloppy builds and the backports releases' freshness (#304)
+
+Nothing to do, now or at forky's release.
+
+- **What runs at the upgrade.** No migration and no re-match. Data sources gains two rows, `Debian:14` and `Debian:15`.
+- **At forky's release.** OSV starts publishing `Debian:15`. The first full import that has it stores it (another release's worth of `advisory_packages` rows, about as many as `Debian:14`'s) and counts every stored backport's sources as changed under `Debian:15`, so it re-matches only the hosts holding a backport, once, as #274's first import did. Findings that `Debian:14` or trixie showed fixed, on a backport whose source `Debian:15` has no data for, reopen as kept then.
+- **Rolling back.** The older code ignores `Debian:15` rows and matches against `Debian:14` alone. After rolling forward, run `bin/rails vulnerabilities:rematch_backports`.
+
 ## Signed kernel images get their findings (#270)
 
 Nothing to do: the upgrade queues its own work. It is listed here because what the dashboard shows changes a lot, and so does the cost of kernel advisory imports.

@@ -8,6 +8,9 @@ class AdvisoryDataSources
   RECENT_IMPORTS = 10
 
   Ecosystem = Data.define(:status, :name, :current, :withdrawn, :hosts)
+  # A release kept only to match a fleet ecosystem's backports (#274, #304): into, the fleet's ecosystem; status, its
+  # Backports::Status (freshness, completeness, and whether full imports arrive without it).
+  Backports = Data.define(:into, :status, :name, :current, :withdrawn)
   # source: host and path, or nil when no feed is configured. schedule: the refresh interval in seconds, or nil
   # when this environment does not schedule it.
   FeedInfo = Data.define(:source, :schedule, :attempts, :max_age, :token)
@@ -19,13 +22,26 @@ class AdvisoryDataSources
   def statuses = @statuses ||= Advisories::Freshness.statuses(now: @now)
 
   def ecosystems
-    counts = AdvisoryPackage.joins(:advisory).group(:ecosystem, Arel.sql("advisories.withdrawn_at IS NULL")).distinct.count(:advisory_id)
     hosts = Ecosystems.host_counts
     statuses.map do |status|
       e = status.ecosystem
       Ecosystem.new(status:, name: Ecosystems.display_name(e), current: counts.fetch([ e, true ], 0), withdrawn: counts.fetch([ e, false ], 0), hosts: hosts.fetch(e, 0))
     end
   end
+
+  # The releases the fleet's backports can be built from (Debian:14, and Debian:15 for trixie-backports-sloppy), as
+  # rows of the same freshness table (#304).
+  def backports
+    Ecosystems.supported.flat_map do |into|
+      ::Backports.statuses(into, now: @now).map do |status|
+        e = status.from
+        Backports.new(into:, status:, name: Ecosystems.display_name(e), current: counts.fetch([ e, true ], 0), withdrawn: counts.fetch([ e, false ], 0))
+      end
+    end
+  end
+
+  # { [ecosystem, current?] => advisories }, one query for every ecosystem.
+  def counts = @counts ||= AdvisoryPackage.joins(:advisory).group(:ecosystem, Arel.sql("advisories.withdrawn_at IS NULL")).distinct.count(:advisory_id)
 
   def feed
     config = Advisories.config
