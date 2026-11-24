@@ -311,7 +311,9 @@ RSpec.describe "Host vulnerabilities", :signed_in, type: :request do
       stub_const("HostFindingGroups::PER_PAGE", 2)
       statements = lambda do |path|
         sql = []
-        counter = ->(*, payload) { sql << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:cached] }
+        # Not a connection's own setup (search path, transactions), which depends on what ran before, not on the page
+        # (as host_vulnerability_triage_spec's count; it failed here on main too when run alone, review of #315).
+        counter = ->(*, payload) { sql << payload[:sql] unless payload[:name] == "SCHEMA" || payload[:cached] || payload[:sql].match?(/\A(SET|BEGIN|COMMIT|ROLLBACK)\b/) }
         ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { get path }
         sql.size
       end
