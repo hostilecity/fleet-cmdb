@@ -30,18 +30,22 @@ Upgrading by hand on every VM does not suit a self-sufficient agent, and will no
 - **A host of the open rollout that restarts more than `FLEET_RESTART_LOOP_RESTARTS` times (default 3, 1 to 31) within `FLEET_RESTART_LOOP_WINDOW_HOURS` (default 24, 1 to 168) counts as failed.** The rule:
   - Only a host the rollout offered the update counts, while it is `updating` or `confirmed`, and while the rollout is open: from the offer to the end of the rollout, across later stages.
   - Only restarts strictly after the offer count, and only those within the window.
-  - **Baseline (owner decision 2026-11-23):** a host with more than the limit within the window *before* its offer was already looping, for example a host with too many packages for its memory limit. It does not count towards the halt. Its first offer stores that count (`rollout_hosts.restarts_before_offer`), and the rollout and host pages show it as "looping before this update".
+  - **Baseline (owner decisions 2026-11-23 and 2026-11-24):** a host with more than the limit within the window *before* its offer was already looping, for example a host with too many packages for its memory limit. It does not count towards the halt, with two limits:
+    - it is never exempt when an earlier rollout marked it `restart_loop` within that window, because an update caused that loop. So a fix release that leaks the same way as the one it replaces still halts at its canaries;
+    - the exemption ends one window after the offer, and from then on its restarts count, since every restart in the window is then after the offer.
+    The first offer stores the count, the limit and window in force (so a later change of either setting moves neither the decision nor its words), and whether an earlier rollout marked the host (`rollout_hosts.restarts_before_offer`, `restart_limit`, `restart_window_hours`, `restart_loop_before`). The rollout and host pages say "looping before this update", then "so not counted until …", "after an earlier rollout's update, so counted", or "counted since …".
+  - A heartbeat from a process older than the one stored (held up while a newer one started) is ignored, so a late heartbeat never counts restarts again.
   - A counted host is marked `restart_loop` and audited (`update.restart_loop`), at most once per rollout. Its stage cannot complete, and a running rollout halts until an operator resumes it, as for a rollback. A late `succeeded` result is stored and keeps the mark: the host runs the release and keeps restarting.
   - The halt reason names the host, the count, the window, and the last stop in words, for example "killed at its memory limit".
   - The check runs only on a heartbeat that shows a new restart, so a steady heartbeat pays nothing for it.
-- **Stage observation time (owner decision 2026-11-23).** Once every host of a stage has confirmed, the stage stays open for `FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES` (default 30, 0 for none, at most 10,080) before the next stage opens. Restarts keep counting meanwhile, so a release whose leak needs 20 minutes or more for its fourth restart halts at the canaries, before any other host is chosen.
+- **Stage observation time (owner decision 2026-11-23).** Once every host of a stage has confirmed, the stage stays open for `FLEET_ROLLOUT_STAGE_OBSERVE_MINUTES` (default 30, 0 for none, at most 10,080) before the next stage opens. The time counts from the later of the stage's confirmation and the last confirmation of any host of the rollout (`rollouts.last_confirmed_at`), so a host of an earlier stage that confirms after an operator's early Advance is observed too, before the next stage or the end. Restarts keep counting meanwhile, so a release whose leak needs 20 minutes or more for its fourth restart halts at the canaries, before any other host is chosen.
   - The last stage is observed too, before the rollout completes: once completed, nothing can halt it.
-  - The rollout page shows "All confirmed; observing until HH:MM UTC".
+  - The rollout page shows "All confirmed; observing until HH:MM UTC" (with the date when it is not today), "waiting for hosts of earlier stages to confirm" for a last stage that waits for them, and "Observed; the next stage is opening" once the time has passed.
   - A stage without hosts is not observed.
   - A resume observes the stage again from the resume.
   - An operator's Advance opens the next stage at once: it is an operator's choice.
   - `RolloutTimeoutJob` moves the rollout on, within a minute of the end of the observation.
-  - A loop slower than the observation time (4 restarts in more than 30 minutes) can still pass a stage; raise the setting for slower ones.
+  - Restarts count from a host's offer, and the observation ends 30 minutes after the last confirmation. So a host is watched from its offer to that point, about its time to confirm plus 30 minutes. A loop that needs longer for its fourth restart can still pass a stage; raise the setting for slower ones.
 - The same restart-loop settings drive the fleet list's "Restarted: more than N times in H hours" filter and the host page's notice. The filter reads only the hosts that loop: the (limit + 1)th newest restart is stored in an indexed column. After lowering `FLEET_RESTART_LOOP_RESTARTS`, `bin/rails restart_loops:refresh` stores it again.
 
 **Install and rollback on the VM.**
