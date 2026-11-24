@@ -8,7 +8,7 @@
     <dt>Bucket</dt><dd><% if candidate&.bucket %><%= bucket_tag(candidate.bucket) %> (rule <span class="mono"><%= candidate.rule %></span>)<% else %>Not in Needs attention or Low risk<% end %></dd>
     <dt>Severity</dt><dd><%= severity_tag(signals.severity) %></dd>
     <dt>Reached</dt><dd><% if words %><span class="sig vec"><%= words.upcase_first %><span class="vecraw"><%= VulnerabilityTriage::Reasons.vector_text(signals.cvss_av, signals.cvss_pr, signals.cvss_ui) %></span></span><% else %>No CVSS vector<% end %></dd>
-    <dt>Fix</dt><dd><%= candidate&.bucket ? "None for this release" : "Not known" %></dd>
+    <dt>Fix</dt><dd><%= decision_fix_words(candidate) %></dd>
     <dt>Known exploited</dt><dd><%= signals.kev? ? "Yes (#{signals.kev_cves.join(', ')}, on CISA's KEV list)" : "No (CISA's KEV list)" %></dd>
     <dt>EPSS</dt><dd><%= signals.epss_score ? "#{(signals.epss_score.to_d * 100).round}%#{' (high band)' if signals.epss_high}" : "No score" %></dd>
     <dt>On this host</dt><dd><%= candidate ? FindingDecisions::Candidates::LISTENING.fetch(candidate.listening).upcase_first : "Not known" %></dd>

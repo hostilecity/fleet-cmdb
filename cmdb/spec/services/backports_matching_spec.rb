@@ -83,6 +83,10 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
     match(bpo)
     expect(finding(bpo, bpo_image[0], "DEBIAN-CVE-2026-91010")).to have_attributes(fixed_version: nil, from_fixed_version: "7.1.3-1")
     expect(rule(bpo, bpo_image[0], "DEBIAN-CVE-2026-91010")).to eq("L5")
+    # The decision form's evidence (VT-OVERRIDES #261) says so too, as the tab's "Fixed in" does.
+    candidate = FindingDecisions::Candidates.load(Advisory.find_by!(advisory_id: "DEBIAN-CVE-2026-91010"), [ bpo.id ]).sole
+    expect(ApplicationController.helpers.decision_fix_words(candidate))
+      .to eq("None for this release (fixed in 7.1.3-1 in the release this backport is built from; no backport of it known yet)")
     # trixie's own 1.3-1+deb13u1 sorts above the backport: upgrading installs it, so it is a fix for this release.
     expect(finding(bpo, "libfoo1", "DEBIAN-CVE-2026-91011")).to have_attributes(fixed_version: "1.3-1+deb13u1", from_fixed_version: "1.4-1")
     expect(rule(bpo, "libfoo1", "DEBIAN-CVE-2026-91011")).to eq("F1")
@@ -173,6 +177,32 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
       expect(calibre_finding).to have_attributes(state: "resolved", resolution: "not_affected")
     end
 
+    # A recorded decision (VT-OVERRIDES #261) on a kept finding: keep_only keeps the finding open and triaged, so the
+    # control keeps applying (O1) and the decision stays; it ends only when the finding resolves on forky's evidence,
+    # as for any finding. Trixie's fix is no evidence here, so it is not a fix that ends the decision either.
+    it "keeps a recorded control applying while the finding is kept, and ends it when forky's data resolves the finding" do
+      travel_to(now + 1.hour)
+      advisory = Advisory.find_by!(advisory_id: "DEBIAN-CVE-2026-26064")
+      candidate = FindingDecisions::Candidates.load(advisory, [ host.id ]).sole
+      expect(ApplicationController.helpers.decision_fix_words(candidate))
+        .to eq("None for this release (kept open: only this release's data says it is fixed, which is no evidence for a backport)")
+      outcome = FindingDecisions.record!(operator: create(:operator), host:, advisory:,
+                                         params: { kind: "control", reason: "calibre-server is not started on this host", expires_on: (Date.current + 30).iso8601,
+                                                   host_ids: [ host.id ], confirmed_ids: [ host.id ] })
+      expect(outcome).to be_saved
+      expect(rule(host, "calibre", "DEBIAN-CVE-2026-26064")).to eq("O1")
+
+      match(host, at: now + 2.hours) # trixie's fix again: still kept, still controlled
+      expect(calibre_finding).to have_attributes(state: "open", kept: true)
+      expect(rule(host, "calibre", "DEBIAN-CVE-2026-26064")).to eq("O1")
+      expect(FindingDecision.sole).to be_active
+
+      import_advisories(record("DEBIAN-CVE-2026-91012", trixie: :absent, forky: "9.3.0+ds+~0.10.5-1", package: "calibre"))
+      VulnerabilityMatcher.match_again! # the same chunk, matched again on the new data
+      expect(calibre_finding).to have_attributes(state: "resolved", resolution: "not_affected")
+      expect(FindingDecision.sole).to have_attributes(ended_why: "resolved")
+    end
+
     it "resolves on withdrawal and removal" do
       second = debian_host(packages: [ calibre ])
       match(second)
@@ -192,6 +222,7 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
 
     it "is re-triaged: a listener, KEV, EPSS, and a control reach it" do
       saved = VulnerabilityTriage::HostFacts.listener_source
+      controls = VulnerabilityTriage::HostFacts.control_source # FindingDecisions::ControlSource since #261, restored below
       VulnerabilityTriage::HostFacts.listener_source = nil
       match(host, at: now + 1.hour)
       expect(rule(host, "calibre", "DEBIAN-CVE-2026-26064")).to eq("L5")
@@ -222,7 +253,7 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
       expect(rule(host, "calibre", "DEBIAN-CVE-2026-26064")).to eq("O1")
     ensure
       VulnerabilityTriage::HostFacts.listener_source = saved
-      VulnerabilityTriage::HostFacts.control_source = nil
+      VulnerabilityTriage::HostFacts.control_source = controls
     end
   end
 

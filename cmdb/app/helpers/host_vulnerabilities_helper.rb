@@ -257,6 +257,19 @@ module HostVulnerabilitiesHelper
     ].compact, " \u00B7 ")
   end
 
+  # The evidence panel's Fix row (mockup override.html, "None for trixie"). A backport's finding (#274) says what
+  # fixed_in says on the tab: a fix in the release the backport is built from is shown but is no fix for this release,
+  # and a kept finding is open only because this release's data alone says it is fixed.
+  def decision_fix_words(candidate)
+    return "Not known" unless candidate&.bucket
+
+    from = candidate.findings.filter_map(&:from_fixed_version).uniq
+    notes = []
+    notes << "fixed in #{from.join(', ')} in the release this backport is built from; no backport of it known yet" if from.any?
+    notes << "kept open: only this release's data says it is fixed, which is no evidence for a backport" if candidate.findings.any?(&:kept)
+    notes.empty? ? "None for this release" : "None for this release (#{notes.join('; ')})"
+  end
+
   DECISION_ENDINGS = { "operator" => "was ended by an operator", "expired" => "expired", "fixed" => "ended when a fix appeared", "resolved" => "ended when its findings resolved" }.freeze
 
   # A rule's row in the Low risk and Ignorable tables: its summary and the KEV and EPSS qualifiers that rule takes
