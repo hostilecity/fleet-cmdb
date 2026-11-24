@@ -11,7 +11,8 @@
 #   host_compliance_summaries_refresh count them; vulnerability_exposure_points is the published points table; version
 #   6 of host_compliance_summaries_changed also notes a finding whose rule, listener, or source changed, and the agent's
 #   reboot flag (two triggers on host_applicability); version 3 of host_compliance_summaries_flush, with a trigger on
-#   host_package_sets, ends a host's run after a gap in its package reports (review of #305, S4).
+#   host_package_sets, ends a host's run after a gap in its package reports (review of #305, S4); and a trigger on
+#   finding_decisions recounts a host whose decisions in force change, for vuln_attention_undecided (#298).
 # - vulnerability_findings_listener_valid (listener 1 or 2, only beside a bucket) is added NOT VALID.
 # - VT-FIXABLE's summary columns (vuln_fixable, vuln_fix_packages, vuln_fix_severities) are dropped: the triage buckets
 #   replace them on the Compliance page and the fleet list (#281 item 1), and nothing reads them. The findings keep
@@ -31,7 +32,7 @@ class AddExposureScores < ActiveRecord::Migration[8.1]
                 host_compliance_summaries_flush: [ 3, 2 ], host_compliance_summaries_mark: [ 2, 1 ] }.freeze
   # Trigger => its table.
   TRIGGERS = { host_compliance_summaries_applicability_insert_delete: :host_applicability, host_compliance_summaries_applicability_update: :host_applicability,
-               host_compliance_summaries_package_sets_gap: :host_package_sets }.freeze
+               host_compliance_summaries_package_sets_gap: :host_package_sets, host_compliance_summaries_decisions: :finding_decisions }.freeze
   PROGRESS = "compliance_score_recounts".freeze
 
   def up

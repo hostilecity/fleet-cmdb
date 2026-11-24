@@ -38,7 +38,9 @@ AS $$
   --   available), else 1 Low (any points), else 0 Minimal;
   -- - vuln_kev_advisories: KEV advisories outside Ignorable; vuln_fix_critical: critical advisories with a finding in
   --   Fix available (the run badge's "fixable critical"); vuln_attention_undecided: advisories with a finding in Needs
-  --   attention and no decision (VT-OVERRIDES records decisions; until then, every one);
+  --   attention and no decision in force (#298: an accepted risk or a control whose ended_at is NULL), as the host
+  --   tab's decisions due count them, less the decisions ending soon, lapsed, or suspended, which depend on the date
+  --   and stay a read-time part (HostDecisions);
   -- - work: one upgrade per source package with F1 or F2 findings, the new kernel package to install (K2), and a reboot
   --   (K1, or the agent's reboot flag, host_applicability.reboot_required); work_items is their sum.
   -- The KEV, EPSS, and tracker sources' freshness is not here: it is a read-time qualifier, so a feed going stale
@@ -96,12 +98,13 @@ AS $$
              COALESCE(bool_or(g.severity IN ('critical', 'high') AND g.worst = 4) FILTER (WHERE g.set = 0), false) AS fixes_waiting,
              count(*) FILTER (WHERE g.set = 0 AND g.kev AND g.worst >= 2)::integer AS kev_advisories,
              count(*) FILTER (WHERE g.set = 0 AND g.severity = 'critical' AND g.in_fix > 0)::integer AS fix_critical,
-             count(*) FILTER (WHERE g.set = 0 AND g.in_attention > 0)::integer AS undecided
+             count(*) FILTER (WHERE g.set = 0 AND g.in_attention > 0 AND NOT (g.advisory_id = ANY (dec.ids)))::integer AS undecided
         FROM (
           -- Set 0, one row per open advisory, in the worst bucket of its triaged findings (5 Needs attention, 4 Fix
           -- available, 3 Low risk by a control (rule O1, 9), 2 Low risk, 1 Ignorable), with the KEV flag of any of them
           -- and the widest listener outside Ignorable; set 1, one per source package.
           SELECT CASE WHEN GROUPING(f.advisory_id) = 0 THEN 0 ELSE 1 END AS set,
+                 f.advisory_id,
                  a.severity::text AS severity,
                  count(*) AS n,
                  count(*) FILTER (WHERE f.bucket = 1) AS in_fix,
@@ -122,6 +125,10 @@ AS $$
            WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')
            GROUP BY GROUPING SETS ((f.advisory_id, a.severity), (COALESCE(f.last_source, f.package)))
         ) g
+        -- The advisories with a decision in force on the host (VT-OVERRIDES #261: an accepted risk keeps its finding in
+        -- Needs attention, a control moves it to Low risk), read as ended_at IS NULL, one probe of the active index.
+        CROSS JOIN (SELECT COALESCE(array_agg(d.advisory_id), '{}'::bigint[]) AS ids
+                      FROM finding_decisions d WHERE d.host_id = h.id AND d.ended_at IS NULL) dec
     ) vulns ON true
     LEFT JOIN host_vulnerability_evaluations hve ON hve.host_id = h.id
     LEFT JOIN host_applicability ha ON ha.host_id = h.id

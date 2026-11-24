@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_262002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -456,14 +456,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
     t.virtual "nothing_evaluated", type: :boolean, as: "((((cis_passed + cis_failed) + cis_not_readable) = 0) AND (NOT (vuln_evaluated OR (((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown) > 0))))", stored: true
     t.virtual "fleet_cis_key", type: :decimal, as: "\nCASE\n    WHEN (((enrollment_state)::text = 'active'::text) AND (((cis_passed + cis_failed) + cis_not_readable) > 0)) THEN ((cis_passed)::numeric / (((cis_passed + cis_failed) + cis_not_readable))::numeric)\n    ELSE NULL::numeric\nEND", stored: true
     t.virtual "fleet_vulns_key", type: :integer, as: "\nCASE\n    WHEN (((enrollment_state)::text = 'active'::text) AND (vuln_evaluated OR (((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown) > 0))) THEN ((((vuln_critical + vuln_high) + vuln_medium) + vuln_low) + vuln_unknown)\n    ELSE NULL::integer\nEND", stored: true
-    t.integer "vuln_fixable", default: 0, null: false
-    t.integer "vuln_fix_packages", default: 0, null: false
-    t.integer "vuln_fix_severities", limit: 2, default: 0, null: false
     t.integer "vuln_fix", default: 0, null: false
     t.integer "vuln_attention", default: 0, null: false
     t.integer "vuln_low_risk", default: 0, null: false
     t.integer "vuln_ignorable", default: 0, null: false
     t.integer "vuln_kev_open", default: 0, null: false
+    t.integer "exposure_tier", limit: 2
+    t.integer "exposure_points"
+    t.integer "work_upgrades"
+    t.integer "work_items"
+    t.datetime "fixable_critical_since"
+    t.datetime "no_fixable_critical_since"
+    t.integer "vuln_kev_advisories", default: 0, null: false
+    t.integer "vuln_fix_critical", default: 0, null: false
+    t.integer "vuln_attention_undecided", default: 0, null: false
+    t.boolean "work_kernel_install", default: false, null: false
+    t.boolean "work_reboot", default: false, null: false
+    t.index "(\nCASE\n    WHEN ((enrollment_state)::text = 'active'::text) THEN exposure_tier\n    ELSE NULL::smallint\nEND) DESC NULLS LAST, (\nCASE\n    WHEN ((enrollment_state)::text = 'active'::text) THEN exposure_points\n    ELSE NULL::integer\nEND) DESC NULLS LAST, name_key, host_id", name: "host_compliance_summaries_exposure", where: "((enrollment_state)::text <> 'retired'::text)"
+    t.index "(\nCASE\n    WHEN ((enrollment_state)::text = 'active'::text) THEN work_items\n    ELSE NULL::integer\nEND) DESC NULLS LAST, name_key, host_id", name: "host_compliance_summaries_work", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index "lower(os_name) DESC NULLS LAST, name_key, host_id", name: "host_compliance_summaries_os_desc", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index "lower(os_name), name_key, host_id", name: "host_compliance_summaries_os", where: "((enrollment_state)::text <> 'retired'::text)"
     t.index "nothing_evaluated, ((- (cis_critical + vuln_critical))), ((- (cis_high + vuln_high))), ((- (cis_medium + vuln_medium))), ((- (cis_low + vuln_low))), ((- vuln_unknown)), COALESCE(pass_rate, (2)::numeric), name_key, host_id", name: "host_compliance_summaries_worst", where: "((enrollment_state)::text = 'active'::text)"
@@ -1100,9 +1110,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
     t.integer "bucket", limit: 2
     t.integer "bucket_rule", limit: 2
     t.boolean "kev"
+    t.integer "listener", limit: 2
     t.index ["advisory_id"], name: "index_vulnerability_findings_on_advisory_id"
     t.index ["host_id", "advisory_id", "package", "architecture"], name: "index_vulnerability_findings_unique", unique: true
     t.index ["state", "host_id"], name: "index_vulnerability_findings_on_state_and_host_id"
+    t.check_constraint "listener IS NULL OR (listener = ANY (ARRAY[1, 2])) AND bucket IS NOT NULL", name: "vulnerability_findings_listener_valid"
     t.check_constraint "(state::text = 'resolved'::text) = (resolution IS NOT NULL) AND (resolution::text = ANY (ARRAY['fixed'::character varying, 'removed'::character varying, 'withdrawn'::character varying, 'not_affected'::character varying]::text[]))", name: "vulnerability_findings_resolution_valid"
     t.check_constraint "state::text = ANY (ARRAY['open'::character varying, 'resolved'::character varying, 'reopened'::character varying]::text[])", name: "vulnerability_findings_state_valid"
   end
@@ -1390,9 +1402,48 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
       $function$
   SQL
 
+  create_function :vulnerability_exposure_points, sql_definition: <<-'SQL'
+      CREATE OR REPLACE FUNCTION public.vulnerability_exposure_points(worst smallint, severity text, kev boolean, listener smallint)
+       RETURNS integer
+       LANGUAGE sql
+       IMMUTABLE PARALLEL SAFE
+      AS $function$
+        -- The points of one open advisory on one host (VT-SCORES #262, the epic's VT-M3, owner decision 13), the published
+        -- table, as VulnerabilityExposure::POINTS and LISTENER_POINTS say it in Ruby (a spec checks they agree):
+        --
+        --   worst bucket of the advisory's findings     critical  high  medium  low or unknown
+        --   5 Needs attention                               40      20      8        2
+        --   4 Fix available                                 20      10      4        1
+        --   3 Low risk by a control (O1)                    10       5      2        1
+        --   2 Low risk                                       2       1      0        0
+        --   1 Ignorable                                      0       0      0        0
+        --
+        -- A known exploited (KEV) advisory scores double, except in Ignorable. A package a process holding a listening socket
+        -- loads (rule N5's evidence, in whatever bucket its finding ends up, Ignorable aside; epic decision 27) adds, once per
+        -- advisory, its listener's row on top (not doubled): 2 a listener on the network, 1 one on loopback only.
+        --
+        --   listener                                    critical  high  medium  low or unknown
+        --   2 on the network                                10       5      2        1
+        --   1 loopback only                                  4       2      1        0
+        SELECT CASE WHEN worst IS NULL OR worst <= 1 THEN 0 ELSE
+                 (CASE worst
+                    WHEN 5 THEN CASE severity WHEN 'critical' THEN 40 WHEN 'high' THEN 20 WHEN 'medium' THEN 8 ELSE 2 END
+                    WHEN 4 THEN CASE severity WHEN 'critical' THEN 20 WHEN 'high' THEN 10 WHEN 'medium' THEN 4 ELSE 1 END
+                    WHEN 3 THEN CASE severity WHEN 'critical' THEN 10 WHEN 'high' THEN 5 WHEN 'medium' THEN 2 ELSE 1 END
+                    ELSE CASE severity WHEN 'critical' THEN 2 WHEN 'high' THEN 1 ELSE 0 END
+                  END) * (CASE WHEN kev THEN 2 ELSE 1 END)
+                 + CASE listener
+                     WHEN 2 THEN CASE severity WHEN 'critical' THEN 10 WHEN 'high' THEN 5 WHEN 'medium' THEN 2 ELSE 1 END
+                     WHEN 1 THEN CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 2 WHEN 'medium' THEN 1 ELSE 0 END
+                     ELSE 0
+                   END
+               END;
+      $function$
+  SQL
+
   create_function :host_compliance_counts, sql_definition: <<-'SQL'
       CREATE OR REPLACE FUNCTION public.host_compliance_counts(host_ids bigint[])
-       RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean, vuln_fixable integer, vuln_fix_packages integer, vuln_fix_severities smallint, vuln_fix integer, vuln_attention integer, vuln_low_risk integer, vuln_ignorable integer, vuln_kev_open integer)
+       RETURNS TABLE(host_id bigint, cis_passed integer, cis_failed integer, cis_not_readable integer, cis_critical integer, cis_high integer, cis_medium integer, cis_low integer, vuln_critical integer, vuln_high integer, vuln_medium integer, vuln_low integer, vuln_unknown integer, vuln_evaluated boolean, vuln_fix integer, vuln_attention integer, vuln_low_risk integer, vuln_ignorable integer, vuln_kev_open integer, exposure_tier smallint, exposure_points integer, vuln_kev_advisories integer, vuln_fix_critical integer, vuln_attention_undecided integer, work_upgrades integer, work_kernel_install boolean, work_reboot boolean, work_items integer)
        LANGUAGE sql
        STABLE
       AS $function$
@@ -1409,14 +1460,40 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
         -- v03 (VT-BUCKETS, #259): the open and reopened findings per triage bucket (1 Fix available, 2 Needs attention,
         -- 3 Low risk, 4 Ignorable), and those with the KEV flag. Counted for every host, evaluated or not, so the four
         -- always add up to the open count: a host that is not evaluated keeps its findings and their buckets as they were.
+        --
+        -- v04 (VT-SCORES, #262; the epic's VT-M3 and VT-M4): v02's fix counts are gone (the buckets replace them on every
+        -- page, #281 item 1; the findings keep their fix flag), and the host's exposure and work are counted, scored only when its last matching
+        -- run evaluated it and every open finding has a bucket (else NULL: never a 0 or a lower tier that stands for data
+        -- not there yet). Each open advisory counts once, in the worst bucket of its findings (Needs attention, Fix
+        -- available, Low risk by a control, Low risk, Ignorable), with the stored KEV flag of any of them and the widest
+        -- listener among them outside Ignorable (vulnerability_findings.listener: 2 network, 1 loopback):
+        -- - exposure_points: vulnerability_exposure_points over those advisories;
+        -- - exposure_tier: 4 Known exploited (a KEV advisory in Needs attention, Fix available, or under a control), else 3
+        --   Exposed, no fix (a critical or high in Needs attention), else 2 Fixes waiting (a critical or high in Fix
+        --   available), else 1 Low (any points), else 0 Minimal;
+        -- - vuln_kev_advisories: KEV advisories outside Ignorable; vuln_fix_critical: critical advisories with a finding in
+        --   Fix available (the run badge's "fixable critical"); vuln_attention_undecided: advisories with a finding in Needs
+        --   attention and no decision in force (#298: an accepted risk or a control whose ended_at is NULL), as the host
+        --   tab's decisions due count them, less the decisions ending soon, lapsed, or suspended, which depend on the date
+        --   and stay a read-time part (HostDecisions);
+        -- - work: one upgrade per source package with F1 or F2 findings, the new kernel package to install (K2), and a reboot
+        --   (K1, or the agent's reboot flag, host_applicability.reboot_required); work_items is their sum.
+        -- The KEV, EPSS, and tracker sources' freshness is not here: it is a read-time qualifier, so a feed going stale
+        -- rewrites no summary and never lowers a score.
         SELECT h.id,
                cis.passed, cis.failed, cis.not_readable, cis.critical, cis.high, cis.medium, cis.low,
                vulns.critical, vulns.high, vulns.medium, vulns.low, vulns.unknown,
                COALESCE(hve.state = 'evaluated', false),
-               CASE WHEN hve.state = 'evaluated' THEN vulns.fixable ELSE 0 END,
-               CASE WHEN hve.state = 'evaluated' THEN vulns.fix_packages ELSE 0 END,
-               CASE WHEN hve.state = 'evaluated' THEN vulns.fix_severities ELSE 0::smallint END,
-               vulns.bucket_fix, vulns.bucket_attention, vulns.bucket_low_risk, vulns.bucket_ignorable, vulns.kev_open
+               vulns.bucket_fix, vulns.bucket_attention, vulns.bucket_low_risk, vulns.bucket_ignorable, vulns.kev_open,
+               CASE WHEN scored.yes THEN
+                 (CASE WHEN vulns.known_exploited THEN 4 WHEN vulns.exposed THEN 3 WHEN vulns.fixes_waiting THEN 2 WHEN vulns.points > 0 THEN 1 ELSE 0 END)::smallint
+               END,
+               CASE WHEN scored.yes THEN vulns.points END,
+               vulns.kev_advisories, vulns.fix_critical, vulns.undecided,
+               CASE WHEN scored.yes THEN vulns.upgrades END,
+               scored.yes AND vulns.kernel_install,
+               scored.yes AND (vulns.reboot OR COALESCE(ha.reboot_required, false)),
+               CASE WHEN scored.yes THEN vulns.upgrades + vulns.kernel_install::integer + (vulns.reboot OR COALESCE(ha.reboot_required, false))::integer END
           FROM (SELECT DISTINCT unnest(host_ids) AS id) h
           LEFT JOIN LATERAL (
             SELECT count(*) FILTER (WHERE r.result = 'pass')::integer AS passed,
@@ -1432,26 +1509,65 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
               LEFT JOIN cis_rule_versions cv ON cv.id = ru.current_version_id
              WHERE r.host_id = h.id
           ) cis ON true
+          -- The host's open findings are read once (one index scan and one join to advisories), grouped two ways in that one
+          -- pass (v04): by advisory, for the severity and bucket counts and the exposure, and by source package, for the
+          -- upgrades. Each finding is in exactly one group of each set.
           LEFT JOIN LATERAL (
-            SELECT count(*) FILTER (WHERE a.severity = 'critical')::integer AS critical,
-                   count(*) FILTER (WHERE a.severity = 'high')::integer AS high,
-                   count(*) FILTER (WHERE a.severity = 'medium')::integer AS medium,
-                   count(*) FILTER (WHERE a.severity = 'low')::integer AS low,
-                   count(*) FILTER (WHERE a.severity = 'unknown')::integer AS unknown,
-                   count(*) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fixable,
-                   count(DISTINCT (f.package, f.architecture)) FILTER (WHERE f.last_fixed_version IS NOT NULL)::integer AS fix_packages,
-                   COALESCE(bit_or(CASE a.severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 4 WHEN 'low' THEN 8 ELSE 16 END)
-                                   FILTER (WHERE f.last_fixed_version IS NOT NULL), 0)::smallint AS fix_severities,
-                   count(*) FILTER (WHERE f.bucket = 1)::integer AS bucket_fix,
-                   count(*) FILTER (WHERE f.bucket = 2)::integer AS bucket_attention,
-                   count(*) FILTER (WHERE f.bucket = 3)::integer AS bucket_low_risk,
-                   count(*) FILTER (WHERE f.bucket = 4)::integer AS bucket_ignorable,
-                   count(*) FILTER (WHERE f.kev)::integer AS kev_open
-              FROM vulnerability_findings f
-              JOIN advisories a ON a.id = f.advisory_id
-             WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')
+            SELECT COALESCE(sum(g.n) FILTER (WHERE g.set = 0 AND g.severity = 'critical'), 0)::integer AS critical,
+                   COALESCE(sum(g.n) FILTER (WHERE g.set = 0 AND g.severity = 'high'), 0)::integer AS high,
+                   COALESCE(sum(g.n) FILTER (WHERE g.set = 0 AND g.severity = 'medium'), 0)::integer AS medium,
+                   COALESCE(sum(g.n) FILTER (WHERE g.set = 0 AND g.severity = 'low'), 0)::integer AS low,
+                   COALESCE(sum(g.n) FILTER (WHERE g.set = 0 AND g.severity = 'unknown'), 0)::integer AS unknown,
+                   COALESCE(sum(g.in_fix) FILTER (WHERE g.set = 0), 0)::integer AS bucket_fix,
+                   COALESCE(sum(g.in_attention) FILTER (WHERE g.set = 0), 0)::integer AS bucket_attention,
+                   COALESCE(sum(g.in_low_risk) FILTER (WHERE g.set = 0), 0)::integer AS bucket_low_risk,
+                   COALESCE(sum(g.in_ignorable) FILTER (WHERE g.set = 0), 0)::integer AS bucket_ignorable,
+                   COALESCE(sum(g.kev_findings) FILTER (WHERE g.set = 0), 0)::integer AS kev_open,
+                   COALESCE(sum(g.untriaged) FILTER (WHERE g.set = 0), 0)::integer AS untriaged,
+                   count(*) FILTER (WHERE g.set = 1 AND g.upgrade)::integer AS upgrades,
+                   COALESCE(bool_or(g.kernel_install) FILTER (WHERE g.set = 0), false) AS kernel_install,
+                   COALESCE(bool_or(g.reboot) FILTER (WHERE g.set = 0), false) AS reboot,
+                   COALESCE(sum(vulnerability_exposure_points(g.worst, g.severity, g.kev, g.listener)) FILTER (WHERE g.set = 0), 0)::integer AS points,
+                   COALESCE(bool_or(g.kev AND g.worst >= 3) FILTER (WHERE g.set = 0), false) AS known_exploited,
+                   COALESCE(bool_or(g.severity IN ('critical', 'high') AND g.worst = 5) FILTER (WHERE g.set = 0), false) AS exposed,
+                   COALESCE(bool_or(g.severity IN ('critical', 'high') AND g.worst = 4) FILTER (WHERE g.set = 0), false) AS fixes_waiting,
+                   count(*) FILTER (WHERE g.set = 0 AND g.kev AND g.worst >= 2)::integer AS kev_advisories,
+                   count(*) FILTER (WHERE g.set = 0 AND g.severity = 'critical' AND g.in_fix > 0)::integer AS fix_critical,
+                   count(*) FILTER (WHERE g.set = 0 AND g.in_attention > 0 AND NOT (g.advisory_id = ANY (dec.ids)))::integer AS undecided
+              FROM (
+                -- Set 0, one row per open advisory, in the worst bucket of its triaged findings (5 Needs attention, 4 Fix
+                -- available, 3 Low risk by a control (rule O1, 9), 2 Low risk, 1 Ignorable), with the KEV flag of any of them
+                -- and the widest listener outside Ignorable; set 1, one per source package.
+                SELECT CASE WHEN GROUPING(f.advisory_id) = 0 THEN 0 ELSE 1 END AS set,
+                       f.advisory_id,
+                       a.severity::text AS severity,
+                       count(*) AS n,
+                       count(*) FILTER (WHERE f.bucket = 1) AS in_fix,
+                       count(*) FILTER (WHERE f.bucket = 2) AS in_attention,
+                       count(*) FILTER (WHERE f.bucket = 3) AS in_low_risk,
+                       count(*) FILTER (WHERE f.bucket = 4) AS in_ignorable,
+                       count(*) FILTER (WHERE f.kev) AS kev_findings,
+                       count(*) FILTER (WHERE f.bucket IS NULL) AS untriaged,
+                       -- rules F1 and F2 (5, 6) are package upgrades, K2 (4) a new kernel package, K1 (3) a reboot
+                       bool_or(f.bucket_rule IN (5, 6)) AS upgrade,
+                       bool_or(f.bucket_rule = 4) AS kernel_install,
+                       bool_or(f.bucket_rule = 3) AS reboot,
+                       max(CASE WHEN f.bucket = 2 THEN 5 WHEN f.bucket = 1 THEN 4 WHEN f.bucket_rule = 9 THEN 3 WHEN f.bucket = 3 THEN 2 WHEN f.bucket = 4 THEN 1 END)::smallint AS worst,
+                       COALESCE(bool_or(f.kev), false) AS kev,
+                       max(f.listener) FILTER (WHERE f.bucket <> 4) AS listener
+                  FROM vulnerability_findings f
+                  JOIN advisories a ON a.id = f.advisory_id
+                 WHERE f.host_id = h.id AND f.state IN ('open', 'reopened')
+                 GROUP BY GROUPING SETS ((f.advisory_id, a.severity), (COALESCE(f.last_source, f.package)))
+              ) g
+              -- The advisories with a decision in force on the host (VT-OVERRIDES #261: an accepted risk keeps its finding in
+              -- Needs attention, a control moves it to Low risk), read as ended_at IS NULL, one probe of the active index.
+              CROSS JOIN (SELECT COALESCE(array_agg(d.advisory_id), '{}'::bigint[]) AS ids
+                            FROM finding_decisions d WHERE d.host_id = h.id AND d.ended_at IS NULL) dec
           ) vulns ON true
-          LEFT JOIN host_vulnerability_evaluations hve ON hve.host_id = h.id;
+          LEFT JOIN host_vulnerability_evaluations hve ON hve.host_id = h.id
+          LEFT JOIN host_applicability ha ON ha.host_id = h.id
+          CROSS JOIN LATERAL (SELECT COALESCE(hve.state = 'evaluated', false) AND vulns.untriaged = 0 AS yes) scored;
       $function$
   SQL
 
@@ -1460,14 +1576,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
        RETURNS void
        LANGUAGE plpgsql
       AS $function$
+      DECLARE
+        grace interval;
       BEGIN
         -- Recomputes the hosts' compliance counts (#193). Called from host_compliance_summaries_flush at commit, which has
         -- already locked these rows in one sorted statement, and by the rebuild and the recount queue. v02 (VT-FIXABLE,
         -- #256): also the open findings with a fix, their packages, and their severities. v03 (VT-BUCKETS, #259): also the
-        -- open findings per triage bucket and those with the KEV flag.
+        -- open findings per triage bucket and those with the KEV flag. v04 (VT-SCORES, #262): not v02's fix counts, whose
+        -- columns are dropped, but the exposure tier and points, the work items, and the run's two times:
+        -- - fixable_critical_since: when the host last went from no critical advisory in Fix available to one (NULL while
+        --   it has none);
+        -- - no_fixable_critical_since: when its current run began, kept while a fixable critical is open. When the last one
+        --   goes, the run carries on if it was open for less than the grace, and starts again now otherwise (a run's badge
+        --   is read from these with the same grace: VulnerabilityExposure::Run). A host that is not scored (not evaluated
+        --   now, or not every open finding triaged) has neither: its run ends, and a new one starts when it is scored again,
+        --   so a run never counts days the server could not see (S4 of the review of #305). A gap in package reports ends a
+        --   run too (host_compliance_summaries_flush v03).
         IF host_ids IS NULL OR cardinality(host_ids) = 0 THEN
           RETURN;
         END IF;
+
+        -- The run's grace for a new fixable critical (owner decision 7; the vulnerabilities.run_grace_days setting), read only
+        -- when there is something to recount. A value that is not a whole number of days (Setting writes only those) reads as
+        -- the default rather than failing every flush.
+        grace := COALESCE((SELECT CASE WHEN jsonb_typeof(st.value) = 'number' AND st.value::text ~ '^[0-9]{1,4}$' THEN (st.value::text)::integer END
+                             FROM settings st WHERE st.key = 'vulnerabilities.run_grace_days'), 7) * interval '1 day';
 
         -- Lock first, in host order, then count in a later statement: under READ COMMITTED that statement takes a new
         -- snapshot, so a transaction that waited here for another one counts what that one committed. Two transactions
@@ -1479,20 +1612,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
                cis_critical = c.cis_critical, cis_high = c.cis_high, cis_medium = c.cis_medium, cis_low = c.cis_low,
                vuln_critical = c.vuln_critical, vuln_high = c.vuln_high, vuln_medium = c.vuln_medium, vuln_low = c.vuln_low,
                vuln_unknown = c.vuln_unknown, vuln_evaluated = c.vuln_evaluated,
-               vuln_fixable = c.vuln_fixable, vuln_fix_packages = c.vuln_fix_packages, vuln_fix_severities = c.vuln_fix_severities,
                vuln_fix = c.vuln_fix, vuln_attention = c.vuln_attention, vuln_low_risk = c.vuln_low_risk, vuln_ignorable = c.vuln_ignorable,
-               vuln_kev_open = c.vuln_kev_open
+               vuln_kev_open = c.vuln_kev_open,
+               exposure_tier = c.exposure_tier, exposure_points = c.exposure_points, vuln_kev_advisories = c.vuln_kev_advisories,
+               vuln_fix_critical = c.vuln_fix_critical, vuln_attention_undecided = c.vuln_attention_undecided,
+               work_upgrades = c.work_upgrades, work_kernel_install = c.work_kernel_install, work_reboot = c.work_reboot, work_items = c.work_items,
+               fixable_critical_since = r.fixable_since, no_fixable_critical_since = r.run_since
           FROM host_compliance_counts(host_ids) c
+          JOIN host_compliance_summaries o ON o.host_id = c.host_id
+          CROSS JOIN LATERAL (
+            SELECT CASE WHEN c.exposure_tier IS NULL THEN NULL
+                        WHEN c.vuln_fix_critical > 0 THEN COALESCE(o.fixable_critical_since, now())
+                   END AS fixable_since,
+                   CASE WHEN c.exposure_tier IS NULL THEN NULL
+                        WHEN c.vuln_fix_critical > 0 THEN o.no_fixable_critical_since
+                        WHEN o.fixable_critical_since IS NULL THEN COALESCE(o.no_fixable_critical_since, now())
+                        WHEN o.no_fixable_critical_since <= o.fixable_critical_since AND now() - o.fixable_critical_since < grace THEN o.no_fixable_critical_since
+                        ELSE now()
+                   END AS run_since
+          ) r
          WHERE s.host_id = c.host_id
            AND (s.cis_passed, s.cis_failed, s.cis_not_readable, s.cis_critical, s.cis_high, s.cis_medium, s.cis_low,
                 s.vuln_critical, s.vuln_high, s.vuln_medium, s.vuln_low, s.vuln_unknown, s.vuln_evaluated,
-                s.vuln_fixable, s.vuln_fix_packages, s.vuln_fix_severities,
-                s.vuln_fix, s.vuln_attention, s.vuln_low_risk, s.vuln_ignorable, s.vuln_kev_open)
+                s.vuln_fix, s.vuln_attention, s.vuln_low_risk, s.vuln_ignorable, s.vuln_kev_open,
+                s.exposure_tier, s.exposure_points, s.vuln_kev_advisories, s.vuln_fix_critical, s.vuln_attention_undecided,
+                s.work_upgrades, s.work_kernel_install, s.work_reboot, s.work_items, s.fixable_critical_since, s.no_fixable_critical_since)
                IS DISTINCT FROM
                (c.cis_passed, c.cis_failed, c.cis_not_readable, c.cis_critical, c.cis_high, c.cis_medium, c.cis_low,
                 c.vuln_critical, c.vuln_high, c.vuln_medium, c.vuln_low, c.vuln_unknown, c.vuln_evaluated,
-                c.vuln_fixable, c.vuln_fix_packages, c.vuln_fix_severities,
-                c.vuln_fix, c.vuln_attention, c.vuln_low_risk, c.vuln_ignorable, c.vuln_kev_open);
+                c.vuln_fix, c.vuln_attention, c.vuln_low_risk, c.vuln_ignorable, c.vuln_kev_open,
+                c.exposure_tier, c.exposure_points, c.vuln_kev_advisories, c.vuln_fix_critical, c.vuln_attention_undecided,
+                c.work_upgrades, c.work_kernel_install, c.work_reboot, c.work_items, r.fixable_since, r.run_since);
       END;
       $function$
   SQL
@@ -1575,6 +1725,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
         sync_ids bigint[];
         status_ids bigint[];
         count_ids bigint[];
+        gap_ids bigint[];
       BEGIN
         -- Runs once a transaction, at commit (a deferred constraint trigger on host_compliance_flushes, #193): syncs and
         -- recounts every host the transaction marked. Every summary row it needs is locked in one statement, in host id
@@ -1586,8 +1737,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
         SELECT array_agg(host_id ORDER BY host_id),
                array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 1 <> 0),
                array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 3 = 2),
-               array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 4 <> 0)
-          INTO all_ids, sync_ids, status_ids, count_ids
+               array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 4 <> 0),
+               array_agg(host_id ORDER BY host_id) FILTER (WHERE kinds & 8 <> 0)
+          INTO all_ids, sync_ids, status_ids, count_ids, gap_ids
           FROM taken;
         IF all_ids IS NULL THEN
           RETURN NULL;
@@ -1609,6 +1761,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
           LEFT JOIN host_liveness l ON l.host_id = c.host_id
          WHERE s.host_id = c.host_id AND NOT s.host_id = ANY (sync_ids)
            AND s.status_rank IS DISTINCT FROM host_compliance_status_rank(s.enrollment_state, l.liveness_status);
+
+        -- v03 (VT-SCORES #262, review of #305 S4): kind 8 is a package report after a gap longer than the badge setting
+        -- (host_compliance_summaries_changed, on host_package_sets). The server saw nothing in the gap, so the host's run
+        -- ends here; the recount that follows (kind 4 is always marked with it) starts a new one from now.
+        UPDATE host_compliance_summaries s SET fixable_critical_since = NULL, no_fixable_critical_since = NULL
+         WHERE s.host_id = ANY (gap_ids) AND (s.fixable_critical_since IS NOT NULL OR s.no_fixable_critical_since IS NOT NULL);
 
         PERFORM host_compliance_summaries_refresh(count_ids);
         RETURN NULL;
@@ -1680,8 +1838,30 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
           RETURN NULL;
         END IF;
 
+        -- host_package_sets (row, VT-SCORES #262, review of #305 S4): a package report after a gap longer than the badge
+        -- setting (vulnerabilities.badge_report_max_age_days, 3 by default) ends the host's run: kind 8, with a recount. The
+        -- trigger's WHEN clause lets through only gaps over a day (the setting's least), so the reports that keep to
+        -- their schedule call nothing.
+        IF TG_TABLE_NAME = 'host_package_sets' THEN
+          IF NEW.received_at - OLD.received_at > COALESCE((SELECT CASE WHEN jsonb_typeof(st.value) = 'number' AND st.value::text ~ '^[0-9]{1,4}$' THEN (st.value::text)::integer END
+                                                             FROM settings st WHERE st.key = 'vulnerabilities.badge_report_max_age_days'), 3) * interval '1 day' THEN
+            PERFORM host_compliance_summaries_mark(ARRAY[NEW.host_id], 12::smallint);
+          END IF;
+          RETURN NULL;
+        END IF;
+
         -- host_vulnerability_evaluations (row, its state changed).
         IF TG_TABLE_NAME = 'host_vulnerability_evaluations' THEN
+          host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
+
+        -- finding_decisions (row, VT-SCORES #262 folding in #298): a decision recorded or ended moves the host's decisions
+        -- due (vuln_attention_undecided). An accepted risk changes no bucket, so the findings' triggers do not see it.
+        ELSIF TG_TABLE_NAME = 'finding_decisions' THEN
+          host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
+
+        -- host_applicability (row, VT-SCORES #262): the agent's reboot flag, a work item, appeared or went. A row trigger
+        -- with a WHEN clause on update, so the in-use reports that leave the flag as it was queue nothing.
+        ELSIF TG_TABLE_NAME = 'host_applicability' THEN
           host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
 
         -- cis_rules (row, its current version changed): a failure that names no version takes the current one's severity.
@@ -1711,6 +1891,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
         -- fix appeared or disappeared (v04, VT-FIXABLE #256: an advisory import that adds or takes back a fixed version
         -- writes last_fixed_version with no change of state; a fix moving from one version to another changes no count).
         -- v05 (VT-BUCKETS, #259): or an open one's triage bucket or KEV flag changed (a re-triage, or a host fact).
+        -- v06 (VT-SCORES, #262): or its rule (K2 to K1 is a new kernel installed: a work item changes, not the bucket), its
+        -- listener (exposure points), or its source package (the upgrades are counted by source).
         ELSIF TG_TABLE_NAME = 'vulnerability_findings' THEN
           IF TG_OP = 'INSERT' THEN
             EXECUTE 'SELECT ARRAY(SELECT DISTINCT n.host_id FROM new_rows n WHERE n.state = ANY ($1))' INTO host_ids USING open_states;
@@ -1724,7 +1906,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
                  WHERE (o.state = ANY ($1) OR n.state = ANY ($1))
                    AND ((o.state = ANY ($1)) <> (n.state = ANY ($1)) OR o.advisory_id <> n.advisory_id OR o.host_id <> n.host_id
                         OR (o.last_fixed_version IS NULL) <> (n.last_fixed_version IS NULL)
-                        OR o.bucket IS DISTINCT FROM n.bucket OR o.kev IS DISTINCT FROM n.kev))
+                        OR o.bucket IS DISTINCT FROM n.bucket OR o.kev IS DISTINCT FROM n.kev
+                        OR o.bucket_rule IS DISTINCT FROM n.bucket_rule OR o.listener IS DISTINCT FROM n.listener
+                        OR o.last_source IS DISTINCT FROM n.last_source))
             $q$ INTO host_ids USING open_states;
           END IF;
         END IF;
@@ -1954,6 +2138,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_261001) do
 
   create_trigger :host_compliance_summaries_findings_delete, sql_definition: <<-SQL
       CREATE TRIGGER host_compliance_summaries_findings_delete AFTER DELETE ON public.vulnerability_findings REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_decisions, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_decisions AFTER INSERT OR UPDATE OF ended_at ON public.finding_decisions FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_package_sets_gap, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_package_sets_gap AFTER UPDATE OF received_at ON public.host_package_sets FOR EACH ROW WHEN (((new.received_at - old.received_at) > 'P1D'::interval)) EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_applicability_update, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_applicability_update AFTER UPDATE OF reboot_required ON public.host_applicability FOR EACH ROW WHEN ((old.reboot_required IS DISTINCT FROM new.reboot_required)) EXECUTE FUNCTION host_compliance_summaries_changed()
+  SQL
+
+  create_trigger :host_compliance_summaries_applicability_insert_delete, sql_definition: <<-SQL
+      CREATE TRIGGER host_compliance_summaries_applicability_insert_delete AFTER INSERT OR DELETE ON public.host_applicability FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
   create_trigger :host_compliance_summaries_flush, sql_definition: <<-SQL

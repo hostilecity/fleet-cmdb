@@ -77,6 +77,11 @@ BEGIN
   IF TG_TABLE_NAME = 'host_vulnerability_evaluations' THEN
     host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
 
+  -- finding_decisions (row, VT-SCORES #262 folding in #298): a decision recorded or ended moves the host's decisions
+  -- due (vuln_attention_undecided). An accepted risk changes no bucket, so the findings' triggers do not see it.
+  ELSIF TG_TABLE_NAME = 'finding_decisions' THEN
+    host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
+
   -- host_applicability (row, VT-SCORES #262): the agent's reboot flag, a work item, appeared or went. A row trigger
   -- with a WHEN clause on update, so the in-use reports that leave the flag as it was queue nothing.
   ELSIF TG_TABLE_NAME = 'host_applicability' THEN
