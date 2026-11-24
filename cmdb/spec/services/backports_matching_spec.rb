@@ -185,7 +185,7 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
       advisory = Advisory.find_by!(advisory_id: "DEBIAN-CVE-2026-26064")
       candidate = FindingDecisions::Candidates.load(advisory, [ host.id ]).sole
       expect(ApplicationController.helpers.decision_fix_words(candidate))
-        .to eq("None for this release (kept open: only this release's data says it is fixed, which is no evidence for a backport)")
+        .to eq("None for this release (kept open: no release's data says it is affected, but a release this backport can be built from has no data for its source)")
       outcome = FindingDecisions.record!(operator: create(:operator), host:, advisory:,
                                          params: { kind: "control", reason: "calibre-server is not started on this host", expires_on: (Date.current + 30).iso8601,
                                                    host_ids: [ host.id ], confirmed_ids: [ host.id ] })
