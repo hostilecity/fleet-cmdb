@@ -1,10 +1,10 @@
 # Words and lamps for rollouts and agent updates (P1-D09, approved mockups agents.html, agents-halted.html, and
 # host.html's "Agent updates"). Every status has its word; colour is never the only signal.
 module RolloutsHelper
-  PROBLEM_STATES = %w[failed rolled_back unconfirmed].freeze
+  PROBLEM_STATES = %w[failed rolled_back unconfirmed restart_loop].freeze
   # The order a stage's counts are listed in.
   STATE_WORDS = { "confirmed" => "confirmed", "updating" => "updating", "pending" => "waiting", "rolled_back" => "rolled back",
-                  "failed" => "failed", "unconfirmed" => "not confirmed" }.freeze
+                  "failed" => "failed", "unconfirmed" => "not confirmed", "restart_loop" => "restarted too often" }.freeze
 
   # "1. Canary", "2. 25% of hosts", "3. Everyone else": stage 0 is the canaries; each later stage brings the
   # rollout up to its share of the hosts on an older version.
@@ -80,6 +80,7 @@ module RolloutsHelper
     when "rolled_back" then [ "offline", "Rolled back", reason ]
     when "failed" then [ "offline", "Failed", reason ]
     when "unconfirmed" then [ "offline", "No result within #{Rollouts.config.confirmation_timeout.in_minutes.to_i} minutes", nil ]
+    when "restart_loop" then [ "offline", restart_loop_words, nil ] # #251
     when "updating" then [ "stale", "Offered #{version}, waiting for its result", nil ]
     else pending_status(member, rollout, version)
     end
@@ -94,7 +95,7 @@ module RolloutsHelper
   def agent_update_summary(member, rollout)
     lamp, = rollout_host_status(member, rollout)
     outcome = { "confirmed" => nil, "rolled_back" => "rolled back", "failed" => "failed", "unconfirmed" => "not confirmed",
-                "updating" => "updating", "pending" => (rollout.state == "running" ? "waiting" : "not offered") }[member.state]
+                "restart_loop" => "restarted too often", "updating" => "updating", "pending" => (rollout.state == "running" ? "waiting" : "not offered") }[member.state]
     words = [ [ member.from_version, rollout.agent_release.version ].compact.join(" → "), outcome ].compact.join(", ")
     tag.span(words, class: [ "lamp", lamp ])
   end
@@ -116,6 +117,12 @@ module RolloutsHelper
       rollout_host_status(member, rollout)[1]
     end
     "#{detail}. #{when_text}"
+  end
+
+  # "Restarted more than 3 times within 24 hours of the update" (#251): the restart-loop settings in force.
+  def restart_loop_words
+    settings = Rollouts.restart_loop
+    "Restarted more than #{pluralize(settings.limit, 'time')} within #{pluralize(settings.window.in_hours.to_i, 'hour')} of the update"
   end
 
   private

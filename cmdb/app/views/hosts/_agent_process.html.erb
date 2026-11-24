@@ -1,0 +1,27 @@
+<%# The agent process and how often systemd restarted it (#251), from the heartbeats' `process` object. An agent
+    killed at its memory limit and restarted every few minutes heartbeats normally between kills, so this is where it
+    shows; more than the restart-loop limit within its window is a restart loop, which halts a rollout the host is in.
+    Agent values are shown escaped; the times are the agent's clock, except the restarts, which are the server's. %>
+<% if host.enrollment_state == "active" && host.first_seen_at %>
+  <div id="<%= dom_id(host, :agent_process) %>">
+    <% if host.agent_process_started_at.nil? %>
+      <p class="muted">Agent version <code><%= host.agent_version %></code> does not report its restarts. Releases from #251 on do.</p>
+    <% else %>
+      <% window = Rollouts.restart_loop.window %>
+      <% recent = host.agent_restarts_within(window) %>
+      <% if host.restart_loop? %>
+        <div class="notice" role="status" id="<%= dom_id(host, :restart_loop) %>">
+          <strong>The agent restarted <%= pluralize(recent, "time") %> in the last <%= pluralize(window.in_hours.to_i, "hour") %>.</strong>
+          <p>systemd keeps restarting it. Between restarts it heartbeats normally, so the host looks online, but its reports may never be sent. <%= agent_last_stop_words(host) %>.</p>
+          <p><strong>Next step:</strong> on the VM, read why with <code>journalctl -u fleet-agent --since "1 day ago" | grep -iE 'oom|killed|failed'</code>. A kill at the memory limit has its own steps in <code>docs/operations/troubleshooting.md</code>, "The agent was killed for using too much memory": a host with very many packages needs a higher limit; otherwise the release it runs probably leaks, and a fixed release is the cure.</p>
+        </div>
+      <% end %>
+      <dl class="facts">
+        <dt>Agent running since</dt><dd><%= utc(host.agent_process_started_at) %> <span class="muted">(agent's clock)</span></dd>
+        <dt>Restarts in the last <%= pluralize(window.in_hours.to_i, "hour") %></dt><dd><%= recent %><% if host.agent_restarted_at %> <span class="muted">(last <%= utc(host.agent_restarted_at) %>)</span><% end %></dd>
+        <dt>Restarts by systemd</dt><dd><%= host.agent_restarts.nil? ? unavailable("Not known") : host.agent_restarts %> <span class="muted">(since it was last started by a person, an update, or a boot)</span></dd>
+        <dt>Last stop</dt><dd><% if host.agent_last_stop_result %><%= agent_last_stop_words(host) %> <span class="muted"><%= utc(host.agent_last_stop_at) %></span><% else %><%= unavailable("Not recorded") %><% end %></dd>
+      </dl>
+    <% end %>
+  </div>
+<% end %>

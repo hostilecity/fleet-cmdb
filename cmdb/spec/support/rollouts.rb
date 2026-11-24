@@ -50,4 +50,12 @@ RSpec.configure do |config|
   ensure
     saved.each { |key, value| rollouts.public_send(:"#{key}=", value) }
   end
+  # The restart-loop settings (#251), as a spec may change them.
+  config.around do |example|
+    restart_loop = Rails.configuration.x.restart_loop
+    saved = restart_loop.to_h.slice(:limit, :window)
+    example.run
+  ensure
+    saved.each { |key, value| restart_loop.public_send(:"#{key}=", value) }
+  end
 end

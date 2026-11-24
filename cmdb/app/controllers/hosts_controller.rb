@@ -13,7 +13,7 @@ class HostsController < ApplicationController
   REPORT_REQUEST_LIMIT = 10
 
   def index
-    @fleet = FleetList.new(params.permit(:q, :tag, :status, :recovery, :vulns, :sort, :dir, :after, :before))
+    @fleet = FleetList.new(params.permit(:q, :tag, :status, :recovery, :vulns, :restarts, :sort, :dir, :after, :before))
     @hosts = @fleet.hosts
     @counts = FleetList.counts
     @total = @fleet.filtered? ? @fleet.total : @counts.values.sum

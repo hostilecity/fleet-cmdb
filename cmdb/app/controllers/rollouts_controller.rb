@@ -34,7 +34,7 @@ class RolloutsController < ApplicationController
   def confirm_advance; end
   def confirm_halt; end
   def confirm_resume
-    @problems = @rollout.rollout_hosts.includes(:host).where(state: %w[failed rolled_back unconfirmed]).order(:stage, :host_id).limit(ROLLOUT_HOST_LIMIT).to_a
+    @problems = @rollout.rollout_hosts.includes(:host).where(state: RolloutsHelper::PROBLEM_STATES).order(:stage, :host_id).limit(ROLLOUT_HOST_LIMIT).to_a
     @update_reasons = latest_reasons(@rollout.agent_updates.where(host_id: @problems.map(&:host_id)))
   end
   def confirm_cancel; end

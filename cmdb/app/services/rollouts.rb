@@ -6,6 +6,9 @@
 #   where to fetch it, nothing else: ADR 0018).
 # - record_result! stores an agent's reported outcome; a failure or rollback halts the rollout.
 # - expire_unconfirmed! (run every minute by RolloutTimeoutJob) halts a rollout whose hosts never reported.
+# - restarts_seen! (from a heartbeat that shows the agent was restarted, #251) marks a host whose agent restarted more
+#   than the restart-loop limit within its window since it was sent the update, which counts as failed for its stage
+#   and halts the rollout.
 #
 # Stages: stage 0 is the canaries (an explicit list of hosts, or a tag); stage n then brings the rollout to
 # stage_percents[n - 1] percent of the hosts that run an older version. The default stages follow the fleet's
@@ -55,6 +58,8 @@ module Rollouts
   OUTCOME_ACTIONS = { "succeeded" => Audit::Actions::UPDATE_SUCCEEDED, "failed" => Audit::Actions::UPDATE_FAILED,
                       "rolled_back" => Audit::Actions::UPDATE_ROLLED_BACK }.freeze
   REASON_LIMIT = 500
+  # The rollout hosts whose restarts count towards a restart loop (#251): sent the update, no outcome against them yet.
+  RESTART_COUNTED_STATES = %w[updating confirmed].freeze
 
   Result = Data.define(:report_id, :duplicate)
 
@@ -278,7 +283,9 @@ module Rollouts
     update = AgentUpdate.create!(host:, rollout:, report_id:, version: payload.fetch("version"), outcome:, reason:,
                                  reported_agent_version: payload.fetch("agent_version"),
                                  occurred_at: Time.iso8601(payload.fetch("occurred_at")), received_at: now)
-    member.update!(state: OUTCOME_STATES.fetch(outcome), resolved_at: now)
+    # A host marked restart_loop (#251) stays so when it confirms late: it runs the version, and keeps restarting.
+    state = member.state == "restart_loop" && outcome == "succeeded" ? "restart_loop" : OUTCOME_STATES.fetch(outcome)
+    member.update!(state:, resolved_at: member.state == "restart_loop" ? member.resolved_at : now)
     Audit.record(actor: host, action: OUTCOME_ACTIONS.fetch(outcome), target: update,
                  changes: { "rollout_id" => rollout.id, "version" => update.version, "reason" => reason })
     FleetBroadcast.hosts_changed([ host_id ])
@@ -290,6 +297,48 @@ module Rollouts
     end
     Result.new(report_id:, duplicate: false)
   end
+
+  # The host's agent was restarted by systemd (#251, ADR 0018): Liveness.record_heartbeat! calls this, under the host
+  # row lock and in the heartbeat's transaction, only for a heartbeat whose `process` object shows new restarts; recent
+  # is the host's agent_recent_restarts as now stored (newest first). A host of the open rollout that was sent the
+  # update (updating or confirmed) and has restarted more than config.x.restart_loop.limit times within
+  # config.x.restart_loop.window, counting only restarts since it was offered, is marked restart_loop: it counts as
+  # failed, so its stage cannot complete, and a running rollout halts, as for a rollback. So a release that leaks
+  # slowly halts with the first hosts that run it, although each of their processes heartbeats and confirms normally.
+  # A host already failed, rolled back, or unconfirmed is left as it is, and one marked once is not marked again. One
+  # indexed read when the host is in no open rollout; lock order host row, then rollout, then rollout host. Returns the
+  # rollout host it marked, or nil.
+  def restarts_seen!(host:, recent:, now: Time.current)
+    member = RolloutHost.joins(:rollout).where(host_id: host.id, state: RESTART_COUNTED_STATES, rollouts: { state: Rollout::OPEN_STATES })
+                        .where.not(offered_at: nil).first
+    return unless member
+
+    restarts = restarts_since(recent, [ now - restart_loop.window, member.offered_at ].max)
+    return unless restarts > restart_loop.limit
+
+    rollout = Rollout.lock.find(member.rollout_id)
+    member.lock!
+    return unless Rollout::OPEN_STATES.include?(rollout.state) && RESTART_COUNTED_STATES.include?(member.state)
+
+    member.update!(state: "restart_loop", resolved_at: now)
+    hours = restart_loop.window.in_hours.to_i
+    reason = "Restarted #{restarts} times within #{hours} hours of the update (more than #{restart_loop.limit})."
+    Audit.record(actor: Audit::SYSTEM, action: Audit::Actions::UPDATE_RESTART_LOOP, target: member,
+                 changes: { "host_id" => host.id, "rollout_id" => rollout.id, "version" => rollout.agent_release.version,
+                            "restarts" => restarts, "window_hours" => hours, "reason" => reason })
+    FleetBroadcast.hosts_changed([ host.id ])
+    if rollout.state == "running"
+      halt_locked!(rollout, actor: Audit::SYSTEM, reason: "#{host.name.truncate(100)} restarted #{restarts} times within #{hours} hours of the update.")
+      FleetBroadcast.refresh
+    end
+    member
+  end
+
+  # The restart-loop settings (#251): limit (more than this many restarts) and window (a duration).
+  def restart_loop = Rails.configuration.x.restart_loop
+
+  # How many of the times in recent (newest first) are at or after since.
+  def restarts_since(recent, since) = Array(recent).count { |at| at >= since }
 
   # Marks hosts that were sent the directive and have not reported within the confirmation timeout as
   # unconfirmed, and halts their running rollout. Returns the number of hosts marked. Idempotent.

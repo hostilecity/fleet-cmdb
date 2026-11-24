@@ -146,6 +146,7 @@
   <section aria-labelledby="updates_heading" id="agent_updates">
     <h2 id="updates_heading">Agent updates</h2>
     <%= render "hosts/recovery_coverage", host: @host %>
+    <%= render "hosts/agent_process", host: @host %>
     <% if @update_history.empty? %>
       <p class="muted">This host has not been part of a rollout.</p>
     <% else %>

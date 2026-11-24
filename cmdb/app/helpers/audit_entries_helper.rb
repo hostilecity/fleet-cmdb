@@ -32,6 +32,7 @@ module AuditEntriesHelper
     Audit::Actions::UPDATE_FAILED => "Agent update failed",
     Audit::Actions::UPDATE_ROLLED_BACK => "Agent update rolled back",
     Audit::Actions::UPDATE_UNCONFIRMED => "Agent update unconfirmed",
+    Audit::Actions::UPDATE_RESTART_LOOP => "Agent restarted too often after an update", # #251
     Audit::Actions::SETTING_CHANGED => "Setting changed",
     Audit::Actions::RULE_CREATED => "Rule created",
     Audit::Actions::RULE_EDITED => "Rule edited",

@@ -381,6 +381,27 @@ RSpec.describe "Rollouts", :signed_in, type: :request do
     expect(stage_cards.first).to end_with("Canary 0, Canary 1, Canary 2 and 1 more")
   end
 
+  describe "a host that restarted too often after the update (#251)" do
+    it "says so on the Agents page, among the problem hosts, and in the host's update history" do
+      rollout = travel_to(Time.utc(2026, 1, 1, 8, 0)) { started.tap { offer(canary_host) } }
+      travel_to(Time.utc(2026, 1, 1, 9, 0)) do
+        Host.transaction { Rollouts.restarts_seen!(host: canary_host, recent: [ Time.current ] * 4) }
+      end
+      expect(rollout.reload).to have_attributes(state: "halted", halt_reason: "Media server restarted 4 times within 24 hours of the update.")
+
+      get "/agents"
+      expect(host_rows.first[3]).to eq("Restarted more than 3 times within 24 hours of the update")
+      expect(stage_cards.first).to start_with("1. Canary 0 of 1 confirmed, 1 restarted too often")
+      get "/agents/rollouts/#{rollout.id}/resume"
+      expect(page.css("#problem_hosts li").map { |li| li.then { words(_1) } }).to eq([ "Media server: Restarted more than 3 times within 24 hours of the update" ])
+      get "/hosts/#{canary_host.id}"
+      expect(page.css("#agent_updates tbody tr").map { |row| words(row) })
+        .to eq([ "0.2.0 → 0.3.0, restarted too often Restarted more than 3 times within 24 hours of the update. 2026-01-01 09:00 UTC" ])
+      get "/audit"
+      expect(page.text).to include("Agent restarted too often after an update")
+    end
+  end
+
   describe "the host page's agent updates" do
     it "says when the host has not been part of a rollout" do
       get "/hosts/#{canary_host.id}"

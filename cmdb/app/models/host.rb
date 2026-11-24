@@ -169,6 +169,13 @@ class Host < ApplicationRecord
     agent_recovery_coverage&.to_sym || :not_reported
   end
 
+  # How many times systemd restarted the agent within window before now (#251), from agent_recent_restarts, which
+  # holds the server's time of each restart the heartbeats showed (Liveness.process_columns).
+  def agent_restarts_within(window = Rollouts.restart_loop.window, now: Time.current) = Rollouts.restarts_since(agent_recent_restarts, now - window)
+
+  # A restart loop (#251): more than the restart-loop limit of restarts within its window, as the fleet filter lists.
+  def restart_loop?(now: Time.current) = agent_restarts_within(now:) > Rollouts.restart_loop.limit
+
   # What the dashboard shows (FR-1.1, FR-1.4): liveness for active hosts, "awaiting first contact" for an
   # active host that has not sent a heartbeat yet, and the enrollment state for everything else.
   def display_status

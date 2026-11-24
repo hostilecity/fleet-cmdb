@@ -16,6 +16,12 @@ module Liveness
   EVALUATION_LOCK_KEY = 0x6c697665
   # Hosts moved per transaction by evaluate!, so a heartbeat never waits behind a fleet-wide transition.
   BATCH_SIZE = 1_000
+  # The restarts hosts.agent_recent_restarts keeps, newest first (#251): enough to count "more than N in the window"
+  # exactly for any restart-loop limit up to RESTART_HISTORY - 1 (config/initializers/rollouts.rb allows 1 to 31).
+  RESTART_HISTORY = 32
+  # How far a process's start may be past the agent_time of the same heartbeat (one clock): more is not a value the
+  # agent could have sent, and the process object is ignored (#251).
+  START_SLACK = 1.second
 
   module_function
 
@@ -26,31 +32,37 @@ module Liveness
   # mode is set up, or the first heartbeat's first_seen_at. Must run inside a transaction (the request's). Returns the
   # server time it recorded. task_capabilities is the heartbeat's `tasks` object (P3-A01), compared with the host's
   # capability columns (task_capability_columns); recovery is its `recovery` object (#180, ADR 0030), compared the same
-  # way (recovery_columns); units is its `units` object (#232), stored as agent_recovery_coverage (recovery_coverage).
+  # way (recovery_columns); units is its `units` object (#232), stored as agent_recovery_coverage (recovery_coverage);
+  # process is its `process` object (#251), stored by process_columns, which also counts the restarts it shows. Counted
+  # restarts are passed to Rollouts.restarts_seen!, which may mark the host's rollout membership and halt the rollout:
+  # only on a heartbeat that shows a restart, so a steady heartbeat reads nothing more.
   def record_heartbeat!(host_id:, credential_id:, agent_version:, agent_schema_version:, agent_time:, task_capabilities: nil,
-                        recovery: nil, units: nil)
+                        recovery: nil, units: nil, process: nil)
     host = AgentHostLock.lock!(host_id:, credential_id:)
 
     # The clock is read only now, after the lock, and last_seen_at never moves backwards: a heartbeat that waited for
     # the row cannot write an older time than the one it waited for.
     now, was = touch(host.id, Time.current, agent_time)
     capabilities = task_capability_columns(task_capabilities)
+    restarted, process_updates = process_columns(process, host, now, agent_time)
     updates = { agent_version:, agent_schema_version:, **capabilities, **recovery_columns(recovery, host, now),
-                agent_recovery_coverage: recovery_coverage(units) }
+                agent_recovery_coverage: recovery_coverage(units), **process_updates }
               .reject { |column, value| host[column] == value }
     if updates.keys.intersect?(capabilities.keys) || task_capabilities.nil? != host.task_capabilities_reported_at.nil?
       updates[:task_capabilities_reported_at] = task_capabilities && now
     end
     updates[:first_seen_at] = now if host.first_seen_at.nil?
     Host.where(id: host.id).update_all(updates) if updates.any?
+    Rollouts.restarts_seen!(host:, recent: updates[:agent_recent_restarts], now:) if restarted.positive?
     unless was == "online"
       HostStatusEvent.insert!({ host_id: host.id, from_status: was, to_status: "online", reason: "heartbeat", occurred_at: now })
     end
     # The row's "last seen" changes on every heartbeat; broadcast only status changes (P1-D05), a new agent
     # version, such as the one an update installed (P1-D09), entering or leaving recovery mode (#180), and a change in
     # whether recovery mode is set up (#232), which the fleet list's filter and the host page show.
+    # A restart too (#251): the host page shows restarts, and the fleet list's filter lists restart loops.
     unchanged = was == "online" && !updates.key?(:agent_version) && host.agent_recovery_since.nil? == recovery.nil? &&
-                !updates.key?(:agent_recovery_coverage)
+                !updates.key?(:agent_recovery_coverage) && restarted.zero?
     FleetBroadcast.hosts_changed([ host.id ]) unless unchanged
     now
   end
@@ -88,6 +100,67 @@ module Liveness
       agent_recovery_retry_at: Time.iso8601(recovery["retry_at"]), agent_recovery_reason: recovery["reason"] }
   end
   private_class_method :recovery_columns
+
+  # [restarts counted, host columns] for a heartbeat's `process` object (#251). Absent (an older agent, or the
+  # installer's own heartbeat), or not a value the agent could have sent (a start after the heartbeat's agent_time, an
+  # exit status that does not fit its exit code; the schema has checked each value's shape and range), it changes
+  # nothing: [0, {}].
+  #
+  # Restarts are counted from systemd's NRestarts, never from the process's start: it rises by one each time systemd
+  # restarts the agent by itself, and any other start (a person, an agent update, recovery mode's hourly try, a boot)
+  # sets it to 0. So against the last known value a higher one counts the difference, and a lower one counts itself (a
+  # reset, then that many restarts); the first value reported, an unread one (null), or an equal one counts none, so
+  # the count is a lower bound: a reset followed by exactly as many restarts as before is not seen. Each counted restart
+  # is put in agent_recent_restarts at the server's time of this heartbeat, newest first, at most RESTART_HISTORY, and
+  # agent_restarted_at becomes that time. record_heartbeat! writes only the columns that changed: a process's
+  # heartbeats after its first change nothing.
+  def process_columns(process, host, now, agent_time)
+    return [ 0, {} ] unless process && plausible_process?(process, agent_time)
+
+    restarts = process["restarts"]
+    known = host.agent_restarts
+    counted = if restarts.nil? || known.nil? then 0
+    elsif restarts > known then restarts - known
+    elsif restarts < known then restarts
+    else 0
+    end
+    stop = process["last_stop"]
+    columns = { agent_process_started_at: Time.iso8601(process["started_at"]), agent_restarts: restarts || known,
+                agent_last_stop_result: stop&.fetch("result"), agent_last_stop_exit_code: stop&.fetch("exit_code"),
+                agent_last_stop_exit_status: stop&.fetch("exit_status"), agent_last_stop_at: stop && Time.iso8601(stop["stopped_at"]) }
+    if counted.positive?
+      recent = ([ now ] * [ counted, RESTART_HISTORY ].min + Array(host.agent_recent_restarts)).first(RESTART_HISTORY)
+      columns.merge!(agent_recent_restarts: recent, agent_restarted_at: now)
+    end
+    [ counted, columns ]
+  end
+  private_class_method :process_columns
+
+  # Whether a schema-valid `process` object is one the agent could have sent: its start no later than the heartbeat's
+  # own agent_time (the same clock), and a stop's exit status as its exit code allows (an exit status 0 to 255 for
+  # exited, a signal 1 to 64 for killed or dumped, none without a code). Anything else is logged and ignored, not
+  # refused: liveness must not depend on it.
+  def plausible_process?(process, agent_time)
+    stop = process["last_stop"]
+    status = stop && stop["exit_status"]
+    stop_ok = stop.nil? || exit_fits?(stop["exit_code"], status)
+    return true if stop_ok && Time.iso8601(process["started_at"]) <= agent_time + START_SLACK
+
+    Rails.logger.warn("[heartbeat] ignored a process object the agent could not have sent: #{process.to_json.truncate(300)}")
+    false
+  end
+  private_class_method :plausible_process?
+
+  # An exit status as systemd gives it with its exit code: none without a code, one for exited, a signal for killed or
+  # dumped (or none, for a signal the agent could not number).
+  def exit_fits?(code, status)
+    case code
+    when nil then status.nil?
+    when "exited" then !status.nil?
+    else status.nil? || status.between?(1, 64)
+    end
+  end
+  private_class_method :exit_fits?
 
   # agent_recovery_coverage for a heartbeat's `units` object (#232): set_up, not_set_up, or unchecked (the agent could not
   # check, `recovery: null`; re-review of #235). nil without the object: not reported.

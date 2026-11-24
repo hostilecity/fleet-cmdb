@@ -21,7 +21,10 @@ module Api
     # runs in recovery mode (#180, ADR 0030), is stored in the same UPDATE too, and the dashboard shows the host as
     # recovering. Nothing in the response can put an agent into recovery mode or take it out. Its `units` object says
     # whether recovery mode is set up on the VM (#232); it is stored in the same UPDATE, written only when it changes,
-    # and the fleet list can show the hosts without it.
+    # and the fleet list can show the hosts without it. Its `process` object (#251) says when the agent process started,
+    # how often systemd restarted it, and how the one before it stopped: stored the same way, written only when it
+    # changes (on a new process), with each restart it shows counted for the fleet list's restart filter and, for a host
+    # in an open rollout, for its stage's halt (Rollouts.restarts_seen!).
     class HeartbeatsController < AuthenticatedController
       self.max_body_bytes = 32.kilobytes
       self.records_credential_use = false
@@ -36,7 +39,7 @@ module Api
         recorded_at = Liveness.record_heartbeat!(host_id: current_host.id, credential_id: current_credential.id,
                                                  agent_version: payload["agent_version"], agent_schema_version: payload["schema_version"],
                                                  agent_time:, task_capabilities: payload["tasks"], recovery: payload["recovery"],
-                                                 units: payload["units"])
+                                                 units: payload["units"], process: payload["process"])
         render json: { server_time: recorded_at.utc.iso8601, directives: directives(recorded_at, agent_time) }
       end
 

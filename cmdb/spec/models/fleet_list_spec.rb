@@ -84,6 +84,43 @@ RSpec.describe FleetList do
       expect(described_class.new(recovery: "everything").recovery).to be_nil
     end
 
+    it "filters to the hosts whose agent restarted more than the limit within the window, with the other filters (#251)" do
+      now = Time.current
+      media.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 4)  # 4 in a day
+      web.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 3)    # exactly 3: no
+      build.update_columns(agent_restarted_at: now - 2.hours, agent_recent_restarts: [ now - 2.hours ] * 3 + [ now - 25.hours ])
+      revoked.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 9) # not retired: listed
+      retired.update_columns(agent_restarted_at: now - 1.hour, agent_recent_restarts: [ now - 1.hour ] * 9)
+      expect(names(restarts: "loop")).to eq([ "Media server", "Old proxy" ])
+      expect(names(restarts: "loop", tag: "lab")).to eq([ "Media server" ])
+      expect(names(restarts: "loop", status: "online")).to eq([ "Media server" ])
+      # The settings in force: more than 2 in 48 hours takes in Build runner's, and web A's.
+      Rails.configuration.x.restart_loop.limit = 2
+      Rails.configuration.x.restart_loop.window = 48.hours
+      expect(names(restarts: "loop")).to eq([ "Build runner", "Media server", "Old proxy", "web A" ])
+      expect(described_class.restart_filter_label).to eq("More than 2 times in 48 hours")
+      list = described_class.new(restarts: "loop", sort: "status")
+      expect([ list.filtered?, list.only_restart_filter?, list.only_recovery_filter? ]).to eq([ true, true, false ])
+      expect(list.list_params).to eq(restarts: "loop", sort: "status")
+      expect(list.sort_params("name")).to eq(restarts: "loop", sort: "name", dir: "asc")
+      expect(described_class.new(restarts: "lots").restarts).to be_nil
+      expect(described_class.new(restarts: "loop", recovery: "missing").only_restart_filter?).to be(false)
+    end
+
+    it "starts the restart filter from a partial index of the hosts that ever restarted (#251)" do
+      # Structural, as for the recovery-mode index: the filter's first condition is a range on the indexed column,
+      # which implies the index's predicate.
+      predicate, columns = Host.connection.select_rows(<<~SQL).first
+        SELECT pg_get_expr(i.indpred, i.indrelid), pg_get_indexdef(i.indexrelid) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+         WHERE c.relname = 'index_hosts_restarted'
+      SQL
+      expect(predicate).to eq("(agent_restarted_at IS NOT NULL)")
+      expect(columns).to include("(agent_restarted_at)")
+      expect(FleetList::RESTART_LOOP).to start_with("hosts.agent_restarted_at >= :since AND ")
+      plan = Host.connection.select_values("EXPLAIN #{described_class.new(restarts: 'loop').scope.to_sql}").join("\n")
+      expect(plan).to include("agent_recent_restarts")
+    end
+
     it "has a partial index whose predicate is exactly the recovery-mode filter (#232)" do
       # Structural rather than a plan: the planner's choice on a test database depends on its statistics (it
       # flaked on CI). PostgreSQL uses a partial index whenever the query's condition implies its predicate, which
