@@ -26,6 +26,7 @@ class EvaluationRun
   class Triage
     AT_ONCE = %w[kev kev_all advisory].freeze
     REASONS = %w[kev daily all].freeze
+    # A page of the claim (#312): the run claims every pending change, this many a transaction.
     CLAIM = 1_000
     CHUNK_BATCH = 5_000
     # Up to this many advisories, the run re-triages only their findings on each host (VulnerabilityMatcher.retriage!,
@@ -70,11 +71,14 @@ class EvaluationRun
     #
     # It carries on from its checkpoint (#295), so a resume, or the retry of a run never split, does not prepare again
     # from the start:
-    # - claim: the rows it claimed go into triage_run_claims, and whether it is full and its id into the scope, in the
-    #   transaction that moves the checkpoint (a table, not the scope, so the scope stays small for Data sources and for
-    #   every rewrite of it: review of #308). A resume claims nothing again: a change recorded since (a new row, or a
-    #   claimed one recorded again, which gets a new id) stays pending for the next run, delayed, never lost. Each attempt
-    #   reads its advisories from the claimed rows that still exist; one another run released was re-triaged by that run.
+    # - claim: every change pending as the claim starts, a page of CLAIM at a time by keyset (#312, claim!); each page's
+    #   rows go into triage_run_claims in the transaction that moves the cursor to its last id (a table, not the scope,
+    #   so the scope stays small for Data sources and for every rewrite of it: review of #308), with whether the run is
+    #   full, its id and the claim's bound in the scope. A resume carries on after the cursor, up to the same bound. A
+    #   change recorded since the claim started (a new row, or one recorded again) has a new id: one above the bound, or
+    #   below the cursor, stays pending for the next run, delayed, never lost; one between the two (its id was drawn
+    #   before the bound was read, and committed since) is claimed by this run too, which is harmless. Each attempt reads its advisories from the claimed rows that still exist; one
+    #   another run released was re-triaged by that run.
     # - refresh: the chunks after the cursor, in id order (in SQL, review of #308), CHUNK_BATCH at a time, the cursor
     #   moving after each; a slice killed part way is recomputed again (it writes only the verdicts that change, and
     #   records its changed chunks and adds to the totals with them, so the totals are exact). The signals barrier is taken again on every attempt,
@@ -89,7 +93,7 @@ class EvaluationRun
         return scope
       end
 
-      TriageRunClaim.transaction { checkpoint.step!("claim") { claim! } }
+      claim!(checkpoint)
       advisory_ids = full? ? nil : claimed_advisories
       VulnerabilityMatcher::Chunks.signals_barrier! # every match that read the signals before they changed has committed
       refresh!(checkpoint, advisory_ids) unless checkpoint.done?("refresh")
@@ -147,11 +151,27 @@ class EvaluationRun
 
     private
 
-    # The claim step: claims, records the rows claimed, and returns the scope to store with it.
-    def claim!
-      claimed, kinds = claim_all
-      claimed.each_slice(5_000) { |ids| TriageRunClaim.insert_all(ids.map { |id| { evaluation_run_id: @run_id, triage_signal_change_id: id } }) }
-      @scope = scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).compact.uniq, "full" => full? || kinds.include?("kev_all"))
+    def claim_kinds = reason == "kev" ? AT_ONCE : TriageSignalChange::KINDS
+
+    # The claim step (#312): every change pending as it starts, CLAIM at a time by keyset (after the last id claimed,
+    # up to the newest id on its first page, stored in the scope as claim_upto), each page's claims recorded in the
+    # transaction that moves the cursor to its last id. A resume carries on after the cursor, up to the same bound, and a
+    # kill between pages costs at most the page being claimed. A change recorded since (a new row, or a row recorded
+    # again) has a new id: one above the bound, or below the cursor, waits for the next run (an id is drawn before its
+    # import commits, so one drawn before the bound was read can land between the two, and this run claims it too). The scope is stored with the first page and
+    # with a page that makes the run full (a kev_all change), so other pages write only the cursor.
+    def claim!(checkpoint)
+      checkpoint.keyset!("claim", TriageRunClaim) do |after|
+        first = after.nil?
+        # A run preparing again from the start (another step list) keeps the bound it stored.
+        upto = scope["claim_upto"] || TriageSignalChange.last_id(kinds: claim_kinds)
+        @scope = scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).compact.uniq, "full" => full?, "claim_upto" => upto) if first
+        page = TriageSignalChange.claim(kinds: claim_kinds, limit: CLAIM, after:, upto:)
+        TriageRunClaim.insert_all(page.map { |row| { evaluation_run_id: @run_id, triage_signal_change_id: row.id } }) if page.any?
+        made_full = !full? && page.any? { |row| row.kind == "kev_all" }
+        @scope = scope.merge("full" => true) if made_full
+        [ page.last&.id, page.size == CLAIM, (scope if first || made_full) ]
+      end
     end
 
     def claims = TriageRunClaim.where(evaluation_run_id: @run_id)
@@ -168,9 +188,13 @@ class EvaluationRun
     # and a run that prepares again from the start (another step list) never counts a verdict twice.
     def refresh!(checkpoint, advisory_ids)
       after = checkpoint.after("refresh")
-      rows = full? ? ChunkEvaluation.all : ChunkMatch.where(advisory_id: advisory_ids)
+      # A run of advisories binds them as one array, not an IN list (#312, review of #316: 14 to 159 ms against 265 to
+      # 676 ms for 100,000 advisories).
+      rows = full? ? ChunkEvaluation.all : ChunkMatch.where("chunk_matches.advisory_id = ANY($1::bigint[])")
       rows = rows.where(package_chunk_id: (after + 1)..) if after
-      chunk_ids = rows.distinct.order(:package_chunk_id).pluck(:package_chunk_id)
+      rows = rows.distinct.order(:package_chunk_id)
+      base = VulnerabilityTriage::Base
+      chunk_ids = full? ? rows.pluck(:package_chunk_id) : base.bound_rows(rows.select(:package_chunk_id), base.advisory_bind(advisory_ids)).map(&:first)
       changed = lambda do |ids, verdicts|
         record_chunks(ids) unless full?
         add_totals!(ids.size, verdicts)
@@ -205,28 +229,18 @@ class EvaluationRun
       claims.delete_all
     end
 
-    # [claimed ids, kinds], claiming until nothing new comes (a row an import holds locked is
-    # read again until it is released, so a repeat ends the loop).
-    def claim_all
-      seen = Set.new
-      rows = []
-      loop do
-        batch = TriageSignalChange.claim(kinds: reason == "kev" ? AT_ONCE : TriageSignalChange::KINDS, limit: CLAIM).reject { |row| seen.include?(row.id) }
-        break if batch.empty?
-
-        seen.merge(batch.map(&:id))
-        rows.concat(batch)
-        break if batch.size < CLAIM
-      end
-      [ rows.map(&:id), rows.map(&:kind).uniq ]
-    end
+    # One GIN lookup a CVE (#312): an overlap (aliases && ARRAY[...]) with thousands of CVEs is estimated to match
+    # every advisory, so it was a sequential scan, about 7 s a slice of 5,000 on 150,000 advisories (146 s for a first
+    # tracker import's 100,000 CVEs, on every attempt); this takes about 0.03 s a slice.
+    ALIASES_SQL = "SELECT a.id FROM unnest(?::varchar[]) AS c(cve) JOIN advisories a ON a.aliases @> ARRAY[c.cve]::varchar[]".freeze
 
     # The advisories naming the CVEs (by id or alias), and those named directly.
     def advisories_for(cves, advisories)
       return advisories if cves.empty?
 
       named = cves.each_slice(5_000).flat_map do |slice|
-        Advisory.where(advisory_id: slice + slice.map { |cve| "DEBIAN-#{cve}" }).or(Advisory.where("aliases && ARRAY[?]::varchar[]", slice)).pluck(:id)
+        by_alias = Advisory.connection.select_values(Advisory.sanitize_sql_array([ ALIASES_SQL, PG::TextEncoder::Array.new.encode(slice) ]))
+        Advisory.where(advisory_id: slice + slice.map { |cve| "DEBIAN-#{cve}" }).pluck(:id) + by_alias.map(&:to_i)
       end
       (named + advisories).uniq
     end
