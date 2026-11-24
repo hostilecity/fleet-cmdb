@@ -227,6 +227,18 @@ RSpec.describe "Host package findings", :signed_in, type: :request do
     expect(page_ids.size).to eq(8) # the text search still reads the source, through the host's verdicts
   end
 
+  it "shows a page's rows worst first, then the earliest first seen, then the advisory id (review of #315, N1)" do
+    stub_const("HostPackageFindings::PER_PAGE", 3)
+    import(bash: 6) # 93000 and 93003 high, 93001 and 93004 medium, 93002 and 93005 low
+    # The later advisory id first seen earlier: first seen, not the id, puts it first.
+    VulnerabilityFinding.joins(:advisory).where(host:, advisories: { advisory_id: "DEBIAN-CVE-2026-93003" }).update_all(first_seen_at: 2.days.ago)
+    VulnerabilityFinding.joins(:advisory).where(host:, advisories: { advisory_id: "DEBIAN-CVE-2026-93004" }).update_all(first_seen_at: 2.days.ago)
+    get package_page, params: { package: "bash" }
+    expect(page_ids).to eq(%w[DEBIAN-CVE-2026-93003 DEBIAN-CVE-2026-93000 DEBIAN-CVE-2026-93004])
+    get package_page, params: { package: "bash", after: page.at_css("a[rel=next]")&.[]("href").to_s[/after=([^&]+)/, 1].then { CGI.unescape(_1.to_s) } }
+    expect(page_ids).to eq(%w[DEBIAN-CVE-2026-93001 DEBIAN-CVE-2026-93002 DEBIAN-CVE-2026-93005])
+  end
+
   describe "the paths that make the counts exact (review of #297, S2)" do
     let(:network) { cvss("C:H/I:H/A:H").map { |v| v.merge("score" => v["score"].sub("AV:L/AC:L/PR:L", "AV:N/AC:L/PR:N")) } }
 
