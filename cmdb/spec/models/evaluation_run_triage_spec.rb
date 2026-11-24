@@ -59,6 +59,10 @@ RSpec.describe EvaluationRun::Triage do
     expect(scope).to include("prepared" => true, "full" => false, "changes" => 2_500, "claim_upto" => upto)
     expect(TriageSignalChange.order(:kind).pluck(:kind, :cve_id)).to eq([ %w[epss CVE-2026-99999], %w[kev CVE-2026-88888] ]) # every tracker change released in one run; the others wait
     expect(TriageRunClaim.count).to eq(0)
+
+    following = run("daily") # the next run claims both, the late row included, and releases them (review of #316)
+    expect(described_class.new(following.scope, following.id).prepare!).to include("changes" => 2)
+    expect(TriageSignalChange.count).to eq(0)
   end
 
   it "becomes full when a later page claims a kev_all change, and stores that with the page" do

@@ -74,9 +74,10 @@ class EvaluationRun
     # - claim: every change pending as the claim starts, a page of CLAIM at a time by keyset (#312, claim!); each page's
     #   rows go into triage_run_claims in the transaction that moves the cursor to its last id (a table, not the scope,
     #   so the scope stays small for Data sources and for every rewrite of it: review of #308), with whether the run is
-    #   full, its id and the claim's bound in the scope. A resume carries on after the cursor, up to the same bound: a
-    #   change recorded since the claim started (a new row, or one recorded again, which gets a new id) stays pending for
-    #   the next run, delayed, never lost. Each attempt reads its advisories from the claimed rows that still exist; one
+    #   full, its id and the claim's bound in the scope. A resume carries on after the cursor, up to the same bound. A
+    #   change recorded since the claim started (a new row, or one recorded again) has a new id: one above the bound, or
+    #   below the cursor, stays pending for the next run, delayed, never lost; one between the two (its id was drawn
+    #   before the bound was read, and committed since) is claimed by this run too, which is harmless. Each attempt reads its advisories from the claimed rows that still exist; one
     #   another run released was re-triaged by that run.
     # - refresh: the chunks after the cursor, in id order (in SQL, review of #308), CHUNK_BATCH at a time, the cursor
     #   moving after each; a slice killed part way is recomputed again (it writes only the verdicts that change, and
@@ -154,9 +155,10 @@ class EvaluationRun
 
     # The claim step (#312): every change pending as it starts, CLAIM at a time by keyset (after the last id claimed,
     # up to the newest id on its first page, stored in the scope as claim_upto), each page's claims recorded in the
-    # transaction that moves the cursor to its last id. A resume carries on after the cursor, up to the same bound, so a
-    # change recorded since (a new row, or a row recorded again, which gets a new id above the bound) waits for the next
-    # run, and a kill between pages costs at most the page being claimed. The scope is stored with the first page and
+    # transaction that moves the cursor to its last id. A resume carries on after the cursor, up to the same bound, and a
+    # kill between pages costs at most the page being claimed. A change recorded since (a new row, or a row recorded
+    # again) has a new id: one above the bound, or below the cursor, waits for the next run (an id is drawn before its
+    # import commits, so one drawn before the bound was read can land between the two, and this run claims it too). The scope is stored with the first page and
     # with a page that makes the run full (a kev_all change), so other pages write only the cursor.
     def claim!(checkpoint)
       checkpoint.keyset!("claim", TriageRunClaim) do |after|
@@ -186,9 +188,13 @@ class EvaluationRun
     # and a run that prepares again from the start (another step list) never counts a verdict twice.
     def refresh!(checkpoint, advisory_ids)
       after = checkpoint.after("refresh")
-      rows = full? ? ChunkEvaluation.all : ChunkMatch.where(advisory_id: advisory_ids)
+      # A run of advisories binds them as one array, not an IN list (#312, review of #316: 14 to 159 ms against 265 to
+      # 676 ms for 100,000 advisories).
+      rows = full? ? ChunkEvaluation.all : ChunkMatch.where("chunk_matches.advisory_id = ANY($1::bigint[])")
       rows = rows.where(package_chunk_id: (after + 1)..) if after
-      chunk_ids = rows.distinct.order(:package_chunk_id).pluck(:package_chunk_id)
+      rows = rows.distinct.order(:package_chunk_id)
+      base = VulnerabilityTriage::Base
+      chunk_ids = full? ? rows.pluck(:package_chunk_id) : base.bound_rows(rows.select(:package_chunk_id), base.advisory_bind(advisory_ids)).map(&:first)
       changed = lambda do |ids, verdicts|
         record_chunks(ids) unless full?
         add_totals!(ids.size, verdicts)
