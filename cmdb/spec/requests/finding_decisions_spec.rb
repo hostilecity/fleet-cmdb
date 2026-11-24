@@ -269,6 +269,40 @@ RSpec.describe "Finding decisions", :signed_in, type: :request do
     expect(FindingDecision.sole.ended_why).to eq("suspended")
   end
 
+  # The package page (#283, merged as #297) draws each finding's bucket and reason as the tab does, and the tab's "N more"
+  # link lands there, so it shows the same decision tags and links (the tab's Decision column's, on a Needs attention
+  # finding), with the operator's text escaped.
+  describe "on the package page" do
+    def package_cells(package, **params)
+      get "/hosts/#{host.id}/vulnerabilities/package", params: { package:, **params }
+      page.css("#package_findings tbody tr").to_h { |row| [ words(row.at_css("td:nth-child(2)")).split.first, row.at_css("td:last-child") ] }
+    end
+
+    it "shows a control as the tab's rule O1 row does" do
+      save(reason: hostile)
+      get tab, params: { rule: "O1" }
+      on_tab = page.css("#rule_list .nested-findings td:last-child").map { |td| words(td) }.uniq.sole
+      cell = package_cells("openssl", state: "open", section: "rule", rule: "O1").fetch("DEBIAN-CVE-2026-92002")
+      expect(words(cell)).to eq("Low risk #{on_tab}")
+      expect(cell.at_css("a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities/decisions/#{FindingDecision.sole.id}")
+      expect(response.body).not_to include("<script>alert(1)</script>", "<b>bold</b>", "‮")
+      expect(response.body).to include("&lt;script&gt;alert(1)&lt;/script&gt;")
+    end
+
+    it "tags an accepted risk in Needs attention and on a Low risk finding, and draws nothing for one that ended" do
+      save(kind: "accepted", confirmed: [])
+      save(advisory: shell, kind: "accepted", confirmed: [], until_on: Date.current + 3)
+      cells = package_cells("openssl")
+      expect(words(cells.fetch("DEBIAN-CVE-2026-92002"))).to end_with("N4 Risk accepted Until #{(Date.current + 30).iso8601}. Change or end")
+      expect(cells.fetch("DEBIAN-CVE-2026-92002").at_css(".decision-note a")["href"]).to eq("/hosts/#{host.id}/vulnerabilities/decisions/#{FindingDecision.find_by!(advisory: tls).id}")
+      expect(cells.fetch("DEBIAN-CVE-2026-92001").at_css(".decision-note")).to be_nil # Fix available: no decision
+      expect(words(package_cells("bash").fetch("DEBIAN-CVE-2026-93001"))).to end_with("L2 Risk accepted Until #{(Date.current + 3).iso8601}. Change or end")
+
+      FindingDecisions.end!(FindingDecision.find_by!(advisory: tls), operator: Operator.sole)
+      expect(package_cells("openssl").fetch("DEBIAN-CVE-2026-92002").at_css(".decision-note")).to be_nil # ended for good: the tab offers a new one
+    end
+  end
+
   it "shows a decision on a Low risk finding on its row, and lists it when it is due" do
     save(advisory: shell, kind: "accepted", confirmed: [], until_on: Date.current + 3)
     get tab, params: { rule: "L2" }

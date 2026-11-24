@@ -404,11 +404,14 @@ module HostVulnerabilitiesHelper
     words.join(", ")
   end
 
-  # A finding's bucket and reason on the package page, as on the tab; a resolved finding is in no bucket.
+  # A finding's bucket and reason on the package page, as on the tab; a resolved finding is in no bucket. triage_reason
+  # draws O1's control and a Low risk finding's decision as on the tab; a Needs attention finding's decision, which the
+  # tab draws in its Decision column, is tagged here the same way (VT-OVERRIDES #261).
   def package_finding_bucket(finding, details, signals)
     return tag.span("Resolved: in no bucket", class: "muted") if finding.state == "resolved"
 
     bucket = VulnerabilityTriage.bucket_for(finding.bucket)
-    safe_join([ (bucket_tag(bucket) if bucket), " ", triage_reason(finding, details, signals) ].compact)
+    decision = bucket == "attention" && details.decisions&.for(finding.advisory_id)
+    safe_join([ (bucket_tag(bucket) if bucket), " ", triage_reason(finding, details, signals), (decision_note(finding.host_id, decision, details.decisions) if decision) ].compact)
   end
 end

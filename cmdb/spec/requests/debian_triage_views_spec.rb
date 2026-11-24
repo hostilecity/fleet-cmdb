@@ -567,8 +567,10 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     # EPSS's freshness (#257, still one statement: read once, for the line and the reasons); +16 since the page is paged
     # (#283): the package's counts by state and architecture (the page's count too, with no filter), and the page's triage
     # inputs (VulnerabilityTriage::Explain, about 13) with its KEV dates and EPSS scores, for each finding's bucket and
-    # reason; a filter adds the filtered count. None grows with the findings.
-    expect(package.call(large)).to be <= 24 + 9 + 16
+    # reason; a filter adds the filtered count. +2: the host's finding decisions (VT-OVERRIDES #261: HostDecisions, for
+    # the tab's decision tags, and the controls in force read with the page's triage inputs, as on the tab). None grows
+    # with the findings.
+    expect(package.call(large)).to be <= 24 + 9 + 16 + 2
     puts format("\n  500 findings: tab %d queries, %.0f ms (best of 3); package page %d queries", queries, timings.min * 1000, package.call(large)) if ENV["SHOW_TIMINGS"]
   end
 end
