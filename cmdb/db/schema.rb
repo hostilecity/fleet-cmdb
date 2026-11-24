@@ -1850,14 +1850,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_262002) do
           RETURN NULL;
         END IF;
 
+        -- finding_decisions (row, VT-SCORES #262 folding in #298): an accepted risk recorded or ended moves the host's
+        -- decisions due (vuln_attention_undecided); it changes no bucket, so the findings' triggers do not see it. A control
+        -- cannot move that count (every Needs attention rule comes after O1, and recording or ending one re-triages its
+        -- findings, which the findings' triggers see), so the trigger's WHEN clause leaves controls out. The host is queued
+        -- for ComplianceSummaryRecountJob, as an advisory's new severity queues its hosts, rather than recounted at commit:
+        -- the hourly sweep ends decisions under its slice's host locks, and must not hold them for a recount a host
+        -- (re-check of #305, S2).
+        IF TG_TABLE_NAME = 'finding_decisions' THEN
+          INSERT INTO host_compliance_recounts (host_id) VALUES (NEW.host_id) ON CONFLICT DO NOTHING;
+          RETURN NULL;
+        END IF;
+
         -- host_vulnerability_evaluations (row, its state changed).
         IF TG_TABLE_NAME = 'host_vulnerability_evaluations' THEN
           host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] WHEN 'DELETE' THEN ARRAY[OLD.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
-
-        -- finding_decisions (row, VT-SCORES #262 folding in #298): a decision recorded or ended moves the host's decisions
-        -- due (vuln_attention_undecided). An accepted risk changes no bucket, so the findings' triggers do not see it.
-        ELSIF TG_TABLE_NAME = 'finding_decisions' THEN
-          host_ids := CASE TG_OP WHEN 'INSERT' THEN ARRAY[NEW.host_id] ELSE ARRAY[OLD.host_id, NEW.host_id] END;
 
         -- host_applicability (row, VT-SCORES #262): the agent's reboot flag, a work item, appeared or went. A row trigger
         -- with a WHEN clause on update, so the in-use reports that leave the flag as it was queue nothing.
@@ -2141,7 +2148,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_262002) do
   SQL
 
   create_trigger :host_compliance_summaries_decisions, sql_definition: <<-SQL
-      CREATE TRIGGER host_compliance_summaries_decisions AFTER INSERT OR UPDATE OF ended_at ON public.finding_decisions FOR EACH ROW EXECUTE FUNCTION host_compliance_summaries_changed()
+      CREATE TRIGGER host_compliance_summaries_decisions AFTER INSERT OR UPDATE OF ended_at ON public.finding_decisions FOR EACH ROW WHEN (((new.kind)::text = 'accepted'::text)) EXECUTE FUNCTION host_compliance_summaries_changed()
   SQL
 
   create_trigger :host_compliance_summaries_package_sets_gap, sql_definition: <<-SQL

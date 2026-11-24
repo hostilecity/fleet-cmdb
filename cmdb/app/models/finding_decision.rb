@@ -25,6 +25,12 @@ class FindingDecision < ApplicationRecord
   # Active and not past its last day: what the triage and the tab treat as in force.
   scope :in_force, ->(today = Date.current) { active.where(expires_on: today..) }
 
+  # VT-SCORES (#262, folding in #298): an accepted risk recorded or ended moves its host's decisions due
+  # (vuln_attention_undecided). The database queues the host for a recount (host_compliance_recounts, the trigger
+  # host_compliance_summaries_decisions) rather than recounting it at commit, so the hourly sweep never recounts under
+  # its host locks; ComplianceSummaryRecountJob recounts it once the transaction commits.
+  after_save :queue_summary_recount, if: -> { accepted? && (previously_new_record? || saved_change_to_ended_at?) }
+
   validates :kind, inclusion: { in: KINDS }
   validates :reason, length: { in: REASON_LENGTH }
 
@@ -32,6 +38,8 @@ class FindingDecision < ApplicationRecord
   # characters (bidi overrides, zero-width spaces) and line breaks made spaces, and runs of spaces squeezed. Views
   # still escape it everywhere it is shown, including the audit log.
   def self.sanitize_reason(text) = text.to_s.dup.force_encoding(Encoding::UTF_8).scrub("").gsub(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/, " ").squish
+
+  def queue_summary_recount = ComplianceSummaryRecountJob.after_decisions
 
   def control? = kind == "control"
   def accepted? = kind == "accepted"
