@@ -398,10 +398,11 @@ module HostVulnerabilitiesHelper
 
   # The tab's "N more" link under a package row: the package page with the tab's filters and the row's section and
   # architecture, starting after the last finding the row drew, so it opens on exactly the findings it counts. section:
-  # one of HostTriageSections::PACKAGE_SECTIONS; rule: the rule shown, for "rule". state: "resolved" for a row of the
-  # resolved list (#303), which has no section and keeps the filters the tab applies to it: severity, text, and, under
-  # "All", the signal (the Debian chip and ?fix= are the open list's only).
-  def package_more_path(host, group, link_params:, section: nil, rule: nil, state: "open")
+  # one of HostTriageSections::PACKAGE_SECTIONS, required so that an open row's link never lists the whole package;
+  # rule: the rule shown, for "rule". state: "resolved" for a row of the resolved list (#303), which passes section: nil
+  # and keeps the filters the tab applies to it: severity, text, and, under "All", the signal (the Debian chip and
+  # ?fix= are the open list's only).
+  def package_more_path(host, group, link_params:, section:, rule: nil, state: "open")
     filters = state == "resolved" ? %i[severity signal q] : %i[severity signal q debian fix]
     params = { package: group.package, arch: group.architecture, state:, section: (section unless state == "resolved"), rule: (rule if section == "rule"),
                **link_params.slice(*filters), after: HostPackageFindings.cursor_of(HostTriageSections.shown(group).last), from: "tab" }
