@@ -45,29 +45,32 @@ class EvaluationRun
     MATCH_PAGE = 1_000
 
     def initialize(scope)
-      @scope = scope.to_h.stringify_keys
-      @packages = @scope["packages"].to_h.transform_values { |sources| Array(sources) }
+      @packages = scope["packages"].to_h.transform_values { |sources| Array(sources) }
     end
 
     attr_reader :packages
 
-    # The steps of prepare! (EvaluationRun::Checkpoint): the stamp, the chunks of each ecosystem it touches in turn
-    # (a backport's too, #274), the restamp.
-    def prepare_steps = [ "stamp", *touches.map(&:first).uniq.sort.map { |ecosystem| "match:#{ecosystem}" }, "restamp" ]
+    # The steps of prepare! (EvaluationRun::Checkpoint): the chunks of each chunk ecosystem it touches, in turn (a
+    # backport's touches share the ecosystem of the chunks holding it, #274), then the restamp.
+    def prepare_steps = [ *touches.map(&:first).uniq.sort.map { |ecosystem| "match:#{ecosystem}" }, "restamp" ]
 
-    # Carries on from the checkpoint (#295): the stamp is read once and kept in the scope, so a resume matches the
-    # chunks left against the same import's data; each ecosystem's chunks are matched in id order, MATCH_PAGE at a
-    # time, the cursor moving after each page. Matching with force is idempotent, so a page killed part way is matched
-    # again whole. A chunk that came to hold a source after the cursor passed its id is new, and its own report's match
-    # reads the newest data.
+    # Carries on from the checkpoint (#295): each ecosystem's chunks are read after its cursor, in id order, and matched
+    # MATCH_PAGE at a time, the cursor moving after each page. Matching with force is idempotent, so a page killed part
+    # way is matched again whole. A chunk that came to hold a source after the cursor passed its id is new, and its own
+    # report's match reads the newest data. Each attempt reads the newest stamp before any advisory data (review of
+    # #308): pages matched before a resume keep their older stamp, which never claims newer data than was matched (a
+    # page stamped later is not stamped back, VulnerabilityMatcher::Chunks#newer), and the restamp moves them on only
+    # where no import since changed their sources; otherwise they are matched again on their next use.
     def prepare!(checkpoint = Checkpoint.detached(prepare_steps))
-      checkpoint.step!("stamp") { @scope = @scope.merge("stamp" => AdvisoryImport.newest_succeeded_id) } # before any advisory data is read
-      stamp = @scope["stamp"]
+      stamp = AdvisoryImport.newest_succeeded_id # before any advisory data is read
       touches.group_by(&:first).sort.each do |ecosystem, list|
-        next if checkpoint.done?("match:#{ecosystem}")
+        name = "match:#{ecosystem}"
+        next if checkpoint.done?(name)
 
-        evaluated = list.flat_map { |_, sources, backports| ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(ecosystem, sources, backports)).pluck(:package_chunk_id) }
-        checkpoint.pages!("match:#{ecosystem}", evaluated, MATCH_PAGE) { |slice| VulnerabilityMatcher::Chunks.ensure!(slice, ecosystem, stamp:, force: true) }
+        after = checkpoint.after(name)
+        evaluated = list.map { |_, sources, backports| ChunkEvaluation.where(ecosystem:, package_chunk_id: changed_chunks(ecosystem, sources, backports)) }
+                        .reduce(:or).then { |rows| after ? rows.where(package_chunk_id: (after + 1)..) : rows }.order(:package_chunk_id).pluck(:package_chunk_id)
+        checkpoint.pages!(name, evaluated, MATCH_PAGE) { |slice| VulnerabilityMatcher::Chunks.ensure!(slice, ecosystem, stamp:, force: true) }
       end
       checkpoint.step!("restamp") { VulnerabilityMatcher::Chunks.restamp!(stamp) }
     end

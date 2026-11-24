@@ -353,6 +353,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_295001) do
     t.datetime "updated_at", null: false
     t.string "prepare_step", limit: 80
     t.bigint "prepare_cursor"
+    t.string "prepare_plan", limit: 16
     t.index ["finished_at"], name: "index_evaluation_runs_on_finished_at"
     t.index ["kind", "state"], name: "index_evaluation_runs_unfinished", where: "((state)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))"
     t.check_constraint "kind::text = ANY (ARRAY['cis_rules'::character varying, 'advisories'::character varying, 'triage'::character varying]::text[])", name: "evaluation_runs_kind_valid"
@@ -1076,6 +1077,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_295001) do
     t.bigint "package_chunk_id", null: false
   end
 
+  create_table "triage_run_claims", primary_key: ["evaluation_run_id", "triage_signal_change_id"], force: :cascade do |t|
+    t.bigint "evaluation_run_id", null: false
+    t.bigint "triage_signal_change_id", null: false
+  end
+
   create_table "triage_run_sets", primary_key: ["evaluation_run_id", "package_set_id"], force: :cascade do |t|
     t.bigint "evaluation_run_id", null: false
     t.bigint "package_set_id", null: false
@@ -1175,6 +1181,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_295001) do
   add_foreign_key "tasks", "task_batches"
   add_foreign_key "triage_imports", "operators"
   add_foreign_key "triage_run_chunks", "evaluation_runs", on_delete: :cascade
+  add_foreign_key "triage_run_claims", "evaluation_runs", on_delete: :cascade
   add_foreign_key "triage_run_sets", "evaluation_runs", on_delete: :cascade
   add_foreign_key "vulnerability_findings", "advisories"
   add_foreign_key "vulnerability_findings", "hosts"
