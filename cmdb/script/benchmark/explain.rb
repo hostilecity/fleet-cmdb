@@ -95,12 +95,12 @@ module FleetBenchmark
         },
         "vulnerabilities tab /hosts/:id/vulnerabilities (state and bucket counts, bucket sections, work, one page)" => lambda {
           VulnerabilityFinding.where(host_id: package_host.id).group(:state, :bucket).count # the state counts and the bucket strip (#260)
-          open = VulnerabilityFinding.with_details.where(host_id: package_host.id).joins(:advisory).preload(:advisory).where(state: %w[open reopened])
+          open = VulnerabilityFinding.where(host_id: package_host.id).joins(:advisory).preload(:advisory).where(state: %w[open reopened]) # the plain table, as the tab (#302)
           HostTriageSections.new(open, untriaged: 0) # Fix available, Needs attention, the rule rows, their triage inputs
           HostVulnerabilityWork.new(package_host.id) # work remaining and 30-day progress
         },
         "vulnerabilities tab ?rule=I2 and ?signal=network (VT-HOST-TAB, one page each)" => lambda {
-          open = VulnerabilityFinding.with_details.where(host_id: package_host.id).joins(:advisory).preload(:advisory).where(state: %w[open reopened])
+          open = VulnerabilityFinding.where(host_id: package_host.id).joins(:advisory).preload(:advisory).where(state: %w[open reopened])
           HostTriageSections.new(open, rule: "I2", untriaged: 0)
           HostTriageSections.new(open.where(advisories: { cvss_av: "N", cvss_pr: "N", cvss_ui: "N" }), untriaged: 0)
         },
