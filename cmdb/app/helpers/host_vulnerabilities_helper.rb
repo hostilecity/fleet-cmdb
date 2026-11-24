@@ -43,6 +43,10 @@ module HostVulnerabilitiesHelper
     nil
   end
 
+  # A kept backport finding's Fixed in cell (#274; reworded for #304, review of #309 S3: true whichever release says
+  # it is fixed and whichever has no data).
+  KEPT_OPEN = "Kept open: no release's data says it is affected, but a release this backport can be built from has no data for its source".freeze
+
   # A backport's (#274): a fix only the release it is built from records is shown but is not a fix for this release,
   # unless a backport at or above it is installed (K1, as its reason says), and a kept finding says why it is open.
   def fixed_in(finding)
@@ -52,7 +56,7 @@ module HostVulnerabilitiesHelper
     elsif finding.from_fixed_version
       tag.span(safe_join([ "Fixed in ", tag.span(finding.from_fixed_version, class: "mono"), " in the release this backport is built from; no backport of it known yet" ]),
                class: "unavailable")
-    elsif finding.kept then tag.span("Kept open: only this release's data says it is fixed", class: "unavailable")
+    elsif finding.kept then tag.span(KEPT_OPEN, class: "unavailable")
     else tag.span("No fix available", class: "unavailable")
     end
   end
@@ -259,14 +263,14 @@ module HostVulnerabilitiesHelper
 
   # The evidence panel's Fix row (mockup override.html, "None for trixie"). A backport's finding (#274) says what
   # fixed_in says on the tab: a fix in the release the backport is built from is shown but is no fix for this release,
-  # and a kept finding is open only because this release's data alone says it is fixed.
+  # and a kept finding says what holds it open, as the tab's Fixed in cell does (KEPT_OPEN, review of #309 S3).
   def decision_fix_words(candidate)
     return "Not known" unless candidate&.bucket
 
     from = candidate.findings.filter_map(&:from_fixed_version).uniq
     notes = []
     notes << "fixed in #{from.join(', ')} in the release this backport is built from; no backport of it known yet" if from.any?
-    notes << "kept open: only this release's data says it is fixed, which is no evidence for a backport" if candidate.findings.any?(&:kept)
+    notes << KEPT_OPEN.sub("Kept open", "kept open") if candidate.findings.any?(&:kept)
     notes.empty? ? "None for this release" : "None for this release (#{notes.join('; ')})"
   end
 

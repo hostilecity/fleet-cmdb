@@ -106,6 +106,7 @@ module Advisories
       @problems = []
       @changed = Hash.new { |hash, key| hash[key] = Set.new }
       @refilled = {}
+      @lost = Hash.new { |hash, ecosystem| hash[ecosystem] = Set.new }
       @seen = Set.new
       @ecosystems = Set.new
       @ecosystem_records = Hash.new(0)
@@ -125,6 +126,7 @@ module Advisories
           store(entries.filter_map { |entry| parse(entry) })
         end
         check_deadline!
+        drop_held!
         sweep_absent if @full && @counts["malformed"].zero?
         first_backports_data! if @full
         changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
@@ -159,7 +161,11 @@ module Advisories
       begin
         Record.parse(entry.bytes).tap do |record|
           @counts["rejected_urls"] += record.rejected_urls
-          @counts["skipped_entries"] = @counts.fetch("skipped_entries", 0) + record.skipped_entries if record.skipped_entries.positive?
+          if record.skipped_entries.positive?
+            @counts["skipped_entries"] = @counts.fetch("skipped_entries", 0) + record.skipped_entries
+            by = (@counts["skipped_by_ecosystem"] ||= {})
+            record.skipped_by_ecosystem.each { |ecosystem, n| by[ecosystem] = by.fetch(ecosystem, 0) + n }
+          end
         end
       rescue StandardError => e
         # A shape Record did not anticipate must not roll back the whole import (review of #103).
@@ -201,7 +207,8 @@ module Advisories
 
     # Counts the record and says whether it needs writing. A record as modified as the stored one is written again when
     # it has packages for ecosystems the stored one lacks or lost (an ecosystem this server keeps since then, #274:
-    # Debian:14 for trixie's backports); only those ecosystems' packages count as changed (@refilled).
+    # Debian:14 for trixie's backports); only those ecosystems' packages count as changed (@refilled). Lacking a release
+    # kept only for backports that the stored one has is no reason on its own (#304, held!).
     def classify(record, stored)
       outcome =
         if stored.nil? then record.packages.empty? ? "skipped" : "created"
@@ -215,23 +222,58 @@ module Advisories
       %w[created updated].include?(outcome)
     end
 
-    # The first full import that keeps the release the fleet's backports are built from (Backports.data?, #274) changes
-    # how every stored backport is matched, not only those whose sources it changed: their sources count as changed.
+    # The first full import that keeps a release the fleet's backports can be built from (Backports.complete, #274:
+    # Debian:14; #304: Debian:15 after forky's release) changes how every stored backport is matched, not only those
+    # whose sources it changed: their sources count as changed.
     def first_backports_data!
       Ecosystems.supported.each do |ecosystem|
-        from = Ecosystems.backports_from(ecosystem)
-        next unless from && @ecosystems.include?(from) && !Backports.data?(ecosystem)
-
-        Backports.sources(ecosystem).each { |source| @changed[from] << source }
+        fresh = Ecosystems.backports_releases(ecosystem).select { |from| @ecosystems.include?(from) } - Backports.complete(ecosystem)
+        sources = fresh.any? ? Backports.sources(ecosystem) : []
+        fresh.each { |from| sources.each { |source| @changed[from] << source } }
       end
     end
 
     def refill?(record, stored)
-      ecosystems = record.package_keys.map(&:first).uniq.sort
-      return false if ecosystems == @stored_ecosystems.fetch(stored.id, [])
+      ecosystems = record.package_keys.map(&:first).uniq
+      had = @stored_ecosystems.fetch(stored.id, [])
+      held = held_ecosystems(had - ecosystems)
+      held.each { |ecosystem| @lost[ecosystem] << stored.id }
+      diff = (ecosystems.to_set ^ had.to_set) - held
+      return false if diff.empty?
 
-      @refilled[record.advisory_id] = ecosystems.to_set ^ @stored_ecosystems.fetch(stored.id, []).to_set
+      @refilled[record.advisory_id] = diff
       true
+    end
+
+    # #304 (review of #309, S2): in a full import, the releases kept only for backports that a stored record has and the
+    # incoming one lacks keep their stored rows until the end of the import (held!, drop_held!). An archive with none of
+    # that release's data (a mirror without it, or OSV before it publishes the release) must leave backports on their
+    # last known data, which then goes stale, never on none, which would resolve their findings. When the import has
+    # that release's data, the record's entries for it are really gone, and drop_held! deletes them then. A partial
+    # import's record is taken as it is, as before.
+    def held_ecosystems(lost) = @full ? (lost & (Ecosystems.imported - Ecosystems.supported)).to_set : Set.new
+
+    # The stored rows of a rewritten record to keep (held_ecosystems); none for a withdrawn record.
+    def held!(record, stored_id, old_rows)
+      return [] if record.withdrawn?
+
+      held = held_ecosystems(old_rows.map { |row| row["ecosystem"] }.uniq - record.package_keys.map(&:first).uniq)
+      held.each { |ecosystem| @lost[ecosystem] << stored_id }
+      old_rows.select { |row| held.include?(row["ecosystem"]) }
+    end
+
+    # The held rows of the releases this import has data for: deleted, and their packages counted as changed. Those of
+    # a release it has none of stay, and are counted (held_entries).
+    def drop_held!
+      @lost.each do |ecosystem, ids|
+        rows = AdvisoryPackage.where(ecosystem:, advisory_id: ids.to_a)
+        if @ecosystems.include?(ecosystem)
+          rows.distinct.pluck(:package).each { |package| @changed[ecosystem] << package }
+          rows.delete_all
+        else
+          @counts["held_entries"] = @counts.fetch("held_entries", 0) + rows.count
+        end
+      end
     end
 
     def write(records, existing)
@@ -239,9 +281,10 @@ module Advisories
       old_keys = AdvisoryPackage.where(advisory_id: existing.values_at(*records.map(&:advisory_id)).compact.map(&:id))
                                 .pluck(:advisory_id, :ecosystem, :package).group_by(&:first)
       records.each do |r|
-        keys = old_keys.fetch(existing[r.advisory_id]&.id, []).map { |_, ecosystem, package| [ ecosystem, package ] } + r.package_keys
+        old = old_keys.fetch(existing[r.advisory_id]&.id, []).map { |_, ecosystem, package| [ ecosystem, package ] }
+        held = r.withdrawn? ? Set.new : held_ecosystems(old.map(&:first).uniq - r.package_keys.map(&:first).uniq)
         only = @refilled[r.advisory_id]
-        keys.each { |ecosystem, package| @changed[ecosystem] << package if only.nil? || only.include?(ecosystem) }
+        (old.reject { |ecosystem, _| held.include?(ecosystem) } + r.package_keys).each { |ecosystem, package| @changed[ecosystem] << package if only.nil? || only.include?(ecosystem) }
       end
 
       rows = records.map do |r|
@@ -253,10 +296,14 @@ module Advisories
       ids = Advisory.upsert_all(rows, unique_by: :advisory_id, returning: %i[id advisory_id], record_timestamps: false,
                                       update_only: rows.first.keys - %i[advisory_id created_at]).rows.to_h(&:reverse)
       hand_to_triage(records, existing, ids)
+      stored_rows = AdvisoryPackage.where(advisory_id: ids.values).pluck(:advisory_id, :ecosystem, :package, :ranges, :fixed_version)
+                                   .map { |id, ecosystem, package, ranges, fixed| { "advisory_id" => id, "ecosystem" => ecosystem, "package" => package, "ranges" => ranges, "fixed_version" => fixed } }
+                                   .group_by { |row| row["advisory_id"] }
       AdvisoryPackage.where(advisory_id: ids.values).delete_all
       packages = records.flat_map do |r|
         r.packages.map { |p| { advisory_id: ids.fetch(r.advisory_id), ecosystem: p.ecosystem, package: p.package, ranges: p.ranges, fixed_version: p.fixed_version } }
       end
+      packages += records.flat_map { |r| held!(r, ids.fetch(r.advisory_id), stored_rows.fetch(ids.fetch(r.advisory_id), [])) }.map(&:symbolize_keys)
       AdvisoryPackage.insert_all(packages) if packages.any?
     end
 

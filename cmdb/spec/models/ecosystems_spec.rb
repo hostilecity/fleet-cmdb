@@ -19,7 +19,7 @@ RSpec.describe Ecosystems do
 
   # #274: trixie-backports builds come from forky's versions; OSV lists the ~bpo13 builds under Debian:14.
   it "keeps the ecosystem the fleet's backports are built from, and tells a backport from the release's own packages" do
-    expect(described_class.imported).to eq(%w[Debian:13 Debian:14])
+    expect(described_class.imported).to eq(%w[Debian:13 Debian:14 Debian:15]) # Debian:15 for trixie-backports-sloppy (#304)
     expect(described_class).to be_imported("Debian:14")
     expect(described_class).not_to be_imported("Debian:12")
     expect(described_class).not_to be_supported("Debian:14")

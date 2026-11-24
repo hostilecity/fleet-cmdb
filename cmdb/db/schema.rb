@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_295001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_304001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pg_trgm"
@@ -186,6 +186,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_295001) do
     t.index ["target_type", "target_id", "occurred_at"], name: "index_audit_entries_on_target"
     t.check_constraint "(actor_type::text = 'system'::text) = (actor_id IS NULL)", name: "audit_entries_actor_id_matches_type"
     t.check_constraint "actor_type::text = ANY (ARRAY['operator'::character varying::text, 'host'::character varying::text, 'system'::character varying::text])", name: "audit_entries_actor_type_valid"
+  end
+
+  create_table "backport_source_versions", primary_key: ["ecosystem", "package"], force: :cascade do |t|
+    t.string "ecosystem", limit: 64, null: false
+    t.string "package", limit: 128, null: false
+    t.string "version", limit: 256, null: false
+    t.datetime "updated_at", null: false
   end
 
   create_table "chunk_evaluations", primary_key: ["package_chunk_id", "ecosystem"], force: :cascade do |t|

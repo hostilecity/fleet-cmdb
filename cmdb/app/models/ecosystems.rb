@@ -15,16 +15,31 @@ module Ecosystems
   # advisories, at its own version, once its data is complete here (Backports.data?), and still against its own
   # release's; VulnerabilityMatcher::Chunks.backport_verdict and VulnerabilityMatcher#resolved say how. The marker is
   # the release's number, so a bookworm backport left on a trixie host (~bpo12, built from trixie's version) is matched
-  # as trixie's own. Known limit (#304): trixie-backports-sloppy builds after forky's release still carry ~bpo13.
-  #   ecosystem => { "marker" => what its backports' versions contain, "from" => the ecosystem they are built from }
-  BACKPORTS = { "Debian:13" => { "marker" => "~bpo13+", "from" => "Debian:14" } }.freeze
+  # as trixie's own.
+  #
+  # Sloppy backports (#304). Once forky is released, Debian starts trixie-backports-sloppy: builds of the then testing
+  # release's (Debian 15's) versions for trixie. They carry the same ~bpo13+ marker (Debian's backports name a build
+  # "~bpo${release}+${build}" for the release it is built for, and buster-backports-sloppy's builds from bookworm were
+  # ~bpo10+1, as buster-backports' builds from bullseye), and dpkg records no suite, so a version cannot tell the two
+  # apart. The version order does (owner decision of 2026-11-23 on PR #309): once a new stable release is out, Debian
+  # refuses uploads to the old backports suite "with versions greater than in new stable or new stable-security", and
+  # newer builds go to sloppy (backports.debian.org/Contribute). So a backport whose version sorts above forky's
+  # version of its source (BackportSourceVersion, from the security tracker) is a sloppy build, and is matched against
+  # Debian:15 as well as Debian:14; one at or below it, against Debian:14 only. When forky's version of the source is not
+  # known, it is matched against both, which only adds findings (Backports.releases_for). OSV has Debian:15 data only
+  # once Debian 15 is testing, that is after forky's release, so until then this matches as before.
+  #   ecosystem => { "marker" => what its backports' versions contain, "from" => the ecosystem they are built from,
+  #                  "sloppy" => the one its backports-sloppy builds are built from after "from" is released,
+  #                  "tracker" => the security tracker's name for each of those releases }
+  BACKPORTS = { "Debian:13" => { "marker" => "~bpo13+", "from" => "Debian:14", "sloppy" => "Debian:15",
+                                 "tracker" => { "Debian:14" => "forky", "Debian:15" => "duke" } } }.freeze
 
 
   # The package manager whose version order each ecosystem's ranges use (PackageVersions).
-  MANAGERS = { "Debian:13" => "dpkg", "Debian:14" => "dpkg" }.freeze
+  MANAGERS = { "Debian:13" => "dpkg", "Debian:14" => "dpkg", "Debian:15" => "dpkg" }.freeze
 
   # What the dashboard calls each ecosystem beside its OSV name (P2-D06).
-  NAMES = { "Debian:13" => "Debian 13 (trixie)", "Debian:14" => "Debian 14 (forky)" }.freeze
+  NAMES = { "Debian:13" => "Debian 13 (trixie)", "Debian:14" => "Debian 14 (forky)", "Debian:15" => "Debian 15 (duke)" }.freeze
 
   module_function
 
@@ -46,15 +61,25 @@ module Ecosystems
   def supported?(ecosystem) = TABLE.value?(ecosystem)
 
   # The ecosystems the importer keeps: the fleet's, and those their backports are built from.
-  def imported = (supported + BACKPORTS.values.map { |b| b["from"] }).uniq
+  def imported = (supported + BACKPORTS.keys.flat_map { |ecosystem| backports_releases(ecosystem) }).uniq
 
   def imported?(ecosystem) = imported.include?(ecosystem)
 
   # The ecosystem a host ecosystem's backports are built from ("Debian:13" -> "Debian:14"), or nil.
   def backports_from(ecosystem) = BACKPORTS.dig(ecosystem, "from")
 
-  # The host ecosystems whose backports are built from this one ("Debian:14" -> ["Debian:13"]).
-  def backports_into(ecosystem) = BACKPORTS.select { |_, b| b["from"] == ecosystem }.keys
+  # Every ecosystem a host ecosystem's backports can be built from, that one first, then the one its backports-sloppy
+  # builds are (#304): "Debian:13" -> ["Debian:14", "Debian:15"]; [] for none.
+  def backports_releases(ecosystem) = BACKPORTS.fetch(ecosystem, {}).values_at("from", "sloppy").compact
+
+  # The host ecosystems whose backports can be built from this one ("Debian:14" or "Debian:15" -> ["Debian:13"]).
+  def backports_into(ecosystem) = BACKPORTS.keys.select { |into| backports_releases(into).include?(ecosystem) }
+
+  # Whether the ecosystem is the one a host ecosystem's backports-sloppy builds are built from (#304).
+  def sloppy?(ecosystem) = BACKPORTS.values.any? { |b| b["sloppy"] == ecosystem }
+
+  # The security tracker's name for each release backports are built from: { "forky" => "Debian:14", "duke" => "Debian:15" }.
+  def backports_tracker_releases = BACKPORTS.values.each_with_object({}) { |b, all| b.fetch("tracker", {}).each { |e, name| all[name] = e } }
 
   # What the ecosystem's backports' versions contain ("~bpo13+"), or nil.
   def backport_marker(ecosystem) = BACKPORTS.dig(ecosystem, "marker")

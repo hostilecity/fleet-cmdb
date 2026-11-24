@@ -185,7 +185,7 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
       advisory = Advisory.find_by!(advisory_id: "DEBIAN-CVE-2026-26064")
       candidate = FindingDecisions::Candidates.load(advisory, [ host.id ]).sole
       expect(ApplicationController.helpers.decision_fix_words(candidate))
-        .to eq("None for this release (kept open: only this release's data says it is fixed, which is no evidence for a backport)")
+        .to eq("None for this release (kept open: no release's data says it is affected, but a release this backport can be built from has no data for its source)")
       outcome = FindingDecisions.record!(operator: create(:operator), host:, advisory:,
                                          params: { kind: "control", reason: "calibre-server is not started on this host", expires_on: (Date.current + 30).iso8601,
                                                    host_ids: [ host.id ], confirmed_ids: [ host.id ] })
@@ -323,7 +323,7 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
         .to end_with("Fixed in 7.1.3-1 in the release this backport is built from, with no backport above it known here yet, so it is not counted as a fix.")
       expect(VulnerabilityTriage::Reasons.sentence("K1", inputs)).to eq("Fixed in 7.1.3-1, which is installed. Reboot into it.")
       expect(VulnerabilityTriage::Reasons.sentence("L5", inputs.with(kept: true, from_fixed_version: nil)))
-        .to end_with("Kept open: only this release's data says it is fixed, which is no evidence for a backport, and the release it is built from has no data for linux.")
+        .to end_with("Kept open: no release's data says it is affected, but a release this backport can be built from has no data for linux, so another release's fix is no evidence for it.")
     end
   end
 
@@ -371,9 +371,9 @@ RSpec.describe "Matching backports (#274)" do # rubocop:disable RSpec/DescribeCl
 
     it "carries a backports re-match through a failure and EvaluationRun.retry! (#292)" do
       import_full(cve_64253)
-      allow(Ecosystems).to receive(:backports_from).and_return(nil) # matched as before #274
+      allow(Backports).to receive(:complete).and_return([]) # matched as before #274
       match(bpo, trixie)
-      allow(Ecosystems).to receive(:backports_from).and_call_original
+      allow(Backports).to receive(:complete).and_call_original
       expect(open_findings(bpo)).to eq({})
 
       run = EvaluationRun.start!("advisories", EvaluationRun::Advisories.backports_scope)
