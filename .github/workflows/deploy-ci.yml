@@ -82,7 +82,8 @@ jobs:
           echo "DB_PASSWORD=$password" >> "$GITHUB_ENV"
           docker network create fleet-db
           docker run -d --name postgres --network fleet-db -e POSTGRES_PASSWORD="$(openssl rand -hex 24)" postgres:17
-          for _ in $(seq 1 60); do docker exec postgres pg_isready -q -U postgres && break; sleep 1; done
+          # -h localhost: the image's temporary init server listens on the socket only, so a TCP check waits for the real one.
+          for _ in $(seq 1 60); do docker exec postgres pg_isready -q -h localhost -U postgres && break; sleep 1; done
           docker exec -i postgres psql -q -v ON_ERROR_STOP=1 -U postgres <<SQL
           CREATE ROLE cmdb LOGIN PASSWORD '$password';
           CREATE DATABASE cmdb_production OWNER cmdb;
@@ -309,7 +310,7 @@ jobs:
 
           echo "== the drill against another PostgreSQL server (FLEET_BACKUP_DRILL_HOST)"
           docker run -d --name postgres-drill --network fleet-db -e POSTGRES_PASSWORD="$(openssl rand -hex 24)" postgres:17 > /dev/null
-          for _ in $(seq 1 60); do docker exec postgres-drill pg_isready -q -U postgres && break; sleep 1; done
+          for _ in $(seq 1 60); do docker exec postgres-drill pg_isready -q -h localhost -U postgres && break; sleep 1; done
           docker exec -i postgres-drill psql -q -v ON_ERROR_STOP=1 -U postgres <<SQL
           CREATE ROLE cmdb LOGIN CREATEDB PASSWORD '$DB_PASSWORD';
           SQL
