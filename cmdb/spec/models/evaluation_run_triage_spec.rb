@@ -36,6 +36,42 @@ RSpec.describe EvaluationRun::Triage do
     expect(TriageSignalChange.count).to eq(0)
   end
 
+  # #312: claim had no keyset, so a run claimed its first page again and stopped there, and 2,500 changes took 3 runs.
+  it "claims every change pending as it starts, a page at a time by keyset, and leaves a change recorded between pages for the next run" do
+    cves = Array.new(2_500) { |i| format("CVE-2026-%05d", i + 1) }
+    late = TriageSignalChange.connection.select_value("SELECT #{TriageSignalChange::NEXT_ID}") # an import's id, taken before it commits
+    TriageSignalChange.record!(:tracker, cve_ids: cves)
+    upto = TriageSignalChange.maximum(:id)
+    record = run("daily")
+    pages = []
+    allow(TriageSignalChange).to receive(:claim).and_wrap_original do |original, **options|
+      original.call(**options).tap do |page|
+        pages << [ options[:after], page.size, page.last&.id ]
+        if pages.size == 1
+          TriageSignalChange.record!(:epss, cve_ids: %w[CVE-2026-99999]) # recorded once the claim started
+          TriageSignalChange.create!(id: late, kind: "kev", cve_id: "CVE-2026-88888", created_at: Time.current) # committed below the cursor
+        end
+      end
+    end
+    scope = described_class.new(record.scope, record.id).prepare!(EvaluationRun::Checkpoint.for(record, described_class::STEPS))
+    expect(pages.map { |page| page[1] }).to eq([ 1_000, 1_000, 500 ])
+    expect(pages.map(&:first)).to eq([ nil, pages[0][2], pages[1][2] ]) # each page after the last one's last id
+    expect(scope).to include("prepared" => true, "full" => false, "changes" => 2_500, "claim_upto" => upto)
+    expect(TriageSignalChange.order(:kind).pluck(:kind, :cve_id)).to eq([ %w[epss CVE-2026-99999], %w[kev CVE-2026-88888] ]) # every tracker change released in one run; the others wait
+    expect(TriageRunClaim.count).to eq(0)
+  end
+
+  it "becomes full when a later page claims a kev_all change, and stores that with the page" do
+    stub_const("#{described_class}::CLAIM", 2)
+    TriageSignalChange.record!(:kev, cve_ids: %w[CVE-2026-0001 CVE-2026-0002 CVE-2026-0003])
+    TriageSignalChange.record!(:kev_all)
+    record = run("kev")
+    allow(VulnerabilityMatcher::Chunks).to receive(:signals_barrier!).and_raise(SignalException, "TERM") # killed after the claim
+    expect { described_class.new(record.scope, record.id).prepare!(EvaluationRun::Checkpoint.for(record, described_class::STEPS)) }.to raise_error(SignalException)
+    expect(record.reload).to have_attributes(prepare_step: "refresh", scope: include("full" => true, "claim_upto" => TriageSignalChange.maximum(:id)))
+    expect(TriageRunClaim.where(evaluation_run_id: record.id).count).to eq(4)
+  end
+
   it "releases nothing when its work fails, keeping its claims in their table, and releases them once resumed prepared" do
     TriageSignalChange.record!(:kev_all)
     record = run("kev")
@@ -43,7 +79,7 @@ RSpec.describe EvaluationRun::Triage do
     expect { described_class.new(record.scope, record.id).prepare!(EvaluationRun::Checkpoint.for(record, described_class::STEPS)) }.to raise_error(ActiveRecord::Deadlocked)
     expect(TriageSignalChange.pluck(:kind)).to eq([ "kev_all" ])
     expect(TriageRunClaim.where(evaluation_run_id: record.id).count).to eq(1)
-    expect(record.reload).to have_attributes(prepare_step: "refresh", scope: { "reason" => "kev", "chunk_runs" => [ record.id ], "full" => true }) # nothing big in it
+    expect(record.reload).to have_attributes(prepare_step: "refresh", scope: { "reason" => "kev", "chunk_runs" => [ record.id ], "full" => true, "claim_upto" => TriageSignalChange.maximum(:id) }) # nothing big in it
 
     prepared = record.scope.merge("prepared" => true) # as a run killed between storing its prepared scope and its release
     expect(described_class.new(prepared, record.id).prepare!).to eq(prepared)

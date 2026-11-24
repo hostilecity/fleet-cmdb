@@ -16,7 +16,10 @@
 #
 # Claim protocol (race-free; reviews of #269). Every record! gives the row a new id from the table's sequence, also
 # when the row was already pending, so a row's id names the version of the change a consumer saw:
-#   1. claim(kinds:, limit:) reads up to limit rows, oldest id first, with a plain SELECT: no lock.
+#   1. claim(kinds:, limit:) reads up to limit rows, oldest id first, with a plain SELECT: no lock. Pages after the
+#      first read after the last id claimed, up to a bound fixed as the consumer started (after:, upto:, #312). An id
+#      is taken before its import commits, so a row can appear below the cursor once its page was read: it is not
+#      claimed, so not released, and the next consumer claims it.
 #   2. The consumer recomputes from the current data and commits its work.
 #   3. release!(ids) deletes the claimed ids in a transaction of its own, skipping any row an import has locked
 #      (FOR UPDATE SKIP LOCKED). A change recorded between 1 and 3 has a new id, so it is not deleted and is picked up by
@@ -62,8 +65,18 @@ class TriageSignalChange < ApplicationRecord
     end
   end
 
-  # Up to limit pending changes of the kinds, oldest first, read without locking (step 1 of the claim protocol).
-  def self.claim(kinds: KINDS, limit: 1_000) = where(kind: kinds).order(:id).limit(limit).to_a
+  # Up to limit pending changes of the kinds, oldest first, read without locking (step 1 of the claim protocol). A
+  # consumer that claims more than one page reads by keyset (#312): after the last id it claimed, and up to the newest
+  # id when it started (last_id), so a change recorded since, which has a higher id, waits for the next consumer.
+  def self.claim(kinds: KINDS, limit: 1_000, after: nil, upto: nil)
+    rows = where(kind: kinds)
+    rows = rows.where(id: (after + 1)..) if after
+    rows = rows.where(id: ..upto) if upto
+    rows.order(:id).limit(limit).to_a
+  end
+
+  # The newest pending change of the kinds, or 0 for none: the bound of a paged claim.
+  def self.last_id(kinds: KINDS) = where(kind: kinds).maximum(:id) || 0
 
   # Deletes the claimed rows (step 3), skipping any an import has locked; a row re-recorded since has a new id and
   # stays. Returns how many went. Raises inside an open transaction.

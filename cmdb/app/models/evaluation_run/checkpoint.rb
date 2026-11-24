@@ -74,6 +74,27 @@ class EvaluationRun
       advance!(next_step(name))
     end
 
+    # Works through a step by keyset, a page a transaction (#312: the triage claim), where the step cannot list its ids
+    # up front. Yields the last id handled (nil: from the step's start) inside a transaction of model's; the block does
+    # the page's work and returns [the page's last id, or nil for none, whether another page may follow, the scope to
+    # store or nil]. The cursor moves to that id in the same transaction, so a page's work and its checkpoint commit
+    # together, and a kill before the commit rolls both back. The last page moves on to the next step instead.
+    def keyset!(name, model)
+      return if done?(name)
+
+      loop do
+        more = model.transaction do
+          from = after(name)
+          last, more, scope = yield from
+          raise ArgumentError, "#{name}: a keyset page must end after #{from}, not at #{last}" if from && last && last <= from # never the same page again
+          more &&= !last.nil?
+          more ? advance!(name, last, scope:) : advance!(next_step(name), nil, scope:)
+          more
+        end
+        break unless more
+      end
+    end
+
     # Moves the checkpoint (compare-and-set, see above); raises Lost when another preparation moved it, or the run is
     # no longer queued.
     def advance!(name, cursor = nil, scope: nil)

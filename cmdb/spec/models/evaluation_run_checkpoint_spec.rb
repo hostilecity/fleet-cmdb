@@ -35,6 +35,27 @@ RSpec.describe EvaluationRun::Checkpoint do
       expect(past.step).to eq("last")
     end
 
+    it "works through a keyset step a page at a time, carrying on after its cursor, and moves on after a short page (#312)" do
+      checkpoint = described_class.detached(steps)
+      checkpoint.step!("first") { nil }
+      seen = []
+      checkpoint.keyset!("paged", EvaluationRun) do |after|
+        seen << after
+        { nil => [ 2, true, nil ], 2 => [ 4, true, nil ], 4 => [ 5, false, nil ] }.fetch(after)
+      end
+      expect(seen).to eq([ nil, 2, 4 ])
+      expect(checkpoint).to have_attributes(step: "last", cursor: nil, writes: 4)
+      checkpoint.keyset!("paged", EvaluationRun) { raise "done already" }
+
+      resumed = described_class.new(nil, steps, "paged", 4)
+      afters = []
+      resumed.keyset!("paged", EvaluationRun) { |after| (afters << after) && [ nil, true, nil ] } # an empty page ends it
+      expect(afters).to eq([ 4 ])
+      expect(resumed.step).to eq("last")
+      stuck = described_class.new(nil, steps, "paged", 4)
+      expect { stuck.keyset!("paged", EvaluationRun) { [ 4, true, nil ] } }.to raise_error(ArgumentError, /must end after 4/) # a page read again
+    end
+
     it "prepares from the start when the stored step is not one of the kind's (the code changed between attempts)" do
       checkpoint = described_class.new(nil, steps, "gone", 42)
       expect(checkpoint.done?("first")).to be(false)
@@ -71,6 +92,25 @@ RSpec.describe EvaluationRun::Checkpoint do
 
       record.update_columns(state: "superseded")
       expect { other.advance!("last") }.to raise_error(described_class::Lost, /no longer queued/)
+    end
+
+    it "commits a keyset page's work with its cursor, and rolls the page back when another preparation moved it (#312)" do
+      record = run
+      mine = described_class.for(record, steps)
+      mine.step!("first") { nil }
+      mine.keyset!("paged", EvaluationRun) do |after|
+        record.update_columns(scope: { "page" => after.to_i + 1 }) # the page's work
+        [ after.to_i + 1, after.nil?, ({ "page" => 1, "stored" => true } if after.nil?) ]
+      end
+      expect(record.reload).to have_attributes(prepare_step: "last", scope: { "page" => 2 }) # two pages, the first's scope stored with it
+
+      record.update_columns(prepare_step: "paged", prepare_cursor: 1)
+      mine = described_class.for(record.reload, steps)
+      described_class.for(record, steps).advance!("paged", 99) # a second preparation of the run moved it meanwhile
+      expect do
+        mine.keyset!("paged", EvaluationRun) { |after| record.update_columns(scope: { "page" => "lost" }) && [ after + 1, true, nil ] }
+      end.to raise_error(described_class::Lost)
+      expect(record.reload).to have_attributes(prepare_step: "paged", prepare_cursor: 99, scope: { "page" => 2 }) # the page rolled back with it
     end
 
     it "touches the run, so the watch never takes a preparation that is moving for dead" do
