@@ -21,22 +21,36 @@ module DashboardHelpers
   # Statements count_queries leaves out: schema and transaction statements, and the two that check a page's replica
   # has caught up (ReplicaReads, #198), which are the same on every page.
   UNCOUNTED_NAMES = [ "SCHEMA", "TRANSACTION", "Replica target", "Replica caught up" ].freeze
-  # Also left out: the SET search_path a connection runs when it connects (config/database.yml's schema_search_path,
-  # #313). It is the one connection setup statement Rails names "SQL" rather than "SCHEMA". It runs when a pool is
-  # first used in a process, such as the queue database for the failed-jobs banner, and that may be inside the block.
-  UNCOUNTED_SQL = /\A\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SET search_path TO )/i
+  UNCOUNTED_SQL = /\A\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)/i
+  # Also left out: the SET search_path a connection runs when it connects, to config/database.yml's
+  # schema_search_path and nothing else (#313). It is the one connection setup statement Rails names "SQL" rather than
+  # "SCHEMA". It runs when a pool is first used in a process, such as the queue database for the failed-jobs banner,
+  # and that may be inside the block. Any other SET search_path counts: search_path is a recorded control (#239).
+  CONNECTION_SETUP = "SET search_path TO #{ApplicationRecord.connection_db_config.configuration_hash.fetch(:schema_search_path)}".freeze
+  # Active Record's pool reaper thread reconnects idle pool connections in the background (every 20 s), each with its
+  # SET search_path. The subscription is process-wide, so one that landed inside the block was counted (#313).
+  REAPER_THREAD = "AR Pool Reaper".freeze
 
-  # Counts the SQL statements a block runs on this thread, which runs a request spec's page and a model spec's code.
-  # Statements from other threads are not the block's (#313): the subscription is process-wide, and Active Record's
-  # pool reaper thread reconnects idle pool connections in the background (every 20 s), each with its SET
-  # search_path. One that landed inside the block made the budgets count one statement too many now and then.
+  # Counts the SQL statements a block runs. They must all run on this thread, which runs a request spec's page and a
+  # model spec's code, apart from the pool reaper's, which are left out. A statement from any other thread fails the
+  # example: an upper-limit budget would otherwise read a statement it missed as an improvement.
   def count_queries
     count = 0
     thread = Thread.current
+    elsewhere = Thread::Queue.new
     counter = lambda do |*, payload|
-      count += 1 if Thread.current == thread && !payload[:name].in?(UNCOUNTED_NAMES) && !payload[:sql].match?(UNCOUNTED_SQL)
+      next if payload[:name].in?(UNCOUNTED_NAMES) || payload[:sql].match?(UNCOUNTED_SQL) || payload[:sql] == CONNECTION_SETUP
+
+      if Thread.current == thread then count += 1
+      elsif Thread.current.name != REAPER_THREAD then elsewhere << "#{Thread.current.name || Thread.current.inspect}: #{payload[:sql].squish.truncate(200)}"
+      end
     end
     ActiveSupport::Notifications.subscribed(counter, "sql.active_record") { yield }
+    unless elsewhere.empty?
+      found = Array.new(elsewhere.size) { elsewhere.pop }
+      RSpec::Expectations.fail_with("count_queries counts the statements of the block's own thread only, but #{found.size} ran on another " \
+                                    "thread inside it, so the budget would not see them:\n  #{found.join("\n  ")}")
+    end
     count
   end
 end
