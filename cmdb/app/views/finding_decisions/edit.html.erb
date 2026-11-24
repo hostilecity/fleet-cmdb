@@ -1,0 +1,61 @@
+<% content_for :title, "Decision: #{@advisory.advisory_id} on #{@host.name}" %>
+<% turbo_exempts_page_from_cache %>
+<%# Change or end one decision (VT-OVERRIDES #261, VT-D05): its kind, reason, dates, and evidence as recorded, then a new
+    reason or date (still within the limit counted from the day it was recorded) or its end. An ended decision is shown,
+    never changed. Operator text is escaped. %>
+<% errors = @errors || {} %>
+<% evidence = @decision.evidence %>
+<% last = FindingDecisions.last_day(kev: evidence["kev"], from: @decision.created_at.to_date) %>
+<p><%= link_to "← #{@host.name}: vulnerabilities", vulnerabilities_host_path(@host, anchor: "attn") %></p>
+<div class="page-head"><div><h1><%= @decision.kind_name %></h1>
+  <p><span class="mono"><%= @advisory.advisory_id %></span> on <%= link_to @host.name, vulnerabilities_host_path(@host) %> (<span class="mono"><%= @host.hostname %></span>)</p></div></div>
+<% if errors.any? %>
+  <div class="notice error" role="alert" id="decision_errors"><strong>Nothing was changed.</strong>
+    <ul class="problem-list"><% errors.each_value do |problem| %><li><%= problem %></li><% end %></ul></div>
+<% end %>
+<div class="columns">
+<section class="sheet" aria-labelledby="decision_heading" id="decision">
+  <h2 id="decision_heading" class="mt0">As recorded</h2>
+  <dl class="facts tight">
+    <dt>Recorded</dt><dd>by <%= @decision.created_by.display_name %>, <%= utc(@decision.created_at) %></dd>
+    <dt>Reason</dt><dd id="decision_reason"><%= @decision.reason %></dd>
+    <dt>Until</dt><dd><%= @decision.expires_on.iso8601 %><%= " (past its last day; it ends within the hour)" if @decision.lapsed? %></dd>
+    <dt>Evidence</dt><dd><%= bucket_tag(evidence["bucket"]) %> (rule <span class="mono"><%= evidence["rule"] %></span>); <%= FindingDecisions.evidence_words(evidence) %></dd>
+    <% if @decision.control? %><dt>Confirmed</dt><dd>for <%= @host.name %></dd><% end %>
+    <% unless @decision.active? %>
+      <dt>Ended</dt><dd id="decision_ended"><%= utc(@decision.ended_at) %>: <%= @decision.ended_why == "operator" ? "by #{@decision.ended_by.display_name}" : HostVulnerabilitiesHelper::DECISION_ENDINGS.fetch(@decision.ended_why, "suspended: the evidence got worse") %><%= " (#{FindingDecisions.changes_words(@decision.ended_evidence.to_h)})" if @decision.suspended? %></dd>
+    <% end %>
+  </dl>
+</section>
+<% if @decision.active? %>
+  <div>
+  <%= form_with url: vulnerability_decision_host_path(@host, @decision), method: :post, class: "form wide", id: "change_form", "aria-labelledby": "change_heading" do %>
+    <h2 id="change_heading" class="mt0">Change</h2>
+    <div class="field<%= " invalid" if errors[:reason] %>">
+      <label for="reason">What is the control, or why is the risk acceptable?</label>
+      <%= text_area_tag :reason, @form[:reason], id: "reason", maxlength: FindingDecision::REASON_LENGTH.max, rows: 4, required: true,
+            "aria-invalid": (errors[:reason] ? "true" : nil), "aria-describedby": [ ("reason_error" if errors[:reason]), "reason_hint" ].compact.join(" ") %>
+      <% if errors[:reason] %><p class="error-text" id="reason_error"><%= errors[:reason] %></p><% end %>
+      <p class="hint" id="reason_hint"><%= FindingDecision::REASON_LENGTH.min %> to <%= number_with_delimiter(FindingDecision::REASON_LENGTH.max) %> characters. Do not paste secrets.</p>
+    </div>
+    <div class="field<%= " invalid" if errors[:expires_on] %>">
+      <label for="expires_on">Until</label>
+      <%= date_field_tag :expires_on, @form[:expires_on], id: "expires_on", min: Date.current.iso8601, max: last.iso8601, required: true,
+            "aria-invalid": (errors[:expires_on] ? "true" : nil), "aria-describedby": [ ("expires_on_error" if errors[:expires_on]), "expires_on_hint" ].compact.join(" ") %>
+      <% if errors[:expires_on] %><p class="error-text" id="expires_on_error"><%= errors[:expires_on] %></p><% end %>
+      <p class="expiry-hint" id="expires_on_hint">No later than <%= last.iso8601 %>, the limit counted from the day it was recorded. To go on longer, end it and record a new decision on today's evidence.</p>
+    </div>
+    <% if errors[:base] %><p class="error-text" id="base_error"><%= errors[:base] %></p><% end %>
+    <% if @kev %><%= render "second_factors/prompt", result: second_factor_result, ask: true, intro: "Changing a decision on a known exploited advisory needs a code from your authenticator app every time." %><% end %>
+    <div class="actions"><button class="btn" type="submit">Save changes</button><%= link_to "Cancel", vulnerabilities_host_path(@host, anchor: "attn"), class: "btn quiet" %></div>
+  <% end %>
+  <%= form_with url: end_vulnerability_decision_host_path(@host, @decision), method: :post, class: "form wide", id: "end_form", "aria-labelledby": "end_heading" do %>
+    <h2 id="end_heading">End it now</h2>
+    <p><%= @decision.control? ? "The finding goes back to the bucket the rules give it, and is due a decision if that is Needs attention." : "The finding stays where it is and is due a decision again." %> The decision stays in the history and the audit log.</p>
+    <div class="actions"><button class="btn danger" type="submit">End decision</button></div>
+  <% end %>
+  </div>
+<% else %>
+  <p><%= link_to "Record a new decision…", new_vulnerability_decision_host_path(@host, advisory_id: @advisory.id), class: "btn" %></p>
+<% end %>
+</div>

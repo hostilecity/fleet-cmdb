@@ -12,8 +12,10 @@
 #   KEV dates and EPSS scores a fixed number, so the page costs the same statements whatever the package's size.
 #
 # scope: the findings shown, a VulnerabilityFinding.with_details relation joined to advisories (the controller's
-# filters applied). The reasons' helper (triage_reason) reads inputs, kev_dates, and epss_scores, as on
-# HostTriageSections.
+# filters applied). The reasons' helper (triage_reason) reads inputs, kev_dates, epss_scores, and decisions, as on
+# HostTriageSections. decisions: the host's HostDecisions (VT-OVERRIDES #261), so a finding here shows the decision tags
+# it has on the tab: O1's control and its link, a Low risk finding's decision, and a Needs attention finding's, which
+# the tab shows in its Decision column.
 class HostPackageFindings
   PER_PAGE = 50 # as the tab's pages (HostFindingGroups, HostAdvisoryGroups)
   CURSOR_MAX = 200
@@ -23,7 +25,7 @@ class HostPackageFindings
   CURSOR_KEY = '(?::integer, ?::timestamp, ? COLLATE "C", ?::bigint)'.freeze
   RANK_SQL = "array_position(ARRAY['critical', 'high', 'medium', 'low', 'unknown']::varchar[], advisories.severity)".freeze
 
-  attr_reader :findings, :previous, :next, :count, :notice, :inputs, :kev_dates, :epss_scores
+  attr_reader :findings, :previous, :next, :count, :notice, :inputs, :kev_dates, :epss_scores, :decisions
 
   # The cursor a parameter names: nil when none, :invalid when it does not parse, else [severity rank, first seen,
   # advisory id, finding id].
@@ -45,8 +47,9 @@ class HostPackageFindings
     [ Advisory::SEVERITIES.index(finding.advisory.severity) + 1, finding.first_seen_at.utc.iso8601(6), finding.advisory.advisory_id, finding.id ].join(",")
   end
 
-  def initialize(scope, after: nil, before: nil, per_page: PER_PAGE, count: nil, now: Time.current)
+  def initialize(scope, after: nil, before: nil, per_page: PER_PAGE, count: nil, decisions: nil, now: Time.current)
     @scope = scope
+    @decisions = decisions
     @per_page = per_page
     cursor = before || after
     @notice = :invalid if cursor == :invalid

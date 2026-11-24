@@ -74,6 +74,13 @@ Rails.application.routes.draw do
         get :vulnerabilities, to: "host_vulnerabilities#show"
         # The package name is a query parameter (?package=), as in the mockup, so no stored name can break a path.
         get "vulnerabilities/package", to: "host_vulnerabilities#package", as: :package_vulnerabilities
+        # Finding decisions (VT-OVERRIDES #261, VT-D05): a page per decision, as the host actions, each change a
+        # CSRF-protected POST. The advisory is a query parameter on the new page and a form field on the POST.
+        get "vulnerabilities/decisions/new", to: "finding_decisions#new", as: :new_vulnerability_decision
+        post "vulnerabilities/decisions", to: "finding_decisions#create", as: :vulnerability_decisions
+        get "vulnerabilities/decisions/:decision_id", to: "finding_decisions#edit", as: :vulnerability_decision, constraints: { decision_id: /\d{1,18}/ }
+        post "vulnerabilities/decisions/:decision_id", to: "finding_decisions#update", constraints: { decision_id: /\d{1,18}/ }
+        post "vulnerabilities/decisions/:decision_id/end", to: "finding_decisions#end_decision", as: :end_vulnerability_decision, constraints: { decision_id: /\d{1,18}/ }
         # The host's Tasks tab (P3-DASH-TASKS, mockup host-tasks.html, owner decision Q34): read-only.
         get :tasks, to: "host_tasks#show"
       end

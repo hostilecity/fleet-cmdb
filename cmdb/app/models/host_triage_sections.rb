@@ -12,7 +12,7 @@
 # and EPSS scores of their CVEs, for the reasons and the signals. scope: the open and reopened findings the filters
 # keep, a VulnerabilityFinding.with_details relation joined to advisories. bucket: the one section to show (?bucket=),
 # or nil for all. cursors: { section => [after, before] } as parameters. untriaged: how many open findings have no
-# bucket.
+# bucket. decisions: the host's HostDecisions (VT-OVERRIDES #261), for the decision column and O1's reasons.
 class HostTriageSections
   BUCKETS = %w[fix attention low_risk ignorable untriaged].freeze
   KERNEL_RULES = %w[K1 K2].freeze
@@ -23,12 +23,13 @@ class HostTriageSections
   # (a running kernel's L2) neither renders nor explains them all (review of #281, N3). Worst severity first.
   NESTED_MAX = 200
 
-  attr_reader :bucket, :rule, :kernel, :packages, :attention, :rules, :rule_groups, :untriaged, :inputs, :kev_dates, :epss_scores
+  attr_reader :decisions, :bucket, :rule, :kernel, :packages, :attention, :rules, :rule_groups, :untriaged, :inputs, :kev_dates, :epss_scores
 
   # The rule of a ?rule= parameter when it is one of Low risk's or Ignorable's, else nil.
   def self.rule_param(value) = VulnerabilityTriage::RULES.key?(value) && RULE_BUCKETS.include?(VulnerabilityTriage::RULES[value]) ? value : nil
 
-  def initialize(scope, bucket: nil, rule: nil, cursors: {}, untriaged: 0, now: Time.current)
+  def initialize(scope, bucket: nil, rule: nil, cursors: {}, untriaged: 0, decisions: nil, now: Time.current)
+    @decisions = decisions
     @bucket = bucket
     @rule = rule && shown?(VulnerabilityTriage::RULES.fetch(rule)) ? rule : nil
     @cursors = cursors

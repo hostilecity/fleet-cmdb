@@ -65,6 +65,7 @@ The server downloads vulnerability advisories itself and matches them against th
 | `FLEET_EPSS_REDIRECT_HOSTS` | none | Host names, separated by commas, that the EPSS download may redirect to besides its own host. A redirect to any other host is refused, and the refresh fails naming it. Anything but host names stops the boot |
 | `FLEET_EPSS_ENTER`, `FLEET_EPSS_LEAVE` | `0.10`, `0.07` | A CVE's EPSS band is high from a score of at least `ENTER` until it falls below `LEAVE` (owner decision 6), so a score near the line does not move findings every day. Decimals from 0 to 1, `LEAVE` not above `ENTER`; anything else stops the boot |
 | `FLEET_SIGNAL_MAX_AGE_HOURS` | `168` (shown as 7 days) | KEV and EPSS data older than this is shown as out of date. It is still used: nothing is rewritten when a source goes stale. A whole number, at least 1 |
+| `FLEET_DECISION_MAX_DAYS`, `FLEET_DECISION_MAX_DAYS_KEV` | `90`, `30` | The longest a finding decision (a recorded control or an accepted risk) may last, and the shorter limit for an advisory on CISA's KEV list (epic decision 15). Counted from the day it is recorded; a change cannot go past it. Whole numbers of days from 1 to 366, `KEV` not above the other; anything else stops the boot |
 
 The real OSV Debian archive measured 77.4 MiB zipped, 73,658 records, and 260.9 MiB of JSON (largest record 34.1 KiB) on 2026-11-07, well inside these limits; check again when another distribution's feed is added. The Debian Security Tracker's document measured 84.2 MiB (4,180 source packages, 79,646 entries) the same day.
 

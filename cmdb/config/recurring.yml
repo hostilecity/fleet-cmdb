@@ -136,6 +136,11 @@ production:
   triage_listener_expiry:
     class: TriageListenerExpiryJob
     schedule: every hour at minute 19
+  # VT-S06 (#261): finding decisions past their last day expire, and those whose evidence got worse are suspended; each
+  # re-triages its findings. Hourly, so a decision ends within about an hour of the end of its last day (UTC).
+  finding_decision_expiry:
+    class: FindingDecisionExpiryJob
+    schedule: every hour at minute 7
   # Reviews of #277, #278: evaluation runs of every kind whose job died with its worker are resumed (failed after 3 in a
   # row with no progress).
   evaluation_run_watch:

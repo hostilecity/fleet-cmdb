@@ -89,6 +89,14 @@ module Audit
     SECOND_FACTOR_RECOVERY_CODE_USED = "second_factor.recovery_code_used"
     SECOND_FACTOR_RESET = "second_factor.reset"
 
+    # Finding decisions (VT-OVERRIDES #261, VT-S06): recorded, changed, and ended by an operator; ended by the system
+    # when a fix appeared or every finding resolved; expired and suspended by the system, with the evidence that changed.
+    VULNERABILITY_DECISION_RECORDED = "vulnerability.decision_recorded"
+    VULNERABILITY_DECISION_CHANGED = "vulnerability.decision_changed"
+    VULNERABILITY_DECISION_ENDED = "vulnerability.decision_ended"
+    VULNERABILITY_DECISION_EXPIRED = "vulnerability.decision_expired"
+    VULNERABILITY_DECISION_SUSPENDED = "vulnerability.decision_suspended"
+
     ALL = constants.map { |name| const_get(name) }.freeze
   end
 end

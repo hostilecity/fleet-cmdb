@@ -11,6 +11,7 @@
 #   matcher could not check are listed. Advisory data freshness (Advisories::Freshness, P2-S13) is shown.
 # - package: the findings for one package name on the host, with when each was first seen, resolved, and reopened, its
 #   bucket and reason, in keyset pages (HostPackageFindings, #283); the tab's "N more" link opens it with the tab's filters.
+#   Its decision tags are the tab's (VT-OVERRIDES #261).
 # - Triage (VT-HOST-TAB #260, FR-2.6; approved mockup vuln-triage/host-vulns.html): the open list is drawn by
 #   bucket (HostTriageSections): a strip of the four bucket counts, which always add up to the open count (counted in
 #   the state counts' one grouped query, so over the whole open list whatever the filters), work remaining and 30-day
@@ -85,9 +86,11 @@ class HostVulnerabilitiesController < ApplicationController
       cursors = HostTriageSections::CURSORS.to_h { |section| [ section, [ params[:"#{section}_after"], params[:"#{section}_before"] ] ] }
       # With no open finding triaged yet, only the not-triaged section is drawn: no bucket reads 0 for them (#277 item 15).
       untriaged_only = @bucket_counts["untriaged"].positive? && @bucket_counts["untriaged"] == @state_counts["open"]
+      # The host's decisions (VT-OVERRIDES #261): the decision column, O1's reasons, and the decisions due. One query.
+      @decisions = HostDecisions.new(@host.id)
       @sections = HostTriageSections.new(scope.where(state: %w[open reopened]), bucket: untriaged_only ? "untriaged" : @bucket, rule: @rule, cursors:,
-                                                                                untriaged: @bucket_counts["untriaged"])
-      @work = HostVulnerabilityWork.new(@host.id)
+                                                                                untriaged: @bucket_counts["untriaged"], decisions: @decisions)
+      @work = HostVulnerabilityWork.new(@host.id, decisions: @decisions)
       @listeners = VulnerabilityTriage::HostFacts.listener_coverage(@host.id)
     end
     @resolved_groups = (groups(scope.where(state: "resolved"), :resolved) unless @state == "open")
@@ -119,8 +122,9 @@ class HostVulnerabilitiesController < ApplicationController
 
     load_package_filters
     load_triage_context
+    # The host's decisions (VT-OVERRIDES #261), for the same decision tags as the tab's. One query.
     @page = HostPackageFindings.new(package_scope(findings), after: HostPackageFindings.cursor(params[:after]), before: HostPackageFindings.cursor(params[:before]),
-                                                             count: (@package_counts.values.sum if @filters.empty?))
+                                                             count: (@package_counts.values.sum if @filters.empty?), decisions: HostDecisions.new(@host.id))
     # Opened from the tab's "N more" row (?from=tab, with its cursor): the page starts after the findings the row drew.
     @from_tab = params[:from] == "tab" && params[:after].present? && @page.notice.nil?
     @findings = @page.findings

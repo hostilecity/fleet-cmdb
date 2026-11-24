@@ -87,7 +87,8 @@
       <p class="muted" id="no_match">No open findings match. <%= link_to "Clear the filters", vulnerabilities_host_path(@host, { state: (@state unless @state == "open") }.compact) %></p>
     <% end %>
     <%= render "host_vulnerabilities/sections", host: @host, sections: @sections, counts: @bucket_counts, link_params:, open: @query.present?, filtered:,
-                                                signals: @signals, triage: @triage, triage_status: @triage_status, triage_os: @triage_os, listeners: @listeners %>
+                                                signals: @signals, triage: @triage, triage_status: @triage_status, triage_os: @triage_os, listeners: @listeners,
+                                                due_elsewhere: (@work.due_ids - @work.attention_ids).filter_map { |id| @decisions.for(id) } %>
   <% end %>
   <% if @state != "open" %>
     <section aria-labelledby="resolved_heading" id="resolved_findings">

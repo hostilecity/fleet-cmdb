@@ -29,8 +29,8 @@
         <% end %>
       </ul>
     <% end %>
-    <% if work.decisions_due.positive? %>
-      <p id="decisions_due"><strong><%= pluralize(work.decisions_due, "advisory", plural: "advisories") %> in Needs attention <%= work.decisions_due == 1 ? "has" : "have" %> no decision.</strong> A decision is not work: there may be nothing to do.</p>
+    <% if work.decisions_due.positive? || work.accepted.positive? %>
+      <p id="decisions_due"><% if work.decisions_due.positive? %><strong><%= pluralize(work.decisions_due, "advisory", plural: "advisories") %> <%= work.decisions_due == 1 ? "needs" : "need" %> a decision</strong><%= " (#{work.accepted} more #{work.accepted == 1 ? 'has' : 'have'} an accepted risk)" if work.accepted.positive? %><% else %>No decision is due; <%= pluralize(work.accepted, "advisory", plural: "advisories") %> in Needs attention <%= work.accepted == 1 ? "has" : "have" %> an accepted risk<% end %>. A decision is not work: there may be nothing to do. In Needs attention: record a control, or accept the risk until a date.</p>
     <% end %>
     <% if work.upgrades.any? && host.enrollment_state == "active" %>
       <p class="actions"><%= link_to "Apply package updates on this host…", new_task_parameters_path(type: "apply_package_updates", target: { host_ids: [ host.id ] }), class: "btn quiet", id: "apply_updates" %></p>

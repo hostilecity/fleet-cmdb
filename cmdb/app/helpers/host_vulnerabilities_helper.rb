@@ -176,7 +176,9 @@ module HostVulnerabilitiesHelper
 
     inputs = sections.inputs[finding.id]
     kev, epss = signal_statuses(signals)
-    text = if inputs && VulnerabilityTriage.classify(inputs).rule == rule
+    text = if rule == "O1" && inputs && VulnerabilityTriage.classify(inputs).rule == rule && (decision = sections.decisions&.in_force(finding.advisory_id))
+      control_reason(decision, inputs)
+    elsif inputs && VulnerabilityTriage.classify(inputs).rule == rule
       # "No EPSS score yet" only once EPSS data exists; before, the "none has been imported" qualifier says it.
       details = { kev_dates: sections.kev_dates, epss_scores: (sections.epss_scores unless epss.nil? || epss.never?) }.compact
       VulnerabilityTriage::Reasons.sentence(rule, inputs, kev:, epss:, details:)
@@ -185,8 +187,90 @@ module HostVulnerabilitiesHelper
     else
       [ VulnerabilityTriage::Reasons::SUMMARIES.fetch(rule), *rule_qualifiers(rule, signals) ].join(" ")
     end
-    tag.span(safe_join([ text, tag.span(rule, class: "rule-id") ]), class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
+    reason = tag.span(safe_join([ text, tag.span(rule, class: "rule-id") ]), class: [ "reason", BUCKET_CLASSES.fetch(VulnerabilityTriage::RULES.fetch(rule)) ])
+    if rule == "O1" && decision
+      safe_join([ tag.span("Control in place", class: "override-tag"), reason, " ", link_to("Change or end", vulnerability_decision_host_path(finding.host_id, decision)) ])
+    elsif VulnerabilityTriage::RULES.fetch(rule) == "low_risk" && (other = sections.decisions&.for(finding.advisory_id))
+      safe_join([ reason, decision_note(finding.host_id, other, sections.decisions) ].compact)
+    else
+      reason
+    end
   end
+
+  # A decision on a Low risk finding that is not O1 (an acceptance, or a control no longer in force), on its nested
+  # row: its tag and its link (review of #299, S3). nil when it ended for good (fixed, resolved, by an operator).
+  def decision_note(host_id, decision, decisions)
+    link = ->(text) { link_to(text, vulnerability_decision_host_path(host_id, decision)) }
+    tag_for = if decision.in_force?(decisions.today) then [ decision.kind_name, ("accepted" if decision.accepted?), "Until #{decision.expires_on.iso8601}." ]
+    elsif decision.active? then [ "Decision expired", "suspended", "Its last day was #{decision.expires_on.iso8601}." ]
+    elsif decision.suspended? then [ "Decision suspended", "suspended", "The evidence got worse (#{FindingDecisions.changes_words(decision.ended_evidence.to_h)})." ]
+    end
+    return nil unless tag_for
+
+    name, css, note = tag_for
+    tag.span(safe_join([ tag.span(name, class: [ "override-tag", css ].compact), " ", note, " ", link.("Change or end") ]), class: "state-note decision-note")
+  end
+
+  # Rule O1's reason (VT-OVERRIDES #261, mockup override.html): who recorded the control and when, until when, its text
+  # (operator text, escaped where it is rendered), and the bucket the rules give without it.
+  def control_reason(decision, inputs)
+    without = VulnerabilityTriage.classify(inputs.with(control: false)).rule
+    "#{decision.created_by.display_name} recorded on #{decision.created_at.utc.to_date.iso8601}, until #{decision.expires_on.iso8601}: " \
+      "\u201C#{decision.reason}\u201D Without it: #{bucket_name(VulnerabilityTriage::RULES.fetch(without))} (#{without})."
+  end
+
+  # The Needs attention row's decision cell (VT-OVERRIDES #261, VT-D04; mockups host-vulns.html and override.html): the
+  # decision in force (an accepted risk stays here, marked, and is not due; a control here means its re-triage has not
+  # run yet), one past its last day that the hourly job has not ended, a suspended one with what got worse, or the link
+  # to record one. Operator text is escaped.
+  def decision_cell(host, advisory, decisions)
+    decision = decisions.for(advisory.id)
+    record = safe_join([ link_to("Record a control\u2026", new_vulnerability_decision_host_path(host, advisory_id: advisory.id, kind: "control")),
+                         link_to("Accept the risk\u2026", new_vulnerability_decision_host_path(host, advisory_id: advisory.id, kind: "accepted")) ], tag.br)
+    return record if decision.nil?
+
+    change = link_to("Change or end", vulnerability_decision_host_path(host, decision))
+    by = "#{decision.kind == 'control' ? 'Recorded' : 'Accepted'} by #{decision.created_by.display_name} on #{decision.created_at.utc.to_date.iso8601}: \u201C#{decision.reason}\u201D"
+    if decision.in_force?(decisions.today)
+      soon = decisions.ending_soon?(decision) ? " It ends within #{FindingDecisions::EXPIRING_WITHIN} days, so it is listed as due." : ""
+      note = decision.accepted? ? "Until #{decision.expires_on.iso8601}. Still counted here, with its points; not due.#{soon}" : "Until #{decision.expires_on.iso8601}. #{RETRIAGE_PENDING}#{soon}"
+      safe_join([ tag.span(decision.kind_name, class: [ "override-tag", ("accepted" if decision.accepted?) ]), tag.span(note, class: "state-note"), tag.span(by, class: "state-note"), change ])
+    elsif decision.active?
+      safe_join([ tag.span("Decision expired", class: "override-tag suspended"), tag.span("Its last day was #{decision.expires_on.iso8601}; it ends within the hour and the finding is due a new decision.", class: "state-note") ])
+    elsif decision.suspended?
+      what = FindingDecisions.changes_words(decision.ended_evidence.to_h)
+      text = "#{decision.kind_name} by #{decision.created_by.display_name} on #{decision.created_at.utc.to_date.iso8601} (\u201C#{decision.reason}\u201D), " \
+             "but on #{decision.ended_at.utc.to_date.iso8601} the evidence got worse (#{what}). It no longer applies; the finding is due a new decision."
+      safe_join([ tag.span("Decision suspended", class: "override-tag suspended"), tag.span(text, class: "state-note"), link_to("Record a new decision\u2026", new_vulnerability_decision_host_path(host, advisory_id: advisory.id)) ])
+    else
+      safe_join([ record, tag.span("The last decision #{DECISION_ENDINGS.fetch(decision.ended_why)} on #{decision.ended_at.utc.to_date.iso8601}.", class: "state-note") ])
+    end
+  end
+
+  # One host's evidence on the decision form (N8): its bucket and rule, listening, and firewall.
+  def decision_candidate_evidence(candidate)
+    firewall = { true => "firewall enabled", false => "firewall disabled" }.fetch(candidate.firewall, "firewall not reported")
+    safe_join([
+      (safe_join([ bucket_tag(candidate.bucket), " (", tag.span(candidate.rule, class: "mono"), ")" ]) if candidate.bucket),
+      (tag.span(candidate.listening == "network" ? "Listening: network" : "Listening: loopback only", class: "sig use") unless candidate.listening == "none"),
+      (candidate.listening == "none" ? "no listener reported" : nil), firewall
+    ].compact, " \u00B7 ")
+  end
+
+  # The evidence panel's Fix row (mockup override.html, "None for trixie"). A backport's finding (#274) says what
+  # fixed_in says on the tab: a fix in the release the backport is built from is shown but is no fix for this release,
+  # and a kept finding is open only because this release's data alone says it is fixed.
+  def decision_fix_words(candidate)
+    return "Not known" unless candidate&.bucket
+
+    from = candidate.findings.filter_map(&:from_fixed_version).uniq
+    notes = []
+    notes << "fixed in #{from.join(', ')} in the release this backport is built from; no backport of it known yet" if from.any?
+    notes << "kept open: only this release's data says it is fixed, which is no evidence for a backport" if candidate.findings.any?(&:kept)
+    notes.empty? ? "None for this release" : "None for this release (#{notes.join('; ')})"
+  end
+
+  DECISION_ENDINGS = { "operator" => "was ended by an operator", "expired" => "expired", "fixed" => "ended when a fix appeared", "resolved" => "ended when its findings resolved" }.freeze
 
   # A rule's row in the Low risk and Ignorable tables: its summary and the KEV and EPSS qualifiers that rule takes
   # (they depend on the rule alone; review of #281, S2).
@@ -333,11 +417,14 @@ module HostVulnerabilitiesHelper
     words.join(", ")
   end
 
-  # A finding's bucket and reason on the package page, as on the tab; a resolved finding is in no bucket.
+  # A finding's bucket and reason on the package page, as on the tab; a resolved finding is in no bucket. triage_reason
+  # draws O1's control and a Low risk finding's decision as on the tab; a Needs attention finding's decision, which the
+  # tab draws in its Decision column, is tagged here the same way (VT-OVERRIDES #261).
   def package_finding_bucket(finding, details, signals)
     return tag.span("Resolved: in no bucket", class: "muted") if finding.state == "resolved"
 
     bucket = VulnerabilityTriage.bucket_for(finding.bucket)
-    safe_join([ (bucket_tag(bucket) if bucket), " ", triage_reason(finding, details, signals) ].compact)
+    decision = bucket == "attention" && details.decisions&.for(finding.advisory_id)
+    safe_join([ (bucket_tag(bucket) if bucket), " ", triage_reason(finding, details, signals), (decision_note(finding.host_id, decision, details.decisions) if decision) ].compact)
   end
 end
