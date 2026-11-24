@@ -22,9 +22,12 @@ module DebianTriage
   #   Ecosystems.backports_tracker_releases), it also keeps each source package's current version, the highest of its
   #   suites' versions in the entries' "repositories" (forky, forky-security), in BackportSourceVersion, replaced
   #   whenever the document names the release (kept as it was when it does not). Matching reads forky's to tell
-  #   trixie-backports builds from sloppy ones (Backports.releases_for); a change to one queues a re-match of the
-  #   backports of those sources, once Debian:15's advisory data is complete.
-  # - It never touches findings, advisories, or matching itself (ADR 0022, item 3). Since VT-BUCKETS (#259) Debian's
+  #   trixie-backports builds from sloppy ones (Backports.releases_for, which uses them only while this data is fresh
+  #   and OSV does not contradict them), so they decide which OSV release a backport is compared with: a change to one
+  #   queues a re-match of the backports of those sources, once Debian:15's advisory data is complete, and can open or
+  #   resolve their findings. That is the approved exception to ADR 0022 item 3. Duke's are only the signal that
+  #   Debian 15 exists (Backports::Status#published).
+  # - Otherwise it never touches findings, advisories, or matching itself (ADR 0022, item 3). Since VT-BUCKETS (#259) Debian's
   #   triage decides findings' triage buckets (ADR 0032), never their state or severity: each replaced release records
   #   how many entries the document added and how many changed what the rules read (counts, the churn VT-M6's daily
   #   re-triage estimate needs), and hands the CVEs added, changed, or dropped to the daily triage run

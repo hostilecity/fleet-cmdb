@@ -152,6 +152,61 @@ RSpec.describe "Matching trixie-backports-sloppy builds (#304)" do # rubocop:dis
       expect(Backports.releases_for("Debian:13", %w[Debian:14 Debian:15], [ "linux" ], "bad:version", { "linux" => "7.1.3-1" }, scheme)).to eq(%w[Debian:14 Debian:15])
     end
 
+    it "resolves a forky-series build's finding on forky's evidence when Debian 15 has nothing for its source (re-check N1)" do
+      host = debian_host(packages: [ [ "calibre", "9.5.0+ds-1~bpo13+1", "calibre" ] ])
+      tracker_versions("calibre", forky: { "forky" => "9.5.0+ds-1" })
+      import_full(record("DEBIAN-CVE-2027-90112", trixie: :absent, forky: nil, duke: :absent, package: "calibre"),
+                  record("DEBIAN-CVE-2027-90009", trixie: "6.12.99-1", forky: "7.1.3-1", duke: "7.6.4-1")) # Debian:15 data for linux only
+      match(host)
+      expect(finding(host, "calibre", "DEBIAN-CVE-2027-90112")).to have_attributes(state: "open", kept: false)
+      import_advisories(record("DEBIAN-CVE-2027-90112", trixie: :absent, forky: "9.4.0+ds-1", duke: :absent, package: "calibre", modified: "2026-11-01T00:00:00Z"))
+      match(host, at: now + 1.hour)
+      # Matched against Debian:14 only, which shows it fixed: Debian 15 having no data for calibre does not hold it open.
+      expect(finding(host, "calibre", "DEBIAN-CVE-2027-90112")).to have_attributes(state: "resolved", resolution: "fixed")
+    end
+
+    describe "a forky version that cannot be trusted (re-check S1)" do
+      let(:host) { debian_host(packages: [ installed ]) }
+
+      before do
+        import_full(cve)
+        tracker_versions("linux", forky: { "forky" => "7.1.3-1+deb14u5" })
+      end
+
+      def releases = Backports.releases_for("Debian:13", Backports.complete("Debian:13"), [ "linux" ], installed[1],
+                                            Backports.from_versions("Debian:13", Backports.complete("Debian:13"), [ "linux" ]), PackageVersions.for("dpkg"))
+
+      it "is used when the refresh is on, fresh, and not below what OSV records for forky" do
+        expect(releases).to eq([ "Debian:14" ])
+      end
+
+      it "counts as unknown below a version OSV records as fixed or affected in Debian:14 (both releases, and the finding stays open)" do
+        import_advisories(record("DEBIAN-CVE-2027-90113", trixie: "6.12.99-1", forky: "7.2.0-1", duke: "7.6.4-1")) # forky has fixed it in 7.2.0-1
+        expect(releases).to eq(%w[Debian:14 Debian:15])
+        match(host)
+        expect(finding(host, installed[0], cve["id"])).to have_attributes(state: "open", from_fixed_version: "7.6.4-1")
+        introduced = record("DEBIAN-CVE-2027-90114", trixie: "6.12.99-1", forky: nil, duke: "7.6.4-1")
+        introduced["affected"][1]["ranges"].first["events"] = [ { "introduced" => "7.1.4-1" } ]
+        import_advisories(record("DEBIAN-CVE-2027-90113", trixie: "6.12.99-1", forky: "6.0-1", duke: "7.6.4-1", modified: "2026-11-01T00:00:00Z"), introduced)
+        expect(releases).to eq(%w[Debian:14 Debian:15]) # 7.1.4-1, introduced in forky, is above it too
+      end
+
+      it "counts as unknown once the tracker data is stale, or the refresh is turned off" do
+        travel(Advisories.config.max_age + 1.hour) { expect(releases).to eq(%w[Debian:14 Debian:15]) }
+        saved = DebianTriage.config.tracker_url
+        DebianTriage.config.tracker_url = nil
+        expect(releases).to eq(%w[Debian:14 Debian:15])
+      ensure
+        DebianTriage.config.tracker_url = saved
+      end
+
+      it "counts as unknown when it cannot be parsed against OSV's" do
+        BackportSourceVersion.update_all(version: "bad:version")
+        import_advisories(record("DEBIAN-CVE-2027-90115", trixie: "6.12.99-1", forky: "bad:version!", duke: "7.6.4-1"))
+        expect(releases).to eq(%w[Debian:14 Debian:15])
+      end
+    end
+
     it "resolves a sloppy build's finding as fixed on Debian 15's evidence alone (review N1)" do
       host = debian_host(packages: [ [ "calibre", "9.6.0+ds-1~bpo13+1", "calibre" ] ])
       tracker_versions("calibre", forky: { "forky" => "9.5.0+ds-1" })

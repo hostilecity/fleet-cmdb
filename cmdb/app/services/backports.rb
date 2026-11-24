@@ -48,10 +48,49 @@ module Backports
   def sloppy_of(ecosystem) = Ecosystems::BACKPORTS.dig(ecosystem, "sloppy")
 
   # { source => version } in the release the ecosystem's backports are built from (Debian:14), for the sources, when
-  # complete has its sloppy release (otherwise nothing reads it).
-  def from_versions(ecosystem, complete, sources)
+  # complete has its sloppy release (otherwise nothing reads it). These versions come from the security tracker, and a
+  # too-high one would make a sloppy build look forky-series and hide its Debian:15-only findings (review of #309, S1;
+  # threat model S9), so a version is used only when (a version left out counts as unknown: both releases):
+  # - the tracker refresh is on and its data is fresh (versions_fresh?): versions kept from a refresh turned off or
+  #   failing are not used, so "off means both releases" holds;
+  # - it is plausible against OSV (plausible): not below any version OSV's data for that release records for the
+  #   source (introduced, fixed, last_affected), since a release's version only rises past those.
+  def from_versions(ecosystem, complete, sources, now: Time.current)
     sloppy = sloppy_of(ecosystem)
-    sloppy && complete.include?(sloppy) ? BackportSourceVersion.of(Ecosystems.backports_from(ecosystem), sources) : {}
+    return {} unless sloppy && complete.include?(sloppy) && versions_fresh?(now:)
+
+    from = Ecosystems.backports_from(ecosystem)
+    plausible(from, BackportSourceVersion.of(from, sources))
+  end
+
+  # Whether the stored versions are current: the tracker refresh is configured, and the newest import that stored the
+  # tracker's data (a refresh, a "not modified" one, or an upload) is within Advisories.config.max_age, as for its
+  # triage (DebianTriage::Freshness).
+  def versions_fresh?(now: Time.current)
+    return false if DebianTriage.config.tracker_url.nil?
+
+    at = TriageImport.debian.stored.maximum(:finished_at)
+    !at.nil? && at >= now - Advisories.config.max_age
+  end
+
+  # The versions that OSV's data for the release does not contradict. One query: the distinct versions the release's
+  # ranges name for those sources.
+  def plausible(from, versions)
+    return versions if versions.empty?
+
+    scheme = PackageVersions.for(Ecosystems.manager(from))
+    recorded = AdvisoryPackage.connection.select_rows(AdvisoryPackage.sanitize_sql_array([ <<~SQL.squish, from, versions.keys ]))
+      SELECT DISTINCT p.package, e.value FROM advisory_packages p, jsonb_array_elements(p.ranges) r, jsonb_array_elements(r) ev, jsonb_each_text(ev) e
+      WHERE p.ecosystem = ? AND p.package IN (?) AND e.key IN ('introduced', 'fixed', 'last_affected') AND e.value <> '0'
+    SQL
+    floor = recorded.group_by(&:first).transform_values do |rows|
+      rows.map { |_, text| scheme.parse(text) }.reject { |v| v.is_a?(PackageVersions::Invalid) }.max { |a, b| scheme.compare(a, b) }
+    end
+    versions.select do |package, version|
+      low = floor[package]
+      parsed = scheme.parse(version)
+      low.nil? || (!parsed.is_a?(PackageVersions::Invalid) && scheme.compare(parsed, low) >= 0)
+    end
   end
 
   # The succeeded full imports that kept the ecosystem.
