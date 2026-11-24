@@ -21,21 +21,37 @@
 #   (VulnerabilityFinding.with_details_of: looked up for those findings only, #302), in one more query. A package whose findings
 #   left the list between the two (a matching run committing, or a replica replaying) is left off the page rather
 #   than failing it, and the page's rows count the findings loaded (S2).
+# - Findings loaded (#318): at most LOAD_MAX a row (the NESTED_MAX the tab draws, and one more to tell that the row has
+#   more), the first in the order the row draws them (worst severity, first seen, advisory id: the package page's key),
+#   by a window over the page's rows in the same query. A row with more takes its counts (total, severities, fixes,
+#   states, resolutions, first seen) from its aggregated group, the first query, rather than from the findings loaded;
+#   a row with fewer counts the findings loaded, as before (S2). witnesses: also load, past the first LOAD_MAX, one
+#   finding of each fixed version and every finding with none, which Fix available's "Upgrade to" needs from every
+#   finding of the row (re-check of #281, N3): its highest fix is a stored fixed version or F2's, read from Debian's
+#   tracker for the findings with none. They are not drawn.
 class HostFindingGroups
   PER_PAGE = 50
   CURSOR_MAX = 300
   NAME = /\A[^,\s[:cntrl:]]{1,128}\z/
 
-  # One package's row: its findings in display order and its counts per severity.
-  Group = Data.define(:package, :architecture, :counts, :fixable, :findings) do
-    def total = findings.size
+  # One package's row: its first findings in display order (at most LOAD_MAX), its counts over all of them (total,
+  # per severity, with a fix, per state and resolution), its first seen, and its witnesses (see above; none outside
+  # Fix available).
+  Group = Data.define(:package, :architecture, :counts, :fixable, :findings, :total, :first_seen_at, :states, :resolutions, :witnesses) do
     def worst = Advisory::SEVERITIES.find { |severity| counts.fetch(severity, 0).positive? }
     def installed_version = findings.first.installed_version
-    def first_seen_at = findings.map(&:first_seen_at).min
     def key = "#{package}:#{architecture}"
-    def states = findings.map(&:state).tally
-    def resolutions = findings.filter_map(&:resolution).tally
+    # Every finding loaded: the ones drawn first, then the witnesses.
+    def loaded = findings + witnesses
   end
+
+  # Findings loaded a row: the most the tab draws (HostTriageSections::NESTED_MAX, read at each load), and one more.
+  def self.load_max = HostTriageSections::NESTED_MAX + 1
+
+  # The order a row draws its findings in, SQL over the findings joined to advisories (the package page's ROW_KEY
+  # without the id: a row's findings are of distinct advisories, index_vulnerability_findings_unique).
+  ROW_ORDER = "#{HostPackageFindings::RANK_SQL}, vulnerability_findings.first_seen_at, advisories.advisory_id COLLATE \"C\"".freeze
+  ROW = "vulnerability_findings.package, vulnerability_findings.architecture".freeze
 
   # The sort key of each rank, SQL over the aggregated groups (g), every part ascending, so a page boundary is one row
   # comparison; and the cursor's values in the same shape.
@@ -79,9 +95,11 @@ class HostFindingGroups
   # scope: the findings shown, a relation of findings joined to advisories: the plain table, or with details when a
   # filter reads one (VulnerabilityFinding.with_host_details). host_id: the host they are of. after, before:
   # cursors from HostFindingGroups.cursor for this rank (before wins).
-  def initialize(scope, host_id:, rank: :offenders, after: nil, before: nil, per_page: PER_PAGE)
+  # witnesses: load each row's witnesses (Fix available's package rows).
+  def initialize(scope, host_id:, rank: :offenders, after: nil, before: nil, per_page: PER_PAGE, witnesses: false)
     @scope = scope
     @host_id = host_id
+    @witnesses = witnesses
     @rank = rank
     @per_page = per_page
     cursor = before || after
@@ -132,29 +150,62 @@ class HostFindingGroups
   end
 
   def aggregates
-    Advisory::SEVERITIES.map { |severity| Arel.sql(VulnerabilityFinding.sanitize_sql([ "count(*) FILTER (WHERE advisories.severity = ?) AS #{severity}", severity ])) } +
-      [ Arel.sql("count(*) FILTER (WHERE #{VulnerabilityFinding::FIX_SQL}) AS fixable"),
+    counted = ->(column, value, name) { Arel.sql(VulnerabilityFinding.sanitize_sql([ "count(*) FILTER (WHERE #{column} = ?) AS #{name}", value ])) }
+    Advisory::SEVERITIES.map { |severity| counted.("advisories.severity", severity, severity) } +
+      VulnerabilityFinding::STATES.map { |state| counted.("vulnerability_findings.state", state, "state_#{state}") } +
+      VulnerabilityFinding::RESOLUTIONS.map { |resolution| counted.("vulnerability_findings.resolution", resolution, "resolution_#{resolution}") } +
+      # Only an active finding's fix is a fix (VulnerabilityFinding#fixable); the ranked lists are all active.
+      [ Arel.sql("count(*) FILTER (WHERE vulnerability_findings.state <> 'resolved' AND #{VulnerabilityFinding::FIX_SQL}) AS fixable"),
         Arel.sql("min(array_position(ARRAY['critical', 'high', 'medium', 'low', 'unknown']::varchar[], advisories.severity)) AS worst_rank"),
         Arel.sql("min(vulnerability_findings.first_seen_at) AS first_seen_at"),
         Arel.sql("vulnerability_findings.package"), Arel.sql("vulnerability_findings.architecture") ]
   end
 
   # The page's groups with their findings, loaded in one query (the page's package and architecture pairs, not their
-  # cross product) and sorted worst first, then the earliest first seen. Counts are taken from the rows loaded, and a
-  # package with none left is left off the page.
+  # cross product): at most load_max a row, and its witnesses, picked by a window over the pairs' findings on the
+  # plain table (or the scope's details), then given their details. A row with fewer than load_max counts the
+  # findings loaded; one with more, its aggregated group (row). A package with none left is left off the page.
   def build(rows)
     return [] if rows.empty?
 
+    limit = self.class.load_max
+    by_row = picked(rows, limit).group_by { |finding| [ finding.package, finding.architecture ] }
+    rows.filter_map do |row|
+      list = by_row[[ row["package"], row["architecture"] ]] or next
+
+      list = list.sort_by { |f| [ Advisory::SEVERITIES.index(f.advisory.severity), f.first_seen_at, f.advisory.advisory_id ] }
+      shown = list.first(limit)
+      Group.new(package: row["package"], architecture: row["architecture"], findings: shown, witnesses: list.drop(limit),
+                **(shown.size < limit ? counted(shown) : aggregated(row)))
+    end
+  end
+
+  # The findings of the page's pairs that build loads, with their details.
+  def picked(rows, limit)
     table = VulnerabilityFinding.arel_table
     pairs = rows.map { |row| Arel::Nodes::Grouping.new([ Arel::Nodes.build_quoted(row["package"]), Arel::Nodes.build_quoted(row["architecture"]) ]) }
-    page = @scope.where(Arel::Nodes::In.new(Arel::Nodes::Grouping.new([ table[:package], table[:architecture] ]), pairs))
-    findings = VulnerabilityFinding.with_details_of(page, host_id: @host_id).preload(:advisory).to_a.group_by { |finding| [ finding.package, finding.architecture ] }
-    rows.filter_map do |row|
-      list = findings[[ row["package"], row["architecture"] ]] or next
+    page = @scope.where(Arel::Nodes::In.new(Arel::Nodes::Grouping.new([ table[:package], table[:architecture] ]), pairs)).except(:order, :preload, :includes)
+    ranks = [ Arel.sql("vulnerability_findings.id"), Arel.sql("row_number() OVER (PARTITION BY #{ROW} ORDER BY #{ROW_ORDER}) AS row_rank") ]
+    # A witness: the first finding (by id) of its row and fixed version, or one with no fixed version.
+    ranks << Arel.sql("vulnerability_findings.last_fixed_version IS NULL OR row_number() OVER (PARTITION BY #{ROW}, vulnerability_findings.last_fixed_version " \
+                      "ORDER BY vulnerability_findings.id) = 1 AS witness") if @witnesses
+    ranked = VulnerabilityFinding.unscoped.from(page.select(*ranks), :vulnerability_findings)
+    kept = @witnesses ? ranked.where("vulnerability_findings.row_rank <= ? OR vulnerability_findings.witness", limit) : ranked.where("vulnerability_findings.row_rank <= ?", limit)
+    VulnerabilityFinding.with_details_of(kept, host_id: @host_id).preload(:advisory).to_a
+  end
 
-      Group.new(package: row["package"], architecture: row["architecture"], fixable: list.count(&:fixable),
-                counts: Advisory::SEVERITIES.to_h { |severity| [ severity, list.count { |f| f.advisory.severity == severity } ] },
-                findings: list.sort_by { |f| [ Advisory::SEVERITIES.index(f.advisory.severity), f.first_seen_at, f.advisory.advisory_id ] })
-    end
+  # A row's counts from its findings loaded, all of them.
+  def counted(list)
+    { total: list.size, fixable: list.count(&:fixable), first_seen_at: list.map(&:first_seen_at).min,
+      counts: Advisory::SEVERITIES.to_h { |severity| [ severity, list.count { |f| f.advisory.severity == severity } ] },
+      states: list.map(&:state).tally, resolutions: list.filter_map(&:resolution).tally }
+  end
+
+  # A row's counts from its aggregated group, when it has more findings than were loaded.
+  def aggregated(row)
+    positive = ->(names, prefix) { names.to_h { |name| [ name, row["#{prefix}#{name}"].to_i ] }.select { |_, count| count.positive? } }
+    counts = Advisory::SEVERITIES.to_h { |severity| [ severity, row[severity].to_i ] }
+    { total: counts.values.sum, fixable: row["fixable"].to_i, first_seen_at: row["first_seen_at"], counts:,
+      states: positive.(VulnerabilityFinding::STATES, "state_"), resolutions: positive.(VulnerabilityFinding::RESOLUTIONS, "resolution_") }
   end
 end

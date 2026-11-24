@@ -311,9 +311,11 @@ module HostVulnerabilitiesHelper
   # A Fix available package row's action: the highest fix among its findings (F1's version, or F2's from Debian's
   # tracker when its inputs can be read).
   def upgrade_action(group, sections)
-    # Every finding of the row, not only those drawn: the Fix available rows' inputs are all loaded (HostTriageSections).
-    versions = group.findings.filter_map { |f| (inputs = sections.inputs[f.id]) ? VulnerabilityTriage.fix_for(inputs) : f.fixed_version }.uniq
-    scheme = group.findings.filter_map { |f| sections.inputs[f.id]&.scheme }.first
+    # Every finding the row loads, not only those drawn: past NESTED_MAX, its witnesses, which hold each fixed version
+    # of the row and every finding with none (HostFindingGroups, #318), so the highest is the highest of all its
+    # findings. Their inputs are all loaded (HostTriageSections).
+    versions = group.loaded.filter_map { |f| (inputs = sections.inputs[f.id]) ? VulnerabilityTriage.fix_for(inputs) : f.fixed_version }.uniq
+    scheme = group.loaded.filter_map { |f| sections.inputs[f.id]&.scheme }.first
     best = scheme ? versions.max { |a, b| VulnerabilityTriage.compare(a, b, scheme) || 0 } : versions.max
     best ? safe_join([ "Upgrade to ", tag.span(best, class: "mono") ]) : "Upgrade"
   end
