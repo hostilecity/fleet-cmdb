@@ -19,11 +19,13 @@
 #   updates-b  305, 306, 308: a reboot before the switch, a crash loop, the units refresh (1.0.0, 1.0.1)
 #   packages   370 to 373: apply_package_updates (fleet-agent-1.0.0 is the fault build here, for the
 #              shorter lock wait of scenario 371; see below)
-#   recovery   307: recovery mode (1.0.0, 1.1.0 the fault build, 1.1.1); then 375, a kill at the memory
-#              limit reported in the heartbeat (1.1.0)
+#   recovery   375, a kill at the memory limit reported in the heartbeat, then 307, recovery mode (1.0.0,
+#              1.1.0 the fault build, 1.1.1). 375 runs first: 307 leaves 1.1.1 with 1.1.0 as previous, so
+#              1.0.0, which every scenario's reset starts from, is no longer installed after it.
 #
-# Every group ends with scenario 374, the memory and task limits, for the scenarios that ran in its VM,
-# except that scenario 375 runs after it (in "all" too): it brings the agent to its limit on purpose.
+# Every group ends with scenario 374, the memory and task limits, for the scenarios that ran in its VM. It
+# does not count the one kill scenario 375 causes on purpose: it reads the journal only after the cursor 375
+# leaves in $tmp/oom-expected-cursor once that kill is reported.
 #
 # The VM runs under QEMU with KVM when /dev/kvm is usable, and falls back to TCG (with longer
 # timeouts) when not. It is configured by a cloud-init NoCloud seed with an SSH key generated here.
@@ -737,6 +739,9 @@ memory_kill_reported() {
     ! grep -q "note-stop:" <<< "$journal" || fail "note-stop complained: $(grep 'note-stop:' <<< "$journal" | head -n 3)"
     process=$(jq -cs "[.[] | select(.kind == \"heartbeat\" and .agent_version == \"$FAULTY\" and .status == 200 and .at > $since)] | last | .process" "$events")
     echo "the restarted agent reports $process"
+    # Scenario 374 counts only kills after this point (within_limits).
+    vm "journalctl -n 1 --show-cursor --no-pager -o cat | sed -n 's/^-- cursor: //p'" > "$tmp/oom-expected-cursor"
+    [ -s "$tmp/oom-expected-cursor" ] || fail "cannot read the journal's cursor after the kill"
     printf '%s' "killed at MemoryMax and restarted once; heartbeat: $(jq -r '"restarts \(.restarts), last stop \(.last_stop.result) \(.last_stop.exit_code) \(.last_stop.exit_status)"' <<< "$process")" > "$tmp/last-result"
 }
 
@@ -1287,8 +1292,11 @@ within_limits() {
             | sort | tr '\n' ' ' | sed 's/ $//')
         [ "$shown" = "$want" ] || fail "$unit has '$shown', the unit file says '$want'"
     done
-    # No OOM kill of the agent in any scenario the journal still holds (this boot at least).
-    if vm "journalctl -u fleet-agent --no-pager -o cat | grep -q oom-kill"; then
+    # No OOM kill of the agent in any scenario the journal still holds (this boot at least), except the one
+    # scenario 375 causes on purpose: then only the journal after its cursor counts.
+    local after=""
+    [ ! -s "$tmp/oom-expected-cursor" ] || after="--after-cursor='$(cat "$tmp/oom-expected-cursor")'"
+    if vm "journalctl -u fleet-agent $after --no-pager -o cat | grep -q oom-kill"; then
         fail "the agent was killed for memory: $(vm 'journalctl -u fleet-agent --no-pager -o short-iso | grep -B2 oom-kill | tail -n 6')"
     fi
     agent_limits "now"
@@ -1355,13 +1363,11 @@ fi
 # In "all", after the package scenarios as before; in a group, last, for what ran in its VM.
 [ "$group" != all ] || scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits
 if in_group recovery; then
+    # Before 307, whose two updates leave 1.0.0 uninstalled; 374 skips the kill this one causes on purpose.
+    scenario 375 "A kill at the memory limit is reported in the heartbeat (#251)" memory_kill_reported
     scenario 307 "Crash loop on a confirmed version: recovery mode (#180)" recovery_mode
 fi
 [ "$group" = all ] || scenario 374 "The agent stays inside its memory and task limits (#182)" within_limits
-# After scenario 374, which checks that no scenario before it brought the agent to its limits: this one does.
-if in_group recovery; then
-    scenario 375 "A kill at the memory limit is reported in the heartbeat (#251)" memory_kill_reported
-fi
 
 # shellcheck disable=SC2016 # expanded in the guest
 os=$(vm '. /etc/os-release; echo "$PRETTY_NAME"' 2> /dev/null || echo "Debian 13")
