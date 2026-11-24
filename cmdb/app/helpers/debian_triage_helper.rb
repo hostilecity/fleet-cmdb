@@ -155,6 +155,7 @@ module DebianTriageHelper
     when "never_imported" then "The tracker data has not been imported yet."
     when "stale" then "The tracker data is older than #{triage_hours} (last imported #{utc(status&.updated_at) || 'never'})."
     when "no_cve" then "#{page == :package ? finding.advisory.advisory_id : 'This advisory'} names no CVE, so there is nothing to look up."
+    when "backport" then triage.detail # #274: the release's triage is about its own package, not a backport
     else "The tracker has no entry for #{triage.cve_ids.to_sentence(two_words_connector: ' or ', last_word_connector: ', or ')} in #{triage.release}."
     end
   end

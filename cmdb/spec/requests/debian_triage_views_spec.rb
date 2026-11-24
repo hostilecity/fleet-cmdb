@@ -551,8 +551,9 @@ RSpec.describe "Debian's triage in the dashboard", :signed_in, type: :request do
     # the rule rows, the page's triage inputs (VulnerabilityTriage::Explain, about 10), its KEV dates and EPSS scores, and
     # work remaining and progress; +2: the host's listener data since #268 set VT-BUCKETS' listener hook (its evidence,
     # read with the page's triage inputs, and why N5 can or cannot apply, for the Needs attention note), each one
-    # statement by host. None grows with the findings.
-    expect(queries).to be <= 24 + 10 + 16 + 2
+    # statement by host; +1: the host's backports (#274, HostBackports), one statement by host with no backport. None
+    # grows with the findings.
+    expect(queries).to be <= 24 + 10 + 16 + 2 + 1
     filtered = tab.call(large, severity: "unknown", debian: "no_dsa")
     expect(filtered).to eq(tab.call(small, severity: "unknown", debian: "no_dsa"))
     expect(filtered).to eq(queries) # the chip's filter is a condition in the same statements

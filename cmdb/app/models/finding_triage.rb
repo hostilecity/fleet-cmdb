@@ -19,6 +19,7 @@ class FindingTriage
     "never_imported" => "Debian triage for %s has not been imported yet; it is imported at the next refresh once an active host reports that release.",
     "stale" => "Debian triage for %s is older than %d hours.",
     "no_cve" => "The advisory names no CVE to look up in the Debian Security Tracker.",
+    "backport" => "Debian's triage for %s is about its own package, not this backport, so it is not shown or used.",
     "no_entry" => "The Debian Security Tracker has no entry for this package and CVE in %s."
   }.freeze
 
@@ -40,7 +41,8 @@ class FindingTriage
   # available (its release mapped, imported, and not stale: status from DebianTriage::Freshness), else none match.
   # A finding matches when its source package has a tracker entry for the release, for one of the advisory's CVE ids
   # (its own id without DEBIAN-, or an alias; tracker entries are CVE ids only, so other ids match nothing), with a
-  # no-DSA note and a status other than resolved.
+  # no-DSA note and a status other than resolved. A backport's finding never matches (#274): the release's triage is
+  # about the release's own package (the "backport" reason).
   NO_DSA = <<~SQL.squish.freeze
     EXISTS (SELECT 1 FROM triage_entries t
             WHERE t.tracker = :tracker AND t.release = :release AND t.package = vulnerability_findings.source
@@ -48,10 +50,19 @@ class FindingTriage
               AND t.cve_id = ANY (array_append(advisories.aliases, regexp_replace(advisories.advisory_id, '^DEBIAN-', ''))))
   SQL
 
+  # Not one of the release's backports (Ecosystems::BACKPORTS): the finding's ecosystem has no marker, or its installed
+  # version does not have it.
+  # The table's names and markers are constants of letters, digits, ":", "~", and "+", so they are written as literals.
+  NOT_BACKPORT = Ecosystems::BACKPORTS.map do |ecosystem, b|
+    raise ArgumentError, "unsafe backports row #{ecosystem}" unless "#{ecosystem}#{b['marker']}".match?(/\A[A-Za-z0-9:~+]+\z/)
+
+    "NOT COALESCE(vulnerability_findings.ecosystem = '#{ecosystem}' AND vulnerability_findings.installed_version LIKE '%#{b['marker']}%', false)"
+  end.join(" AND ").presence || "true"
+
   def self.no_dsa(scope, release:, status:)
     return scope.none if release.nil? || status.nil? || status.never? || status.stale
 
-    scope.where(NO_DSA, tracker: DebianTriage::TRACKER, release:)
+    scope.where(NO_DSA, tracker: DebianTriage::TRACKER, release:).where(NOT_BACKPORT)
   end
 
   # findings: VulnerabilityFinding records (a relation or an array).
@@ -84,6 +95,7 @@ class FindingTriage
     elsif status.never? then [ "never_imported", release ]
     elsif status.stale then [ "stale", release, (@max_age / 1.hour).round ]
     elsif self.class.cve_ids(finding.advisory).empty? then [ "no_cve" ]
+    elsif Ecosystems.backport?(finding.ecosystem, finding.installed_version) then [ "backport", release ]
     end
   end
 

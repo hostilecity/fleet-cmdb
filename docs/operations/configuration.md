@@ -50,7 +50,7 @@ The server downloads vulnerability advisories itself and matches them against th
 
 | Setting | Default | |
 |---|---|---|
-| `FLEET_ADVISORY_FEED_URL` | `https://storage.googleapis.com/osv-vulnerabilities/Debian/all.zip` | The OSV archive the refresh downloads (Debian's covers every release; only `Debian:13` is kept). HTTPS only, or empty to turn the refresh off |
+| `FLEET_ADVISORY_FEED_URL` | `https://storage.googleapis.com/osv-vulnerabilities/Debian/all.zip` | The OSV archive the refresh downloads (Debian's covers every release; `Debian:13` is kept, and `Debian:14` for matching trixie's backports, #274). HTTPS only, or empty to turn the refresh off |
 | `FLEET_ADVISORY_FEED_TOKEN` | none | Sent as a bearer token, for a mirror that needs one; also read from credentials (`advisories.feed_token`). Never logged or shown |
 | `FLEET_ADVISORY_MAX_DOWNLOAD_MB` | `512` | The largest archive downloaded or imported |
 | `FLEET_ADVISORY_MAX_AGE_HOURS` | `48` | Older data shows a warning on the dashboard |

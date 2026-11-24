@@ -105,6 +105,7 @@ module Advisories
       @counts = COUNTS.index_with(0)
       @problems = []
       @changed = Hash.new { |hash, key| hash[key] = Set.new }
+      @refilled = {}
       @seen = Set.new
       @ecosystems = Set.new
       @ecosystem_records = Hash.new(0)
@@ -125,6 +126,7 @@ module Advisories
         end
         check_deadline!
         sweep_absent if @full && @counts["malformed"].zero?
+        first_backports_data! if @full
         changed = @changed.to_h { |ecosystem, packages| [ ecosystem, packages.sort ] }
         # changed_packages: what re-matching needs to know this import touched, even after its run (ADR 0028 decision 7).
         outcome = { state: "succeeded", ecosystems: @ecosystems.to_a.sort, counts: @counts, problems: @problems, **@validators, finished_at: Time.current,
@@ -155,7 +157,10 @@ module Advisories
       raise Record::Malformed, entry.problem if entry.problem
 
       begin
-        Record.parse(entry.bytes).tap { |record| @counts["rejected_urls"] += record.rejected_urls }
+        Record.parse(entry.bytes).tap do |record|
+          @counts["rejected_urls"] += record.rejected_urls
+          @counts["skipped_entries"] = @counts.fetch("skipped_entries", 0) + record.skipped_entries if record.skipped_entries.positive?
+        end
       rescue StandardError => e
         # A shape Record did not anticipate must not roll back the whole import (review of #103).
         raise e if e.is_a?(Record::Malformed)
@@ -180,6 +185,8 @@ module Advisories
       # earlier batch stored, in the same transaction.
       records = records.group_by(&:advisory_id).map { |_, versions| versions.max_by(&:modified_at) }
       existing = Advisory.where(advisory_id: records.map(&:advisory_id)).index_by(&:advisory_id)
+      @stored_ecosystems = AdvisoryPackage.where(advisory_id: existing.values.map(&:id)).distinct.pluck(:advisory_id, :ecosystem)
+                                          .group_by(&:first).transform_values { |rows| rows.map(&:last).sort }
       changes = records.select do |record|
         @seen << record.advisory_id
         record.package_keys.map(&:first).uniq.each do |ecosystem|
@@ -192,12 +199,15 @@ module Advisories
       write(changes, existing) if changes.any?
     end
 
-    # Counts the record and says whether it needs writing.
+    # Counts the record and says whether it needs writing. A record as modified as the stored one is written again when
+    # it has packages for ecosystems the stored one lacks or lost (an ecosystem this server keeps since then, #274:
+    # Debian:14 for trixie's backports); only those ecosystems' packages count as changed (@refilled).
     def classify(record, stored)
       outcome =
         if stored.nil? then record.packages.empty? ? "skipped" : "created"
         elsif stored.modified_at > record.modified_at then "older"
-        elsif stored.modified_at == record.modified_at && stored.withdrawn_reason != "absent" then "unchanged"
+        elsif stored.modified_at == record.modified_at && stored.withdrawn_reason != "absent"
+          refill?(record, stored) ? "updated" : "unchanged"
         else "updated"
         end
       @counts[outcome] += 1
@@ -205,11 +215,34 @@ module Advisories
       %w[created updated].include?(outcome)
     end
 
+    # The first full import that keeps the release the fleet's backports are built from (Backports.data?, #274) changes
+    # how every stored backport is matched, not only those whose sources it changed: their sources count as changed.
+    def first_backports_data!
+      Ecosystems.supported.each do |ecosystem|
+        from = Ecosystems.backports_from(ecosystem)
+        next unless from && @ecosystems.include?(from) && !Backports.data?(ecosystem)
+
+        Backports.sources(ecosystem).each { |source| @changed[from] << source }
+      end
+    end
+
+    def refill?(record, stored)
+      ecosystems = record.package_keys.map(&:first).uniq.sort
+      return false if ecosystems == @stored_ecosystems.fetch(stored.id, [])
+
+      @refilled[record.advisory_id] = ecosystems.to_set ^ @stored_ecosystems.fetch(stored.id, []).to_set
+      true
+    end
+
     def write(records, existing)
       now = Time.current
       old_keys = AdvisoryPackage.where(advisory_id: existing.values_at(*records.map(&:advisory_id)).compact.map(&:id))
-                                .pluck(:ecosystem, :package)
-      (old_keys + records.flat_map(&:package_keys)).each { |ecosystem, package| @changed[ecosystem] << package }
+                                .pluck(:advisory_id, :ecosystem, :package).group_by(&:first)
+      records.each do |r|
+        keys = old_keys.fetch(existing[r.advisory_id]&.id, []).map { |_, ecosystem, package| [ ecosystem, package ] } + r.package_keys
+        only = @refilled[r.advisory_id]
+        keys.each { |ecosystem, package| @changed[ecosystem] << package if only.nil? || only.include?(ecosystem) }
+      end
 
       rows = records.map do |r|
         { advisory_id: r.advisory_id, source: @source, summary: r.summary, aliases: r.aliases, severity: r.severity, severity_raw: r.severity_raw,

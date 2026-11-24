@@ -6,7 +6,9 @@ class PackageSet < ApplicationRecord
   # from them included (SignedSources, #270): the chunks from the entries' source index, then the sets from the GIN
   # index on chunk_ids.
   scope :holding_sources, lambda { |sources|
-    chunks = PackageChunkEntry.where("COALESCE(source, name) IN (?)", SignedSources.reported(sources)).select(:package_chunk_id)
-    where("chunk_ids && ARRAY(#{chunks.to_sql})::bigint[]").select(:id)
+    holding_chunks(PackageChunkEntry.where("COALESCE(source, name) IN (?)", SignedSources.reported(sources)).select(:package_chunk_id))
   }
+
+  # The sets holding one of the chunks a relation selects (package_chunk_id), from the GIN index on chunk_ids.
+  scope :holding_chunks, ->(chunks) { where("chunk_ids && ARRAY(#{chunks.to_sql})::bigint[]").select(:id) }
 end

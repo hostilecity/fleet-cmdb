@@ -66,7 +66,7 @@
     <% @findings.each do |finding| %>
       <tr class="finding <%= finding.state %>"><td><%= severity_tag(finding.advisory.severity) %></td><td><%= advisory_cell(finding.advisory) %></td>
         <td><span class="mono"><%= finding.package %>:<%= finding.architecture %></span></td><td><span class="mono"><%= finding.installed_version %></span></td>
-        <td><%= finding.fixed_version ? tag.span(finding.fixed_version, class: "mono") : tag.span("No fix available", class: "unavailable") %></td>
+        <td><%= finding.fixed_version ? tag.span(finding.fixed_version, class: "mono") : fixed_in(finding) %></td>
         <td><%= finding_state_lamp(finding) %><% if finding.resolution %><span class="state-note"><%= HostVulnerabilitiesHelper::RESOLUTIONS.fetch(finding.resolution) %></span><% end %></td>
         <td><%= triage_lines(finding, @triage[finding], page: :package, status: @triage_status, os: @triage_os) %></td>
         <td><%= finding_history(finding) %></td></tr>

@@ -21,6 +21,17 @@ Nothing to do: the upgrade queues its own work.
 
   (`docker exec -i fleet-cmdb bin/rails dbconsole` runs them.) After rolling forward again, run `bin/rails vulnerabilities:validate_triage_checks`, which clears the buckets the older code left on resolved findings, adds both checks back, and validates them, then `bin/rails vulnerabilities:triage`: findings the older code opened meanwhile have no bucket until it, or their host's next report, gives them one.
 
+## Backports are matched against the release they are built from (#274)
+
+Nothing to do: the next full advisory import does the work.
+
+- **What changes.** Packages from trixie-backports (versions with `~bpo13+`) are also matched against `Debian:14` (forky) advisories, and trixie's data and Debian's triage for trixie no longer resolve, clear, or show beside their findings ([health-and-jobs.md](health-and-jobs.md#advisory-data)). Hosts with no backport see no change.
+- **What runs at the upgrade.** `IndexBackportPackageEntries` builds a small partial index on the backports in `package_chunk_entries`, concurrently. `AddBackportVerdicts` (`20261122274003`; it adds a column only if it is missing) adds two columns to `chunk_matches`, with constant defaults, so nothing is rewritten. Nothing is re-matched yet: until a full import keeps `Debian:14`, backports are matched as before.
+- **The first full import after the upgrade** (the scheduled refresh when OSV next changes its archive, most days; without the feed, `bin/rails advisories:import FILE=all.zip FULL=1`) stores `Debian:14`. It writes every stored advisory that names forky again: a record as modified as the stored one is written again when it names an ecosystem the stored one lacks. That import's line on **Data sources** therefore shows almost every DEBIAN-CVE record as "updated", and rewrites their `Debian:13` rows too, about one `advisory_packages` table's worth of dead rows for autovacuum. Only the `Debian:14` packages count as changed, and every stored backport's sources with them, so it re-matches only the hosts holding a backport. Findings trixie's fix had resolved on a backport whose source forky has no data for are reopened then. Malformed records or `Debian:14` entries in that import do not hold it back: they are skipped and counted, and **Data sources** shows the state. The next import is back to "unchanged".
+- **What operators will see on a host with a backports kernel.** New findings for CVEs fixed in trixie's 6.12 series but not in the backport's, with forky's fix shown but not counted as Fix available. Fewer findings Ignorable or Low risk through Debian's triage for trixie. Some findings kept open that trixie's data had resolved. Each is expected.
+- **Storage.** The `Debian:14` packages about double `advisory_packages` (one row per advisory, ecosystem, and source), and advisories that name only forky add `advisories` rows.
+- **Rolling back.** The older code skips `Debian:14` and resolves the backports' findings on trixie's data again at their next match. After rolling forward, run `bin/rails vulnerabilities:rematch_backports`: it re-matches every backport's source, and only the hosts holding a backport.
+
 ## Signed kernel images get their findings (#270)
 
 Nothing to do: the upgrade queues its own work. It is listed here because what the dashboard shows changes a lot, and so does the cost of kernel advisory imports.

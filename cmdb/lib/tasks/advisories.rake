@@ -167,6 +167,17 @@ namespace :vulnerabilities do
     puts "Queued re-match #{run.id} for #{sources.join(', ')} in #{scope['packages'].keys.join(', ')}: its progress is on the Data sources page."
   end
 
+  # #274: after a rollback and roll forward, or a change to Ecosystems::BACKPORTS. Only the chunks holding a backport
+  # and the hosts on sets holding them, for every backport's source, through the partial index on backports.
+  desc "Queue a background re-match of the chunks and hosts holding a backport (trixie-backports packages), and nothing else"
+  task rematch_backports: :environment do
+    scope = EvaluationRun::Advisories.backports_scope
+    abort "No backport is stored: nothing to re-match." if scope.nil?
+
+    run = EvaluationRun.start!("advisories", scope)
+    puts "Queued re-match #{run.id} of the backports of #{scope['packages'].values.flatten.uniq.size} sources: its progress is on the Data sources page."
+  end
+
   # VT-BUCKETS #259: the way to re-triage everything by hand, for example after a failed triage run's retry also failed,
   # or after config/triage_applicability.yml changed. Its progress is on the Data sources page.
   desc "Queue a background re-triage of every chunk verdict and every host's findings (normally done when a signal or Debian's triage changes)"
