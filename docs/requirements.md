@@ -128,6 +128,15 @@ Build these in Phase 1 and reuse them unchanged in Phases 2 and 3.
 - **Units after an update.** A confirmed remote update installs the new version's systemd units too, as the installer does: the supervisor runs the new, confirmed, signed binary as `fleet-agent install --refresh-units`, which writes only the unit files the installer wrote (a local copy is left alone), reloads systemd, and changes nothing else. A refresh that fails is noted in the update's result, and the update still succeeds. Heartbeats say whether recovery mode is set up, and the dashboard lists the hosts where it is not, with the next step. (#232)
 - Update requests, outcomes, and rollbacks are audited and visible per host. A manual upgrade by re-running the installer remains documented.
 
+### FR-S.6 Operator API for provisioning tools (proposed, DEC-33)
+
+- A second API, `/api/operator/v1`, serves tools on the LAN that create and remove VMs. It is served only on the private agent hostname and refused on the dashboard hostname. (proposed, ADR 0033)
+- Callers authenticate with a service credential: named, shown once, stored only as a hash, with an expiry (default 90 days, at most 1 year), revocable at once, and created by a signed-in operator after the second factor (or the first one by a rake task).
+- Each credential has fixed scopes: `hosts:preregister` (create a pre-registered host and receive its one-time token; issue a new token for a pending host), `hosts:read`, `compliance:read`, `hosts:retire`. No scope reaches tasks, rules, releases, rollouts, settings, operators, or any agent.
+- Pre-registering through the API behaves exactly like the dashboard's pre-registration (FR-S.1): the same token lifetime, the same Pending state, the same audit entry, with the service credential as actor.
+- Writes and credential changes are audited; reads are not, but each credential records when and from where it was last used.
+- The contract (schemas and examples) lives in `docs/api/operator/` and follows the agent API's conventions (DEC-08): strict validation, one error shape, per-credential rate limits.
+
 ## 5. Phase 1 — CMDB and fleet inventory
 
 Phase 1 is complete when an operator can install and enroll a VM with one command and one approval, see it appear in the dashboard within one heartbeat interval, watch it go stale and then offline when the agent stops, and trust that the inventory shown matches the VM.
@@ -392,5 +401,6 @@ A phase is done only when all of these hold:
 
 ## 10. Decisions and traceability
 
+- DEC-33 (operator API for provisioning tools, [ADR 0033](decisions/0033-operator-api.md)) is proposed and awaits the owner; nothing is built until it is accepted.
 - All twenty decisions (`DEC-01` to `DEC-20`) are recorded as ADRs; see the index in [`docs/decisions/README.md`](decisions/README.md). To change one, add an ADR that supersedes it.
 - Every `FR-*`, `NFR-*`, and `AC-*` ID in this document is covered by at least one issue in [`docs/backlog/issues.yml`](backlog/issues.yml), and every `DEC-*` has an ADR. `ruby docs/backlog/import.rb check` verifies both.

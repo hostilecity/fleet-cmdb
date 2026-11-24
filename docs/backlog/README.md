@@ -38,6 +38,7 @@ Nothing else is copied into GitHub, so there is nothing to keep in sync: change 
 | Phase 1 — CMDB & inventory | 21: server (hosts, access, API/enrollment, onboarding, heartbeat, inventory, operability, releases, rollouts), dashboard (3: fleet, actions, audit log), agent (core, install, collectors, reporting, packaging, updater), deployment, verification, acceptance |
 | Phase 2 — Config, CIS & vulnerabilities | 13 |
 | Phase 3 — Remote tasks | 12 |
+| Operator API | 3: service credentials, hosts, compliance; proposed 2026-11-22 (ADR 0033), not created on GitHub until the owner accepts it; gated by `P2-ACCEPT`, not gating Phase 3 |
 | Vulnerability triage | 9: an epic and 8 slices (VT-EPIC), approved by the owner 2026-11-19; gated by `P2-ACCEPT`, not gating Phase 3 |
 
 The Phase 2 and Phase 3 counts were corrected to what `import.rb check` prints (13 and 12) in the vulnerability triage PR (#265).

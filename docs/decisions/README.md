@@ -36,5 +36,6 @@ One file per decision, numbered in the order decided. Copy `0000-template.md` to
 | [0030](0030-agent-recovery-mode.md) | An agent that keeps failing on a confirmed version runs in recovery mode instead of stopping for good (proposed; amends 0018) | #180 |
 | [0031](0031-second-scale-step-readiness.md) | Second scale step, app side only: optional pooler with a direct connection for session locks, caught-up replica reads, and node roles | #198 |
 | [0032](0032-vulnerability-triage-buckets.md) | Triage buckets for findings, CISA KEV and FIRST EPSS signals, a published exposure tier and score, and audited operator decisions (accepted by the owner 2026-11-19; extends 0011 and 0022, amends 0011 for the bucket) | #264 |
+| [0033](0033-operator-api.md) | A scoped operator API on the private hostname, with service credentials, for provisioning tools to pre-register, read and retire hosts (proposed) | DEC-33 |
 
 Not an ADR: [`phase-3-threat-model.md`](phase-3-threat-model.md) is the Phase 3 threat model ([P3-X01](../backlog/specs/p3-security.md)). It decides nothing by itself; its proposals become binding only through a spec or an ADR.
