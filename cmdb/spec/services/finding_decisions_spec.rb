@@ -233,6 +233,29 @@ RSpec.describe FindingDecisions do
   end
 
   describe "ending by itself" do
+    # #295: the hourly sweep runs while a KEV run's preparation is down between its checkpoints; neither one undoes or
+    # repeats the other's work when the run is resumed.
+    it "suspends the control once when the sweep runs while the KEV run is killed part way through its preparation" do
+      extend PreparationKills
+      decision = record.decisions.sole
+      stub_const("EvaluationRun::Triage::CHUNK_BATCH", 1)
+      killer = PreparationKills::Killer.new { |attempt, _, label| attempt == 1 && label == "after checkpoint refresh" }
+      kill_with(killer)
+      import_kev(kev_file("CVE-2026-92002"))
+      run = EvaluationRun.where(kind: "triage").order(:id).last
+      swept = []
+      allow(EvaluationRunWatchJob).to receive(:perform_now).and_wrap_original do |original, *args|
+        swept << FindingDecisionExpiryJob.perform_now # the sweep, while the run is down: it suspends the control
+        original.call(*args)
+      end
+      expect(drive_killed(run, killer)).to eq(2)
+      expect(swept).to eq([ 1 ])
+      expect(decision.reload).to have_attributes(ended_why: "suspended")
+      expect(audits("decision_suspended").count).to eq(1)
+      expect(rules(tls)).to eq("libssl3t64" => "N1", "openssl" => "N1")
+      expect(FindingDecisionExpiryJob.perform_now).to eq(0)
+    end
+
     it "suspends a control when its CVE is added to KEV, in the triage run, and the finding falls through to N1" do
       decision = record.decisions.sole
       import_kev(kev_file("CVE-2026-92002"))

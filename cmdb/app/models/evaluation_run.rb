@@ -22,6 +22,9 @@
 #   the OOM killer) without a retry, so after_discard never runs. EvaluationRunWatchJob resumes a run whose jobs are
 #   gone from what it recorded (its fan-out again, or its remaining batches), and fails it, with the reason "stopped",
 #   after RESUMES resumes in a row with no progress.
+# - Preparation (#295): a queued run's preparation records a checkpoint as it goes (EvaluationRun::Checkpoint: the
+#   step it reached and the last chunk id it handled), so a resume, or the retry of a run never split, carries on from
+#   it. The split that follows is one transaction, so a run's batches are all there or none are.
 # - Progress: batches_done of batch_count and hosts_done of host_count, shown where the run was triggered (the rule page,
 #   the Advisory data sources page). The dashboard refreshes once when the run finishes, if what it shows changed.
 # - Runs finished or superseded more than KEPT ago are deleted when a run starts; a failed run is kept until a later
@@ -35,12 +38,13 @@ class EvaluationRun < ApplicationRecord
   BATCH_SIZE = 1_000
   KEPT = 30.days
   # How many times in a row EvaluationRunWatchJob resumes a run whose job died with no progress since the last resume,
-  # before it fails the run. A resume after progress (a batch counted, or the run split) starts the count again, so a
-  # long run survives any number of deploys once it is split; its preparation is not progress (no cursor: a resume
-  # prepares again), so 4 deploys during one preparation fail it (reviews of #277).
+  # before it fails the run. A resume after progress (a batch counted, the run split, or its preparation's checkpoint
+  # moved, #295) starts the count again, so a long run survives any number of deploys, as long as each attempt moves
+  # it on (reviews of #277).
   RESUMES = 3
   # What EvaluationRunWatchJob keeps in a run's scope: how many resumes in a row made no progress, the progress
-  # ([state, batches done]) at the last one, and why it failed the run ("failure" => "stopped"). A retry drops them.
+  # ([state, batches done, preparation step, its cursor], #295) at the last one, and why it failed the run
+  # ("failure" => "stopped"). A retry drops them.
   WATCH_KEYS = %w[resumes resume_progress failure].freeze
 
   has_many :batches, class_name: "EvaluationBatch", inverse_of: :evaluation_run, dependent: :delete_all
@@ -101,26 +105,19 @@ class EvaluationRun < ApplicationRecord
   # second press, even one that read the run as failed before the first committed, finds it no longer failed and
   # changes nothing (fifth review of #277). A run with batches left (it was split, so prepared) is reopened and carries
   # on from them, as a resume does, so a failed run of a million hosts does not start from scratch; the batches whose
-  # jobs are still queued (a run failed by one batch raising every retry) are not queued again by its fan-out. Any other (one
-  # never split has no batches, and reopening it would finish it with no host done) is superseded at once by a new run
-  # from its scope. Returns the run that now carries the work.
+  # jobs are still queued (a run failed by one batch raising every retry) are not queued again by its fan-out. A run
+  # never split is reopened as queued, and carries on preparing from its checkpoint (#295). A reopened run keeps its
+  # id, so where a newer run of its kind is unfinished, that one's line is shown first. Returns the run.
   def self.retry!(run)
     transaction do
       locked = lock.find(run.id)
       next locked unless locked.failed?
 
-      scope = locked.scope.except(*WATCH_KEYS)
-      if locked.carries_on?
-        locked.update!(state: "running", finished_at: nil, scope:)
-        ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(locked.id) }
-        next locked
-      end
-
-      retried = create!(kind: locked.kind, scope:)
-      locked.update!(state: "superseded", superseded_by: retried, finished_at: Time.current)
-      Triage.drop_sets([ locked.id ]) if locked.kind == "triage"
-      ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(retried.id) }
-      retried
+      # Never split: queued, it carries on preparing from its checkpoint (#295), then is split. Split: running, its
+      # fan-out queues the batches it has left (one with none left finishes).
+      locked.update!(state: locked.started_at ? "running" : "queued", finished_at: nil, scope: locked.scope.except(*WATCH_KEYS))
+      ActiveRecord.after_all_transactions_commit { EvaluationRunJob.perform_later(locked.id) }
+      locked
     end
   end
 
@@ -152,9 +149,16 @@ class EvaluationRun < ApplicationRecord
     # the batches that still have a live job: a reopened run's other batches may still be queued (review of #292).
     again = state == "running"
     # The work's own preparation, before the hosts are found (an import matches its changed chunks, ADR 0028); outside
-    # the run's lock, since it can take a while. Idempotent, so a retried fan-out may run it again.
+    # the run's lock, since it can take a while. Idempotent, and it carries on from its checkpoint (#295), so a retried
+    # or resumed fan-out runs only what is left of it. A preparation that finds the checkpoint moved by another (or the
+    # run no longer queued) stops, and leaves the run to it.
     if state == "queued"
-      prepared = work.prepare!
+      begin
+        prepared = work.then { |w| w.prepare!(Checkpoint.for(self, w.prepare_steps)) }
+      rescue Checkpoint::Lost => e
+        Rails.logger.warn("[evaluation] #{kind} run #{id}: #{e.message}: this preparation stops")
+        return
+      end
       update!(scope: prepared) if kind == "triage" # the chunks it recorded, so its batches and a retry find its hosts
     end
     batch_ids = transaction do
@@ -166,6 +170,9 @@ class EvaluationRun < ApplicationRecord
       reload
       next [] unless unfinished?
 
+      # A fan-out that started on a queued run and finds it split already is a second one (the first split it): it
+      # queues only the batches with no live job, as a fan-out again does.
+      again ||= state == "running"
       split! if state == "queued"
       supersede!(older)
       batches.order(:position).pluck(:id)
@@ -238,11 +245,11 @@ class EvaluationRun < ApplicationRecord
     save!
   end
 
-  # A run with no hosts to evaluate finishes as it is split.
+  # A run with no batch left finishes: one split into none, or one reopened with none left.
   def finish_empty!
     transaction do
       lock!
-      next unless state == "running" && batch_count.zero?
+      next unless state == "running" && !batches.exists?
 
       finish!
       save!

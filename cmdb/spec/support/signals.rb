@@ -54,6 +54,13 @@ module SignalHelpers
   def pending_changes(kind) = TriageSignalChange.where(kind:).order(:cve_id, :advisory_id).pluck(Arel.sql("coalesce(cve_id, advisory_id::text, kind)"))
 end
 
+# What the claim protocol's release and the signals barrier do inside the test's transaction (below; also
+# spec/support/preparation_kills.rb, which wraps them).
+SignalHelpers::IN_TEST_TRANSACTION = {
+  release!: ->(ids) { TriageSignalChange.where(id: ids).delete_all },
+  signals_barrier!: -> { ChunkEvaluation.connection.execute("SELECT pg_advisory_xact_lock(#{VulnerabilityMatcher::Chunks::SIGNALS_LOCK.join(', ')})") }
+}.freeze
+
 RSpec::Matchers.define_negated_matcher :not_include, :include unless RSpec::Matchers.method_defined?(:not_include)
 
 RSpec.configure do |config|
@@ -78,10 +85,8 @@ RSpec.configure do |config|
   config.before do |example|
     next if !self.class.use_transactional_tests || example.metadata[:claim_protocol]
 
-    allow(TriageSignalChange).to receive(:release!) { |ids| TriageSignalChange.where(id: ids).delete_all }
+    allow(TriageSignalChange).to receive(:release!, &SignalHelpers::IN_TEST_TRANSACTION[:release!])
     # Likewise the signals barrier, which refuses inside a transaction (its lock would last until the test ends).
-    allow(VulnerabilityMatcher::Chunks).to receive(:signals_barrier!) do
-      ChunkEvaluation.connection.execute("SELECT pg_advisory_xact_lock(#{VulnerabilityMatcher::Chunks::SIGNALS_LOCK.join(', ')})")
-    end
+    allow(VulnerabilityMatcher::Chunks).to receive(:signals_barrier!, &SignalHelpers::IN_TEST_TRANSACTION[:signals_barrier!])
   end
 end

@@ -64,7 +64,7 @@ RSpec.describe EvaluationRunWatchJob do
       expect { VulnerabilityMatcher.match_again! }.not_to(change { [ findings, evaluations ] })
     end
 
-    it "resumes a run killed while it was being prepared, part way through matching its chunks, which prepares it again" do
+    it "resumes a run killed while it was being prepared, part way through matching its chunks, from its checkpoint" do
       run = import_curl
       stub_const("VulnerabilityMatcher::Chunks::BATCH", 1)
       calls = 0
@@ -80,7 +80,7 @@ RSpec.describe EvaluationRunWatchJob do
       RSpec::Mocks.space.proxy_for(VulnerabilityMatcher::Chunks).reset
       expect(described_class.perform_now).to eq(outcome) # untouched for less than 10 minutes: left alone
       expect(watch).to eq(outcome(resumed: [ run.id ]))
-      expect(run.reload).to have_attributes(state: "queued", scope: include("resumes" => 1, "resume_progress" => [ "queued", 0 ]))
+      expect(run.reload).to have_attributes(state: "queued", scope: include("resumes" => 1, "resume_progress" => [ "queued", 0, nil, nil ])) # killed in its first page
       perform_evaluation_jobs
       expect(run.reload).to have_attributes(state: "finished", batches_done: 2, host_count: 2, hosts_done: 2)
       expect_both_hosts_correct
@@ -110,7 +110,7 @@ RSpec.describe EvaluationRunWatchJob do
       expect(left.size).to eq(1)
       killed_job("EvaluationBatchJob", left.first)
       expect(watch).to eq(outcome(resumed: [ run.id ]))
-      expect(run.reload.scope).to include("resumes" => 1, "resume_progress" => [ "running", 1 ])
+      expect(run.reload.scope).to include("resumes" => 1, "resume_progress" => [ "running", 1, "prepared", nil ])
       perform_enqueued_jobs(only: EvaluationRunJob)
       expect(batch_jobs.map { |job| job["arguments"] }).to eq([ left ])
       perform_evaluation_jobs
@@ -193,23 +193,40 @@ RSpec.describe EvaluationRunWatchJob do
       expect_both_hosts_correct
     end
 
-    it "starts a run that failed before it was split again as a new run, once however often it is pressed" do
+    it "reopens a run stopped before it was split, which carries on preparing from its checkpoint, once however often it is pressed (#295)" do
       run = import_curl
       clear_enqueued_jobs
+      allow(VulnerabilityMatcher::Chunks).to receive(:restamp!).and_raise(SignalException, "TERM") # killed there every time
+      killed! { run.fan_out! }
+      expect(run.reload.prepare_step).to eq("restamp") # its chunks were matched
       EvaluationRun::RESUMES.times do |n|
         expect(watch(after: (n + 1) * 11.minutes)).to eq(outcome(resumed: [ run.id ]))
         clear_enqueued_jobs
+        killed! { EvaluationRunJob.new(run.id).perform(run.id) } # perform alone: a killed worker runs no callback
       end
-      expect(watch(after: 50.minutes)).to eq(outcome(failed: [ run.id ]))
+      expect(watch(after: 50.minutes)).to eq(outcome(failed: [ run.id ])) # the checkpoint never moved
+      allow(VulnerabilityMatcher::Chunks).to receive(:restamp!).and_call_original
       stale = EvaluationRun.find(run.id)
-      retried = nil
-      expect { retried = EvaluationRun.retry!(run) }.to change(EvaluationRun, :count).by(1) # no batches to carry on from
-      expect { expect(EvaluationRun.retry!(stale)).to eq(run.reload) }.not_to change(EvaluationRun, :count)
-      expect(run).to have_attributes(state: "superseded", superseded_by_id: retried.id)
-      expect(retried.scope).to eq(run.scope.except(*EvaluationRun::WATCH_KEYS))
+      expect { expect(EvaluationRun.retry!(run)).to eq(run) }.not_to change(EvaluationRun, :count)
+      expect { expect(EvaluationRun.retry!(stale)).to eq(run) }.not_to change(EvaluationRun, :count)
+      expect(run.reload).to have_attributes(state: "queued", finished_at: nil, prepare_step: "restamp")
+      expect(run.scope.keys).not_to include(*EvaluationRun::WATCH_KEYS)
+      expect(enqueued_jobs.count { |job| job["job_class"] == "EvaluationRunJob" }).to eq(1)
+      allow(VulnerabilityMatcher::Chunks).to receive(:ensure!).and_call_original
       perform_evaluation_jobs
-      expect(retried.reload).to have_attributes(state: "finished", hosts_done: 2)
+      expect(VulnerabilityMatcher::Chunks).not_to have_received(:ensure!).with(anything, anything, hash_including(force: true)) # not prepared again
+      expect(run.reload).to have_attributes(state: "finished", hosts_done: 2, prepare_step: "prepared")
       expect_both_hosts_correct
+    end
+
+    it "reopens a run split with no batch left, which then finishes rather than waiting for the watch" do
+      run = import_curl
+      clear_enqueued_jobs
+      run.update_columns(state: "failed", started_at: Time.current, batch_count: 2, finished_at: Time.current) # as no path leaves it
+      expect { expect(EvaluationRun.retry!(run)).to eq(run) }.not_to change(EvaluationRun, :count)
+      perform_enqueued_jobs(only: EvaluationRunJob)
+      expect(run.reload.state).to eq("finished")
+      expect(batch_jobs).to be_empty
     end
 
     it "does not queue again the batches of a reopened run whose jobs are still queued (review of #292)" do
@@ -265,6 +282,52 @@ RSpec.describe EvaluationRunWatchJob do
       perform_evaluation_jobs
       expect(run.reload).to have_attributes(state: "finished", batches_done: 2, hosts_done: 2)
       expect_both_hosts_correct
+    end
+
+    describe "killed at every point of its preparation (#295)" do
+      include PreparationKills
+
+      before do
+        stub_const("EvaluationRun::Advisories::MATCH_PAGE", 1) # a checkpoint a chunk
+        stub_const("VulnerabilityMatcher::Chunks::BATCH", 1)
+      end
+
+      # A new advisory for curl each time, so each run has real work to prepare.
+      def import_curl_again(n)
+        import_advisories(osv_record(id: "DSA-1-#{n}", package: "curl", fixed: "8.14.1-2"))
+        EvaluationRun.where(kind: "advisories").order(:id).last
+      end
+
+      it "finishes whichever point it is killed at, with both hosts as a full re-match leaves them, each batched once" do
+        dry = PreparationKills::Killer.new
+        kill_with(dry)
+        expect(drive_killed(import_curl_again(0), dry)).to eq(1)
+        expect(dry.labels).to include("after checkpoint match:Debian:13", "after match_slice", "after checkpoint restamp", "after restamp!",
+                                      "after checkpoint prepared", "before the batches are queued")
+        (1..dry.labels.size).each do |point|
+          killer = PreparationKills::Killer.new { |attempt, index, _| attempt == 1 && index == point }
+          kill_with(killer)
+          run = import_curl_again(point)
+          expect(drive_killed(run, killer)).to eq(2), "killed at #{dry.labels[point - 1]}"
+          expect_batched_once(run, 2)
+        end
+        curl = Advisory.where("advisory_id LIKE 'DSA-1-%'").count
+        expect(curl).to eq(dry.labels.size + 1)
+        expect(VulnerabilityFinding.where(host: hosts.first).active.group(:package).count).to eq("curl" => curl) # each import's finding, on both hosts
+        expect(VulnerabilityFinding.where(host: hosts.second).active.group(:package).count).to eq("libcurl4" => curl, "vim" => 1)
+        expect { VulnerabilityMatcher.match_again! }.not_to(change { [ findings, evaluations ] })
+      end
+
+      it "is never failed when each attempt is killed as soon as it moves its checkpoint, since each move is progress" do
+        killer = PreparationKills::Killer.new { |_, _, label| label.start_with?("after checkpoint") }
+        kill_with(killer)
+        run = import_curl_again(1)
+        attempts = drive_killed(run, killer)
+        expect(attempts).to be > EvaluationRun::RESUMES + 1 # more kills in a row than the watch allows without progress
+        expect(run.reload.scope).not_to include("failure")
+        expect_batched_once(run, 2)
+        expect_both_hosts_correct
+      end
     end
   end
 

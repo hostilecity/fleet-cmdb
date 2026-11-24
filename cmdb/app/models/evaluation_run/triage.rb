@@ -20,9 +20,9 @@ class EvaluationRun
   #   everywhere) makes the run "all" too.
   # - Staleness starts nothing and rewrites nothing (B1): only stored data changing does.
   # - A failed run can be started again (the Data sources page, EvaluationRun.retry!): a prepared run with batches left
-  #   carries on from them; any other is started again as a new run whose scope names the chunks it recorded, so it
-  #   re-runs the same hosts without claiming again, and supersedes it. A later run covers an earlier one only when it
-  #   re-runs every host the earlier one would (its chunks, or all), so latest-wins never drops a host.
+  #   carries on from them; one never split carries on preparing from its checkpoint (#295), claiming nothing again. A
+  #   later run covers an earlier one only when it re-runs every host the earlier one would: a full run, which covers
+  #   any prepared one (#295: no run carries another's chunks), so latest-wins never drops a host.
   class Triage
     AT_ONCE = %w[kev kev_all advisory].freeze
     REASONS = %w[kev daily all].freeze
@@ -31,7 +31,8 @@ class EvaluationRun
     # Up to this many advisories, the run re-triages only their findings on each host (VulnerabilityMatcher.retriage!,
     # about 1 ms a host); above it (a first tracker import names most of them), each host's transitions run in full,
     # about 80 ms a host at 4,450 findings: 21 thread-hours at a million hosts, as the migration's full run costs. The
-    # advisory ids are kept in the run's scope, so the limit also bounds that row.
+    # prepared scope keeps the advisory ids up to this limit only, so it bounds that row; while the run prepares, they
+    # are read from its claims, not kept (#295).
     ADVISORY_LIMIT = 20_000
 
     # Deletes runs' triage_run_sets rows once the current transaction commits (fifth review of #277: up to about
@@ -57,32 +58,48 @@ class EvaluationRun
     # ADVISORY_LIMIT advisories).
     def advisory_ids = full? ? nil : scope["advisory_ids"]&.map(&:to_i)
 
+    # The steps of prepare! (EvaluationRun::Checkpoint, #295).
+    STEPS = %w[claim refresh sets].freeze
+
     # Claims, recomputes, records, releases; returns the scope the run keeps (EvaluationRun#fan_out! stores it too).
     # Crash-safe (review of #277, B2, and its re-checks): the run's id is in its stored scope before anything is recorded
     # under it, each slice's changed chunks are recorded in the transaction that changes them, and the prepared scope is
-    # stored before the claims are released. So a fan-out run again after a failure, from any point, reaches every host
-    # a committed slice changed, and claims not released are claimed again. A run whose job died with its worker (Solid
-    # Queue fails a killed worker's job without a retry) is resumed by EvaluationRunWatchJob: its fan-out or its
-    # remaining batches are queued again, at most EvaluationRun::RESUMES times in a row with no progress. A full run
-    # resumes rather than restarts: its base pass writes only the verdicts that change, and its batches carry on from
-    # those left.
-    def prepare!
-      return own_sets! if prepared?
+    # stored before the claims are released. A run whose job died with its worker (Solid Queue fails a killed worker's
+    # job without a retry) is resumed by EvaluationRunWatchJob, at most EvaluationRun::RESUMES times in a row with no
+    # progress.
+    #
+    # It carries on from its checkpoint (#295), so a resume, or the retry of a run never split, does not prepare again
+    # from the start:
+    # - claim: the rows it claimed go into triage_run_claims, and whether it is full and its id into the scope, in the
+    #   transaction that moves the checkpoint (a table, not the scope, so the scope stays small for Data sources and for
+    #   every rewrite of it: review of #308). A resume claims nothing again: a change recorded since (a new row, or a
+    #   claimed one recorded again, which gets a new id) stays pending for the next run, delayed, never lost. Each attempt
+    #   reads its advisories from the claimed rows that still exist; one another run released was re-triaged by that run.
+    # - refresh: the chunks after the cursor, in id order (in SQL, review of #308), CHUNK_BATCH at a time, the cursor
+    #   moving after each; a slice killed part way is recomputed again (it writes only the verdicts that change, and
+    #   records its changed chunks and adds to the totals with them, so the totals are exact). The signals barrier is taken again on every attempt,
+    #   before the chunks are read. A chunk below the cursor that came to hold an advisory since was matched after the
+    #   first barrier, so it read the new signals itself.
+    # - sets: the sets holding the recorded chunks, in one statement (idempotent), stored with the prepared scope as the
+    #   checkpoint moves past it. Then the claims are released and their rows deleted; a run killed between the two
+    #   releases them as it is resumed.
+    def prepare!(checkpoint = Checkpoint.detached(STEPS))
+      if prepared?
+        release_claimed!
+        return scope
+      end
 
-      store!(scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).compact.uniq))
-      claimed, kinds, cves, advisories = claim_all
-      full = full? || kinds.include?("kev_all")
-      advisory_ids = full ? nil : advisories_for(cves, advisories)
+      TriageRunClaim.transaction { checkpoint.step!("claim") { claim! } }
+      advisory_ids = full? ? nil : claimed_advisories
       VulnerabilityMatcher::Chunks.signals_barrier! # every match that read the signals before they changed has committed
-      chunk_ids = full ? ChunkEvaluation.distinct.pluck(:package_chunk_id) : ChunkMatch.where(advisory_id: advisory_ids).distinct.pluck(:package_chunk_id)
-      stats = Hash.new(0)
-      record = full ? nil : ->(ids) { record_chunks(ids) }
-      changed = chunk_ids.each_slice(CHUNK_BATCH).flat_map { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: record, stats:) }
-      record_sets! unless full
-      store!(scope.merge("full" => full, "prepared" => true, "sets_run" => (@run_id unless full), "changes" => claimed.size, "advisories" => advisory_ids&.size,
-                         "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
-                         "chunks_changed" => changed.size, "verdicts_changed" => stats[:verdicts]))
-      TriageSignalChange.release!(claimed) if claimed.any?
+      refresh!(checkpoint, advisory_ids) unless checkpoint.done?("refresh")
+      checkpoint.step!("sets") do
+        record_sets! unless full?
+        @scope = scope.merge("prepared" => true, "sets_run" => (@run_id unless full?), "changes" => claims.count, "advisories" => advisory_ids&.size,
+                             "advisory_ids" => (advisory_ids.sort if advisory_ids && advisory_ids.size <= ADVISORY_LIMIT),
+                             "chunks_changed" => full? ? totals.first : TriageRunChunk.where(evaluation_run_id: @run_id).count, "verdicts_changed" => totals.last)
+      end
+      release_claimed!
       scope
     end
 
@@ -118,24 +135,77 @@ class EvaluationRun
       advisory_ids ? VulnerabilityMatcher.retriage!(ids, advisory_ids:) : VulnerabilityMatcher.match!(ids).changed_host_ids
     end
 
-    # A run that is not prepared is covered only by a run that carries its id (a retry from its scope), never just
-    # because the covering run is full: a run still preparing may refresh after this one has read the bases (review of
-    # #277, re-check S2). A prepared run is covered by a full run, or by one that re-runs its chunks for at least its
-    # advisories.
-    def covers?(other)
-      return false unless other.is_a?(Triage)
-      return !other.run_id.nil? && chunk_runs.include?(other.run_id) unless other.prepared?
-      return true if full?
-      return false if other.full? || !(other.chunk_runs - chunk_runs).empty?
-
-      advisory_ids.nil? || (!other.advisory_ids.nil? && (other.advisory_ids - advisory_ids).empty?)
-    end
+    # A full run covers a prepared one: it re-runs every host. A run that is not prepared is never covered, not even by
+    # a full run, since it may refresh after this one has read the bases (review of #277, re-check S2). Any other run
+    # covers none: each records its changed chunks under its own id only (since #295 a retry reopens the run itself,
+    # so no run carries another's), so none is sure to re-run every one of another's hosts.
+    def covers?(other) = other.is_a?(Triage) && other.prepared? && full?
 
     def refresh_always? = false
 
+    def prepare_steps = STEPS
+
     private
 
-    # [claimed ids, kinds, CVE ids, advisory ids], claiming until nothing new comes (a row an import holds locked is
+    # The claim step: claims, records the rows claimed, and returns the scope to store with it.
+    def claim!
+      claimed, kinds = claim_all
+      claimed.each_slice(5_000) { |ids| TriageRunClaim.insert_all(ids.map { |id| { evaluation_run_id: @run_id, triage_signal_change_id: id } }) }
+      @scope = scope.merge("chunk_runs" => (chunk_runs + [ @run_id ]).compact.uniq, "full" => full? || kinds.include?("kev_all"))
+    end
+
+    def claims = TriageRunClaim.where(evaluation_run_id: @run_id)
+
+    # The advisories the claimed rows that still exist name.
+    def claimed_advisories
+      rows = TriageSignalChange.where(id: claims.select(:triage_signal_change_id)).pluck(:cve_id, :advisory_id)
+      advisories_for(rows.filter_map(&:first).uniq, rows.filter_map(&:last).uniq)
+    end
+
+    # The base refresh over the chunks after the cursor. Its totals are exact across attempts (review of #308): each
+    # refresh transaction adds what it changed to the run's verdicts_changed and chunks_changed, and records its changed
+    # chunks, before it commits, so a slice killed part way and repeated changes nothing more and counts nothing more,
+    # and a run that prepares again from the start (another step list) never counts a verdict twice.
+    def refresh!(checkpoint, advisory_ids)
+      after = checkpoint.after("refresh")
+      rows = full? ? ChunkEvaluation.all : ChunkMatch.where(advisory_id: advisory_ids)
+      rows = rows.where(package_chunk_id: (after + 1)..) if after
+      chunk_ids = rows.distinct.order(:package_chunk_id).pluck(:package_chunk_id)
+      changed = lambda do |ids, verdicts|
+        record_chunks(ids) unless full?
+        add_totals!(ids.size, verdicts)
+      end
+      checkpoint.pages!("refresh", chunk_ids, CHUNK_BATCH) { |slice| VulnerabilityTriage::Base.refresh!(slice, advisory_ids:, on_changed: changed) }
+    end
+
+    TOTALS_SQL = <<~SQL.squish.freeze
+      UPDATE evaluation_runs SET scope = scope || jsonb_build_object(
+        'chunks_changed', COALESCE((scope ->> 'chunks_changed')::bigint, 0) + :chunks,
+        'verdicts_changed', COALESCE((scope ->> 'verdicts_changed')::bigint, 0) + :verdicts)
+      WHERE id = :run
+    SQL
+
+    # Inside a refresh transaction: adds to the run's totals (the run's row, in the scope's two keys only).
+    def add_totals!(chunks, verdicts)
+      EvaluationRun.connection.exec_update(EvaluationRun.sanitize_sql_array([ TOTALS_SQL, { chunks:, verdicts:, run: @run_id.to_i } ]))
+    end
+
+    # The totals as stored, every attempt's: [chunks, verdicts]. For a full run, which records no chunks, a chunk counts
+    # once for each ecosystem it is evaluated in (one, but for a chunk two releases share); a run of advisories counts
+    # its recorded chunks instead.
+    def totals = (EvaluationRun.where(id: @run_id).pick(Arel.sql("scope -> 'chunks_changed'"), Arel.sql("scope -> 'verdicts_changed'")) || [ 0, 0 ]).map(&:to_i)
+
+    # Releases the rows the run claimed, once its prepared scope is stored, and deletes its claims (the claim
+    # protocol's step 3, outside any transaction).
+    def release_claimed!
+      ids = claims.pluck(:triage_signal_change_id)
+      return if ids.empty?
+
+      TriageSignalChange.release!(ids)
+      claims.delete_all
+    end
+
+    # [claimed ids, kinds], claiming until nothing new comes (a row an import holds locked is
     # read again until it is released, so a repeat ends the loop).
     def claim_all
       seen = Set.new
@@ -148,7 +218,7 @@ class EvaluationRun
         rows.concat(batch)
         break if batch.size < CLAIM
       end
-      [ rows.map(&:id), rows.map(&:kind).uniq, rows.filter_map(&:cve_id).uniq, rows.filter_map(&:advisory_id).uniq ]
+      [ rows.map(&:id), rows.map(&:kind).uniq ]
     end
 
     # The advisories naming the CVEs (by id or alias), and those named directly.
@@ -175,16 +245,6 @@ class EvaluationRun
       ON CONFLICT DO NOTHING
     SQL
 
-    # A run started from a prepared run's scope (a retry of one that was never split) records the sets under its own
-    # id, so it reads only its own and the older run's can go when it is superseded.
-    def own_sets!
-      return scope if full? || scope["sets_run"] == @run_id
-
-      record_sets!
-      store!(scope.merge("sets_run" => @run_id))
-      scope
-    end
-
     # Finds the sets holding the recorded chunks once, through the sets' GIN index, before the prepared scope is
     # stored (so a fan-out run again records them again, idempotently), and analyses the table, so the batches' plans
     # see how many there are.
@@ -192,11 +252,6 @@ class EvaluationRun
       connection = TriageRunSet.connection
       connection.exec_update(TriageRunSet.sanitize_sql_array([ SETS_SQL, { run: @run_id, runs: recorded_runs } ]))
       connection.execute("ANALYZE triage_run_sets")
-    end
-
-    def store!(scope)
-      @scope = scope
-      EvaluationRun.where(id: @run_id).update_all(scope:, updated_at: Time.current)
     end
   end
 end

@@ -35,7 +35,7 @@ spec/jobs/cis_evaluation_job_spec.rb:0.71
 spec/jobs/compliance_refresh_spec.rb:3.82
 spec/jobs/debian_triage_refresh_job_spec.rb:5.86
 spec/jobs/epss_refresh_job_spec.rb:0.29
-spec/jobs/evaluation_run_watch_job_spec.rb:7.1
+spec/jobs/evaluation_run_watch_job_spec.rb:13.11
 spec/jobs/job_failure_spec.rb:0.32
 spec/jobs/kev_refresh_job_spec.rb:0.94
 spec/jobs/vulnerability_match_job_spec.rb:1.47
@@ -66,6 +66,7 @@ spec/models/cis_compliance_spec.rb:0.71
 spec/models/cis_result_history_spec.rb:0.55
 spec/models/config_diff_spec.rb:0.06
 spec/models/ecosystems_spec.rb:0.01
+spec/models/evaluation_run_checkpoint_spec.rb:1.14
 spec/models/evaluation_run_spec.rb:15.19
 spec/models/evaluation_run_triage_spec.rb:0.71
 spec/models/finding_triage_spec.rb:2.02
@@ -228,7 +229,7 @@ spec/services/vulnerability_matcher_concurrency_spec.rb:0.56
 spec/services/vulnerability_matcher_performance_spec.rb:14.51
 spec/services/vulnerability_matcher_spec.rb:5.41
 spec/services/vulnerability_triage/tables_spec.rb:0.29
-spec/services/vulnerability_triage_matching_spec.rb:22.21
+spec/services/vulnerability_triage_matching_spec.rb:34.28
 spec/services/vulnerability_triage_spec.rb:0.3
 spec/tasks/advisories_rake_spec.rb:3.88
 spec/tasks/backup_rake_spec.rb:0.33

@@ -6,8 +6,8 @@
 #   is failed or has not moved for STALLED_AFTER. When the run is done, the frame reloads the page once, to show the
 #   results. A tick does not count as the operator's activity, so an open tab cannot keep a session alive.
 # - retry: a failed run is started again with the same rules or sources (a POST, CSRF-protected), under its row lock
-#   (EvaluationRun.retry!): a run with batches left carries on from them, any other is superseded by a new run, and a
-#   second press changes nothing. Starting evaluation changes no setting and contacts no agent, so it is not audited,
+#   (EvaluationRun.retry!): a run with batches left carries on from them, one never split carries on preparing from its
+#   checkpoint (#295), and a second press changes nothing. Starting evaluation changes no setting and contacts no agent, so it is not audited,
 #   as the runs a rule change or an import start are not.
 class EvaluationRunsController < ApplicationController
   def progress
@@ -21,7 +21,9 @@ class EvaluationRunsController < ApplicationController
     return redirect_to(page_for(run), alert: "That run did not fail, so there is nothing to start again.") unless run.failed?
 
     retried = EvaluationRun.retry!(run)
-    carried_on = retried.id == run.id && !retried.superseded_by_id # reopened, rather than superseded by a new run
+    # Reopened with its batches left, rather than reopened before its split (it carries on preparing, #295, and then
+    # checks every affected host) or superseded by a new run.
+    carried_on = retried.id == run.id && retried.state == "running"
     redirect_to page_for(run), notice: EvaluationRunsHelper::RETRY_TEXT.fetch(run.kind)[carried_on ? 1 : 0].last
   end
 
